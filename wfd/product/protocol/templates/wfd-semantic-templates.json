@@ -1,0 +1,241 @@
+{
+  "format_version": "wfd.semantic-templates/1.0",
+  "status": "templates_only_not_products",
+  "purpose": "Discovery of common semantic dimensions and seven business template groups. No product or data object is created by this file.",
+  "common_axes": [
+    "identity",
+    "time",
+    "measurement",
+    "content_nature",
+    "statistical",
+    "financial",
+    "relation",
+    "coverage_quality",
+    "source",
+    "version"
+  ],
+  "business_groups": [
+    {
+      "group_id": "market",
+      "name": "市场行情与价格口径",
+      "template_only": true,
+      "dimensions": [
+        "instrument_listing",
+        "trading_calendar",
+        "session_timezone",
+        "raw_adjusted_price",
+        "volume_amount",
+        "coverage"
+      ]
+    },
+    {
+      "group_id": "macro",
+      "name": "宏观经济基础数据",
+      "template_only": true,
+      "dimensions": [
+        "region",
+        "statistical_period",
+        "nominal_real",
+        "base_period",
+        "seasonal_adjustment",
+        "first_release_revision"
+      ]
+    },
+    {
+      "group_id": "credit_money",
+      "name": "信用、货币与流动性",
+      "template_only": true,
+      "dimensions": [
+        "money_aggregate",
+        "credit_scope",
+        "interest_rate_tenor",
+        "stock_flow",
+        "central_bank_operation"
+      ]
+    },
+    {
+      "group_id": "industry",
+      "name": "行业供需、库存与产业链",
+      "template_only": true,
+      "dimensions": [
+        "product_scope",
+        "capacity",
+        "inventory_stock",
+        "shipment_flow",
+        "cost_profit",
+        "supply_chain_relation"
+      ]
+    },
+    {
+      "group_id": "company_finance",
+      "name": "公司财务与经营八子域",
+      "template_only": true,
+      "dimensions": [
+        "raw_disclosure",
+        "standardized_history",
+        "operations",
+        "model_derived",
+        "segments",
+        "forecast_scenario",
+        "research_rating",
+        "calendar_mapping"
+      ]
+    },
+    {
+      "group_id": "calendar_seasonal",
+      "name": "季节性与日历",
+      "template_only": true,
+      "dimensions": [
+        "natural_calendar",
+        "trading_calendar",
+        "accounting_calendar",
+        "observation_window",
+        "seasonal_original",
+        "holiday"
+      ]
+    },
+    {
+      "group_id": "event_relation",
+      "name": "事件与关系",
+      "template_only": true,
+      "dimensions": [
+        "event_identity",
+        "publication",
+        "occurrence",
+        "effective_relation",
+        "set_completeness",
+        "evidence"
+      ]
+    }
+  ],
+  "finance_subdomains": [
+    {
+      "subdomain_id": "raw_disclosure",
+      "name": "原始披露财务",
+      "leaf_items": [
+        "原始利润表",
+        "原始资产负债表",
+        "原始现金流量表",
+        "原始附注结构化数据",
+        "年报半年报季报",
+        "合并与母公司报表",
+        "更正重述及审计版本"
+      ],
+      "leaf_count": 7
+    },
+    {
+      "subdomain_id": "standardized_history",
+      "name": "标准化历史财务",
+      "leaf_items": [
+        "连续年度三表",
+        "连续半年度三表",
+        "连续单季度三表",
+        "连续年初累计数据",
+        "滚动十二个月财务数据",
+        "科目映射合并及拆分",
+        "财务口径和可比性版本",
+        "清洗质量及版本"
+      ],
+      "leaf_count": 8
+    },
+    {
+      "subdomain_id": "operations",
+      "name": "公司经营业务",
+      "leaf_items": [
+        "产量销量库存",
+        "订单及在手订单",
+        "产能开工率与利用率",
+        "产品业务分部与地区",
+        "渠道门店及客户数据",
+        "原材料成本与经营费用",
+        "资本开支扩产与项目进度",
+        "供应链及实物设施关联"
+      ],
+      "leaf_count": 8
+    },
+    {
+      "subdomain_id": "model_derived",
+      "name": "金融建模派生数据",
+      "leaf_items": [
+        "盈利能力及成长指标",
+        "营运资本与周转天数",
+        "固定资产与折旧滚动",
+        "债务及融资滚动",
+        "租赁资产和负债滚动",
+        "税务及其他财务调节",
+        "现金流及资本开支计算",
+        "三表勾稽结果"
+      ],
+      "leaf_count": 8
+    },
+    {
+      "subdomain_id": "management_plan",
+      "name": "管理层声明与经营计划",
+      "leaf_items": [
+        "业绩预告与业绩快报",
+        "已公开经营指引",
+        "产销订单与投资计划",
+        "项目建设及投产公告",
+        "计划修订延期和撤回",
+        "计划与实际结果关联"
+      ],
+      "leaf_count": 6
+    },
+    {
+      "subdomain_id": "research_reports",
+      "name": "机构调研与研报",
+      "leaf_items": [
+        "机构调研记录",
+        "参与机构与分析师",
+        "投资者关系活动",
+        "业绩说明会及电话会议",
+        "公司研究报告元数据",
+        "正式评级与目标价格声明",
+        "报告发布和修订版本"
+      ],
+      "leaf_count": 7
+    },
+    {
+      "subdomain_id": "consensus_forecast",
+      "name": "机构预测与一致预期",
+      "leaf_items": [
+        "收入利润每股收益预测",
+        "季度与年度财务预测声明",
+        "分析师预测修订记录",
+        "发布者发布的一致预期",
+        "可复现的一致预期统计",
+        "统计样本及定义版本",
+        "实际结果与预测声明关联"
+      ],
+      "leaf_count": 7
+    },
+    {
+      "subdomain_id": "forecast_scenario",
+      "name": "预测与情景资料",
+      "leaf_items": [
+        "外部模型身份及版本",
+        "输入数据与假设记录",
+        "确定性计算的情景结果",
+        "已生成的预测三表",
+        "预测情景资料与边界"
+      ],
+      "leaf_count": 5
+    }
+  ],
+  "not_an_allowlist": "Custom complete declarations outside these groups remain admissible if they satisfy the semantic and contract requirements.",
+  "finance_leaf_count": 56,
+  "finance_detail_coverage": {
+    "source": "01 §5.5 / 2026-10-28 attachment lines 82-162",
+    "leaf_count": 56,
+    "subdomains": {
+      "raw_disclosure": 7,
+      "standardized_history": 8,
+      "operations": 8,
+      "model_derived": 8,
+      "management_plan": 6,
+      "research_reports": 7,
+      "consensus_forecast": 7,
+      "forecast_scenario": 5
+    }
+  }
+}

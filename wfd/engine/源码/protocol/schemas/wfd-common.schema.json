@@ -1,0 +1,882 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wfd.example/spec/v1.3/wfd-common.schema.json",
+  "title": "WFD 联合修订草案共享类型注册表（非稳定接口）",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "TimeWithPrecision": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "known",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "precision": {
+          "type": "string",
+          "enum": [
+            "year",
+            "quarter",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "second",
+            "interval",
+            "unknown"
+          ]
+        },
+        "earliest_utc": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latest_exclusive_utc": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_timezone": {
+          "type": "string"
+        },
+        "evidence_ref": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "precision",
+        "earliest_utc",
+        "latest_exclusive_utc",
+        "source_timezone"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "known"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "precision": {
+                "enum": [
+                  "year",
+                  "quarter",
+                  "month",
+                  "day",
+                  "hour",
+                  "minute",
+                  "second",
+                  "interval"
+                ]
+              },
+              "earliest_utc": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+              },
+              "latest_exclusive_utc": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "unknown",
+                  "not_applicable"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "precision": {
+                "const": "unknown"
+              },
+              "earliest_utc": {
+                "type": "null"
+              },
+              "latest_exclusive_utc": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "IdentityRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "entity",
+            "instrument",
+            "listing",
+            "market",
+            "region",
+            "physical_object",
+            "definition",
+            "product",
+            "case",
+            "event",
+            "claim",
+            "publication",
+            "acquisition",
+            "outcome",
+            "source"
+          ]
+        },
+        "namespace": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        }
+      },
+      "required": [
+        "kind",
+        "namespace",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "ImmutableRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "schema",
+            "contract",
+            "definition_version",
+            "product_manifest",
+            "snapshot",
+            "registry_decision",
+            "governance",
+            "relation",
+            "rule",
+            "permission",
+            "evidence_binding",
+            "source_version",
+            "method",
+            "data_file",
+            "eligibility_policy",
+            "locator_map"
+          ]
+        },
+        "dataset_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "namespace": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "version": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "digest": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolution": {
+          "const": "pinned"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "dependency_type": {
+          "type": "string",
+          "enum": [
+            "read",
+            "compute",
+            "regenerate",
+            "audit"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "dataset_id",
+        "namespace",
+        "id",
+        "version",
+        "digest",
+        "resolution",
+        "required",
+        "dependency_type"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+            }
+          }
+        },
+        {
+          "properties": {
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        }
+      ]
+    },
+    "CoverageDescriptor": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "basis": {
+          "type": "string",
+          "enum": [
+            "declared_full",
+            "observed_partial",
+            "explicit_incremental",
+            "unknown"
+          ]
+        },
+        "completeness": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "coverage_evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/EvidenceRef"
+          }
+        },
+        "absence_means": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "explicitly_absent",
+            "not_applicable"
+          ]
+        }
+      },
+      "required": [
+        "scope",
+        "basis",
+        "completeness",
+        "coverage_evidence",
+        "absence_means"
+      ],
+      "additionalProperties": false
+    },
+    "ValueState": {
+      "type": "string",
+      "enum": [
+        "valid_value",
+        "reported_zero",
+        "unknown",
+        "not_reported",
+        "not_collected",
+        "out_of_coverage",
+        "not_applicable",
+        "not_yet_effective",
+        "not_matured",
+        "insufficient_warmup",
+        "source_conflict"
+      ]
+    },
+    "EvidenceRef": {
+      "type": "object",
+      "properties": {
+        "ref_kind": {
+          "type": "string",
+          "enum": [
+            "content",
+            "publication",
+            "acquisition",
+            "processing",
+            "binding",
+            "locator"
+          ]
+        },
+        "ref_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "content_sha256": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "binding_digest": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "locator_generation": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "ref_kind",
+        "ref_id",
+        "content_sha256",
+        "binding_digest",
+        "locator_generation"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "ref_kind": {
+                "const": "locator"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "locator_generation": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "RequestIdentity": {
+      "type": "object",
+      "properties": {
+        "dataset_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "trusted_actor_namespace": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "submission_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "dataset_id",
+        "trusted_actor_namespace",
+        "request_id",
+        "submission_digest"
+      ],
+      "additionalProperties": false
+    },
+    "EligibilityDecision": {
+      "type": "object",
+      "properties": {
+        "history_mode": {
+          "type": "string",
+          "enum": [
+            "snapshot_contents",
+            "market_known_at",
+            "system_held_at"
+          ]
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "eligible",
+            "ineligible",
+            "indeterminate"
+          ]
+        },
+        "reason_code": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "cutoff": {
+          "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/TimeWithPrecision"
+        },
+        "held_scope": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usable_stage": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "acquired",
+                "custodied",
+                "published_readable"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/EvidenceRef"
+          }
+        }
+      },
+      "required": [
+        "history_mode",
+        "decision",
+        "reason_code",
+        "cutoff",
+        "held_scope",
+        "usable_stage",
+        "evidence_refs"
+      ],
+      "additionalProperties": false
+    },
+    "PublicationReceipt": {
+      "type": "object",
+      "properties": {
+        "protocol_version": {
+          "const": "wfd.ingest/1.3-candidate"
+        },
+        "dataset_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "publish_plan_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "expected_parent_snapshot_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshot_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "publication_state": {
+          "type": "string",
+          "enum": [
+            "not_published",
+            "staged",
+            "files_sealed",
+            "manifest_sealed",
+            "snapshot_described",
+            "publish_intent_recorded",
+            "published_verified",
+            "publication_unknown",
+            "degraded"
+          ]
+        },
+        "index_state": {
+          "type": "string",
+          "enum": [
+            "not_required",
+            "ready",
+            "pending_rebuild",
+            "failed_rebuild"
+          ]
+        },
+        "verification_scope": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "on_access",
+            "full"
+          ]
+        },
+        "verification_health": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "degraded",
+            "unknown"
+          ]
+        },
+        "published_outputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "output_key": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+              },
+              "product_id": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+              },
+              "manifest_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "output_key",
+              "product_id",
+              "manifest_digest"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "excluded_outputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "output_key": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+              },
+              "reason_code": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+              }
+            },
+            "required": [
+              "output_key",
+              "reason_code"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "protocol_version",
+        "dataset_id",
+        "request_id",
+        "publish_plan_id",
+        "expected_parent_snapshot_id",
+        "snapshot_id",
+        "publication_state",
+        "index_state",
+        "verification_scope",
+        "verification_health",
+        "published_outputs",
+        "excluded_outputs"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "publication_state": {
+                "const": "published_verified"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "snapshot_id": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "BundleStateDigest": {
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "const": "wfd.logical-state/1.3-candidate"
+        },
+        "source_dataset_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "selection_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "state_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "identity_namespace": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        }
+      },
+      "required": [
+        "algorithm",
+        "source_dataset_id",
+        "selection_digest",
+        "state_digest",
+        "identity_namespace"
+      ],
+      "additionalProperties": false
+    },
+    "ErrorObject": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "normal_decision",
+            "validation_error",
+            "execution_error",
+            "state_report"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "request_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output_key": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "next_action": {
+          "type": "string"
+        },
+        "field_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "affected_scope": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "expected_or_missing": {
+          "type": [
+            "string",
+            "array",
+            "object",
+            "null"
+          ]
+        },
+        "actual_or_candidates": {
+          "type": [
+            "string",
+            "array",
+            "object",
+            "null"
+          ]
+        },
+        "diagnostic_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "kind",
+        "message",
+        "phase",
+        "request_id",
+        "output_key",
+        "retryable",
+        "next_action"
+      ],
+      "additionalProperties": false
+    },
+    "FileEntry": {
+      "type": "object",
+      "properties": {
+        "relative_path": {
+          "type": "string"
+        },
+        "file_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "byte_size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "row_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scope_id": {
+          "type": "string"
+        },
+        "time_axis": {
+          "type": "string"
+        },
+        "time_min_utc": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "time_max_utc": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "relative_path",
+        "file_sha256",
+        "byte_size",
+        "row_count",
+        "scope_id",
+        "time_axis",
+        "time_min_utc",
+        "time_max_utc"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$comment": "V1.3 candidate, not validated on real WFD SDK; top-level normative Schema stored under schemas/."
+}

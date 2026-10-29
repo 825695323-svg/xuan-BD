@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wfd.example/spec/v1.3/wfd-manifest.schema.json",
+  "title": "wfd-manifest V1.1 联合修订草案",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "format_version": {
+      "const": "wfd.manifest/1.3-candidate"
+    },
+    "dataset_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+    },
+    "product_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+    },
+    "product_release_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+    },
+    "contract_ref": {
+      "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/ImmutableRef"
+    },
+    "schema_ref": {
+      "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/ImmutableRef"
+    },
+    "coverage": {
+      "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/CoverageDescriptor"
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/FileEntry"
+      }
+    },
+    "required_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/ImmutableRef"
+      }
+    },
+    "predecessor_manifest": {
+      "oneOf": [
+        {
+          "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/ImmutableRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "format_version",
+    "dataset_id",
+    "product_id",
+    "product_release_id",
+    "contract_ref",
+    "schema_ref",
+    "coverage",
+    "files",
+    "required_refs",
+    "predecessor_manifest"
+  ],
+  "$comment": "V1.3 compatible schema; semantics pending SDK and real data verification."
+}

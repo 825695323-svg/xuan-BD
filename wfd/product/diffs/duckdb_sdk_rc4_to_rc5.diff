@@ -1,0 +1,20 @@
+--- /Users/mashiro/WFD规划与测试/engine_impl_rc4/wfd_sdk/duckdb_sdk.py	2026-10-26 21:01:51
++++ /Users/mashiro/WFD规划与测试/engine_impl_rc5/wfd_sdk/duckdb_sdk.py	2026-10-26 21:49:20
+@@ -41,7 +41,7 @@
+ 
+ 
+ def load_protocol_validator(root: Path) -> Draft202012Validator:
+-    schemas = {p.name: json.loads(p.read_text('utf-8')) for p in (root/'schemas').glob('*.schema.json')}
++    schemas = {p.name: json.loads(p.read_text('utf-8')) for p in (root/'schemas').glob('*.schema.json') if not p.name.startswith('._')}
+     registry = Registry()
+     for schema in schemas.values():
+         registry = registry.with_resource(schema['$id'], Resource.from_contents(schema))
+@@ -222,7 +222,7 @@
+ 
+     def _valid_snapshots(self):
+         result=[]
+-        for p in (self.root/'catalog/commits').glob('*.json'):
++        for p in [x for x in (self.root/'catalog/commits').glob('*.json') if not x.name.startswith('._')]:
+             try:
+                 marker=json.loads(p.read_text('utf-8'))
+                 snap=self.root/marker['snapshot_file']

@@ -1,0 +1,2984 @@
+{
+  "protocol_version": "wfd.ingest/1.3-candidate",
+  "intent": "submit",
+  "producer_namespace": "bd.p6.local",
+  "request_identity": {
+    "dataset_id": "bd_p6_actual_20261027",
+    "trusted_actor_namespace": "bd.p6.local",
+    "request_id": "p6-market-1793049820691",
+    "submission_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "expected_parent_snapshot_id": null,
+  "outputs": [
+    {
+      "output_key": "cn.equity.daily_bar.unadjusted",
+      "logical_domain": "observations",
+      "subject": {
+        "kind": "listing",
+        "namespace": "cn.szse.listing",
+        "id": "000001:19910403"
+      },
+      "definition_mode": "create",
+      "definition_ref": null,
+      "new_definition_declaration": {
+        "semantic_code": "cn.equity.daily_bar.unadjusted",
+        "measurement_nature": "mixed_observation",
+        "unit_code": "per_field",
+        "definition_authority": "eastmoney.unadjusted_daily_bars",
+        "time_role": "observation",
+        "field_definitions": [
+          {
+            "field_code": "open",
+            "data_type": "decimal",
+            "unit_code": "cny_per_share",
+            "measurement_nature": "stock",
+            "time_role": "trading_day"
+          },
+          {
+            "field_code": "high",
+            "data_type": "decimal",
+            "unit_code": "cny_per_share",
+            "measurement_nature": "stock",
+            "time_role": "trading_day"
+          },
+          {
+            "field_code": "low",
+            "data_type": "decimal",
+            "unit_code": "cny_per_share",
+            "measurement_nature": "stock",
+            "time_role": "trading_day"
+          },
+          {
+            "field_code": "close",
+            "data_type": "decimal",
+            "unit_code": "cny_per_share",
+            "measurement_nature": "stock",
+            "time_role": "trading_day"
+          },
+          {
+            "field_code": "volume_lot",
+            "data_type": "decimal",
+            "unit_code": "lot_100_shares",
+            "measurement_nature": "flow",
+            "time_role": "trading_day"
+          },
+          {
+            "field_code": "amount_cny",
+            "data_type": "decimal",
+            "unit_code": "cny",
+            "measurement_nature": "flow",
+            "time_role": "trading_day"
+          }
+        ]
+      },
+      "input_mode": "partial_observation",
+      "coverage": {
+        "scope": {
+          "dataset": "bd_p6_actual_20261027",
+          "bounded_product_release": true
+        },
+        "basis": "observed_partial",
+        "completeness": "partial",
+        "coverage_evidence": [],
+        "absence_means": "unknown"
+      },
+      "payload": {
+        "kind": "tabular_rows",
+        "rows": [
+          {
+            "business_key": "000001:2026-04-01",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-03-31T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-01T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.09"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.23"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.08"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.15"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "918925"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1025538832.67"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-02",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-01T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-02T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.15"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.32"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.13"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.27"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1148895"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1292756711.67"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-03",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-02T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-03T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.28"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.28"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.09"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.12"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "757757"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "845283641.29"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-07",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-06T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-07T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.12"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.14"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.97"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.03"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "607955"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "671322754.77"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-08",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-07T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-08T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.11"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.22"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.05"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.22"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "812976"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "906308305.45"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-09",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-08T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-09T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.17"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.22"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.06"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.10"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "602365"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "669239285.37"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-10",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-09T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-10T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.10"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.13"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.07"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.09"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "481047"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "534088990.51"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-13",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-12T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-13T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.05"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.09"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.03"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.07"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "406104"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "449056813.73"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-14",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-13T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-14T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.07"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.17"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.07"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.17"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "496151"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "551741632.58"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-15",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-14T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-15T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.16"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.22"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.15"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.21"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "503938"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "564031568.33"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-16",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-15T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-16T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.20"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.23"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.07"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.09"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "680915"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "758006903.42"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-17",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-16T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-17T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.09"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.11"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.99"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.01"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "722530"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "797678405.53"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-20",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-19T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-20T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.01"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.07"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.96"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.06"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "630034"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "695097193.51"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-21",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-20T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-21T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.04"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.16"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.03"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.08"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "806946"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "896659539.18"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-22",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-21T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-22T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.08"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.09"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.95"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.98"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "839054"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "923203009.35"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-23",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-22T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-23T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.98"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.03"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.93"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.00"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "648067"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "711757543.31"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-24",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-23T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-24T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.98"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.03"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.92"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.00"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "582710"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "639781173.32"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-27",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-26T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-27T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.33"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.57"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.29"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.38"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "3401276"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "3891707615.21"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-28",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-27T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-28T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.36"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.46"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.32"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.46"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1674259"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1908333958.72"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-29",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-28T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-29T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.43"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.54"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.39"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.52"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1378423"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1583294868.98"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-04-30",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-04-29T16:00:00Z",
+              "latest_exclusive_utc": "2026-04-30T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.50"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.60"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.46"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.49"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1139242"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1312827775.76"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-06",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-05T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-06T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.50"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.50"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.30"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.36"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1216388"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1380730921.13"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-07",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-06T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-07T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.37"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.39"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.30"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.37"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "936958"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1062755238.50"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-08",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-07T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-08T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.34"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.42"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.30"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.30"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "798820"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "905737835.21"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-11",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-10T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-11T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.29"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.31"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.16"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.28"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "931865"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1047435369.38"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-12",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-11T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-12T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.28"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.36"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.21"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.25"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1029038"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1158241865.91"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-13",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-12T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-13T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.25"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.28"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.11"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.14"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1017974"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1136724107.40"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-14",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-13T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-14T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.14"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.15"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.05"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.05"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "794368"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "881960631.20"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-15",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-14T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-15T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.05"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.11"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.96"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.99"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "974742"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1074648532.65"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-18",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-17T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-18T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.96"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.97"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.82"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.86"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "856382"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "931697164.00"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-19",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-18T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-19T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.83"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.92"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.83"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.86"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "793529"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "862561883.36"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-20",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-19T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-20T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.86"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.88"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.76"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.77"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "747632"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "808079588.87"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-21",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-20T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-21T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.78"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.80"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.69"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.70"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1110211"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1194144111.50"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-22",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-21T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-22T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.70"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.73"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.65"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.68"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "954133"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1020057083.13"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-25",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-24T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-25T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.68"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.76"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.64"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.68"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "663103"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "709614127.77"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-26",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-25T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-26T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.71"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.83"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.66"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.79"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "837347"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "900879538.05"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-27",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-26T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-27T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.76"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.85"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.72"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.76"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "839727"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "905710898.28"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-28",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-27T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-28T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.76"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.79"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.63"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.66"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "900711"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "963695781.21"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-05-29",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-28T16:00:00Z",
+              "latest_exclusive_utc": "2026-05-29T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.65"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.93"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.62"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.93"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1399368"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1515692068.28"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-01",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-05-31T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-01T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.90"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.99"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.81"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.99"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "954596"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1042306455.86"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-02",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-01T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-02T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.98"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.10"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.94"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.08"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "885428"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "978159336.86"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-03",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-02T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-03T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.03"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.06"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.92"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.99"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "825272"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "906870268.35"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-04",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-03T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-04T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.91"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.97"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.77"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.82"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "869271"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "943329311.39"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-05",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-04T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-05T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.83"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.03"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.83"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.98"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1003503"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1102446143.34"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-08",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-07T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-08T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.97"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.10"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.96"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.03"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1090926"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1203946343.40"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-09",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-08T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-09T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.01"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.19"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.96"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.13"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1149672"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1277122415.79"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-10",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-09T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-10T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.07"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.35"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.07"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.32"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1543176"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1738056712.03"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-11",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-10T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-11T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.32"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.39"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.25"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.30"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1156222"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1308133972.13"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-12",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-11T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-12T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.00"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.25"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.88"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.24"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "2032355"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "2263042930.57"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-15",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-14T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-15T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.21"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.21"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.98"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.06"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1541305"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1711561286.57"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-16",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-15T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-16T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.05"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "11.12"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.91"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.94"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "942708"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1034554249.38"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-17",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-16T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-17T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.97"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.99"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.75"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.78"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "965828"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1046564895.54"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-18",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-17T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-18T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.74"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.77"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.52"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.52"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1426893"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1511009564.95"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-22",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-21T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-22T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.52"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.67"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.42"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.65"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1265317"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1334768052.78"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-23",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-22T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-23T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.65"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.91"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.63"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.71"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1190604"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1285360400.38"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-24",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-23T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-24T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.68"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.78"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.51"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.51"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1125841"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1193370303.56"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-25",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-24T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-25T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.47"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.59"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.41"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.42"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1083999"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1136742126.47"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-26",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-25T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-26T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.42"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.47"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.19"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.23"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1236482"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1270902947.86"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-29",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-28T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-29T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.22"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.32"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.02"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.24"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1124140"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1144166877.64"
+              }
+            }
+          },
+          {
+            "business_key": "000001:2026-06-30",
+            "subject": {
+              "kind": "listing",
+              "namespace": "cn.szse.listing",
+              "id": "000001:19910403"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "day",
+              "earliest_utc": "2026-06-29T16:00:00Z",
+              "latest_exclusive_utc": "2026-06-30T16:00:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.22"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.22"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.04"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "10.05"
+              },
+              "volume_lot": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1111353"
+              },
+              "amount_cny": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "1121201539.48"
+              }
+            }
+          }
+        ]
+      },
+      "evidence_refs": [
+        {
+          "ref_kind": "content",
+          "ref_id": "e_002da38b07778f99997a6b38",
+          "content_sha256": "sha256:002da38b07778f99997a6b385eb45c10955a64c3f2f8a6ff2484371fc1240750",
+          "binding_digest": null,
+          "locator_generation": null
+        }
+      ]
+    }
+  ],
+  "source_bundle": {
+    "source_id": "eastmoney_bars_2026q2",
+    "source_ids": [
+      "eastmoney_bars_2026q2"
+    ],
+    "sources": [
+      {
+        "source_id": "eastmoney_bars_2026q2",
+        "provider": "东方财富",
+        "requested_url": "https://push2his.eastmoney.com/api/qt/stock/kline/get?fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&ut=7eea3edcaed734bea9cbfc24409ed989&secid=0.000001&klt=101&fqt=0&beg=20260401&end=20260630",
+        "request_method": "GET",
+        "request_form": null,
+        "requested_at_utc": "2026-10-26T16:22:37Z",
+        "license": "unknown",
+        "usage_scope": "user_local_financial_database",
+        "http_status": 200,
+        "response_url": "https://push2his.eastmoney.com/api/qt/stock/kline/get?fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&ut=7eea3edcaed734bea9cbfc24409ed989&secid=0.000001&klt=101&fqt=0&beg=20260401&end=20260630",
+        "content_type": "application/json; charset=UTF-8",
+        "acquired_at_utc": "2026-10-26T16:22:37Z",
+        "response_sha256": "002da38b07778f99997a6b385eb45c10955a64c3f2f8a6ff2484371fc1240750",
+        "response_bytes": 4930,
+        "sha256": "002da38b07778f99997a6b385eb45c10955a64c3f2f8a6ff2484371fc1240750",
+        "url": "https://push2his.eastmoney.com/api/qt/stock/kline/get?fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&ut=7eea3edcaed734bea9cbfc24409ed989&secid=0.000001&klt=101&fqt=0&beg=20260401&end=20260630",
+        "evidence_ref": {
+          "ref_kind": "content",
+          "ref_id": "e_002da38b07778f99997a6b38",
+          "content_sha256": "sha256:002da38b07778f99997a6b385eb45c10955a64c3f2f8a6ff2484371fc1240750",
+          "binding_digest": null,
+          "locator_generation": null
+        },
+        "original_file_name": "eastmoney_bars_2026q2.response"
+      }
+    ],
+    "license": "unknown",
+    "usage_scope": "user_local_financial_database",
+    "public_time": {
+      "status": "unknown",
+      "precision": "unknown",
+      "earliest_utc": null,
+      "latest_exclusive_utc": null,
+      "source_timezone": "Asia/Shanghai"
+    },
+    "source_roles": {
+      "cn.equity.daily_bar.unadjusted": [
+        {
+          "source_id": "eastmoney_bars_2026q2",
+          "roles": [
+            "definer",
+            "first_publisher",
+            "deliverer"
+          ]
+        }
+      ]
+    },
+    "product_service": {
+      "version": "wfd.product-service/0.3",
+      "outputs": {
+        "cn.equity.daily_bar.unadjusted": {
+          "read_dependencies": []
+        }
+      }
+    }
+  }
+}

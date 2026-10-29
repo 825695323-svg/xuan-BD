@@ -1,0 +1,150 @@
+{
+  "status": "complete",
+  "run_at": "2026-10-26T19:11:13.952Z",
+  "machine_protocol": "wfd.product-machine/0.1",
+  "transport": "stdin/stdout single bounded JSON object",
+  "code_identity": {
+    "entry_sha256": "998b3fed1e8afc10f391e2d210da2f1d19040aaa44deaaa802ee5d4246a0a011",
+    "config_sha256": "d4d71d6fc27a3650b645f33845f757326129ff1d5955d847b11b30243632d722",
+    "service_source_sha256": "b7f108ac17fbf3009165d0ee940fceb441ef5e08e4f9a63809249bcd4d01484c",
+    "governance_source_sha256": "846457eaabaafa26aa020f00719ca7714bfac47db3c90c6fb19b4b4840be7281"
+  },
+  "old_generic_transport_used": false,
+  "service_identity": {
+    "format_version": "wfd.product-capabilities/0.2",
+    "service_version": "wfd.product-service/0.3",
+    "contract_version": "wfd.product-contracts/0.3",
+    "ingest_protocol": "wfd.ingest/1.3-candidate",
+    "schema_id": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json"
+  },
+  "connection": {
+    "connection_id": "wfd-product-local-20261027",
+    "caller_id": "bd-p6-reader",
+    "trusted_actor_namespace": "wfd.financial_products",
+    "store": "/Users/mashiro/WFD规划与测试/世界金融数据库（World Financial Database）/03_测试与验证记录/金融产品建设_2026-10-27/run_20261026T164019Z/store",
+    "runtime": "/Users/mashiro/xuan BD/xuan BD/staging/P6_xuanBD联调_2026-10-27/runtime/reader_0_2"
+  },
+  "snapshot_id": "s_9f3edb73a442f1940a54a1d8",
+  "product_count": 12,
+  "row_count": 176,
+  "business_products": [
+    {
+      "product_id": "p_1012da93c0a1279006ff747e",
+      "rows": 91
+    },
+    {
+      "product_id": "p_d91987a11e99f581da8e71c7",
+      "rows": 60
+    },
+    {
+      "product_id": "p_4d71c88028d880a23a3ac084",
+      "rows": 16
+    }
+  ],
+  "fixed_read_rows_sha256": "9172766158c79154a352299c30ccc83bcb573b465be2ec237d45a4bd84235527",
+  "trace": {
+    "product_id": "p_26be7d18c2302505ea79da68",
+    "evidence_count": 4,
+    "all_evidence_verified": true
+  },
+  "request_status": {
+    "state": "unknown",
+    "snapshot_id": null
+  },
+  "snapshot_port": {
+    "product_id": "p_d91987a11e99f581da8e71c7",
+    "row_count": 60,
+    "verified_scope": "server_identity_descriptor_and_projection",
+    "projection_sha256": "ab99d0ec53a16796e1f0001068603c32de3fe99a6df20bd5b560586856a3722d",
+    "rows_sha256": null,
+    "rows_sha256_basis": "not_exposed_by_wfd_product_service"
+  },
+  "negative_boundary": {
+    "unsupported_code": "OPERATION_UNSUPPORTED",
+    "permission_code": "REQUEST_INVALID"
+  },
+  "calls": [
+    {
+      "label": "capabilities",
+      "operation": "capabilities",
+      "requestId": "bd-30a44f98-d8bc-49ed-97b3-3df1ab30c75e",
+      "elapsedMs": 0,
+      "responseBytes": 7246,
+      "serviceVersion": "wfd.product-service/0.3",
+      "contractVersion": "wfd.product-contracts/0.3",
+      "schemaId": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json",
+      "connectionId": "wfd-product-local-20261027",
+      "callerId": "bd-p6-reader",
+      "trustedActorNamespace": "wfd.financial_products"
+    },
+    {
+      "label": "contract_discovery",
+      "operation": "contract_discovery",
+      "requestId": "bd-8bf25f36-1970-4489-aa8c-eade5704ab74",
+      "elapsedMs": 26,
+      "responseBytes": 50886,
+      "serviceVersion": "wfd.product-service/0.3",
+      "contractVersion": "wfd.product-contracts/0.3",
+      "schemaId": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json",
+      "connectionId": "wfd-product-local-20261027",
+      "callerId": "bd-p6-reader",
+      "trustedActorNamespace": "wfd.financial_products"
+    },
+    {
+      "label": "fixed_read",
+      "operation": "fixed_read",
+      "requestId": "bd-1ff52093-c19d-430c-bce8-7f840542e0fe",
+      "elapsedMs": 381,
+      "responseBytes": 342594,
+      "serviceVersion": "wfd.product-service/0.3",
+      "contractVersion": "wfd.product-contracts/0.3",
+      "schemaId": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json",
+      "connectionId": "wfd-product-local-20261027",
+      "callerId": "bd-p6-reader",
+      "trustedActorNamespace": "wfd.financial_products"
+    },
+    {
+      "label": "request_status",
+      "operation": "request_status",
+      "requestId": "bd-aea0d4c7-881e-4749-8790-c20f379346b7",
+      "elapsedMs": 0,
+      "responseBytes": 1522,
+      "serviceVersion": "wfd.product-service/0.3",
+      "contractVersion": "wfd.product-contracts/0.3",
+      "schemaId": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json",
+      "connectionId": "wfd-product-local-20261027",
+      "callerId": "bd-p6-reader",
+      "trustedActorNamespace": "wfd.financial_products"
+    },
+    {
+      "label": "trace",
+      "operation": "trace",
+      "requestId": "bd-fd1e2df1-33ad-4e6d-af27-749d1d98f8c1",
+      "elapsedMs": 70,
+      "responseBytes": 5616,
+      "serviceVersion": "wfd.product-service/0.3",
+      "contractVersion": "wfd.product-contracts/0.3",
+      "schemaId": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json",
+      "connectionId": "wfd-product-local-20261027",
+      "callerId": "bd-p6-reader",
+      "trustedActorNamespace": "wfd.financial_products"
+    }
+  ],
+  "evidence_files": [
+    "capabilities.json",
+    "discovery.json",
+    "fixed-read.json",
+    "fixed-read-summary.json",
+    "request-status.json",
+    "trace.json",
+    "snapshot-port.json",
+    "negative-boundary.json",
+    "summary.json"
+  ],
+  "not_claimed": [
+    "整个 P6 未通过；本批只验证公开本地进程边界与发现/固定读取。",
+    "submit/packages/export/company_view/calendar_read 明确未支持。",
+    "Windows x64 与拔盘轮未由本批覆盖。",
+    "未把旧 wfd.data-service/v1 generic-transport 或 /v3/data-entry 当新库。"
+  ]
+}

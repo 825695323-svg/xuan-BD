@@ -1,0 +1,32 @@
+{
+  "source_id": "cninfo_2026031_metadata",
+  "provider": "巨潮资讯网",
+  "requested_url": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
+  "request_method": "POST",
+  "request_form": {
+    "pageNum": "1",
+    "pageSize": "30",
+    "column": "szse",
+    "tabName": "fulltext",
+    "stock": "000001,gssz0000001",
+    "searchkey": "",
+    "secid": "",
+    "plate": "sz",
+    "category": "",
+    "trade": "",
+    "seDate": "2026-08-14~2026-08-16",
+    "sortName": "",
+    "sortType": "",
+    "isHLtitle": "true"
+  },
+  "requested_at_utc": "2026-10-26T16:22:37Z",
+  "license": "unknown",
+  "usage_scope": "user_local_financial_database",
+  "http_status": 200,
+  "response_url": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
+  "content_type": "application/json;charset=UTF-8",
+  "acquired_at_utc": "2026-10-26T16:22:37Z",
+  "response_sha256": "f88f12ff9b7324d2a30bac0aa25f3f625d728a5b83a7816a3cf53b9e7b81979a",
+  "response_bytes": 4004,
+  "response_file": "sources/cninfo_2026031_metadata.response"
+}

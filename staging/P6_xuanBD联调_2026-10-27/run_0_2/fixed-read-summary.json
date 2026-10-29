@@ -1,0 +1,58 @@
+{
+  "snapshot_id": "s_9f3edb73a442f1940a54a1d8",
+  "row_count": 176,
+  "product_count": 12,
+  "row_projection": "compact",
+  "rows_sha256": "9172766158c79154a352299c30ccc83bcb573b465be2ec237d45a4bd84235527",
+  "per_product": [
+    {
+      "product_id": "p_1012da93c0a1279006ff747e",
+      "rows": 91
+    },
+    {
+      "product_id": "p_d91987a11e99f581da8e71c7",
+      "rows": 60
+    },
+    {
+      "product_id": "p_4d71c88028d880a23a3ac084",
+      "rows": 16
+    },
+    {
+      "product_id": "p_1ceb333fa472754a7afd7c39",
+      "rows": 1
+    },
+    {
+      "product_id": "p_26be7d18c2302505ea79da68",
+      "rows": 1
+    },
+    {
+      "product_id": "p_4dd691214f2ac2afd5998508",
+      "rows": 1
+    },
+    {
+      "product_id": "p_83d329d1df6707e11c101566",
+      "rows": 1
+    },
+    {
+      "product_id": "p_87f1ab6c3f831bad8b27720d",
+      "rows": 1
+    },
+    {
+      "product_id": "p_b2f29e56c25cade5a16eda85",
+      "rows": 1
+    },
+    {
+      "product_id": "p_b3139543720b08b051b36da0",
+      "rows": 1
+    },
+    {
+      "product_id": "p_d3cb058244a684295dca5a7a",
+      "rows": 1
+    },
+    {
+      "product_id": "p_da3b0f2d3c9d8d1afe38e5f2",
+      "rows": 1
+    }
+  ],
+  "response_sha256": "9d92740d0a07e4689a9044d126e70b9edc8dd272759e63db18ae303d9bdd3b9d"
+}

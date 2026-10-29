@@ -1,0 +1,5 @@
+{
+  "status": "failed",
+  "code": "ENOENT",
+  "message": "ENOENT: no such file or directory, open '/Users/mashiro/WFD规划与测试/世界金融数据库（World Financial Database）/03_测试与验证记录/P6_xuanBD联调_2026-10-27/actual/product_machine_config.json'"
+}

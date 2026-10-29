@@ -1,0 +1,130 @@
+--- /Users/mashiro/WFD/formal_engine_rc1/wfd_sdk/state.py	2026-10-26 19:59:09
++++ /Users/mashiro/WFD/engine_impl_rc3/wfd_sdk/state.py	2026-10-26 20:23:48
+@@ -46,6 +46,8 @@
+         self.root = Path(root)
+         self.path = self.root / "catalog/state.json"
+         self.recovery_dir = self.root / "catalog/recovery"
++        # 激活历史：HEAD_STALE 的唯一可信依据（不使用 Commit 时间、编号或图序）
++        self.activation_log = self.root / "catalog/activation_log.jsonl"
+ 
+     # ------------------------------------------------------------------ 基础读写
+     def read(self) -> dict | None:
+@@ -66,7 +68,7 @@
+             return st
+         st = {"format_version": FORMAT, "active_head": None, "head_snapshot_sha256": None,
+               "writer_host": writer_host, "writer_epoch": 0, "update_seq": 0,
+-              "prev_head": None, "updated_at_utc": _now()}
++              "prev_head": None, "activation_history": [], "updated_at_utc": _now()}
+         self._write_atomic(st)
+         return st
+ 
+@@ -134,6 +136,14 @@
+         if sid not in valid_snapshots:
+             return {"ok": False, "code": "HEAD_INVALID_DIGEST", "snapshot_id": sid,
+                     "detail": "active_head 不在可验证快照集合内"}
++        retired = self._retired(sid)
++        if retired:
++            return {"ok": False, "code": "HEAD_INVALID_RETIRED", "snapshot_id": sid,
++                    "detail": f"active_head 指向已退役版本（{retired}）"}
++        stale = self._stale_reason(sid, st)
++        if stale:
++            return {"ok": False, "code": "HEAD_STALE", "snapshot_id": sid,
++                    "detail": f"指针落后或有可信激活历史与之冲突（{stale}）"}
+         return {"ok": True, "code": "OK", "snapshot_id": sid,
+                 "writer_host": st.get("writer_host"), "writer_epoch": st.get("writer_epoch"),
+                 "update_seq": st.get("update_seq")}
+@@ -152,8 +162,12 @@
+         if (writer_epoch is not None and int(writer_epoch) < int(st.get("writer_epoch") or 0)):
+             return {"ok": False, "code": "WRITER_EPOCH_ROLLBACK",
+                     "detail": f"epoch 不能回退：请求 {writer_epoch}，当前 {st.get('writer_epoch')}"}
++        hist = list(st.get("activation_history") or [])
++        hist.append({"snapshot_id": snapshot_id, "update_seq": int(st.get("update_seq") or 0) + 1,
++                     "prev_head": cur, "at_utc": _now()})
+         new = {
+             "format_version": FORMAT,
++            "activation_history": hist[-200:],      # 与 HEAD 同文件、同一次原子写：HEAD_STALE 的唯一权威依据
+             "active_head": snapshot_id,
+             "head_snapshot_sha256": "sha256:" + _sha_file(Path(snapshot_path)),
+             "writer_host": writer_host if writer_host is not None else st.get("writer_host"),
+@@ -166,9 +180,80 @@
+             self._write_atomic(new)
+         except OSError as exc:
+             return {"ok": False, "code": "HEAD_WRITE_FAILED", "detail": str(exc)}
++        # 追加激活历史（只增不改；写失败不阻断激活，但会让后续 HEAD_STALE 判定失去依据）
++        try:
++            self.activation_log.parent.mkdir(parents=True, exist_ok=True)
++            with open(self.activation_log, "a", encoding="utf-8") as f:
++                f.write(json.dumps({"snapshot_id": snapshot_id, "update_seq": new["update_seq"],
++                                    "prev_head": cur, "writer_host": new.get("writer_host"),
++                                    "writer_epoch": new.get("writer_epoch"), "at_utc": _now()},
++                                   ensure_ascii=False) + "\n")
++                f.flush(); os.fsync(f.fileno())
++        except OSError as exc:
++            try:
++                new["log_mirror_error"] = str(exc)[:200]
++                self._write_atomic(new)
++            except OSError:
++                pass
+         return {"ok": True, "code": "OK", "state": new}
+ 
+-    # ------------------------------------------------------------------ 显式恢复
++    # ------------------------------------------------------------------ 退役/过期辅助
++    def _retired(self, sid: str) -> str | None:
++        """返回退役原因（若该版本已退出可读/保留集合）。"""
++        rp = self.root / "catalog/retention.json"
++        if rp.is_file():
++            try:
++                rec = (json.loads(rp.read_text("utf-8")).get("snapshots") or {}).get(sid) or {}
++                if rec.get("state") == "released":
++                    return "RETENTION_RELEASED"
++            except ValueError:
++                return "RETENTION_UNREADABLE"
++        lp = self.root / f"catalog/lineage/{sid}.json"
++        if lp.is_file():
++            try:
++                st = (json.loads(lp.read_text("utf-8")) or {}).get("status")
++                if st in ("revoked_read", "retired_data_deleted"):
++                    return f"LINEAGE_{st.upper()}"
++            except ValueError:
++                return "LINEAGE_UNREADABLE"
++        return None
++
++    def _stale_reason(self, sid: str, st: dict) -> str | None:
++        """HEAD_STALE 只依据可信激活历史判定。
++
++        权威来源：state.json 内的 `activation_history`（与 HEAD 同一次原子写）；
++        旧库无该字段时回退 `catalog/activation_log.jsonl`；两者都没有则不判过期。
++        不使用 Commit 时间、Snapshot 编号或图序，避免把"已提交未激活"误判为过期。
++        """
++        hist = st.get("activation_history") or []
++        if hist:
++            last = hist[-1]
++            cur_seq = int(st.get("update_seq") or 0)
++            log_seq = int(last.get("update_seq") or 0)
++            if log_seq > cur_seq:
++                return f"POINTER_ROLLBACK({cur_seq} < {log_seq})"
++            if log_seq == cur_seq and last.get("snapshot_id") != sid:
++                return f"RECORDED_HEAD_DIFFERS({last.get('snapshot_id')} != {sid})"
++            return None
++        if not self.activation_log.is_file():
++            return None
++        last = None
++        try:
++            for line in self.activation_log.read_text("utf-8").splitlines():
++                if line.strip():
++                    last = json.loads(line)
++        except ValueError:
++            return "ACTIVATION_LOG_UNREADABLE"
++        if not last:
++            return None
++        cur_seq = int(st.get("update_seq") or 0)
++        log_seq = int(last.get("update_seq") or 0)
++        if log_seq > cur_seq:
++            return f"POINTER_ROLLBACK({cur_seq} < {log_seq})"
++        if log_seq == cur_seq and last.get("snapshot_id") != sid:
++            return f"RECORDED_HEAD_DIFFERS({last.get('snapshot_id')} != {sid})"
++        return None
++
+     def recover(self, valid_snapshots, operator: str, *, note: str = "") -> dict:
+         """唯一候选才恢复；写诊断与恢复记录；不改任何 parent。"""
+         valid_snapshots = self._as_map(valid_snapshots)

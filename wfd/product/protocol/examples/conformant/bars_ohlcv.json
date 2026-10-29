@@ -1,0 +1,136 @@
+{
+  "protocol_version": "wfd.ingest/1.3-candidate",
+  "request_identity": {
+    "dataset_id": "dataset_001",
+    "trusted_actor_namespace": "example.agent",
+    "request_id": "request_003",
+    "submission_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "intent": "submit",
+  "producer_namespace": "example.agent",
+  "expected_parent_snapshot_id": null,
+  "outputs": [
+    {
+      "output_key": "one_minute_bar",
+      "logical_domain": "observations",
+      "subject": {
+        "kind": "instrument",
+        "namespace": "example.instrument",
+        "id": "equity_001"
+      },
+      "definition_mode": "create",
+      "definition_ref": null,
+      "new_definition_declaration": {
+        "semantic_code": "equity.bar",
+        "measurement_nature": "mixed_observation",
+        "unit_code": "per_field",
+        "definition_authority": "example.publisher",
+        "time_role": "observation",
+        "field_definitions": [
+          {
+            "field_code": "open",
+            "data_type": "decimal",
+            "unit_code": "cny_per_share",
+            "measurement_nature": "stock",
+            "time_role": "bar_interval",
+            "consistency_group": "ohlc_price"
+          },
+          {
+            "field_code": "high",
+            "data_type": "decimal",
+            "unit_code": "cny_per_share",
+            "measurement_nature": "stock",
+            "time_role": "bar_interval",
+            "consistency_group": "ohlc_price"
+          },
+          {
+            "field_code": "low",
+            "data_type": "decimal",
+            "unit_code": "cny_per_share",
+            "measurement_nature": "stock",
+            "time_role": "bar_interval",
+            "consistency_group": "ohlc_price"
+          },
+          {
+            "field_code": "close",
+            "data_type": "decimal",
+            "unit_code": "cny_per_share",
+            "measurement_nature": "stock",
+            "time_role": "bar_interval",
+            "consistency_group": "ohlc_price"
+          },
+          {
+            "field_code": "volume",
+            "data_type": "integer",
+            "unit_code": "share",
+            "measurement_nature": "flow",
+            "time_role": "bar_interval",
+            "consistency_group": "bar_volume"
+          }
+        ]
+      },
+      "input_mode": "partial_observation",
+      "coverage": {
+        "scope": {
+          "objects": [
+            "automaker_001"
+          ],
+          "period": "2025"
+        },
+        "basis": "observed_partial",
+        "completeness": "partial",
+        "coverage_evidence": [],
+        "absence_means": "unknown"
+      },
+      "payload": {
+        "kind": "tabular_rows",
+        "rows": [
+          {
+            "business_key": "equity_001_20250102_0930",
+            "subject": {
+              "kind": "instrument",
+              "namespace": "example.instrument",
+              "id": "equity_001"
+            },
+            "observation_time": {
+              "status": "known",
+              "precision": "minute",
+              "earliest_utc": "2025-01-02T01:30:00Z",
+              "latest_exclusive_utc": "2025-01-02T01:31:00Z",
+              "source_timezone": "Asia/Shanghai"
+            },
+            "values": {
+              "open": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "12.30"
+              },
+              "high": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "12.40"
+              },
+              "low": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "12.20"
+              },
+              "close": {
+                "data_type": "decimal",
+                "value_state": "valid_value",
+                "value": "12.35"
+              },
+              "volume": {
+                "data_type": "integer",
+                "value_state": "valid_value",
+                "value": "5400"
+              }
+            }
+          }
+        ]
+      },
+      "evidence_refs": []
+    }
+  ],
+  "source_bundle": {}
+}

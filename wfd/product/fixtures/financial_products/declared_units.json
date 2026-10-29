@@ -1,0 +1,133 @@
+{
+  "version": "wfd.financial-units/1",
+  "nature": "declared_reference_semantics",
+  "units": [
+    {
+      "unit_code": "cny",
+      "meaning": "人民币元",
+      "dimension": "money",
+      "base_unit": "cny",
+      "scale_decimal": "1"
+    },
+    {
+      "unit_code": "share",
+      "meaning": "股",
+      "dimension": "security_quantity",
+      "base_unit": "share",
+      "scale_decimal": "1"
+    },
+    {
+      "unit_code": "cny_per_share",
+      "meaning": "人民币元每股",
+      "dimension": "money_per_share",
+      "base_unit": "cny_per_share",
+      "scale_decimal": "1"
+    },
+    {
+      "unit_code": "lot_100_shares",
+      "meaning": "本批A股成交量一手等于100股",
+      "dimension": "security_quantity",
+      "base_unit": "share",
+      "scale_decimal": "100"
+    },
+    {
+      "unit_code": "cny_100million",
+      "meaning": "人民币亿元",
+      "dimension": "money",
+      "base_unit": "cny",
+      "scale_decimal": "100000000"
+    },
+    {
+      "unit_code": "cny_per_10_shares",
+      "meaning": "人民币元每10股",
+      "dimension": "money_per_share",
+      "base_unit": "cny_per_share",
+      "scale_decimal": "0.1"
+    },
+    {
+      "unit_code": "ratio",
+      "meaning": "无量纲比例",
+      "dimension": "ratio",
+      "base_unit": "ratio",
+      "scale_decimal": "1"
+    },
+    {
+      "unit_code": "date",
+      "meaning": "公历ISO日期，非精确时刻",
+      "dimension": "date",
+      "base_unit": "not_applicable",
+      "scale_decimal": null
+    },
+    {
+      "unit_code": "day_of_week",
+      "meaning": "本批深交所日历周序：周日1至周六7",
+      "dimension": "ordinal",
+      "base_unit": "not_applicable",
+      "scale_decimal": null
+    },
+    {
+      "unit_code": "text",
+      "meaning": "文本",
+      "dimension": "text",
+      "base_unit": "not_applicable",
+      "scale_decimal": null
+    },
+    {
+      "unit_code": "identifier",
+      "meaning": "命名空间内标识，不作数值运算",
+      "dimension": "identifier",
+      "base_unit": "not_applicable",
+      "scale_decimal": null
+    },
+    {
+      "unit_code": "currency_code",
+      "meaning": "币种代码，本批CNY对应人民币",
+      "dimension": "identifier",
+      "base_unit": "not_applicable",
+      "scale_decimal": null
+    },
+    {
+      "unit_code": "timezone",
+      "meaning": "时区标识，本批使用Asia/Shanghai",
+      "dimension": "identifier",
+      "base_unit": "not_applicable",
+      "scale_decimal": null
+    },
+    {
+      "unit_code": "boolean",
+      "meaning": "布尔值",
+      "dimension": "boolean",
+      "base_unit": "not_applicable",
+      "scale_decimal": null
+    },
+    {
+      "unit_code": "per_field",
+      "meaning": "复合产品按每个字段的单位解释",
+      "dimension": "marker",
+      "base_unit": "not_applicable",
+      "scale_decimal": null
+    },
+    {
+      "unit_code": "not_applicable",
+      "meaning": "该语义不适用数值量纲",
+      "dimension": "marker",
+      "base_unit": "not_applicable",
+      "scale_decimal": null
+    }
+  ],
+  "source_basis": {
+    "market": [
+      "eastmoney_bars_2026q2"
+    ],
+    "calendar": [
+      "szse_calendar_2026-04",
+      "szse_calendar_2026-05",
+      "szse_calendar_2026-06"
+    ],
+    "financial": [
+      "cninfo_summary_1225475343",
+      "cninfo_board_1225475348",
+      "cninfo_2026031_metadata"
+    ]
+  }
+}

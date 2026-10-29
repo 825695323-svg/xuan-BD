@@ -1,0 +1,37 @@
+{
+  "protocol_version": "wfd.structured-ingest/1.0",
+  "request_identity": {
+    "dataset_id": "wfd_local_r1",
+    "trusted_actor_namespace": "wfd.local",
+    "request_id": "r1-example-001",
+    "submission_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "intent": "submit",
+  "producer_namespace": "wfd.local",
+  "expected_parent_snapshot_id": null,
+  "outputs": [
+    {
+      "output_key": "example_metric",
+      "logical_domain": "observations",
+      "subject": {"kind": "physical_object", "namespace": "wfd.local", "id": "object_1"},
+      "definition_mode": "create",
+      "definition_ref": null,
+      "definition": {
+        "semantic_code": "wfd.local.example_metric",
+        "measurement_nature": "flow",
+        "unit_code": "count",
+        "definition_authority": "wfd.local",
+        "time_role": "observation",
+        "semantic_context": {
+          "version": "wfd.semantic-context/1.0",
+          "content_nature": "observed_fact",
+          "time": {"period_type": "natural", "frequency": "year", "interval": "closed"},
+          "statistical": {"price_basis": "nominal", "period_aggregation": "period"}
+        }
+      },
+      "input_mode": "partial_observation",
+      "coverage": {"scope": {"sample_only": true}, "basis": "observed_partial", "completeness": "partial", "absence_means": "unknown"},
+      "payload": {"kind": "scalar_rows", "rows": [{"business_key": "row-1", "value_decimal": "10", "value_state": "valid_value", "observation_time": {"status": "known", "precision": "year", "earliest_utc": "2025-01-01T00:00:00Z", "latest_exclusive_utc": "2026-01-01T00:00:00Z", "source_timezone": "UTC"}}]}
+    }
+  ]
+}

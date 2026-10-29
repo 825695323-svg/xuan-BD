@@ -1,0 +1,17 @@
+{
+  "source_id": "cninfo_summary_1225475343",
+  "provider": "平安银行股份有限公司；披露平台：巨潮资讯网",
+  "requested_url": "https://static.cninfo.com.cn/finalpage/2026-08-15/1225475343.PDF",
+  "request_method": "GET",
+  "request_form": null,
+  "requested_at_utc": "2026-10-26T16:28:36Z",
+  "license": "unknown",
+  "usage_scope": "user_local_financial_database",
+  "http_status": 200,
+  "response_url": "https://static.cninfo.com.cn/finalpage/2026-08-15/1225475343.PDF",
+  "content_type": "application/pdf",
+  "acquired_at_utc": "2026-10-26T16:28:36Z",
+  "response_sha256": "611f3a43bce9998b444e62f1d0efa9a3e4078cb3e2821a0abd3128539b390503",
+  "response_bytes": 236325,
+  "response_file": "sources/cninfo_summary_1225475343.pdf"
+}

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "id": "wfd-product-local-20261027",
+  "kind": "wfd-product-machine",
+  "connection_id": "wfd-product-local-20261027",
+  "environment": "user_test",
+  "mode": "user_test",
+  "purpose": "user_test",
+  "protocol": "wfd.product-machine/0.1",
+  "config_path": "/Users/mashiro/xuan BD/xuan BD/staging/P6_actual_20261027/product_machine_run3.json",
+  "store": "/Users/mashiro/xuan BD/xuan BD/staging/P6_actual_20261027/store_run3",
+  "runtime": "/Users/mashiro/xuan BD/xuan BD/staging/P6_actual_20261027/runtime_run3",
+  "python_path": "/Users/mashiro/WFD规划与测试/runtime/venv/bin/python",
+  "entry_path": "/Users/mashiro/WFD规划与测试/世界金融数据库（World Financial Database）/02_数据库引擎与实施代码/产品开发/wfd_sdk/product_machine.py",
+  "harness_root": "/Users/mashiro/xuan BD/运行数据",
+  "harness_root_id": "701e578c-4b16-412b-af20-a1685b5d9738",
+  "harness_binding": {
+    "root": "/Users/mashiro/xuan BD/运行数据",
+    "root_id": "701e578c-4b16-412b-af20-a1685b5d9738"
+  },
+  "maintenance_intent": "p6-product-machine-check-final-20261027"
+}

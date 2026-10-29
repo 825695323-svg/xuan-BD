@@ -1,0 +1,6 @@
+interface:
+  display_name: "百度网盘与每日补齐"
+  short_description: "管理百度网盘文件，按本地日期补齐分享更新，并保留校验、续跑和中转清理记录"
+  default_prompt: "使用 $baidu-drive 完成百度网盘文件任务；涉及每日补齐时先核对本地业务日期，再处理缺口。"
+policy:
+  allow_implicit_invocation: true

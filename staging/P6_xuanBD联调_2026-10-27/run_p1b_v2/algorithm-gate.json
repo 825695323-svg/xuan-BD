@@ -1,0 +1,276 @@
+{
+  "status": "rejected",
+  "product_id": "p_72eeb399a487bbad80981641",
+  "snapshot_id": "s_67599763a42340c8f8f15396",
+  "generic_fixed_read": {
+    "product_id": "p_72eeb399a487bbad80981641",
+    "snapshot_id": "s_67599763a42340c8f8f15396",
+    "row_count": 3,
+    "definition": {
+      "version": "v_0d9f41dd79354796",
+      "digest": "sha256:0d9f41dd79354796e388b4578660eb4cc1aebd76fa077b11ce552a45a3553a79"
+    },
+    "contract": {
+      "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454"
+    },
+    "declared_fields": [],
+    "requested_fields": [
+      "value_decimal"
+    ],
+    "fields_checked_per_row": true,
+    "definition_checked_per_row": true,
+    "first_row_keys": [
+      "contract_ref",
+      "definition_ref",
+      "eligibility",
+      "evidence_refs",
+      "product_id",
+      "record_ref",
+      "revision",
+      "revision_state",
+      "row",
+      "source_binding",
+      "subject"
+    ],
+    "full_rows_sha256": "57ebcdd7fae7a0a3d8297e03f2a092962d910a0e870f8d423621d238f4802c84",
+    "rows_sha256_basis": "local_full_public_rows; not a server full-resource digest",
+    "raw_value_state_preserved": true,
+    "cell_metadata": {
+      "basis": "per_cell_value_state_type_unit_metadata",
+      "count": 3,
+      "unsafe_count": 0,
+      "first_cells": [
+        {
+          "row": 0,
+          "field": "value_decimal",
+          "present": true,
+          "value": "157066",
+          "value_state": "valid_value",
+          "data_type": null,
+          "unit_code": null,
+          "unit_ref": null,
+          "declared_unit_code": "vehicle",
+          "safe_value_state": true
+        },
+        {
+          "row": 1,
+          "field": "value_decimal",
+          "present": true,
+          "value": "142504",
+          "value_state": "valid_value",
+          "data_type": null,
+          "unit_code": null,
+          "unit_ref": null,
+          "declared_unit_code": "vehicle",
+          "safe_value_state": true
+        },
+        {
+          "row": 2,
+          "field": "value_decimal",
+          "present": true,
+          "value": "91862",
+          "value_state": "valid_value",
+          "data_type": null,
+          "unit_code": null,
+          "unit_ref": null,
+          "declared_unit_code": "vehicle",
+          "safe_value_state": true
+        }
+      ]
+    }
+  },
+  "algorithm_port": {
+    "status": "rejected",
+    "port_status": {
+      "status": "available",
+      "reason": null
+    },
+    "definition": {
+      "version": "v_0d9f41dd79354796",
+      "digest": "sha256:0d9f41dd79354796e388b4578660eb4cc1aebd76fa077b11ce552a45a3553a79",
+      "id": "def_0d9f41dd79354796e388b457"
+    },
+    "contract": {
+      "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454",
+      "set_version": "wfd.product-contracts/0.3"
+    },
+    "caller_expectations": {
+      "adjustment": "unadjusted",
+      "adjustmentBasis": "not_applicable",
+      "availability": {
+        "closeTime": "15:00",
+        "kind": "bar_close"
+      },
+      "barClosed": true,
+      "currency": "CNY",
+      "frequency": "1d",
+      "priceUnit": "currency_per_share",
+      "subject": "p_72eeb399a487bbad80981641",
+      "synthetic": false,
+      "timezone": "Asia/Shanghai"
+    },
+    "caller_expectations_used_as_truth": false,
+    "observed": {
+      "semantic_code": "p1.port.automobiles.handled",
+      "definition_authority": "p1.validation",
+      "measurement_nature": "flow",
+      "time_role": "statistical_period",
+      "time_axis": {
+        "precisions": [
+          "year"
+        ],
+        "timezones": [
+          "America/Los_Angeles"
+        ],
+        "statuses": [
+          "known"
+        ]
+      },
+      "unit_codes": {},
+      "selected_fields": [
+        "value_decimal"
+      ]
+    },
+    "structured": {
+      "frequency": null,
+      "adjustment": null,
+      "adjustment_basis": null,
+      "bar_closed": null,
+      "currency": null,
+      "timezone": null,
+      "availability": null,
+      "price_unit": null
+    },
+    "derived": {
+      "frequency": {
+        "value": "1y",
+        "basis": [
+          "time_role:statistical_period",
+          "observation_time.precision:year"
+        ]
+      },
+      "timezone": {
+        "value": "America/Los_Angeles",
+        "basis": [
+          "observation_time.source_timezone"
+        ]
+      },
+      "currency": {
+        "value": null,
+        "basis": [
+          "unit_currencies:none"
+        ]
+      },
+      "price_unit": {
+        "value": null,
+        "basis": [
+          "close_field_unit:none"
+        ]
+      }
+    },
+    "missing": [
+      "payload.tabular_rows",
+      "contract.field_definitions",
+      "value_field.timestamp_date",
+      "value_field.close_price_unit",
+      "frequency.daily",
+      "currency",
+      "adjustment",
+      "adjustment_basis",
+      "bar_closed",
+      "availability"
+    ],
+    "mismatches": [
+      "field.not_declared:value_decimal",
+      "frequency: caller=1d actual=1y",
+      "timezone: caller=Asia/Shanghai actual=America/Los_Angeles"
+    ],
+    "wrong_definition_revision": {
+      "label": "annual-throughput wrong definitionRevision",
+      "code": "ALGORITHM_SNAPSHOT_DEFINITION_MISMATCH",
+      "message": "{\"product_id\":\"p_72eeb399a487bbad80981641\",\"snapshot_id\":\"s_67599763a42340c8f8f15396\",\"caller_definition_revision\":\"v_intentionally_wrong_revision\",\"actual_definition_version\":\"v_0d9f41dd79354796\",\"actual_definition_digest\":\"sha256:0d9f41dd79354796e388b4578660eb4cc1aebd76fa077b11ce552a45a3553a79\",\"reason\":\"caller definitionRevision does not match the fixed service definition\"}",
+      "details": {
+        "product_id": "p_72eeb399a487bbad80981641",
+        "snapshot_id": "s_67599763a42340c8f8f15396",
+        "caller_definition_revision": "v_intentionally_wrong_revision",
+        "actual_definition_version": "v_0d9f41dd79354796",
+        "actual_definition_digest": "sha256:0d9f41dd79354796e388b4578660eb4cc1aebd76fa077b11ce552a45a3553a79",
+        "reason": "caller definitionRevision does not match the fixed service definition"
+      },
+      "returned_verified_scope": null
+    },
+    "correct_definition_fake_daily": {
+      "label": "correct definition + caller fake daily semantics",
+      "code": "ALGORITHM_SNAPSHOT_FIELDS_UNSUPPORTED",
+      "message": "{\"product_id\":\"p_72eeb399a487bbad80981641\",\"snapshot_id\":\"s_67599763a42340c8f8f15396\",\"payload_kind\":\"scalar_rows\",\"requested_fields\":[\"value_decimal\"],\"declared_field_source\":\"none\",\"reason\":\"fixed contract has no declared value-field definitions; cannot verify field semantics per row\"}",
+      "details": {
+        "product_id": "p_72eeb399a487bbad80981641",
+        "snapshot_id": "s_67599763a42340c8f8f15396",
+        "payload_kind": "scalar_rows",
+        "requested_fields": [
+          "value_decimal"
+        ],
+        "declared_field_source": "none",
+        "reason": "fixed contract has no declared value-field definitions; cannot verify field semantics per row"
+      },
+      "returned_verified_scope": null
+    },
+    "undeclared_field_negative": null,
+    "range_negative": {
+      "label": "non-empty range",
+      "code": "ALGORITHM_SNAPSHOT_RANGE_UNSUPPORTED",
+      "message": "{\"product_id\":\"p_72eeb399a487bbad80981641\",\"snapshot_id\":\"s_67599763a42340c8f8f15396\",\"range\":{\"start\":\"2020-01-01\",\"end\":\"2030-01-01\"},\"reason\":\"range filtering is not implemented; refusing to return the whole product under a caller range claim\",\"action\":\"remove range for a whole fixed product read, or wait for P4 bounded range support\"}",
+      "details": {
+        "product_id": "p_72eeb399a487bbad80981641",
+        "snapshot_id": "s_67599763a42340c8f8f15396",
+        "range": {
+          "start": "2020-01-01",
+          "end": "2030-01-01"
+        },
+        "reason": "range filtering is not implemented; refusing to return the whole product under a caller range claim",
+        "action": "remove range for a whole fixed product read, or wait for P4 bounded range support"
+      },
+      "returned_verified_scope": null
+    },
+    "compact_negative": {
+      "label": "compact row projection removed",
+      "code": "REQUEST_INVALID",
+      "message": "REQUEST_INVALID:row_projection=compact removed; the public projection, contract/unit definitions, evidence_refs/source_binding and trace eligibility must not be dropped to save bytes. Use full and let P4 implement bounded paging. 下一步：请按 wfd.product-machine/0.1 发送一个 JSON 对象；权限和身份不能放在请求里。",
+      "details": null,
+      "returned_verified_scope": null
+    },
+    "null_state_probe": {
+      "cells": [
+        {
+          "row": 0,
+          "field": "close",
+          "present": true,
+          "value": null,
+          "value_state": "unknown",
+          "data_type": "decimal",
+          "unit_code": "cny_per_share",
+          "unit_ref": null,
+          "declared_unit_code": null,
+          "safe_value_state": false
+        },
+        {
+          "row": 1,
+          "field": "close",
+          "present": true,
+          "value": null,
+          "value_state": "not_applicable",
+          "data_type": "decimal",
+          "unit_code": "cny_per_share",
+          "unit_ref": null,
+          "declared_unit_code": null,
+          "safe_value_state": false
+        }
+      ],
+      "unsafe_count": 2,
+      "states_distinct": true,
+      "any_safe_value_state": false
+    },
+    "verified_scope_returned": null,
+    "note": "金融算法入口未通过；通用 fixed_read 已通过。拒绝原因是固定合同缺结构化金融算法语义，不是 mock 失败。"
+  }
+}

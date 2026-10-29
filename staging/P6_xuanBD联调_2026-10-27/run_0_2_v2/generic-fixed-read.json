@@ -1,0 +1,721 @@
+{
+  "product_id": "p_d91987a11e99f581da8e71c7",
+  "snapshot_id": "s_9f3edb73a442f1940a54a1d8",
+  "row_count": 60,
+  "definition": {
+    "version": "v_a90223db0a1ce489",
+    "digest": "sha256:a90223db0a1ce489b77af4b834de564e580409a4b14d351ab9e94c759e945666"
+  },
+  "contract": {
+    "digest": "sha256:657f3fc4a2eced233845561c0e2cce90aa61b9c37310f4366626f7dfb8482753"
+  },
+  "declared_fields": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume_lot",
+    "amount_cny"
+  ],
+  "requested_fields": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume_lot",
+    "amount_cny"
+  ],
+  "fields_checked_per_row": true,
+  "definition_checked_per_row": true,
+  "first_row_keys": [
+    "contract_ref",
+    "definition_ref",
+    "eligibility",
+    "evidence_refs",
+    "product_id",
+    "record_ref",
+    "revision",
+    "revision_state",
+    "row",
+    "source_binding",
+    "subject"
+  ],
+  "full_rows_sha256": "9e1ab7d92da9d84519ba022a2807b4bcd158e880a7fe50805bd3a242c4b46c89",
+  "rows_sha256_basis": "local_full_public_rows; not a server full-resource digest",
+  "raw_value_state_preserved": true,
+  "cell_metadata": {
+    "basis": "per_cell_value_state_type_unit_metadata",
+    "count": 360,
+    "unsafe_count": 0,
+    "first_cells": [
+      {
+        "row": 0,
+        "field": "open",
+        "present": true,
+        "value": "11.09",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "cny_per_share",
+        "safe_value_state": true
+      },
+      {
+        "row": 0,
+        "field": "high",
+        "present": true,
+        "value": "11.23",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "cny_per_share",
+        "safe_value_state": true
+      },
+      {
+        "row": 0,
+        "field": "low",
+        "present": true,
+        "value": "11.08",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "cny_per_share",
+        "safe_value_state": true
+      },
+      {
+        "row": 0,
+        "field": "close",
+        "present": true,
+        "value": "11.15",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "cny_per_share",
+        "safe_value_state": true
+      },
+      {
+        "row": 0,
+        "field": "volume_lot",
+        "present": true,
+        "value": "918925",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "lot_100_shares",
+        "safe_value_state": true
+      },
+      {
+        "row": 0,
+        "field": "amount_cny",
+        "present": true,
+        "value": "1025538832.67",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "cny",
+        "safe_value_state": true
+      },
+      {
+        "row": 1,
+        "field": "open",
+        "present": true,
+        "value": "11.15",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "cny_per_share",
+        "safe_value_state": true
+      },
+      {
+        "row": 1,
+        "field": "high",
+        "present": true,
+        "value": "11.32",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "cny_per_share",
+        "safe_value_state": true
+      },
+      {
+        "row": 1,
+        "field": "low",
+        "present": true,
+        "value": "11.13",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "cny_per_share",
+        "safe_value_state": true
+      },
+      {
+        "row": 1,
+        "field": "close",
+        "present": true,
+        "value": "11.27",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "cny_per_share",
+        "safe_value_state": true
+      },
+      {
+        "row": 1,
+        "field": "volume_lot",
+        "present": true,
+        "value": "1148895",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "lot_100_shares",
+        "safe_value_state": true
+      },
+      {
+        "row": 1,
+        "field": "amount_cny",
+        "present": true,
+        "value": "1292756711.67",
+        "value_state": "valid_value",
+        "data_type": "decimal",
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "cny",
+        "safe_value_state": true
+      }
+    ]
+  },
+  "public_projection": {
+    "format_version": "wfd.public-projection/0.1",
+    "source_paths": "omitted",
+    "raw_original_text": "omitted",
+    "evidence_refs": "content digests only; locator fields omitted",
+    "source_ids": [
+      "eastmoney_bars_2026q2"
+    ],
+    "contract_bodies": "partial",
+    "complete_contract_bodies": false,
+    "contract_projections": [
+      {
+        "product_id": "p_d91987a11e99f581da8e71c7",
+        "original_contract_ref": {
+          "dataset_id": "wfd_cn_000001_financial_products",
+          "dependency_type": "read",
+          "digest": "sha256:657f3fc4a2eced233845561c0e2cce90aa61b9c37310f4366626f7dfb8482753",
+          "id": "contract_657f3fc4a2eced233845561c",
+          "kind": "contract",
+          "namespace": "wfd.product",
+          "required": true,
+          "resolution": "pinned",
+          "version": "v_657f3fc4a2eced23"
+        },
+        "projection_digest": "sha256:a77594d29a0ac766f85b3ce56f1f7ba74647ac0f710fefe0767c84b79adb19be",
+        "projection_scope": "public product body (unit provenance paths/raw originals omitted)",
+        "complete_contract_body": false
+      }
+    ],
+    "contract_refs": [
+      {
+        "dataset_id": "wfd_cn_000001_financial_products",
+        "dependency_type": "read",
+        "digest": "sha256:657f3fc4a2eced233845561c0e2cce90aa61b9c37310f4366626f7dfb8482753",
+        "id": "contract_657f3fc4a2eced233845561c",
+        "kind": "contract",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_657f3fc4a2eced23"
+      }
+    ]
+  },
+  "source_ids": [
+    "eastmoney_bars_2026q2"
+  ],
+  "products": [
+    {
+      "contract_ref": {
+        "dataset_id": "wfd_cn_000001_financial_products",
+        "dependency_type": "read",
+        "digest": "sha256:657f3fc4a2eced233845561c0e2cce90aa61b9c37310f4366626f7dfb8482753",
+        "id": "contract_657f3fc4a2eced233845561c",
+        "kind": "contract",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_657f3fc4a2eced23"
+      },
+      "contracts": {
+        "compute_dependencies": {
+          "dependencies": [],
+          "derived_submission": "not_implemented",
+          "execution": "external"
+        },
+        "publication": {
+          "compaction": "requires_preserving_per_row_bindings",
+          "duplicate_keys": "reject_without_revision",
+          "physical_storage": "append_only",
+          "revision_modes": [
+            "processing_repair",
+            "source_correction",
+            "withdrawal"
+          ],
+          "updates": "immutable_logical_versions",
+          "withdrawal": "tombstone"
+        },
+        "read": {
+          "dependencies": [
+            {
+              "dataset_id": "wfd_cn_000001_financial_products",
+              "product_id": "p_1012da93c0a1279006ff747e",
+              "required": true,
+              "role": "cn.szse.trading_calendar",
+              "snapshot_id": "s_b2cd8f5933cf8e1482742e12"
+            },
+            {
+              "dataset_id": "wfd_cn_000001_financial_products",
+              "product_id": "p_1ceb333fa472754a7afd7c39",
+              "required": true,
+              "role": "cn.listing.identity",
+              "snapshot_id": "s_b2cd8f5933cf8e1482742e12"
+            },
+            {
+              "dataset_id": "wfd_cn_000001_financial_products",
+              "product_id": "p_26be7d18c2302505ea79da68",
+              "required": true,
+              "role": "cn.company.identity",
+              "snapshot_id": "s_b2cd8f5933cf8e1482742e12"
+            },
+            {
+              "dataset_id": "wfd_cn_000001_financial_products",
+              "product_id": "p_4d71c88028d880a23a3ac084",
+              "required": true,
+              "role": "cn.semantic.units",
+              "snapshot_id": "s_b2cd8f5933cf8e1482742e12"
+            },
+            {
+              "dataset_id": "wfd_cn_000001_financial_products",
+              "product_id": "p_83d329d1df6707e11c101566",
+              "required": true,
+              "role": "cn.security.issuer",
+              "snapshot_id": "s_b2cd8f5933cf8e1482742e12"
+            },
+            {
+              "dataset_id": "wfd_cn_000001_financial_products",
+              "product_id": "p_b2f29e56c25cade5a16eda85",
+              "required": true,
+              "role": "cn.security.identity",
+              "snapshot_id": "s_b2cd8f5933cf8e1482742e12"
+            },
+            {
+              "dataset_id": "wfd_cn_000001_financial_products",
+              "product_id": "p_b3139543720b08b051b36da0",
+              "required": true,
+              "role": "cn.listing.security",
+              "snapshot_id": "s_b2cd8f5933cf8e1482742e12"
+            },
+            {
+              "dataset_id": "wfd_cn_000001_financial_products",
+              "product_id": "p_d3cb058244a684295dca5a7a",
+              "required": true,
+              "role": "cn.market.identity",
+              "snapshot_id": "s_b2cd8f5933cf8e1482742e12"
+            },
+            {
+              "dataset_id": "wfd_cn_000001_financial_products",
+              "product_id": "p_da3b0f2d3c9d8d1afe38e5f2",
+              "required": true,
+              "role": "cn.listing.market",
+              "snapshot_id": "s_b2cd8f5933cf8e1482742e12"
+            }
+          ],
+          "fixed_snapshot_required": true,
+          "held_scope": "received_structured",
+          "perspectives": [
+            "snapshot_contents",
+            "market_known_at",
+            "system_held_at"
+          ]
+        },
+        "semantic": {
+          "definition_ref": {
+            "dataset_id": "wfd_cn_000001_financial_products",
+            "dependency_type": "read",
+            "digest": "sha256:a90223db0a1ce489b77af4b834de564e580409a4b14d351ab9e94c759e945666",
+            "id": "def_a90223db0a1ce489b77af4b8",
+            "kind": "definition_version",
+            "namespace": "wfd.product",
+            "required": true,
+            "resolution": "pinned",
+            "version": "v_a90223db0a1ce489"
+          },
+          "fields": [
+            {
+              "data_type": "decimal",
+              "field_code": "open",
+              "measurement_nature": "stock",
+              "time_role": "trading_day",
+              "unit_code": "cny_per_share"
+            },
+            {
+              "data_type": "decimal",
+              "field_code": "high",
+              "measurement_nature": "stock",
+              "time_role": "trading_day",
+              "unit_code": "cny_per_share"
+            },
+            {
+              "data_type": "decimal",
+              "field_code": "low",
+              "measurement_nature": "stock",
+              "time_role": "trading_day",
+              "unit_code": "cny_per_share"
+            },
+            {
+              "data_type": "decimal",
+              "field_code": "close",
+              "measurement_nature": "stock",
+              "time_role": "trading_day",
+              "unit_code": "cny_per_share"
+            },
+            {
+              "data_type": "decimal",
+              "field_code": "volume_lot",
+              "measurement_nature": "flow",
+              "time_role": "trading_day",
+              "unit_code": "lot_100_shares"
+            },
+            {
+              "data_type": "decimal",
+              "field_code": "amount_cny",
+              "measurement_nature": "flow",
+              "time_role": "trading_day",
+              "unit_code": "cny"
+            }
+          ],
+          "unit_definitions": {}
+        }
+      },
+      "dataset_id": "wfd_cn_000001_financial_products",
+      "declaration": {
+        "definition_authority": "eastmoney.unadjusted_daily_bars",
+        "field_definitions": [
+          {
+            "data_type": "decimal",
+            "field_code": "open",
+            "measurement_nature": "stock",
+            "time_role": "trading_day",
+            "unit_code": "cny_per_share"
+          },
+          {
+            "data_type": "decimal",
+            "field_code": "high",
+            "measurement_nature": "stock",
+            "time_role": "trading_day",
+            "unit_code": "cny_per_share"
+          },
+          {
+            "data_type": "decimal",
+            "field_code": "low",
+            "measurement_nature": "stock",
+            "time_role": "trading_day",
+            "unit_code": "cny_per_share"
+          },
+          {
+            "data_type": "decimal",
+            "field_code": "close",
+            "measurement_nature": "stock",
+            "time_role": "trading_day",
+            "unit_code": "cny_per_share"
+          },
+          {
+            "data_type": "decimal",
+            "field_code": "volume_lot",
+            "measurement_nature": "flow",
+            "time_role": "trading_day",
+            "unit_code": "lot_100_shares"
+          },
+          {
+            "data_type": "decimal",
+            "field_code": "amount_cny",
+            "measurement_nature": "flow",
+            "time_role": "trading_day",
+            "unit_code": "cny"
+          }
+        ],
+        "measurement_nature": "mixed_observation",
+        "semantic_code": "cn.equity.daily_bar.unadjusted",
+        "time_role": "observation",
+        "unit_code": "per_field"
+      },
+      "definition_ref": {
+        "dataset_id": "wfd_cn_000001_financial_products",
+        "dependency_type": "read",
+        "digest": "sha256:a90223db0a1ce489b77af4b834de564e580409a4b14d351ab9e94c759e945666",
+        "id": "def_a90223db0a1ce489b77af4b8",
+        "kind": "definition_version",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_a90223db0a1ce489"
+      },
+      "logical_domain": "observations",
+      "payload_kind": "tabular_rows",
+      "product_id": "p_d91987a11e99f581da8e71c7",
+      "service_version": "wfd.product-service/0.2",
+      "subject": {
+        "id": "000001:19910403",
+        "kind": "listing",
+        "namespace": "cn.szse.listing"
+      }
+    }
+  ],
+  "first_row": {
+    "product_id": "p_d91987a11e99f581da8e71c7",
+    "row": {
+      "business_key": "000001:2026-04-01",
+      "observation_time": {
+        "earliest_utc": "2026-03-31T16:00:00Z",
+        "latest_exclusive_utc": "2026-04-01T16:00:00Z",
+        "precision": "day",
+        "source_timezone": "Asia/Shanghai",
+        "status": "known"
+      },
+      "subject": {
+        "id": "000001:19910403",
+        "kind": "listing",
+        "namespace": "cn.szse.listing"
+      },
+      "values": {
+        "amount_cny": {
+          "data_type": "decimal",
+          "value": "1025538832.67",
+          "value_state": "valid_value"
+        },
+        "close": {
+          "data_type": "decimal",
+          "value": "11.15",
+          "value_state": "valid_value"
+        },
+        "high": {
+          "data_type": "decimal",
+          "value": "11.23",
+          "value_state": "valid_value"
+        },
+        "low": {
+          "data_type": "decimal",
+          "value": "11.08",
+          "value_state": "valid_value"
+        },
+        "open": {
+          "data_type": "decimal",
+          "value": "11.09",
+          "value_state": "valid_value"
+        },
+        "volume_lot": {
+          "data_type": "decimal",
+          "value": "918925",
+          "value_state": "valid_value"
+        }
+      }
+    },
+    "subject": {
+      "id": "000001:19910403",
+      "kind": "listing",
+      "namespace": "cn.szse.listing"
+    },
+    "definition_ref": {
+      "dataset_id": "wfd_cn_000001_financial_products",
+      "dependency_type": "read",
+      "digest": "sha256:a90223db0a1ce489b77af4b834de564e580409a4b14d351ab9e94c759e945666",
+      "id": "def_a90223db0a1ce489b77af4b8",
+      "kind": "definition_version",
+      "namespace": "wfd.product",
+      "required": true,
+      "resolution": "pinned",
+      "version": "v_a90223db0a1ce489"
+    },
+    "eligibility": {
+      "decision": "eligible",
+      "reason": "snapshot_only_not_PIT"
+    },
+    "contract_ref": {
+      "dataset_id": "wfd_cn_000001_financial_products",
+      "dependency_type": "read",
+      "digest": "sha256:657f3fc4a2eced233845561c0e2cce90aa61b9c37310f4366626f7dfb8482753",
+      "id": "contract_657f3fc4a2eced233845561c",
+      "kind": "contract",
+      "namespace": "wfd.product",
+      "required": true,
+      "resolution": "pinned",
+      "version": "v_657f3fc4a2eced23"
+    },
+    "revision": {
+      "input_mode": "partial_observation",
+      "logical_key": "000001:2026-04-01",
+      "reason": null,
+      "revision_id": "r_de7b545c836f81014de8f7a88d1b2361",
+      "supersedes": null,
+      "withdrawn": false
+    },
+    "record_ref": {
+      "product_id": "p_d91987a11e99f581da8e71c7",
+      "snapshot_id": "s_9f3edb73a442f1940a54a1d8",
+      "logical_key": "000001:2026-04-01",
+      "revision_id": "r_de7b545c836f81014de8f7a88d1b2361"
+    },
+    "revision_state": "current",
+    "evidence_refs": [
+      {
+        "binding_digest": null,
+        "content_sha256": "sha256:002da38b07778f99997a6b385eb45c10955a64c3f2f8a6ff2484371fc1240750",
+        "ref_id": "e_002da38b07778f99997a6b38",
+        "ref_kind": "content"
+      }
+    ],
+    "source_binding": {
+      "source_ids": [
+        "eastmoney_bars_2026q2"
+      ],
+      "contract_ref": {
+        "dataset_id": "wfd_cn_000001_financial_products",
+        "dependency_type": "read",
+        "digest": "sha256:657f3fc4a2eced233845561c0e2cce90aa61b9c37310f4366626f7dfb8482753",
+        "id": "contract_657f3fc4a2eced233845561c",
+        "kind": "contract",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_657f3fc4a2eced23"
+      }
+    }
+  },
+  "last_row": {
+    "product_id": "p_d91987a11e99f581da8e71c7",
+    "row": {
+      "business_key": "000001:2026-06-30",
+      "observation_time": {
+        "earliest_utc": "2026-06-29T16:00:00Z",
+        "latest_exclusive_utc": "2026-06-30T16:00:00Z",
+        "precision": "day",
+        "source_timezone": "Asia/Shanghai",
+        "status": "known"
+      },
+      "subject": {
+        "id": "000001:19910403",
+        "kind": "listing",
+        "namespace": "cn.szse.listing"
+      },
+      "values": {
+        "amount_cny": {
+          "data_type": "decimal",
+          "value": "1121201539.48",
+          "value_state": "valid_value"
+        },
+        "close": {
+          "data_type": "decimal",
+          "value": "10.05",
+          "value_state": "valid_value"
+        },
+        "high": {
+          "data_type": "decimal",
+          "value": "10.22",
+          "value_state": "valid_value"
+        },
+        "low": {
+          "data_type": "decimal",
+          "value": "10.04",
+          "value_state": "valid_value"
+        },
+        "open": {
+          "data_type": "decimal",
+          "value": "10.22",
+          "value_state": "valid_value"
+        },
+        "volume_lot": {
+          "data_type": "decimal",
+          "value": "1111353",
+          "value_state": "valid_value"
+        }
+      }
+    },
+    "subject": {
+      "id": "000001:19910403",
+      "kind": "listing",
+      "namespace": "cn.szse.listing"
+    },
+    "definition_ref": {
+      "dataset_id": "wfd_cn_000001_financial_products",
+      "dependency_type": "read",
+      "digest": "sha256:a90223db0a1ce489b77af4b834de564e580409a4b14d351ab9e94c759e945666",
+      "id": "def_a90223db0a1ce489b77af4b8",
+      "kind": "definition_version",
+      "namespace": "wfd.product",
+      "required": true,
+      "resolution": "pinned",
+      "version": "v_a90223db0a1ce489"
+    },
+    "eligibility": {
+      "decision": "eligible",
+      "reason": "snapshot_only_not_PIT"
+    },
+    "contract_ref": {
+      "dataset_id": "wfd_cn_000001_financial_products",
+      "dependency_type": "read",
+      "digest": "sha256:657f3fc4a2eced233845561c0e2cce90aa61b9c37310f4366626f7dfb8482753",
+      "id": "contract_657f3fc4a2eced233845561c",
+      "kind": "contract",
+      "namespace": "wfd.product",
+      "required": true,
+      "resolution": "pinned",
+      "version": "v_657f3fc4a2eced23"
+    },
+    "revision": {
+      "input_mode": "partial_observation",
+      "logical_key": "000001:2026-06-30",
+      "reason": null,
+      "revision_id": "r_ba9fdfe4f9f4d6dde8512c38df7a02e3",
+      "supersedes": null,
+      "withdrawn": false
+    },
+    "record_ref": {
+      "product_id": "p_d91987a11e99f581da8e71c7",
+      "snapshot_id": "s_9f3edb73a442f1940a54a1d8",
+      "logical_key": "000001:2026-06-30",
+      "revision_id": "r_ba9fdfe4f9f4d6dde8512c38df7a02e3"
+    },
+    "revision_state": "current",
+    "evidence_refs": [
+      {
+        "binding_digest": null,
+        "content_sha256": "sha256:002da38b07778f99997a6b385eb45c10955a64c3f2f8a6ff2484371fc1240750",
+        "ref_id": "e_002da38b07778f99997a6b38",
+        "ref_kind": "content"
+      }
+    ],
+    "source_binding": {
+      "source_ids": [
+        "eastmoney_bars_2026q2"
+      ],
+      "contract_ref": {
+        "dataset_id": "wfd_cn_000001_financial_products",
+        "dependency_type": "read",
+        "digest": "sha256:657f3fc4a2eced233845561c0e2cce90aa61b9c37310f4366626f7dfb8482753",
+        "id": "contract_657f3fc4a2eced233845561c",
+        "kind": "contract",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_657f3fc4a2eced23"
+      }
+    }
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "format_version": "wfd.storage-release/1.0",
+  "release_id": "WFD-STORAGE/1.0.0",
+  "version": "1.0.0",
+  "release_status": "stable_scoped",
+  "release_status_zh": "已验证范围稳定",
+  "production_accepted": false,
+  "release_date": "2026-10-27",
+  "timezone": "Asia/Shanghai",
+  "base_implementation": "IMPL-rc5",
+  "source_root": "源码",
+  "original_source_archive": {
+    "history_path": "99_历史版本与旧实验/2026-10-27_阶段收口前/02_数据库引擎与实施代码/世界金融数据库_引擎_IMPL-rc5_2026-10-26.zip",
+    "sha256": "4bcad29abc144169be4e18ef5a2f8c3226ca3f57edff5a87577486a26ebefb87"
+  },
+  "source_tree_sha256": "f6e2e37335523e4385a6e3eee59b6b928b41a69dc53e44d6acf101d52bfcab12",
+  "source_checksums_file": "SOURCE_CHECKSUMS.json",
+  "source_checksums_sha256": "00b24b5246ba54e24620302761dbc4a50634d96a723888113b633548a1b9885f",
+  "engine_module_count": 10,
+  "engine_modules_unchanged": true,
+  "source_file_count": 94,
+  "acceptance_register_file": "验收范围与证据.json",
+  "acceptance_register_sha256": "0cf4db1ec74cc87ab800216d5c8996b7bc330a0bbe2c17a113aa9b59ff776df7",
+  "stable_capability_ids": [
+    "SCOPE-01",
+    "SCOPE-02",
+    "SCOPE-03",
+    "SCOPE-04"
+  ],
+  "limitations": [
+    {
+      "id": "LIMIT-01",
+      "name": "完整生产验收未通过",
+      "status": "NOT_ACCEPTED",
+      "detail": "production_accepted=false；稳定发布只限本登记列明的已验证能力与环境。"
+    },
+    {
+      "id": "LIMIT-02",
+      "name": "rc5 Windows 实机未覆盖",
+      "status": "NOT_RUN",
+      "detail": "Windows 双向实机通过属于 rc3；rc5 改动迁移与写锁，未自动继承 rc3 的平台验收。"
+    },
+    {
+      "id": "LIMIT-03",
+      "name": "S5 物理拔盘证据未闭环",
+      "status": "VOID",
+      "detail": "两个运行的 run_completed.json 均 cut_detected=false，缺事后 verify_report.json；随后文件不存在异常使物理动作与检测结果仍有解释缺口，不断言操作者未拔盘。"
+    },
+    {
+      "id": "LIMIT-04",
+      "name": "真实代表性金融规模未覆盖",
+      "status": "NOT_ACCEPTED",
+      "detail": "只有 5 万/20 万行合成探针，非实际 A 股代表性数据规模。"
+    },
+    {
+      "id": "LIMIT-05",
+      "name": "长时连续运行未覆盖",
+      "status": "NOT_ACCEPTED",
+      "detail": "五轮提交重启失败数为 0，但未记录长时持续运行时长、资源变化和持续业务负载。"
+    },
+    {
+      "id": "LIMIT-06",
+      "name": "其它真实故障窗口未覆盖",
+      "status": "NOT_ACCEPTED",
+      "detail": "S3 替换后及 S4 删除后等未见对应报告，S1—S4 不能外推全部物理故障。"
+    },
+    {
+      "id": "LIMIT-07",
+      "name": "完整授权元数据与新 Schema（结构约束）运行校验",
+      "status": "NOT_IMPLEMENTED_OR_NOT_VERIFIED",
+      "detail": "rc5 transfer 仅检查交接凭证旧/新 host、旧/新 epoch、base_snapshot_id 五个核心值及已测谱系；不宣称完整授权元数据或新结构约束已进入运行路径。"
+    },
+    {
+      "id": "LIMIT-08",
+      "name": "状态格式兼容仍保留",
+      "status": "COMPATIBILITY_FACT",
+      "detail": "常规状态写入采用 wfd.state/1.0；transfer 导入路径仍可能写 wfd.host/1.0 旧格式。原码不变，不能宣称所有写入已经统一新格式。"
+    },
+    {
+      "id": "LIMIT-09",
+      "name": "业务产品及 241 项验收独立",
+      "status": "OUT_OF_SCOPE",
+      "detail": "本发布不晋升第三阶段产品服务、真实金融闭环或原始 241 项业务功能；逐项证据映射另行登记。"
+    }
+  ],
+  "new_runtime_tests_executed": false,
+  "third_stage_product_code_included": false,
+  "precedence": "本RELEASE与发布说明确定1.0.0发布身份和已验证范围；源码中的候选README保留为历史说明。此优先级不改变旧测试事实、协议实现或production_accepted=false。"
+}

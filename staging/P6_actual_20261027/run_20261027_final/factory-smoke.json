@@ -1,0 +1,14 @@
+{
+  "status": "ok",
+  "connectionId": "wfd-product-local-20261027",
+  "configPath": "/Users/mashiro/xuan BD/xuan BD/staging/P6_actual_20261027/product_machine_run3.json",
+  "store": "/Users/mashiro/xuan BD/xuan BD/staging/P6_actual_20261027/store_run3",
+  "runtime": "/Users/mashiro/xuan BD/xuan BD/staging/P6_actual_20261027/runtime_run3",
+  "callerId": "bd-p6-producer-20261027",
+  "trustedActorNamespace": "bd.p6.local",
+  "snapshotPort": {
+    "status": "available",
+    "reason": null
+  },
+  "profileKind": "wfd-product-machine"
+}

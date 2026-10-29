@@ -1,0 +1,21 @@
+{
+  "exclude": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/vendor/**",
+    "**/.git/**",
+    "**/.local/**",
+    "var/**",
+    "**/.private/**",
+    "**/__pycache__/**",
+    "**/*.sqlite*",
+    "**/tests/**",
+    "**/test/**",
+    "**/examples/**",
+    "**/verification/**",
+    "**/fixtures/**",
+    "**/work/**",
+    "**/._*",
+    "config/**"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "product_id": "p_72eeb399a487bbad80981641",
+  "snapshot_id": "s_a07e9271b41004b6d4469875",
+  "evidence_count": 1,
+  "all_evidence_verified": true,
+  "evidence": [
+    {
+      "relative_path": "evidence/sha256/140e9fcbc71222321733a2f2c48c9a2c4193ec413cf212a37fec2099dc784b9e",
+      "verified": true,
+      "content_sha256": "sha256:140e9fcbc71222321733a2f2c48c9a2c4193ec413cf212a37fec2099dc784b9e"
+    }
+  ],
+  "response_sha256": "1f79471cb8c9b49007c5cb4e245280090f9c0c2760f14073a20a985626131b43"
+}

@@ -1,0 +1,339 @@
+{
+  "protocol_version": "wfd.product-machine/0.1",
+  "request_id": "bd-d7a2bde6-f409-48c6-ab35-a4c23652aa5a",
+  "operation": "trace",
+  "ok": true,
+  "result": {
+    "snapshot_id": "s_a4cefd441d1576af377d338f",
+    "products": [
+      {
+        "contract_ref": {
+          "dataset_id": "bd_p6_actual_20261027",
+          "dependency_type": "read",
+          "digest": "sha256:ef4046e1b5272ebf2b427a1681e3a70864a9e1a47fbb114754f51958bf4ab83b",
+          "id": "contract_ef4046e1b5272ebf2b427a16",
+          "kind": "contract",
+          "namespace": "wfd.product",
+          "required": true,
+          "resolution": "pinned",
+          "version": "v_ef4046e1b5272ebf"
+        },
+        "contracts": {
+          "compute_dependencies": {
+            "dependencies": [],
+            "derived_submission": "verified_fixed_lineage",
+            "execution": "external"
+          },
+          "contract_set_version": "wfd.product-contracts/0.3",
+          "part_digests": {
+            "compute_dependencies": "sha256:15b72c95d6d6fb5fb5522796e2111c68655848de7c2c3ac921da50fc7091c774",
+            "publication": "sha256:521e274a66990bed613651bb7748686e52657a0ac4a9a2955b169ad287fc5057",
+            "read": "sha256:80afca685b7ee73c3bb2f5dfc49e3ebe47c1e5cf913ba3ca95dd617727090760",
+            "semantic": "sha256:4671e8021146b741a9260ce928c2153c88cf509d733f9aefe0b427ed019d8d5f"
+          },
+          "publication": {
+            "compaction": "requires_preserving_per_row_bindings",
+            "duplicate_keys": "reject_without_revision",
+            "formal_publish_requires": [
+              "caller_publish_role",
+              "source_formal_grant",
+              "validated_contracts",
+              "verified_dependencies",
+              "custodied_evidence",
+              "verified_snapshot"
+            ],
+            "physical_storage": "append_only",
+            "revision_modes": [
+              "processing_repair",
+              "source_correction",
+              "withdrawal"
+            ],
+            "updates": "immutable_logical_versions",
+            "withdrawal": "tombstone"
+          },
+          "read": {
+            "business_time_field": "observation_time",
+            "dependencies": [],
+            "fixed_snapshot_required": true,
+            "held_scope": "received_structured",
+            "perspectives": [
+              "snapshot_contents",
+              "market_known_at",
+              "system_held_at"
+            ],
+            "primary_key": "business_key"
+          },
+          "semantic": {
+            "definition_ref": {
+              "dataset_id": "bd_p6_actual_20261027",
+              "dependency_type": "read",
+              "digest": "sha256:a90223db0a1ce489b77af4b834de564e580409a4b14d351ab9e94c759e945666",
+              "id": "def_a90223db0a1ce489b77af4b8",
+              "kind": "definition_version",
+              "namespace": "wfd.product",
+              "required": true,
+              "resolution": "pinned",
+              "version": "v_a90223db0a1ce489"
+            },
+            "fields": [
+              {
+                "data_type": "decimal",
+                "field_code": "open",
+                "measurement_nature": "stock",
+                "time_role": "trading_day",
+                "unit_code": "cny_per_share"
+              },
+              {
+                "data_type": "decimal",
+                "field_code": "high",
+                "measurement_nature": "stock",
+                "time_role": "trading_day",
+                "unit_code": "cny_per_share"
+              },
+              {
+                "data_type": "decimal",
+                "field_code": "low",
+                "measurement_nature": "stock",
+                "time_role": "trading_day",
+                "unit_code": "cny_per_share"
+              },
+              {
+                "data_type": "decimal",
+                "field_code": "close",
+                "measurement_nature": "stock",
+                "time_role": "trading_day",
+                "unit_code": "cny_per_share"
+              },
+              {
+                "data_type": "decimal",
+                "field_code": "volume_lot",
+                "measurement_nature": "flow",
+                "time_role": "trading_day",
+                "unit_code": "lot_100_shares"
+              },
+              {
+                "data_type": "decimal",
+                "field_code": "amount_cny",
+                "measurement_nature": "flow",
+                "time_role": "trading_day",
+                "unit_code": "cny"
+              }
+            ],
+            "measurement_nature": "mixed_observation",
+            "unit_code": "per_field",
+            "unit_definitions": {
+              "cny": {
+                "definition": {
+                  "dimension": "money"
+                },
+                "digest": "sha256:1fe628a79105778233b7f1a10f1f2da872ef6fd7b89a78aff873ba015f38f1a1"
+              },
+              "cny_per_share": {
+                "definition": {
+                  "dimension": "money_per_share"
+                },
+                "digest": "sha256:ac3cb0486dc6640c139b5963a7c37a26f72ff520a4ed889ded08035f30d9d945"
+              },
+              "lot_100_shares": {
+                "definition": {
+                  "dimension": "quantity"
+                },
+                "digest": "sha256:d7fc77e2fae4d950b3ef7dfb998105ffa9c78f164f4b8e1782695fb8012a5c27"
+              }
+            }
+          }
+        },
+        "coverage": {
+          "absence_means": "unknown",
+          "basis": "observed_partial",
+          "completeness": "partial",
+          "coverage_evidence": [],
+          "scope": {
+            "bounded_product_release": true,
+            "dataset": "bd_p6_actual_20261027"
+          }
+        },
+        "coverage_predecessor_ref": null,
+        "coverage_ref": "sha256:76438282bd98998b7898e6bf4129a7f3078a765d7b6b25b70b67f0d9afc64c6f",
+        "dataset_id": "bd_p6_actual_20261027",
+        "declaration": {
+          "definition_authority": "eastmoney.unadjusted_daily_bars",
+          "field_definitions": [
+            {
+              "data_type": "decimal",
+              "field_code": "open",
+              "measurement_nature": "stock",
+              "time_role": "trading_day",
+              "unit_code": "cny_per_share"
+            },
+            {
+              "data_type": "decimal",
+              "field_code": "high",
+              "measurement_nature": "stock",
+              "time_role": "trading_day",
+              "unit_code": "cny_per_share"
+            },
+            {
+              "data_type": "decimal",
+              "field_code": "low",
+              "measurement_nature": "stock",
+              "time_role": "trading_day",
+              "unit_code": "cny_per_share"
+            },
+            {
+              "data_type": "decimal",
+              "field_code": "close",
+              "measurement_nature": "stock",
+              "time_role": "trading_day",
+              "unit_code": "cny_per_share"
+            },
+            {
+              "data_type": "decimal",
+              "field_code": "volume_lot",
+              "measurement_nature": "flow",
+              "time_role": "trading_day",
+              "unit_code": "lot_100_shares"
+            },
+            {
+              "data_type": "decimal",
+              "field_code": "amount_cny",
+              "measurement_nature": "flow",
+              "time_role": "trading_day",
+              "unit_code": "cny"
+            }
+          ],
+          "measurement_nature": "mixed_observation",
+          "semantic_code": "cn.equity.daily_bar.unadjusted",
+          "time_role": "observation",
+          "unit_code": "per_field"
+        },
+        "definition_compatibility": "initial",
+        "definition_parent_ref": null,
+        "definition_ref": {
+          "dataset_id": "bd_p6_actual_20261027",
+          "dependency_type": "read",
+          "digest": "sha256:a90223db0a1ce489b77af4b834de564e580409a4b14d351ab9e94c759e945666",
+          "id": "def_a90223db0a1ce489b77af4b8",
+          "kind": "definition_version",
+          "namespace": "wfd.product",
+          "required": true,
+          "resolution": "pinned",
+          "version": "v_a90223db0a1ce489"
+        },
+        "definition_sequence": 1,
+        "logical_domain": "observations",
+        "payload_kind": "tabular_rows",
+        "product_family_id": "pf_374f4bce0a3f7c6f575afabf",
+        "product_id": "p_69187760dfa849b97b062efd",
+        "service_version": "wfd.product-service/0.3",
+        "subject": {
+          "id": "000001:19910403",
+          "kind": "listing",
+          "namespace": "cn.szse.listing"
+        },
+        "content_digest": "sha256:a2e34bdc138a7148b8143653a2e62a703d3b95420cee1f23a56e22d30217d131",
+        "source_admission": {
+          "source_ids": [
+            "eastmoney_bars_2026q2"
+          ],
+          "permissions": {
+            "eastmoney_bars_2026q2": {
+              "may_export": false,
+              "may_export_evidence": false,
+              "may_publish_formal": true,
+              "may_read": true,
+              "may_read_evidence": true,
+              "may_redistribute": false,
+              "may_submit": true
+            }
+          }
+        }
+      }
+    ],
+    "evidence": [
+      {
+        "reference": {
+          "binding_digest": null,
+          "content_sha256": "sha256:002da38b07778f99997a6b385eb45c10955a64c3f2f8a6ff2484371fc1240750",
+          "ref_id": "e_002da38b07778f99997a6b38",
+          "ref_kind": "content"
+        },
+        "relative_path": "evidence/sha256/002da38b07778f99997a6b385eb45c10955a64c3f2f8a6ff2484371fc1240750",
+        "verified": true
+      }
+    ],
+    "public_projection": {
+      "format_version": "wfd.public-projection/0.1",
+      "source_paths": "omitted",
+      "raw_original_text": "omitted",
+      "evidence_refs": "content digests only; locator fields omitted",
+      "source_ids": [
+        "eastmoney_bars_2026q2"
+      ],
+      "contract_bodies": "partial",
+      "complete_contract_bodies": false,
+      "contract_projections": [
+        {
+          "product_id": "p_69187760dfa849b97b062efd",
+          "original_contract_ref": {
+            "dataset_id": "bd_p6_actual_20261027",
+            "dependency_type": "read",
+            "digest": "sha256:ef4046e1b5272ebf2b427a1681e3a70864a9e1a47fbb114754f51958bf4ab83b",
+            "id": "contract_ef4046e1b5272ebf2b427a16",
+            "kind": "contract",
+            "namespace": "wfd.product",
+            "required": true,
+            "resolution": "pinned",
+            "version": "v_ef4046e1b5272ebf"
+          },
+          "projection_digest": "sha256:5b48658fc6cb74dfa544b8c154f9754199a60b9238e4738c0fa9b050724c2b1f",
+          "projection_scope": "public product body (unit provenance paths/raw originals omitted)",
+          "complete_contract_body": false
+        }
+      ],
+      "contract_refs": [
+        {
+          "dataset_id": "bd_p6_actual_20261027",
+          "dependency_type": "read",
+          "digest": "sha256:ef4046e1b5272ebf2b427a1681e3a70864a9e1a47fbb114754f51958bf4ab83b",
+          "id": "contract_ef4046e1b5272ebf2b427a16",
+          "kind": "contract",
+          "namespace": "wfd.product",
+          "required": true,
+          "resolution": "pinned",
+          "version": "v_ef4046e1b5272ebf"
+        }
+      ]
+    },
+    "service_identity": {
+      "format_version": "wfd.product-capabilities/0.2",
+      "service_version": "wfd.product-service/0.3",
+      "contract_version": "wfd.product-contracts/0.3",
+      "ingest_protocol": "wfd.ingest/1.3-candidate",
+      "schema_id": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json"
+    }
+  },
+  "error": null,
+  "identity": {
+    "caller_id": "bd-p6-producer-20261027",
+    "trusted_actor_namespace": "bd.p6.local",
+    "caller_roles": [
+      "evidence_write",
+      "publish",
+      "read",
+      "read_evidence",
+      "register",
+      "submit"
+    ],
+    "connection_id": "wfd-product-local-20261027",
+    "source_binding": "trusted constructor configuration; request cannot grant permissions"
+  },
+  "service": {
+    "format_version": "wfd.product-capabilities/0.2",
+    "service_version": "wfd.product-service/0.3",
+    "contract_version": "wfd.product-contracts/0.3",
+    "ingest_protocol": "wfd.ingest/1.3-candidate",
+    "schema_id": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json"
+  },
+  "elapsed_ms": 18
+}

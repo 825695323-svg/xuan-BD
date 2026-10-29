@@ -1,0 +1,21 @@
+{
+  "codeThemeId": "codex",
+  "theme": {
+    "accent": "#5B8CFF",
+    "accentSource": "chatgpt",
+    "contrast": 60,
+    "fonts": {
+      "code": null,
+      "ui": null
+    },
+    "ink": "#E2E8F0",
+    "opaqueWindows": false,
+    "semanticColors": {
+      "diffAdded": "#22C55E",
+      "diffRemoved": "#EF4444",
+      "skill": "#ad7bf9"
+    },
+    "surface": "#121A24"
+  },
+  "variant": "dark"
+}

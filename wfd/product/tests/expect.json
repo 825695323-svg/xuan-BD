@@ -1,0 +1,10 @@
+{
+  "engine": "/Users/mashiro/WFD/engine_impl_rc3",
+  "expect": {
+    "wfd_sdk/transfer.py": "bfb17c65db78dabace72f529ebfa14e77944809a95036abde7a55641f65606f8",
+    "wfd_sdk/state.py": "3549fb6e897a93c5a2b1e61941ea057a0abfa4f7e19af9b8611cc18e414e79f7",
+    "wfd_sdk/gc.py": "db4f7c9cf37c51c863893471595a1b09e27fdb00ae4e8fbb2b61b54f3a0b347f",
+    "wfd_sdk/lineage.py": "7d86a72e9f5a02a4cf3e34c659efc34426c77a9a4c6379b7d0cba9a552a65a4e",
+    "wfd_sdk/duckdb_sdk.py": "334927504736c9d19a92244a97b1de78e556e2c1a96e29bf8e8f045afcde09af"
+  }
+}

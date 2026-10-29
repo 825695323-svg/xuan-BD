@@ -1,0 +1,19 @@
+--- /Users/mashiro/WFD规划与测试/engine_rc3_verified/wfd_sdk/gc.py	2026-10-26 20:25:23
++++ /Users/mashiro/WFD规划与测试/engine_impl_rc4/wfd_sdk/gc.py	2026-10-26 21:01:51
+@@ -25,6 +25,8 @@
+ """
+ from __future__ import annotations
+ 
++from wfd_sdk.writerlock import guarded_method, guarded_store_func
++
+ import hashlib
+ import json
+ from datetime import datetime, timezone
+@@ -291,6 +293,7 @@
+         }
+ 
+     # ------------------------------------------------------------------ 执行
++    @guarded_method
+     def execute(self, plan: dict, *, run_id: str, interrupt_after: int | None = None) -> dict:
+         """隔离测试库上真正删除。
+ 

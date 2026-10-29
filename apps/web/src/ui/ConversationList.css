@@ -1,0 +1,17 @@
+.conversation-sidebar .conversation-organization {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: .65;
+  font-size: .75rem;
+  font-weight: 400;
+}
+.conversation-sidebar .conversation-organization svg,
+.conversation-sidebar .conversation-pin { flex-shrink: 0; }
+.conversation-sidebar .conversation-organization > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.conversation-sidebar .conversation-pin { opacity: .65; }
+.conversation-sidebar .conversation-group > h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

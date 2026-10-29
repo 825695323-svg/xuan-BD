@@ -1,0 +1,201 @@
+{
+  "protocol_version": "wfd.ingest/1.3-candidate",
+  "request_identity": {
+    "dataset_id": "test_wfd_v13_round2",
+    "trusted_actor_namespace": "wfd.test.curated",
+    "request_id": "r2_port_monthly_2025",
+    "submission_digest": "sha256:c36047698222730613fdd20585730461a8cbefe51bbd83a0e128e5f2feae9d67"
+  },
+  "intent": "submit",
+  "producer_namespace": "wfd.test.curated",
+  "expected_parent_snapshot_id": null,
+  "outputs": [
+    {
+      "output_key": "la_port_teus_monthly_2025",
+      "logical_domain": "observations",
+      "subject": {
+        "kind": "physical_object",
+        "namespace": "us.port.official",
+        "id": "port_of_los_angeles"
+      },
+      "definition_mode": "create",
+      "definition_ref": null,
+      "new_definition_declaration": {
+        "semantic_code": "port.container.throughput",
+        "measurement_nature": "flow",
+        "unit_code": "teu",
+        "definition_authority": "portoflosangeles.official",
+        "time_role": "statistical_period"
+      },
+      "input_mode": "partial_observation",
+      "coverage": {
+        "scope": {
+          "year": 2025,
+          "months": 12,
+          "metric": "monthly_total_container_throughput",
+          "sample_only": true
+        },
+        "basis": "observed_partial",
+        "completeness": "partial",
+        "coverage_evidence": [],
+        "absence_means": "unknown"
+      },
+      "payload": {
+        "kind": "scalar_rows",
+        "rows": [
+          {
+            "business_key": "la_port_month_01_2025",
+            "value_decimal": "924245.00",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-01-01T08:00:00Z",
+              "latest_exclusive_utc": "2025-02-01T08:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_month_02_2025",
+            "value_decimal": "801398.00",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-02-01T08:00:00Z",
+              "latest_exclusive_utc": "2025-03-01T08:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_month_03_2025",
+            "value_decimal": "778403.70",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-03-01T08:00:00Z",
+              "latest_exclusive_utc": "2025-04-01T07:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_month_04_2025",
+            "value_decimal": "842806.65",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-04-01T07:00:00Z",
+              "latest_exclusive_utc": "2025-05-01T07:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_month_05_2025",
+            "value_decimal": "716618.60",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-05-01T07:00:00Z",
+              "latest_exclusive_utc": "2025-06-01T07:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_month_06_2025",
+            "value_decimal": "892339.75",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-06-01T07:00:00Z",
+              "latest_exclusive_utc": "2025-07-01T07:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_month_07_2025",
+            "value_decimal": "1019837.30",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-07-01T07:00:00Z",
+              "latest_exclusive_utc": "2025-08-01T07:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_month_08_2025",
+            "value_decimal": "958355.15",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-08-01T07:00:00Z",
+              "latest_exclusive_utc": "2025-09-01T07:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_month_09_2025",
+            "value_decimal": "883053.25",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-09-01T07:00:00Z",
+              "latest_exclusive_utc": "2025-10-01T07:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_month_10_2025",
+            "value_decimal": "848424.25",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-10-01T07:00:00Z",
+              "latest_exclusive_utc": "2025-11-01T07:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_month_11_2025",
+            "value_decimal": "782249.00",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-11-01T07:00:00Z",
+              "latest_exclusive_utc": "2025-12-01T08:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_month_12_2025",
+            "value_decimal": "791587.75",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "month",
+              "earliest_utc": "2025-12-01T08:00:00Z",
+              "latest_exclusive_utc": "2026-01-01T08:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          }
+        ]
+      },
+      "evidence_refs": []
+    }
+  ],
+  "source_bundle": {
+    "source_url": "https://portoflosangeles.org/business/statistics/container-statistics/historical-teu-statistics-2025",
+    "acquisition": "manual transcription from official web-view, not raw original source file",
+    "raw_source_bytes_custodied": false,
+    "business_publication_time": "monthly statistics, exact per-observation release timestamps not established"
+  }
+}

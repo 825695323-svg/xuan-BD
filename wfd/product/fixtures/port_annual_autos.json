@@ -1,0 +1,96 @@
+{
+  "protocol_version": "wfd.ingest/1.3-candidate",
+  "request_identity": {
+    "dataset_id": "test_wfd_v13_round2",
+    "trusted_actor_namespace": "wfd.test.curated",
+    "request_id": "r2_port_auto_annual",
+    "submission_digest": "sha256:090cfbdf99519d4541edec843803dd2567d56b8b1b1f69a960dedc45523fb0ef"
+  },
+  "intent": "submit",
+  "producer_namespace": "wfd.test.curated",
+  "expected_parent_snapshot_id": null,
+  "outputs": [
+    {
+      "output_key": "la_port_auto_handled_2023_2025",
+      "logical_domain": "observations",
+      "subject": {
+        "kind": "physical_object",
+        "namespace": "us.port.official",
+        "id": "port_of_los_angeles"
+      },
+      "definition_mode": "create",
+      "definition_ref": null,
+      "new_definition_declaration": {
+        "semantic_code": "port.automobiles.handled",
+        "measurement_nature": "flow",
+        "unit_code": "vehicle",
+        "definition_authority": "portoflosangeles.official",
+        "time_role": "statistical_period"
+      },
+      "input_mode": "partial_observation",
+      "coverage": {
+        "scope": {
+          "years": [
+            2023,
+            2024,
+            2025
+          ],
+          "metric": "annual_automobiles_handled",
+          "sample_only": true
+        },
+        "basis": "observed_partial",
+        "completeness": "partial",
+        "coverage_evidence": [],
+        "absence_means": "unknown"
+      },
+      "payload": {
+        "kind": "scalar_rows",
+        "rows": [
+          {
+            "business_key": "la_port_autos_handled_2023",
+            "value_decimal": "157066",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "year",
+              "earliest_utc": "2023-01-01T08:00:00Z",
+              "latest_exclusive_utc": "2024-01-01T08:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_autos_handled_2024",
+            "value_decimal": "142504",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "year",
+              "earliest_utc": "2024-01-01T08:00:00Z",
+              "latest_exclusive_utc": "2025-01-01T08:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          },
+          {
+            "business_key": "la_port_autos_handled_2025",
+            "value_decimal": "91862",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "year",
+              "earliest_utc": "2025-01-01T08:00:00Z",
+              "latest_exclusive_utc": "2026-01-01T08:00:00Z",
+              "source_timezone": "America/Los_Angeles"
+            }
+          }
+        ]
+      },
+      "evidence_refs": []
+    }
+  ],
+  "source_bundle": {
+    "source_url": "https://portoflosangeles.org/business/statistics/facts-and-figures",
+    "acquisition": "manual transcription from official web-view, not raw original source file",
+    "raw_source_bytes_custodied": false,
+    "business_publication_time": "annual report as displayed in current facts-and-figures, no historical vintage proof"
+  }
+}

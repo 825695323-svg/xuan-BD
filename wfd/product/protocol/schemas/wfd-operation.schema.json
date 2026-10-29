@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wfd.example/spec/v1.3/wfd-operation.schema.json",
+  "title": "WFD 不可变权威操作事实 / 联合修订草案",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "format_version": {
+      "const": "wfd.operation/1.3-candidate"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+    },
+    "dataset_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+    },
+    "request_identity": {
+      "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/RequestIdentity"
+    },
+    "output_key": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fact_kind": {
+      "enum": [
+        "registration_decision",
+        "registry_object_sealed",
+        "visible_in_snapshot",
+        "custody_receipt",
+        "publish_plan_sealed",
+        "publish_receipt",
+        "abandoned"
+      ]
+    },
+    "occurred_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?Z$"
+    },
+    "previous_event_ref": {
+      "oneOf": [
+        {
+          "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/ImmutableRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "format_version",
+    "event_id",
+    "dataset_id",
+    "request_identity",
+    "output_key",
+    "fact_kind",
+    "occurred_at",
+    "previous_event_ref",
+    "payload"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "fact_kind": {
+            "const": "publish_plan_sealed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "publish_plan_id": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+              },
+              "expected_parent_snapshot_id": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "qualified_output_keys": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+                }
+              },
+              "rejected_output_keys": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+                }
+              }
+            },
+            "required": [
+              "publish_plan_id",
+              "expected_parent_snapshot_id",
+              "qualified_output_keys",
+              "rejected_output_keys"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$comment": "V1.3 compatible schema; semantics pending SDK and real data verification."
+}

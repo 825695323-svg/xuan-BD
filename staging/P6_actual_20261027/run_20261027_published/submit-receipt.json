@@ -1,0 +1,244 @@
+{
+  "protocol_version": "wfd.product-machine/0.1",
+  "request_id": "bd-77d7c780-a1b6-4e31-8403-0c6ae429e2b9",
+  "operation": "submit",
+  "ok": true,
+  "result": {
+    "status": "published_formal",
+    "snapshot_id": "s_a4cefd441d1576af377d338f",
+    "publication_summary": {
+      "published_formal": 1,
+      "published_sandbox": 0,
+      "committed_pending_activation": 0,
+      "not_published": 0
+    },
+    "output_results": [
+      {
+        "output_key": "cn.equity.daily_bar.unadjusted",
+        "registration_state": "registered",
+        "publication_state": "published_formal",
+        "product_id": "p_69187760dfa849b97b062efd",
+        "definition_ref": {
+          "kind": "definition_version",
+          "dataset_id": "bd_p6_actual_20261027",
+          "namespace": "wfd.product",
+          "id": "def_a90223db0a1ce489b77af4b8",
+          "version": "v_a90223db0a1ce489",
+          "digest": "sha256:a90223db0a1ce489b77af4b834de564e580409a4b14d351ab9e94c759e945666",
+          "resolution": "pinned",
+          "required": true,
+          "dependency_type": "read"
+        },
+        "contract_ref": {
+          "kind": "contract",
+          "dataset_id": "bd_p6_actual_20261027",
+          "namespace": "wfd.product",
+          "id": "contract_ef4046e1b5272ebf2b427a16",
+          "version": "v_ef4046e1b5272ebf",
+          "digest": "sha256:ef4046e1b5272ebf2b427a1681e3a70864a9e1a47fbb114754f51958bf4ab83b",
+          "resolution": "pinned",
+          "required": true,
+          "dependency_type": "read"
+        },
+        "engine_publication_state": "published_verified",
+        "snapshot_id": "s_a4cefd441d1576af377d338f"
+      }
+    ],
+    "engine_receipt": {
+      "status": "published_sandbox",
+      "snapshot_id": "s_a4cefd441d1576af377d338f",
+      "parent_snapshot_id": null,
+      "request_key": "8a4170a754b8ebf2a06a1a585a0f91c325b5de7ce25d2008c006a498467c5b08",
+      "request_fingerprint": "9c36dd26465582e6cd345f57d6fcda6a98873a15d787bbec411a9cda25ef4507",
+      "outputs_success": [
+        "cn.equity.daily_bar.unadjusted"
+      ],
+      "outputs_rejected": [],
+      "storage_format": "parquet_duckdb_zstd_typed_columns_poc",
+      "duckdb_roundtrip_verified": true,
+      "independent_other_engine_verified": false,
+      "production_publishable": false
+    },
+    "commit_receipt": {
+      "status": "published_sandbox",
+      "snapshot_id": "s_a4cefd441d1576af377d338f",
+      "parent_snapshot_id": null,
+      "request_key": "8a4170a754b8ebf2a06a1a585a0f91c325b5de7ce25d2008c006a498467c5b08",
+      "request_fingerprint": "9c36dd26465582e6cd345f57d6fcda6a98873a15d787bbec411a9cda25ef4507",
+      "outputs_success": [
+        "cn.equity.daily_bar.unadjusted"
+      ],
+      "outputs_rejected": [],
+      "storage_format": "parquet_duckdb_zstd_typed_columns_poc",
+      "duckdb_roundtrip_verified": true,
+      "independent_other_engine_verified": false,
+      "production_publishable": false
+    },
+    "request_key": "8a4170a754b8ebf2a06a1a585a0f91c325b5de7ce25d2008c006a498467c5b08",
+    "request_state": "published_formal",
+    "formal_publication_receipt": "catalog/product_service/formal_publications/8a4170a754b8ebf2a06a1a585a0f91c325b5de7ce25d2008c006a498467c5b08.json",
+    "formal_publication_checks": {
+      "format_version": "wfd.formal-publication/0.3",
+      "service_version": "wfd.product-service/0.3",
+      "request_key": "8a4170a754b8ebf2a06a1a585a0f91c325b5de7ce25d2008c006a498467c5b08",
+      "request_identity": {
+        "dataset_id": "bd_p6_actual_20261027",
+        "trusted_actor_namespace": "bd.p6.local",
+        "request_id": "p6-market-1793049820691",
+        "submission_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "input_fingerprint": "b0a3405622b9d60ead85ca4452373d26de5b32417dd4079ee5d90c659fe1d9cd",
+      "snapshot_id": "s_a4cefd441d1576af377d338f",
+      "snapshot_file_sha256": "96a6c5ac45d676edec754e070ee80b14228031eb233a60242bd5f78426b76092",
+      "commit_marker_sha256": "d324e27656aabe485ce6da36198336faeec8174e51846622d12a26508af07ed4",
+      "raw_engine_status": "published_sandbox",
+      "source_ids": [
+        "eastmoney_bars_2026q2"
+      ],
+      "source_formal_grants": {
+        "eastmoney_bars_2026q2": true
+      },
+      "checks": {
+        "caller_publish_role": true,
+        "source_formal_grant": true,
+        "engine_not_sandbox": true,
+        "snapshot_present": true,
+        "commit_marker_present": true,
+        "valid_commit": true,
+        "contracts_verified": true,
+        "dependencies_verified": true,
+        "evidence_custodied": true,
+        "fixed_readback_verified": true
+      },
+      "outputs": [
+        {
+          "output_key": "cn.equity.daily_bar.unadjusted",
+          "product_id": "p_69187760dfa849b97b062efd",
+          "contract_ref": {
+            "kind": "contract",
+            "dataset_id": "bd_p6_actual_20261027",
+            "namespace": "wfd.product",
+            "id": "contract_ef4046e1b5272ebf2b427a16",
+            "version": "v_ef4046e1b5272ebf",
+            "digest": "sha256:ef4046e1b5272ebf2b427a1681e3a70864a9e1a47fbb114754f51958bf4ab83b",
+            "resolution": "pinned",
+            "required": true,
+            "dependency_type": "read"
+          },
+          "derived_lineage_digest": null,
+          "published_revision_ids": [
+            "r_013706b5ae63e130a9b94908e22f5aa0",
+            "r_0237d12c9d148b0547cd32e3004f729d",
+            "r_07c2fcb4d862760cb96ee7ef5cecc94c",
+            "r_10829865da7e7476264fd5d1e033d0e3",
+            "r_13244c957aa0c6af74cc51d875b382a1",
+            "r_17a9283cc8cfc4ca44427bd6c59bde7d",
+            "r_1b857a78b50a6c955d3fbb32a7c12fda",
+            "r_241a3332d42e481600887366ff763614",
+            "r_24a3d10f3b7cb24a59ffbd90f8ded25b",
+            "r_2a40181ef797936cb98334f6d53f2106",
+            "r_2ca2415b85559fc0a639b25c4f00385e",
+            "r_2e0c75b958dde10d573e1362a3e256a9",
+            "r_3786ace44c06577b45c6ea8b927fe6cc",
+            "r_3fffebcc0fbfa54d85617763a917b352",
+            "r_42c35996ab5dd093fbaf7820bd2897a7",
+            "r_42ff7107f69f47c8d4cafd6bd00cede0",
+            "r_433b645d8fd850de22d2b380103c1f77",
+            "r_45661387ead5d66c60a8fc4d186d1702",
+            "r_498d7a528cf9871be218da5aaea93b73",
+            "r_4ad184fdab65c974706465368c6828ff",
+            "r_4ca52bf1820fc6dd4f99f71980bac251",
+            "r_52870c26b7dba880449d4d42dadddec3",
+            "r_5465279d858f0b62989343711dbba8e9",
+            "r_549534d79604707add146f53a53f522c",
+            "r_54b582179f3269876ca9907a6847f666",
+            "r_58504f60cf2c53345eb9595d2999a6e2",
+            "r_5d600641f20eedbffb8be4830e00d038",
+            "r_62d0216d88d87b91bd3ad7f79475f93b",
+            "r_6a0c4303e1cec8b270545988215e02c9",
+            "r_6bc0b9a1efe2c1b7cf855ea76335b2a3",
+            "r_729559c6d3cfe730c39dbdc3014715db",
+            "r_81f81beb683dae6d78c8acf8001daf6e",
+            "r_89728afe7a48acc1ee40722da8397380",
+            "r_8a8e786f9b8d03feb0736baecbb91002",
+            "r_8ffd212dff5953fc7a36d1f8721e3356",
+            "r_910a5efbbf96670a4066d3ce2fae87ee",
+            "r_9663ed89f0f6a74390bf43f76ba10393",
+            "r_96ebbfe3c63b3a8785cae3bc7f3af5ce",
+            "r_9a5f31357994a029ee04b271a486f4fa",
+            "r_9c211e1de69c662e849fec8aac006518",
+            "r_9d82d249ff996f13fe51b1a16b20ea97",
+            "r_9fe4bcf2ef6ecd94d349a6106b6c561f",
+            "r_a19eb36bc721ba8a10e77f46b74c3a40",
+            "r_a72c73bde7fca3220a8d58fafa1ef4a2",
+            "r_ab981de68595c89951e3401db9167665",
+            "r_ad0fa5b2f9475c99996a6feefc09c549",
+            "r_bd1787189fdb1f573a8d90574294339a",
+            "r_bda7fb823d637abdc49a244ea2f9c553",
+            "r_bf6fd1b5bd6953258a7aa8d0f29912ad",
+            "r_c05b2768777f7e9604009f3e76716b71",
+            "r_c376a6eef65204c538198e657932e20a",
+            "r_c84f1cd18596a409553ce58bfd2ce366",
+            "r_d67afc59823b156384145804cbbcc9f3",
+            "r_db1f6b794f7af7cf174d8ae79a14469d",
+            "r_eaa6dc656008e4314de5154cd82be2be",
+            "r_f10d91c0d5d2824c60f806950c9e6e54",
+            "r_f18384e51391a91275f225966c222bc6",
+            "r_f2fdef7f53bbe8742c2d2717721d8f01",
+            "r_f314a9dead44e0722d6868cee55c7af8",
+            "r_f85160935c3b3baa209a41c0c7723d8a"
+          ],
+          "published_content_sha256": "sha256:7fb08ee462f99bfe8b20ffbd88d3a918e65de23afd26b481328dfc355a2a6051",
+          "evidence": [
+            {
+              "content_sha256": "sha256:002da38b07778f99997a6b385eb45c10955a64c3f2f8a6ff2484371fc1240750",
+              "verified": true
+            }
+          ]
+        }
+      ],
+      "formal_publication_state": "published_formal"
+    },
+    "formal_publication_verified": true,
+    "idempotent_replay": false,
+    "service_version": "wfd.product-service/0.3",
+    "production_publishable": false,
+    "request_identity": {
+      "dataset_id": "bd_p6_actual_20261027",
+      "trusted_actor_namespace": "bd.p6.local",
+      "request_id": "p6-market-1793049820691",
+      "submission_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "document_sha256": "sha256:364ff3c8692820a2ce10ac2e3055b808d47f7a953de60584d1e7e93e5861d07e",
+    "service_identity": {
+      "format_version": "wfd.product-capabilities/0.2",
+      "service_version": "wfd.product-service/0.3",
+      "contract_version": "wfd.product-contracts/0.3",
+      "ingest_protocol": "wfd.ingest/1.3-candidate",
+      "schema_id": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json"
+    }
+  },
+  "error": null,
+  "identity": {
+    "caller_id": "bd-p6-producer-20261027",
+    "trusted_actor_namespace": "bd.p6.local",
+    "caller_roles": [
+      "evidence_write",
+      "publish",
+      "read",
+      "read_evidence",
+      "register",
+      "submit"
+    ],
+    "connection_id": "wfd-product-local-20261027",
+    "source_binding": "trusted constructor configuration; request cannot grant permissions"
+  },
+  "service": {
+    "format_version": "wfd.product-capabilities/0.2",
+    "service_version": "wfd.product-service/0.3",
+    "contract_version": "wfd.product-contracts/0.3",
+    "ingest_protocol": "wfd.ingest/1.3-candidate",
+    "schema_id": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json"
+  },
+  "elapsed_ms": 147
+}

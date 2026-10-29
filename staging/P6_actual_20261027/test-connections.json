@@ -1,0 +1,20 @@
+{
+  "connections": [
+    {
+      "id": "wfd-product-local-20261027",
+      "kind": "wfd-product-machine",
+      "mode": "user_test",
+      "purpose": "user_test",
+      "protocol": "wfd.product-machine/0.1",
+      "config_path": "/Users/mashiro/xuan BD/xuan BD/staging/P6_actual_20261027/product_machine_final.json",
+      "store": "/Users/mashiro/xuan BD/xuan BD/staging/P6_actual_20261027/store_final",
+      "runtime": "/Users/mashiro/xuan BD/xuan BD/staging/P6_actual_20261027/runtime_final",
+      "python_path": "/Users/mashiro/WFD\u89c4\u5212\u4e0e\u6d4b\u8bd5/runtime/venv/bin/python",
+      "entry_path": "/Users/mashiro/WFD\u89c4\u5212\u4e0e\u6d4b\u8bd5/\u4e16\u754c\u91d1\u878d\u6570\u636e\u5e93\uff08World Financial Database\uff09/02_\u6570\u636e\u5e93\u5f15\u64ce\u4e0e\u5b9e\u65bd\u4ee3\u7801/\u4ea7\u54c1\u5f00\u53d1/wfd_sdk/product_machine.py",
+      "harness_binding": {
+        "root": "/Users/mashiro/xuan BD/xuan BD/staging/P6_actual_20261027/wiring_runtime",
+        "root_id": "test-p6-runtime"
+      }
+    }
+  ]
+}

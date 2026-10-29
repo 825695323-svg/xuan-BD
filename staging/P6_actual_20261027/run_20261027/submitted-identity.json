@@ -1,0 +1,14 @@
+{
+  "datasetId": "bd_p6_actual_20261027",
+  "namespace": "bd.p6.local",
+  "requestId": "p6-market-1793049759353",
+  "productId": "p_69187760dfa849b97b062efd",
+  "snapshotId": "s_a7b77766ed996b54b089673e",
+  "request_identity": {
+    "dataset_id": "bd_p6_actual_20261027",
+    "trusted_actor_namespace": "bd.p6.local",
+    "request_id": "p6-market-1793049759353",
+    "submission_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "status": "published_formal"
+}

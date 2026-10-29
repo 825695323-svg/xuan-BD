@@ -1,0 +1,39 @@
+{
+  "snapshot_id": "s_a07e9271b41004b6d4469875",
+  "product_count": 1,
+  "source_count": 1,
+  "products": [
+    {
+      "product_id": "p_72eeb399a487bbad80981641",
+      "dataset_id": "p1_contract_validation",
+      "subject": {
+        "id": "port_of_los_angeles",
+        "kind": "physical_object",
+        "namespace": "us.port.official"
+      },
+      "payload_kind": "scalar_rows",
+      "contract_ref": {
+        "dataset_id": "p1_contract_validation",
+        "dependency_type": "read",
+        "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454",
+        "id": "contract_9c7700513553845e18bdba61",
+        "kind": "contract",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_9c7700513553845e"
+      },
+      "definition_ref": {
+        "dataset_id": "p1_contract_validation",
+        "dependency_type": "read",
+        "digest": "sha256:0d9f41dd79354796e388b4578660eb4cc1aebd76fa077b11ce552a45a3553a79",
+        "id": "def_0d9f41dd79354796e388b457",
+        "kind": "definition_version",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_0d9f41dd79354796"
+      }
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "unsupported": {
+    "code": "OPERATION_UNSUPPORTED",
+    "message": "operation submit is not in this bounded process boundary 下一步：该操作不在本批公开进程边界内；请使用 capabilities 列出的操作。",
+    "action": "该操作不在本批公开进程边界内；请使用 capabilities 列出的操作。",
+    "requestId": "bd-2acf0c92-1322-4607-ad1a-fcdcd1a2c344",
+    "operation": "submit",
+    "identity": {
+      "caller_id": "bd-p6-reader",
+      "trusted_actor_namespace": "wfd.financial_products",
+      "caller_roles": [
+        "read",
+        "read_evidence"
+      ],
+      "connection_id": "wfd-product-local-20261027",
+      "source_binding": "trusted constructor configuration; request cannot grant permissions"
+    },
+    "service": {
+      "format_version": "wfd.product-capabilities/0.2",
+      "service_version": "wfd.product-service/0.3",
+      "contract_version": "wfd.product-contracts/0.3",
+      "ingest_protocol": "wfd.ingest/1.3-candidate",
+      "schema_id": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json"
+    },
+    "hasJobId": false
+  },
+  "permissionBoundary": {
+    "code": "REQUEST_INVALID",
+    "message": "REQUEST_INVALID:unexpected arguments caller_roles 下一步：请按 wfd.product-machine/0.1 发送一个 JSON 对象；权限和身份不能放在请求里。",
+    "action": "请按 wfd.product-machine/0.1 发送一个 JSON 对象；权限和身份不能放在请求里。",
+    "requestId": "bd-0b3380f5-90e7-4d9c-b4e8-e6a4d9f97988",
+    "operation": "fixed_read",
+    "identity": {
+      "caller_id": "bd-p6-reader",
+      "trusted_actor_namespace": "wfd.financial_products",
+      "caller_roles": [
+        "read",
+        "read_evidence"
+      ],
+      "connection_id": "wfd-product-local-20261027",
+      "source_binding": "trusted constructor configuration; request cannot grant permissions"
+    }
+  }
+}

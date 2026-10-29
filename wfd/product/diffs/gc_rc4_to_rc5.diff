@@ -1,0 +1,41 @@
+--- /Users/mashiro/WFD规划与测试/engine_impl_rc4/wfd_sdk/gc.py	2026-10-26 21:01:51
++++ /Users/mashiro/WFD规划与测试/engine_impl_rc5/wfd_sdk/gc.py	2026-10-26 21:49:20
+@@ -62,6 +62,11 @@
+     """闭包不完整或保留状态不可读 → 拒绝危险删除（GC09）"""
+ 
+ 
++def _clean_json(paths):
++    """过滤 macOS 在 exFAT/NTFS 上生成的伴生文件（._*、.DS_Store 等）。"""
++    return [p for p in paths if not (p.name.startswith("._") or p.name in (".DS_Store", ".trashes"))]
++
++
+ class GC:
+     def __init__(self, store: Path, *, cooldown_seconds: int = 0, keep_metadata: bool = True):
+         # keep_metadata=True 表示：只退出保留集合、删数据文件，但保留 snapshot/commit/manifest 记录，
+@@ -75,7 +80,7 @@
+     # ------------------------------------------------------------------ 读取权威状态
+     def snapshots(self) -> dict:
+         out = {}
+-        for p in (self.state / "snapshots").glob("*.json"):
++        for p in _clean_json((self.state / "snapshots").glob("*.json")):
+             try:
+                 d = load_json(p)
+             except ValueError as exc:
+@@ -85,7 +90,7 @@
+ 
+     def commits(self) -> dict:
+         out = {}
+-        for p in (self.state / "commits").glob("*.json"):
++        for p in _clean_json((self.state / "commits").glob("*.json")):
+             try:
+                 d = load_json(p)
+             except ValueError as exc:
+@@ -152,7 +157,7 @@
+ 
+     def _load_dir(self, name: str) -> dict:
+         d = {}
+-        for p in (self.state / name).glob("*.json"):
++        for p in _clean_json((self.state / name).glob("*.json")):
+             try:
+                 d[p.stem] = load_json(p)
+             except ValueError as exc:

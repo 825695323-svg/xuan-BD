@@ -1,0 +1,22 @@
+{
+  "runtime_root": "/Users/mashiro/xuan BD/运行数据",
+  "runtime_identity": "701e578c-4b16-412b-af20-a1685b5d9738",
+  "bindings_revision": 17,
+  "runtime_identity_matches": true,
+  "config_resource": {
+    "kind": "directory",
+    "path": "personal/config",
+    "owned": true,
+    "identity": "9f9aff60-479c-4223-a48e-6b2cd6c46ba9",
+    "device": "16777229",
+    "inode": "27752962"
+  },
+  "connections_registry": {
+    "kind": "file",
+    "path": "/Users/mashiro/.config/credentials/connections.json"
+  },
+  "connection_registered": false,
+  "registered_profile": null,
+  "read_at": "2026-10-27T05:30:00Z",
+  "note": "只读实际 ResourceBindings/connections_registry；未写 runtime JSON/SQLite。"
+}

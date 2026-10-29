@@ -1,0 +1,84 @@
+--- /Users/mashiro/WFD/formal_engine_rc1/wfd_sdk/transfer.py	2026-10-26 19:59:09
++++ /Users/mashiro/WFD/engine_impl_rc3/wfd_sdk/transfer.py	2026-10-26 20:23:32
+@@ -334,9 +334,34 @@
+               and handover.get("base_snapshot_id") == base_expected)
+         return (True, "HANDOVER_VERIFIED") if ok else (False, "WRITER_NOT_AUTHORIZED")
+ 
+-    if imported and incoming_sid == imported:
+-        # 关键：激活"从别处导入的版本"一律需要凭证，即使本机当前主端同名。
+-        # 否则导入方沿用旧主端身份时，会被当成"自己续写"而跳过交接（2026-10-26 实测缺陷）。
++    # 合法初始化判定：只有"确认处于合法初始化状态、导入闭包完整、无待恢复正式历史"才免凭证。
++    # active_head is None 本身不等于新库——旧库丢 HEAD 也满足它，那种情况必须凭证。
++    fresh = False
++    if active is None:
++        try:
++            from wfd_sdk.gc import GC as _GC
++            valid = set(_GC(store).valid_snapshots())
++            from wfd_sdk.lineage import Lineage as _L
++            chain = {c["snapshot_id"] for c in _L(store).ancestors(incoming_sid)["chain"]}
++            has_recovery = any((store / "catalog/recovery").glob("*.json"))
++            fresh = (int(st_now.get("update_seq") or 0) == 0
++                     and not has_recovery
++                     and valid.issubset(chain | {incoming_sid}))
++        except Exception:  # noqa: BLE001 —— 判定失败一律按"非新库"处理（fail-closed）
++            fresh = False
++
++    if fresh:
++        authorized, reason = (writer_epoch >= cur_epoch, "FIRST_WRITER_INITIALIZED")
++    elif active is None:
++        # 指针为空但库中存在非本链历史，或存在恢复记录：不能借"首次写入"绕过凭证
++        authorized, reason = False, "HEAD_REQUIRES_RECOVERY"
++    elif imported and incoming_sid == imported and (imp_from.get("host") == writer_host) and active is not None:
++        # 同主端快进：导入来源主端就是本端主端，且本端已激活过该主端版本 → 属于正常推进，不需要接管凭证。
++        # 注意判据是"来源主端 == 本端主端"，他端导入（win-01 收 mac-a 的包）不会命中这里。
++        authorized, reason = (writer_epoch >= cur_epoch and ff.get("mode") in ("fast_forward", "local_ahead_noop", "already_at_target"),
++                              "SAME_WRITER_FAST_FORWARD")
++    elif imported and incoming_sid == imported:
++        # 他端导入：必须凭证（这才是 V2 缺陷要守住的路径）
+         if imp_from.get("host"):
+             authorized, reason = _check_handover(imported, imp_from["host"], int(imp_from.get("epoch") or 0))
+         else:
+@@ -367,35 +392,12 @@
+         (commit).write_text(json.dumps({"snapshot_id": incoming_sid, "snapshot_file": f"catalog/snapshots/{incoming_sid}.json",
+                                         "snapshot_sha256": sha_file(snap)}, ensure_ascii=False, sort_keys=True,
+                                        separators=(",", ":")).encode(), encoding="utf-8")
+-    st = write_host_state(store, writer_host=writer_host, writer_epoch=writer_epoch,
+-                          active_head=incoming_sid, note=f"activated:{ff['mode']}",
+-                          prev_head=st_now.get("active_head"),
+-                          update_seq=int(st_now.get("update_seq") or 0) + 1)
+-    return {"status": "activated", "mode": ff["mode"], "active_head": incoming_sid, "state": st, "chain": ff["chain"]}
+-
+-
+-def publish_guard(store: Path, *, host: str, epoch: int) -> dict:
++    # 统一进入权威状态机：与引擎发布、显式恢复共用 StateStore.activate（原子写 + 激活历史）
++    from wfd_sdk.state import StateStore
++    res = StateStore(store).activate(incoming_sid, snap,
++                                     expected_prev=st_now.get("active_head"),
++                                     writer_host=writer_host, writer_epoch=writer_epoch)
++    if not res.get("ok"):
++        return {"status": "rejected", "code": res.get("code"), "detail": res}
+     st = host_state(store)
+-    ok = st.get("writer_host") == host and int(st.get("writer_epoch") or 0) == epoch
+-    return {"ok": ok, "code": "OK" if ok else "WRITER_NOT_AUTHORIZED",
+-            "current": {"host": st.get("writer_host"), "epoch": st.get("writer_epoch")}}
+-
+-
+-# ---------------------------------------------------------------- 冷热层
+-def read_guarded(store: Path, snapshot_id: str, rows_loader) -> dict:
+-    """读前检查对象所在存储层是否可用；冷层未挂载必须显式报错。"""
+-    store = Path(store)
+-    mm_path = store / "catalog/mount_map.json"
+-    tiers = {}
+-    if mm_path.is_file():
+-        tiers = json.loads(mm_path.read_text("utf-8")).get("objects", {})
+-    snap = json.loads((store / f"catalog/snapshots/{snapshot_id}.json").read_text("utf-8"))
+-    unavailable = []
+-    for f in snap["files"]:
+-        h = f["file_sha256"].split(":")[-1]
+-        info = tiers.get(h)
+-        if info and info.get("tier") == "EXTERNAL_COLD" and not info.get("mounted"):
+-            unavailable.append(f["file_relpath"])
+-    if unavailable:
+-        raise StorageTierUnavailable(f"STORAGE_TIER_UNAVAILABLE {unavailable[:3]}")
+-    return rows_loader(store, snapshot_id)
++    return {"status": "activated", "mode": ff["mode"], "active_head": incoming_sid, "state": st, "chain": ff["chain"]}

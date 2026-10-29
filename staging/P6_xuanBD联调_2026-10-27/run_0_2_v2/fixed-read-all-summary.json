@@ -1,0 +1,95 @@
+{
+  "snapshot_id": "s_9f3edb73a442f1940a54a1d8",
+  "row_count": 176,
+  "product_count": 12,
+  "row_projection": "full",
+  "rows_sha256": "6ef01024bcf17d77480b5ad4d999e737de5529161d797a681620a903722046f9",
+  "per_product": [
+    {
+      "product_id": "p_1012da93c0a1279006ff747e",
+      "rows": 91,
+      "definition_contract_identities": [
+        "v_3d38c21ab9435eca|sha256:3d38c21ab9435eca49ee7bb3f06db8a1b78af1755e687cd210e53ef4ecb16032|sha256:8b5d1f14c3a7b2c39496bbef61b5a49f47d97b0391f39a11780a97bcb85c91ed"
+      ]
+    },
+    {
+      "product_id": "p_d91987a11e99f581da8e71c7",
+      "rows": 60,
+      "definition_contract_identities": [
+        "v_a90223db0a1ce489|sha256:a90223db0a1ce489b77af4b834de564e580409a4b14d351ab9e94c759e945666|sha256:657f3fc4a2eced233845561c0e2cce90aa61b9c37310f4366626f7dfb8482753"
+      ]
+    },
+    {
+      "product_id": "p_4d71c88028d880a23a3ac084",
+      "rows": 16,
+      "definition_contract_identities": [
+        "v_4164e90310a16730|sha256:4164e90310a16730e861e7418cdf854caf7a98a18473c9f2204b095f3164e36f|sha256:b17ef0389393991bafa8ef489e9eee6e34fcb5787c3e54a843780fdf39c7fdf0"
+      ]
+    },
+    {
+      "product_id": "p_1ceb333fa472754a7afd7c39",
+      "rows": 1,
+      "definition_contract_identities": [
+        "v_9bb3a57c91369cab|sha256:9bb3a57c91369cab42355e8422da0c445279825cae3b74599a3153f7aa1694ca|sha256:8624583972fcb0377799aec07b5f82b2c4eaaf4eabd301144b6a6962cb6e157b"
+      ]
+    },
+    {
+      "product_id": "p_26be7d18c2302505ea79da68",
+      "rows": 1,
+      "definition_contract_identities": [
+        "v_c870f27312811870|sha256:c870f273128118707dcf11706e5b75779ac5e3a8edafada85f10bada0df1eac7|sha256:03ee9026ec3b819371d35fac19b19208083535b853af107688118284930ce2f5"
+      ]
+    },
+    {
+      "product_id": "p_4dd691214f2ac2afd5998508",
+      "rows": 1,
+      "definition_contract_identities": [
+        "v_67f1fdc28b2f3366|sha256:67f1fdc28b2f3366bf1de4e183055cbbe101c8ed18015e279bc3b73c5a2081d7|sha256:d81366584e26b86c05dc7993b2ccf3b0d72f9357dadac9f829169f0c3489bc1a"
+      ]
+    },
+    {
+      "product_id": "p_83d329d1df6707e11c101566",
+      "rows": 1,
+      "definition_contract_identities": [
+        "v_c38651358497134f|sha256:c38651358497134fb16cc9c1436aad79f9ab15089d2ae6dee1bb429b23dfd806|sha256:5c8ef9d49da00ac47e9a52ac735070f4de1af56927dddd84c90e5ae9a262d928"
+      ]
+    },
+    {
+      "product_id": "p_87f1ab6c3f831bad8b27720d",
+      "rows": 1,
+      "definition_contract_identities": [
+        "v_1e051a43e88d1181|sha256:1e051a43e88d118146291693c3e19f4920e9597a4976de929f1e4fb0a7206512|sha256:90986bb2930152cbcf5bfe74af87685b96caee0cca6648bca1b0673436641576"
+      ]
+    },
+    {
+      "product_id": "p_b2f29e56c25cade5a16eda85",
+      "rows": 1,
+      "definition_contract_identities": [
+        "v_5f137b4f82dd732a|sha256:5f137b4f82dd732ab44b3478804f073cf56adbb3f63104184ffc149909c4da91|sha256:ea8eef49581b144c8fdad0972561cee1519ef3e9ecc14aa104b80611d899b0bf"
+      ]
+    },
+    {
+      "product_id": "p_b3139543720b08b051b36da0",
+      "rows": 1,
+      "definition_contract_identities": [
+        "v_a1e64711d5777d16|sha256:a1e64711d5777d160347452758c69c40d80d1662c12d994a52bcb31ac708e02b|sha256:c6b56789325460d76cdc3e7c3dfb1ea7ca2c7d3c939997c80044a48dc583dd0b"
+      ]
+    },
+    {
+      "product_id": "p_d3cb058244a684295dca5a7a",
+      "rows": 1,
+      "definition_contract_identities": [
+        "v_437647fe27e87109|sha256:437647fe27e87109bab87df92bc36a75ba6a18cf00909d715d83ab9186ef1b37|sha256:45a39e79e0701ef1123be5f5513f2f6c013c76024bb5e01c5fb4ba30fc53c91e"
+      ]
+    },
+    {
+      "product_id": "p_da3b0f2d3c9d8d1afe38e5f2",
+      "rows": 1,
+      "definition_contract_identities": [
+        "v_efd29c700c46de1b|sha256:efd29c700c46de1bb56af1398a1b2af42d1a401905c1319a459c61a0128bc6d1|sha256:1fe9cdf4cbb80a326415e9ea77228c76beddac48284993d2c47eb3f86cd562c7"
+      ]
+    }
+  ],
+  "mixed_identity_products": [],
+  "response_sha256": "d8cc3f3641933fad0cf99328b15233d8ae9c585f6bba84646bbee54a7383d080"
+}

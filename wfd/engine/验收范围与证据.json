@@ -1,0 +1,467 @@
+{
+  "format_version": "wfd.storage-acceptance-register/1.0",
+  "release_id": "WFD-STORAGE/1.0.0",
+  "release_status": "stable_scoped",
+  "release_status_zh": "已验证范围稳定",
+  "production_accepted": false,
+  "published_date": "2026-10-27",
+  "timezone": "Asia/Shanghai",
+  "path_base": "project_root",
+  "new_runtime_tests_executed": false,
+  "source": {
+    "base_version": "IMPL-rc5",
+    "original_archive_path": "99_历史版本与旧实验/2026-10-27_阶段收口前/02_数据库引擎与实施代码/世界金融数据库_引擎_IMPL-rc5_2026-10-26.zip",
+    "original_archive_sha256": "4bcad29abc144169be4e18ef5a2f8c3226ca3f57edff5a87577486a26ebefb87",
+    "source_tree_sha256": "f6e2e37335523e4385a6e3eee59b6b928b41a69dc53e44d6acf101d52bfcab12",
+    "engine_modules": {
+      "wfd_sdk/__init__.py": "1a0e864e3392997f4576a3183f767f9bb4dad037c012d56d98b5e6374b57ca09",
+      "wfd_sdk/duckdb_sdk.py": "a21ff157b25f8af2c8dff790a5c71b2b5487aa248dae4d708602e3db6e2d3340",
+      "wfd_sdk/duckdb_storage.py": "06fb0b8512cf1578e87936f2903f1dedaaabb02a0a547b1ee6437b00c4bb450a",
+      "wfd_sdk/gc.py": "52d929f9ab5cb99d82bae4a338d906c4bd4a98fa44abfa1d7ae34e0eeec1fe57",
+      "wfd_sdk/lineage.py": "7d86a72e9f5a02a4cf3e34c659efc34426c77a9a4c6379b7d0cba9a552a65a4e",
+      "wfd_sdk/parquet_lite.py": "a0c2dd98844b9426dea93cb24dc282889a21db6783f7001640543d77e30b3924",
+      "wfd_sdk/parquet_sdk.py": "f76bdb89982c087799d98dcfa7af65a7fa9edf07c345569e0a7df706b1923762",
+      "wfd_sdk/state.py": "738e98b8109f10f0807436cc428716656f2f3bdedaf26758b3b294c0ad5d821c",
+      "wfd_sdk/transfer.py": "345e1dd4e5962481e878ed0459eb333c562c7431a7bd768ebdf1fcb01f6c776e",
+      "wfd_sdk/writerlock.py": "ed2d565ccdcadf04763208d8481abf12efded75beae037841d522ac6dacd1ed8"
+    },
+    "unchanged_engine_module_count": 10
+  },
+  "stable_scope": [
+    {
+      "id": "SCOPE-01",
+      "name": "本机不可变发布、固定快照读取与权威版本状态",
+      "environment": "macOS 本机已记录测试目录与运行环境；不扩称 Windows rc5 已验收",
+      "evidence_ids": [
+        "RC5-FORMAL"
+      ],
+      "limits": "仅对应原套件断言；不包含金融产品业务验收、完整部署生产验收或任意规模承诺"
+    },
+    {
+      "id": "SCOPE-02",
+      "name": "本机单写入者排他、过期主端拒绝与离线分叉阻断",
+      "environment": "macOS 本机多进程 C1—C6 实测",
+      "evidence_ids": [
+        "RC5-CONCURRENCY"
+      ],
+      "limits": "不覆盖 Windows 锁行为、网络共享盘、多主自动合并或长时持续运行"
+    },
+    {
+      "id": "SCOPE-03",
+      "name": "本机数据回收保护、显式恢复与同机迁移接管",
+      "environment": "macOS 本机原报告中的独立目录与隔离库",
+      "evidence_ids": [
+        "RC5-FORMAL",
+        "RC5-EVIDENCE-RECOVERY"
+      ],
+      "limits": "迁移只晋升已测闭包/谱系及凭证五个核心值检查；完整授权元数据与新协议 Schema 运行校验未覆盖，不扩称跨平台通过"
+    },
+    {
+      "id": "SCOPE-04",
+      "name": "已记录的 exFAT 断电点位事后恢复一致性",
+      "environment": "rc5 实际加载模块；macOS + /Volumes/WFD exFAT 测试介质；2026-10-26 记录场景",
+      "evidence_ids": [
+        "RC5-S1",
+        "RC5-S2",
+        "RC5-S3",
+        "RC5-S4"
+      ],
+      "limits": "仅 S1 partial-write、S2 commit-written、S3 before-rename、S4 before-unlink 的报告断言；不承诺任意断电、拔盘绝对无损，不批准 exFAT 日常活跃写入"
+    }
+  ],
+  "not_accepted_or_not_covered": [
+    {
+      "id": "LIMIT-01",
+      "name": "完整生产验收未通过",
+      "status": "NOT_ACCEPTED",
+      "detail": "production_accepted=false；稳定发布只限本登记列明的已验证能力与环境。"
+    },
+    {
+      "id": "LIMIT-02",
+      "name": "rc5 Windows 实机未覆盖",
+      "status": "NOT_RUN",
+      "detail": "Windows 双向实机通过属于 rc3；rc5 改动迁移与写锁，未自动继承 rc3 的平台验收。"
+    },
+    {
+      "id": "LIMIT-03",
+      "name": "S5 物理拔盘证据未闭环",
+      "status": "VOID",
+      "detail": "两个运行的 run_completed.json 均 cut_detected=false，缺事后 verify_report.json；随后文件不存在异常使物理动作与检测结果仍有解释缺口，不断言操作者未拔盘。"
+    },
+    {
+      "id": "LIMIT-04",
+      "name": "真实代表性金融规模未覆盖",
+      "status": "NOT_ACCEPTED",
+      "detail": "只有 5 万/20 万行合成探针，非实际 A 股代表性数据规模。"
+    },
+    {
+      "id": "LIMIT-05",
+      "name": "长时连续运行未覆盖",
+      "status": "NOT_ACCEPTED",
+      "detail": "五轮提交重启失败数为 0，但未记录长时持续运行时长、资源变化和持续业务负载。"
+    },
+    {
+      "id": "LIMIT-06",
+      "name": "其它真实故障窗口未覆盖",
+      "status": "NOT_ACCEPTED",
+      "detail": "S3 替换后及 S4 删除后等未见对应报告，S1—S4 不能外推全部物理故障。"
+    },
+    {
+      "id": "LIMIT-07",
+      "name": "完整授权元数据与新 Schema（结构约束）运行校验",
+      "status": "NOT_IMPLEMENTED_OR_NOT_VERIFIED",
+      "detail": "rc5 transfer 仅检查交接凭证旧/新 host、旧/新 epoch、base_snapshot_id 五个核心值及已测谱系；不宣称完整授权元数据或新结构约束已进入运行路径。"
+    },
+    {
+      "id": "LIMIT-08",
+      "name": "状态格式兼容仍保留",
+      "status": "COMPATIBILITY_FACT",
+      "detail": "常规状态写入采用 wfd.state/1.0；transfer 导入路径仍可能写 wfd.host/1.0 旧格式。原码不变，不能宣称所有写入已经统一新格式。"
+    },
+    {
+      "id": "LIMIT-09",
+      "name": "业务产品及 241 项验收独立",
+      "status": "OUT_OF_SCOPE",
+      "detail": "本发布不晋升第三阶段产品服务、真实金融闭环或原始 241 项业务功能；逐项证据映射另行登记。"
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "RC5-FORMAL",
+      "archive_path": "03_测试与验证记录/世界金融数据库_正式引擎rc5验收_2026-10-26.zip",
+      "archive_sha256": "4eb0584170ac1ca5a4678902a3d6a99267706d982974c3d63a93e50867616431",
+      "archive_bytes": 311213,
+      "tested_source_version": "IMPL-rc5",
+      "report_entries": [
+        "formal/results.json",
+        "formal/provenance.json",
+        "formal/SUMMARY.md"
+      ],
+      "status": "PASS",
+      "coverage": "P0 7、GC 11、P0-4 12、H01 7、E 6；合计43条已执行断言通过；M12未运行",
+      "limitations": [
+        "同机实测，不构成rc5 Windows验收",
+        "原报告 production_accepted=false 保留"
+      ],
+      "counts": {
+        "PASS": 43,
+        "NOT_RUN": 1
+      },
+      "actual_module_sha256": {
+        "wfd_sdk": "1a0e864e3392997f4576a3183f767f9bb4dad037c012d56d98b5e6374b57ca09",
+        "wfd_sdk.transfer": "345e1dd4e5962481e878ed0459eb333c562c7431a7bd768ebdf1fcb01f6c776e",
+        "wfd_sdk.state": "738e98b8109f10f0807436cc428716656f2f3bdedaf26758b3b294c0ad5d821c",
+        "wfd_sdk.gc": "52d929f9ab5cb99d82bae4a338d906c4bd4a98fa44abfa1d7ae34e0eeec1fe57",
+        "wfd_sdk.lineage": "7d86a72e9f5a02a4cf3e34c659efc34426c77a9a4c6379b7d0cba9a552a65a4e",
+        "wfd_sdk.duckdb_sdk": "a21ff157b25f8af2c8dff790a5c71b2b5487aa248dae4d708602e3db6e2d3340"
+      },
+      "environment": {
+        "python": "3.12.15",
+        "platform": "darwin"
+      }
+    },
+    {
+      "evidence_id": "RC5-CONCURRENCY",
+      "archive_path": "03_测试与验证记录/世界金融数据库_正式引擎rc5验收_2026-10-26.zip",
+      "archive_sha256": "4eb0584170ac1ca5a4678902a3d6a99267706d982974c3d63a93e50867616431",
+      "archive_bytes": 311213,
+      "tested_source_version": "IMPL-rc5",
+      "report_entries": [
+        "concurrency/results.json"
+      ],
+      "status": "PASS",
+      "coverage": "C1—C6；多进程排他、分叉、过期主端与进程退出后释放锁",
+      "limitations": [
+        "macOS 本机；不外推跨平台锁和长稳"
+      ],
+      "counts": {
+        "PASS": 6,
+        "FAIL": 0
+      }
+    },
+    {
+      "evidence_id": "RC5-EVIDENCE-RECOVERY",
+      "archive_path": "03_测试与验证记录/世界金融数据库_正式引擎rc5验收_2026-10-26.zip",
+      "archive_sha256": "4eb0584170ac1ca5a4678902a3d6a99267706d982974c3d63a93e50867616431",
+      "archive_bytes": 311213,
+      "tested_source_version": "IMPL-rc5",
+      "report_entries": [
+        "gc-evidence/results.json"
+      ],
+      "status": "PASS",
+      "coverage": "GC11a/GC11/GC11b、D1—D4；证据保留与恢复注入",
+      "limitations": [
+        "软件恢复注入不替代未覆盖物理点位"
+      ],
+      "counts": {
+        "PASS": 7,
+        "FAIL": 0
+      }
+    },
+    {
+      "evidence_id": "RC3-WINDOWS",
+      "archive_path": "03_测试与验证记录/世界金融数据库_rc3_M12双向闭环_2026-10-26.zip",
+      "archive_sha256": "0e5e4c3d1e2b699d1ca6e884d9ea752290e504e78f710bf57fd3730c5d04f350",
+      "archive_bytes": 36598,
+      "tested_source_version": "IMPL-rc3",
+      "report_entries": [
+        "win/REPORT_rc3_win1.md",
+        "win/source_identity.json",
+        "win/env.txt",
+        "win/R4b_readback.json",
+        "win/M_results.json"
+      ],
+      "status": "PASS_HISTORICAL_VERSION",
+      "coverage": "rc3 Windows→Mac→Windows 双向交接及固定读取3产品/16行",
+      "limitations": [
+        "源码版本为rc3，不属于1.0.0(rc5原码)稳定平台范围",
+        "该轮exFAT中断为逻辑截断，不是物理拔盘"
+      ],
+      "source_archive_sha256": "a069df685b4b470520fcff22ce6c940d1d0e186e8b38d1943d103cbb6ff5e359"
+    },
+    {
+      "evidence_id": "RC5-S1",
+      "archive_path": "03_测试与验证记录/世界金融数据库_断电试验_S1_2026-10-26.zip",
+      "archive_sha256": "5831df69604f034208b328c30f23b883bfaa22ab1ed9615c33aff2fda017e10a",
+      "archive_bytes": 14819,
+      "tested_source_version": "IMPL-rc5",
+      "report_entries": [
+        "verify_report.json",
+        "cut_point.json",
+        "baseline.json"
+      ],
+      "status": "PASS",
+      "coverage": "S1 partial-write；power模式事后报告断言全部成立",
+      "limitations": [
+        "只覆盖该点位、记录介质及实现",
+        "不把现场恢复结果外推成任意断电无损承诺"
+      ],
+      "counts": {
+        "pass": 14,
+        "fail": 0,
+        "unknown": 0
+      },
+      "run_id": "S1_20261026_215215",
+      "point": "partial-write",
+      "cut_mode": "power",
+      "forced": false,
+      "actual_module_sha256": {
+        "wfd_sdk.duckdb_sdk": "a21ff157b25f8af2c8dff790a5c71b2b5487aa248dae4d708602e3db6e2d3340",
+        "wfd_sdk.state": "738e98b8109f10f0807436cc428716656f2f3bdedaf26758b3b294c0ad5d821c",
+        "wfd_sdk.gc": "52d929f9ab5cb99d82bae4a338d906c4bd4a98fa44abfa1d7ae34e0eeec1fe57",
+        "wfd_sdk.transfer": "345e1dd4e5962481e878ed0459eb333c562c7431a7bd768ebdf1fcb01f6c776e"
+      },
+      "source_attribution": "实际加载模块完整哈希匹配rc5；S1/S2/S4原injection_plan中的rc4包号为误登记，保留原件并以此更正。"
+    },
+    {
+      "evidence_id": "RC5-S2",
+      "archive_path": "03_测试与验证记录/世界金融数据库_断电试验_S2_2026-10-26.zip",
+      "archive_sha256": "ec41bde90f9450d22cb7ae30b4430ab6edd086daec6c78bfa84fd696c4c9fad6",
+      "archive_bytes": 15624,
+      "tested_source_version": "IMPL-rc5",
+      "report_entries": [
+        "verify_report.json",
+        "cut_point.json",
+        "baseline.json"
+      ],
+      "status": "PASS",
+      "coverage": "S2 commit-written；power模式事后报告断言全部成立",
+      "limitations": [
+        "只覆盖该点位、记录介质及实现",
+        "不把现场恢复结果外推成任意断电无损承诺"
+      ],
+      "counts": {
+        "pass": 14,
+        "fail": 0,
+        "unknown": 0
+      },
+      "run_id": "S2_20261026_215702",
+      "point": "commit-written",
+      "cut_mode": "power",
+      "forced": false,
+      "actual_module_sha256": {
+        "wfd_sdk.duckdb_sdk": "a21ff157b25f8af2c8dff790a5c71b2b5487aa248dae4d708602e3db6e2d3340",
+        "wfd_sdk.state": "738e98b8109f10f0807436cc428716656f2f3bdedaf26758b3b294c0ad5d821c",
+        "wfd_sdk.gc": "52d929f9ab5cb99d82bae4a338d906c4bd4a98fa44abfa1d7ae34e0eeec1fe57",
+        "wfd_sdk.transfer": "345e1dd4e5962481e878ed0459eb333c562c7431a7bd768ebdf1fcb01f6c776e"
+      },
+      "source_attribution": "实际加载模块完整哈希匹配rc5；S1/S2/S4原injection_plan中的rc4包号为误登记，保留原件并以此更正。"
+    },
+    {
+      "evidence_id": "RC5-S3",
+      "archive_path": "03_测试与验证记录/世界金融数据库_断电试验_S3_2026-10-26.zip",
+      "archive_sha256": "16d206e000f2bd0784e47c497810dbb24dbb1d9227c8e06aabf0f12ede2c287a",
+      "archive_bytes": 13804,
+      "tested_source_version": "IMPL-rc5",
+      "report_entries": [
+        "verify_report.json",
+        "cut_point.json",
+        "baseline.json"
+      ],
+      "status": "PASS",
+      "coverage": "S3 before-rename；power模式事后报告断言全部成立",
+      "limitations": [
+        "只覆盖该点位、记录介质及实现",
+        "不把现场恢复结果外推成任意断电无损承诺"
+      ],
+      "counts": {
+        "pass": 14,
+        "fail": 0,
+        "unknown": 0
+      },
+      "run_id": "S3_20261026_220440_recovered",
+      "point": "before-rename",
+      "cut_mode": "power",
+      "forced": false,
+      "actual_module_sha256": {
+        "wfd_sdk.duckdb_sdk": "a21ff157b25f8af2c8dff790a5c71b2b5487aa248dae4d708602e3db6e2d3340",
+        "wfd_sdk.state": "738e98b8109f10f0807436cc428716656f2f3bdedaf26758b3b294c0ad5d821c",
+        "wfd_sdk.gc": "52d929f9ab5cb99d82bae4a338d906c4bd4a98fa44abfa1d7ae34e0eeec1fe57",
+        "wfd_sdk.transfer": "345e1dd4e5962481e878ed0459eb333c562c7431a7bd768ebdf1fcb01f6c776e"
+      },
+      "source_attribution": "S3恢复整理目录与原run_id不同；断点及核验实际模块匹配rc5；已统一归档。"
+    },
+    {
+      "evidence_id": "RC5-S4",
+      "archive_path": "03_测试与验证记录/世界金融数据库_断电试验_S4_2026-10-26.zip",
+      "archive_sha256": "11beb68d96add82096ba6dd9abba2165fae1962b234f98ef20f5ee5816604315",
+      "archive_bytes": 16086,
+      "tested_source_version": "IMPL-rc5",
+      "report_entries": [
+        "verify_report.json",
+        "cut_point.json",
+        "baseline.json"
+      ],
+      "status": "PASS",
+      "coverage": "S4 before-unlink；power模式事后报告断言全部成立",
+      "limitations": [
+        "只覆盖该点位、记录介质及实现",
+        "不把现场恢复结果外推成任意断电无损承诺"
+      ],
+      "counts": {
+        "pass": 16,
+        "fail": 0,
+        "unknown": 0
+      },
+      "run_id": "S4_20261026_221053",
+      "point": "before-unlink",
+      "cut_mode": "power",
+      "forced": false,
+      "actual_module_sha256": {
+        "wfd_sdk.duckdb_sdk": "a21ff157b25f8af2c8dff790a5c71b2b5487aa248dae4d708602e3db6e2d3340",
+        "wfd_sdk.state": "738e98b8109f10f0807436cc428716656f2f3bdedaf26758b3b294c0ad5d821c",
+        "wfd_sdk.gc": "52d929f9ab5cb99d82bae4a338d906c4bd4a98fa44abfa1d7ae34e0eeec1fe57",
+        "wfd_sdk.transfer": "345e1dd4e5962481e878ed0459eb333c562c7431a7bd768ebdf1fcb01f6c776e"
+      },
+      "source_attribution": "实际加载模块完整哈希匹配rc5；S1/S2/S4原injection_plan中的rc4包号为误登记，保留原件并以此更正。"
+    },
+    {
+      "evidence_id": "RC5-S5-FIRST",
+      "archive_path": "03_测试与验证记录/世界金融数据库_断电试验_S5_2026-10-26.zip",
+      "archive_sha256": "4bc8cdabc42da10c429c94b364e149d360c2a2a15f8fd3e2f2f1bbb3bbc1ca4e",
+      "archive_bytes": 5599,
+      "tested_source_version": "IMPL-rc5",
+      "report_entries": [
+        "run_completed.json",
+        "powercut_log.jsonl",
+        "cut_point.json"
+      ],
+      "status": "VOID",
+      "coverage": "迁移中途拔盘意图与断点材料已保留，缺有效事后核验",
+      "limitations": [
+        "不能记PASS",
+        "不能由检测false断言未发生物理拔盘",
+        "实际模块为rc5，计划中的rc4包号不改变归属"
+      ],
+      "run_id": "S5_20261026_231701",
+      "completion_record": {
+        "format_version": "wfd.powercut.completed/1.0",
+        "run_id": "S5_20261026_231701",
+        "scenario": "S5",
+        "cut_mode": "unplug",
+        "cut_detected": false,
+        "completed_at_utc": "2026-10-26T15:17:16Z",
+        "note": "脚本在断点后继续执行完毕 → 本次未发生断电/拔盘，属 VOID"
+      }
+    },
+    {
+      "evidence_id": "RC5-S5-UNPLUG",
+      "archive_path": "03_测试与验证记录/世界金融数据库_断电试验_S5_拔盘轮_2026-10-26.zip",
+      "archive_sha256": "bf3863ffc297dba445aaeea3e69c06dcaa4160218aee025b347034fbeedd86cb",
+      "archive_bytes": 6778,
+      "tested_source_version": "IMPL-rc5",
+      "report_entries": [
+        "run_completed.json",
+        "powercut_log.jsonl",
+        "cut_point.json"
+      ],
+      "status": "VOID",
+      "coverage": "迁移中途拔盘意图与断点材料已保留，缺有效事后核验",
+      "limitations": [
+        "不能记PASS",
+        "不能由检测false断言未发生物理拔盘",
+        "实际模块为rc5，计划中的rc4包号不改变归属"
+      ],
+      "run_id": "S5_20261026_232348",
+      "completion_record": {
+        "format_version": "wfd.powercut.completed/1.0",
+        "run_id": "S5_20261026_232348",
+        "scenario": "S5",
+        "cut_mode": "unplug",
+        "cut_detected": false,
+        "completed_at_utc": "2026-10-26T15:24:03Z",
+        "note": "脚本在断点后继续执行完毕 → 本次未发生断电/拔盘，属 VOID"
+      }
+    },
+    {
+      "evidence_id": "RC5-SCALE-PROBE",
+      "archive_path": "03_测试与验证记录/世界金融数据库_规模底数_2026-10-26.zip",
+      "archive_sha256": "fadd532637350c178b435c381d4e7e6f1f92142f8e5e443346070dc262cf4510",
+      "archive_bytes": 660,
+      "tested_source_version": "IMPL-rc5 (driver path; archive lacks full run provenance)",
+      "report_entries": [
+        "n50000_232025/scale.json",
+        "n200000_232045/scale.json"
+      ],
+      "status": "OBSERVATION_ONLY",
+      "coverage": "5万/20万行合成观测的写入、读取、压缩与回收计划探针",
+      "limitations": [
+        "不是代表性金融规模验收",
+        "原包没有完整环境/运行源码身份，不能补造"
+      ],
+      "representative_data_accepted": false,
+      "rows": [
+        50000,
+        200000
+      ]
+    },
+    {
+      "evidence_id": "RC5-RESTART-FIVE",
+      "archive_path": "03_测试与验证记录/世界金融数据库_五轮提交重启_2026-10-26.zip",
+      "archive_sha256": "8634b30ae3c55f8e9e4e5b516f52cfb3557539b7c97f21146b8d750d5f660898",
+      "archive_bytes": 3447,
+      "tested_source_version": "IMPL-rc5 (recorded driver engine path)",
+      "report_entries": [
+        "rounds.json",
+        "scripts/run_restart_rounds.py"
+      ],
+      "status": "PASS_LIMITED",
+      "coverage": "五轮子进程提交及重新调用一致性检查，失败数0",
+      "limitations": [
+        "不是操作系统五次重启",
+        "不是长时连续运行",
+        "未以原报告缺少的源码身份扩称完整可复现验收"
+      ],
+      "counts": {
+        "rounds": 5,
+        "fail": 0
+      }
+    }
+  ],
+  "interpretation": [
+    "稳定范围由能力、版本、环境和证据共同限定，不由stable字样无限扩张。",
+    "历史报告中的production_accepted=false仍有效；本发布只添加有范围版本身份，不改旧结论。",
+    "引擎源码/旧说明/原证据未改；第三阶段产品开发源码未纳入本交付。",
+    "本次仅做静态哈希、归档和打包核验，不重复执行已有引擎测试。"
+  ]
+}

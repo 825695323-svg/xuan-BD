@@ -1,0 +1,46 @@
+{
+  "registry_version": "wfd.machine/1.3-candidate",
+  "canonical_fields": {
+    "value_state": "value_state",
+    "decimal": "value_decimal",
+    "payload": "outputs[].payload",
+    "coverage": "coverage.scope/basis/completeness/coverage_evidence/absence_means"
+  },
+  "deprecated_aliases": {
+    "value_status": "value_state",
+    "outputs[].rows": "outputs[].payload.rows",
+    "data.transport": "not_supported",
+    "completeness.source_declared_partial": "completeness.partial",
+    "completeness.declared_scope_only": "completeness.unknown",
+    "completeness.partial_from_source": "completeness.partial"
+  },
+  "supported_payload_kinds": [
+    "scalar_rows",
+    "tabular_rows",
+    "relation_edges",
+    "event_records"
+  ],
+  "supported_time_precisions": [
+    "year",
+    "quarter",
+    "month",
+    "day",
+    "hour",
+    "minute",
+    "second",
+    "interval",
+    "unknown"
+  ],
+  "unsupported_file_payloads": [
+    "local_file",
+    "staged_upload"
+  ],
+  "errors_added_or_clarified": [
+    "UNSUPPORTED_PAYLOAD_KIND",
+    "UNSUPPORTED_TIME_PRECISION",
+    "TIME_PRECISION_INSUFFICIENT",
+    "NEEDS_METADATA",
+    "SCHEMA_VALIDATION_FAILED"
+  ],
+  "status": "DRAFT_NOT_FROZEN"
+}

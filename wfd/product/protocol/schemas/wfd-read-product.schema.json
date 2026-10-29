@@ -1,0 +1,514 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wfd.example/spec/v1.3/wfd-read-product.schema.json",
+  "title": "wfd-read-product / P4a1 data_only public context V1.3-product1b",
+  "description": "P4a1 fixed product read plus four bounded data_only context operations (company context, event timeline, applicable rules, relation graph <=3). trace_evidence remains a legacy/BD path and is not exposed by the data_only profile.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "enum": [
+        "wfd.read/1.3-product1",
+        "wfd.read/1.3-product1b"
+      ]
+    },
+    "dataset_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+    },
+    "operation": {
+      "type": "string",
+      "enum": [
+        "read_product",
+        "read_company_context",
+        "read_relation_graph",
+        "read_applicable_rules",
+        "read_event_timeline",
+        "trace_evidence"
+      ],
+      "description": "read_product 与四个 data_only 公开上下文操作由运行期按 profile/能力表裁决；trace_evidence 不向 data_only 开放（BD 追溯边界）。"
+    },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+    },
+    "history_mode": {
+      "type": "string",
+      "enum": [
+        "snapshot_contents",
+        "market_known_at",
+        "system_held_at"
+      ]
+    },
+    "knowledge_cutoff": {
+      "oneOf": [
+        {
+          "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/TimeWithPrecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "held_scope": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "usable_stage": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "acquired",
+            "custodied",
+            "published_readable"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "subject": {
+      "oneOf": [
+        {
+          "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/IdentityRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "完整 IdentityRef；kind、namespace、id 三者同时相等才匹配，不做 id 单字段匹配。"
+    },
+    "max_nodes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200000,
+      "description": "read_product 中表示本次固定快照内该产品允许预扫的物理候选行上限；预算超限在读取业务行前拒绝。"
+    },
+    "product_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+    },
+    "fields": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+      },
+      "description": "只允许产品已声明的 value 字段；scalar_rows 产品显式支持 value_decimal。上下文操作可用 fields 选择投影字段，该选择进入 query_hash/cursor 绑定。"
+    },
+    "business_time_range": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "role": {
+              "type": "string",
+              "enum": [
+                "observation",
+                "statistical_period",
+                "event",
+                "public",
+                "expected",
+                "effective",
+                "session_date",
+                "declared",
+                "validity"
+              ]
+            },
+            "start": {
+              "type": "string",
+              "pattern": "^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})(?:T[0-9]{2}:[0-9]{2}:[0-9]{2})?$"
+            },
+            "end": {
+              "type": "string",
+              "pattern": "^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})(?:T[0-9]{2}:[0-9]{2}:[0-9]{2})?$"
+            },
+            "timezone": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "role",
+            "start",
+            "end",
+            "timezone"
+          ],
+          "description": "真实本地时间区间：日期端点按 timezone 解释；date-only end 为含当日，datetime end 为含该秒。"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "page_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500
+    },
+    "max_scan_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 268435456,
+      "description": "读取业务行前的预算：固定快照元数据加该产品全部 manifest 文件实际大小；没有文件范围索引时保守按产品全部文件计。"
+    },
+    "cursor": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "不透明分页游标；绑定完整查询摘要和末稳定键。"
+    },
+    "max_execution_time_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "P4a1 声明不支持硬执行时间预算；出现该字段时运行期返回 HARD_EXECUTION_BUDGET_UNSUPPORTED。"
+    },
+    "event_types": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "relation_types": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "rule_codes": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "record_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "product_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "logical_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "revision_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "product_id",
+        "logical_key"
+      ]
+    },
+    "trace_fields": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+      }
+    },
+    "max_edges": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000
+    },
+    "include_history": {
+      "type": "boolean"
+    },
+    "max_depth": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
+    }
+  },
+  "required": [
+    "protocol_version",
+    "dataset_id",
+    "operation",
+    "snapshot_id",
+    "history_mode",
+    "knowledge_cutoff",
+    "held_scope",
+    "usable_stage",
+    "subject",
+    "max_nodes"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "read_product"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "required": [
+          "product_id",
+          "fields",
+          "page_size",
+          "max_scan_bytes"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "history_mode": {
+            "const": "snapshot_contents"
+          }
+        },
+        "required": [
+          "history_mode"
+        ]
+      },
+      "then": {
+        "properties": {
+          "knowledge_cutoff": {
+            "type": "null"
+          },
+          "held_scope": {
+            "type": "null"
+          },
+          "usable_stage": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "history_mode": {
+            "const": "market_known_at"
+          }
+        },
+        "required": [
+          "history_mode"
+        ]
+      },
+      "then": {
+        "properties": {
+          "knowledge_cutoff": {
+            "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/TimeWithPrecision"
+          },
+          "held_scope": {
+            "type": "null"
+          },
+          "usable_stage": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "history_mode": {
+            "const": "system_held_at"
+          }
+        },
+        "required": [
+          "history_mode"
+        ]
+      },
+      "then": {
+        "properties": {
+          "knowledge_cutoff": {
+            "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/TimeWithPrecision"
+          },
+          "held_scope": {
+            "type": "string"
+          },
+          "usable_stage": {
+            "enum": [
+              "acquired",
+              "custodied",
+              "published_readable"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "read_company_context"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "required": [
+          "page_size",
+          "max_scan_bytes",
+          "subject"
+        ],
+        "properties": {
+          "protocol_version": {
+            "const": "wfd.read/1.3-product1b"
+          },
+          "subject": {
+            "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/IdentityRef"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "read_event_timeline"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "required": [
+          "page_size",
+          "max_scan_bytes",
+          "subject"
+        ],
+        "properties": {
+          "protocol_version": {
+            "const": "wfd.read/1.3-product1b"
+          },
+          "subject": {
+            "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/IdentityRef"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "read_applicable_rules"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "required": [
+          "page_size",
+          "max_scan_bytes",
+          "subject"
+        ],
+        "properties": {
+          "protocol_version": {
+            "const": "wfd.read/1.3-product1b"
+          },
+          "subject": {
+            "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/IdentityRef"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "read_relation_graph"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "required": [
+          "page_size",
+          "max_scan_bytes",
+          "subject",
+          "max_depth"
+        ],
+        "properties": {
+          "protocol_version": {
+            "const": "wfd.read/1.3-product1b"
+          },
+          "subject": {
+            "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/IdentityRef"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "trace_evidence"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "required": [
+          "page_size",
+          "max_scan_bytes",
+          "product_id"
+        ],
+        "properties": {
+          "protocol_version": {
+            "const": "wfd.read/1.3-product1b"
+          }
+        }
+      }
+    }
+  ],
+  "$comment": "P4a1 bounded product read request. The four context operations are data_only public; trace_evidence is not exposed there. system_held_at requires the existing WFD target-instance holding facts and never substitutes source received time."
+}

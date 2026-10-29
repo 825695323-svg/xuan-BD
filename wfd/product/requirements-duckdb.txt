@@ -1,0 +1,4 @@
+duckdb==2.0.0
+jsonschema>=4.23,<5
+referencing>=0.35
+pytest>=8,<10

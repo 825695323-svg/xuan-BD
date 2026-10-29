@@ -1,0 +1,107 @@
+{
+  "status": {
+    "status": "available",
+    "reason": null
+  },
+  "product_id": "p_d91987a11e99f581da8e71c7",
+  "row_count": 60,
+  "verified_scope": "server_identity_descriptor_and_projection",
+  "resolution": {
+    "contract": "wfd.product-machine/0.1",
+    "operation": "fixed_read",
+    "instanceId": "wfd-product-local-20261027",
+    "productId": "p_d91987a11e99f581da8e71c7",
+    "snapshotId": "s_9f3edb73a442f1940a54a1d8",
+    "definitionRevision": "v_a90223db0a1ce489",
+    "definitionRef": {
+      "dataset_id": "wfd_cn_000001_financial_products",
+      "dependency_type": "read",
+      "digest": "sha256:a90223db0a1ce489b77af4b834de564e580409a4b14d351ab9e94c759e945666",
+      "id": "def_a90223db0a1ce489b77af4b8",
+      "kind": "definition_version",
+      "namespace": "wfd.product",
+      "required": true,
+      "resolution": "pinned",
+      "version": "v_a90223db0a1ce489"
+    },
+    "contractRef": {
+      "dataset_id": "wfd_cn_000001_financial_products",
+      "dependency_type": "read",
+      "digest": "sha256:657f3fc4a2eced233845561c0e2cce90aa61b9c37310f4366626f7dfb8482753",
+      "id": "contract_657f3fc4a2eced233845561c",
+      "kind": "contract",
+      "namespace": "wfd.product",
+      "required": true,
+      "resolution": "pinned",
+      "version": "v_657f3fc4a2eced23"
+    },
+    "fields": [
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume_lot",
+      "amount_cny"
+    ],
+    "rowCount": 60,
+    "rowsSha256": null,
+    "rowsSha256Basis": "not_exposed_by_wfd_product_service",
+    "projectionSha256": "ab99d0ec53a16796e1f0001068603c32de3fe99a6df20bd5b560586856a3722d",
+    "projection": {
+      "fields": [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume_lot",
+        "amount_cny"
+      ],
+      "rowCount": 60,
+      "sha256": "ab99d0ec53a16796e1f0001068603c32de3fe99a6df20bd5b560586856a3722d",
+      "basis": "local_selected_fields_canonical_json"
+    },
+    "verification": {
+      "scope": "server_identity_descriptor_and_projection",
+      "fullRowsRecomputedLocally": false,
+      "descriptorBasis": "wfd.product-machine fixed_read products/definition_ref/contract_ref",
+      "transport": {
+        "requestId": "bd-9051801e-dcce-4531-8133-fe01519e9a0d",
+        "operation": "fixed_read",
+        "elapsedMs": 293,
+        "responseBytes": 124183,
+        "serviceVersion": "wfd.product-service/0.3",
+        "contractVersion": "wfd.product-contracts/0.3",
+        "schemaId": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json",
+        "connectionId": "wfd-product-local-20261027",
+        "callerId": "bd-p6-reader",
+        "trustedActorNamespace": "wfd.financial_products"
+      }
+    },
+    "transport": {
+      "requestId": "bd-9051801e-dcce-4531-8133-fe01519e9a0d",
+      "operation": "fixed_read",
+      "elapsedMs": 293,
+      "responseBytes": 124183,
+      "serviceVersion": "wfd.product-service/0.3",
+      "contractVersion": "wfd.product-contracts/0.3",
+      "schemaId": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json",
+      "connectionId": "wfd-product-local-20261027",
+      "callerId": "bd-p6-reader",
+      "trustedActorNamespace": "wfd.financial_products"
+    }
+  },
+  "first_row_keys": [
+    "amount_cny",
+    "business_key",
+    "close",
+    "contract_ref",
+    "definition_ref",
+    "high",
+    "low",
+    "observation_time",
+    "open",
+    "record_ref",
+    "subject",
+    "volume_lot"
+  ]
+}

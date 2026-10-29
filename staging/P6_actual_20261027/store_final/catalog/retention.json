@@ -1,0 +1,10 @@
+{
+  "format_version": "wfd.retention/1.0",
+  "updated_at_utc": "2026-10-26T21:22:57Z",
+  "policy": {
+    "auto_expire": false,
+    "keep_last_n": null,
+    "keep_days": null
+  },
+  "snapshots": {}
+}

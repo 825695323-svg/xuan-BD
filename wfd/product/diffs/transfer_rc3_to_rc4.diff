@@ -1,0 +1,29 @@
+--- /Users/mashiro/WFD规划与测试/engine_rc3_verified/wfd_sdk/transfer.py	2026-10-26 20:25:23
++++ /Users/mashiro/WFD规划与测试/engine_impl_rc4/wfd_sdk/transfer.py	2026-10-26 21:01:51
+@@ -20,6 +20,8 @@
+ """
+ from __future__ import annotations
+ 
++from wfd_sdk.writerlock import guarded_method, guarded_store_func
++
+ import hashlib
+ import json
+ import shutil
+@@ -190,6 +192,7 @@
+ 
+ 
+ # ---------------------------------------------------------------- 导入（增量）
++@guarded_store_func
+ def import_package(pkg_dir: Path, store: Path, *, interrupt_after: int | None = None) -> dict:
+     """把包导入目标库。只拷缺失对象；已有对象必须哈希一致才复用。"""
+     pkg_dir, store = Path(pkg_dir), Path(store)
+@@ -294,6 +297,9 @@
+     return {"ok": False, "reason": "LINEAGE_FORK_DETECTED", "detail": rel, "chain": ids}
+ 
+ 
++@guarded_store_func
++
++
+ def activate(store: Path, incoming_sid: str, *, writer_host: str, writer_epoch: int,
+              handover: dict | None = None) -> dict:
+     store = Path(store)

@@ -1,0 +1,410 @@
+{
+  "product_id": "p_72eeb399a487bbad80981641",
+  "snapshot_id": "s_67599763a42340c8f8f15396",
+  "row_count": 3,
+  "definition": {
+    "version": "v_0d9f41dd79354796",
+    "digest": "sha256:0d9f41dd79354796e388b4578660eb4cc1aebd76fa077b11ce552a45a3553a79"
+  },
+  "contract": {
+    "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454"
+  },
+  "declared_fields": [],
+  "requested_fields": [
+    "value_decimal"
+  ],
+  "fields_checked_per_row": true,
+  "definition_checked_per_row": true,
+  "first_row_keys": [
+    "contract_ref",
+    "definition_ref",
+    "eligibility",
+    "evidence_refs",
+    "product_id",
+    "record_ref",
+    "revision",
+    "revision_state",
+    "row",
+    "source_binding",
+    "subject"
+  ],
+  "full_rows_sha256": "57ebcdd7fae7a0a3d8297e03f2a092962d910a0e870f8d423621d238f4802c84",
+  "rows_sha256_basis": "local_full_public_rows; not a server full-resource digest",
+  "raw_value_state_preserved": true,
+  "cell_metadata": {
+    "basis": "per_cell_value_state_type_unit_metadata",
+    "count": 3,
+    "unsafe_count": 0,
+    "first_cells": [
+      {
+        "row": 0,
+        "field": "value_decimal",
+        "present": true,
+        "value": "157066",
+        "value_state": "valid_value",
+        "data_type": null,
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "vehicle",
+        "safe_value_state": true
+      },
+      {
+        "row": 1,
+        "field": "value_decimal",
+        "present": true,
+        "value": "142504",
+        "value_state": "valid_value",
+        "data_type": null,
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "vehicle",
+        "safe_value_state": true
+      },
+      {
+        "row": 2,
+        "field": "value_decimal",
+        "present": true,
+        "value": "91862",
+        "value_state": "valid_value",
+        "data_type": null,
+        "unit_code": null,
+        "unit_ref": null,
+        "declared_unit_code": "vehicle",
+        "safe_value_state": true
+      }
+    ]
+  },
+  "public_projection": {
+    "format_version": "wfd.public-projection/0.1",
+    "source_paths": "omitted",
+    "raw_original_text": "omitted",
+    "evidence_refs": "content digests only; locator fields omitted",
+    "source_ids": [
+      "p1_fixture"
+    ],
+    "contract_bodies": "partial",
+    "complete_contract_bodies": false,
+    "contract_projections": [
+      {
+        "product_id": "p_72eeb399a487bbad80981641",
+        "original_contract_ref": {
+          "dataset_id": "p1_contract_validation",
+          "dependency_type": "read",
+          "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454",
+          "id": "contract_9c7700513553845e18bdba61",
+          "kind": "contract",
+          "namespace": "wfd.product",
+          "required": true,
+          "resolution": "pinned",
+          "version": "v_9c7700513553845e"
+        },
+        "projection_digest": "sha256:6b44f7788975877e97b20a0a15f0c84e0c22760f43cd4223e82bc70fc7929753",
+        "projection_scope": "public product body (unit provenance paths/raw originals omitted)",
+        "complete_contract_body": false
+      }
+    ],
+    "contract_refs": [
+      {
+        "dataset_id": "p1_contract_validation",
+        "dependency_type": "read",
+        "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454",
+        "id": "contract_9c7700513553845e18bdba61",
+        "kind": "contract",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_9c7700513553845e"
+      }
+    ]
+  },
+  "source_ids": [
+    "p1_fixture"
+  ],
+  "products": [
+    {
+      "contract_ref": {
+        "dataset_id": "p1_contract_validation",
+        "dependency_type": "read",
+        "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454",
+        "id": "contract_9c7700513553845e18bdba61",
+        "kind": "contract",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_9c7700513553845e"
+      },
+      "contracts": {
+        "compute_dependencies": {
+          "dependencies": [],
+          "derived_submission": "not_implemented",
+          "execution": "external"
+        },
+        "contract_set_version": "wfd.product-contracts/0.3",
+        "part_digests": {
+          "compute_dependencies": "sha256:a148459df97179ab75088800966a68f7125b00ae2887fc67eca8b428a0d2def1",
+          "publication": "sha256:521e274a66990bed613651bb7748686e52657a0ac4a9a2955b169ad287fc5057",
+          "read": "sha256:80afca685b7ee73c3bb2f5dfc49e3ebe47c1e5cf913ba3ca95dd617727090760",
+          "semantic": "sha256:baab1816e4f04b6022d549ebfb8f1481f37c7658c421162ace507f1fc3fc71d4"
+        },
+        "publication": {
+          "compaction": "requires_preserving_per_row_bindings",
+          "duplicate_keys": "reject_without_revision",
+          "formal_publish_requires": [
+            "caller_publish_role",
+            "source_formal_grant",
+            "validated_contracts",
+            "verified_dependencies",
+            "custodied_evidence",
+            "verified_snapshot"
+          ],
+          "physical_storage": "append_only",
+          "revision_modes": [
+            "processing_repair",
+            "source_correction",
+            "withdrawal"
+          ],
+          "updates": "immutable_logical_versions",
+          "withdrawal": "tombstone"
+        },
+        "read": {
+          "business_time_field": "observation_time",
+          "dependencies": [],
+          "fixed_snapshot_required": true,
+          "held_scope": "received_structured",
+          "perspectives": [
+            "snapshot_contents",
+            "market_known_at",
+            "system_held_at"
+          ],
+          "primary_key": "business_key"
+        },
+        "semantic": {
+          "definition_ref": {
+            "dataset_id": "p1_contract_validation",
+            "dependency_type": "read",
+            "digest": "sha256:0d9f41dd79354796e388b4578660eb4cc1aebd76fa077b11ce552a45a3553a79",
+            "id": "def_0d9f41dd79354796e388b457",
+            "kind": "definition_version",
+            "namespace": "wfd.product",
+            "required": true,
+            "resolution": "pinned",
+            "version": "v_0d9f41dd79354796"
+          },
+          "fields": [],
+          "measurement_nature": "flow",
+          "unit_code": "vehicle",
+          "unit_definitions": {
+            "vehicle": {
+              "definition": {
+                "dimension": "quantity"
+              },
+              "digest": "sha256:f8698ba2b6ba53826120deb92fd2b96d82225c9152c32719575d449d549ca016"
+            }
+          }
+        }
+      },
+      "dataset_id": "p1_contract_validation",
+      "declaration": {
+        "definition_authority": "p1.validation",
+        "measurement_nature": "flow",
+        "semantic_code": "p1.port.automobiles.handled",
+        "time_role": "statistical_period",
+        "unit_code": "vehicle"
+      },
+      "definition_compatibility": "initial",
+      "definition_parent_ref": null,
+      "definition_ref": {
+        "dataset_id": "p1_contract_validation",
+        "dependency_type": "read",
+        "digest": "sha256:0d9f41dd79354796e388b4578660eb4cc1aebd76fa077b11ce552a45a3553a79",
+        "id": "def_0d9f41dd79354796e388b457",
+        "kind": "definition_version",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_0d9f41dd79354796"
+      },
+      "definition_sequence": 1,
+      "logical_domain": "observations",
+      "payload_kind": "scalar_rows",
+      "product_family_id": "pf_989bd4721268b8dfce6a54c4",
+      "product_id": "p_72eeb399a487bbad80981641",
+      "service_version": "wfd.product-service/0.3",
+      "subject": {
+        "id": "port_of_los_angeles",
+        "kind": "physical_object",
+        "namespace": "us.port.official"
+      }
+    }
+  ],
+  "first_row": {
+    "product_id": "p_72eeb399a487bbad80981641",
+    "row": {
+      "business_key": "la_port_autos_handled_2023",
+      "observation_time": {
+        "earliest_utc": "2023-01-01T08:00:00Z",
+        "latest_exclusive_utc": "2024-01-01T08:00:00Z",
+        "precision": "year",
+        "source_timezone": "America/Los_Angeles",
+        "status": "known"
+      },
+      "value_decimal": "157066",
+      "value_state": "valid_value"
+    },
+    "subject": {
+      "id": "port_of_los_angeles",
+      "kind": "physical_object",
+      "namespace": "us.port.official"
+    },
+    "definition_ref": {
+      "dataset_id": "p1_contract_validation",
+      "dependency_type": "read",
+      "digest": "sha256:0d9f41dd79354796e388b4578660eb4cc1aebd76fa077b11ce552a45a3553a79",
+      "id": "def_0d9f41dd79354796e388b457",
+      "kind": "definition_version",
+      "namespace": "wfd.product",
+      "required": true,
+      "resolution": "pinned",
+      "version": "v_0d9f41dd79354796"
+    },
+    "eligibility": {
+      "decision": "eligible",
+      "reason": "snapshot_only_not_PIT"
+    },
+    "contract_ref": {
+      "dataset_id": "p1_contract_validation",
+      "dependency_type": "read",
+      "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454",
+      "id": "contract_9c7700513553845e18bdba61",
+      "kind": "contract",
+      "namespace": "wfd.product",
+      "required": true,
+      "resolution": "pinned",
+      "version": "v_9c7700513553845e"
+    },
+    "revision": {
+      "input_mode": "partial_observation",
+      "logical_key": "la_port_autos_handled_2023",
+      "reason": null,
+      "revision_id": "r_88dc9a6ce8ffa1e1324bec5e6b451a62",
+      "supersedes": null,
+      "withdrawn": false
+    },
+    "record_ref": {
+      "product_id": "p_72eeb399a487bbad80981641",
+      "snapshot_id": "s_67599763a42340c8f8f15396",
+      "logical_key": "la_port_autos_handled_2023",
+      "revision_id": "r_88dc9a6ce8ffa1e1324bec5e6b451a62"
+    },
+    "revision_state": "current",
+    "evidence_refs": [
+      {
+        "binding_digest": null,
+        "content_sha256": "sha256:140e9fcbc71222321733a2f2c48c9a2c4193ec413cf212a37fec2099dc784b9e",
+        "ref_id": "e_140e9fcbc71222321733a2f2",
+        "ref_kind": "content"
+      }
+    ],
+    "source_binding": {
+      "source_ids": [
+        "p1_fixture"
+      ],
+      "contract_ref": {
+        "dataset_id": "p1_contract_validation",
+        "dependency_type": "read",
+        "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454",
+        "id": "contract_9c7700513553845e18bdba61",
+        "kind": "contract",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_9c7700513553845e"
+      }
+    }
+  },
+  "last_row": {
+    "product_id": "p_72eeb399a487bbad80981641",
+    "row": {
+      "business_key": "la_port_autos_handled_2025",
+      "observation_time": {
+        "earliest_utc": "2025-01-01T08:00:00Z",
+        "latest_exclusive_utc": "2026-01-01T08:00:00Z",
+        "precision": "year",
+        "source_timezone": "America/Los_Angeles",
+        "status": "known"
+      },
+      "value_decimal": "91862",
+      "value_state": "valid_value"
+    },
+    "subject": {
+      "id": "port_of_los_angeles",
+      "kind": "physical_object",
+      "namespace": "us.port.official"
+    },
+    "definition_ref": {
+      "dataset_id": "p1_contract_validation",
+      "dependency_type": "read",
+      "digest": "sha256:0d9f41dd79354796e388b4578660eb4cc1aebd76fa077b11ce552a45a3553a79",
+      "id": "def_0d9f41dd79354796e388b457",
+      "kind": "definition_version",
+      "namespace": "wfd.product",
+      "required": true,
+      "resolution": "pinned",
+      "version": "v_0d9f41dd79354796"
+    },
+    "eligibility": {
+      "decision": "eligible",
+      "reason": "snapshot_only_not_PIT"
+    },
+    "contract_ref": {
+      "dataset_id": "p1_contract_validation",
+      "dependency_type": "read",
+      "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454",
+      "id": "contract_9c7700513553845e18bdba61",
+      "kind": "contract",
+      "namespace": "wfd.product",
+      "required": true,
+      "resolution": "pinned",
+      "version": "v_9c7700513553845e"
+    },
+    "revision": {
+      "input_mode": "partial_observation",
+      "logical_key": "la_port_autos_handled_2025",
+      "reason": null,
+      "revision_id": "r_726c11c9bf8da648c797b4d304772928",
+      "supersedes": null,
+      "withdrawn": false
+    },
+    "record_ref": {
+      "product_id": "p_72eeb399a487bbad80981641",
+      "snapshot_id": "s_67599763a42340c8f8f15396",
+      "logical_key": "la_port_autos_handled_2025",
+      "revision_id": "r_726c11c9bf8da648c797b4d304772928"
+    },
+    "revision_state": "current",
+    "evidence_refs": [
+      {
+        "binding_digest": null,
+        "content_sha256": "sha256:140e9fcbc71222321733a2f2c48c9a2c4193ec413cf212a37fec2099dc784b9e",
+        "ref_id": "e_140e9fcbc71222321733a2f2",
+        "ref_kind": "content"
+      }
+    ],
+    "source_binding": {
+      "source_ids": [
+        "p1_fixture"
+      ],
+      "contract_ref": {
+        "dataset_id": "p1_contract_validation",
+        "dependency_type": "read",
+        "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454",
+        "id": "contract_9c7700513553845e18bdba61",
+        "kind": "contract",
+        "namespace": "wfd.product",
+        "required": true,
+        "resolution": "pinned",
+        "version": "v_9c7700513553845e"
+      }
+    }
+  }
+}

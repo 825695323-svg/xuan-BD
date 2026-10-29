@@ -1,0 +1,17 @@
+{
+  "source_id": "szse_security_000001",
+  "provider": "深圳证券交易所",
+  "requested_url": "https://www.szse.cn/api/report/ShowReport/data?SHOWTYPE=JSON&CATALOGID=1110&tab1PAGENO=1&tab1PAGESIZE=20&TABKEY=tab1&txtDMorJC=000001",
+  "request_method": "GET",
+  "request_form": null,
+  "requested_at_utc": "2026-10-26T16:22:37Z",
+  "license": "unknown",
+  "usage_scope": "user_local_financial_database",
+  "http_status": 200,
+  "response_url": "https://www.szse.cn/api/report/ShowReport/data?SHOWTYPE=JSON&CATALOGID=1110&tab1PAGENO=1&tab1PAGESIZE=20&TABKEY=tab1&txtDMorJC=000001",
+  "content_type": "application/json",
+  "acquired_at_utc": "2026-10-26T16:22:37Z",
+  "response_sha256": "256d9fa19edd28e5e35b2522af7ad572ec075b18d5246fec78b3af048f224276",
+  "response_bytes": 16277,
+  "response_file": "sources/szse_security_000001.response"
+}

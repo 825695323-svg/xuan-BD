@@ -1,0 +1,25 @@
+{
+  "source_id": "cninfo_board_1225475348",
+  "provider": "平安银行股份有限公司；披露平台：巨潮资讯网",
+  "original_local_path": "/Users/mashiro/Xuan BD/项目本体/wfd/product/fixtures/financial_slice/cninfo_1225475348.pdf",
+  "request_method": "LOCAL_READ",
+  "requested_url": "https://static.cninfo.com.cn/finalpage/2026-08-15/1225475348.PDF",
+  "http_status": null,
+  "acquired_at_utc": "2026-10-26T15:55:25Z",
+  "local_copied_at_utc": "2026-10-26T16:31:17Z",
+  "response_file": "sources/cninfo_board_1225475348.pdf",
+  "response_sha256": "223148e483f6356f47b1805fa4c77fb4e3c86c5f843345feb6e38324fd1affc8",
+  "response_bytes": 186777,
+  "license": "unknown",
+  "usage_scope": "user_local_financial_database",
+  "original_http_status": 200,
+  "original_acquisition": {
+    "requested_url": "https://static.cninfo.com.cn/finalpage/2026-08-15/1225475348.PDF",
+    "response_url": "https://static.cninfo.com.cn/finalpage/2026-08-15/1225475348.PDF",
+    "http_status": 200,
+    "content_type": "application/pdf",
+    "acquired_at_utc": "2026-10-26T15:55:25Z",
+    "sha256": "223148e483f6356f47b1805fa4c77fb4e3c86c5f843345feb6e38324fd1affc8",
+    "bytes": 186777
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "protocol_version": "wfd.ingest/1.3-candidate",
+  "request_identity": {
+    "dataset_id": "sample_validation_dataset",
+    "trusted_actor_namespace": "wfd.test.curated",
+    "request_id": "sample_tatqa_3",
+    "submission_digest": "sha256:3f6caa25b72d741219b3320406c3d5589e1f45da61f24344c4198f04f013b278"
+  },
+  "intent": "submit",
+  "producer_namespace": "wfd.test.curated",
+  "expected_parent_snapshot_id": null,
+  "outputs": [
+    {
+      "output_key": "tatqa_undetermined_issuer_sales",
+      "logical_domain": "observations",
+      "subject": {
+        "kind": "entity",
+        "namespace": "tatqa.unresolved.issuer",
+        "id": "issuer_unknown"
+      },
+      "definition_mode": "create",
+      "definition_ref": null,
+      "new_definition_declaration": {
+        "semantic_code": "table.total_sales",
+        "measurement_nature": "flow",
+        "unit_code": "usd_million",
+        "definition_authority": "tatqa.benchmark.table",
+        "time_role": "reported_fiscal_period"
+      },
+      "input_mode": "partial_observation",
+      "coverage": {
+        "scope": {
+          "table_uid": "3ffd9053-a45d-491c-957a-1b2fa0af0570",
+          "years": [
+            2017,
+            2018,
+            2019
+          ],
+          "issuer": "unresolved"
+        },
+        "basis": "observed_partial",
+        "completeness": "partial",
+        "coverage_evidence": [],
+        "absence_means": "unknown"
+      },
+      "payload": {
+        "kind": "scalar_rows",
+        "rows": [
+          {
+            "business_key": "tatqa_total_sales_2019",
+            "value_decimal": "1496.5",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "year",
+              "earliest_utc": "2019-01-01T00:00:00Z",
+              "latest_exclusive_utc": "2020-01-01T00:00:00Z",
+              "source_timezone": "UTC"
+            }
+          },
+          {
+            "business_key": "tatqa_total_sales_2018",
+            "value_decimal": "1202.9",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "year",
+              "earliest_utc": "2018-01-01T00:00:00Z",
+              "latest_exclusive_utc": "2019-01-01T00:00:00Z",
+              "source_timezone": "UTC"
+            }
+          },
+          {
+            "business_key": "tatqa_total_sales_2017",
+            "value_decimal": "1107.7",
+            "value_state": "valid_value",
+            "observation_time": {
+              "status": "known",
+              "precision": "year",
+              "earliest_utc": "2017-01-01T00:00:00Z",
+              "latest_exclusive_utc": "2018-01-01T00:00:00Z",
+              "source_timezone": "UTC"
+            }
+          }
+        ]
+      },
+      "evidence_refs": []
+    }
+  ],
+  "source_bundle": {
+    "source_url": "https://raw.githubusercontent.com/NExTplusplus/TAT-QA/master/dataset_raw/tatqa_dataset_dev.json",
+    "acquisition": "manual excerpt from published web-page representation",
+    "raw_source_bytes_custodied": false,
+    "business_publication_time": "unverified"
+  }
+}

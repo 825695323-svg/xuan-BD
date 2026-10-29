@@ -1,0 +1,15 @@
+{
+  "source_id": "company_roster_20261014",
+  "provider": "余哈哈的数据仓库；用户本地资料",
+  "original_local_path": "/Users/mashiro/数据清洗 特征提取 标注 前期汇总原包/静态数据库/原包/上市企业名单和概念分类/上市公司基本信息/2026/20261014_上市公司基本信息@余哈哈的数据仓库 原创整理.csv",
+  "request_method": "LOCAL_READ",
+  "requested_url": null,
+  "http_status": null,
+  "acquired_at_utc": "2026-10-26T16:31:17Z",
+  "local_copied_at_utc": "2026-10-26T16:31:17Z",
+  "response_file": "sources/company_roster_20261014.csv",
+  "response_sha256": "11744d9d2a770890094c9521f3addd5c66aad5e564af346724350ccfa8e2a3ea",
+  "response_bytes": 15389197,
+  "license": "unknown",
+  "usage_scope": "user_local_financial_database"
+}

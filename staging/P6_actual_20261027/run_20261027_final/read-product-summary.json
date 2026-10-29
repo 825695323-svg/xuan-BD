@@ -1,0 +1,38 @@
+{
+  "product_id": "p_69187760dfa849b97b062efd",
+  "snapshot_id": "s_244f9515a1189e0e07452b92",
+  "page_count": 3,
+  "row_count": 60,
+  "fields": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume_lot",
+    "amount_cny"
+  ],
+  "definition": {
+    "dataset_id": "bd_p6_actual_20261027",
+    "dependency_type": "read",
+    "digest": "sha256:a90223db0a1ce489b77af4b834de564e580409a4b14d351ab9e94c759e945666",
+    "id": "def_a90223db0a1ce489b77af4b8",
+    "kind": "definition_version",
+    "namespace": "wfd.product",
+    "required": true,
+    "resolution": "pinned",
+    "version": "v_a90223db0a1ce489"
+  },
+  "contract": {
+    "dataset_id": "bd_p6_actual_20261027",
+    "dependency_type": "read",
+    "digest": "sha256:ef4046e1b5272ebf2b427a1681e3a70864a9e1a47fbb114754f51958bf4ab83b",
+    "id": "contract_ef4046e1b5272ebf2b427a16",
+    "kind": "contract",
+    "namespace": "wfd.product",
+    "required": true,
+    "resolution": "pinned",
+    "version": "v_ef4046e1b5272ebf"
+  },
+  "paged_read_complete": true,
+  "rows_sha256": "1c410e10973b7207bd813b2bc1a805a18422f61a4db38156706ca52105b53f86"
+}

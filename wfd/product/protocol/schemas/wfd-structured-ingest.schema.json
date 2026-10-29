@@ -1,0 +1,904 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wfd.example/spec/1.0/wfd-structured-ingest.schema.json",
+  "title": "wfd.structured-ingest/1.0 data-only boundary",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/identifier"
+        },
+        "namespace": {
+          "$ref": "#/$defs/identifier"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "version": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "required": [
+        "kind",
+        "namespace",
+        "id"
+      ]
+    },
+    "ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/identifier"
+        },
+        "namespace": {
+          "$ref": "#/$defs/identifier"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "version": {
+          "$ref": "#/$defs/identifier"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "dataset_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "resolution": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "dependency_type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "namespace",
+        "id"
+      ]
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "count": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "interval": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        }
+      }
+    },
+    "axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "subject_kind": {
+          "type": "string"
+        },
+        "identity_resolution_rule": {
+          "type": "string"
+        },
+        "alias_scope": {
+          "type": "string"
+        },
+        "period_type": {
+          "enum": [
+            "natural",
+            "trading",
+            "accounting",
+            "observation_window",
+            "instant",
+            "unknown"
+          ]
+        },
+        "frequency": {
+          "type": "string"
+        },
+        "interval": {
+          "enum": [
+            "closed",
+            "open",
+            "half_open"
+          ]
+        },
+        "calendar_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accounting_calendar_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "window": {
+          "$ref": "#/$defs/window"
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "measurement_nature": {
+          "enum": [
+            "stock",
+            "flow",
+            "event",
+            "derived",
+            "mixed_observation",
+            "relation"
+          ]
+        },
+        "unit_code": {
+          "type": "string"
+        },
+        "precision": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "sign": {
+          "type": "string"
+        },
+        "aggregation": {
+          "type": "string"
+        },
+        "value_states": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assertion_status": {
+          "type": "string"
+        },
+        "target_period": {
+          "type": "string"
+        },
+        "sample_scope_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "weighting_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "price_basis": {
+          "enum": [
+            "nominal",
+            "real",
+            "unknown"
+          ]
+        },
+        "base_period_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seasonal_adjustment": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "enum": [
+                "adjusted",
+                "not_adjusted",
+                "unknown"
+              ]
+            },
+            "method_ref": {
+              "$ref": "#/$defs/ref"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        },
+        "period_aggregation": {
+          "enum": [
+            "instant",
+            "period",
+            "ytd",
+            "quarterly",
+            "ttm",
+            "observation_window",
+            "trailing_twelve_months",
+            "unknown"
+          ]
+        },
+        "denominator_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coverage_scope_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accounting_standard_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "consolidation_scope": {
+          "enum": [
+            "consolidated",
+            "parent",
+            "not_applicable",
+            "unknown"
+          ]
+        },
+        "mapping_comparability_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "price_adjustment": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "direction": {
+              "enum": [
+                "raw",
+                "adjusted",
+                "unknown"
+              ]
+            },
+            "anchor_ref": {
+              "$ref": "#/$defs/ref"
+            }
+          }
+        },
+        "return_definition_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "currency_conversion_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "relation_type": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string"
+        },
+        "set_completeness": {
+          "type": "string"
+        },
+        "effective_scope": {
+          "type": "string"
+        },
+        "completeness": {
+          "type": "string"
+        },
+        "absence_means": {
+          "type": "string"
+        },
+        "validation_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "warmup_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "definition_authority": {
+          "$ref": "#/$defs/identifier"
+        },
+        "publisher_ref": {
+          "$ref": "#/$defs/identity"
+        },
+        "definition_version": {
+          "$ref": "#/$defs/identifier"
+        },
+        "method_version": {
+          "$ref": "#/$defs/identifier"
+        },
+        "parent_version": {
+          "$ref": "#/$defs/identifier"
+        },
+        "revision_mode": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string"
+        }
+      }
+    },
+    "semantic_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": "wfd.semantic-context/1.0"
+        },
+        "content_nature": {
+          "enum": [
+            "observed_fact",
+            "source_claim",
+            "plan",
+            "forecast",
+            "actual_outcome",
+            "deterministic_derived",
+            "definition_rule"
+          ]
+        },
+        "measurement_nature": {
+          "enum": [
+            "stock",
+            "flow",
+            "event",
+            "derived",
+            "mixed_observation",
+            "relation"
+          ]
+        },
+        "identity": {
+          "$ref": "#/$defs/axis"
+        },
+        "time": {
+          "$ref": "#/$defs/axis"
+        },
+        "measurement": {
+          "$ref": "#/$defs/axis"
+        },
+        "content": {
+          "$ref": "#/$defs/axis"
+        },
+        "statistical": {
+          "$ref": "#/$defs/axis"
+        },
+        "financial": {
+          "$ref": "#/$defs/axis"
+        },
+        "relation": {
+          "$ref": "#/$defs/axis"
+        },
+        "coverage_quality": {
+          "$ref": "#/$defs/axis"
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "definition_authority": {
+              "$ref": "#/$defs/identifier"
+            },
+            "publisher_ref": {
+              "$ref": "#/$defs/identity"
+            }
+          }
+        },
+        "version_axis": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "definition_version": {
+              "$ref": "#/$defs/identifier"
+            },
+            "method_version": {
+              "$ref": "#/$defs/identifier"
+            },
+            "parent_version": {
+              "$ref": "#/$defs/identifier"
+            },
+            "revision_mode": {
+              "type": "string"
+            }
+          }
+        },
+        "derivation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "required": {
+              "type": "boolean"
+            }
+          }
+        },
+        "unknown_axes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "content_nature"
+      ]
+    },
+    "algorithm_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "result_semantics": {
+          "type": "string"
+        },
+        "mathematical_definition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "window": {
+          "$ref": "#/$defs/window"
+        },
+        "constants": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "definition_version": {
+          "$ref": "#/$defs/identifier"
+        },
+        "algorithm_ref": {
+          "$ref": "#/$defs/ref"
+        }
+      },
+      "required": [
+        "mathematical_definition"
+      ]
+    },
+    "field_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field_code": {
+          "$ref": "#/$defs/identifier"
+        },
+        "data_type": {
+          "enum": [
+            "decimal",
+            "integer",
+            "text",
+            "boolean"
+          ]
+        },
+        "unit_code": {
+          "type": "string"
+        },
+        "measurement_nature": {
+          "enum": [
+            "stock",
+            "flow",
+            "event",
+            "derived",
+            "mixed_observation",
+            "relation"
+          ]
+        },
+        "time_role": {
+          "type": "string"
+        },
+        "consistency_group": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "field_code",
+        "data_type",
+        "unit_code",
+        "measurement_nature",
+        "time_role"
+      ]
+    },
+    "definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "semantic_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "measurement_nature": {
+          "enum": [
+            "stock",
+            "flow",
+            "event",
+            "derived",
+            "mixed_observation",
+            "relation"
+          ]
+        },
+        "unit_code": {
+          "type": "string"
+        },
+        "definition_authority": {
+          "$ref": "#/$defs/identifier"
+        },
+        "time_role": {
+          "type": "string"
+        },
+        "field_definitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field_definition"
+          }
+        },
+        "semantic_context": {
+          "$ref": "#/$defs/semantic_context"
+        },
+        "field_semantic_context": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/field_axis_map"
+          }
+        },
+        "algorithm_definition": {
+          "$ref": "#/$defs/algorithm_definition"
+        }
+      },
+      "required": [
+        "semantic_code",
+        "measurement_nature",
+        "unit_code",
+        "definition_authority",
+        "time_role",
+        "semantic_context"
+      ]
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "scalar_rows",
+            "tabular_rows",
+            "relation_edges",
+            "event_records"
+          ]
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "rows"
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "type": "object"
+        },
+        "basis": {
+          "type": "string"
+        },
+        "completeness": {
+          "type": "string"
+        },
+        "absence_means": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "basis",
+        "completeness",
+        "absence_means"
+      ]
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "output_key": {
+          "$ref": "#/$defs/identifier"
+        },
+        "logical_domain": {
+          "enum": [
+            "foundation",
+            "observations",
+            "events"
+          ]
+        },
+        "subject": {
+          "$ref": "#/$defs/identity"
+        },
+        "definition_mode": {
+          "enum": [
+            "create",
+            "reuse"
+          ]
+        },
+        "definition_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "definition": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/definition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input_mode": {
+          "enum": [
+            "complete_snapshot",
+            "partial_observation",
+            "explicit_increment",
+            "source_correction",
+            "processing_repair",
+            "withdrawal"
+          ]
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverage"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload"
+        },
+        "revisions": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "output_key",
+        "logical_domain",
+        "subject",
+        "definition_mode",
+        "definition",
+        "input_mode",
+        "coverage",
+        "payload"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "definition_mode": {
+                "const": "create"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "definition": {
+                "$ref": "#/$defs/definition"
+              },
+              "definition_ref": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "definition_mode": {
+                "const": "reuse"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "definition": {
+                "type": "null"
+              },
+              "definition_ref": {
+                "$ref": "#/$defs/ref"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field_axis_map": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "time": {
+          "$ref": "#/$defs/axis"
+        },
+        "measurement": {
+          "$ref": "#/$defs/axis"
+        },
+        "content": {
+          "$ref": "#/$defs/axis"
+        },
+        "statistical": {
+          "$ref": "#/$defs/axis"
+        },
+        "financial": {
+          "$ref": "#/$defs/axis"
+        },
+        "coverage_quality": {
+          "$ref": "#/$defs/axis"
+        }
+      }
+    }
+  },
+  "properties": {
+    "protocol_version": {
+      "const": "wfd.structured-ingest/1.0"
+    },
+    "request_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dataset_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "trusted_actor_namespace": {
+          "$ref": "#/$defs/identifier"
+        },
+        "request_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "submission_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "dataset_id",
+        "trusted_actor_namespace",
+        "request_id",
+        "submission_digest"
+      ]
+    },
+    "intent": {
+      "const": "submit"
+    },
+    "producer_namespace": {
+      "$ref": "#/$defs/identifier"
+    },
+    "expected_parent_snapshot_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/output"
+      }
+    },
+    "consistency_groups": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "required": [
+    "protocol_version",
+    "request_identity",
+    "intent",
+    "producer_namespace",
+    "expected_parent_snapshot_id",
+    "outputs"
+  ],
+  "$comment": "No source_bundle, evidence_refs, source paths, execution code, processing logs, license refs or BD locators. Business publisher identity and dynamic payload fields remain governed by the declared product fields."
+}

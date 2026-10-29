@@ -1,0 +1,156 @@
+{
+  "protocol_version": "wfd.product-machine/0.1",
+  "request_id": "bd-e375326e-de5f-458d-9f89-852cb2ab6db2",
+  "operation": "request_status",
+  "ok": true,
+  "result": {
+    "caller_id": "p1-writer",
+    "errors": [],
+    "formal_publication": {
+      "path": "catalog/product_service/formal_publications/c9cd43832867b672b26417749775c407f50275b56cb16165a6ff4c77354bac84.json",
+      "record": {
+        "checks": {
+          "caller_publish_role": true,
+          "commit_marker_present": true,
+          "contracts_verified": true,
+          "dependencies_verified": true,
+          "engine_not_sandbox": true,
+          "evidence_custodied": true,
+          "fixed_readback_verified": true,
+          "snapshot_present": true,
+          "source_formal_grant": true,
+          "valid_commit": true
+        },
+        "commit_marker_sha256": "d3a2aba9928bc09f2c4b391d5dac3421e5e685dc114b5ebe6c0f9bfd51c11ccb",
+        "formal_publication_state": "published_formal",
+        "format_version": "wfd.formal-publication/0.3",
+        "input_fingerprint": "0045e24adfbd35e7d4390ef9439d64bcf42bd9a0b6e0e394ba09fcb1152f2cbd",
+        "outputs": [
+          {
+            "contract_ref": {
+              "dataset_id": "p1_contract_validation",
+              "dependency_type": "read",
+              "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454",
+              "id": "contract_9c7700513553845e18bdba61",
+              "kind": "contract",
+              "namespace": "wfd.product",
+              "required": true,
+              "resolution": "pinned",
+              "version": "v_9c7700513553845e"
+            },
+            "evidence": [
+              {
+                "content_sha256": "sha256:140e9fcbc71222321733a2f2c48c9a2c4193ec413cf212a37fec2099dc784b9e",
+                "verified": true
+              }
+            ],
+            "output_key": "la_port_auto_handled_2023_2025",
+            "product_id": "p_72eeb399a487bbad80981641",
+            "published_content_sha256": "sha256:c89488b24213e0ba6035e19cfc09b8d895e0369841c91f38327a46171bbca6bb",
+            "published_revision_ids": [
+              "r_6893566a79675f844f49c4beac65896f",
+              "r_726c11c9bf8da648c797b4d304772928",
+              "r_88dc9a6ce8ffa1e1324bec5e6b451a62"
+            ]
+          }
+        ],
+        "raw_engine_status": "published_sandbox",
+        "request_identity": {
+          "dataset_id": "p1_contract_validation",
+          "request_id": "p1-new-definition-run_20261026T190546Z",
+          "submission_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "trusted_actor_namespace": "wfd.p1.validation"
+        },
+        "request_key": "c9cd43832867b672b26417749775c407f50275b56cb16165a6ff4c77354bac84",
+        "service_version": "wfd.product-service/0.3",
+        "snapshot_file_sha256": "1593e3f96de91ae18789ef4770dc8663269f543ddd2b37c944f19295816aeccb",
+        "snapshot_id": "s_67599763a42340c8f8f15396",
+        "source_formal_grants": {
+          "p1_fixture": true
+        },
+        "source_ids": [
+          "p1_fixture"
+        ]
+      }
+    },
+    "format_version": "wfd.product-request-state/0.3",
+    "input_fingerprint": "0045e24adfbd35e7d4390ef9439d64bcf42bd9a0b6e0e394ba09fcb1152f2cbd",
+    "output_results": [
+      {
+        "contract_ref": {
+          "dataset_id": "p1_contract_validation",
+          "dependency_type": "read",
+          "digest": "sha256:9c7700513553845e18bdba61d289b5d52c6fb56c869d01b47eba032188f30454",
+          "id": "contract_9c7700513553845e18bdba61",
+          "kind": "contract",
+          "namespace": "wfd.product",
+          "required": true,
+          "resolution": "pinned",
+          "version": "v_9c7700513553845e"
+        },
+        "definition_ref": {
+          "dataset_id": "p1_contract_validation",
+          "dependency_type": "read",
+          "digest": "sha256:0d9f41dd79354796e388b4578660eb4cc1aebd76fa077b11ce552a45a3553a79",
+          "id": "def_0d9f41dd79354796e388b457",
+          "kind": "definition_version",
+          "namespace": "wfd.product",
+          "required": true,
+          "resolution": "pinned",
+          "version": "v_0d9f41dd79354796"
+        },
+        "engine_publication_state": "published_verified",
+        "output_key": "la_port_auto_handled_2023_2025",
+        "product_id": "p_72eeb399a487bbad80981641",
+        "publication_state": "published_formal",
+        "registration_state": "registered",
+        "snapshot_id": "s_67599763a42340c8f8f15396"
+      }
+    ],
+    "phases": {
+      "custody": "verified",
+      "publication": "published",
+      "received": "accepted",
+      "registration": "registered",
+      "validation": "passed"
+    },
+    "publication_intent": "formal",
+    "request_identity": {
+      "dataset_id": "p1_contract_validation",
+      "request_id": "p1-new-definition-run_20261026T190546Z",
+      "submission_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "trusted_actor_namespace": "wfd.p1.validation"
+    },
+    "request_key": "c9cd43832867b672b26417749775c407f50275b56cb16165a6ff4c77354bac84",
+    "service_status": "published_formal",
+    "service_version": "wfd.product-service/0.3",
+    "snapshot_id": "s_67599763a42340c8f8f15396",
+    "state": "published_formal",
+    "service_identity": {
+      "format_version": "wfd.product-capabilities/0.2",
+      "service_version": "wfd.product-service/0.3",
+      "contract_version": "wfd.product-contracts/0.3",
+      "ingest_protocol": "wfd.ingest/1.3-candidate",
+      "schema_id": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json"
+    }
+  },
+  "error": null,
+  "identity": {
+    "caller_id": "bd-p6-reader",
+    "trusted_actor_namespace": "wfd.p1.validation",
+    "caller_roles": [
+      "read",
+      "read_evidence"
+    ],
+    "connection_id": "wfd-product-local-20261027",
+    "source_binding": "trusted constructor configuration; request cannot grant permissions"
+  },
+  "service": {
+    "format_version": "wfd.product-capabilities/0.2",
+    "service_version": "wfd.product-service/0.3",
+    "contract_version": "wfd.product-contracts/0.3",
+    "ingest_protocol": "wfd.ingest/1.3-candidate",
+    "schema_id": "https://wfd.example/spec/v1.3/wfd-ingest.schema.json"
+  },
+  "elapsed_ms": 0
+}
