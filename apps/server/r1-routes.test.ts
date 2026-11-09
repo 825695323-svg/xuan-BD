@@ -233,7 +233,7 @@ test('F01 actual service assembly injects processing; unconfigured Web cannot su
 });
 
 test('F05 real HTTP → processing → Python publish → fixed read → BD links; lost receipt recovers original task after restart',
-  { skip: !python ? 'Requires explicitly selected WFD_PYTHON; no system interpreter or private config discovery.' : false, timeout: 180000 }, async () => {
+  { skip: !python ? 'Requires explicitly selected WFD_PYTHON; no system interpreter or private config discovery.' : false, timeout: 180000 }, async t => {
     const f = fixture(true); let h = await host(f);
     try {
       const ready = await h.call('/r1/capabilities'); assert.equal(ready.connection.profile, 'data_only');
@@ -306,7 +306,13 @@ test('F05 real HTTP → processing → Python publish → fixed read → BD link
       json(join(f.root, 'http-concurrent-submit.json'), { actualHttp: true, actualPython: true,
         concurrentConfirmations: 4, uniqueTaskIds: [...new Set(concurrent.map(item => item.jobId))],
         actualClientSubmitCalls: firstSubmitCalls, taskStatus: done.status });
+      const attemptReads = t.mock.method(h.services.r1!, 'attempt');
+      const recent = await h.call('/r1/requests');
+      assert.deepEqual(recent.items, [{ requestId: first.requestId, state: 'associated', rowCount: 2, errorCode: null }]);
+      assert.equal(attemptReads.mock.callCount(), 0, 'Listing requests must not load full handoff evidence');
       const associated: R1RequestView = await h.call('/r1/requests/r1-http-first'); assert.equal(associated.state, 'associated');
+      assert.equal(attemptReads.mock.callCount(), 1, 'A detail read must verify the frozen handoff only once');
+      attemptReads.mock.restore();
       const associations = associated.local.associations as Record<string, unknown>[]; assert.equal(associations.length, 2);
       assert.ok(associations.every(row => row.record_id && row.record_version && row.snapshot_id));
       const snapshot = String(associations[0]!.snapshot_id);

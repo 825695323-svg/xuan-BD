@@ -51,6 +51,9 @@ export type R1RowResult = { row_index: number; business_key: string } & (
   { state: 'inserted' | 'duplicate_skipped'; record_id: string; record_version: string }
   | { state: 'conflict_pending'; reason: string; difference_fields: string[]; existing_records: R1ConflictRecord[] }
 );
+export interface R1RequestSummary {
+  requestId: string; state: string; rowCount: number; errorCode: string | null;
+}
 export interface R1RequestView {
   requestId: string; state: string; datasetId: string; outputKey: string;
   documentSha256: string; connection: R1ConnectionIdentity;

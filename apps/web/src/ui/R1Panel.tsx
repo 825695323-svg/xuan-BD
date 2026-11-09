@@ -1,7 +1,7 @@
 import { R1DuplicateResult } from './R1DuplicateResult';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, RefreshCw, ShieldAlert } from 'lucide-react';
-import type { R1CapabilitiesView, R1Mapping, R1PrepareInput, R1RequestView, R1ScalarMapping, R1SourceDeclaration, R1TabularMapping, R1TimeMapping } from '../../../../contracts/r1-contracts';
+import type { R1CapabilitiesView, R1Mapping, R1PrepareInput, R1RequestSummary, R1RequestView, R1ScalarMapping, R1SourceDeclaration, R1TabularMapping, R1TimeMapping } from '../../../../contracts/r1-contracts';
 import type { FixedCalculationCandidateSelection } from '../../../../contracts/fixed-calculation-contracts';
 import type { MaterialCategory, MaterialEnvelope, MaterialRecord } from '../../../../modules/collection/materials/contracts';
 import type { XlsxColumnType, XlsxTableSelection } from '../../../../modules/collection/data-processing/xlsx-table';
@@ -226,7 +226,7 @@ function readConstants(value: string): Record<string, OperatorConstant> {
 /** 所有结构化交接沿原 R1 请求身份核对。 */
 export function R1Panel({ algorithmFocus = null }: { algorithmFocus?: AlgorithmEntryFocus | null }) {
   const words = useWords();
-  const [caps, setCaps] = useState<R1CapabilitiesView | null>(null), [recent, setRecent] = useState<R1RequestView[]>([]);
+  const [caps, setCaps] = useState<R1CapabilitiesView | null>(null), [recent, setRecent] = useState<R1RequestSummary[]>([]);
   const [materials, setMaterials] = useState<MaterialEnvelope[]>([]), [materialId, setMaterialId] = useState('');
   const [calculationSelection, setCalculationSelection] = useState<FixedCalculationCandidateSelection | null>(null);
   const [materialCategory, setMaterialCategory] = useState<MaterialCategory>('unclassified');
@@ -309,7 +309,9 @@ export function R1Panel({ algorithmFocus = null }: { algorithmFocus?: AlgorithmE
       usage_scope: text(savedSource.usage_scope), authorization: readAuthorization(savedSource.authorization) });
     // Confirmation belongs to the visible detail load; a refresh requires explicit re-confirmation.
     // A task can settle between list and detail reads; never leave its visible row on an older state.
-    setRecent(items => items.map(item => item.requestId === current.requestId ? current : item));
+    setRecent(items => items.map(item => item.requestId === current.requestId
+      ? { requestId: current.requestId, state: current.state, rowCount: current.rowCount,
+        errorCode: typeof current.error?.code === 'string' ? current.error.code : null } : item));
   };
   const patchScalar = (patch: Partial<R1ScalarMapping>) => setScalarMapping(previous => ({ ...previous, ...patch }));
   const patchXlsx = (patch: Partial<ReturnType<typeof emptyXlsxDraft>>) => setXlsxDraft(previous => ({ ...previous, ...patch }));
