@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { writeFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
@@ -76,7 +76,7 @@ function answersFor(questions: { key: string }[]): Record<string, string> {
 test('适配原件经普通 R1 发布、固定读回、来源均线与派生发布', { skip: !enabled, timeout: 900_000 }, async () => {
   const fixture = createFullChainFixture({ name: 'adapter-r1', machine: true,
     units: { date: { dimension: 'date' }, share: { dimension: 'quantity' }, CNY: { dimension: 'number' } } });
-  const host = await openFullChainHost(fixture);
+  let host = await openFullChainHost(fixture);
   try {
     // 1) 适配候选、重放与采用（普通 HTTP 入口）。
     await host.call('/processing/adapters/candidates', { requestId: 'r1-candidate', input: { config } }, 201);
@@ -185,5 +185,64 @@ test('适配原件经普通 R1 发布、固定读回、来源均线与派生发�
     writeFileSync(join(fixture.root, 'adapter-r1-proof.json'), JSON.stringify({ batchId, binding, classified,
       associations, originalRead: originalRead.result, derived: derived.result, proof,
       sample: { source: '合成等价 JSONP 响应', realVendorReplay: false } }, null, 2));
+
+    // 与前批交叠、且批内出现两次的同一原件，两条都直接指向最早的实际交接。
+    const overlapId = 'adapter-series-reuse';
+    const overlapping = await host.call('/r1/batches/start', { ...input, batchId: overlapId,
+      files: [input.files[0], input.files[0]], algorithmRouting: undefined }, 202) as R1BatchView;
+    const sourceRef = { batchId, itemId: item.itemId };
+    assert.equal(overlapping.state, 'completed');
+    for (const duplicate of overlapping.items) {
+      assert.deepEqual(duplicate.duplicateOf, sourceRef);
+      assert.equal(duplicate.autoRequestId, item.autoRequestId);
+    }
+    const setDuplicate = (id: string, index: number, ref: typeof sourceRef) =>
+      host.database.connection.prepare('UPDATE r1_auto_batches SET record_json=json_set(record_json,?,json(?)) WHERE batch_id=?')
+        .run(`$.items[${index}].duplicateOf`, JSON.stringify(ref), id);
+    const readOverlap = () => host.call('/r1/batches/' + overlapId) as Promise<R1BatchView>;
+    // 模拟旧版多跳记录。正确链能读回，坏链仅在读视图中标明受阻。
+    setDuplicate(overlapId, 1, { batchId: overlapId, itemId: 'item-1' });
+    assert.equal((await readOverlap()).state, 'completed');
+    for (const target of ['item-2', 'missing']) {
+      setDuplicate(overlapId, 1, { batchId: overlapId, itemId: target });
+      const blocked = await readOverlap();
+      assert.equal(blocked.items[0]!.state, 'associated');
+      assert.equal(blocked.items[1]!.error?.code, 'R1_BATCH_DUPLICATE_INVALID');
+      assert.equal(blocked.state, 'blocked');
+    }
+    setDuplicate(overlapId, 1, { batchId: overlapId, itemId: 'item-1' });
+
+    // 相同原件的复权声明改变：复用已经保管的字节，但须以新交接身份重新核本次适配。
+    const changed: R1BatchStartInput = { ...input, batchId: 'adapter-series-hfq',
+      sourceContextTemplate: { ...input.sourceContextTemplate!, adjustment: 'hfq' } };
+    const started = await host.call('/r1/batches/start', changed, 202) as R1BatchView;
+    assert.equal(started.items[0]!.duplicateOf, null);
+    assert.notEqual(started.items[0]!.autoRequestId, item.autoRequestId);
+    const rejected = await wait(() => host.call('/r1/batches/' + changed.batchId) as Promise<R1BatchView>,
+      result => result.items[0]!.state === 'blocked', 'changed source context must be rechecked');
+    assert.equal(rejected.items[0]!.materialId, item.materialId);
+    assert.equal(rejected.items[0]!.error?.code, 'ADAPTER_CONTEXT_MISMATCH');
+
+    // 旧版可能已经留下跨模板的重复指针。重试或新批次名均不能把它当成本次核验。
+    setDuplicate(changed.batchId, 0, { batchId: overlapId, itemId: 'item-2' });
+    const legacyView = await host.call('/r1/batches/' + changed.batchId) as R1BatchView;
+    assert.equal(legacyView.state, 'blocked');
+    assert.equal(legacyView.items[0]!.error?.code, 'R1_BATCH_CONTEXT_CONFLICT');
+    assert.equal(legacyView.items[0]!.auto, null);
+    for (const retryId of [changed.batchId, 'adapter-series-legacy-alias']) {
+      assert.equal((await host.call('/r1/batches/start', { ...changed, batchId: retryId }, 409)).code, 'R1_BATCH_CONTEXT_CONFLICT');
+    }
+
+    // 重开时连接身份已变。已关联的原报与派生仍属原批次，调度器不得写坏历史状态。
+    const batchRecord = (id: string) => host.database.connection.prepare('SELECT record_json FROM r1_auto_batches WHERE batch_id=?').get(id)!.record_json;
+    const saved = batchRecord(batchId), savedConflict = batchRecord(changed.batchId);
+    const oldConnection = host.services.r1Runtime!.currentIdentity();
+    await host.close();
+    appendFileSync(fixture.configPath, '\n');
+    host = await openFullChainHost(fixture);
+    assert.notEqual(host.services.r1Runtime!.currentIdentity().configSha256, oldConnection.configSha256);
+    assert.equal((await host.call('/r1/batches/' + batchId)).state, 'completed');
+    assert.equal(batchRecord(batchId), saved);
+    assert.equal(batchRecord(changed.batchId), savedConflict);
   } finally { await host.close(); }
 });

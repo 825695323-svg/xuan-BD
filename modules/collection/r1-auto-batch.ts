@@ -84,6 +84,7 @@ export interface R1BatchView {
   createdAt: number; updatedAt: number;
 }
 const yielded = new Set<ItemState>(['associated', 'conflicts_pending', 'awaiting_answers', 'blocked']);
+const duplicateErrors = new Set(['R1_BATCH_CONTEXT_CONFLICT', 'R1_BATCH_DUPLICATE_INVALID']);
 function fail(code: string, message: string): never { throw new TaskError(code, message); }
 
 /** A manifest and scheduling journal. Original custody, processing and publication retain their existing owners. */
@@ -130,29 +131,36 @@ export class R1AutoBatchService {
   private calculationEntries(record: BatchRecord): BatchCalculationRecord[] {
     return record.calculations ?? (record.calculation ? [record.calculation] : []);
   }
+  private needsProgress(record: BatchRecord): boolean {
+    if (record.stopped || record.error) return false;
+    // 已办结的批次依赖原交接事实；重开或迟到的任务事件不能按今天的连接重写其状态。
+    return record.items.some(item => (!item.materialId && !item.duplicateOf) || !this.options.auto.isAssociated(item.autoRequestId))
+      || this.calculationEntries(record).some(calc => !calc.materialId || !this.options.auto.isAssociated(calc.requestId));
+  }
   attach(): void {
     if (this.closed || this.unsubscribe.length) return;
     this.chunked.attach();
+    const resume = (record: BatchRecord) => { if (this.needsProgress(record)) void this.schedule(record.input.batchId); };
     this.unsubscribe.push(this.options.auto.subscribe(requestId => {
-      for (const record of this.matching('autoRequestId', requestId)) void this.schedule(record.input.batchId);
-      for (const record of this.records()) if (this.calculationEntries(record).some(calculation => calculation.requestId === requestId)) void this.schedule(record.input.batchId);
+      for (const record of this.matching('autoRequestId', requestId)) resume(record);
     }), this.options.tasks().subscribe(({ task, event }) => {
       if (!['TASK_SUCCEEDED', 'TASK_FAILED', 'TASK_INTERRUPTED', 'TASK_RECONCILED', 'TASK_CANCELLED', 'TASK_PAUSED'].includes(event.type)) return;
-      for (const record of this.matching('custodyTaskId', task.id)) void this.schedule(record.input.batchId);
-      for (const record of this.records()) if (this.calculationEntries(record).some(calculation => calculation.custodyTaskId === task.id)) void this.schedule(record.input.batchId);
+      for (const record of this.matching('custodyTaskId', task.id)) resume(record);
     }));
-    for (const record of this.records()) void this.schedule(record.input.batchId);
+    for (const record of this.records()) resume(record);
   }
   start(value: unknown, operator: OperatorContext): R1BatchView {
     const input = readStart(value), { batchId, ...scope } = input;
     const digest = wfdSha256(canonicalWfdJson(scope)), previous = this.find(batchId);
     if (previous) {
       if (previous.inputSha256 !== digest) fail('R1_BATCH_CONFLICT', '原批次已冻结清单、来源、用途、数据集及授权，不能覆盖。');
+      this.assertReuseContext(previous);
       return { ...this.view(previous), duplicateBatch: true };
     }
     const same = this.db.prepare('SELECT record_json FROM r1_auto_batches WHERE input_sha256=?').get(digest);
     if (same) {
       const original = JSON.parse(String(same.record_json)) as BatchRecord;
+      this.assertReuseContext(original);
       this.db.prepare('INSERT INTO r1_auto_batch_aliases VALUES(?,?)').run(batchId, original.input.batchId);
       return { ...this.view(original), duplicateBatch: true };
     }
@@ -171,16 +179,20 @@ export class R1AutoBatchService {
     const items: BatchItem[] = [];
     for (const [index, file] of input.files.entries()) {
       const requestedUrl = fileUrl(input.source.requested_url, file.relativePath);
-      // 已采用适配是固定项身份的一部分：同字节换配置版本（频率/复权/单位不同）不能命中旧条目继续旧解析。
-      // 无适配输入保持历史摘要（不新增 adapter:null），有适配时才纳入固定三元身份。
-      const entrySha256 = wfdSha256(canonicalWfdJson({ file, source: { ...input.source, requested_url: requestedUrl },
+      // 相同原件可复用保管任务；交接还须绑定本批的来源证据。
+      const custodySha256 = wfdSha256(canonicalWfdJson({ file, source: { ...input.source, requested_url: requestedUrl },
         datasetId: input.datasetId, datePolicy: input.datePolicy ?? null, sourceValueColumns: input.sourceValueColumns ?? null, connection,
         ...(adapter ? { adapter: { adapterId: adapter.adapterId, version: adapter.version, configDigest: adapter.configDigest } } : {}) }));
-      const local = items.find(item => item.entrySha256 === entrySha256), known = this.entry(entrySha256);
+      // 旧条目用保管摘要做交接身份。仅当其所属批次的冻结模板与本次一致时沿用。
+      const legacy = this.entry(custodySha256);
+      const sourceContextTemplate = input.sourceContextTemplate ?? null;
+      const reuseLegacy = canonicalWfdJson(legacy?.sourceContextTemplate ?? null) === canonicalWfdJson(sourceContextTemplate);
+      const entrySha256 = reuseLegacy ? custodySha256 : wfdSha256(canonicalWfdJson({ custodySha256, sourceContextTemplate }));
+      const local = items.find(item => item.entrySha256 === entrySha256), known = reuseLegacy ? legacy : this.entry(entrySha256);
       items.push({ ...file, entrySha256, requestedUrl, itemId: `item-${index + 1}`,
-        uploadRequestId: `batch-upload:${entrySha256}`, autoRequestId: `batch-auto:${entrySha256}`,
+        uploadRequestId: `batch-upload:${custodySha256}`, autoRequestId: `batch-auto:${entrySha256}`,
         custodyTaskId: null, materialId: null, stage: 'awaiting_upload', error: null, policyAnswers: {},
-        duplicateOf: local ? { batchId, itemId: local.itemId } : known ? { batchId: known.batchId, itemId: known.item.itemId } : null });
+        duplicateOf: local ? local.duplicateOf ?? { batchId, itemId: local.itemId } : known ? { batchId: known.batchId, itemId: known.item.itemId } : null });
     }
     const record: BatchRecord = { ...(adapter ? { adapter } : {}), input, inputSha256: digest, connection, operator,
       controlGeneration: this.options.tasks().getControl().generation, stopped: false, error: null, items, createdAt: now, updatedAt: now };
@@ -222,9 +234,11 @@ export class R1AutoBatchService {
   async upload(batchId: string, itemId: string, bytes: Buffer): Promise<R1BatchView> {
     const record = this.require(batchId), item = record.items.find(entry => entry.itemId === itemId) ?? fail('R1_BATCH_ITEM_NOT_FOUND', '没有该批次清单项。');
     if (!Buffer.isBuffer(bytes) || bytes.length !== item.byteLength || wfdSha256(bytes) !== item.sha256) fail('R1_BATCH_FILE_CHANGED', '上传字节与本批次冻结的文件摘要或长度不符，原清单保留。');
+    this.assertReuseContext(record);
     this.assertCurrent(record);
     if (item.duplicateOf) {
-      await this.upload(item.duplicateOf.batchId, item.duplicateOf.itemId, bytes);
+      const original = this.original(record, item);
+      await this.upload(original.batchId, original.item.itemId, bytes);
       return this.get(batchId);
     }
     if (item.custodyTaskId) { void this.schedule(batchId); return this.get(batchId); }
@@ -248,7 +262,7 @@ export class R1AutoBatchService {
     this.uploads.set(key, work); return work;
   }
   async advance(batchId: string): Promise<R1BatchView> {
-    const record = this.require(batchId); this.assertDispatch(); this.assertConnection(record);
+    const record = this.require(batchId); this.assertReuseContext(record); this.assertDispatch(); this.assertConnection(record);
     record.controlGeneration = this.options.tasks().getControl().generation; record.stopped = false; record.error = null; this.save(record);
     for (const item of this.view(record).items) {
       if (item.auto && ['recovering', 'stopped'].includes(item.auto.state)) await this.options.auto.advance(item.autoRequestId);
@@ -304,7 +318,12 @@ export class R1AutoBatchService {
 
   private async progress(batchId: string): Promise<void> {
     const record = this.require(batchId);
-    if (record.stopped || record.error) return;
+    if (!this.needsProgress(record)) return;
+    try { this.assertReuseContext(record); }
+    catch (error) {
+      if (error instanceof TaskError && duplicateErrors.has(error.code)) return; // 历史坏链在读视图中报告。
+      throw error;
+    }
     this.assertCurrent(record);
     for (const item of record.items) {
       if (item.duplicateOf) {
@@ -515,28 +534,34 @@ export class R1AutoBatchService {
       error: auto?.error ?? calculation.error, auto, proof: calculation.proof ? summarizeCalculatedMAProof(calculation.proof) : null };
   }
   private itemView(item: BatchItem, record: BatchRecord): R1BatchItemView {
-    const original = item.duplicateOf ? item.duplicateOf.batchId === record.input.batchId
-      ? record.items.find(entry => entry.itemId === item.duplicateOf!.itemId)!
-      : this.require(item.duplicateOf.batchId).items.find(entry => entry.itemId === item.duplicateOf!.itemId)! : item;
+    let original = item, referenceError: R1AutoView['error'] = null;
+    if (item.duplicateOf) {
+      try { original = this.original(record, item).item; }
+      catch (error) {
+        if (!(error instanceof TaskError && duplicateErrors.has(error.code))) throw error;
+        referenceError = errorView(error);
+      }
+    }
     let auto: R1AutoView | null = null;
-    if (original.materialId) {
+    if (!referenceError && original.materialId) {
       try { auto = this.options.auto.get(original.autoRequestId); }
       catch (error) { if (!(error instanceof TaskError && error.code === 'R1_AUTO_NOT_FOUND')) throw error; }
     }
     return { name: item.name, relativePath: item.relativePath, sha256: item.sha256, byteLength: item.byteLength,
       itemId: item.itemId, requestedUrl: item.requestedUrl, autoRequestId: original.autoRequestId,
       custodyTaskId: original.custodyTaskId, materialId: original.materialId,
-      state: auto?.state ?? (original.stage === 'ready' ? 'inspecting' : original.stage), duplicateOf: item.duplicateOf,
-      error: auto?.error ?? original.error, auto, policyAnswers: original.policyAnswers,
+      state: referenceError ? 'blocked' : auto?.state ?? (original.stage === 'ready' ? 'inspecting' : original.stage), duplicateOf: item.duplicateOf,
+      error: referenceError ?? auto?.error ?? original.error, auto, policyAnswers: original.policyAnswers,
       algorithmInspection: original.algorithmInspection ?? item.algorithmInspection ?? null };
   }
   private view(record: BatchRecord): R1BatchView {
     const items = record.items.map(item => this.itemView(item, record));
     const first = items.find(item => !yielded.has(item.state));
-    const nextUploadItemId = !record.stopped && !record.error && first?.state === 'awaiting_upload' ? first.itemId : null;
+    const error = record.error ?? items.find(item => item.error && duplicateErrors.has(item.error.code))?.error ?? null;
+    const nextUploadItemId = !record.stopped && !error && first?.state === 'awaiting_upload' ? first.itemId : null;
     const calculations = this.calculationEntries(record).map(calculation => this.calculationView(record, calculation)!).filter(Boolean);
     const calculation = calculations[0] ?? null;
-    const state: R1BatchView['state'] = record.stopped ? 'stopped' : record.error ? 'blocked'
+    const state: R1BatchView['state'] = record.stopped ? 'stopped' : error ? 'blocked'
       : items.some(item => item.state === 'recovering') ? 'recovering' : first?.state === 'stopped' ? 'stopped'
       : first?.state === 'awaiting_upload' ? 'awaiting_upload' : first ? 'running'
       : items.some(item => item.state === 'awaiting_answers') ? 'awaiting_answers'
@@ -546,7 +571,7 @@ export class R1AutoBatchService {
       : calculations.some(calculation => !['associated', 'blocked'].includes(calculation.state)) ? 'running'
       : calculations.some(calculation => calculation.state === 'blocked') ? 'blocked' : 'completed';
     return { batchId: record.input.batchId, source: record.input.source, datasetId: record.input.datasetId,
-      datePolicy: record.input.datePolicy ?? null, state, items, nextUploadItemId, error: record.error, duplicateBatch: false,
+      datePolicy: record.input.datePolicy ?? null, state, items, nextUploadItemId, error, duplicateBatch: false,
       sourceValueColumns: record.input.sourceValueColumns ?? null,
       calculation, calculations, algorithmRouting: record.input.algorithmRouting ?? null,
       createdAt: record.createdAt, updatedAt: Math.max(record.updatedAt, ...items.map(item => item.auto?.updatedAt ?? 0)) };
@@ -564,12 +589,41 @@ export class R1AutoBatchService {
   }
   private save(record: BatchRecord): void { record.updatedAt = Date.now(); this.db.prepare('UPDATE r1_auto_batches SET record_json=?,updated_at=? WHERE batch_id=?').run(canonicalWfdJson(record), record.updatedAt, record.input.batchId); }
   private records(limit?: number): BatchRecord[] { return this.db.prepare(`SELECT record_json FROM r1_auto_batches ORDER BY updated_at DESC,rowid DESC ${limit ? 'LIMIT ?' : ''}`).all(...(limit ? [limit] : [])).map(row => JSON.parse(String(row.record_json)) as BatchRecord); }
-  private matching(key: 'autoRequestId' | 'custodyTaskId', value: string): BatchRecord[] { return this.db.prepare(`SELECT record_json FROM r1_auto_batches WHERE EXISTS (SELECT 1 FROM json_each(record_json,'$.items') WHERE json_extract(value,'$.${key}')=?)`).all(value).map(row => JSON.parse(String(row.record_json)) as BatchRecord); }
-  private entry(sha256: string): { batchId: string; item: BatchItem } | null {
-    const row = this.db.prepare("SELECT record_json FROM r1_auto_batches WHERE EXISTS (SELECT 1 FROM json_each(record_json,'$.items') WHERE json_extract(value,'$.entrySha256')=?) ORDER BY rowid LIMIT 1").get(sha256);
+  private matching(key: 'autoRequestId' | 'custodyTaskId', value: string): BatchRecord[] {
+    const calculationKey = key === 'autoRequestId' ? 'requestId' : key;
+    return this.db.prepare(`SELECT record_json FROM r1_auto_batches
+      WHERE EXISTS (SELECT 1 FROM json_each(record_json,'$.items') WHERE json_extract(value,'$.${key}')=?)
+      OR json_extract(record_json,'$.calculation.${calculationKey}')=?
+      OR EXISTS (SELECT 1 FROM json_each(record_json,'$.calculations') WHERE json_extract(value,'$.${calculationKey}')=?)`)
+      .all(value, value, value).map(row => JSON.parse(String(row.record_json)) as BatchRecord);
+  }
+  private entry(sha256: string): { batchId: string; item: BatchItem; sourceContextTemplate?: R1BatchStartInput['sourceContextTemplate'] } | null {
+    const row = this.db.prepare(`SELECT record_json FROM r1_auto_batches WHERE EXISTS (SELECT 1 FROM json_each(record_json,'$.items')
+      WHERE json_extract(value,'$.entrySha256')=? AND json_extract(value,'$.duplicateOf') IS NULL) ORDER BY rowid LIMIT 1`).get(sha256);
     if (!row) return null;
     const record = JSON.parse(String(row.record_json)) as BatchRecord;
     const item = record.items.find(entry => entry.entrySha256 === sha256 && !entry.duplicateOf)!;
+    return { batchId: record.input.batchId, item, sourceContextTemplate: record.input.sourceContextTemplate };
+  }
+  private assertReuseContext(record: BatchRecord): void {
+    for (const item of record.items) if (item.duplicateOf) this.original(record, item);
+  }
+  private original(record: BatchRecord, item: BatchItem): { batchId: string; item: BatchItem } {
+    // 老批次可能保留多跳引用。每次跨批都核冻结的来源条件，只沿真实原项读取。
+    const context = canonicalWfdJson(record.input.sourceContextTemplate ?? null);
+    const visited = new Set<string>();
+    while (item.duplicateOf) {
+      const { batchId, itemId } = item.duplicateOf;
+      const key = batchId + '/' + itemId;
+      if (visited.has(key)) fail('R1_BATCH_DUPLICATE_INVALID', '重复项引用成环，无法核对原交接。');
+      visited.add(key);
+      if (batchId !== record.input.batchId) {
+        record = this.find(batchId) ?? fail('R1_BATCH_DUPLICATE_INVALID', '重复项引用的原批次缺失。');
+        if (canonicalWfdJson(record.input.sourceContextTemplate ?? null) !== context)
+          fail('R1_BATCH_CONTEXT_CONFLICT', '已有批次的重复项来源模板不一致，请核对原交接；未复用旧结果。');
+      }
+      item = record.items.find(entry => entry.itemId === itemId) ?? fail('R1_BATCH_DUPLICATE_INVALID', '重复项引用的原条目缺失。');
+    }
     return { batchId: record.input.batchId, item };
   }
   private find(batchId: string): BatchRecord | null { id(batchId); const row = this.db.prepare('SELECT record_json FROM r1_auto_batches WHERE batch_id=COALESCE((SELECT canonical_id FROM r1_auto_batch_aliases WHERE batch_id=?),?)').get(batchId, batchId); return row ? JSON.parse(String(row.record_json)) as BatchRecord : null; }

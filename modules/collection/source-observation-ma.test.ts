@@ -173,7 +173,8 @@ test('the batch rejects an oversized already-associated input set before calling
     const index = Number(taskId.slice('custody-'.length));
     return { envelope: { materialId: `material-${index}`, sha256: wfdSha256(originals[index]!), byteLength: originals[index]!.length } };
   }, readOriginal: (materialId:string) => ({bytes:originals[Number(materialId.slice('material-'.length))]!}) } as unknown as MaterialService;
-  const auto = { start: (value: { requestId: string; materialId: string }) => {
+  const auto = { isAssociated: (id: string) => autoViews.get(id)?.state === 'associated',
+    start: (value: { requestId: string; materialId: string }) => {
     const view = { ...value, state: 'associated', error: null, updatedAt: 1, currentRequest: {
       ...input('envelope', [['20260101', 'A', '1']]).request, rowCount: 2501 } } as unknown as R1AutoView;
     autoViews.set(value.requestId, view); return view;
