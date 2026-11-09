@@ -4563,24 +4563,7 @@ def _structured_delta_scan_package(bundle, descriptor):
     return snap, products, checked, files
 
 
-def export_structured_delta_bundle(service, product_ids, destination, *, snapshot_id,
-                                   baseline_store, baseline_snapshot_id,
-                                   selection=None, perspective="snapshot_contents"):
-    """Export only missing WFD structured objects over an existing target baseline."""
-    if service.has_permission("export") is not True:
-        raise PermissionError("WFD_EXPORT_PERMISSION_REQUIRED")
-    if perspective != "snapshot_contents":
-        raise ValueError("STRUCTURED_PERSPECTIVE_NOT_IMPLEMENTED")
-    destination = Path(destination)
-    if destination.exists():
-        raise ValueError("BUNDLE_DESTINATION_EXISTS")
-    baseline_products, baseline_snap = _structured_baseline_products(
-        baseline_store, baseline_snapshot_id)
-    baseline_receipt = baseline_snap.get("receipt") or {}
-    baseline_selection = (baseline_receipt.get("normalized_selection_digest")
-                          or baseline_receipt.get("selection_digest"))
-    if not baseline_selection:
-        raise ValueError("STRUCTURED_BASELINE_STATE_UNKNOWN")
+def _structured_export_selection(service, product_ids, snapshot_id, selection, perspective):
     snapshot = _bundle_snapshot(service.engine, snapshot_id)
     discovered = service.discover_products(snapshot_id=snapshot_id)["products"]
     by_id = {p["product_id"]: p for p in discovered}
@@ -4606,6 +4589,30 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
                       "business_time_range": copy.deepcopy(item["business_time_range"])}
                      for item in sorted(selection_products, key=lambda x: x["product_id"])],
     }
+    return selection_products, selection_core
+
+
+def export_structured_delta_bundle(service, product_ids, destination, *, snapshot_id,
+                                   baseline_store, baseline_snapshot_id,
+                                   selection=None, perspective="snapshot_contents"):
+    """Export only missing WFD structured objects over an existing target baseline."""
+    if service.has_permission("export") is not True:
+        raise PermissionError("WFD_EXPORT_PERMISSION_REQUIRED")
+    if perspective != "snapshot_contents":
+        raise ValueError("STRUCTURED_PERSPECTIVE_NOT_IMPLEMENTED")
+    destination = Path(destination)
+    if destination.exists():
+        raise ValueError("BUNDLE_DESTINATION_EXISTS")
+    baseline_products, baseline_snap = _structured_baseline_products(
+        baseline_store, baseline_snapshot_id)
+    baseline_receipt = baseline_snap.get("receipt") or {}
+    baseline_selection = (baseline_receipt.get("normalized_selection_digest")
+                          or baseline_receipt.get("selection_digest"))
+    if not baseline_selection:
+        raise ValueError("STRUCTURED_BASELINE_STATE_UNKNOWN")
+    selection_products, selection_core = _structured_export_selection(
+        service, product_ids, snapshot_id, selection, perspective)
+    source_dataset_id = selection_core["source_dataset_id"]
     normalized_digest = _structured_normalized_digest(selection_core)
     if normalized_digest != baseline_selection:
         raise ValueError("STRUCTURED_BASELINE_SELECTION_MISMATCH")
@@ -5328,31 +5335,9 @@ def export_structured_reference_bundle(service, product_ids, destination, *, sna
     destination = Path(destination)
     if destination.exists():
         raise ValueError("BUNDLE_DESTINATION_EXISTS")
-    snapshot = _bundle_snapshot(service.engine, snapshot_id)
-    discovered = service.discover_products(snapshot_id=snapshot_id)["products"]
-    by_id = {p["product_id"]: p for p in discovered}
-    normalized = _normalize_selection(selection, sorted(set(product_ids or [])))
-    selection_products = []
-    for item in normalized["products"]:
-        product = by_id.get(item["product_id"])
-        if product is None:
-            raise ValueError("STRUCTURED_PRODUCT_NOT_FOUND:" + item["product_id"])
-        if _read_dependencies(product):
-            raise ValueError("STRUCTURED_READ_DEPENDENCY_NOT_IMPLEMENTED")
-        fields = sorted(item["fields"] or _declaration_fields(product))
-        if item.get("subject") is not None and item["subject"] != product.get("subject"):
-            raise ValueError("STRUCTURED_SUBJECT_NOT_IN_PRODUCT_SCOPE")
-        selection_products.append({**item, "fields": fields, "product": product})
-    source_dataset_id = (snapshot.get("receipt", {}).get("dataset_id")
-                         or selection_products[0]["product"]["dataset_id"])
-    selection_core = {
-        "profile": STRUCTURED_PROFILE, "perspective": perspective,
-        "source_dataset_id": source_dataset_id, "source_snapshot_id": snapshot_id,
-        "products": [{"product_id": item["product_id"], "fields": item["fields"],
-                      "subject": copy.deepcopy(item["subject"]),
-                      "business_time_range": copy.deepcopy(item["business_time_range"])}
-                     for item in sorted(selection_products, key=lambda x: x["product_id"])],
-    }
+    selection_products, selection_core = _structured_export_selection(
+        service, product_ids, snapshot_id, selection, perspective)
+    source_dataset_id = selection_core["source_dataset_id"]
     normalized_digest = _structured_normalized_digest(selection_core)
     external = []
     for item in sorted(selection_products, key=lambda x: x["product_id"]):

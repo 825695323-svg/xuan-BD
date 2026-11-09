@@ -1,18 +1,7 @@
 import { Router } from 'express';
-import { TaskError, type TaskRuntime, type TaskService } from '../../platform/jobs/tasks.js';
-import type { PersonalCore } from '../../modules/agent/runtime/core.js';
-import type { HealthResponse } from '../../contracts/contracts.js';
-import type { JsonValue, TaskRecord } from '../../contracts/task-contracts.js';
-import { digestOperationArgs } from '../../platform/security/permissions.js';
-import { DATABASE_PORT_RESERVATION } from '../../adapters/database/data-service-port.js';
-import type { CollectionService } from '../../modules/collection/service.js';
-import type { FinancialService } from '../../modules/financial/service.js';
-import type { FinancialHostSubmission } from '../../modules/financial/types.js';
+import { TaskError } from '../../platform/jobs/tasks.js';
+import type { BdService } from '../../modules/agent/service.js';
 import { financialPublicError } from '../../modules/financial/contracts.js';
-import type { MaterialService } from '../../modules/collection/materials/service.js';
-import type { MaterialSemanticService } from '../../modules/collection/materials/semantic.js';
-
-import { BdService, BD_VERSION, COLLECTION_BD_VERSION, WORKSPACE_BD_VERSION } from '../../modules/agent/service.js';
 
 export function createBdRouter(service: BdService, onResume?: () => void): Router {
     const router = Router();
@@ -112,12 +101,6 @@ export function createBdRouter(service: BdService, onResume?: () => void): Route
     return router;
 }
 
-function isCollectionOperation(operation: string): boolean { return ['collection.receive', 'collection.collect', 'collection.process'].includes(operation); }
-function collectionMaterialIdentity(args: unknown): string {
-  const data = object(args); return digestOperationArgs({ kind: data.kind, inputId: data.inputId, planId: data.planId });
-}
-
-function asJson(value: unknown): JsonValue { return JSON.parse(JSON.stringify(value)) as JsonValue; }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TaskError('INVALID_SERVICE_ARGS', '参数必须是对象。');
   return value as Record<string, unknown>;
