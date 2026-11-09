@@ -10,28 +10,21 @@ from pathlib import Path
 import pytest
 
 from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, canonical, load_protocol_validator
-from wfd_sdk.duckdb_storage import rows_from_parquet
 from wfd_sdk.product_bundle import (
     export_structured_reference_bundle, register_structured_reference_bundle,
 )
 from wfd_sdk.product_data_service import WFDDataOnlyService
+from synthetic_daily import SUBJECT, daily_rows
 
 
 HERE = Path(__file__).resolve().parents[1]
-ROOT = HERE.parents[1]
-DAILY60 = ROOT / "03_测试与验证记录/P3_通用入库与更新_2026-10-27/batches/run_20261026T200932Z/store"
-DAILY60_SID = "s_9c6b1cf47d2f782194474fcf"
-DAILY60_PID = "p_1d757ae27ee0b41b3ac63bcb"
-SUBJECT = {"kind": "instrument", "namespace": "wfd.cn", "id": "instrument_000001_a"}
 KEYS = ["daily_000001_20251226", "daily_000001_20251229",
         "daily_000001_20251230", "daily_000001_20251231"]
 
 
 def _cache():
-    snap = json.loads((DAILY60 / f"catalog/snapshots/{DAILY60_SID}.json").read_text())
-    entry = next(e for e in snap["files"] if e["product_id"] == DAILY60_PID)
-    rows = rows_from_parquet((DAILY60 / entry["file_relpath"]).read_bytes())
-    return {row["business_key"]: row for row in rows if row["business_key"] in KEYS}
+    # Actual snapshots/versions are produced by _submit, not read from old assets.
+    return {row["business_key"]: row for row in daily_rows() if row["business_key"] in KEYS}
 
 
 def _definition():
@@ -134,7 +127,7 @@ def test_structured_reference_reachable_fixed_read_no_bd(tmp_path):
     assert result["read_self_contained"] is False
     assert [row["record_id"] for row in result["rows"]] == KEYS[1:]
     assert [row["row"]["values"]["close_price"]["value"] for row in result["rows"]] == [
-        "11.56", "11.48", "11.41"]
+        "100.40", "100.41", "100.42"]  # generated values, not historical prices
     assert not list((tmp_path / "target/catalog/commits").glob("*.json"))
     assert not list((tmp_path / "target/catalog/snapshots").glob("*.json"))
     assert (tmp_path / "target/catalog/state.json").is_file()

@@ -7,7 +7,8 @@ import type { FileReferenceService } from '../../resources/files.js';
 import type { TaskExecutionContext } from '../../jobs/tasks.js';
 import type { TaskResult } from '../../../contracts/task-contracts.js';
 import { acquireAuthority, DirectError } from '../../runtime/file-workspace.js';
-import { extractPublicWebHtml, publishRawPage, type HtmlExtraction, type RawPageCapture } from './raw-page.js';
+import { extractPublicWebHtml, hasPdfHeader, publishRawPage, publishRawPdf,
+  type HtmlExtraction, type RawPageCapture, type RawPdfCapture } from './raw-page.js';
 export { extractPublicWebHtml } from './raw-page.js';
 
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -130,18 +131,20 @@ export function responseKind(contentType: string): { kind: 'html' | 'text'; char
   const charset = /;\s*charset\s*=\s*(?:"([^"]+)"|([^;\s]+))/iu.exec(contentType);
   if (mime === 'text/html' || mime === 'application/xhtml+xml') return { kind: 'html', mime, charset: charset?.[1] ?? charset?.[2] ?? 'utf-8' };
   if (['text/plain', 'text/markdown', 'text/x-markdown', 'application/json'].includes(mime) || /^application\/[a-z0-9.+-]+\+json$/u.test(mime)) return { kind: 'text', mime, charset: charset?.[1] ?? charset?.[2] ?? 'utf-8' };
-  throw new DirectError('WEB_CONTENT_UNSUPPORTED', '当前只支持公开 HTML、普通文字、Markdown 和 JSON；其他内容请使用明确文件动作。');
+  throw new DirectError('WEB_CONTENT_UNSUPPORTED', '当前动作不支持此响应类型；公开 PDF 原件仅由 web.read_public 接收 application/pdf 响应。');
 }
 
-/** 公开读取与搜索共用同一网络通道；资源收束后才返回完整响应。 */
-export async function fetchPublicWeb(context: TaskExecutionContext, args: { url: string; action?: 'web.read_public' | 'web.search' }, options: PublicWebOptions = {}): Promise<RawPageCapture> {
+/** 公开读取与搜索共用同一网络通道；只有明确读取可保管 PDF 原件。 */
+export function fetchPublicWeb(context: TaskExecutionContext, args: { url: string; action: 'web.search' }, options?: PublicWebOptions): Promise<RawPageCapture>;
+export function fetchPublicWeb(context: TaskExecutionContext, args: { url: string; action?: 'web.read_public' }, options?: PublicWebOptions): Promise<RawPageCapture | RawPdfCapture>;
+export async function fetchPublicWeb(context: TaskExecutionContext, args: { url: string; action?: 'web.read_public' | 'web.search' }, options: PublicWebOptions = {}): Promise<RawPageCapture | RawPdfCapture> {
   const original = validatePublicWebUrl(args.url);
   const action = args.action ?? 'web.read_public';
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > TIMEOUT_MS) throw new DirectError('WEB_BUDGET_INVALID', '网页读取时间预算无效。');
   let remainingMs = timeoutMs, current = original, bytes = 0;
   const visited = new Set<string>();
-  let rawBytes: Uint8Array = new Uint8Array(), mime = '', charset = '', httpStatus = 0, extraction: HtmlExtraction | undefined;
+  let rawBytes: Uint8Array = new Uint8Array(), mime = '', charset = '', httpStatus = 0, extraction: HtmlExtraction | undefined, pdf = false;
   for (let hop = 0; ; hop++) {
     context.signal.throwIfAborted();
     if (visited.has(current.href)) throw new DirectError('WEB_REDIRECT_LOOP', '网页重定向形成循环。');
@@ -164,6 +167,7 @@ export async function fetchPublicWeb(context: TaskExecutionContext, args: { url:
       if (!answers.length || answers.length > 32) throw new DirectError('WEB_DNS_FAILED', '网址未解析到允许数量的公开地址。');
       for (const answer of answers) assertPublicWebAddress(answer);
       response = await (options.transport ?? pinnedGet)({ url: current, address: answers.find((answer) => answer.family === 4) ?? answers[0]!, signal,
+        ...(action === 'web.read_public' ? { headers: { accept: 'application/pdf,text/plain,text/markdown,application/json,text/html;q=0.9' } } : {}),
         assertAuthorized: () => { signal.throwIfAborted(); authority.assert(); } });
       signal.throwIfAborted(); authority.assert();
       if (REDIRECTS.has(response.status)) {
@@ -173,7 +177,13 @@ export async function fetchPublicWeb(context: TaskExecutionContext, args: { url:
         next = validatePublicWebUrl(new URL(location, current).href);
       } else {
         if (header(response, 'content-encoding') && header(response, 'content-encoding').toLowerCase() !== 'identity') throw new DirectError('WEB_ENCODING_UNSUPPORTED', '网页忽略了本次不压缩请求，压缩内容尚不支持。');
-        const kind = responseKind(header(response, 'content-type'));
+        const contentType = header(response, 'content-type');
+        const pdfResponse = action === 'web.read_public' && contentType.split(';', 1)[0]!.trim().toLowerCase() === 'application/pdf';
+        const kind = pdfResponse ? null : responseKind(contentType);
+        if (pdfResponse) {
+          if (response.status === 206 || header(response, 'content-range')) throw new DirectError('WEB_PDF_RESPONSE_INCOMPLETE', 'PDF 返回了部分内容，未保管为完整原件。');
+          if (response.status !== 200) throw new DirectError('WEB_PDF_HTTP_STATUS', 'PDF 未返回完整成功响应，未保管原件。');
+        }
         const length = header(response, 'content-length');
         if (length && (!/^\d+$/u.test(length) || Number(length) > MAX_BYTES)) throw new DirectError('WEB_RESPONSE_LIMIT', '网页响应超过本次 2 MiB 上限。');
         const chunks: Buffer[] = [];
@@ -187,13 +197,18 @@ export async function fetchPublicWeb(context: TaskExecutionContext, args: { url:
         signal.throwIfAborted(); authority.assert();
         if (length && Number(length) !== bytes) throw new DirectError('WEB_RESPONSE_INCOMPLETE', '网页响应长度与声明不一致，未发布不完整内容。');
         rawBytes = Buffer.concat(chunks);
-        let text: string;
-        try { text = new TextDecoder(kind.charset, { fatal: true }).decode(rawBytes); }
-        catch { throw new DirectError('WEB_TEXT_ENCODING_INVALID', '网页字符编码不支持或内容不是有效文字。'); }
-        mime = kind.mime; charset = kind.charset; httpStatus = response.status;
-        extraction = kind.kind === 'html' ? extractPublicWebHtml(text) : { text, title: '', extractor: 'raw-text',
-          status: text.trim() ? 'complete' : 'partial', complete: !!text.trim(), reasons: text.trim() ? [] : ['no-static-body-text'], locations: [] };
-        if (Buffer.byteLength(extraction.text, 'utf8') > MAX_BYTES) throw new DirectError('WEB_TEXT_LIMIT', '提取文字超过本次 2 MiB 上限。');
+        if (pdfResponse) {
+          if (!hasPdfHeader(rawBytes)) throw new DirectError('WEB_PDF_HEADER_INVALID', '响应声明为 PDF，但缺少可核对的 PDF 版本文件头；未保管为 PDF 原件。');
+          mime = 'application/pdf'; charset = ''; httpStatus = response.status; pdf = true;
+        } else {
+          let text: string;
+          try { text = new TextDecoder(kind!.charset, { fatal: true }).decode(rawBytes); }
+          catch { throw new DirectError('WEB_TEXT_ENCODING_INVALID', '网页字符编码不支持或内容不是有效文字。'); }
+          mime = kind!.mime; charset = kind!.charset; httpStatus = response.status;
+          extraction = kind!.kind === 'html' ? extractPublicWebHtml(text) : { text, title: '', extractor: 'raw-text',
+            status: text.trim() ? 'complete' : 'partial', complete: !!text.trim(), reasons: text.trim() ? [] : ['no-static-body-text'], locations: [] };
+          if (Buffer.byteLength(extraction.text, 'utf8') > MAX_BYTES) throw new DirectError('WEB_TEXT_LIMIT', '提取文字超过本次 2 MiB 上限。');
+        }
       }
     } catch (error) { failure = error; }
     finally {
@@ -209,7 +224,7 @@ export async function fetchPublicWeb(context: TaskExecutionContext, args: { url:
       if (context.signal.aborted) context.signal.throwIfAborted();
       if (controller.signal.aborted || remainingMs <= 0) throw new DirectError('WEB_TIMEOUT', '网页读取达到本次 30 秒网络时间预算。');
       if (failure instanceof DirectError) throw failure;
-      throw new DirectError('WEB_REQUEST_FAILED', '网页读取没有取得完整文字，没有自动重试。');
+      throw new DirectError('WEB_REQUEST_FAILED', '公开读取没有取得完整响应，没有自动重试。');
     }
     await context.emit({ type: 'side_effect_result', effectId, outcome: 'succeeded', evidence: '本跳完整响应或重定向已核对，全部自有网络资源已关闭。', data: { status: response!.status, hop, bytes } });
     context.signal.throwIfAborted(); authority.assert();
@@ -217,11 +232,14 @@ export async function fetchPublicWeb(context: TaskExecutionContext, args: { url:
     if (!next) break;
     current = next;
   }
+  if (pdf) return { kind: 'pdf', action: 'web.read_public', sourceURL: original.href, finalURL: current.href,
+    bytes: rawBytes, contentType: 'application/pdf', httpStatus: 200, sourceKind: 'http-response' };
   return { action, sourceURL: original.href, finalURL: current.href,
     bytes: rawBytes, contentType: mime, charset, httpStatus, sourceKind: 'http-response', extraction: extraction! };
 }
 
-/** 显式零模型读取；完整文字只发布到应用自产目录。 */
+/** 显式零模型读取；PDF 只保管原件，文字网页沿原正文路径发布。 */
 export async function readPublicWeb(context: TaskExecutionContext, args: { url: string }, files: FileReferenceService, artifactRoot: string, options: PublicWebOptions = {}): Promise<TaskResult> {
-  return publishRawPage(context, files, artifactRoot, await fetchPublicWeb(context, args, options));
+  const capture = await fetchPublicWeb(context, args, options);
+  return capture.kind === 'pdf' ? publishRawPdf(context, files, artifactRoot, capture) : publishRawPage(context, files, artifactRoot, capture);
 }

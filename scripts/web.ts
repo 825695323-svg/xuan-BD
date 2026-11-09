@@ -48,7 +48,7 @@ export async function runWeb(args: readonly string[] = process.argv.slice(2)): P
   } catch (error) {
     const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
     const message = code === 'EADDRINUSE' ? '本机 4317 端口已有实例；请先关闭原实例，未接管其状态。'
-      : code === 'STATE_IN_USE' ? '状态目录已有所有者或遗留锁；请先核对原实例与 .harness-owner.lock，不能自动接管。'
+      : code === 'STATE_IN_USE' ? '状态目录已有所有者或遗留锁；请先核对原实例与 .bd-owner.lock，不能自动接管。'
       : code === 'WEB_BUILD_MISSING' ? '网页资源尚未构建；请先运行 npm run build。'
       : code === 'INVALID_ARGUMENTS' ? '用法：启动入口 [--runtime-root=绝对工作目录] [--launcher=绝对定位文件]。端口与本机绑定不可覆盖。'
       : 'xuan BD 启动失败；请核对既有工作目录、配置和状态访问权限。';

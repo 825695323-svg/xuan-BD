@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "node": "24.22.1",
+  "npm": "11.19.1",
+  "python": "3.12.15",
+  "pythonRequirements": "config/local-web-python-requirements.txt",
+  "minimumFreeBytes": 268435456
+}

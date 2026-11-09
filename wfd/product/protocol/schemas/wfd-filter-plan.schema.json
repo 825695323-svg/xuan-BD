@@ -1,0 +1,536 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wfd.example/spec/v1.4/wfd-filter-plan.schema.json",
+  "title": "WFD bounded structured object filter, 1.4-product1",
+  "description": "Fixed snapshot and registered product/field bindings. Exact decimal predicates and three-valued logic. Historical qualification stays in existing product contracts. This protocol declaration does not imply production release or historical qualification acceptance.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "dataset_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+    },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+    },
+    "history_mode": {
+      "type": "string",
+      "enum": [
+        "snapshot_contents",
+        "market_known_at",
+        "system_held_at"
+      ]
+    },
+    "knowledge_cutoff": {
+      "oneOf": [
+        {
+          "$ref": "https://wfd.example/spec/v1.3/wfd-common.schema.json#/$defs/TimeWithPrecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "held_scope": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "usable_stage": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "acquired",
+            "custodied",
+            "published_readable"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "business_time_range": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "role": {
+              "type": "string",
+              "enum": [
+                "observation",
+                "statistical_period",
+                "event",
+                "public",
+                "expected",
+                "effective",
+                "session_date",
+                "declared",
+                "validity"
+              ]
+            },
+            "start": {
+              "type": "string",
+              "pattern": "^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})(?:T[0-9]{2}:[0-9]{2}:[0-9]{2})?$"
+            },
+            "end": {
+              "type": "string",
+              "pattern": "^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})(?:T[0-9]{2}:[0-9]{2}:[0-9]{2})?$"
+            },
+            "timezone": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "role",
+            "start",
+            "end",
+            "timezone"
+          ],
+          "description": "真实本地时间区间：日期端点按 timezone 解释；date-only end 为含当日，datetime end 为含该秒。"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "max_nodes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200000,
+      "description": "read_product 中表示本次固定快照内该产品允许预扫的物理候选行上限；预算超限在读取业务行前拒绝。"
+    },
+    "max_scan_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 268435456,
+      "description": "读取业务行前的预算：固定快照元数据加该产品全部 manifest 文件实际大小；没有文件范围索引时保守按产品全部文件计。"
+    },
+    "page_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500
+    },
+    "protocol_version": {
+      "const": "wfd.filter-objects/1.4-product1"
+    },
+    "operation": {
+      "const": "filter_objects"
+    },
+    "universe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "explicit_subjects"
+        },
+        "subjects": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/subject"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "subjects"
+      ]
+    },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "metric": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+          },
+          "field": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+          },
+          "bindings": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "subject": {
+                  "$ref": "#/$defs/subject"
+                },
+                "product_id": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+                }
+              },
+              "required": [
+                "subject",
+                "product_id"
+              ]
+            }
+          }
+        },
+        "required": [
+          "metric",
+          "field",
+          "bindings"
+        ]
+      }
+    },
+    "predicate": {
+      "$ref": "#/$defs/predicate"
+    },
+    "order_by": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "subject"
+              },
+              "direction": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "direction"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "metric"
+              },
+              "metric": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+              },
+              "direction": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              },
+              "nulls": {
+                "enum": [
+                  "first",
+                  "last"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "metric",
+              "direction",
+              "nulls"
+            ]
+          }
+        ]
+      }
+    },
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "context_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "dataset_id",
+    "snapshot_id",
+    "history_mode",
+    "knowledge_cutoff",
+    "held_scope",
+    "usable_stage",
+    "business_time_range",
+    "max_nodes",
+    "max_scan_bytes",
+    "page_size",
+    "protocol_version",
+    "operation",
+    "universe",
+    "metrics",
+    "predicate",
+    "order_by"
+  ],
+  "$defs": {
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "entity",
+            "instrument",
+            "listing",
+            "region"
+          ]
+        },
+        "namespace": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        }
+      },
+      "required": [
+        "kind",
+        "namespace",
+        "id"
+      ]
+    },
+    "constant": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "data_type": {
+          "const": "decimal"
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+        },
+        "unit_code": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+        }
+      },
+      "required": [
+        "data_type",
+        "value",
+        "unit_code"
+      ]
+    },
+    "predicate": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "compare": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "metric": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+                },
+                "op": {
+                  "enum": [
+                    "=",
+                    ">=",
+                    "<=",
+                    ">",
+                    "<"
+                  ]
+                },
+                "value": {
+                  "$ref": "#/$defs/constant"
+                }
+              },
+              "required": [
+                "metric",
+                "op",
+                "value"
+              ]
+            }
+          },
+          "required": [
+            "compare"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "between": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "metric": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+                },
+                "low": {
+                  "$ref": "#/$defs/constant"
+                },
+                "high": {
+                  "$ref": "#/$defs/constant"
+                },
+                "include_low": {
+                  "type": "boolean"
+                },
+                "include_high": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "metric",
+                "low",
+                "high",
+                "include_low",
+                "include_high"
+              ]
+            }
+          },
+          "required": [
+            "between"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "in": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "metric": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+                },
+                "values": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "uniqueItems": true,
+                  "items": {
+                    "$ref": "#/$defs/constant"
+                  }
+                }
+              },
+              "required": [
+                "metric",
+                "values"
+              ]
+            }
+          },
+          "required": [
+            "in"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "compare_metrics": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "left": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+                },
+                "right": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
+                },
+                "op": {
+                  "enum": [
+                    "=",
+                    ">=",
+                    "<=",
+                    ">",
+                    "<"
+                  ]
+                }
+              },
+              "required": [
+                "left",
+                "right",
+                "op"
+              ]
+            }
+          },
+          "required": [
+            "compare_metrics"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "and": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/$defs/predicate"
+              }
+            }
+          },
+          "required": [
+            "and"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "or": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/$defs/predicate"
+              }
+            }
+          },
+          "required": [
+            "or"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "not": {
+              "$ref": "#/$defs/predicate"
+            }
+          },
+          "required": [
+            "not"
+          ]
+        }
+      ]
+    }
+  }
+}

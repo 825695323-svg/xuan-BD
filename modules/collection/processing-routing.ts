@@ -1,4 +1,5 @@
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
+import type { EligibilityHistoryMode, EligibilityPurpose, PurposeEvidenceClaim, RestrictionEvidence } from './purpose-eligibility.js';
 
 /** 保管状态只有三项，与路由状态分开保存；处理拒绝不得回写或删除保管事实。 */
 export const CUSTODY_STATES = ['inventoried', 'receiving', 'received'] as const;
@@ -27,6 +28,8 @@ export interface NormalizedEvidence {
   materialId?: string; materialSha256?: string;
   requestId?: string; field?: string; method?: string; path?: string; remoteAddress?: string | null; observedAt?: number;
   messageId?: string;
+  table?: { selectionSha256: string; projectionSha256: string; sheetName: string; sheetPart: string; column: string;
+    scope: 'header' | 'column_constant'; headerCell: string; firstDataRow: number; lastDataRow: number; selectedRows: number };
 }
 export interface NormalizedDimension {
   key: DimensionKey;
@@ -41,12 +44,31 @@ export interface MaterialFacts {
   format: string; support: string; adapter: { id: string; version: string } | null;
   custodyState: Extract<CustodyState, 'received'>;
 }
+export interface StructuredUsage {
+  purpose: EligibilityPurpose;
+  historyMode: EligibilityHistoryMode | null;
+  cutoff: string | null;
+  perspective: string | null;
+  /** 由受信结构化动作构造；不接受把任意原话重贴成另一用途。 */
+  purposeEvidence: PurposeEvidenceClaim[];
+  /** 实际 WFD 治理读取/检查证据；发布边界缺失时阻断。 */
+  restriction?: RestrictionEvidence;
+}
+export interface UsageQualification {
+  status: 'eligible' | 'ineligible' | 'insufficient_evidence';
+  gaps: string[];
+  checkedScope: string[];
+  evidenceSha256: string;
+  historyUse: string | null;
+}
 export interface RoutingDecisionFacts {
   material: MaterialFacts;
   dimensions: NormalizedDimension[];
   target?: { present: boolean; kind: 'productRef' | 'declaration' | 'none'; expectedSnapshotId: string | null };
   /** 只接受受信请求里的明确动作；自然语言用途说明不参与发布判定。 */
   intendedAction?: 'inspect' | 'publish';
+  /** 共用用途资格的实际判决；非 eligible 时不能形成 ready_candidate/publishEligible。 */
+  usage?: UsageQualification | null;
   rejected: boolean;
   outputId: string | null;
 }
@@ -56,11 +78,11 @@ export interface RoutingDecision {
   gaps: string[];
 }
 
-/** 固定政策：只实现当前 CSV/JSON 与已有转换产物能承接的确定性规则；不把 174 条业务规则批量标为通过。 */
+/** 固定政策：只签发已列明并实际执行的受控规则；专用适配不授予通用业务核验资格。 */
 export const PROCESSING_POLICY = Object.freeze({
-  version: 'bd-processing-policy/1',
-  scope: 'strict UTF-8 CSV and JSON row tables; explicit field mapping, trim, empty-to-null, scalar typing, constant annotations and structural checks only',
-  ruleCoverage: '仅上述已绑定规则；其余 174 条业务规则未实现、未执行，不能由本政策签发通过。',
+  version: 'bd-processing-policy/2',
+  scope: 'CSV/JSON row tables and explicit XLSX cells; declared exact numeric grammar; namespace-resolved numeric XBRL subset; reviewed whole UTF-8 business paragraphs; frozen native PDF table regions; trusted fixed CAS/CNY standardization and legal natural-year quarter/TTM calculations. Per-output applicability and gaps remain explicit.',
+  ruleCoverage: '仅已列明且本输出实际执行的规则；未适配概念、单位、维度、财年、文字用途或修订相容性保持缺口，其余业务规则不能由结构检查批量签发通过。',
   unknownPolicy: 'unknown/conflict 保持缺口；不按不适用跳过，也不阻断不依赖它的解析、清洗或结构完整性检查。发布/算法具体用途资格单独判断；结构检查成功不等于来源真实性或业务语义已验证。',
   purposePolicy: '使用目的只能由真实操作者请求字段或真实用户消息证据确认；模型建议只作未采用建议。',
   reusePolicy: '相同固定输入、规则、实现版本和政策的已完成步骤可复用；变化只重算受影响步骤及下游。',
@@ -112,10 +134,12 @@ export interface OutputRoutingFacts extends RoutingDecisionFacts {
   outputState: 'pending' | 'structured' | 'blocked' | 'failed' | 'custody_only';
   processingGaps: string[];
   adapterGaps: string[];
+  /** 仅显式金融表格目标要求此门；通用结构检查与旧标量计划不因此改变。 */
+  semantic?: { quality: 'pending' | 'pass' | 'fail' | 'indeterminate'; gaps: string[] } | null;
 }
 /** 输出级路由：逐输出独立；已完成核对为 ready_candidate，发布用途仍须目标。 */
 export function deriveOutputRouting(facts: OutputRoutingFacts): RoutingDecision {
-  const gaps = unique([...gapsForDimensions(facts.dimensions), ...facts.adapterGaps, ...facts.processingGaps]);
+  const gaps = unique([...gapsForDimensions(facts.dimensions), ...facts.adapterGaps, ...facts.processingGaps, ...(facts.semantic?.gaps ?? [])]);
   if (facts.rejected) return { custodyState: facts.material.custodyState, routingState: 'rejected', gaps: unique([...gaps, '操作者明确拒绝该输出用途。']) };
   if (facts.adapterGaps.length || facts.material.support !== 'supported') return { custodyState: facts.material.custodyState, routingState: 'needs_adapter', gaps };
   if (CLASSIFICATION_DIMENSIONS.some(key => facts.dimensions.find(item => item.key === key)?.status !== 'known')) {
@@ -126,8 +150,16 @@ export function deriveOutputRouting(facts: OutputRoutingFacts): RoutingDecision 
   }
   if (facts.outputState === 'failed') return { custodyState: facts.material.custodyState, routingState: 'needs_review', gaps: unique([...gaps, '输出处理失败；保留原件与上游产物，未形成通过证明。']) };
   if (facts.outputState === 'blocked') return { custodyState: facts.material.custodyState, routingState: 'needs_review', gaps: unique([...gaps, '输出处理仍有阻塞步骤；未形成候选。']) };
+  if (facts.usage && facts.usage.status !== 'eligible') {
+    return { custodyState: facts.material.custodyState, routingState: 'needs_review',
+      gaps: unique([...gaps, ...facts.usage.gaps]) };
+  }
   if (isPublishAction(facts.intendedAction) && !facts.target?.present) {
     return { custodyState: facts.material.custodyState, routingState: 'needs_target', gaps: unique([...gaps, '发布用途尚无冻结的已有产品引用或完整新声明。']) };
+  }
+  if (facts.semantic && facts.semantic.quality !== 'pass') {
+    return { custodyState: facts.material.custodyState, routingState: 'needs_review',
+      gaps: unique([...gaps, `本输出金融规则核对为 ${facts.semantic.quality}；结构产物不代表金融发布资格。`]) };
   }
   if (facts.outputState === 'structured') return { custodyState: facts.material.custodyState, routingState: 'ready_candidate', gaps };
   if (facts.outputState === 'custody_only') return { custodyState: facts.material.custodyState, routingState: 'needs_review', gaps: unique([...gaps, '仅保管原件，尚未声明可执行表源规则。']) };

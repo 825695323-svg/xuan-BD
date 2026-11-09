@@ -38,7 +38,9 @@ export function createAlgorithmRouter(services: AlgorithmRouteServices) {
     if (Object.keys(body).some(key => !['requestId', 'call'].includes(key)) || typeof body.requestId !== 'string' || !isRecord(body.call)) {
       throw new CoreError('INVALID_ALGORITHM_BODY', '计算请求只接受 requestId 与结构化 call 对象。', 400);
     }
-    res.status(202).json(service().submit(body.requestId, body.call));
+    res.status(202).json(service().submit(body.requestId, body.call, {
+      authority: 'operator-http', requestId: body.requestId, observedAtUtc: new Date().toISOString(),
+    }));
   });
   router.get('/calls/:taskId', (req, res) => {
     if (typeof req.params.taskId !== 'string' || !req.params.taskId) throw new CoreError('INVALID_ALGORITHM_TASK', '缺少任务编号。', 400);

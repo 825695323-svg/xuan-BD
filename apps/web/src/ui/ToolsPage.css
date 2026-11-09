@@ -1,7 +1,6 @@
 /* 基础数据算法：沿用数据页的两栏结构、主题变量与紧凑控件。 */
 
 .tools-page { align-items: stretch; }
-.tools-nav { display: flex; flex-direction: column; }
 .tools-tool-id { flex: 0 0 auto; color: var(--weak); font: .68rem/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .tools-panel { display: flex; flex-direction: column; }
 .tools-content { width: 100%; max-width: 1000px; min-width: 0; }
@@ -100,4 +99,294 @@
 @media (max-width: 860px) {
   .tools-form-section { padding: 12px; }
   .tools-result-table th, .tools-result-table td { padding: 6px 7px; }
+}
+
+/* 统一算法查找：来源、用途分类与条目列表共用左栏；右侧保留原详情与原操作。 */
+.tools-nav-block { display: grid; gap: 4px; min-width: 0; }
+.tools-nav-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 2px 10px 3px; color: var(--muted); font-size: .68rem; letter-spacing: .02em; }
+.tools-source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
+.tools-filter-list { display: grid; gap: 1px; }
+.tools-filter-button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 31px; padding: 5px 10px; border-radius: 7px; color: var(--ink); font-size: .79rem; line-height: 1.4; text-align: left; }
+.tools-filter-button:hover { background: var(--hover); }
+.tools-filter-button[aria-pressed="true"] { background: var(--selected); color: var(--accent); }
+.tools-filter-button > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.tools-filter-count { margin-left: auto; flex: 0 0 auto; color: var(--weak); font-size: .68rem; font-variant-numeric: tabular-nums; }
+.tools-filter-button[aria-pressed="true"] .tools-filter-count { color: inherit; }
+.tools-nav-results { margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--line); }
+.tools-entry-group { display: grid; gap: 1px; margin-bottom: 9px; }
+.tools-entry-group-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 5px 10px 3px; color: var(--weak); font-size: .66rem; letter-spacing: .02em; }
+.tools-entry-group-title > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.tools-nav-entry { display: grid; gap: 2px; width: 100%; min-height: 38px; padding: 6px 10px; border-radius: 7px; color: var(--ink); text-align: left; }
+.tools-nav-entry:hover { background: var(--hover); }
+.tools-nav-entry[aria-current="true"] { background: var(--selected); color: var(--accent); }
+.tools-nav-entry-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .81rem; line-height: 1.4; }
+.tools-nav-entry-meta { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--weak); font-size: .64rem; line-height: 1.4; }
+.tools-nav-entry-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tools-source-tag { display: inline-flex; align-items: center; flex: 0 0 auto; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--muted); font-size: .63rem; line-height: 1.5; white-space: nowrap; }
+.tools-source-tag[data-kind="library"] { background: color-mix(in srgb, var(--accent) 11%, transparent); color: color-mix(in srgb, var(--accent) 82%, var(--ink)); }
+.tools-source-tag[data-kind="fixed"] { background: color-mix(in srgb, var(--status-green) 12%, transparent); color: color-mix(in srgb, var(--status-green) 72%, var(--ink)); }
+.tools-source-tag[data-kind="batch"] { background: color-mix(in srgb, var(--status-warning) 13%, transparent); color: color-mix(in srgb, var(--status-warning) 74%, var(--ink)); }
+.tools-group-tag { display: inline-flex; align-items: center; padding: 1px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); font-size: .66rem; line-height: 1.5; white-space: nowrap; }
+.tools-source-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 18px; }
+.tools-source-card { display: grid; gap: 5px; min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-2); }
+.tools-source-card[data-status="error"], .tools-source-card[data-status="unavailable"] { border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); }
+.tools-source-card[data-status="blocked"] { border-color: color-mix(in srgb, var(--status-warning) 34%, var(--line)); }
+.tools-source-card[data-status="ready"] { border-color: color-mix(in srgb, var(--status-green) 28%, var(--line)); }
+.tools-source-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tools-source-card-head .tools-spin { color: var(--muted); }
+.tools-source-card-count { color: var(--ink); font-size: 1.28rem; font-weight: 600; line-height: 1.3; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tools-source-card-count > span { color: var(--muted); font-size: .72rem; font-weight: 500; }
+.tools-source-card-note { color: var(--muted); font-size: .72rem; line-height: 1.55; overflow-wrap: anywhere; }
+.tools-scope-note { margin-top: 16px; padding: 8px 11px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); font-size: .75rem; line-height: 1.55; }
+.tools-entry-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; margin-top: 12px; }
+.tools-entry-actions .tools-field-hint { flex: 1 1 260px; margin: 0; }
+.tools-open-entry { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+@media (max-width: 1080px) {
+  .tools-source-overview { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+}
+@media (max-width: 860px) {
+  .tools-page .tools-nav { max-height: 340px; }
+  .tools-source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tools-filter-button { padding: 5px 8px; font-size: .77rem; }
+}
+
+/* 处置建议：只读设计稿，与上方登记状态和下方受控计算分区显示。 */
+.tools-design { padding: 12px 14px; border: 1px dashed var(--line); border-radius: 12px; background: var(--surface-2); }
+.tools-design-badge { padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: .7rem; white-space: nowrap; }
+.tools-design-note { margin: 6px 0 10px; color: var(--muted); font-size: .76rem; line-height: 1.6; overflow-wrap: anywhere; }
+.tools-design-text { margin: 4px 0 10px; color: var(--ink); font-size: .82rem; line-height: 1.7; overflow-wrap: anywhere; }
+.tools-design .tools-meta { margin-bottom: 10px; }
+.tools-design-ledger { margin-top: 16px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-2); }
+.tools-design-ledger > summary { display: flex; align-items: center; gap: 9px; padding: 10px 13px; cursor: pointer; color: var(--ink); font-size: .8rem; line-height: 1.5; list-style: none; }
+.tools-design-ledger > summary::-webkit-details-marker { display: none; }
+.tools-design-ledger > summary::before { content: '▸'; flex: 0 0 auto; color: var(--muted); font-size: .72rem; }
+.tools-design-ledger[open] > summary::before { content: '▾'; }
+.tools-design-ledger-count { flex: 0 0 auto; margin-left: auto; color: var(--muted); font: .7rem/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.tools-design-ledger-body { padding: 2px 14px 16px; border-top: 1px solid var(--line); }
+.tools-design-ledger-body h5 { margin: 16px 0 7px; font-size: .82rem; font-weight: 600; }
+.tools-design-table-wrap { max-width: 100%; overflow-x: auto; }
+.tools-design-table { width: 100%; min-width: 620px; border-collapse: collapse; font-size: .74rem; line-height: 1.6; }
+.tools-design-table th, .tools-design-table td { padding: 7px 9px; border: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.tools-design-table th { background: var(--surface); color: var(--muted); font-weight: 600; }
+.tools-design-list { margin: 0; padding-left: 20px; color: var(--muted); font-size: .76rem; line-height: 1.7; }
+.tools-design-list li { margin: 5px 0; }
+@media (max-width: 720px) {
+  .tools-design { padding: 10px; }
+  .tools-design-ledger-body { padding: 2px 10px 14px; }
+}
+
+/* 接口源式分类编排：复用 market-* / source-check-* 版式，只读、无拖拽、无写入。 */
+.algo-head .tools-refresh { margin-left: auto; }
+.algo-board { margin-top: 18px; }
+.algo-board-section { margin-bottom: 20px; }
+.algo-board-section-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 2px; }
+.algo-board-section-head h3 { margin: 0; font-size: .9rem; font-weight: 600; }
+.algo-board-section .market-types { max-width: none; margin-top: 8px; }
+button.algo-card { width: 100%; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); color: var(--ink); font: inherit; text-align: left; cursor: pointer; transition: border-color .12s ease, background .12s ease; }
+button.algo-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+button.algo-card.is-selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface-2)); }
+button.algo-card .market-type-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.algo-card .market-type-asset { max-width: 45%; overflow: hidden; text-overflow: ellipsis; font: .68rem/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
+button.algo-card .market-type-box-body { min-height: 22px; }
+button.algo-card .market-type-chip, button.algo-card .market-type-chip:active { cursor: default; }
+.algo-card-kind { flex: 0 0 auto; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--muted); font-size: .7rem; }
+.algo-card-kind[data-kind="fixed"] { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.algo-card-kind[data-kind="batch"] { background: color-mix(in srgb, var(--status-warning) 14%, transparent); color: var(--status-warning); }
+.algo-card-desc { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 2px 0 8px; color: var(--muted); font-size: .74rem; line-height: 1.55; }
+.algo-card-open { color: var(--muted); font-size: .72rem; }
+button.algo-card.is-selected .algo-card-open { color: var(--accent); }
+.algo-detail-head { display: flex; align-items: baseline; gap: 10px; margin: 24px 0 4px; padding-top: 14px; border-top: 1px solid var(--line); }
+.algo-detail-head h3 { margin: 0; font-size: .92rem; font-weight: 600; }
+.algo-detail-head .market-state { margin-left: auto; }
+.source-check-block .tools-source-overview { margin-top: 10px; }
+@media (max-width: 720px) {
+  button.algo-card .market-type-pair { grid-template-columns: 1fr; }
+  .algo-board-section .market-types { grid-template-columns: 1fr; }
+  .algo-head { flex-wrap: wrap; }
+}
+
+/* 左侧目录：接口源页的 data-nav-item / is-group / data-nav-children 体系，折叠只影响显示。 */
+.algo-nav-count { flex: 0 0 auto; color: var(--muted); font: .72rem/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
+/* 算法目录的条目全部是二级项；与接口源/采集源一级目录保持同一字号，不再额外缩小。 */
+.algo-nav .data-nav-item,
+.algo-nav .data-nav-item.is-child,
+.algo-nav .data-nav-item.is-group.is-child { font-size: .92rem; }
+.algo-nav-subhead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 9px 0 2px; padding: 0 12px; color: var(--muted); font-size: .72rem; }
+.algo-nav-entry-title, .algo-nav-category-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.algo-nav .data-nav-item[aria-current="true"] .data-nav-dot { background: var(--accent); }
+
+
+/* 右侧整页：执行链状态卡默认收起，主体是当前打开算法的完整内容。 */
+.algo-status-details { margin-top: 8px; }
+.algo-status-details > summary { cursor: pointer; padding: 2px 0; color: var(--muted); font-size: .76rem; list-style: none; }
+.algo-status-details > summary::-webkit-details-marker { display: none; }
+.algo-status-details > summary::before { content: '▸'; margin-right: 6px; }
+.algo-status-details[open] > summary::before { content: '▾'; }
+.source-check-block .tools-source-overview { margin-top: 8px; }
+.tools-page .tools-content { max-width: none; }
+.tools-page .tools-tool-head { margin-top: 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
+.tools-page .tools-title { font-size: 1.12rem; }
+.tools-page .tools-section:not(.tools-design) { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.tools-page .tools-compute { border-color: color-mix(in srgb, var(--accent) 32%, var(--line)); }
+.tools-page .tools-result { background: var(--surface-2); }
+@media (max-width: 720px) {
+  .tools-page .tools-section:not(.tools-design), .tools-page .tools-tool-head { padding: 11px 12px; }
+}
+
+/* 四层结构：算法定义 / 计算配置 / 数据产品 / 运行状态；工程细节收进开发诊断。 */
+.algo-counts { margin-top: 4px; color: var(--muted); font-size: .78rem; line-height: 1.6; }
+.algo-detail-head .tools-description { max-width: 82ch; }
+.algo-layer-note { margin-left: auto; color: var(--weak); font-size: .72rem; }
+.algo-layer-run { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.algo-layer-run .tools-section-head { margin-bottom: 10px; }
+
+.algo-formula { display: grid; gap: 6px; margin: 2px 0 14px; }
+.algo-formula-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; padding: 7px 10px; border-left: 2px solid color-mix(in srgb, var(--accent) 42%, var(--line)); border-radius: 0 8px 8px 0; background: var(--surface-2); }
+.algo-formula-output { flex: 0 0 auto; min-width: 4.5rem; color: var(--muted); font-size: .72rem; font-weight: 600; letter-spacing: .01em; }
+.algo-formula-code { flex: 1 1 320px; min-width: 0; color: var(--ink); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .8rem; line-height: 1.65; overflow-wrap: anywhere; }
+.algo-formula-note { flex: 1 1 100%; color: var(--weak); font-size: .72rem; line-height: 1.6; }
+
+.algo-semantics { display: grid; gap: 8px; margin: 0 0 12px; }
+.algo-semantics > div { display: grid; gap: 2px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.algo-semantics > div[data-state="conflict"] { border-color: color-mix(in srgb, var(--status-warning) 38%, var(--line)); background: color-mix(in srgb, var(--status-warning) 6%, var(--surface)); }
+.algo-semantics dt { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: .7rem; }
+.algo-semantics dd { margin: 0; font-size: .8rem; line-height: 1.6; overflow-wrap: anywhere; }
+.algo-flag { padding: 0 5px; border-radius: 4px; font-size: .64rem; line-height: 1.6; }
+.algo-flag[data-state="conflict"] { background: color-mix(in srgb, var(--status-warning) 16%, transparent); color: color-mix(in srgb, var(--status-warning) 82%, var(--ink)); }
+.algo-flag[data-state="unresolved"] { background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--muted); }
+.algo-meta { margin-top: 12px; }
+.algo-limits { margin-top: 12px; }
+
+.algo-impl { display: grid; gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
+.algo-impl > li { padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+.algo-impl-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.algo-impl-id { flex: 1 1 200px; min-width: 0; color: var(--ink); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .74rem; overflow-wrap: anywhere; }
+.algo-impl-role { flex: 0 0 auto; padding: 0 6px; border-radius: 999px; font-size: .64rem; line-height: 1.7; }
+.algo-impl-role[data-role="primary"] { background: color-mix(in srgb, var(--status-green) 14%, transparent); color: color-mix(in srgb, var(--status-green) 76%, var(--ink)); }
+.algo-impl-role[data-role="reference"] { background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--muted); }
+.algo-impl-lang { flex: 0 0 auto; color: var(--weak); font-size: .68rem; }
+.algo-impl-version { flex: 0 0 auto; color: var(--muted); font-size: .68rem; }
+
+.algo-config-list { display: grid; gap: 8px; }
+.algo-config { padding: 9px 11px; border: 1px dashed var(--line); border-radius: 9px; }
+.algo-config-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.algo-config-head strong { font-size: .82rem; }
+.algo-config-id { color: var(--weak); font-size: .68rem; }
+.algo-config-meta { margin: 4px 0 0; color: var(--muted); font-size: .76rem; line-height: 1.6; }
+
+.algo-products { display: grid; gap: 9px; }
+.algo-product { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.algo-product-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.algo-product-head strong { font-size: .84rem; }
+.algo-product-kind { padding: 0 6px; border-radius: 999px; font-size: .64rem; line-height: 1.7; }
+.algo-product-kind[data-kind="fixed"] { background: color-mix(in srgb, var(--status-green) 13%, transparent); color: color-mix(in srgb, var(--status-green) 74%, var(--ink)); }
+.algo-product-kind[data-kind="batch"] { background: color-mix(in srgb, var(--status-warning) 15%, transparent); color: color-mix(in srgb, var(--status-warning) 76%, var(--ink)); }
+.algo-product-note { margin: 5px 0 0; color: var(--muted); font-size: .78rem; line-height: 1.6; }
+.algo-product-open { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; color: var(--accent); font-size: .76rem; }
+.algo-product-banner { margin: 8px 0 0; padding: 7px 10px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); font-size: .76rem; line-height: 1.6; }
+
+.algo-status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.algo-status-cell { display: grid; gap: 3px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+.algo-status-cell[data-tone="ok"] { border-color: color-mix(in srgb, var(--status-green) 26%, var(--line)); }
+.algo-status-cell[data-tone="warn"] { border-color: color-mix(in srgb, var(--status-warning) 32%, var(--line)); }
+.algo-status-cell[data-tone="bad"] { border-color: color-mix(in srgb, var(--danger) 28%, var(--line)); }
+.algo-status-label { color: var(--muted); font-size: .68rem; }
+.algo-status-value { font-size: .84rem; font-weight: 600; }
+.algo-status-value[data-tone="ok"] { color: color-mix(in srgb, var(--status-green) 72%, var(--ink)); }
+.algo-status-value[data-tone="warn"] { color: color-mix(in srgb, var(--status-warning) 78%, var(--ink)); }
+.algo-status-value[data-tone="bad"] { color: var(--danger); }
+.algo-status-value[data-tone="idle"] { color: var(--muted); }
+.algo-status-basis { color: var(--weak); font-size: .7rem; line-height: 1.55; overflow-wrap: anywhere; }
+.algo-overall { display: grid; gap: 3px; margin: 10px 0 0; padding: 9px 11px; border-radius: 9px; background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.algo-overall strong { font-size: .84rem; }
+.algo-overall span { color: var(--muted); font-size: .76rem; line-height: 1.6; overflow-wrap: anywhere; }
+.algo-overall[data-tone="bad"] { background: color-mix(in srgb, var(--danger) 7%, transparent); }
+.algo-overall[data-tone="bad"] strong { color: var(--danger); }
+.algo-overall[data-tone="ok"] { background: color-mix(in srgb, var(--status-green) 8%, transparent); }
+.algo-overall[data-tone="ok"] strong { color: color-mix(in srgb, var(--status-green) 74%, var(--ink)); }
+.algo-status-error { margin-top: 8px; }
+
+.tools-dev { margin-top: 16px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-2); }
+.tools-dev > summary { display: flex; align-items: center; gap: 9px; padding: 10px 13px; cursor: pointer; color: var(--muted); font-size: .8rem; list-style: none; }
+.tools-dev > summary::-webkit-details-marker { display: none; }
+.tools-dev > summary::before { content: '▸'; flex: 0 0 auto; color: var(--weak); font-size: .72rem; }
+.tools-dev[open] > summary::before { content: '▾'; }
+.tools-dev-count { flex: 0 0 auto; margin-left: auto; color: var(--weak); font: .7rem/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.tools-dev-body { padding: 4px 14px 14px; border-top: 1px solid var(--line); }
+.tools-dev-body .tools-design { margin-top: 12px; background: var(--surface); }
+
+.algo-nav-products { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+
+@media (max-width: 980px) {
+  .algo-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .algo-layer-note { display: none; }
+}
+@media (max-width: 720px) {
+  .algo-status-grid { grid-template-columns: 1fr; }
+  .algo-layer-run { padding: 11px 12px; }
+  .algo-formula-code { flex-basis: 100%; }
+}
+
+/* 数据产品目录与设计附录：只读设计稿，表格可横向滚动，不引入任何写操作。 */
+.algo-catalog { margin-top: 18px; }
+.algo-catalog-block { margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.algo-catalog-block > summary { display: flex; align-items: center; gap: 9px; padding: 9px 12px; cursor: pointer; color: var(--ink); font-size: .82rem; list-style: none; }
+.algo-catalog-block > summary::-webkit-details-marker { display: none; }
+.algo-catalog-block > summary::before { content: '▸'; flex: 0 0 auto; color: var(--weak); font-size: .72rem; }
+.algo-catalog-block[open] > summary::before { content: '▾'; }
+.algo-catalog-block .tools-design-table-wrap { padding: 0 12px 12px; }
+.algo-catalog-table { min-width: 1080px; }
+.algo-catalog-table td { font-size: .74rem; line-height: 1.6; }
+
+.algo-appendix { margin-top: 12px; }
+.algo-appendix .tools-dev-body h5 { margin: 16px 0 6px; font-size: .84rem; font-weight: 600; }
+.algo-appendix .tools-dev-body h5:first-of-type { margin-top: 6px; }
+.algo-rules { margin: 4px 0 8px; padding-left: 20px; color: var(--muted); font-size: .78rem; line-height: 1.7; }
+.algo-rules li { margin: 6px 0; }
+.algo-spec-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.algo-external { margin: 8px 0 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.algo-external strong { font-size: .8rem; }
+.algo-external p { margin: 4px 0 0; color: var(--muted); font-size: .76rem; line-height: 1.65; }
+.algo-links { display: flex; flex-wrap: wrap; gap: 10px; }
+.algo-links a { color: var(--accent); font-size: .76rem; text-decoration: none; }
+.algo-links a:hover { text-decoration: underline; }
+@media (max-width: 720px) {
+  .algo-spec-grid { grid-template-columns: 1fr; }
+  .algo-catalog-block .tools-design-table-wrap { padding: 0 8px 10px; }
+}
+
+/* 附录里的原文说明：逐字保留，等宽换行，不解析 Markdown。 */
+.algo-note { margin: 6px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.algo-note > summary { padding: 7px 10px; cursor: pointer; color: var(--ink); font-size: .78rem; list-style: none; }
+.algo-note > summary::-webkit-details-marker { display: none; }
+.algo-note > summary::before { content: '▸'; margin-right: 6px; color: var(--weak); font-size: .7rem; }
+.algo-note[open] > summary::before { content: '▾'; }
+.algo-note-text { margin: 0; padding: 10px 12px; border-top: 1px solid var(--line); color: var(--muted); font: .72rem/1.75 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 设计目录改为按钮头，便于左侧跳转直接展开与定位。 */
+.algo-catalog-head { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 12px; border: 0; background: none; color: var(--ink); font: inherit; font-size: .82rem; text-align: left; cursor: pointer; }
+.algo-catalog-head:hover { color: var(--accent); }
+.algo-catalog-head > span:first-child { flex: 1 1 auto; min-width: 0; }
+.tools-dev-summary { display: flex; align-items: center; gap: 9px; width: 100%; padding: 10px 13px; border: 0; background: none; color: var(--muted); font: inherit; font-size: .8rem; text-align: left; cursor: pointer; }
+.tools-dev-summary:hover { color: var(--ink); }
+.tools-dev-summary > span:first-child { flex: 1 1 auto; min-width: 0; }
+tr[data-focus="true"] td { background: color-mix(in srgb, var(--accent) 11%, var(--surface)); }
+.algo-nav-design { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+
+/* 设计登记：与算法同分类列出，条目与详情都只读。 */
+.tools-source-tag[data-kind="design"] { background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--muted); }
+.algo-wide { grid-column: 1 / -1; }
+
+/* 设计条目与算法的互相关联：只做跳转，不改变任何状态。 */
+.algo-related { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.algo-related-chip { padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2); color: var(--ink); font: inherit; font-size: .74rem; cursor: pointer; }
+.algo-related-chip:hover { border-color: var(--accent); color: var(--accent); }
+.algo-design-body { margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+
+/* 第三栏外壳已给出名称与状态：详情内的原头部只保留说明文字，不再重复卡片与标题。 */
+.tools-page .object-detail .tools-tool-head {
+  margin: 0 0 6px;
+  padding: 0;
+  border: 0;
+  background: none;
 }

@@ -36,7 +36,7 @@ export interface BrowserHost {
   shutdown(): Promise<void>;
 }
 interface Owner {
-  version: 1; application: 'xuan-harness-browser'; runtimeIdentity: string; homeRoot: string; profileRoot: string;
+  version: 1; application: 'xuan-bd-browser'; runtimeIdentity: string; homeRoot: string; profileRoot: string;
   nonce: string; state: 'starting' | 'ready' | 'stopped' | 'unknown';
   enginePid?: number; daemonPid?: number; portFileSha256?: string; daemonFileSha256?: string;
 }
@@ -70,13 +70,16 @@ export async function startBrowserHost(options: BrowserHostOptions): Promise<Bro
   }
   const profileRoot = join(homeRoot, 'profile'), bbRoot = join(homeRoot, '.bb-browser');
   const configuration: BrowserConfiguration = { daemonConfigPath: join(bbRoot, 'daemon.json'), adapterRoot: join(bbRoot, 'bb-sites'), privateRoot: join(bbRoot, 'sites') };
-  const portFile = join(profileRoot, 'DevToolsActivePort'), ownerPath = join(homeRoot, '.harness-browser-owner.json'), lockPath = join(homeRoot, '.harness-browser.lock');
+  const portFile = join(profileRoot, 'DevToolsActivePort'), ownerPath = join(homeRoot, '.bd-browser-owner.json'), lockPath = join(homeRoot, '.bd-browser.lock');
+  if (['.harness-browser-owner.json', '.harness-browser.lock'].some(name => exists(join(homeRoot, name)))) {
+    throw new DirectError('BROWSER_OWNER_UNCONFIRMED', '原应用浏览器所有者尚未完成命名迁移；请先核对原停止事实，不自动接管。');
+  }
   let previous: Owner | undefined;
   if (exists(ownerPath)) {
     let value: unknown;
     try { value = JSON.parse((await readBrowserBoundFile(ownerPath, 16_000)).toString('utf8')); }
     catch { throw new DirectError('BROWSER_OWNER_UNCONFIRMED', '浏览器原所有者记录无法核对；未读取其他配置或接管进程。'); }
-    if (!object(value) || value.version !== 1 || value.application !== 'xuan-harness-browser' || value.runtimeIdentity !== runtimeIdentity
+    if (!object(value) || value.version !== 1 || value.application !== 'xuan-bd-browser' || value.runtimeIdentity !== runtimeIdentity
       || value.homeRoot !== homeRoot || value.profileRoot !== profileRoot || value.state !== 'stopped' || typeof value.nonce !== 'string') {
       throw new DirectError('BROWSER_OWNER_UNCONFIRMED', '独立浏览器原所有者或停止状态未确认；未接管、停止或删除遗留现场。');
     }
@@ -93,11 +96,11 @@ export async function startBrowserHost(options: BrowserHostOptions): Promise<Bro
   try { await writeFile(lockPath, lockBody, { flag: 'wx', mode: 0o600 }); }
   catch { throw new DirectError('BROWSER_OWNER_UNCONFIRMED', '浏览器专用根仍有所有者锁；不按进程编号或时间自动抢占。'); }
   const lockIdentity = inspectPath(lockPath);
-  let owner: Owner = { version: 1, application: 'xuan-harness-browser', runtimeIdentity, homeRoot, profileRoot, nonce, state: 'starting' };
+  let owner: Owner = { version: 1, application: 'xuan-bd-browser', runtimeIdentity, homeRoot, profileRoot, nonce, state: 'starting' };
   let engine: Service | undefined, daemon: Service | undefined, shutdownDone: Promise<void> | undefined, ownedBrowserSocket: string | undefined;
   const saveOwner = async () => {
     assertCurrent();
-    const temporary = join(homeRoot, '.harness-browser-owner-' + nonce + '.tmp');
+    const temporary = join(homeRoot, '.bd-browser-owner-' + nonce + '.tmp');
     await writeFile(temporary, JSON.stringify(owner) + '\n', { mode: 0o600, flag: 'wx' }); await rename(temporary, ownerPath);
   };
   const snapshotDiscovery = async () => {

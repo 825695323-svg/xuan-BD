@@ -3,6 +3,7 @@
 """取得平安银行首批产品材料；只下载与结构化，不创建数据库或安装依赖。"""
 from __future__ import annotations
 
+import argparse
 import csv
 import hashlib
 import json
@@ -16,10 +17,10 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from run_financial_slice import new_output_directory, selected_directory, selected_program
 
 ENGINE = Path(__file__).resolve().parents[1]
-DEST = ENGINE / "fixtures/financial_products"
-MATERIALS = Path("/Users/mashiro/数据清洗 特征提取 标注 前期汇总原包")
+DEST = MATERIALS = SLICE_ROOT = PDF_PYTHON = None
 START, END = "2026-04-01", "2026-06-30"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.szse.cn/"}
 
@@ -155,7 +156,7 @@ def assemble():
     listing = next(row for row in listing_block["data"] if row["agdm"] == "000001")
     ann_meta, ann_raw = response("cninfo_2026031_metadata")
     announcement = next(row for row in ann_raw["announcements"] if row["announcementId"] == "1225475348" and row["secCode"] == "000001")
-    slice_dir = ENGINE / "fixtures/financial_slice"
+    slice_dir = SLICE_ROOT
     original_acquisition = json.loads((slice_dir / "official_acquisition.json").read_text("utf-8"))
     board_meta = local_source("cninfo_board_1225475348", slice_dir / "cninfo_1225475348.pdf", "平安银行股份有限公司；披露平台：巨潮资讯网", acquisition=original_acquisition)
     assert board_meta["response_sha256"] == original_acquisition["sha256"]
@@ -232,8 +233,7 @@ def assemble():
             summary_pdf = DEST / summary_meta["response_file"]
             summary_text = summary_pdf.with_suffix(".txt")
             if not summary_text.exists():
-                pdf_python = "/Users/mashiro/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
-                extraction = subprocess.run([pdf_python, "-c", "from pypdf import PdfReader; import sys; print('\\n\\f\\n'.join(p.extract_text() for p in PdfReader(sys.argv[1]).pages))", str(summary_pdf)],
+                extraction = subprocess.run([PDF_PYTHON, "-c", "from pypdf import PdfReader; import sys; print('\\n\\f\\n'.join(p.extract_text() for p in PdfReader(sys.argv[1]).pages))", str(summary_pdf)],
                                             capture_output=True, text=True, check=True)
                 summary_text.write_text(extraction.stdout, "utf-8")
             report_text = summary_text.read_text("utf-8")
@@ -283,5 +283,17 @@ def assemble():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--fetch", action="store_true", required=True, help="明确执行本脚本列出的网络采集")
+    parser.add_argument("--output", type=Path, required=True, help="全新工程外输出目录；父目录须存在")
+    parser.add_argument("--materials-root", type=Path, required=True, help="本次明确选择的既有原包根")
+    parser.add_argument("--slice-root", type=Path, required=True, help="明确选择的既有公告小样目录")
+    parser.add_argument("--pdf-python", type=Path, required=True, help="明确选择的 PDF 文字提取解释器")
+    args = parser.parse_args()
+    MATERIALS = selected_directory(args.materials_root)
+    SLICE_ROOT = selected_directory(args.slice_root)
+    PDF_PYTHON = selected_program(args.pdf_python)
+    DEST = new_output_directory(args.output, MATERIALS, SLICE_ROOT)
+    DEST.mkdir(mode=0o700)
     acquire()
     assemble()

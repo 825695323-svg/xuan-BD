@@ -42,7 +42,7 @@ export interface PiBackendConfig extends PiRequestHooks {
   resolveApiKey?: () => Promise<string>;
   customModel?: PiCustomModelConfig;
   toolFactory?: (context: PiToolFactoryContext) => readonly ToolDefinition[] | Promise<readonly ToolDefinition[]>;
-  /** 含首次请求；工具模式显式配置1到8次，另加已接受的引导输入。 */
+  /** 含首次请求；工具模式显式配置1到32次，另加已接受的引导输入。 */
   maxModelRequests?: number;
   /** 受信宿主的角色提示；不从用户或模型输入读取。 */
   systemPrompt?: string;

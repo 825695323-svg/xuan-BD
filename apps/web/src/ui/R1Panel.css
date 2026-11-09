@@ -1,0 +1,68 @@
+.r1-panel { display: grid; gap: 20px; min-width: 0; }
+.r1-panel .database-overview-head { margin-bottom: 0; }
+.r1-form, .r1-stage { display: grid; gap: 12px; min-width: 0; }
+.r1-form fieldset, .r1-stage { margin: 0; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.r1-form fieldset { display: grid; gap: 14px; min-width: 0; }
+.r1-form legend, .r1-stage h3 { margin: 0; padding: 0 4px; font-size: .93rem; font-weight: 600; color: var(--ink); }
+.r1-panel label { display: grid; gap: 6px; min-width: 0; font-size: .84rem; color: var(--ink); }
+.r1-panel input:not([type=checkbox]), .r1-panel textarea, .r1-panel select { width: 100%; min-width: 0; min-height: 40px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--surface-2); font: inherit; }
+.r1-panel textarea { min-height: 180px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .8rem; line-height: 1.5; }
+.r1-panel input:focus-visible, .r1-panel select:focus-visible, .r1-panel textarea:focus-visible, .r1-panel button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.r1-panel :disabled { cursor: not-allowed; opacity: .62; }
+.r1-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; }
+.r1-actions { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+.r1-actions > label { flex: 1 1 220px; }
+.r1-panel button { min-height: 40px; }
+.r1-panel .primary-button, .r1-panel .text-button { justify-self: start; }
+.r1-help, .r1-notice { margin: 0; font-size: .82rem; line-height: 1.65; overflow-wrap: anywhere; }
+.r1-help { color: var(--muted); max-width: 80ch; }
+.r1-notice { padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft-surface); color: var(--ink); }
+.r1-panel code, .r1-panel .database-receipt span { overflow-wrap: anywhere; }
+.r1-panel .database-text-preview { max-height: 360px; overflow: auto; margin: 0; padding: 12px; border-radius: 8px; background: var(--surface-2); font-size: .79rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.r1-panel .r1-confirm { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; line-height: 1.6; }
+.r1-confirm input { width: 20px; height: 20px; flex: 0 0 20px; margin: 1px 0 0; accent-color: var(--accent); }
+.r1-success { display: flex; align-items: flex-start; gap: 8px; margin: 0; color: var(--ink); font-size: .86rem; line-height: 1.65; }
+.r1-success svg { flex: 0 0 auto; margin-top: 3px; }
+.r1-panel details > summary { cursor: pointer; min-height: 32px; padding: 5px 0; font-size: .85rem; }
+.r1-field-list { display: grid; gap: 10px; min-width: 0; }
+.r1-field-row { display: grid; grid-template-columns: minmax(120px, .9fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: 10px 12px; align-items: end; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.r1-field-row label { font-size: .78rem; }
+.r1-field-row input { min-height: 36px; }
+.r1-field-row .text-button { align-self: end; }
+.r1-public-time { padding-top: 10px; border-top: 1px solid var(--line); }
+.r1-panel textarea.r1-constants { min-height: 90px; }
+.r1-proof { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft-surface); }
+.r1-proof > p { margin: 0; font-size: .84rem; line-height: 1.65; }
+.r1-proof-state { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+.r1-proof-state > p { margin: 0; font-size: .83rem; line-height: 1.65; }
+.r1-proof-state--pass > p:first-child { color: var(--accent); }
+.r1-proof-state--fail > p:first-child { color: var(--danger); }
+.r1-proof-state--pending > p:first-child, .r1-proof-state--indeterminate > p:first-child { color: var(--muted); }
+.r1-proof-gaps { display: grid; gap: 4px; margin: 0; padding-left: 1.2em; font-size: .82rem; line-height: 1.6; color: var(--ink); }
+.r1-material, .r1-xlsx, .r1-raw-preview { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft-surface); }
+.r1-material > p, .r1-xlsx > p, .r1-raw-preview > p { margin: 0; font-size: .84rem; line-height: 1.6; overflow-wrap: anywhere; }
+.r1-raw-preview { background: var(--surface); }
+.r1-table-scroll { max-width: 100%; overflow: auto; }
+.r1-table-scroll table { border-collapse: collapse; min-width: max-content; font-size: .8rem; }
+.r1-table-scroll th, .r1-table-scroll td { max-width: 260px; padding: 7px 9px; border: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.r1-read-result { display: grid; gap: 12px; min-width: 0; }
+.r1-read-result caption { text-align: left; padding-bottom: 8px; font-weight: 600; }
+.r1-read-result td small { display: block; margin-top: 5px; color: var(--muted); font-size: .74rem; }
+.r1-read-fields { display: grid; gap: 10px; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.r1-read-fields legend { font-size: .84rem; padding: 0 4px; }
+.r1-read-field-options { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.r1-panel .r1-read-field-options label { display: flex; align-items: center; gap: 7px; overflow-wrap: anywhere; }
+.r1-read-field-options input { width: 18px; height: 18px; flex: 0 0 18px; margin: 0; accent-color: var(--accent); }
+.r1-lifecycle { display: flex; flex-wrap: wrap; gap: 8px; }
+.r1-lifecycle span { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft-surface); color: var(--ink); font-size: .81rem; line-height: 1.5; }
+@media (max-width: 760px) {
+  .database-page { flex-direction: column; }
+  .database-page > .data-nav { display: flex; flex: 0 0 auto; gap: 4px; width: 100%; overflow-x: auto; overflow-y: hidden; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px; }
+  .database-page > .data-nav .data-nav-item { flex: 0 0 auto; width: auto; min-height: 40px; }
+  .database-page > .database-panel { padding: 16px; }
+  .r1-grid { grid-template-columns: minmax(0, 1fr); }
+  .r1-field-row { grid-template-columns: minmax(0, 1fr); }
+  .r1-form fieldset, .r1-stage { padding: 14px; }
+  .r1-actions { align-items: stretch; }
+  .r1-actions > button { flex: 1 1 auto; white-space: normal; }
+}

@@ -30,7 +30,7 @@ export class ResourceBindings {
     if (lstatSync(join(runtimeRoot, 'config/.bindings-maintenance.lock'), { throwIfNoEntry: false })) throw new Error('资源绑定正在受控维护；请等待维护完成后启动。');
     const marker = objectFile(join(runtimeRoot, '.xuan-runtime.json'));
     const value = objectFile(join(runtimeRoot, 'config/machine.bindings.json'));
-    if (marker.application !== 'xuan-harness' || marker.version !== 1 || typeof marker.identity !== 'string'
+    if (marker.application !== 'xuan-bd' || marker.version !== 1 || typeof marker.identity !== 'string'
       || value.version !== 1 || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1
       || value.runtimeIdentity !== marker.identity || !record(value.resources)) throw new Error('运行根身份或资源绑定版本无效。');
     this.document = value as unknown as MachineBindingDocument;
@@ -102,12 +102,12 @@ export class ResourceBindings {
 
 /** 固定发现规则定位配置；具体机器位置只保存在该记录或明确启动覆盖中。 */
 export function launcherPath(): string {
-  if (process.platform === 'darwin') return join(homedir(), 'Library/Application Support/Xuan Harness/launcher.json');
-  if (process.platform === 'win32') return join(homedir(), 'AppData', 'Local', 'Xuan Harness', 'launcher.json');
+  if (process.platform === 'darwin') return join(homedir(), 'Library/Application Support/Xuan BD/launcher.json');
+  if (process.platform === 'win32') return join(homedir(), 'AppData', 'Local', 'Xuan BD', 'launcher.json');
   throw new Error('随包启动当前支持 macOS arm64 与 Windows x64；此平台尚未提供依赖。');
 }
 export function locateRuntimeRoot(explicit?: string, environment: NodeJS.ProcessEnv = process.env, locatorFile?: string): string {
-  const override = explicit ?? environment.XUAN_HARNESS_HOME;
+  const override = explicit ?? environment.XUAN_BD_HOME;
   if (override !== undefined) {
     if (!isAbsolute(override) || override.includes('\0')) throw new Error('运行工作根覆盖需要绝对路径。');
     return resolve(override);

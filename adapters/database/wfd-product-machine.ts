@@ -1,6 +1,7 @@
+import { R1_CONTEXT_OPERATIONS, type R1ContextOperation } from '../../contracts/r1-contracts.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { realpathSync, statSync } from 'node:fs';
+import { appendFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { DataServiceError } from './wfd-error.js';
 import { isWfdRecord, type WfdRecord } from './wfd-transport.js';
@@ -8,7 +9,7 @@ import { isWfdRecord, type WfdRecord } from './wfd-transport.js';
 /**
  * 公开本地结构化进程边界：WFD `wfd.product-machine/0.1`。
  *
- * 与旧 `wfd.data-service/v1` generic-transport 完全分开：本适配只启动 WFD
+ * 本适配只启动当前 WFD
  * 产品开发目录中的 `wfd_sdk/product_machine.py`，通过 stdin/stdout 传一个有界 JSON
  * 请求；不连接旧 `/v3/data-entry`，不借用旧六列或 user_test 线路，不直接读取
  * WFD 私有 catalog。store/runtime、调用者命名空间、角色、来源许可和单位只来自
@@ -23,6 +24,21 @@ export const WFD_PRODUCT_MACHINE_PROTOCOL = 'wfd.product-machine/0.1';
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const MAX_STDERR_BYTES = 16_384;
 const WRITE_OPERATIONS = new Set(['submit', 'recovery', 'evidence_ingest', 'batch_begin', 'batch_put_chunk', 'batch_finalize']);
+
+/**
+ * 计时侧信道：仅在设置 BD_WFD_TIMING_LOG 时逐次追加 JSONL，不改请求/回执形状。
+ * 用于把一次提交拆成序列化、进程启动、传输、WFD 内部（机器自报 elapsed_ms）与读回。
+ */
+export interface WfdTimingEntry {
+  at: number; operation: string; requestId: string; write: boolean; ok: boolean;
+  requestBytes: number; responseBytes: number; serializeMs: number; spawnMs: number;
+  stdinMs: number; waitMs: number; totalMs: number; machineElapsedMs: number | null;
+}
+function recordTiming(entry: WfdTimingEntry): void {
+  const target = process.env.BD_WFD_TIMING_LOG;
+  if (!target) return;
+  try { appendFileSync(target, JSON.stringify(entry) + '\n'); } catch { /* 计时不得影响主流程 */ }
+}
 
 export interface WfdProductMachineConfiguration {
   /** 已安装 duckdb/jsonschema/thrift 依赖的 Python 解释器绝对路径。 */
@@ -60,14 +76,61 @@ export interface WfdProductMachineReply {
   transport: WfdProductMachineTransport;
 }
 
+/** A local alias is only a plan reference; products/fields resolve in the pinned snapshot. */
+export interface WfdFilterSubject { kind: 'entity' | 'instrument' | 'listing' | 'region'; namespace: string; id: string }
+export interface WfdFilterConstant { data_type: 'decimal'; value: string; unit_code: string }
+export type WfdFilterOperator = '=' | '>=' | '<=' | '>' | '<';
+export type WfdFilterPredicate =
+  | { compare: { metric: string; op: WfdFilterOperator; value: WfdFilterConstant } }
+  | { between: { metric: string; low: WfdFilterConstant; high: WfdFilterConstant; include_low: boolean; include_high: boolean } }
+  | { in: { metric: string; values: WfdFilterConstant[] } }
+  | { compare_metrics: { left: string; right: string; op: WfdFilterOperator } }
+  | { and: WfdFilterPredicate[] } | { or: WfdFilterPredicate[] } | { not: WfdFilterPredicate };
+export interface WfdFilterPlan {
+  protocol_version: 'wfd.filter-objects/1.4-product1'; operation: 'filter_objects';
+  dataset_id: string; snapshot_id: string;
+  history_mode: 'snapshot_contents' | 'market_known_at' | 'system_held_at';
+  knowledge_cutoff: WfdRecord | null; held_scope: string | null; usable_stage: 'acquired' | 'custodied' | 'published_readable' | null;
+  universe: { kind: 'explicit_subjects'; subjects: WfdFilterSubject[] };
+  metrics: Array<{ metric: string; field: string; bindings: Array<{ subject: WfdFilterSubject; product_id: string }> }>;
+  business_time_range: { role: string; start: string; end: string; timezone: string } | null;
+  predicate: WfdFilterPredicate;
+  order_by: Array<{ kind: 'subject'; direction: 'asc' | 'desc' }
+    | { kind: 'metric'; metric: string; direction: 'asc' | 'desc'; nulls: 'first' | 'last' }>;
+  page_size: number; max_scan_bytes: number; max_nodes: number; cursor?: string | null;
+  /** Digest of a host-owned joint document/index context, when composed by BD. */
+  context_digest?: string;
+}
+
 export interface WfdProductMachineReadOptions {
   snapshotId: string;
   productId?: string;
   perspective?: 'snapshot_contents' | 'market_known_at' | 'system_held_at';
   at?: string;
+  heldScope?: string;
+  usableStage?: 'acquired' | 'custodied' | 'published_readable';
   subject?: string;
   includeHistory?: boolean;
   rowProjection?: 'full' | 'compact';
+}
+
+/** Additive, fixed snapshot_contents selection; never a truncated fixed_read. */
+export interface WfdProductMachineReadPageOptions {
+  snapshotId: string;
+  productId: string;
+  recordRefs: Array<{ record_id: string; record_version: string }>;
+  pageSize?: number;
+  maxPageBytes?: number;
+  cursor?: string | null;
+}
+
+/** Whole current nonwithdrawn product leaves; not an enlarged R1 selected-ref request. */
+export interface WfdProductMachineReadProductPageOptions {
+  snapshotId: string;
+  productId: string;
+  pageSize?: number;
+  maxPageBytes?: number;
+  cursor?: string | null;
 }
 
 export interface WfdProductMachineErrorOptions {
@@ -110,6 +173,10 @@ const fail = (code: string, message: string, options: WfdProductMachineErrorOpti
 export class WfdProductMachineClient {
   private readonly config: Required<Pick<WfdProductMachineConfiguration, 'pythonPath' | 'entryPath' | 'configPath'
     | 'projectRoot' | 'timeoutMs' | 'maxResponseBytes' | 'maxRequestBytes'>>;
+
+  filterObjects(plan: WfdFilterPlan, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('filter_objects', plan as unknown as WfdRecord, signal);
+  }
 
   constructor(configuration: WfdProductMachineConfiguration) {
     const config = {
@@ -180,6 +247,15 @@ export class WfdProductMachineClient {
     return this.request('capabilities', {}, signal);
   }
 
+  reviewDefinition(intent: import('../../contracts/r1-contracts.js').R1DefinitionIntent, signal?: AbortSignal) {
+    return this.request('review_definition', { snapshot_id: intent.snapshotId, dataset_id: intent.datasetId,
+      subject: intent.subject, semantic_code: intent.semanticCode, field_codes: intent.fieldCodes }, signal);
+  }
+
+  snapshotStatus(signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('snapshot_status', {}, signal);
+  }
+
   discover(snapshotId: string, subject?: string, signal?: AbortSignal): Promise<WfdProductMachineReply> {
     if (typeof snapshotId !== 'string' || !snapshotId) {
       return Promise.reject(new WfdProductMachineError('WFD_PRODUCT_MACHINE_REQUEST', 'contract_discovery 需要明确固定 snapshot_id。', {
@@ -200,9 +276,47 @@ export class WfdProductMachineClient {
       ...(options.productId ? { product_id: options.productId } : {}),
       ...(options.perspective ? { perspective: options.perspective } : {}),
       ...(options.at ? { at: options.at } : {}),
+      ...(options.heldScope ? { held_scope: options.heldScope } : {}),
+      ...(options.usableStage ? { usable_stage: options.usableStage } : {}),
       ...(options.subject ? { subject: options.subject } : {}),
       ...(options.includeHistory !== undefined ? { include_history: options.includeHistory } : {}),
       ...(options.rowProjection ? { row_projection: options.rowProjection } : {}),
+    }, signal);
+  }
+
+  readPage(options: WfdProductMachineReadPageOptions, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    if (typeof options.snapshotId !== 'string' || !options.snapshotId || /^(latest|current)$/iu.test(options.snapshotId)
+      || typeof options.productId !== 'string' || !options.productId || !Array.isArray(options.recordRefs)
+      || options.recordRefs.length < 1 || options.recordRefs.length > 5000) {
+      return Promise.reject(new WfdProductMachineError('WFD_PRODUCT_MACHINE_REQUEST', '固定页需要准确快照、产品与 1–5000 个实际行版本。', {
+        operation: 'fixed_read_page', requestId: 'request',
+      }));
+    }
+    return this.request('fixed_read_page', { snapshot_id: options.snapshotId, product_id: options.productId,
+      record_refs: options.recordRefs,
+      ...(options.pageSize !== undefined ? { page_size: options.pageSize } : {}),
+      ...(options.maxPageBytes !== undefined ? { max_page_bytes: options.maxPageBytes } : {}),
+      ...(options.cursor !== undefined ? { cursor: options.cursor } : {}),
+    }, signal);
+  }
+
+  /** One bounded full-product page; no automatic retry, selected-ref or full-read fallback. */
+  readProductPage(options: WfdProductMachineReadProductPageOptions, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    const keys = new Set(['snapshotId', 'productId', 'pageSize', 'maxPageBytes', 'cursor']);
+    if (!isWfdRecord(options) || Object.keys(options).some(key => !keys.has(key))
+      || typeof options.snapshotId !== 'string' || !/^s_[0-9a-f]{24}$/u.test(options.snapshotId)
+      || typeof options.productId !== 'string' || !/^p_[0-9a-f]{24}$/u.test(options.productId)
+      || (options.pageSize !== undefined && (!Number.isSafeInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 1000))
+      || (options.maxPageBytes !== undefined && (!Number.isSafeInteger(options.maxPageBytes) || options.maxPageBytes < 1 || options.maxPageBytes > 4_194_304))
+      || (options.cursor !== undefined && options.cursor !== null && (typeof options.cursor !== 'string' || !options.cursor))) {
+      return Promise.reject(new WfdProductMachineError('WFD_PRODUCT_MACHINE_REQUEST', '整产品固定页需要准确快照/产品、1–1000 行及1 字节–4 MiB的完整结果预算；不能携带选行、历史或调用者权限参数。', {
+        operation: 'fixed_read_product_page', requestId: 'request',
+      }));
+    }
+    return this.request('fixed_read_product_page', { snapshot_id: options.snapshotId, product_id: options.productId,
+      ...(options.pageSize !== undefined ? { page_size: options.pageSize } : {}),
+      ...(options.maxPageBytes !== undefined ? { max_page_bytes: options.maxPageBytes } : {}),
+      ...(options.cursor !== undefined ? { cursor: options.cursor } : {}),
     }, signal);
   }
 
@@ -211,12 +325,14 @@ export class WfdProductMachineClient {
   }
 
   requestStatusPage(requestIdentity: WfdRecord, options: { outputOffset?: number; outputLimit?: number;
-    outputDetail?: 'summary' | 'full' } = {}, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    outputDetail?: 'summary' | 'full'; rowOffset?: number; rowLimit?: number } = {}, signal?: AbortSignal): Promise<WfdProductMachineReply> {
     return this.request('request_status', {
       request_identity: requestIdentity,
       ...(options.outputOffset !== undefined ? { output_offset: options.outputOffset } : {}),
       ...(options.outputLimit !== undefined ? { output_limit: options.outputLimit } : {}),
       ...(options.outputDetail !== undefined ? { output_detail: options.outputDetail } : {}),
+      ...(options.rowOffset !== undefined ? { row_offset: options.rowOffset } : {}),
+      ...(options.rowLimit !== undefined ? { row_limit: options.rowLimit } : {}),
     }, signal);
   }
 
@@ -262,6 +378,14 @@ export class WfdProductMachineClient {
     }, signal);
   }
 
+  readContext(operation: R1ContextOperation, request: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    if (!R1_CONTEXT_OPERATIONS.includes(operation) || !isWfdRecord(request) || request.operation !== operation
+      || request.protocol_version !== 'wfd.read/1.3-product1b' || request.history_mode !== 'snapshot_contents') {
+      return Promise.reject(new WfdProductMachineError('WFD_PRODUCT_MACHINE_REQUEST', '上下文只允许四个明确操作及固定快照内容视角，内外操作必须一致。', { operation: 'context', requestId: 'request' }));
+    }
+    return this.request(operation, { request }, signal);
+  }
+
   readProduct(request: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
     if (!isWfdRecord(request)) {
       return Promise.reject(new WfdProductMachineError('WFD_PRODUCT_MACHINE_REQUEST', 'read_product 需要完整查询请求对象。', {
@@ -291,6 +415,24 @@ export class WfdProductMachineClient {
     return this.request('batch_finalize', { batch_id: batchId }, signal);
   }
 
+  /** 正式用途治理：暂停状态、显式审计复现、暂停登记、精确修复票据与解决说明。 */
+  usageStatus(signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('usage_status', {}, signal);
+  }
+  usageAuditRead(snapshotId: string, issueId: string, productId?: string, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('usage_audit_read', { snapshot_id: snapshotId, issue_id: issueId,
+      ...(productId ? { product_id: productId } : {}) }, signal);
+  }
+  usageSuspend(declaration: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('usage_suspend', { declaration }, signal);
+  }
+  usageAuthorizeRepair(declaration: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('usage_authorize_repair', { declaration }, signal);
+  }
+  usageResolve(declaration: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('usage_resolve', { declaration }, signal);
+  }
+
   /** 只用于边界负向验证；入口仍会拒绝未支持操作，不因客户端调用而扩权。 */
   request(operation: string, args: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
     const requestId = 'bd-' + randomUUID();
@@ -304,7 +446,9 @@ export class WfdProductMachineClient {
         operation, requestId,
       }));
     }
+    const serializeStarted = Date.now();
     const body = JSON.stringify({ protocol_version: WFD_PRODUCT_MACHINE_PROTOCOL, request_id: requestId, operation, arguments: args });
+    const serializeMs = Date.now() - serializeStarted;
     if (Buffer.byteLength(body) > this.config.maxRequestBytes) {
       return Promise.reject(new WfdProductMachineError('WFD_PRODUCT_MACHINE_REQUEST_BUDGET', '薄入口请求超过有界上限；没有发送。', {
         operation, requestId,
@@ -312,6 +456,7 @@ export class WfdProductMachineClient {
     }
     return new Promise<WfdProductMachineReply>((resolveCall, reject) => {
       const started = Date.now();
+      let spawnAt = 0, stdinAt = 0;
       const writeOperation = WRITE_OPERATIONS.has(operation);
       let dispatched = false;
       let settled = false;
@@ -325,9 +470,17 @@ export class WfdProductMachineClient {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8' },
       });
+      const timing = (ok: boolean, reply?: WfdProductMachineReply) => {
+        const totalMs = Date.now() - started;
+        recordTiming({ at: Date.now(), operation, requestId, write: writeOperation,
+          requestBytes: Buffer.byteLength(body), responseBytes: stdout.length, serializeMs,
+          spawnMs: spawnAt ? spawnAt - started : -1, stdinMs: stdinAt && spawnAt ? stdinAt - spawnAt : -1,
+          waitMs: totalMs, totalMs, machineElapsedMs: reply?.transport?.elapsedMs ?? null, ok });
+      };
       const finish = (error?: unknown, reply?: WfdProductMachineReply) => {
         if (settled) return;
         settled = true;
+        timing(!error, reply);
         if (timer) clearTimeout(timer);
         signal?.removeEventListener('abort', abort);
         if (error) { reject(error); child.kill('SIGKILL'); } else resolveCall(reply!);
@@ -339,6 +492,7 @@ export class WfdProductMachineClient {
         operation, requestId, mayHaveBeenAccepted: writeOperation && dispatched,
       })), this.config.timeoutMs);
       signal?.addEventListener('abort', abort, { once: true });
+      child.on('spawn', () => { spawnAt = Date.now(); });
       child.on('error', error => finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_TRANSPORT', '无法启动或等待 WFD 产品进程。', {
         operation, requestId, cause: error, mayHaveBeenAccepted: writeOperation && dispatched,
       })));
@@ -423,6 +577,7 @@ export class WfdProductMachineClient {
       });
       dispatched = true;
       child.stdin.end(body);
+      stdinAt = Date.now();
     });
   }
 }

@@ -1160,7 +1160,7 @@
       "contract": "docs/扩展内置逐项契约.md"
     }
   ],
-  "note": "按入口和条目标识计数；事实读取、图形描述和重复方法不等于互不重复的算法。扩展公式业务输入资格及验收范围见扩展验证结果。",
+  "note": "按现存源码资产的入口与条目标识计数；事实读取、图形描述和重复方法不等于互不重复的算法。各组 contract（契约路径）说明当前实现；应用放行范围、采用状态与输入资格分别以 modules/financial/algorithm-registry.ts（受控登记）、modules/financial/algorithm-types.ts（执行合同）及当前运行配置核对。本目录不启用计算，不代表全部资产已经验收。",
   "execution_executed": false,
   "third_party_python_dependencies": []
 }

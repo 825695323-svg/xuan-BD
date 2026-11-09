@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Plus, Search } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { request } from '../api';
 import { ErrorNote, Modal, errorDetail, useWords } from './Controls';
-import { FilterSelect } from './FilterSelect';
 import { MorphIcon } from './MorphIcon';
 import { RunReceipt, SourceCheckError, SourceCheckLine, useSourceCheck, type SourceRunTask } from './SourceActions';
+import { DetailDiagnostics, DetailFacts, DetailHeader, DetailSection, ObjectDetailPanel } from './ObjectDetailPanel';
+import { useObjectSelection } from './useStoredSelection';
+import { setWorkspaceObject } from './workspace-context';
 import type { CaptureSourceSetting, SourceSettingsView } from '../../../../contracts/source-settings';
 import {
-  baiduLabels, baiduOperations, CHANNELS, FOLLOW_KEY, logos, metaOf, monogram, operationLabels, readFollowed,
+  baiduLabels, baiduOperations, metaOf, operationLabels,
   sourceSearchText, TOPICS, type CaptureSource, type CustomSource,
 } from './captureCatalog';
 
@@ -16,12 +18,7 @@ export function CaptureSourcesPage() {
   const words = useWords();
   const [open, setOpen] = useState<Set<string>>(() => new Set(['topics', 'views']));
   const [topic, setTopic] = useState<string>('全部');
-  const [regionFilter, setRegionFilter] = useState<string>('全部');
-  const [channelFilter, setChannelFilter] = useState<string>('全部');
-  const [languageFilter, setLanguageFilter] = useState<string>('全部');
-  const [statusFilter, setStatusFilter] = useState<string>('全部');
-  const [shortcut, setShortcut] = useState<'none' | 'followed' | 'opinion'>('none');
-  const [followed, setFollowed] = useState<string[]>(() => readFollowed());
+  const [shortcut, setShortcut] = useState<'none' | 'opinion'>('none');
   const [sources, setSources] = useState<CaptureSource[] | null>(null);
   const [settings, setSettings] = useState<SourceSettingsView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -29,6 +26,8 @@ export function CaptureSourcesPage() {
   const [customSources, setCustomSources] = useState<CustomSource[]>([]);
   const [loginStates, setLoginStates] = useState<Record<string, string>>({});
   const [query, setQuery] = useState('');
+  /** 自定义来源单独读取；两者都回来之前不判定"没有这个对象"。 */
+  const [catalogReady, setCatalogReady] = useState(false);
   const [loginOpen, setLoginOpen] = useState<Set<string>>(new Set());
   const [loginBusy, setLoginBusy] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -37,8 +36,6 @@ export function CaptureSourcesPage() {
   const [runError, setRunError] = useState<string | null>(null);
   const [runBusy, setRunBusy] = useState(false);
   const runRequestId = useRef(`ui-capture-${crypto.randomUUID()}`);
-
-  useEffect(() => { try { window.localStorage.setItem(FOLLOW_KEY, JSON.stringify(followed)); } catch { /* 关注仅作本地快捷视图。 */ } }, [followed]);
 
   const loadSourceSettings = useCallback(async () => {
     try {
@@ -55,7 +52,8 @@ export function CaptureSourcesPage() {
       .catch(() => { if (alive) setLoginStates({}); }); };
     const loadCustom = () => { void request('/api/ui/custom-sources')
       .then((value) => { if (alive) setCustomSources(((value as { sources?: CustomSource[] }).sources) ?? []); })
-      .catch(() => { if (alive) setCustomSources([]); }); };
+      .catch(() => { if (alive) setCustomSources([]); })
+      .finally(() => { if (alive) setCatalogReady(true); }); };
     void loadSourceSettings(); void loadCustom(); loadStates();
     const timer = window.setInterval(() => { void loadSourceSettings(); loadCustom(); loadStates(); }, 10_000);
     void request('/api/skills')
@@ -108,12 +106,6 @@ export function CaptureSourcesPage() {
   const matchesFilters = (source: CaptureSource) => {
     const meta = metaOf(source);
     if (topic !== '全部' && !meta.topics.includes(topic)) return false;
-    if (regionFilter !== '全部' && !meta.regions.includes(regionFilter)) return false;
-    if (channelFilter !== '全部' && meta.channel !== channelFilter) return false;
-    if (languageFilter !== '全部' && !meta.languages.includes(languageFilter)) return false;
-    if (statusFilter === '可用' && !source.available) return false;
-    if (statusFilter === '受限' && source.available) return false;
-    if (shortcut === 'followed' && !followed.includes(source.sourceId)) return false;
     if (shortcut === 'opinion' && !metaOf(source).opinion) return false;
     return true;
   };
@@ -123,6 +115,10 @@ export function CaptureSourcesPage() {
   }, ...customSources.map((source) => ({ sourceId: source.id, label: source.label, available: false, loginRequired: true, custom: true,
     operations: source.operations.map((operation) => ({ operation })) }))];
   const visibleSources = allSources.filter((source) => matchesFilters(source) && fuzzy(sourceSearchText(source)));
+  /** 三栏布局里当前选中的来源；只影响详情栏，不改变任何筛选或采集状态。 */
+  const selection = useObjectSelection('xuan.capture.object',
+    allSources.map((source) => source.sourceId), sources !== null && catalogReady);
+  const selectedId = selection.id;
   const toggle = (id: string) => setOpen((current) => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -154,86 +150,84 @@ export function CaptureSourcesPage() {
       <span>{words('快捷视图', 'Views')}</span><MorphIcon name={open.has('views') ? 'chevron-up' : 'chevron-down'} size={16} />
     </button>
     {open.has('views') && <div className="data-nav-children">
-      {navItem('followed', words('已关注', 'Followed'), shortcut === 'followed', () => setShortcut((current) => current === 'followed' ? 'none' : 'followed'))}
       {navItem('opinion', words('舆论观察', 'Public opinion'), shortcut === 'opinion', () => setShortcut((current) => current === 'opinion' ? 'none' : 'opinion'))}
     </div>}
   </aside>;
 
-  return <div className="data-page">
+  const selectedSource = allSources.find((source) => source.sourceId === selectedId) ?? null;
+  const selectedMeta = selectedSource ? metaOf(selectedSource) : null;
+  const selectedSetting = selectedSource ? settings?.capture.find((item) => item.sourceId === selectedSource.sourceId) ?? null : null;
+  const selectedCheck = selectedSource ? settings?.checks.find((item) => item.id === selectedSource.sourceId) : undefined;
+  // 只发布"当前在看哪个来源"，不写会话、不触发采集。
+  useEffect(() => {
+    setWorkspaceObject(selectedId ? { page: 'capture', kind: 'source', id: selectedId, label: selectedSource?.label ?? selectedId } : null);
+  }, [selectedId, selectedSource?.label]);
+  useEffect(() => () => setWorkspaceObject(null), []);
+  const loginText = (state?: string) => state === 'saved' ? words('已保存', 'Saved')
+    : state === 'public' ? words('公开可读', 'Public') : state === 'expired' ? words('已过期', 'Expired')
+      : state ? words('未登录', 'Not signed in') : words('未读取', 'Not read');
+
+  return <div className="data-page page-panes">
     {nav}
-    <section className="data-panel" aria-label={words('采集源', 'Capture sources')}>
-      <div className="source-head">
-        <h2 className="data-panel-title">{words('采集源', 'Sources')}</h2>
-        <span className="source-count">{words(`${allSources.length} 个来源`, `${allSources.length} sources`)}</span>
-      </div>
-
-      <div className="source-filter-block">
-        <span className="source-filter-label">{words('筛选', 'Filters')}</span>
-        <div className="source-selects">
-          <FilterSelect label={words('覆盖地区', 'Region')} value={regionFilter} options={['全部', '全球', '中国大陆', '中国香港', '中国台湾', '美国', '欧洲']} onChange={setRegionFilter} />
-          <FilterSelect label={words('来源渠道', 'Channel')} value={channelFilter} options={['全部', ...CHANNELS, '工具']} onChange={setChannelFilter} />
-          <FilterSelect label={words('语言', 'Language')} value={languageFilter} options={['全部', '中文', '英文']} onChange={setLanguageFilter} />
-          <FilterSelect label={words('运行状态', 'Status')} value={statusFilter} options={['全部', '可用', '受限']} onChange={setStatusFilter} />
-        </div>
-      </div>
-
+    <section className="page-cards" aria-label={words('采集源', 'Capture sources')}>
       {loginError && <ErrorNote detail={loginError}>{words('登录操作未完成。', 'The login action did not complete.')}</ErrorNote>}
       <SourceCheckError error={sourceCheck.error} />
       {error && <ErrorNote detail={error}>{words('采集源状态暂时无法读取。', 'Capture source status could not be read.')}</ErrorNote>}
       {!error && !sources && <p className="data-empty">{words('读取中…', 'Loading…')}</p>}
-      {!!sources?.length && <div className="source-grid">{visibleSources.map((source) => {
+      {!!sources?.length && <div className="object-list">{visibleSources.map((source) => {
         const meta = metaOf(source);
-        const check = settings?.checks.find(item => item.id === source.sourceId);
-        const captureSetting = settings?.capture.find(item => item.sourceId === source.sourceId) ?? null;
-        return <article className="source-card" key={source.sourceId}>
-          <div className="source-card-head">
-            <span className="source-logo-wrap">
-              <span className="source-logo" aria-hidden="true">
-                {logos[source.sourceId]
-                  ? <img src={`/logos/${logos[source.sourceId]}`} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = 'none'; }} />
-                  : <span className="source-logo-fallback">{monogram(source)}</span>}
-              </span>
-              {source.sourceId !== 'baidu-drive' && source.loginRequired !== false && !['saved', 'public'].includes(loginStates[source.sourceId] ?? '')
-                ? <button type="button" className="source-logo-add" data-open={loginOpen.has(source.sourceId)}
-                  disabled={loginBusy === source.sourceId}
-                  aria-label={loginOpen.has(source.sourceId) ? words('保存登录态', 'Save login state') : words('打开登录页', 'Open login page')}
-                  title={loginOpen.has(source.sourceId) ? words('保存登录态', 'Save login state') : words('打开登录页', 'Open login page')}
-                  onClick={() => void loginAction(source.sourceId, loginOpen.has(source.sourceId) ? 'save' : 'open')}>
-                  {loginOpen.has(source.sourceId) ? <Check size={11} aria-hidden="true" /> : <Plus size={11} aria-hidden="true" />}
-                </button>
-                : null}
-            </span>
-            <span className="source-card-title">{source.label}</span>
-            <span className="source-head-right">
-              {(source.custom || (source.sourceId === 'baidu-drive' && !source.available))
-                ? <span className="source-unavailable" title={source.custom ? words('自定义来源：采集脚本与登录接入仍需开发', 'Custom source: capture script and login are not connected yet') : words('bdpan 未装配，暂不能保存登录态', 'bdpan is not connected; login state cannot be saved yet')}>{source.custom ? words('待接入', 'Not wired') : words('未装配', 'Not connected')}</span>
-                : null}
-              <button type="button" className="source-follow" aria-pressed={followed.includes(source.sourceId)}
-                title={followed.includes(source.sourceId) ? words('取消关注', 'Unfollow') : words('关注与计划', 'Follow & plan')}
-                onClick={() => setFollowed((current) => current.includes(source.sourceId) ? current.filter((id) => id !== source.sourceId) : [...current, source.sourceId])}>
-                {followed.includes(source.sourceId) ? words('已关注', 'Followed') : words('关注', 'Follow')}
-              </button>
-              <span className="source-lamp" data-ok={source.available} role="img" aria-label={source.available ? words('可用', 'Available') : words('不可用', 'Unavailable')} />
-            </span>
-          </div>
-          <p className="source-ops">{(source.operations ?? []).map((item) => operationLabels[item.operation] ?? baiduLabels[item.operation] ?? item.operation).join(' · ') || words('无固定操作', 'No fixed operations')}</p>
-          <p className="source-meta">
-            {[meta.topics.length ? meta.topics.join(' / ') : words('未分类', 'Unclassified'), meta.regions.join(' / ') || '—', meta.channel, meta.languages.join('/') || '—'].join(' · ')}
-          </p>
-          <div className="source-checks">
-            <SourceCheckLine check={check} />
-            <div className="source-check-actions">
-              <button type="button" className="text-button" disabled={sourceCheck.busy !== null} onClick={() => void sourceCheck.check(source.sourceId)}>
-                {sourceCheck.busy === source.sourceId ? words('检查中…', 'Checking…') : words('检查', 'Check')}</button>
-              {captureSetting?.enabled && !source.custom && source.sourceId !== 'baidu-drive' && <button type="button" className="text-button"
-                onClick={() => { setRunReceipt(null); setRunError(null); runRequestId.current = `ui-capture-${crypto.randomUUID()}`; setRunTarget({ source, setting: captureSetting }); }}>
-                {words('单次采集…', 'Collect once…')}</button>}
-            </div>
-          </div>
-        </article>;
+        return <button type="button" key={source.sourceId} className="object-card"
+          aria-current={selectedId === source.sourceId ? 'true' : undefined} onClick={() => selection.select(source.sourceId)}>
+          <span className="object-card-main">
+            <span className="object-card-title">{source.label}</span>
+            <span className="object-card-meta">{[meta.topics[0] ?? words('未分类', 'Unclassified'), meta.channel].filter(Boolean).join(' · ')}</span>
+          </span>
+          <span className="object-card-state" data-ok={source.available}>{source.available ? words('可用', 'Available') : words('不可用', 'Unavailable')}</span>
+        </button>;
       })}</div>}
       {!!sources?.length && !visibleSources.length && <p className="data-empty">{words('没有匹配的采集源', 'No matching sources')}</p>}
     </section>
+    <ObjectDetailPanel
+      label={words('来源详情', 'Source detail')}
+      header={<DetailHeader
+        title={selection.pending ? words('正在读取…', 'Loading…') : selectedSource?.label ?? words('未选择来源', 'No source selected')}
+        status={selectedSource ? (selectedSource.available ? words('可用', 'Available') : words('不可用', 'Unavailable')) : undefined}
+        tone={selectedSource?.available ? 'ready' : 'warning'} />}
+      summary={selectedSource ? <DetailFacts items={[
+        { label: words('登录态', 'Login'), value: loginText(loginStates[selectedSource.sourceId]) },
+        { label: words('渠道', 'Channel'), value: selectedMeta?.channel ?? '—' },
+        { label: words('采集范围', 'Coverage'), value: selectedMeta?.regions.join(' / ') || '—' },
+        { label: words('最近检查', 'Latest check'), value: <SourceCheckLine check={selectedCheck} /> },
+      ]} /> : undefined}
+      diagnostics={selectedSource ? <DetailDiagnostics label={words('分类与语言说明', 'Topics and languages')}
+        count={words(`${(selectedMeta?.topics.length ?? 0) + (selectedMeta?.languages.length ?? 0)} 项`, `${(selectedMeta?.topics.length ?? 0) + (selectedMeta?.languages.length ?? 0)} items`)}>
+        <dl className="object-detail-facts">
+          <div><dt>{words('分类', 'Topics')}</dt><dd>{selectedMeta?.topics.join(' / ') || words('未分类', 'Unclassified')}</dd></div>
+          <div><dt>{words('语言', 'Languages')}</dt><dd>{selectedMeta?.languages.join(' / ') || '—'}</dd></div>
+        </dl>
+      </DetailDiagnostics> : undefined}>
+      {selection.pending ? <p className="object-detail-note">{words('来源列表尚未读回，暂不显示详情，也不回落到其他来源。',
+        'The source list has not loaded yet; no detail is shown and no other source is substituted.')}</p>
+        : !selectedSource ? <p className="object-detail-note">{words('从第二栏选择一个来源，这里显示它的登录态、覆盖范围与最近检查。',
+          'Pick a source from the list; its login state, coverage and latest check appear here.')}</p> : <>
+        <DetailSection title={words('可用操作', 'Operations')} note={words('按该来源已登记的固定操作', 'Fixed operations registered for this source')}>
+          <p className="object-detail-value">{(selectedSource.operations ?? []).map((item) => operationLabels[item.operation] ?? baiduLabels[item.operation] ?? item.operation).join(' · ') || words('无固定操作', 'No fixed operations')}</p>
+        </DetailSection>
+        <DetailSection title={words('采集配置', 'Capture')}>
+          <p className="object-detail-value">{selectedSetting?.enabled ? selectedSetting.operation : words('未启用', 'Not enabled')}</p>
+        </DetailSection>
+        <div className="supplier-detail-actions">
+          {selectedSource.sourceId !== 'baidu-drive' && selectedSource.loginRequired !== false && <button type="button" className="text-button" disabled={loginBusy === selectedSource.sourceId}
+            onClick={() => void loginAction(selectedSource.sourceId, loginOpen.has(selectedSource.sourceId) ? 'save' : 'open')}>
+            {loginOpen.has(selectedSource.sourceId) ? words('保存登录态', 'Save login state') : words('打开登录页', 'Open login page')}</button>}
+          <button type="button" className="text-button" disabled={sourceCheck.busy !== null} onClick={() => void sourceCheck.check(selectedSource.sourceId)}>
+            {sourceCheck.busy === selectedSource.sourceId ? words('检查中…', 'Checking…') : words('检查', 'Check')}</button>
+          {selectedSetting?.enabled && !selectedSource.custom && selectedSource.sourceId !== 'baidu-drive' && <button type="button" className="text-button"
+            onClick={() => { setRunReceipt(null); setRunError(null); runRequestId.current = `ui-capture-${crypto.randomUUID()}`; setRunTarget({ source: selectedSource, setting: selectedSetting }); }}>
+            {words('单次采集…', 'Collect once…')}</button>}
+        </div>
+      </>}
+    </ObjectDetailPanel>
     {runTarget && <Modal title={words('单次采集', 'Collect once')} onClose={() => { if (runBusy) return; setRunTarget(null); setRunReceipt(null); setRunError(null); }} busy={runBusy}>
       <p><strong>{runTarget.source.label}</strong> · {words('按当前已保存的操作和参数发起一次真实采集；页面不会自动运行或自动登录。', 'Runs one real collection with the saved operation and parameters; nothing runs or logs in automatically.')}</p>
       <p className="database-scope">{words('操作', 'Operation')} {runTarget.setting?.operation ?? '—'} · {words('参数', 'Parameters')} {runTarget.setting && Object.keys(runTarget.setting.parameters).length ? JSON.stringify(runTarget.setting.parameters) : '{}'}</p>

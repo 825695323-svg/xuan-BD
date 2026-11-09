@@ -11,7 +11,7 @@ import { MATERIAL_CLEANING_RULES_VERSION, MATERIAL_SEMANTIC_PROPOSAL_VERSION, SE
   type AppliedMaterialChange, type MaterialDateFormat, type MaterialSemanticProposal, type MaterialSemanticRecord,
   type SemanticEvidence, type SemanticJudgment, type SemanticQuestion, type SemanticProcessedTable, type TrustedMaterialOrigin } from './semantic-contracts.js';
 
-export const MATERIAL_SEMANTIC_RUNTIME = 'harness.material-semantics';
+export const MATERIAL_SEMANTIC_RUNTIME = 'bd.material-semantics';
 export const MATERIAL_SEMANTIC_OPERATION = 'materials.semantic-process';
 export const MATERIAL_SEMANTIC_PROCESSOR_VERSION = 'material-semantic-processor/1.2';
 export interface MaterialSemanticServiceOptions { database: CoreDatabase; materials: MaterialService; tasks(): TaskService; limits?: Partial<MaterialLimits> }
@@ -48,13 +48,13 @@ export class MaterialSemanticService {
       instructions: [
         '仅提交原件材料身份、语义证据及有限清洗规则；不要提供数据行、模型身份、运行身份或授权。',
         '原件与用户消息证据可仅给 quote；只接受唯一原句。重复原句须给准确 start/end；显式坐标有误即拒绝。BOM 保留。',
-        'known 必须有原文或真实用户消息证据；推断来源不得写成用户声明。unknown/conflict 不会被采用为事实。',
+        'known 必须有原文或真实用户消息证据；推断来源不得写成用户声明。judgments 中的 unknown 示例：{id:"j-unknown",key:"period",status:"unknown",evidence:[]}，不要带 value；unknown/conflict 不会被采用为事实。',
         '接收类别 unclassified 表示用途待判断。先读原文与自然语言需求，再提交 classification 的 data/tool、理由与原文或真实消息证据；这是模型判断，不能冒充用户声明。缺少分类只保存候选，不加工。',
         '分类只属于本次提案，不改变原件 materialId、originalSha256 或接收类别；已明确接收为 data/tool 的旧原件不能改类，待确认语义继续按同一原件全部历史核对。',
         'CSV headerLine 是从 1 开始的物理原件行，headerEvidence 须覆盖该表头原文；字段 column 从 1 开始。',
         '字段映射 evidence 须覆盖完整原始表头单元格（含原有空白与引号），也可引用包含它的完整表头行。',
         '只规范空白、空值、明确格式日期和十进制字面量；不换单位、不猜时区、不填业务值。日期证据须包含明确格式名称。',
-        '影响清洗的未知判断放入 requiredJudgmentIds 或 questions；不相关的 unknown 可以保留。',
+        '影响清洗的未知判断放入 cleaning.requiredJudgmentIds 或 questions；不相关的 unknown 可以保留。requiredJudgmentIds 不属于提案顶层。',
         '同一材料和会话分支的待确认语义不能靠省略旧提案或换判断 id 绕过；无关纯空白清理仍可独立执行。',
         '确认以 supersedesProposalId 或每项 confirmations.proposalId 引用旧提案及问题，并在对应 key/scope 的 known 或日期/小数规则证据中引用实际新回复；旧提案不可改写。',
       ] });
@@ -296,7 +296,7 @@ export class MaterialSemanticService {
     const expected = { proposalId: binding.proposalId, materialId: binding.proposal.materialId, originalSha256: binding.proposal.originalSha256, bindingDigest: digestOperationArgs(binding) };
     if (digestOperationArgs(task.args) !== digestOperationArgs(expected) || task.versions.originalSha256 !== binding.proposal.originalSha256) fail('MATERIAL_SEMANTIC_INPUT_CHANGED', '任务参数与冻结语义输入不一致。');
   }
-  private assertDispatch(): void { if (this.tasks.getControl().stopped) throw new TaskError('HARNESS_STOPPED', '服务已停止，不接受新的语义加工任务。'); }
+  private assertDispatch(): void { if (this.tasks.getControl().stopped) throw new TaskError('BD_STOPPED', '服务已停止，不接受新的语义加工任务。'); }
   private assertActive(context: TaskExecutionContext): void {
     context.signal.throwIfAborted(); this.assertDispatch();
     const task = this.tasks.get(context.task.id);
@@ -305,32 +305,84 @@ export class MaterialSemanticService {
 }
 
 interface JsonSchema { type?: string; const?: unknown; enum?: unknown[]; oneOf?: JsonSchema[]; required?: string[]; additionalProperties?: boolean; properties?: Record<string, JsonSchema>; items?: JsonSchema; minItems?: number; maxItems?: number; minLength?: number; maxLength?: number; minimum?: number; maximum?: number; pattern?: string }
-function checkSchema(value: unknown, schema: JsonSchema, path = 'proposal'): void {
+const MAX_VALIDATION_ISSUES = 4;
+export interface MaterialSemanticValidationIssue { path: string; reason: string }
+export class MaterialSemanticError extends MaterialError {
+  readonly validationIssues: readonly MaterialSemanticValidationIssue[];
+  constructor(code: string, issues: readonly MaterialSemanticValidationIssue[]) {
+    super(code, '提案字段不符合材料提案契约。');
+    const bounded = issues.slice(0, MAX_VALIDATION_ISSUES);
+    this.validationIssues = Buffer.byteLength(JSON.stringify(bounded), 'utf8') <= 1_000 ? bounded : [];
+  }
+}
+function addIssue(issues: MaterialSemanticValidationIssue[], path: string, reason: string): void {
+  const shape = path.replace(/\[\d+\]/gu, '[]');
+  if (issues.length < MAX_VALIDATION_ISSUES && !issues.some(issue => issue.path.replace(/\[\d+\]/gu, '[]') === shape && issue.reason === reason)) {
+    issues.push({ path, reason });
+  }
+}
+function collectSchemaIssues(value: unknown, schema: JsonSchema, path: string, issues: MaterialSemanticValidationIssue[]): void {
+  if (issues.length >= MAX_VALIDATION_ISSUES) return;
   if (schema.oneOf) {
-    let matches = 0;
-    for (const choice of schema.oneOf) try { checkSchema(value, choice, path); matches++; } catch { /* 此分支不匹配。 */ }
-    if (matches !== 1) fail('INVALID_MATERIAL_SEMANTIC_PROPOSAL', `${path} 证据类型无效。`);
+    const matches = schema.oneOf.filter(choice => {
+      const candidate: MaterialSemanticValidationIssue[] = [];
+      collectSchemaIssues(value, choice, path, candidate);
+      return candidate.length === 0;
+    }).length;
+    if (matches !== 1) addIssue(issues, path, '证据类型不符合合同；请核对 source 和必需字段。');
     return;
   }
-  const invalid = () => fail('INVALID_MATERIAL_SEMANTIC_PROPOSAL', `${path} 不符合材料提案契约。`);
-  if (Object.hasOwn(schema, 'const') && value !== schema.const) invalid();
-  if (schema.enum && !schema.enum.includes(value)) invalid();
+  if (Object.hasOwn(schema, 'const') && value !== schema.const) { addIssue(issues, path, '固定版本值不符合合同。'); return; }
+  if (schema.enum && !schema.enum.includes(value)) { addIssue(issues, path, '取值不在合同允许范围内。'); return; }
   if (schema.type === 'object') {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) invalid();
+    if (!value || typeof value !== 'object' || Array.isArray(value)) { addIssue(issues, path, '须为对象。'); return; }
     const object = value as Record<string, unknown>;
-    if (schema.required?.some(key => !Object.hasOwn(object, key)) || (schema.additionalProperties === false && Object.keys(object).some(key => !Object.hasOwn(schema.properties ?? {}, key)))) invalid();
-    for (const [key, item] of Object.entries(object)) checkSchema(item, schema.properties?.[key] ?? {}, `${path}.${key}`);
+    if (schema.additionalProperties === false) for (const key of Object.keys(object)) if (!Object.hasOwn(schema.properties ?? {}, key)) {
+      // 只把受信合同中已有的字段名放入路径；其他模型自造键绝不回显。
+      if (path === 'proposal' && key === 'requiredJudgmentIds') addIssue(issues, 'proposal.requiredJudgmentIds', '此字段只允许放在 cleaning.requiredJudgmentIds。');
+      else addIssue(issues, path, '存在合同未允许的额外字段；请删除。');
+    }
+    for (const key of schema.required ?? []) if (!Object.hasOwn(object, key)) addIssue(issues, `${path}.${key}`, '缺少必需字段。');
+    for (const [key, child] of Object.entries(schema.properties ?? {})) if (Object.hasOwn(object, key)) {
+      collectSchemaIssues(object[key], child, `${path}.${key}`, issues);
+    }
   } else if (schema.type === 'array') {
-    if (!Array.isArray(value) || value.length < (schema.minItems ?? 0) || value.length > (schema.maxItems ?? Infinity)) invalid();
-    for (const item of value as unknown[]) checkSchema(item, schema.items ?? {}, `${path}[]`);
+    if (!Array.isArray(value)) { addIssue(issues, path, '须为数组。'); return; }
+    if (value.length < (schema.minItems ?? 0) || value.length > (schema.maxItems ?? Infinity)) {
+      addIssue(issues, path, '数组项目数量不符合合同。'); return;
+    }
+    for (const [index, item] of value.entries()) collectSchemaIssues(item, schema.items ?? {}, `${path}[${index}]`, issues);
   } else if (schema.type === 'string') {
-    if (typeof value !== 'string' || value.length < (schema.minLength ?? 0) || value.length > (schema.maxLength ?? Infinity) || (schema.pattern && !new RegExp(schema.pattern, 'u').test(value))) invalid();
+    if (typeof value !== 'string' || value.length < (schema.minLength ?? 0) || value.length > (schema.maxLength ?? Infinity)
+      || (schema.pattern && !new RegExp(schema.pattern, 'u').test(value))) addIssue(issues, path, '须为符合合同长度和格式的字符串。');
   } else if (schema.type === 'integer') {
-    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < (schema.minimum ?? -Infinity) || value > (schema.maximum ?? Infinity)) invalid();
-  } else if (schema.type === 'boolean' && typeof value !== 'boolean') invalid();
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < (schema.minimum ?? -Infinity) || value > (schema.maximum ?? Infinity)) addIssue(issues, path, '须为合同范围内的整数。');
+  } else if (schema.type === 'boolean' && typeof value !== 'boolean') addIssue(issues, path, '须为布尔值。');
+}
+function checkSchema(value: unknown, schema: JsonSchema, path = 'proposal'): void {
+  const issues: MaterialSemanticValidationIssue[] = [];
+  collectSchemaIssues(value, schema, path, issues);
+  if (issues.length) throw new MaterialSemanticError('INVALID_MATERIAL_SEMANTIC_PROPOSAL', issues);
 }
 function cloneProposal(input: unknown): MaterialSemanticProposal {
-  checkSchema(input, SEMANTIC_PROPOSAL_SCHEMA as JsonSchema);
+  const issues: MaterialSemanticValidationIssue[] = [];
+  collectSchemaIssues(input, SEMANTIC_PROPOSAL_SCHEMA as JsonSchema, 'proposal', issues);
+  const schemaInvalid = issues.length > 0;
+  let unknownValue = false;
+  if (input && typeof input === 'object' && !Array.isArray(input) && Array.isArray((input as {judgments?:unknown}).judgments)) {
+    for (const [index, judgment] of (input as {judgments:unknown[]}).judgments.entries()) {
+      if (!judgment || typeof judgment !== 'object' || Array.isArray(judgment)) continue;
+      const item = judgment as Record<string, unknown>, path = `proposal.judgments[${index}]`;
+      if (item.status === 'known') {
+        if (typeof item.value !== 'string' || !item.value.trim()) addIssue(issues, `${path}.value`, 'known 须有非空 value。');
+        if (Array.isArray(item.evidence) && !item.evidence.length) addIssue(issues, `${path}.evidence`, 'known 须有原件或真实用户消息证据。');
+      } else if ((item.status === 'unknown' || item.status === 'conflict') && item.value !== undefined) {
+        addIssue(issues, `${path}.value`, 'unknown/conflict 不能携带已确定 value；保留 status 并给 evidence 数组。'); unknownValue = true;
+      }
+    }
+  }
+  if (issues.length) throw new MaterialSemanticError(schemaInvalid || unknownValue
+    ? 'INVALID_MATERIAL_SEMANTIC_PROPOSAL' : 'MATERIAL_KNOWN_WITHOUT_EVIDENCE', issues);
   if (JSON.stringify(input).length > 100_000) fail('MATERIAL_PROPOSAL_BUDGET', '语义提案超过字符预算。');
   const proposal = structuredClone(input) as MaterialSemanticProposal, ids = new Set<string>();
   validId(proposal.materialId);
@@ -339,8 +391,6 @@ function cloneProposal(input: unknown): MaterialSemanticProposal {
   for (const j of proposal.judgments) {
     validId(j.id);
     if (ids.has(j.id)) fail('INVALID_MATERIAL_SEMANTIC_PROPOSAL', '语义判断编号重复。'); ids.add(j.id);
-    if (j.status === 'known' && (!j.value?.trim() || !j.evidence.length)) fail('MATERIAL_KNOWN_WITHOUT_EVIDENCE', 'known 判断必须有明确值与原件或真实用户消息证据。');
-    if (j.status !== 'known' && j.value !== undefined) fail('INVALID_MATERIAL_SEMANTIC_PROPOSAL', 'unknown/conflict 不能携带已确定 value。');
   }
   for (const id of proposal.cleaning.requiredJudgmentIds ?? []) if (!ids.has(id)) fail('INVALID_MATERIAL_SEMANTIC_PROPOSAL', '清洗规则引用不存在的语义判断。');
   for (const items of [proposal.table?.fields ?? [], proposal.cleaning.dates, proposal.cleaning.decimals]) {

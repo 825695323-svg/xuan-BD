@@ -8,6 +8,8 @@ export interface SourceConnection {
   id: string; pluginId: string; alias: string; enabled: boolean; baseUrl: string;
   credential: CredentialReference | null; scopes: string[];
   tdxMode?: 'data_service' | 'client_http';
+  /** WeRSS 本地缓存仅访问这里明确登记的 feed，不读取账号订阅清单。 */
+  feedIds?: string[];
 }
 export interface SourcePolicy { scopeId: string; enabled: boolean; mode: 'inherit' | 'override'; primary: string | null; backups: string[] }
 export type SourceOperationId = 'minute_bars' | 'daily_bars' | 'index_constituents';
@@ -20,6 +22,8 @@ export interface SourceSettingsDocument {
   revision: number; updatedAt: string | null;
   plugins: Array<{ id: string; enabled: boolean }>;
   connections: SourceConnection[]; policies: SourcePolicy[]; operationPolicies: SourceOperationPolicy[]; capture: CaptureSourceSetting[];
+  /** 仅当前固定版公众号正文提取脚本；路径由本机来源设置受控保存，模型不能提交。 */
+  wechatExtract: { enabled: boolean; scriptPath: string | null; sha256: string };
   execution: { maxConcurrentPerAccount: 1; minimumIntervalMs: number };
 }
 export interface SourceCheck {

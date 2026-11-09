@@ -4,7 +4,7 @@ import type { PermissionCapability, PermissionService } from '../../platform/sec
 import type { TaskExecutionContext, TaskRecord, TaskService } from '../../platform/jobs/tasks.js';
 import type { JsonValue } from '../../contracts/task-contracts.js';
 
-export const FINANCIAL_RUNTIME = 'harness.financial';
+export const FINANCIAL_RUNTIME = 'bd.financial';
 export const FINANCIAL_PLUGIN_ID = 'xuen.local-finance';
 export const FINANCIAL_PLUGIN_VERSION = '1.0.0';
 export const FINANCIAL_CONTRACT_VERSION = 'financial-tools/1';

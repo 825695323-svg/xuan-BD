@@ -3,7 +3,7 @@ import iconv from 'iconv-lite';
 import type { ConversionPayload, ConversionIssue } from '../../../contracts/conversion.js';
 import type { JsonValue } from '../../../contracts/task-contracts.js';
 import { DirectError } from '../../runtime/file-workspace.js';
-import { attr, decodeText, parseXml, xmlChildren, xmlNodes, zipMembers, type ArchiveMember } from './formats.js';
+import { attr, decodeText, parseXml, scanXml, xmlChildren, xmlNodes, zipMembers, type ArchiveMember, type XmlSpan } from './formats.js';
 
 type Native = { [key: string]: JsonValue };
 const local = (node: Element): string => node.localName.split(':').at(-1)!;
@@ -125,14 +125,74 @@ export function officeNative(bytes: Buffer, format: 'docx' | 'pptx' | 'xlsx', si
       const segments = xmlChildren(node).filter(child => ['t', 'r'].includes(local(child)));
       return { value: segments.map(child => local(child) === 't' ? text(child) : xmlNodes(child, 't').map(item => text(item)).join('')).join(''), rawXml: node.outerHTML };
     }) : [];
-    const sheets: Native[] = [];
+    // XLSX 工作表单独扫描原文，不建立整张表 DOM；跨工作簿预算不改变通用 XML 的 10 万节点限制。
+    let sheetElements = 0, sheetRows = 0, sheetCells = 0, resultFloor = 0;
+    const reserve = (value: unknown) => {
+      resultFloor += Buffer.byteLength(JSON.stringify(value));
+      if (resultFloor > 64_000_000) throw new DirectError('XLSX_RESULT_LIMIT', 'XLSX 原生内容已超过本次 64 MB 结果预算。');
+    };
+    for (const [path, value] of parts) reserve({ path, xml: value.xml });
+    reserve(shared);
+    const sheets: Native[] = [], seenSheetParts = new Set<string>();
     for (const sheet of xmlNodes(workbook, 'sheet')) {
       const rid = sheet.getAttribute('r:id') ?? attr(sheet, 'id'), path = relations.find(value => value.id === rid)?.part;
       if (!path || !byPath.has(path)) throw new DirectError('OFFICE_PART_MISSING', 'Excel 工作表关系缺失。');
       if (!relations.find(value => value.id === rid)?.type.endsWith('/worksheet')) { issues.push({ code: 'XLSX_NON_WORKSHEET', message: '图表工作表只保留关系与原生部件。', location: { part: path } }); part(path); continue; }
-      const doc = part(path), rows = xmlNodes(doc, 'row').map(row => {
-        tick(); return { row: attr(row, 'r'), cells: direct(row, 'c').map(cell => {
-          tick(); const rawValue = direct(cell, 'v')[0], inline = direct(cell, 'is')[0], formula = direct(cell, 'f')[0], type = attr(cell, 't') ?? 'n';
+      if (seenSheetParts.has(path)) throw new DirectError('XLSX_STRUCTURE_INVALID', '多个工作表重复指向同一原生部件。');
+      seenSheetParts.add(path);
+      const xml = decodeText(byPath.get(path)!.read()).text;
+      let sheetData: XmlSpan | undefined;
+      const rowSpans: { span: XmlSpan; cells: XmlSpan[] }[] = [];
+      let cellSpans: XmlSpan[] = [];
+      const name = (value: string | null) => value?.split(':').at(-1) ?? null;
+      try {
+        sheetElements += scanXml(xml, { maxElements: 400_000 - sheetElements, onText(value, parent) {
+          if (value.trim() && ['worksheet', 'sheetData', 'row', 'c'].includes(name(parent) ?? '')) throw new DirectError('XLSX_STRUCTURE_INVALID', '工作表结构节点含未承接的直接文本。');
+        }, onElement(span) {
+          signal.throwIfAborted();
+          const tag = name(span.name), parent = name(span.parent);
+          if (parent === null && tag !== 'worksheet') throw new DirectError('XLSX_STRUCTURE_INVALID', '工作表原生根节点不是 worksheet。');
+          if (parent === 'sheetData' && tag !== 'row' || parent === 'row' && tag !== 'c') throw new DirectError('XLSX_STRUCTURE_INVALID', '工作表行或单元格包含未承接的结构。');
+          if (tag === 'sheetData') {
+            if (parent !== 'worksheet' || sheetData) throw new DirectError('XLSX_STRUCTURE_INVALID', '工作表 sheetData 位置或数量无效。');
+            sheetData = span;
+          } else if (tag === 'row') {
+            if (parent !== 'sheetData') throw new DirectError('XLSX_STRUCTURE_INVALID', '工作表 row 不在 sheetData 中。');
+            if (++sheetRows > 10_000) throw new DirectError('XLSX_ROW_LIMIT', 'XLSX 全工作簿行数超过本次 10,000 行预算。');
+            rowSpans.push({ span, cells: cellSpans }); cellSpans = [];
+          } else if (tag === 'c') {
+            if (parent !== 'row') throw new DirectError('XLSX_STRUCTURE_INVALID', '工作表单元格不在 row 中。');
+            if (++sheetCells > 100_000) throw new DirectError('XLSX_CELL_LIMIT', 'XLSX 全工作簿单元格超过本次 100,000 格预算。');
+            cellSpans.push(span);
+          }
+        } });
+      } catch (error) {
+        if (error instanceof DirectError && error.code === 'XML_LIMIT') throw new DirectError('XLSX_XML_LIMIT', 'XLSX 工作表超过全工作簿 400,000 元素或 128 层预算。');
+        throw error;
+      }
+      if (!sheetData || cellSpans.length) throw new DirectError('XLSX_STRUCTURE_INVALID', '工作表缺少 sheetData 或行与单元格未完整承接。');
+      const metaXml = sheetData.selfClosing ? xml : xml.slice(0, sheetData.start) + xml.slice(sheetData.start, sheetData.openEnd).replace(/>$/u, '/>') + xml.slice(sheetData.end);
+      const doc = parseXml(metaXml); parts.set(path, { xml, document: doc }); reserve({ path, xml });
+      const seenRows = new Set<string>();
+      const rows = rowSpans.map(({ span, cells: spans }) => {
+        const fragment = xml.slice(span.start, span.end);
+        if (Buffer.byteLength(fragment) > 1_000_000) throw new DirectError('XLSX_ROW_LIMIT', 'XLSX 单行 XML 超过本次 1 MB 片段预算。');
+        let row: Element;
+        try { row = parseXml(fragment).documentElement; }
+        catch (error) { if (error instanceof DirectError && error.code === 'XML_LIMIT') throw new DirectError('XLSX_ROW_LIMIT', 'XLSX 单行 XML 超过本次 100,000 元素或 128 层预算。'); throw error; }
+        const cells = direct(row, 'c');
+        if (cells.length !== spans.length) throw new DirectError('XLSX_STRUCTURE_INVALID', '工作表单元格片段与逐行解析数量不一致。');
+        const rowAddress = attr(row, 'r');
+        if (rowAddress && (!/^[1-9]\d*$/u.test(rowAddress) || seenRows.has(rowAddress))) throw new DirectError('XLSX_STRUCTURE_INVALID', '工作表行号无效或重复。');
+        if (rowAddress) seenRows.add(rowAddress);
+        const seenCells = new Set<string>();
+        const result = { row: rowAddress, cells: cells.map((cell, index) => {
+          const source = spans[index]!;
+          if (source.start < span.openEnd || source.end > span.end) throw new DirectError('XLSX_STRUCTURE_INVALID', '工作表单元格片段超出原行。');
+          const address = attr(cell, 'r'), cellRow = address?.match(/^[A-Z]{1,3}([1-9]\d*)$/u)?.[1];
+          if (address && (!cellRow || seenCells.has(address) || rowAddress && cellRow !== rowAddress)) throw new DirectError('XLSX_STRUCTURE_INVALID', '工作表单元格地址无效、重复或与行号不符。');
+          if (address) seenCells.add(address);
+          const rawValue = direct(cell, 'v')[0], inline = direct(cell, 'is')[0], formula = direct(cell, 'f')[0], type = attr(cell, 't') ?? 'n';
           const rawStorage = rawValue ? text(rawValue) : null;
           const sharedIndex = type === 's' && rawStorage !== null && /^\d+$/u.test(rawStorage) ? Number(rawStorage) : undefined;
           if (sharedIndex !== undefined && !shared[sharedIndex]) issues.push({ code: 'XLSX_SHARED_STRING_MISSING', message: '单元格共享字符串索引缺失，未填补原值。', location: { part: path, cell: attr(cell, 'r') } });
@@ -140,8 +200,10 @@ export function officeNative(bytes: Buffer, format: 'docx' | 'pptx' | 'xlsx', si
             resolvedSharedString: sharedIndex === undefined ? null : shared[sharedIndex]?.value ?? null,
             inlineString: inline ? xmlChildren(inline).filter(child => ['t', 'r'].includes(local(child))).map(child => local(child) === 't' ? text(child) : xmlNodes(child, 't').map(item => text(item)).join('')).join('') : null,
             formula: formula ? { expression: text(formula), attributes: Array.from(formula.attributes).map(value => ({ name: value.name, value: value.value })) } : null,
-            styleIndex: attr(cell, 's'), rawXml: cell.outerHTML };
+            styleIndex: attr(cell, 's'), rawXml: xml.slice(source.start, source.end) };
         }) };
+        for (const cell of result.cells) reserve(cell);
+        return result;
       });
       const hyperlinks = xmlNodes(doc, 'hyperlink').map(node => ({ cellRange: attr(node, 'ref'), display: attr(node, 'display'), ...links(path, node.getAttribute('r:id'), attr(node, 'location')) }));
       sheets.push({ name: attr(sheet, 'name'), nativeId: attr(sheet, 'sheetId'), state: attr(sheet, 'state'), part: path, rows, hyperlinks,

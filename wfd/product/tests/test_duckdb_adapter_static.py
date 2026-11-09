@@ -61,6 +61,18 @@ def test_prevent_native_name_collision():
         _native_schema('tabular_rows',rows)
 
 
+def test_long_logical_code_keeps_original_value_and_bounded_native_names():
+    codes = ['src_' + 'x' * 75 + suffix for suffix in ['A', 'B']]
+    row = {'values': {code: {'data_type': 'text', 'value': code, 'value_state': 'valid_value'} for code in codes}}
+    metrics = [(name, read) for name, _, read in _native_schema('tabular_rows', [row]) if name.startswith('mhash_')]
+    assert len({name for name, _ in metrics}) == 4
+    assert all(len(name) <= 60 for name, _ in metrics)
+    assert sorted(read(row) for name, read in metrics if not name.endswith('_state')) == codes
+    for invalid in ['x' * 129, 'a' * 65 + '"']:
+        with pytest.raises(ValueError, match='UNSAFE_FIELD_CODE'):
+            _native_schema('tabular_rows', [{'values': {invalid: row['values'][codes[0]]}}])
+
+
 def test_paths_are_sql_quoted():
     assert _pathstr(Path("/tmp/foo's.parquet")) == "'/tmp/foo''s.parquet'"
     assert _ident('x"y')=='"x""y"'

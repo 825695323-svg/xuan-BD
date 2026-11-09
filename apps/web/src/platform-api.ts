@@ -8,6 +8,54 @@ import type { MemoryForgetPreview, MemoryInput, MemoryRecord, MemoryScope, Memor
 
 interface PrivateContext { generation: number; revision: number }
 
+/** 本机受信启动器注入的只读路径桥；普通网页没有这个对象。 */
+interface NativeFileBridge {
+  version: 1;
+  resolve(files: readonly File[]): Promise<readonly (string | null)[]>;
+}
+declare global {
+  interface Window { __xuanNativeFiles?: NativeFileBridge }
+}
+
+/** 普通网页直接上传；只有本机受信窗口才存在路径桥。 */
+export function hasNativeFileBridge(): boolean {
+  return typeof window !== 'undefined' && !!window.__xuanNativeFiles;
+}
+
+/** 本机桥必须给出绝对路径；不把相对路径、URL 或文件名猜成原文件。 */
+export function isAbsoluteFilePath(path: string): boolean {
+  return /^(?:\/|[a-zA-Z]:[\\/]|\\\\)/.test(path);
+}
+
+/**
+ * 按输入顺序取得同一批实际 File 对象的原文件绝对路径。
+ * 桥不存在时返回 null；未知版本、畸形回执或解析失败都明确拒绝，不猜路径。
+ */
+export async function resolveNativeFilePaths(files: readonly File[]): Promise<readonly (string | null)[] | null> {
+  if (typeof window === 'undefined') return null;
+  const bridge: unknown = window.__xuanNativeFiles;
+  if (bridge === undefined) return null;
+  if (!bridge || typeof bridge !== 'object') throw new RequestError('本机文件路径接口无效，请使用应用窗口重新选择文件。');
+  const candidate = bridge as { version?: unknown; resolve?: unknown };
+  if (candidate.version !== 1 || typeof candidate.resolve !== 'function') {
+    throw new RequestError('本机文件路径接口版本不受支持，请使用应用窗口重新选择文件。');
+  }
+  let value: unknown;
+  try { value = await (candidate.resolve as (this: unknown, files: readonly File[]) => Promise<unknown>).call(candidate, files); }
+  catch (error) {
+    const detail = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+    const reason = detail.trim() ? `：${detail.trim()}` : '';
+    throw new RequestError(`未能读取原文件路径${reason}；请使用应用窗口重新选择文件。`);
+  }
+  if (!Array.isArray(value)) throw new RequestError('原文件路径结果不完整，未加入草稿；请使用应用窗口重新选择文件。');
+  const paths = Array.from(value);
+  if (paths.length !== files.length
+    || !paths.every((path) => path === null || (typeof path === 'string' && path.trim().length > 0 && isAbsoluteFilePath(path)))) {
+    throw new RequestError('原文件路径结果不完整，未加入草稿；请使用应用窗口重新选择文件。');
+  }
+  return paths as (string | null)[];
+}
+
 /** 私有写请求只使用本页已核实的代次；尚未核实时不发送，也不猜代次。 */
 function privateContext(action: string): PrivateContext {
   const generation = localDataGeneration();
@@ -32,8 +80,9 @@ export const getFiles = async (id: string) => await request(`/api/files?conversa
 export const registerFile = async (id: string, path: string) => await request('/api/files', 'POST', { conversationId: id, path }) as FileReference;
 export const observeFile = async (id: string) => await request(`/api/files/${encodeURIComponent(id)}/observe`, 'POST', {});
 export async function uploadFile(conversationId: string, file: File): Promise<FileReference> {
-  if (file.size > 25 * 1024 * 1024) throw new RequestError('附件上限为 25 MB；更大的文件请登记本机路径。');
-  if (!file.size) throw new RequestError('请选择一个非空文件。');
+  // 本地预检没有发出请求，必须带明确失败身份，不能被当作“可能已受理”。
+  if (file.size > 25 * 1024 * 1024) throw new RequestError('此环境未取得原文件路径，上传最多 25 MiB；请使用应用窗口重新选择文件。', 413, 'UPLOAD_TOO_LARGE');
+  if (!file.size) throw new RequestError('请选择一个非空文件。', 400, 'INVALID_UPLOAD');
   const context = privateContext('上传附件');
   let response: Response;
   try {
@@ -48,8 +97,10 @@ export async function uploadFile(conversationId: string, file: File): Promise<Fi
   if (!response.ok) {
     const code = revocationCode(body);
     if (code) notifyLocalDataRevoked(code);
-    throw new RequestError(isObject(body) && typeof body.error === 'string' ? body.error : '附件保存失败。', response.status,
-      isObject(body) && typeof body.code === 'string' ? body.code : null);
+    const backendCode = isObject(body) && typeof body.code === 'string' ? body.code : null;
+    throw new RequestError(backendCode === 'UPLOAD_TOO_LARGE'
+      ? '此环境未取得原文件路径，上传最多 25 MiB；请使用应用窗口重新选择文件。'
+      : isObject(body) && typeof body.error === 'string' ? body.error : '附件保存失败。', response.status, backendCode);
   }
   assertCurrent(context, '附件上传');
   if (!isObject(body) || typeof body.id !== 'string' || body.source !== 'user-attached') throw new RequestError('附件保存确认无效，请先核对文件列表。');

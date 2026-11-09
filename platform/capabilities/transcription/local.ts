@@ -42,6 +42,7 @@ export interface LocalTranscriptionOptions {
   modelPath: string;
   binary(name: 'ffmpeg' | 'ffprobe' | 'whisper-cli'): string;
   assertPath(path: string): void;
+  assertModelPath(path: string): void;
   runTool(context: TaskExecutionContext, workspace: DirectWorkspace, authority: DirectAuthority,
     binary: DirectBinary, args: string[], path: string, timeout?: number): Promise<DirectProcessResult>;
   convert(input: string, extension: string, output: string, format: string): string[];
@@ -147,7 +148,7 @@ export async function transcribeLocalFile(context: TaskExecutionContext, input: 
   if (reference.kind !== 'file' || (input.fileRefVersion !== undefined && reference.version !== input.fileRefVersion)) {
     throw new DirectError('MATERIAL_REFERENCE_CHANGED', '选定的媒体原件版本已变化。');
   }
-  options.assertPath(reference.invocationPath); options.assertPath(options.modelPath);
+  options.assertPath(reference.invocationPath); options.assertModelPath(options.modelPath);
   if (input.destination) options.assertPath(input.destination);
   const extension = extname(reference.canonicalPath).toLowerCase(), demuxer = DEMUXERS[extension];
   if (!demuxer) throw new DirectError('UNSUPPORTED_INPUT', '转录仅接受已登记的本地音频或视频；播放列表与外部引用格式不会被读取。');

@@ -31,13 +31,6 @@ export const SOURCE_META: Record<string, SourceMeta> = {
   sogouwechat: { topics: ['社会与民生', '产业与企业'], regions: ['中国大陆'], channel: '搜索聚合', languages: ['中文'], opinion: true },
   'baidu-drive': { topics: [], regions: [], channel: '工具', languages: ['中文'] },
 };
-export const FOLLOW_KEY = 'xuan.followedSources.v1';
-export const readFollowed = (): string[] => {
-  try {
-    const raw = window.localStorage.getItem(FOLLOW_KEY), parsed: unknown = raw ? JSON.parse(raw) : null;
-    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string').slice(0, 60) : [];
-  } catch { return []; }
-};
 export const baiduOperations = ['ls', 'search', 'download', 'upload', 'transfer-list', 'transfer-select'];
 export const baiduLabels: Record<string, string> = {
   ls: '列目录 ls', search: '搜索 search', download: '下载 download',

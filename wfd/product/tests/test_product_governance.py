@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from test_product_service import ALL_ROLES, HERE, SOURCE_POLICY, UNIT_REGISTRY, extension, known_time, make_service, next_doc
+from test_product_service import (
+    ALL_ROLES, HERE, SOURCE_POLICY, UNIT_REGISTRY, extension, fixture_source_roles,
+    known_time, make_service, next_doc,
+)
 from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, load_protocol_validator
 from wfd_sdk.product_bundle import export_financial_bundle
 from wfd_sdk.product_governance import validate_definition, validate_payload
@@ -214,6 +217,39 @@ def test_additive_field_definition_is_classified_compatible():
         {"field_code": "note", "data_type": "text", "unit_code": "text",
          "measurement_nature": "stock", "time_role": "observation"})
     assert WFDProductService._definition_relation(prior, added["declaration"]) == "compatible_additive"
+
+
+def test_additive_field_context_preserves_existing_fields_and_global_scope():
+    old = {"semantic_code": "test.source-qualifications", "measurement_nature": "mixed_observation",
+           "unit_code": "per_field", "definition_authority": "p1.test", "time_role": "observation",
+           "field_definitions": [{"field_code": "reading", "data_type": "decimal", "unit_code": "cny",
+                                  "measurement_nature": "mixed_observation", "time_role": "observation"}],
+           "semantic_context": {"content_nature": "source_claim"},
+           "field_semantic_context": {"reading": {"content": {"assertion_status": "source_reported_price_label"}}}}
+    added = copy.deepcopy(old)
+    added["field_definitions"].append({"field_code": "note", "data_type": "text", "unit_code": "text",
+                                        "measurement_nature": "mixed_observation", "time_role": "observation"})
+    added["field_semantic_context"]["note"] = {"content": {"assertion_status": "source_reported_interpretation"}}
+    assert WFDProductService._definition_relation({"declaration": old}, added) == "compatible_additive"
+    for change in ("delete_context", "replace_context", "override_time", "change_global", "change_unit", "remove_field"):
+        candidate = copy.deepcopy(added)
+        if change == "delete_context":
+            del candidate["field_semantic_context"]["reading"]
+        elif change == "replace_context":
+            candidate["field_semantic_context"]["reading"]["content"]["assertion_status"] = "confirmed_market_fact"
+        elif change == "override_time":
+            candidate["field_semantic_context"]["reading"]["time"] = {"period_type": "instant"}
+        elif change == "change_global":
+            candidate["semantic_context"]["content_nature"] = "observed_fact"
+        elif change == "change_unit":
+            candidate["field_definitions"][0]["unit_code"] = "usd"
+        else:
+            candidate["field_definitions"] = candidate["field_definitions"][1:]
+            del candidate["field_semantic_context"]["reading"]
+        assert WFDProductService._definition_relation({"declaration": old}, candidate) == "breaking", change
+    unqualified = copy.deepcopy(old)
+    del unqualified["field_semantic_context"]
+    assert WFDProductService._definition_relation({"declaration": unqualified}, added) == "breaking"
 
 
 def test_idempotent_replay_preserves_original_grade(tmp_path):
@@ -511,6 +547,7 @@ def test_compatible_field_addition_reuses_product_id_and_persists_units(tmp_path
     service, doc = make_service(tmp_path)
     output = doc["outputs"][0]
     output["output_key"] = "stable_tabular"
+    doc["source_bundle"]["source_roles"] = fixture_source_roles(doc["outputs"])
     output["new_definition_declaration"] = {
         "semantic_code": "p1.stable.tabular", "measurement_nature": "mixed_observation",
         "unit_code": "per_field", "definition_authority": "p1.test", "time_role": "observation",
@@ -618,6 +655,7 @@ def test_unpublished_draft_does_not_poison_published_identity(tmp_path):
     base["expected_parent_snapshot_id"] = s1
     output = base["outputs"][0]
     output["output_key"] = "identity_evolution"
+    base["source_bundle"]["source_roles"] = fixture_source_roles(base["outputs"])
     output["new_definition_declaration"] = {
         "semantic_code": "p1.identity.evolution", "measurement_nature": "mixed_observation",
         "unit_code": "per_field", "definition_authority": "p1.test", "time_role": "observation",
@@ -777,6 +815,7 @@ def test_unrelated_source_scope_does_not_block_authorized_product(tmp_path):
     second["source_bundle"]["source_ids"] = ["other"]
     second["source_bundle"]["usage_scope"] = "other_local_use"
     second["outputs"][0]["output_key"] = "other_output"
+    second["source_bundle"]["source_roles"] = fixture_source_roles(second["outputs"], "other")
     second["outputs"][0]["subject"] = {"id": "port_of_long_beach", "kind": "physical_object",
                                       "namespace": "us.port.official"}
     second["outputs"][0]["new_definition_declaration"]["semantic_code"] = "audit.other.product"

@@ -41,7 +41,7 @@ def test_reference_normal_same_range_reads_three_rows(tmp_path):
     assert report["readable"] is True
     result = handle.read()
     assert [row["row"]["values"]["close_price"]["value"] for row in result["rows"]] == [
-        "11.56", "11.48", "11.41"]
+        "100.40", "100.41", "100.42"]  # deterministic synthetic inputs, not historical prices
     assert not list((tmp_path / "target/catalog/commits").glob("*.json"))
     assert not list((tmp_path / "target/catalog/snapshots").glob("*.json"))
 

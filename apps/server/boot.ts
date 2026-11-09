@@ -52,6 +52,11 @@ export async function startLocalServer(options: {
   } catch (error) {
     startupFence?.release();
     services?.taskCompletions?.dispose();
+    services?.segments?.close();
+    services?.files.closeTemporaryRetention();
+    services?.options.processRuntime?.closeTemporaryRetention();
+    await services?.r1Batches?.dispose();
+    await services?.r1Auto?.dispose();
     const disposed = await Promise.allSettled([services?.tasks.dispose(), core?.dispose()]);
     let databaseClosed = true;
     try { database?.close(); } catch { databaseClosed = false; }
@@ -68,6 +73,11 @@ export async function startLocalServer(options: {
     stop ??= (async () => {
       stopping = true;
       services?.taskCompletions?.dispose();
+      services?.segments?.close();
+      services?.files.closeTemporaryRetention();
+      services?.options.processRuntime?.closeTemporaryRetention();
+      await services?.r1Batches?.dispose();
+      await services?.r1Auto?.dispose();
       // 仍持有入口，直到所有使用者收束并关闭数据库；另一个进程此时不能恢复它。
       let companionFailure: unknown;
       try { await options.beforeShutdown?.(); } catch (error) { companionFailure = error; }
@@ -109,7 +119,12 @@ export async function ownStateRoot(databasePath: string): Promise<() => Promise<
     if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error;
   }
   // 目录别名归到同一实际状态根；数据库链接则在上方直接拒绝。
-  const path = resolve(stateRoot, '.harness-owner.lock'), token = randomUUID();
+  const legacyOwner = await lstat(resolve(stateRoot, '.harness-owner.lock')).catch(error => {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (legacyOwner) throw Object.assign(new Error('原应用仍有状态所有者或遗留锁；请先按原身份核对并完成命名迁移。'), { code: 'STATE_IN_USE' });
+  const path = resolve(stateRoot, '.bd-owner.lock'), token = randomUUID();
   let file;
   try { file = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600); }
   catch (error) {
@@ -154,7 +169,7 @@ export async function prepareStateRootRecovery(databasePath: string, expected: S
     || !/^[0-9]+$/u.test(expected.device) || !/^[0-9]+$/u.test(expected.inode) || !/^[a-f0-9]{64}$/u.test(expected.sha256)) throw lost();
   const database = await lstat(databasePath);
   if (!database.isFile() || database.nlink !== 1) throw lost();
-  const path = resolve(parent, '.harness-owner.lock');
+  const path = resolve(parent, '.bd-owner.lock');
   const verify = async () => {
     const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {

@@ -8,6 +8,7 @@ import copy
 import csv
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -17,12 +18,47 @@ from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parents[1]
 PROJECT = ENGINE.parents[1]
-FIXTURES = ENGINE / "fixtures/financial_slice"
-MATERIALS = Path("/Users/mashiro/数据清洗 特征提取 标注 前期汇总原包")
 UNKNOWN = {"status": "unknown", "precision": "unknown", "earliest_utc": None,
            "latest_exclusive_utc": None, "source_timezone": "Asia/Shanghai"}
 SOURCE_ID = "user-materials"
 OFFICIAL_URL = "https://static.cninfo.com.cn/finalpage/2026-08-15/1225475348.PDF"
+
+
+def selected_directory(value):
+    path = Path(value)
+    if not path.is_absolute() or not path.is_dir():
+        raise ValueError("输入目录须为明确选择的既有绝对路径")
+    return path.resolve()
+
+
+def selected_file(value, *roots):
+    path = Path(value)
+    if not path.is_absolute() or not path.is_file():
+        raise ValueError("输入文件或程序须为明确选择的既有绝对路径")
+    path = path.resolve()
+    if roots and not any(path.is_relative_to(root) for root in roots):
+        raise ValueError("材料引用超出本次明确选择的输入目录")
+    return path
+
+
+def new_output_directory(value, *inputs):
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("输出须为明确的工程外绝对路径")
+    resolved = path.resolve()
+    for protected in (PROJECT.resolve(), *(Path(item).resolve() for item in inputs)):
+        if resolved == protected or resolved.is_relative_to(protected) or protected.is_relative_to(resolved):
+            raise ValueError("输出不能与源码或所选原材料目录重叠")
+    if path.exists() or path.is_symlink() or not resolved.parent.is_dir():
+        raise ValueError("输出必须是父目录已存在的全新目录，不能覆盖既有文件或目录")
+    return resolved
+
+
+def selected_program(value):
+    path = selected_file(value)
+    if not os.access(path, os.X_OK):
+        raise ValueError("所选程序不可执行")
+    return path
 
 
 def save(path, value):
@@ -47,7 +83,7 @@ def day_time(day):
                     (start + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00"), "day")
 
 
-def fetch_official():
+def fetch_official(fixtures, pdf_python):
     """仅取得对应单份公告，保留响应字节与本轮真实取得时间。"""
     request = urllib.request.Request(OFFICIAL_URL, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.cninfo.com.cn/"})
     with urllib.request.urlopen(request, timeout=45) as response:
@@ -57,18 +93,17 @@ def fetch_official():
                     "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
     if not raw.startswith(b"%PDF-"):
         raise ValueError("官方端点未返回PDF，不能作为公告原件")
-    FIXTURES.mkdir(parents=True, exist_ok=True)
-    pdf = FIXTURES / "cninfo_1225475348.pdf"
+    fixtures.mkdir(parents=True, exist_ok=True)
+    pdf = fixtures / "cninfo_1225475348.pdf"
     pdf.write_bytes(raw)
-    save(FIXTURES / "official_acquisition.json", metadata)
-    pdf_python = "/Users/mashiro/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
+    save(fixtures / "official_acquisition.json", metadata)
     extracted = subprocess.run([pdf_python, "-c", "from pypdf import PdfReader; import sys; print('\\n\\f\\n'.join(p.extract_text() for p in PdfReader(sys.argv[1]).pages))", str(pdf)],
                                check=True, capture_output=True, text=True)
-    (FIXTURES / "cninfo_1225475348.txt").write_text(extracted.stdout, "utf-8")
+    (fixtures / "cninfo_1225475348.txt").write_text(extracted.stdout, "utf-8")
     return metadata
 
 
-def prepare_inputs():
+def prepare_inputs(materials, fixtures, official_root=None):
     """只抽取已存在材料，不联网、不执行素材中的代码。"""
     sources, quotes = [], []
 
@@ -77,16 +112,16 @@ def prepare_inputs():
         return len(sources) - 1
 
     for day in ["20261012", "20261013", "20261014", "20261015", "20261016"]:
-        path = MATERIALS / "静态数据库/原包/每日日线/按交易日/2026" / f"{day}@余哈哈的数据仓库 原创整理.csv"
+        path = materials / "静态数据库/原包/每日日线/按交易日/2026" / f"{day}@余哈哈的数据仓库 原创整理.csv"
         index = source(path, "compiled_market_data")
         with path.open(encoding="utf-8-sig", newline="") as stream:
             row = next(r for r in csv.DictReader(stream) if r["股票代码"] == "000001")
         quotes.append({"source_index": index, "raw": row})
-    identity_path = MATERIALS / "静态数据库/原包/上市企业名单和概念分类/上市公司基本信息/2026/20261014_上市公司基本信息@余哈哈的数据仓库 原创整理.csv"
+    identity_path = materials / "静态数据库/原包/上市企业名单和概念分类/上市公司基本信息/2026/20261014_上市公司基本信息@余哈哈的数据仓库 原创整理.csv"
     identity_index = source(identity_path, "compiled_company_identity")
     with identity_path.open(encoding="utf-8-sig", newline="") as stream:
         company = next(r for r in csv.DictReader(stream) if r["TS股票代码"] == "000001.SZ")
-    report_path = MATERIALS / "测试用目录数据类型/提炼_XuanRoot/样例/分析记录_真实内容样例.json"
+    report_path = materials / "测试用目录数据类型/提炼_XuanRoot/样例/分析记录_真实内容样例.json"
     report_index = source(report_path, "upstream_analysis_with_announcement_claims")
     report = json.loads(report_path.read_text("utf-8"))
     facts = report["output"]["verified_facts"]
@@ -113,10 +148,11 @@ def prepare_inputs():
                             "关系有效期未知；五个已观测交易日期不等于完整交易日历。",
                             "行情CSV有复权因子但未提供价格复权口径，本轮原值保存且复权状态未知。",
                             "许可及对外分发资格未确认，仅用于用户授权的本机样本库。"]}
-    official_path = FIXTURES / "cninfo_1225475348.pdf"
+    official_root = official_root or fixtures
+    official_path = official_root / "cninfo_1225475348.pdf"
     if official_path.exists():
-        official_meta = json.loads((FIXTURES / "official_acquisition.json").read_text("utf-8"))
-        official_text = (FIXTURES / "cninfo_1225475348.txt").read_text("utf-8")
+        official_meta = json.loads((official_root / "official_acquisition.json").read_text("utf-8"))
+        official_text = (official_root / "cninfo_1225475348.txt").read_text("utf-8")
         compact = re.sub(r"\s+", "", official_text)
         if "公告编号：2026-031" not in compact or "平安银行股份有限公司董事会决议公告" not in compact:
             raise ValueError("原件公告身份不匹配，停止使用旧样例")
@@ -140,7 +176,7 @@ def prepare_inputs():
                                "历史行情公开时间、证券关系有效期间和价格复权口径仍未知；五日样本不等于完整交易日历。",
                                "实际取得时间为本轮网络下载与本地接收时间；不把上游历史采集时间当WFD已持有。",
                                "许可及对外分发资格未确认，仅用于用户授权的本机样本库。"]
-    save(FIXTURES / "inputs.json", data)
+    save(fixtures / "inputs.json", data)
     return data
 
 
@@ -338,13 +374,36 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare-only", action="store_true", help="只从授权原包提取小型结构化输入")
     parser.add_argument("--fetch-official", action="store_true", help="联网取得并核对当前单份巨潮公告原件，然后更新输入")
-    parser.add_argument("--output", type=Path, default=PROJECT / "03_测试与验证记录/首个金融产品闭环_2026-10-26")
+    parser.add_argument("--output", type=Path, required=True, help="全新工程外输出目录；父目录须存在")
+    parser.add_argument("--materials-root", type=Path, required=True, help="本次明确选择的既有原包根")
+    parser.add_argument("--inputs", type=Path, help="执行时明确选择的既有 inputs.json")
+    parser.add_argument("--official-root", type=Path, help="准备时明确选择的既有公告原件目录")
+    parser.add_argument("--pdf-python", type=Path, help="联网取公告时明确选择的 PDF 文字提取解释器")
     args = parser.parse_args()
+    materials = selected_directory(args.materials_root)
+    official = selected_directory(args.official_root) if args.official_root else None
+    if args.fetch_official and official:
+        parser.error("联网取得新公告与选择既有公告目录不能同时使用")
+    preparing = args.prepare_only or args.fetch_official
+    if preparing and args.inputs:
+        parser.error("准备输入时不接受 --inputs")
+    if not preparing and not args.inputs:
+        parser.error("执行需要明确选择 --inputs")
+    inputs = selected_file(args.inputs) if args.inputs else None
+    pdf_python = selected_program(args.pdf_python) if args.pdf_python else None
+    if args.fetch_official and not pdf_python:
+        parser.error("联网取得公告需要 --pdf-python")
+    output = new_output_directory(args.output, materials, *(item for item in (official, inputs) if item))
     if args.fetch_official:
-        print(json.dumps(fetch_official(), ensure_ascii=False, indent=2))
-    if args.prepare_only or args.fetch_official:
-        prepared = prepare_inputs()
-        print(json.dumps({"inputs": str(FIXTURES / "inputs.json"), "quote_rows": len(prepared["quotes"]), "financial_rows": len(prepared["financial"]),
+        output.mkdir(mode=0o700)
+        print(json.dumps(fetch_official(output, pdf_python), ensure_ascii=False, indent=2))
+    if preparing:
+        output.mkdir(mode=0o700, exist_ok=args.fetch_official)
+        prepared = prepare_inputs(materials, output, official)
+        print(json.dumps({"inputs": str(output / "inputs.json"), "quote_rows": len(prepared["quotes"]), "financial_rows": len(prepared["financial"]),
                           "source_files": len(prepared["sources"]), "limitations": prepared["limitations"]}, ensure_ascii=False, indent=2))
     else:
-        raise SystemExit(run(json.loads((FIXTURES / "inputs.json").read_text("utf-8")), args.output))
+        data = json.loads(inputs.read_text("utf-8"))
+        for source in data["sources"]:
+            source["path"] = str(selected_file(source["path"], materials, inputs.parent, *((official,) if official else ())))
+        raise SystemExit(run(data, output))

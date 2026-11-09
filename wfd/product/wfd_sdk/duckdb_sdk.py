@@ -17,7 +17,8 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from .state import StateStore, StateError
-from .duckdb_storage import parquet_from_rows, rows_from_parquet, parse_footer, require_duckdb, DUCKDB_STORAGE_FORMAT
+from .duckdb_storage import parquet_from_rows, rows_from_parquet, parse_footer, require_duckdb, matching_business_keys, DUCKDB_STORAGE_FORMAT
+from . import row_version_objects
 
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
@@ -40,13 +41,14 @@ def safe_id(v: str) -> str:
     return re.sub(r'[^a-z0-9_-]', '_', v.lower())[:64] or 'unknown'
 
 
-def load_protocol_validator(root: Path) -> Draft202012Validator:
+def load_protocol_validator(root: Path, entry: str = 'wfd-ingest.schema.json') -> Draft202012Validator:
+    """按受信配置选择内部写入契约；默认仍是旧的 wfd-ingest（旧 Profile 行为不变）。"""
     schemas = {p.name: json.loads(p.read_text('utf-8')) for p in (root/'schemas').glob('*.schema.json') if not p.name.startswith('._')}
     registry = Registry()
     for schema in schemas.values():
         registry = registry.with_resource(schema['$id'], Resource.from_contents(schema))
-    v = Draft202012Validator(schemas['wfd-ingest.schema.json'], registry=registry)
-    v.check_schema(schemas['wfd-ingest.schema.json'])
+    v = Draft202012Validator(schemas[entry], registry=registry)
+    v.check_schema(schemas[entry])
     return v
 
 
@@ -88,7 +90,7 @@ def field_issue(row, field_code, code, msg):
 
 
 def business_validate(output: dict, *, sandbox: bool=True, derived_lineage: dict|None=None,
-                      derived_verifier=None) -> list[ValidationIssue]:
+                      derived_verifier=None, data_only_write=False) -> list[ValidationIssue]:
     """Minimal generic checks, not a replacement for financial product contracts."""
     errs=[]; p=output['payload']; kind=p['kind']
     if kind=='metadata_revision':
@@ -107,7 +109,13 @@ def business_validate(output: dict, *, sandbox: bool=True, derived_lineage: dict
             break
     semantic_context=(declaration or {}).get('semantic_context') or {}
     derivation=semantic_context.get('derivation') or {}
-    requires_lineage=((declaration or {}).get('measurement_nature')=='derived'
+    # The structured data profile persists the business formula and result. The
+    # originating BD instance holds the run proof. Full-profile lineage rules
+    # still apply to legacy documents and to outputs explicitly requiring it.
+    algorithm=(declaration or {}).get('algorithm_definition') or {}
+    external_calculation=(data_only_write and semantic_context.get('content_nature')=='deterministic_derived'
+                          and isinstance(algorithm,dict) and bool(algorithm.get('mathematical_definition')))
+    requires_lineage=(((declaration or {}).get('measurement_nature')=='derived' and not external_calculation)
                       or derivation.get('required') is True)
     if requires_lineage:
         # WFD never computes derived values.  A computed result (including a
@@ -310,35 +318,67 @@ class WFDDuckDBPrototype:
 
     NOT production WFD. Written files are under disposable test root.
     """
+    @classmethod
+    def open_existing(cls, root: Path, validator: Draft202012Validator, *,
+                      runtime_root: Path, read_only: bool = True, sandbox=True,
+                      writer_host: str | None = None, writer_epoch: int | None = None):
+        """Open an initialized store without repairing or initializing its files.
+
+        Read-only opens also leave the local runtime untouched.  A writable open
+        is a separate choice; it never creates a missing store/state/retention.
+        """
+        return cls(root, validator, runtime_root=runtime_root, sandbox=sandbox,
+                   writer_host=writer_host, writer_epoch=writer_epoch,
+                   initialize=False, read_only=read_only)
+
+    @classmethod
+    def initialize_new(cls, root: Path, validator: Draft202012Validator, *,
+                       runtime_root: Path, sandbox=True,
+                       writer_host: str | None = None, writer_epoch: int | None = None):
+        """Explicit provisioning only, after the owner authorizes a new store.
+
+        This storage API does not grant caller roles and is not a machine
+        operation.  Never interpret a nonempty selected directory as a new WFD.
+        """
+        root = Path(root)
+        if root.exists() and (not root.is_dir() or any(root.iterdir())):
+            raise ValueError("STORE_INITIALIZATION_REQUIRES_EMPTY_DIRECTORY")
+        return cls(root, validator, runtime_root=runtime_root, sandbox=sandbox,
+                   writer_host=writer_host, writer_epoch=writer_epoch,
+                   initialize=True, read_only=False)
+
     def __init__(self,root: Path,validator: Draft202012Validator, *, runtime_root:Path, sandbox=True,
                  writer_host:str|None=None, writer_epoch:int|None=None,
                  initialize:bool=True, read_only:bool=False):
+        # The legacy constructor still supports explicit test/provisioning
+        # callers. Machine connections must use open_existing, not its defaults.
         require_duckdb()  # fail-fast instead of silently using the legacy writer
-        if read_only and initialize:
+        if read_only:
             initialize = False
         self.root=Path(root);self.validator=validator;self.sandbox=sandbox
+        try:
+            self.expected_protocol = validator.schema['properties']['protocol_version']['const']
+        except Exception:
+            self.expected_protocol = SUPPORTED_PROTOCOL
         self.runtime_root=Path(runtime_root)
         self.read_only=bool(read_only)
         self.writer_host=writer_host
         self.writer_epoch=writer_epoch
+        self.state=StateStore(self.root)
+        if not initialize:
+            if not self.root.is_dir() or not self.state.path.is_file():
+                raise FileNotFoundError("FORMAL_VOLUME_NOT_INITIALIZED:" + str(self.root))
         if self.read_only:
-            if not self.root.is_dir():
-                raise FileNotFoundError("FORMAL_VOLUME_NOT_INITIALIZED:" + str(self.root))
-            self.state=StateStore(self.root)
-            if not self.state.path.is_file():
-                raise FileNotFoundError("FORMAL_VOLUME_NOT_INITIALIZED:" + str(self.root))
             return
-        self.runtime_root.mkdir(parents=True,exist_ok=True)
         if self.runtime_root.resolve()==self.root.resolve() or self.root.resolve() in self.runtime_root.resolve().parents:
             raise ValueError("LOCAL_INDEX_MUST_BE_OUTSIDE_DATA_VOLUME")
+        self.runtime_root.mkdir(parents=True,exist_ok=True)
         if initialize:
             for sub in ['catalog/manifests','catalog/snapshots','catalog/commits','catalog/governance/receipts',
                         'catalog/lineage','catalog/recovery','catalog/forks',
                         'observations','foundation','events','_staging']:
                 (self.root/sub).mkdir(parents=True,exist_ok=True)
-        # ENG-01：初始化并校验权威 HEAD 状态（空指针，不从提交图推导）
-        self.state=StateStore(self.root)
-        if initialize:
+            # ENG-01：初始化并校验权威 HEAD 状态（空指针，不从提交图推导）
             self.state.ensure_initialized(writer_host=writer_host)
         # R-ST-03：保留状态默认"全部保留"；初始化时显式落盘，缺失即视为被篡改（GC09）
         ret=self.root/'catalog/retention.json'
@@ -366,7 +406,7 @@ class WFDDuckDBPrototype:
         for p in [x for x in (self.root/'catalog/commits').glob('*.json') if not x.name.startswith('._')]:
             try:
                 marker=json.loads(p.read_text('utf-8'))
-                snap=self.root/marker['snapshot_file']
+                snap=self.root/row_version_objects.snapshot_relative(marker,marker['snapshot_id'])
                 sb=snap.read_bytes()
                 if sha(sb)!=marker['snapshot_sha256']:continue
                 d=json.loads(sb)
@@ -375,6 +415,7 @@ class WFDDuckDBPrototype:
                 manifest=json.loads(manifest_bytes)
                 if manifest['files']!=d['files']:continue
                 if d['snapshot_id'] != marker['snapshot_id']:continue
+                row_version_objects.project_snapshot(self.root,d)
                 good=True
                 for ent in d['files']:
                     payload=(self.root/ent['file_relpath']).read_bytes()
@@ -383,15 +424,28 @@ class WFDDuckDBPrototype:
             except (OSError,ValueError,KeyError):continue
         return result
 
+    def _resolved_head(self):
+        """Validate the authoritative head, without hydrating unrelated history."""
+        state = self.state.read()
+        sid = (state or {}).get('active_head')
+        snaps = None
+        if isinstance(sid, str) and re.fullmatch(r's_[0-9a-f]{24}', sid):
+            try:
+                snaps = [self._valid_snapshot_exact(sid)]
+            except ValueError:
+                pass  # Preserve the existing missing/corrupt/ambiguous diagnostics.
+        if snaps is None:
+            snaps = self._valid_snapshots()
+        resolved = self.state.resolve(snaps)
+        current = next((item for item in snaps if item['snapshot_id'] == resolved.get('snapshot_id')), None)
+        return resolved, current
+
     def head(self):
         """正式 HEAD：只认 catalog/state.json.active_head（02 补丁 R-ST-01）。"""
-        snaps=self._valid_snapshots()
-        st=self.state.resolve(snaps)
+        st, current = self._resolved_head()
         if not st['ok']:
             raise StateError(st['code'], st.get('detail',''))
-        sid=st.get('snapshot_id')
-        if sid is None:return None
-        return next((d for d in snaps if d['snapshot_id']==sid),None)
+        return current
 
     def diagnostic_heads(self):
         """诊断用：从 Commit 集合推导的头，不构成正式版本判定。"""
@@ -437,9 +491,51 @@ class WFDDuckDBPrototype:
     def _known_request(self,rid):
         fn=self.root/'catalog/governance/receipts'/f'{rid}.json'
         if fn.exists():return json.loads(fn.read_text('utf-8'))
+        # The cache contains only identities from metadata already verified in
+        # this engine instance. Every negative reuse re-reads and hashes all
+        # three authoritative files; filesystem timestamps are never trusted.
+        cache = getattr(self, '_negative_request_metadata', None)
+        if cache is None:
+            cache = self._negative_request_metadata = {}
         # Recover if process died after the marker was written but before receipt
-        for d in self._valid_snapshots():
-            if d.get('request_key')==rid:return d['receipt']
+        for path in (self.root/'catalog/commits').glob('*.json'):
+            if path.name.startswith('._'):
+                continue
+            try:
+                marker_bytes = path.read_bytes()
+                prior = cache.get(path.name)
+                if (prior and prior['request_key'] != rid
+                        and sha(marker_bytes) == prior['marker_sha256']
+                        and sha((self.root/prior['snapshot_file']).read_bytes()) == prior['snapshot_sha256']
+                        and sha((self.root/prior['manifest_relpath']).read_bytes()) == prior['manifest_sha256']):
+                    continue
+                marker = json.loads(marker_bytes)
+                lookup = marker.get('request_lookup')
+                if (isinstance(lookup, dict) and set(lookup) == {
+                        'parent_snapshot_id', 'request_key', 'request_fingerprint', 'manifest_sha256'}
+                        and marker.get('request_lookup_sha256') == sha(canonical(lookup))
+                        and marker.get('snapshot_id') == path.stem
+                        and row_version_objects.snapshot_relative(marker,path.stem) == f'catalog/snapshots/{path.stem}.json'
+                        and marker['snapshot_id'] == 's_' + sha(canonical([
+                            lookup['parent_snapshot_id'], lookup['request_key'],
+                            lookup['request_fingerprint'], lookup['manifest_sha256']]))[:24]):
+                    if lookup['request_key'] != rid:
+                        continue
+                # Old or inconsistent lookups use the original commit-bound
+                # snapshot and manifest as the identity index. An unrelated
+                # request cannot become a match through payload contents.
+                d = self._valid_snapshot_exact(marker['snapshot_id'], verify_payloads=False)
+                if d.get('request_key') != rid:
+                    cache[path.name] = {
+                        'request_key':d.get('request_key'),'marker_sha256':sha(marker_bytes),
+                        'snapshot_file':row_version_objects.snapshot_relative(marker,path.stem),'snapshot_sha256':marker['snapshot_sha256'],
+                        'manifest_relpath':d['manifest_relpath'],'manifest_sha256':d['manifest_sha256']}
+                    continue
+                # A matching identity always retains the original full file
+                # verification, including lost-receipt recovery of old commits.
+                return self._valid_snapshot_exact(marker['snapshot_id'])['receipt']
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
         return None
 
     def _snapshot_product_parts(self, snapshot, product_id):
@@ -707,10 +803,13 @@ class WFDDuckDBPrototype:
         schema_issues=sorted(self.validator.iter_errors(doc),key=lambda x:list(map(str,x.path)))
         if schema_issues:
             return {'status':'rejected_schema','errors':[ValidationIssue('SCHEMA_INVALID',x.message[:250],field_path='.'.join(map(str,x.path))) for x in schema_issues[:20]]}
-        if doc['protocol_version']!=SUPPORTED_PROTOCOL:
+        # data_only 内部契约用 wfd_publish_context 承载发布元数据；引擎内部沿用既有键，只在校验通过后适配。
+        if isinstance(doc, dict) and 'wfd_publish_context' in doc and 'source_bundle' not in doc:
+            doc = dict(doc); doc['source_bundle'] = doc['wfd_publish_context']
+        if doc['protocol_version']!=self.expected_protocol:
             return {'status':'rejected_schema','errors':[ValidationIssue('UNSUPPORTED_PROTOCOL','Unsupported protocol version')]}
         # ENG-03：发布前必须解析出唯一权威 HEAD；HEAD 不可用则拒绝，不得回退到图推导
-        head_state=self.state.resolve(self._valid_snapshots())
+        head_state = self._resolved_head()[0]
         if not head_state['ok']:
             return {'status':'rejected','errors':[ValidationIssue(head_state['code'],head_state.get('detail',''))]}
         if writer_epoch is not None and int((self.state.read() or {}).get('writer_epoch') or 0)!=writer_epoch:
@@ -733,6 +832,7 @@ class WFDDuckDBPrototype:
         derived_lineages=(doc.get('source_bundle',{}) or {}).get('_wfd_derived_lineage') or {}
         for out in doc['outputs']:
             errors=business_validate(out,sandbox=self.sandbox,
+                data_only_write=self.expected_protocol=='wfd.data-only-write/0.1-candidate',
                 derived_lineage=derived_lineages.get(out['output_key']) if isinstance(derived_lineages,dict) else None,
                 derived_verifier=lambda output,lineage: self._derived_lineage_errors(output,lineage,doc))
             pid=self._resolved_product_id(doc,out)
@@ -740,12 +840,26 @@ class WFDDuckDBPrototype:
                 if errors: rejected.append({'output_key':out['output_key'],'errors':errors})
                 else: accepted.append(out)
                 continue
-            existing_keys=set()
-            for old in (h['files'] if h else []):
-                if old['product_id']==pid:
+            new_keys={row.get('business_key',row.get('event_id')) for row in out['payload']['rows']}
+            prior_parts=[old for old in (h['files'] if h else []) if old['product_id']==pid]
+            versions=(doc['source_bundle'].get('_wfd_row_versions') or {}).get(out['output_key'])
+            bounded_keys=(doc['source_bundle'].get('_wfd_data_only') is True
+                          and out['payload']['kind'] in {'scalar_rows','tabular_rows'}
+                          and isinstance(versions,dict) and set(versions)==new_keys
+                          and all(isinstance(v,dict) and v.get('input_mode') in {'partial_observation','explicit_increment'} for v in versions.values())
+                          and all(isinstance(key,str) for key in new_keys)
+                          and all(old.get('payload_kind') in {'scalar_rows','tabular_rows'}
+                                  and old.get('source_bundle',{}).get('_wfd_data_only') is True for old in prior_parts))
+            if bounded_keys:
+                # HEAD has verified every declared file. Read real protocol
+                # keys from those Parquet files, never trust the version map
+                # as proof of what physical rows actually contain.
+                existing_keys=matching_business_keys([self.root/old['file_relpath'] for old in prior_parts],new_keys)
+            else:
+                existing_keys=set()
+                for old in prior_parts:
                     for old_row in rows_from_parquet((self.root/old['file_relpath']).read_bytes()):
                         existing_keys.add(old_row.get('business_key',old_row.get('event_id')))
-            new_keys={row.get('business_key',row.get('event_id')) for row in out['payload']['rows']}
             if new_keys & existing_keys:
                 errors.append(ValidationIssue('DUPLICATE_EXISTING_BUSINESS_KEY','Existing product contains keys; corrections require versioned revision handling'))
             if out['input_mode'] in {'source_correction','processing_repair','withdrawal','coverage_revision'}:
@@ -770,7 +884,7 @@ class WFDDuckDBPrototype:
                                 changed=True
         if not accepted:
             return {'status':'rejected','errors':[e for entry in rejected for e in entry['errors']],'output_results':rejected}
-        base_files=[] if h is None else copy.deepcopy(h['files'])
+        base_files=[] if h is None else list(h['files'])
         # Important: retain earlier product entries and immutable files, no in-place updates.
         new_files=[]
         for out in accepted:
@@ -792,9 +906,11 @@ class WFDDuckDBPrototype:
             self._write_immutable(rel,data)
             new_files.append({'product_id':pid,'output_key':out['output_key'],'file_relpath':rel,'file_sha256':file_digest,
                 'row_count':len(out['payload']['rows']),'definition':definition,'subject':out['subject'],
-                'source_bundle':doc['source_bundle'],'evidence_refs':out['evidence_refs'],
+                'source_bundle':doc['source_bundle'],'evidence_refs':out.get('evidence_refs') or [],
                 'input_mode':out['input_mode'],'payload_kind':out['payload']['kind']})
         files=base_files+new_files
+        if row_version_objects.writing_enabled(self.root,self.runtime_root):
+            files=row_version_objects.externalize_files(self.root,files,self._write_immutable)
         dup=self._duplicate_entries(files)
         if dup:
             return {'status':'rejected','errors':[ValidationIssue('DUPLICATE_ARTIFACT',f'duplicate manifest entries: {dup[:3]}')],'output_results':dup}
@@ -814,7 +930,10 @@ class WFDDuckDBPrototype:
         self._write_immutable(srel,sraw)
         if fail_before_commit:
             return {'status':'injected_failure_before_commit','orphan_snapshot_file':srel}
-        craw=canonical({'snapshot_id':sid,'snapshot_file':srel,'snapshot_sha256':sha(sraw)})
+        lookup = {'parent_snapshot_id':parent,'request_key':key,
+                  'request_fingerprint':fingerprint,'manifest_sha256':mhash}
+        craw=canonical({'snapshot_id':sid,'snapshot_file':row_version_objects.marker_snapshot_file(files,sid),'snapshot_sha256':sha(sraw),
+                        'request_lookup':lookup,'request_lookup_sha256':sha(canonical(lookup))})
         self._write_immutable(f'catalog/commits/{sid}.json',craw)
         self._write_immutable(f'catalog/governance/receipts/{key}.json',canonical(receipt))
         # ENG-03：受控更新 HEAD；失败时保留 commit，但不得冒充已激活
@@ -860,6 +979,8 @@ class WFDDuckDBPrototype:
         dup=self._duplicate_entries(files)
         if dup:
             return {'status':'rejected','errors':[ValidationIssue('DUPLICATE_ARTIFACT',f'duplicate manifest entries: {dup[:3]}')],'output_results':dup}
+        if row_version_objects.writing_enabled(self.root,self.runtime_root):
+            files=row_version_objects.externalize_files(self.root,files,self._write_immutable)
         manifest={'parent_snapshot_id':head['snapshot_id'],'files':files}
         mraw=canonical(manifest);mhash=sha(mraw)
         mrel=f'catalog/manifests/manifest_{mhash[:24]}.json'
@@ -872,7 +993,7 @@ class WFDDuckDBPrototype:
               'request_fingerprint':mhash,'receipt':receipt}
         sraw=canonical(snap);srel=f'catalog/snapshots/{sid}.json'
         self._write_immutable(srel,sraw)
-        craw=canonical({'snapshot_id':sid,'snapshot_file':srel,'snapshot_sha256':sha(sraw)})
+        craw=canonical({'snapshot_id':sid,'snapshot_file':row_version_objects.marker_snapshot_file(files,sid),'snapshot_sha256':sha(sraw)})
         self._write_immutable(f'catalog/commits/{sid}.json',craw)
         act=self.state.activate(sid,self.root/srel,expected_prev=head['snapshot_id'],
                                 writer_host=self.writer_host,
@@ -892,7 +1013,7 @@ class WFDDuckDBPrototype:
         try:
             marker=json.loads((self.root/'catalog/commits'/f'{snapshot_id}.json').read_bytes().decode('utf-8'))
             if marker.get('snapshot_id')!=snapshot_id:raise ValueError('SNAPSHOT_ID_MISMATCH')
-            sb=(self.root/marker['snapshot_file']).read_bytes()
+            sb=(self.root/row_version_objects.snapshot_relative(marker,snapshot_id)).read_bytes()
             if sha(sb)!=marker['snapshot_sha256']:raise ValueError('SNAPSHOT_DIGEST_MISMATCH')
             d=json.loads(sb)
             if d['snapshot_id']!=snapshot_id:raise ValueError('SNAPSHOT_ID_MISMATCH')
@@ -900,6 +1021,7 @@ class WFDDuckDBPrototype:
             if sha(mb)!=d['manifest_sha256']:raise ValueError('MANIFEST_DIGEST_MISMATCH')
             manifest=json.loads(mb)
             if manifest['files']!=d['files']:raise ValueError('MANIFEST_FILE_LIST_MISMATCH')
+            row_version_objects.project_snapshot(self.root,d)
             if verify_payloads:
                 for ent in d['files']:
                     if product_ids is not None and ent['product_id'] not in product_ids:continue
@@ -926,7 +1048,7 @@ class WFDDuckDBPrototype:
             raw=(self.root/entry['file_relpath']).read_bytes()
             if sha(raw)!=entry['file_sha256']:raise ValueError('CHECKSUM_MISMATCH')
             rows=rows_from_parquet(raw)
-            result.append({'product_id':entry['product_id'],'metadata':{'definition':entry['definition'],'subject':entry['subject'],'payload_kind':entry['payload_kind']},'rows':rows,'evidence':entry['evidence_refs'],'source':entry['source_bundle']})
+            result.append({'product_id':entry['product_id'],'metadata':{'definition':entry['definition'],'subject':entry['subject'],'payload_kind':entry['payload_kind']},'rows':rows,'evidence':entry.get('evidence_refs') or [],'source':entry['source_bundle']})
         return result
 
     def rebuild_sqlite_index(self):
@@ -944,6 +1066,7 @@ class WFDDuckDBPrototype:
     def export_test_bundle(self,product_id:str,destination:Path, *,snapshot_id=None):
         """Limited one-product, read-only *sandbox* export (not formal WFD full/delta bundle)."""
         snap=self.read_snapshot(snapshot_id)
+        row_version_objects.reject_unsupported(snap,'export_test_bundle')
         entries=[f for f in snap['files'] if f['product_id']==product_id]
         if not entries:raise ValueError('PRODUCT_NOT_FOUND')
         destination=Path(destination);destination.mkdir(parents=True,exist_ok=True)
@@ -957,7 +1080,7 @@ class WFDDuckDBPrototype:
             (destination/rel).write_bytes(raw)
             out.append({'rel_path':rel.as_posix(),'sha256':sha(raw),'row_count':ent['row_count'],
                         'definition':ent['definition'],'subject':ent['subject'],'source':ent['source_bundle'],
-                        'evidence_refs':ent['evidence_refs']})
+                        'evidence_refs':ent.get('evidence_refs') or []})
         bundle={'kind':'wfd_poc_test_bundle','source_snapshot_id':snap['snapshot_id'],'product_id':product_id,
                 'read_self_contained':True,'audit_self_contained':False,'recomputable':False,
                 'formal_wfd_bundle':False,'files':out}

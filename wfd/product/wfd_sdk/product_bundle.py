@@ -34,6 +34,7 @@ from .product_service import WFDProductService
 from .product_data_service import WFDDataOnlyService
 from .transfer import export_package, import_package, object_manifest, verify_package
 from .writerlock import writer_lock
+from .row_version_objects import reject_unsupported
 
 
 LEGACY_FORMAT = "wfd.financial-bundle/0.1"
@@ -247,6 +248,12 @@ class _Node:
         return (self.dataset_id, self.snapshot_id, self.product_id)
 
 
+def _bundle_snapshot(engine, snapshot_id):
+    snapshot = engine.read_snapshot(snapshot_id)
+    reject_unsupported(snapshot, "bundle")
+    return snapshot
+
+
 def _dataset_id(service):
     path = Path(service.root) / "catalog/product_service/dataset.json"
     if not path.is_file():
@@ -256,7 +263,7 @@ def _dataset_id(service):
 
 def _source_product(service, snapshot_id, product_id):
     try:
-        snapshot = service.engine.read_snapshot(snapshot_id)
+        snapshot = _bundle_snapshot(service.engine, snapshot_id)
     except (ValueError, OSError) as exc:
         raise ValueError("BUNDLE_SOURCE_SNAPSHOT_UNAVAILABLE:" + snapshot_id) from exc
     entries = [entry for entry in snapshot["files"] if entry.get("product_id") == product_id]
@@ -914,7 +921,7 @@ def _source_files_for_protection(nodes):
     result = []
     seen = set()
     for node in nodes:
-        for entry in node.service.engine.read_snapshot(node.snapshot_id)["files"]:
+        for entry in _bundle_snapshot(node.service.engine, node.snapshot_id)["files"]:
             rel = entry["file_relpath"]
             if (node.service.root, rel) in seen:
                 continue
@@ -1281,7 +1288,7 @@ def _write_target_store(temp_root, nodes, entries, target_sid, metadata_versions
 def _metadata_versions_for(nodes, perspective, at):
     result = []
     for node in nodes:
-        snapshot = node.service.engine.read_snapshot(node.snapshot_id)
+        snapshot = _bundle_snapshot(node.service.engine, node.snapshot_id)
         for item in snapshot.get("metadata_versions", []) or []:
             if item.get("product_id") != node.product_id:
                 continue
@@ -1775,7 +1782,7 @@ class BundledProductService(WFDProductService):
                     if Path(mapped.root).resolve() == Path(self.root).resolve():
                         raise ValueError("DEPENDENCY_DATASET_SERVICE_FALLBACK_FORBIDDEN:" + str(dset))
                     engine = mapped.engine
-            snapshot = engine.read_snapshot(sid)
+            snapshot = _bundle_snapshot(engine, sid)
             entries = [entry for entry in snapshot["files"] if entry.get("product_id") == pid]
             if not entries:
                 raise ValueError("DEPENDENCY_PRODUCT_UNAVAILABLE:" + str(pid))
@@ -1877,7 +1884,7 @@ def import_financial_bundle(bundle, destination, *, runtime_root, protocol_root=
                 raw = (bundle / "objects" / item["digest"]).read_bytes()
                 engine._write_immutable(f"evidence/sha256/{item['digest']}", raw)
     target_sid = descriptor["target_snapshot_id"]
-    snapshot = engine.read_snapshot(target_sid)
+    snapshot = _bundle_snapshot(engine, target_sid)
     dependency_index, datasets = set(), set()
     for entry in snapshot["files"]:
         product = _entry_binding(entry)["product"]
@@ -2128,7 +2135,7 @@ def export_delta_bundle(service, product_ids, destination, *, snapshot_id,
         runtime_root=baseline_store.parent / (baseline_store.name + "_delta_runtime"),
         sandbox=False, writer_host=None)
     try:
-        baseline_snapshot = baseline_engine.read_snapshot(baseline_snapshot_id)
+        baseline_snapshot = _bundle_snapshot(baseline_engine, baseline_snapshot_id)
     except (ValueError, OSError) as exc:
         raise ValueError("BUNDLE_BASELINE_UNAVAILABLE:" + str(baseline_snapshot_id)) from exc
     baseline_receipt = baseline_snapshot.get("receipt") or {}
@@ -2375,7 +2382,7 @@ def apply_delta_bundle(bundle, target_store, *, runtime_root, allowed_sources,
                 target_store, load_protocol_validator(Path(protocol_root) if protocol_root
                                                       else Path(__file__).resolve().parents[1] / "protocol"),
                 runtime_root=Path(runtime_root), sandbox=False, writer_host=None)
-            engine.read_snapshot(target_sid)
+            _bundle_snapshot(engine, target_sid)
             staging.update({"state": "applied", "applied_at_utc": _now(),
                             "active_head": engine.state.read().get("active_head"),
                             "write_authority_granted": False})
@@ -2409,9 +2416,9 @@ def apply_delta_bundle(bundle, target_store, *, runtime_root, allowed_sources,
             if item.get("carried"):
                 raw = (bundle / "objects" / item["digest"]).read_bytes()
                 engine._write_immutable(f"evidence/sha256/{item['digest']}", raw)
-        engine.read_snapshot(target_sid)
+        _bundle_snapshot(engine, target_sid)
         dependency_index, datasets = set(), set()
-        for entry in engine.read_snapshot(target_sid)["files"]:
+        for entry in _bundle_snapshot(engine, target_sid)["files"]:
             product = _entry_binding(entry)["product"]
             dependency_index.add((product["dataset_id"], target_sid, product["product_id"]))
             datasets.add(product["dataset_id"])
@@ -2448,7 +2455,7 @@ def apply_delta_bundle(bundle, target_store, *, runtime_root, allowed_sources,
 def _reference_protection_files(nodes):
     result, seen = [], set()
     for node in nodes:
-        snapshot = node.service.engine.read_snapshot(node.snapshot_id)
+        snapshot = _bundle_snapshot(node.service.engine, node.snapshot_id)
         for entry in snapshot["files"]:
             rel = entry["file_relpath"]
             if (node.service.root, rel) not in seen:
@@ -3058,7 +3065,7 @@ def export_structured_bundle(service, product_ids, destination, *, snapshot_id,
     destination = Path(destination)
     if destination.exists():
         raise ValueError("BUNDLE_DESTINATION_EXISTS")
-    snapshot = service.engine.read_snapshot(snapshot_id)
+    snapshot = _bundle_snapshot(service.engine, snapshot_id)
     discovered = service.discover_products(snapshot_id=snapshot_id)["products"]
     by_id = {product["product_id"]: product for product in discovered}
     raw_selection = _normalize_selection(selection, sorted(set(product_ids or [])))
@@ -4183,7 +4190,7 @@ def _structured_baseline_products(store, baseline_sid):
         Path(store), load_protocol_validator(Path(__file__).resolve().parents[1] / "protocol"),
         runtime_root=Path(store).parent / (Path(store).name + "_delta_base_runtime"),
         sandbox=False, writer_host=None)
-    snapshot = engine.read_snapshot(baseline_sid)
+    snapshot = _bundle_snapshot(engine, baseline_sid)
     products = {}
     for entry in snapshot["files"]:
         product = entry["source_bundle"]["_wfd_product_bindings"][entry["output_key"]]["product"]
@@ -4574,7 +4581,7 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
                           or baseline_receipt.get("selection_digest"))
     if not baseline_selection:
         raise ValueError("STRUCTURED_BASELINE_STATE_UNKNOWN")
-    snapshot = service.engine.read_snapshot(snapshot_id)
+    snapshot = _bundle_snapshot(service.engine, snapshot_id)
     discovered = service.discover_products(snapshot_id=snapshot_id)["products"]
     by_id = {p["product_id"]: p for p in discovered}
     normalized = _normalize_selection(selection, sorted(set(product_ids or [])))
@@ -4832,7 +4839,7 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
             runtime_root=Path(baseline_store).parent / (Path(baseline_store).name + "_delta_base_runtime"),
             sandbox=False, writer_host=None)
         baseline_entries = {e["file_relpath"]: e["file_sha256"].split(":")[-1]
-                            for e in baseline_engine.read_snapshot(baseline_snapshot_id)["files"]}
+                            for e in _bundle_snapshot(baseline_engine, baseline_snapshot_id)["files"]}
         reused, missing_objects = [], []
         objects = []
         for obj in checked["inventory"]["objects"]:
@@ -5094,7 +5101,7 @@ def apply_structured_delta_bundle(bundle, target_store, *, runtime_root,
             engine = WFDDuckDBPrototype(target_store, load_protocol_validator(
                 Path(protocol_root) if protocol_root else Path(__file__).resolve().parents[1] / "protocol"),
                 runtime_root=Path(runtime_root), sandbox=False, writer_host=None)
-            existing = engine.read_snapshot(descriptor["target_snapshot_id"])
+            existing = _bundle_snapshot(engine, descriptor["target_snapshot_id"])
             receipt = existing.get("receipt") or {}
             if (receipt.get("bundle_id") != descriptor.get("bundle_id")
                     or receipt.get("target_state_digest") != descriptor.get("target_state_digest")
@@ -5155,7 +5162,7 @@ def apply_structured_delta_bundle(bundle, target_store, *, runtime_root,
         engine = WFDDuckDBPrototype(target_store, load_protocol_validator(
             Path(protocol_root) if protocol_root else Path(__file__).resolve().parents[1] / "protocol"),
             runtime_root=Path(runtime_root), sandbox=False, writer_host=None)
-        snapshot = engine.read_snapshot(descriptor["target_snapshot_id"])
+        snapshot = _bundle_snapshot(engine, descriptor["target_snapshot_id"])
         groups = _structured_snapshot_holding_groups(snapshot)
         baseline_records = _structured_snapshot_record_keys(target_store, baseline_sid)
         holdable = _structured_holdable_groups(
@@ -5321,7 +5328,7 @@ def export_structured_reference_bundle(service, product_ids, destination, *, sna
     destination = Path(destination)
     if destination.exists():
         raise ValueError("BUNDLE_DESTINATION_EXISTS")
-    snapshot = service.engine.read_snapshot(snapshot_id)
+    snapshot = _bundle_snapshot(service.engine, snapshot_id)
     discovered = service.discover_products(snapshot_id=snapshot_id)["products"]
     by_id = {p["product_id"]: p for p in discovered}
     normalized = _normalize_selection(selection, sorted(set(product_ids or [])))
@@ -5710,7 +5717,7 @@ def _structured_resolver_dataset(resolver):
         sid = state.get("active_head") or state.get("imported_head")
         if not sid:
             return None
-        snap = resolver.engine.read_snapshot(sid)
+        snap = _bundle_snapshot(resolver.engine, sid)
         for entry in snap.get("files", []):
             product = entry.get("source_bundle", {}).get("_wfd_product_bindings", {}).get(
                 entry.get("output_key"), {}).get("product")

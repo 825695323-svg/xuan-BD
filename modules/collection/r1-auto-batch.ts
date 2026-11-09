@@ -1,0 +1,640 @@
+import type { R1ConnectionIdentity, R1SourceDeclaration } from '../../contracts/r1-contracts.js';
+import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
+import { TaskError, type TaskService } from '../../platform/jobs/tasks.js';
+import type { CoreDatabase } from '../../platform/state/database.js';
+import type { OperatorContext } from './processing-plan.js';
+import type { MaterialService } from './materials/service.js';
+import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
+import type { R1AutoService, R1AutoState, R1AutoView } from './r1-auto.js';
+import { R1ChunkedCsvService } from './r1-chunked-csv.js';
+import { classifyR1AlgorithmInput, r1AlgorithmPeriod, readR1AlgorithmSettings, readR1BatchAlgorithmRouting,
+  type R1AlgorithmClassification, type R1AlgorithmSettings, type R1BarKind, type R1BatchAlgorithmRouting } from './r1-algorithm-routing.js';
+import { assertSourceObservationMAImplementationCurrent, buildSourceObservationMA, readSourceObservationMASelection, sourceObservationMACodeDigest,
+  SOURCE_OBSERVATION_MA_LIMITS, SOURCE_OBSERVATION_MA_VERSION, summarizeCalculatedMAProof,
+  type CalculatedMAProof, type CalculatedMAProofSummary, type SourceObservationMAInput,
+  type SourceObservationMAContext, type SourceObservationMASelection } from './source-observation-ma.js';
+import { readAdapterBindingRef, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
+import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
+
+export const R1_BATCH_MAX_FILES = 100;
+export const R1_BATCH_MAX_BYTES = 128 * 1024 * 1024;
+export interface R1BatchFile { name: string; relativePath: string; sha256: string; byteLength: number }
+export interface R1BatchStartInput {
+  batchId: string; source: R1SourceDeclaration; datasetId: string; files: R1BatchFile[];
+  datePolicy?: 'a_share_calendar_day_asia_shanghai';
+  sourceValueColumns?: string[];
+  calculation?: SourceObservationMASelection;
+  algorithmRouting?: R1BatchAlgorithmRouting;
+  /** 本批统一使用的已采用端点适配引用；逐件配置不在本批展开。 */
+  sourceAdapter?: AdapterBindingRef;
+  /** 本批逐件取得回执模板：地址含 {file} 占位，材料摘要逐件绑定。 */
+  sourceContextTemplate?: { kind: 'receipt' | 'synthetic'; urlTemplate: string; observedAt: string; protocol?: string;
+    fields?: string[]; fields2?: string[]; frequency?: 'day' | 'minute' | 'event' | 'other';
+    adjustment?: 'none' | 'qfq' | 'hfq' | 'unknown'; market?: string; basis: string };
+}
+type ItemState = R1AutoState | 'awaiting_upload' | 'custody';
+interface Duplicate { batchId: string; itemId: string }
+interface BatchItem extends R1BatchFile {
+  itemId: string; entrySha256: string; requestedUrl: string; uploadRequestId: string; autoRequestId: string;
+  custodyTaskId: string | null; materialId: string | null; stage: 'awaiting_upload' | 'custody' | 'ready' | 'blocked';
+  duplicateOf: Duplicate | null; error: R1AutoView['error'];
+  policyAnswers: Record<string, string>;
+  algorithmInspection?: R1AlgorithmClassification;
+}
+interface BatchRecord {
+  selectedKeyReplacement?: true;
+  /** 本批冻结的已采用适配；逐件预检与交接都按同一摘要核对。 */
+  adapter?: FrozenAdapterBinding;
+  input: R1BatchStartInput; inputSha256: string; connection: R1ConnectionIdentity; operator: OperatorContext;
+  controlGeneration: number; stopped: boolean; error: R1AutoView['error']; items: BatchItem[];
+  createdAt: number; updatedAt: number;
+  calculation?: BatchCalculationRecord;
+  calculations?: BatchCalculationRecord[];
+}
+interface BatchCalculationRecord {
+  calculationId?: string; kind?: R1BarKind; selection?: SourceObservationMASelection; itemIds?: string[];
+  partitioned?: boolean;
+  seriesContinuation?: boolean;
+  frozenSeries?: { inputs: { materialId: string; autoRequestId: string }[]; context: SourceObservationMAContext };
+  state: 'waiting_inputs' | 'calculating' | 'custody' | 'processing' | 'associated' | 'recovering' | 'blocked' | 'stopped';
+  requestId: string; uploadRequestId: string; custodyTaskId: string | null; materialId: string | null;
+  source: R1SourceDeclaration | null; proof: CalculatedMAProof | null; error: R1AutoView['error'];
+  implementation: { version: string; codeDigest: string };
+}
+export interface R1BatchCalculationView {
+  calculationId: string; kind: R1BarKind | null; itemIds: string[];
+  selection: SourceObservationMASelection; state: BatchCalculationRecord['state']; requestId: string;
+  custodyTaskId: string | null; materialId: string | null; productId: string | null; snapshotId: string | null;
+  error: R1AutoView['error']; auto: R1AutoView | null; proof: CalculatedMAProofSummary | null;
+}
+export interface R1BatchItemView extends R1BatchFile {
+  itemId: string; requestedUrl: string; autoRequestId: string; custodyTaskId: string | null; materialId: string | null;
+  state: ItemState; duplicateOf: Duplicate | null; error: R1AutoView['error']; auto: R1AutoView | null;
+  policyAnswers: Record<string, string>;
+  algorithmInspection: R1AlgorithmClassification | null;
+}
+export interface R1BatchView {
+  batchId: string; source: R1SourceDeclaration; datasetId: string; datePolicy: R1BatchStartInput['datePolicy'] | null;
+  sourceValueColumns: string[] | null;
+  calculation: R1BatchCalculationView | null;
+  calculations: R1BatchCalculationView[];
+  algorithmRouting: R1BatchAlgorithmRouting | null;
+  state: 'awaiting_upload' | 'running' | 'awaiting_answers' | 'recovering' | 'completed' | 'conflicts_pending' | 'stopped' | 'blocked';
+  items: R1BatchItemView[]; nextUploadItemId: string | null; error: R1AutoView['error']; duplicateBatch: boolean;
+  createdAt: number; updatedAt: number;
+}
+const yielded = new Set<ItemState>(['associated', 'conflicts_pending', 'awaiting_answers', 'blocked']);
+function fail(code: string, message: string): never { throw new TaskError(code, message); }
+
+/** A manifest and scheduling journal. Original custody, processing and publication retain their existing owners. */
+export class R1AutoBatchService {
+  readonly chunked: R1ChunkedCsvService;
+  private readonly pending = new Map<string, Promise<void>>();
+  private readonly dirty = new Set<string>();
+  private readonly uploads = new Map<string, Promise<R1BatchView>>();
+  private readonly unsubscribe: (() => void)[] = [];
+  private closed = false;
+  constructor(private readonly options: {
+    database: CoreDatabase; tasks(): TaskService; auto: R1AutoService; materials: MaterialService;
+    connection(): R1ConnectionIdentity | null;
+    custodyRoot?: string;
+    accept(input: { bytes: Buffer; name: string; category: 'data'; requestId: string }): Promise<string>;
+    adapters?: EndpointAdapterRegistry;
+    readCalculationInput?(item: { materialId: string; autoRequestId: string }, selection: SourceObservationMASelection): Promise<SourceObservationMAInput>;
+  }) {
+    this.chunked = new R1ChunkedCsvService(options);
+    options.database.migrate('r1-auto-batches', 1, `CREATE TABLE r1_auto_batches (
+      batch_id TEXT PRIMARY KEY,input_sha256 TEXT NOT NULL UNIQUE,record_json TEXT NOT NULL,updated_at INTEGER NOT NULL
+    ); CREATE TABLE r1_auto_batch_aliases (batch_id TEXT PRIMARY KEY,canonical_id TEXT NOT NULL REFERENCES r1_auto_batches(batch_id));`);
+  }
+  private get db() { return this.options.database.connection; }
+  algorithmSettings(): R1AlgorithmSettings {
+    const row = this.db.prepare('SELECT value_json FROM app_settings WHERE key=?').get('r1.batch-algorithms');
+    return row ? readR1AlgorithmSettings(JSON.parse(String(row.value_json))) : { revision: 0, dailyPeriod: null, minutePeriod: null };
+  }
+  updateAlgorithmSettings(value: unknown): R1AlgorithmSettings {
+    const update = readR1AlgorithmSettings(value);
+    return this.options.database.transaction(() => {
+      const previous = this.algorithmSettings();
+      if (update.revision !== previous.revision) fail('R1_ALGORITHM_SETTINGS_CONFLICT', '算法周期已在其他页面改变，请读取当前设置后保存。');
+      const next = { ...update, revision: previous.revision + 1 };
+      this.db.prepare('INSERT INTO app_settings(key,value_json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json')
+        .run('r1.batch-algorithms', canonicalWfdJson(next));
+      return next;
+    });
+  }
+  classify(bytes: Buffer, binding?: AdapterBindingRef): R1AlgorithmClassification {
+    const adapter = binding ? (this.options.adapters ?? fail('R1_ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记，不能按声明式适配预检。')).resolve(binding) : undefined;
+    return classifyR1AlgorithmInput(bytes, adapter ? { sourceAdapter: adapter } : undefined);
+  }
+  private calculationEntries(record: BatchRecord): BatchCalculationRecord[] {
+    return record.calculations ?? (record.calculation ? [record.calculation] : []);
+  }
+  attach(): void {
+    if (this.closed || this.unsubscribe.length) return;
+    this.chunked.attach();
+    this.unsubscribe.push(this.options.auto.subscribe(requestId => {
+      for (const record of this.matching('autoRequestId', requestId)) void this.schedule(record.input.batchId);
+      for (const record of this.records()) if (this.calculationEntries(record).some(calculation => calculation.requestId === requestId)) void this.schedule(record.input.batchId);
+    }), this.options.tasks().subscribe(({ task, event }) => {
+      if (!['TASK_SUCCEEDED', 'TASK_FAILED', 'TASK_INTERRUPTED', 'TASK_RECONCILED', 'TASK_CANCELLED', 'TASK_PAUSED'].includes(event.type)) return;
+      for (const record of this.matching('custodyTaskId', task.id)) void this.schedule(record.input.batchId);
+      for (const record of this.records()) if (this.calculationEntries(record).some(calculation => calculation.custodyTaskId === task.id)) void this.schedule(record.input.batchId);
+    }));
+    for (const record of this.records()) void this.schedule(record.input.batchId);
+  }
+  start(value: unknown, operator: OperatorContext): R1BatchView {
+    const input = readStart(value), { batchId, ...scope } = input;
+    const digest = wfdSha256(canonicalWfdJson(scope)), previous = this.find(batchId);
+    if (previous) {
+      if (previous.inputSha256 !== digest) fail('R1_BATCH_CONFLICT', '原批次已冻结清单、来源、用途、数据集及授权，不能覆盖。');
+      return { ...this.view(previous), duplicateBatch: true };
+    }
+    const same = this.db.prepare('SELECT record_json FROM r1_auto_batches WHERE input_sha256=?').get(digest);
+    if (same) {
+      const original = JSON.parse(String(same.record_json)) as BatchRecord;
+      this.db.prepare('INSERT INTO r1_auto_batch_aliases VALUES(?,?)').run(batchId, original.input.batchId);
+      return { ...this.view(original), duplicateBatch: true };
+    }
+    if (input.algorithmRouting && canonicalWfdJson(input.algorithmRouting.settings) !== canonicalWfdJson(this.algorithmSettings()))
+      fail('R1_ALGORITHM_SETTINGS_CONFLICT', '算法周期在本次授权前已变化，请读取当前设置并重新确认本批；原批次恢复继续使用原冻结规则。');
+    this.assertDispatch();
+    const connection = this.connection(), now = Date.now();
+    // 只接受已采用版本；本批逐件预检、交接都使用同一冻结配置，后续登记变化不改写本批。
+    const adapter = input.sourceAdapter
+      ? (this.options.adapters ?? fail('R1_ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记，不能按声明式适配交接。')).resolve(input.sourceAdapter)
+      : undefined;
+    if (input.calculation && !this.options.readCalculationInput) fail('R1_MA_READER_REQUIRED', '来源观测均线需要已装配的受控固定读取器。');
+    if (input.calculation) assertSourceObservationMAImplementationCurrent();
+    if (input.calculation && input.sourceValueColumns && !input.sourceValueColumns.includes(input.calculation.valueColumn))
+      fail('R1_MA_FIELD', '均线数值列须随本批原始数据一同交接；请在原列选择中包含它。');
+    const items: BatchItem[] = [];
+    for (const [index, file] of input.files.entries()) {
+      const requestedUrl = fileUrl(input.source.requested_url, file.relativePath);
+      // 已采用适配是固定项身份的一部分：同字节换配置版本（频率/复权/单位不同）不能命中旧条目继续旧解析。
+      // 无适配输入保持历史摘要（不新增 adapter:null），有适配时才纳入固定三元身份。
+      const entrySha256 = wfdSha256(canonicalWfdJson({ file, source: { ...input.source, requested_url: requestedUrl },
+        datasetId: input.datasetId, datePolicy: input.datePolicy ?? null, sourceValueColumns: input.sourceValueColumns ?? null, connection,
+        ...(adapter ? { adapter: { adapterId: adapter.adapterId, version: adapter.version, configDigest: adapter.configDigest } } : {}) }));
+      const local = items.find(item => item.entrySha256 === entrySha256), known = this.entry(entrySha256);
+      items.push({ ...file, entrySha256, requestedUrl, itemId: `item-${index + 1}`,
+        uploadRequestId: `batch-upload:${entrySha256}`, autoRequestId: `batch-auto:${entrySha256}`,
+        custodyTaskId: null, materialId: null, stage: 'awaiting_upload', error: null, policyAnswers: {},
+        duplicateOf: local ? { batchId, itemId: local.itemId } : known ? { batchId: known.batchId, itemId: known.item.itemId } : null });
+    }
+    const record: BatchRecord = { ...(adapter ? { adapter } : {}), input, inputSha256: digest, connection, operator,
+      controlGeneration: this.options.tasks().getControl().generation, stopped: false, error: null, items, createdAt: now, updatedAt: now };
+    if (input.calculation) record.calculation = { state: 'waiting_inputs', requestId: `batch-ma:${digest}`,
+      uploadRequestId: `batch-ma-upload:${digest}`, custodyTaskId: null, materialId: null, source: null, proof: null, error: null,
+      implementation: { version: SOURCE_OBSERVATION_MA_VERSION, codeDigest: sourceObservationMACodeDigest() } };
+    if (input.algorithmRouting) {
+      const groups = new Map<string, { kind: R1BarKind; selection: SourceObservationMASelection; itemIds: string[] }>();
+      for (const item of items) {
+        const inspected = input.algorithmRouting.files.find(file => file.sha256 === item.sha256)!;
+        const period = r1AlgorithmPeriod(input.algorithmRouting.settings, inspected.kind);
+        if (!period || !inspected.complete || !inspected.valueColumn || !['daily_bar', 'minute_bar'].includes(inspected.kind)) continue;
+        if (input.sourceValueColumns && !input.sourceValueColumns.includes(inspected.valueColumn)) continue;
+        const key = canonicalWfdJson([inspected.kind, inspected.valueColumn, inspected.dateColumn, inspected.minuteColumn]);
+        const group = groups.get(key) ?? { kind: inspected.kind as R1BarKind,
+          selection: { method: 'source_observation_ma' as const, period, valueColumn: inspected.valueColumn }, itemIds: [] };
+        group.itemIds.push(item.itemId); groups.set(key, group);
+      }
+      record.calculations = [...groups.entries()].map(([key, group]) => {
+        const calculationId = `ma-${wfdSha256(key).slice(0, 16)}`, supported = !!this.options.readCalculationInput;
+        return { ...group, calculationId, seriesContinuation: true, state: supported ? 'waiting_inputs' : 'blocked',
+          requestId: `batch-ma:${digest}:${calculationId}`, uploadRequestId: `batch-ma-upload:${digest}:${calculationId}`,
+          custodyTaskId: null, materialId: null, source: null, proof: null,
+          error: supported ? null : { code: 'R1_MA_READER_REQUIRED', message: '来源观测均线没有受控固定读取器；本批原数据继续办理。' },
+          implementation: { version: SOURCE_OBSERVATION_MA_VERSION, codeDigest: sourceObservationMACodeDigest() } };
+      });
+      if (record.calculations.length) assertSourceObservationMAImplementationCurrent();
+    }
+    this.db.prepare('INSERT INTO r1_auto_batches VALUES(?,?,?,?)').run(batchId, digest, canonicalWfdJson(record), now);
+    void this.schedule(batchId);
+    return this.view(record);
+  }
+  list(): R1BatchView[] { return this.records(20).map(record => this.view(record)); }
+  get(batchId: string): R1BatchView { return this.view(this.require(batchId)); }
+  calculationEvidence(batchId: string, calculationId?: string): CalculatedMAProof | null {
+    const calculations = this.calculationEntries(this.require(batchId));
+    return (calculationId ? calculations.find(calculation => (calculation.calculationId ?? 'legacy') === calculationId) : calculations[0])?.proof ?? null;
+  }
+  async upload(batchId: string, itemId: string, bytes: Buffer): Promise<R1BatchView> {
+    const record = this.require(batchId), item = record.items.find(entry => entry.itemId === itemId) ?? fail('R1_BATCH_ITEM_NOT_FOUND', '没有该批次清单项。');
+    if (!Buffer.isBuffer(bytes) || bytes.length !== item.byteLength || wfdSha256(bytes) !== item.sha256) fail('R1_BATCH_FILE_CHANGED', '上传字节与本批次冻结的文件摘要或长度不符，原清单保留。');
+    this.assertCurrent(record);
+    if (item.duplicateOf) {
+      await this.upload(item.duplicateOf.batchId, item.duplicateOf.itemId, bytes);
+      return this.get(batchId);
+    }
+    if (item.custodyTaskId) { void this.schedule(batchId); return this.get(batchId); }
+    if (this.view(record).nextUploadItemId !== itemId) fail('R1_BATCH_ORDER', '本批次上一件尚在保管、交接或核对原结果，请按原清单依次继续。');
+    const key = `${batchId}:${itemId}`, existing = this.uploads.get(key);
+    if (existing) return existing;
+    const work = (async () => {
+      if (record.input.algorithmRouting || record.input.calculation) {
+        const latest = this.require(batchId), current = latest.items.find(entry => entry.itemId === itemId)!;
+        current.algorithmInspection = this.classify(bytes, record.input.sourceAdapter); this.save(latest);
+      }
+      const taskId = await this.options.accept({ bytes, name: item.name, category: 'data', requestId: item.uploadRequestId });
+      // Re-read after asynchronous custody: another item or a task event may have updated this journal.
+      const latest = this.require(batchId), current = latest.items.find(entry => entry.itemId === itemId)!;
+      current.custodyTaskId = taskId; current.stage = 'custody'; this.save(latest);
+      const task = this.options.tasks().get(taskId);
+      if (task.status === 'ready') this.options.tasks().start(task.id, task.version);
+      await this.schedule(batchId);
+      return this.get(batchId);
+    })().finally(() => this.uploads.delete(key));
+    this.uploads.set(key, work); return work;
+  }
+  async advance(batchId: string): Promise<R1BatchView> {
+    const record = this.require(batchId); this.assertDispatch(); this.assertConnection(record);
+    record.controlGeneration = this.options.tasks().getControl().generation; record.stopped = false; record.error = null; this.save(record);
+    for (const item of this.view(record).items) {
+      if (item.auto && ['recovering', 'stopped'].includes(item.auto.state)) await this.options.auto.advance(item.autoRequestId);
+      else if (item.custodyTaskId && !item.materialId) {
+        const task = this.options.tasks().get(item.custodyTaskId);
+        if (task.status === 'ready') this.options.tasks().start(task.id, task.version);
+        else if (['paused', 'interrupted'].includes(task.status)) {
+          const latest = this.require(batchId), current = latest.items.find(entry => entry.itemId === item.itemId)!;
+          current.stage = 'custody'; current.error = null; this.save(latest);
+          this.options.tasks().resume(task.id, task.version);
+        }
+      }
+    }
+    for (const calculation of this.calculationEntries(record)) {
+      if (calculation.materialId && ['recovering', 'stopped'].includes(this.calculationView(record, calculation)!.state)) await this.options.auto.advance(calculation.requestId);
+      else if (calculation.custodyTaskId && !calculation.materialId) {
+        const task = this.options.tasks().get(calculation.custodyTaskId);
+        if (task.status === 'ready') this.options.tasks().start(task.id, task.version);
+        else if (['paused', 'interrupted'].includes(task.status)) this.options.tasks().resume(task.id, task.version);
+      }
+    }
+    await this.schedule(batchId); return this.get(batchId);
+  }
+  async dispose(): Promise<void> {
+    this.closed = true; this.unsubscribe.splice(0).forEach(unsubscribe => unsubscribe()); this.dirty.clear();
+    await Promise.allSettled([...this.pending.values(), ...this.uploads.values()]);
+    await this.chunked.dispose();
+  }
+  private schedule(batchId: string): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    const previous = this.pending.get(batchId);
+    if (previous) { this.dirty.add(batchId); return previous; }
+    const work = Promise.resolve().then(async () => {
+      do { this.dirty.delete(batchId); await this.progress(batchId); } while (!this.closed && this.dirty.has(batchId));
+    }).catch(error => {
+      if (this.closed) return;
+      const record = this.require(batchId); record.error = errorView(error);
+      if (/STOPPED|SERVICE_CLOSED/u.test(record.error.code)) record.stopped = true;
+      this.save(record);
+    }).finally(() => { this.pending.delete(batchId); if (!this.closed && this.dirty.has(batchId)) void this.schedule(batchId); });
+    this.pending.set(batchId, work); return work;
+  }
+  /** 逐件回执上下文：只替换文件占位与材料摘要，其余声明原样进入核对。 */
+  private sourceContextFor(record: BatchRecord, item: BatchItem) {
+    const template = record.input.sourceContextTemplate!;
+    if (!template.urlTemplate.includes('{file}')) fail('R1_BATCH_CONTEXT', '来源回执地址模板须包含 {file} 占位。');
+    return { kind: template.kind, url: template.urlTemplate.replaceAll('{file}', encodeURIComponent(item.relativePath)),
+      materialSha256: item.sha256, observedAt: template.observedAt, basis: template.basis,
+      ...(template.protocol ? { protocol: template.protocol } : {}), ...(template.fields ? { fields: template.fields } : {}),
+      ...(template.fields2 ? { fields2: template.fields2 } : {}), ...(template.frequency ? { frequency: template.frequency } : {}),
+      ...(template.adjustment ? { adjustment: template.adjustment } : {}), ...(template.market ? { market: template.market } : {}) };
+  }
+
+  private async progress(batchId: string): Promise<void> {
+    const record = this.require(batchId);
+    if (record.stopped || record.error) return;
+    this.assertCurrent(record);
+    for (const item of record.items) {
+      if (item.duplicateOf) {
+        const original = this.itemView(item, record);
+        if ((record.input.algorithmRouting || record.input.calculation) && !original.algorithmInspection && original.materialId) {
+          item.algorithmInspection = this.classify(this.options.materials.readOriginal(original.materialId).bytes, record.input.sourceAdapter); this.save(record);
+        }
+        continue;
+      }
+      // Cover custody accepted before this journal could bind the task. The material
+      // service owns the stable request lookup; no second file or request is created.
+      if (item.stage === 'awaiting_upload') {
+        const accepted = this.options.materials.requestTask(item.uploadRequestId);
+        if (accepted) { item.custodyTaskId = accepted.id; item.stage = 'custody'; this.save(record); }
+      }
+      if (item.stage === 'custody' && item.custodyTaskId) {
+        const task = this.options.tasks().get(item.custodyTaskId);
+        if (task.status === 'succeeded') {
+          const material = this.options.materials.getByTask(task.id) ?? fail('R1_BATCH_MATERIAL_MISSING', '原保管任务成功但没有对应材料，保留原任务核对。');
+          if (material.envelope.sha256 !== item.sha256 || material.envelope.byteLength !== item.byteLength) fail('R1_BATCH_FILE_CHANGED', '原保管任务的材料与批清单不一致。');
+          if ((record.input.algorithmRouting || record.input.calculation) && !item.algorithmInspection)
+            item.algorithmInspection = this.classify(this.options.materials.readOriginal(material.envelope.materialId).bytes, record.input.sourceAdapter);
+          item.materialId = material.envelope.materialId; item.stage = 'ready'; this.save(record);
+        } else if (['failed', 'cancelled', 'blocked', 'needs_review', 'interrupted', 'paused'].includes(task.status)) {
+          item.stage = 'blocked'; item.error = { code: task.error?.code ?? 'R1_BATCH_CUSTODY_BLOCKED', message: task.error?.message ?? '原保管任务未完成，请按原任务核对。' }; this.save(record);
+        } else return;
+      }
+      if (item.stage === 'ready' && item.materialId) {
+        if ((record.input.algorithmRouting || record.input.calculation) && !item.algorithmInspection) {
+          item.algorithmInspection = this.classify(this.options.materials.readOriginal(item.materialId).bytes, record.input.sourceAdapter); this.save(record);
+        }
+        let auto: R1AutoView;
+        try {
+          const start = record.selectedKeyReplacement ? this.options.auto.startReplacing.bind(this.options.auto) : this.options.auto.start.bind(this.options.auto);
+          auto = start({ requestId: item.autoRequestId, materialId: item.materialId,
+            source: { ...record.input.source, requested_url: item.requestedUrl }, datasetId: record.input.datasetId,
+            ...(record.input.sourceValueColumns ? { sourceValueColumns: record.input.sourceValueColumns } : {}),
+            ...(record.input.sourceAdapter ? { sourceAdapter: record.input.sourceAdapter } : {}),
+            ...(record.input.sourceContextTemplate ? { sourceContext: this.sourceContextFor(record, item) } : {}) }, record.operator);
+          // This opt-in declares the scope of the selected batch. The recognizer must
+          // independently identify a source trade-date question; generic dates are never answered here.
+          if (record.input.datePolicy === 'a_share_calendar_day_asia_shanghai' && auto.state === 'awaiting_answers'
+            && auto.questions.some(question => question.key === 'source_trade_date_timezone')) {
+            auto = this.options.auto.answer(item.autoRequestId, { answers: { source_trade_date_timezone: 'Asia/Shanghai' } }, record.operator);
+            item.policyAnswers.source_trade_date_timezone = 'Asia/Shanghai'; this.save(record);
+          }
+        } catch (error) {
+          if (error instanceof TaskError && error.code === 'R1_AUTO_BUSY') return;
+          item.stage = 'blocked'; item.error = errorView(error); this.save(record); continue;
+        }
+        if (!yielded.has(auto.state)) return;
+      }
+      if (item.stage === 'awaiting_upload') return;
+    }
+    this.partitionCalculations(record);
+    for (const calculation of this.calculationEntries(record)) await this.progressCalculation(record, calculation);
+  }
+  private partitionCalculations(record: BatchRecord): void {
+    if (!record.calculations) return;
+    for (const calculation of [...record.calculations]) {
+      if (calculation.partitioned || calculation.state !== 'waiting_inputs') continue;
+      const items = record.items.filter(item => calculation.itemIds!.includes(item.itemId)).map(item => this.itemView(item, record));
+      if (items.some(item => item.state !== 'associated')) continue;
+      const products = new Map<string, string[]>();
+      for (const item of items) {
+        const association = item.auto?.currentRequest?.local.associations;
+        const first = Array.isArray(association) && isWfdRecord(association[0]) ? association[0] : null;
+        if (typeof first?.product_id !== 'string') continue;
+        const ids = products.get(first.product_id) ?? []; ids.push(item.itemId); products.set(first.product_id, ids);
+      }
+      if (products.size > 1) {
+        const offset = record.calculations.indexOf(calculation);
+        record.calculations.splice(offset, 1, ...[...products].map(([productId, itemIds]) => {
+          const suffix = wfdSha256(productId).slice(0, 12);
+          return { ...calculation, partitioned: true, itemIds, calculationId: `${calculation.calculationId}-${suffix}`,
+            requestId: `${calculation.requestId}:${suffix}`, uploadRequestId: `${calculation.uploadRequestId}:${suffix}` };
+        }));
+      } else calculation.partitioned = true;
+      this.save(record);
+    }
+  }
+  private async progressCalculation(record: BatchRecord, calculation: BatchCalculationRecord): Promise<void> {
+    const selection = calculation.selection ?? record.input.calculation;
+    if (!calculation || !selection || ['associated', 'blocked'].includes(calculation.state)) return;
+    // A batch made entirely from previous acquisitions still uses their original identities once each.
+    const selectedItems = calculation.itemIds ? record.items.filter(item => calculation.itemIds!.includes(item.itemId)) : record.items;
+    const inputs = [...new Map(selectedItems.map(item => {
+      const view = this.itemView(item, record); return [view.autoRequestId, view];
+    })).values()];
+    for (const item of inputs) {
+      const inspected = item.algorithmInspection;
+      if (!inspected) continue;
+      const expected = record.input.algorithmRouting?.files.find(file => file.sha256 === item.sha256);
+      if (!['daily_bar', 'minute_bar'].includes(inspected.kind) || !inspected.complete || inspected.valueColumn !== selection.valueColumn
+        || calculation.kind && inspected.kind !== calculation.kind || expected && canonicalWfdJson(expected) !== canonicalWfdJson(inspected)) {
+        calculation.state = 'blocked'; calculation.error = { code: 'R1_ALGORITHM_CONTENT_MISMATCH',
+          message: `原件 ${item.name} 的完整内容不符合本批冻结的行情算法路由：${inspected.reason} 原数据仍按原编号办理。` }; this.save(record); return;
+      }
+    }
+    const blocked = inputs.find(item => item.state === 'blocked' || item.state === 'conflicts_pending');
+    if (blocked) { calculation.state = 'blocked'; calculation.error = { code: 'R1_MA_INPUT_BLOCKED', message: `原件 ${blocked.name} 未完成原数据交接，未计算或发布派生结果。` }; this.save(record); return; }
+    if (inputs.some(item => item.state !== 'associated')) return;
+    if (inputs.some(item => !item.algorithmInspection)) {
+      calculation.state = 'blocked'; calculation.error = { code: 'R1_ALGORITHM_INSPECTION_MISSING', message: '完整原件尚无服务端行情分类证据，未计算。' }; this.save(record); return;
+    }
+    this.assertCurrent(record);
+    if (calculation.implementation.version !== SOURCE_OBSERVATION_MA_VERSION || calculation.implementation.codeDigest !== sourceObservationMACodeDigest()) {
+      calculation.state = 'blocked'; calculation.error = { code: 'R1_MA_IMPLEMENTATION_CHANGED', message: '均线代码与本批接受时冻结的身份不同，保留原批，不静默换实现。' }; this.save(record); return;
+    }
+    try {
+      assertSourceObservationMAImplementationCurrent();
+      if (inputs.reduce((sum, input) => sum + input.auto!.currentRequest!.rowCount, 0) > SOURCE_OBSERVATION_MA_LIMITS.maxRows)
+        fail('R1_MA_ROW_BUDGET', '本批已关联观测合计超过 5000 行，未开始读取固定产品或生成派生结果。');
+      let bytes: Buffer | null = null;
+      if (!calculation.proof) {
+        calculation.state = 'calculating'; this.save(record);
+        if (calculation.seriesContinuation && !calculation.frozenSeries) {
+          const current = inputs.at(-1)!;
+          const context = await this.options.auto.readCalculationContext(current.autoRequestId); this.assertCurrent(record);
+          const refs = new Map<string, { materialId: string; autoRequestId: string }>();
+          for (const previous of this.records().filter(previous => previous.createdAt <= record.createdAt).sort((a, b) => a.createdAt - b.createdAt)) {
+            if (canonicalWfdJson(previous.connection) !== canonicalWfdJson(record.connection) || previous.input.datasetId !== record.input.datasetId
+              || previous.input.source.source_id !== record.input.source.source_id || previous.input.source.provider !== record.input.source.provider
+              || previous.input.source.requested_url !== record.input.source.requested_url
+              || previous.input.source.usage_scope !== record.input.source.usage_scope) continue;
+            for (const item of previous.items) {
+              const view = this.itemView(item, previous), associations = view.auto?.currentRequest?.local.associations;
+              const first = Array.isArray(associations) && isWfdRecord(associations[0]) ? associations[0] : null;
+              if (view.state !== 'associated' || first?.product_id !== context.productId || !view.materialId
+                || view.algorithmInspection?.kind !== current.algorithmInspection?.kind) continue;
+              refs.set(view.autoRequestId, { materialId: view.materialId, autoRequestId: view.autoRequestId });
+            }
+          }
+          for (const item of inputs) refs.set(item.autoRequestId, { materialId: item.materialId!, autoRequestId: item.autoRequestId });
+          calculation.frozenSeries = { inputs: [...refs.values()], context }; this.save(record);
+        }
+        const read: SourceObservationMAInput[] = [];
+        for (const item of calculation.frozenSeries?.inputs ?? inputs) {
+          read.push(await this.options.readCalculationInput!({ materialId: item.materialId!, autoRequestId: item.autoRequestId }, selection));
+          this.assertCurrent(record);
+        }
+        const generated = buildSourceObservationMA(selection, read, calculation.frozenSeries?.context); bytes = generated.bytes;
+        const now = new Date().toISOString().replace(/\.\d{3}Z$/u, 'Z');
+        calculation.proof = generated.proof;
+        calculation.source = { source_id: 'bd.source_observation_ma', provider: 'BD 本机确定性计算',
+          requested_url: `urn:bd:source-observation-ma:${generated.proof.materialSha256}`,
+          requested_at_utc: now, acquired_at_utc: now, usage_scope: record.input.source.usage_scope,
+          authorization: record.input.source.authorization ? { ...record.input.source.authorization,
+            basis: `本批明确授权的原数据与来源观测均线一并交接；原授权依据：${record.input.source.authorization.basis}` } : undefined };
+        calculation.state = 'custody'; this.save(record);
+      }
+      if (!calculation.custodyTaskId) {
+        const previous = this.options.materials.requestTask(calculation.uploadRequestId);
+        if (previous) { calculation.custodyTaskId = previous.id; this.save(record); }
+        else {
+          if (!bytes) {
+            const read: SourceObservationMAInput[] = [];
+            for (const item of calculation.frozenSeries?.inputs ?? inputs) {
+              read.push(await this.options.readCalculationInput!({ materialId: item.materialId!, autoRequestId: item.autoRequestId }, selection)); this.assertCurrent(record);
+            }
+            const replayed = buildSourceObservationMA(selection, read, calculation.frozenSeries?.context);
+            if (replayed.proof.materialSha256 !== calculation.proof.materialSha256 || canonicalWfdJson(replayed.proof) !== canonicalWfdJson(calculation.proof))
+              fail('R1_MA_RESULT_CHANGED', '按冻结输入重建的派生候选与原证明不同，未替换原结果。');
+            bytes = replayed.bytes;
+          }
+          calculation.custodyTaskId = await this.options.accept({ bytes, name: 'source-observation-ma.json', category: 'data', requestId: calculation.uploadRequestId });
+          this.assertCurrent(record); this.save(record);
+        }
+      }
+      if (!calculation.materialId) {
+        const task = this.options.tasks().get(calculation.custodyTaskId!);
+        if (task.status === 'ready') { this.options.tasks().start(task.id, task.version); return; }
+        if (task.status === 'succeeded') {
+          const material = this.options.materials.getByTask(task.id) ?? fail('R1_MA_MATERIAL_MISSING', '派生保管任务成功但没有实际材料。');
+          if (material.envelope.sha256 !== calculation.proof.materialSha256) fail('R1_MA_RESULT_CHANGED', '派生保管材料摘要与固定计算证明不符。');
+          calculation.materialId = material.envelope.materialId; calculation.state = 'processing'; this.save(record);
+        } else if (['failed', 'cancelled', 'blocked', 'needs_review', 'interrupted', 'paused'].includes(task.status)) {
+          fail(task.error?.code ?? 'R1_MA_CUSTODY_BLOCKED', task.error?.message ?? '派生材料尚未完成保管，保留原任务。');
+        } else return;
+      }
+      const auto = this.options.auto.startCalculated({ requestId: calculation.requestId, materialId: calculation.materialId!,
+        source: calculation.source!, datasetId: record.input.datasetId }, calculation.proof, record.operator);
+      calculation.state = auto.state === 'associated' ? 'associated' : auto.state === 'recovering' ? 'recovering'
+        : auto.state === 'blocked' || auto.state === 'conflicts_pending' || auto.state === 'awaiting_answers' ? 'blocked' : auto.state === 'stopped' ? 'stopped' : 'processing';
+      calculation.error = auto.state === 'awaiting_answers' ? { code: 'R1_MA_GENERATED_EVIDENCE', message: '受控生成材料存在未预期语义缺项，未以来源原报方式发布。' } : auto.error;
+      this.save(record);
+    } catch (error) {
+      if (error instanceof TaskError && error.code === 'R1_AUTO_BUSY') return;
+      calculation.error = errorView(error); calculation.state = /STOPPED|SERVICE_CLOSED/u.test(calculation.error.code) ? 'stopped' : 'blocked'; this.save(record);
+    }
+  }
+  private calculationView(record: BatchRecord, calculation: BatchCalculationRecord): R1BatchCalculationView | null {
+    const selection = calculation.selection ?? record.input.calculation;
+    if (!calculation || !selection) return null;
+    let auto: R1AutoView | null = null;
+    if (calculation.materialId) {
+      try { auto = this.options.auto.get(calculation.requestId); }
+      catch (error) { if (!(error instanceof TaskError && error.code === 'R1_AUTO_NOT_FOUND')) throw error; }
+    }
+    const associations = auto?.currentRequest?.local.associations;
+    const first = Array.isArray(associations) && isWfdRecord(associations[0]) ? associations[0] : null;
+    const state = auto?.state === 'associated' ? 'associated' : auto?.state === 'recovering' ? 'recovering'
+      : auto?.state === 'stopped' ? 'stopped' : auto?.state === 'blocked' || auto?.state === 'conflicts_pending' ? 'blocked' : calculation.state;
+    return { calculationId: calculation.calculationId ?? 'legacy', kind: calculation.kind ?? null,
+      itemIds: calculation.itemIds ?? record.items.map(item => item.itemId), selection, state, requestId: calculation.requestId, materialId: calculation.materialId,
+      custodyTaskId: calculation.custodyTaskId, productId: typeof first?.product_id === 'string' ? first.product_id : null,
+      snapshotId: typeof first?.snapshot_id === 'string' ? first.snapshot_id : null,
+      error: auto?.error ?? calculation.error, auto, proof: calculation.proof ? summarizeCalculatedMAProof(calculation.proof) : null };
+  }
+  private itemView(item: BatchItem, record: BatchRecord): R1BatchItemView {
+    const original = item.duplicateOf ? item.duplicateOf.batchId === record.input.batchId
+      ? record.items.find(entry => entry.itemId === item.duplicateOf!.itemId)!
+      : this.require(item.duplicateOf.batchId).items.find(entry => entry.itemId === item.duplicateOf!.itemId)! : item;
+    let auto: R1AutoView | null = null;
+    if (original.materialId) {
+      try { auto = this.options.auto.get(original.autoRequestId); }
+      catch (error) { if (!(error instanceof TaskError && error.code === 'R1_AUTO_NOT_FOUND')) throw error; }
+    }
+    return { name: item.name, relativePath: item.relativePath, sha256: item.sha256, byteLength: item.byteLength,
+      itemId: item.itemId, requestedUrl: item.requestedUrl, autoRequestId: original.autoRequestId,
+      custodyTaskId: original.custodyTaskId, materialId: original.materialId,
+      state: auto?.state ?? (original.stage === 'ready' ? 'inspecting' : original.stage), duplicateOf: item.duplicateOf,
+      error: auto?.error ?? original.error, auto, policyAnswers: original.policyAnswers,
+      algorithmInspection: original.algorithmInspection ?? item.algorithmInspection ?? null };
+  }
+  private view(record: BatchRecord): R1BatchView {
+    const items = record.items.map(item => this.itemView(item, record));
+    const first = items.find(item => !yielded.has(item.state));
+    const nextUploadItemId = !record.stopped && !record.error && first?.state === 'awaiting_upload' ? first.itemId : null;
+    const calculations = this.calculationEntries(record).map(calculation => this.calculationView(record, calculation)!).filter(Boolean);
+    const calculation = calculations[0] ?? null;
+    const state: R1BatchView['state'] = record.stopped ? 'stopped' : record.error ? 'blocked'
+      : items.some(item => item.state === 'recovering') ? 'recovering' : first?.state === 'stopped' ? 'stopped'
+      : first?.state === 'awaiting_upload' ? 'awaiting_upload' : first ? 'running'
+      : items.some(item => item.state === 'awaiting_answers') ? 'awaiting_answers'
+      : items.some(item => item.state === 'conflicts_pending') ? 'conflicts_pending'
+      : items.some(item => item.state === 'blocked') ? 'blocked'
+      : calculations.some(calculation => calculation.state === 'recovering') ? 'recovering' : calculations.some(calculation => calculation.state === 'stopped') ? 'stopped'
+      : calculations.some(calculation => !['associated', 'blocked'].includes(calculation.state)) ? 'running'
+      : calculations.some(calculation => calculation.state === 'blocked') ? 'blocked' : 'completed';
+    return { batchId: record.input.batchId, source: record.input.source, datasetId: record.input.datasetId,
+      datePolicy: record.input.datePolicy ?? null, state, items, nextUploadItemId, error: record.error, duplicateBatch: false,
+      sourceValueColumns: record.input.sourceValueColumns ?? null,
+      calculation, calculations, algorithmRouting: record.input.algorithmRouting ?? null,
+      createdAt: record.createdAt, updatedAt: Math.max(record.updatedAt, ...items.map(item => item.auto?.updatedAt ?? 0)) };
+  }
+  private assertDispatch(): void { if (this.closed || this.options.tasks().getControl().stopped) fail('BD_STOPPED', '服务已停止，请保留原批次并明确继续。'); }
+  private connection(): R1ConnectionIdentity { return this.options.connection() ?? fail('R1_NOT_CONFIGURED', '批量交接需要已装配的 data_only 连接。'); }
+  private assertConnection(record: BatchRecord): void { if (canonicalWfdJson(record.connection) !== canonicalWfdJson(this.connection())) fail('R1_BATCH_CONNECTION_CHANGED', '当前连接或实现与本批冻结身份不同，未换连接继续。'); }
+  private assertCurrent(record: BatchRecord): void {
+    this.assertDispatch(); this.assertConnection(record);
+    if (record.controlGeneration !== this.options.tasks().getControl().generation) fail('BD_STOPPED', '批次接受后停止代次已变化，请明确继续原批次。');
+    if (!record.adapter) return;
+    const current = (this.options.adapters ?? fail('R1_ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记。'))
+      .resolve({ adapterId: record.adapter.adapterId, version: record.adapter.version, configDigest: record.adapter.configDigest });
+    if (canonicalWfdJson(current) !== canonicalWfdJson(record.adapter)) fail('R1_BATCH_ADAPTER_CHANGED', '本批冻结的适配配置已变化；未换配置继续原批次。');
+  }
+  private save(record: BatchRecord): void { record.updatedAt = Date.now(); this.db.prepare('UPDATE r1_auto_batches SET record_json=?,updated_at=? WHERE batch_id=?').run(canonicalWfdJson(record), record.updatedAt, record.input.batchId); }
+  private records(limit?: number): BatchRecord[] { return this.db.prepare(`SELECT record_json FROM r1_auto_batches ORDER BY updated_at DESC,rowid DESC ${limit ? 'LIMIT ?' : ''}`).all(...(limit ? [limit] : [])).map(row => JSON.parse(String(row.record_json)) as BatchRecord); }
+  private matching(key: 'autoRequestId' | 'custodyTaskId', value: string): BatchRecord[] { return this.db.prepare(`SELECT record_json FROM r1_auto_batches WHERE EXISTS (SELECT 1 FROM json_each(record_json,'$.items') WHERE json_extract(value,'$.${key}')=?)`).all(value).map(row => JSON.parse(String(row.record_json)) as BatchRecord); }
+  private entry(sha256: string): { batchId: string; item: BatchItem } | null {
+    const row = this.db.prepare("SELECT record_json FROM r1_auto_batches WHERE EXISTS (SELECT 1 FROM json_each(record_json,'$.items') WHERE json_extract(value,'$.entrySha256')=?) ORDER BY rowid LIMIT 1").get(sha256);
+    if (!row) return null;
+    const record = JSON.parse(String(row.record_json)) as BatchRecord;
+    const item = record.items.find(entry => entry.entrySha256 === sha256 && !entry.duplicateOf)!;
+    return { batchId: record.input.batchId, item };
+  }
+  private find(batchId: string): BatchRecord | null { id(batchId); const row = this.db.prepare('SELECT record_json FROM r1_auto_batches WHERE batch_id=COALESCE((SELECT canonical_id FROM r1_auto_batch_aliases WHERE batch_id=?),?)').get(batchId, batchId); return row ? JSON.parse(String(row.record_json)) as BatchRecord : null; }
+  private require(batchId: string): BatchRecord { return this.find(batchId) ?? fail('R1_BATCH_NOT_FOUND', '没有该批次的持久记录。'); }
+}
+
+function readContextTemplate(value: unknown): NonNullable<R1BatchStartInput['sourceContextTemplate']> {
+  if (!isWfdRecord(value)) throw new TaskError('R1_BATCH_CONTEXT', '来源回执模板须为明确对象。');
+  const allowed = ['kind', 'urlTemplate', 'observedAt', 'protocol', 'fields', 'fields2', 'frequency', 'adjustment', 'market', 'basis'];
+  if (Object.keys(value).some(key => !allowed.includes(key))) throw new TaskError('R1_BATCH_CONTEXT', '来源回执模板含未声明字段。');
+  if (value.kind !== 'receipt' && value.kind !== 'synthetic') throw new TaskError('R1_BATCH_CONTEXT', '来源回执模板须明确 receipt 或 synthetic。');
+  if (typeof value.urlTemplate !== 'string' || !/^https?:\/\//u.test(value.urlTemplate) || !value.urlTemplate.includes('{file}'))
+    throw new TaskError('R1_BATCH_CONTEXT', '来源回执地址模板须为 http(s) 且含 {file} 占位。');
+  if (typeof value.observedAt !== 'string' || !Number.isFinite(Date.parse(value.observedAt)))
+    throw new TaskError('R1_BATCH_CONTEXT', '来源回执模板须提供明确取得时间。');
+  if (typeof value.basis !== 'string' || value.basis.trim().length < 8 || value.basis.length > 1000)
+    throw new TaskError('R1_BATCH_CONTEXT', '来源回执模板须说明依据；合成样本必须如实标注。');
+  return structuredClone(value) as NonNullable<R1BatchStartInput['sourceContextTemplate']>;
+}
+function readStart(value: unknown): R1BatchStartInput {
+  const body = object(value, ['batchId', 'source', 'datasetId', 'files', 'datePolicy', 'sourceValueColumns', 'calculation', 'algorithmRouting', 'sourceAdapter', 'sourceContextTemplate']); id(body.batchId); id(body.datasetId);
+  const source = object(body.source, ['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope', 'authorization', 'license']);
+  assertKnownR1Source(source as unknown as R1SourceDeclaration);
+  const requested = parseR1Utc(String(source.requested_at_utc)), acquired = parseR1Utc(String(source.acquired_at_utc));
+  if (!Number.isFinite(requested) || !Number.isFinite(acquired) || acquired < requested) fail('R1_SOURCE_TIME', '本批来源需要有效的 UTC 请求和取得时间。');
+  if (body.datePolicy !== undefined && body.datePolicy !== 'a_share_calendar_day_asia_shanghai') fail('R1_BATCH_INPUT', '批次日期声明不在受支持范围。');
+  const selected = body.sourceValueColumns;
+  if (selected !== undefined && (!Array.isArray(selected) || !selected.length || selected.length > 256
+    || selected.some(name => typeof name !== 'string' || !name.trim() || name.length > 256 || /[\u0000-\u001f]/u.test(name))
+    || new Set(selected).size !== selected.length)) fail('R1_BATCH_SOURCE_COLUMNS', '本批选列需要 1 至 256 个不重复的实际原列名，留空时交接全表。');
+  if (!Array.isArray(body.files) || !body.files.length || body.files.length > R1_BATCH_MAX_FILES) fail('R1_BATCH_FILE_BUDGET', `本批需要 1 至 ${R1_BATCH_MAX_FILES} 个明确选定的文件。`);
+  const files = body.files.map(value => {
+    const file = object(value, ['name', 'relativePath', 'sha256', 'byteLength']);
+    if (typeof file.name !== 'string' || !file.name.trim() || file.name.length > 512 || /[/\\\u0000-\u001f\u007f]/u.test(file.name)
+      || ['.', '..'].includes(file.name) || typeof file.relativePath !== 'string' || !file.relativePath || file.relativePath.length > 2048
+      || /[\\:\u0000-\u001f\u007f]/u.test(file.relativePath) || file.relativePath.split('/').some(part => !part || part === '.' || part === '..')
+      || file.relativePath.split('/').at(-1) !== file.name || typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(file.sha256)
+      || !Number.isSafeInteger(file.byteLength) || Number(file.byteLength) < 1 || Number(file.byteLength) > 25 * 1024 * 1024) fail('R1_BATCH_FILE', '每项需要实际文件名、来源系列内相对位置、摘要和 25 MiB 内非空字节长度。');
+    fileUrl(String(source.requested_url), file.relativePath);
+    return file as unknown as R1BatchFile;
+  });
+  const positions = new Map<string, string>();
+  for (const file of files) {
+    const previous = positions.get(file.relativePath);
+    if (previous && previous !== file.sha256) fail('R1_BATCH_SOURCE_PATH_CONFLICT', '不同字节不能共用本批同一来源位置。请保留实际子目录，或按不同来源系列分批选择。');
+    positions.set(file.relativePath, file.sha256);
+  }
+  if (files.reduce((total, file) => total + file.byteLength, 0) > R1_BATCH_MAX_BYTES) fail('R1_BATCH_BYTE_BUDGET', '本批清单总量不能超过 128 MiB。');
+  const algorithmRouting = body.algorithmRouting === undefined ? undefined : readR1BatchAlgorithmRouting(body.algorithmRouting);
+  if (algorithmRouting && body.calculation !== undefined) fail('R1_ALGORITHM_ROUTING', '按类自动路由与旧明确均线参数不能同时提交。');
+  if (algorithmRouting && (algorithmRouting.files.length !== new Set(files.map(file => file.sha256)).size
+    || files.some(file => !algorithmRouting.files.some(inspected => inspected.sha256 === file.sha256 && inspected.byteLength === file.byteLength))))
+    fail('R1_ALGORITHM_FILE_BINDING', '算法预检必须与本批所有原件的完整摘要及长度逐件一致，不能引用别的文件。');
+  return structuredClone({ batchId: body.batchId, source: source as unknown as R1SourceDeclaration, datasetId: body.datasetId,
+    files, ...(body.datePolicy ? { datePolicy: body.datePolicy } : {}), ...(selected ? { sourceValueColumns: [...selected as string[]].sort() } : {}),
+    ...(body.sourceAdapter === undefined ? {} : { sourceAdapter: readAdapterBindingRef(body.sourceAdapter) }),
+    ...(body.sourceContextTemplate === undefined ? {} : { sourceContextTemplate: readContextTemplate(body.sourceContextTemplate) }),
+    ...(algorithmRouting ? { algorithmRouting: { ...algorithmRouting, files: [...algorithmRouting.files].sort((a, b) => a.sha256.localeCompare(b.sha256)) } } : {}),
+    ...(body.calculation === undefined ? {} : { calculation: readSourceObservationMASelection(body.calculation) }) }) as R1BatchStartInput;
+}
+function fileUrl(series: string, path: string): string {
+  let base: URL; try { base = new URL(series); } catch { return fail('R1_BATCH_SOURCE_SERIES', '请明确提供来源系列的绝对地址或 file URI（文件资源标识）。'); }
+  if (base.search || base.hash || ['blob:', 'data:', 'javascript:'].includes(base.protocol)) fail('R1_BATCH_SOURCE_SERIES', '来源系列地址不能含查询、片段或临时内容地址。');
+  return `${base.href.replace(/\/?$/u, '/')}${path.split('/').map(encodeURIComponent).join('/')}`;
+}
+function object(value: unknown, keys: string[]): Record<string, unknown> { if (!isWfdRecord(value) || Object.keys(value).some(key => !keys.includes(key))) fail('R1_BATCH_INPUT', '批次只接受明确清单和声明，不能覆盖连接、目标或权限。'); return value; }
+function id(value: unknown): asserts value is string { if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/u.test(value)) fail('R1_BATCH_INPUT', '批次需要稳定编号。'); }
+function errorView(error: unknown): { code: string; message: string } { return { code: error && typeof error === 'object' && 'code' in error ? String(error.code) : 'R1_BATCH_FAILED', message: error instanceof Error ? error.message : String(error) }; }

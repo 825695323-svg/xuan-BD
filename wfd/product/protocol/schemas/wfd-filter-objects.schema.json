@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wfd.example/spec/v1.4/wfd-filter-objects.schema.json",
+  "title": "WFD filter_objects request (candidate, spec/v1.4)",
+  "description": "R07-B 候选：在固定快照上按已登记字段与 Decimal 常量筛选对象。只读；不计算、不派生、不写入。本文件为候选，尚未发行。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "dataset_id",
+    "operation",
+    "snapshot_id",
+    "history_mode",
+    "knowledge_cutoff",
+    "held_scope",
+    "usable_stage",
+    "universe",
+    "product_id",
+    "business_time_range",
+    "predicate",
+    "page_size",
+    "max_scan_bytes",
+    "max_nodes"
+  ],
+  "properties": {
+    "protocol_version": {
+      "const": "wfd.filter-objects/1.4-candidate"
+    },
+    "dataset_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "operation": {
+      "const": "filter_objects"
+    },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^s_[a-z0-9]{16,64}$"
+    },
+    "history_mode": {
+      "enum": [
+        "snapshot_contents"
+      ]
+    },
+    "knowledge_cutoff": {
+      "type": "null"
+    },
+    "held_scope": {
+      "type": "null"
+    },
+    "usable_stage": {
+      "type": "null"
+    },
+    "universe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "subjects"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "explicit_subjects"
+          ]
+        },
+        "subjects": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "kind",
+              "namespace"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "kind": {
+                "enum": [
+                  "instrument"
+                ]
+              },
+              "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              }
+            }
+          }
+        }
+      }
+    },
+    "product_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "business_time_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "start",
+        "end",
+        "timezone"
+      ],
+      "properties": {
+        "role": {
+          "const": "observation"
+        },
+        "start": {
+          "type": "string",
+          "pattern": "^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})(?:T[0-9]{2}:[0-9]{2}:[0-9]{2})?$"
+        },
+        "end": {
+          "type": "string",
+          "pattern": "^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})(?:T[0-9]{2}:[0-9]{2}:[0-9]{2})?$"
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "predicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "compare"
+      ],
+      "properties": {
+        "compare": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "field",
+            "op",
+            "value"
+          ],
+          "properties": {
+            "field": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "op": {
+              "enum": [
+                "=",
+                ">=",
+                "<=",
+                ">",
+                "<"
+              ]
+            },
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "data_type",
+                "value",
+                "unit_code"
+              ],
+              "properties": {
+                "data_type": {
+                  "const": "decimal"
+                },
+                "value": {
+                  "type": "string",
+                  "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+                },
+                "unit_code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "page_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500
+    },
+    "max_scan_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 268435456
+    },
+    "max_nodes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200000
+    }
+  }
+}

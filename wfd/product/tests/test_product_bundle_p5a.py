@@ -20,8 +20,7 @@ from wfd_sdk.transfer import verify_package
 
 
 HERE = Path(__file__).resolve().parents[1]
-ROOT = HERE.parents[1]
-P3A6_STORE = ROOT / "03_测试与验证记录/P3_通用入库与更新_2026-10-27/run_20261027_p3a6/store"
+# Fixed historical identities are used only by the explicitly selected integration.
 P3A6_SNAPSHOT = "s_75ba1080a80c944a7cb5e89e"
 P3A6_PLAN = "p_c6e2ebaa67c41eb6aad986a9"
 P3A6_SCHEDULE = "p_c29cff868e8ec4508de69ead"
@@ -185,9 +184,14 @@ def _target_snapshot(bundle: Path, descriptor):
     return json.loads(files[f"catalog/snapshots/{descriptor['target_snapshot_id']}.json"].decode()), files
 
 
-def test_real_p3a6_precise_slice_is_physically_selected_and_reads_isolated(tmp_path):
+@pytest.mark.integration
+def test_real_p3a6_precise_slice_is_physically_selected_and_reads_isolated(
+        tmp_path, wfd_history_root):
+    historical_store = (wfd_history_root / "P3_通用入库与更新_2026-10-27" /
+                        "run_20261027_p3a6/store")
+    assert historical_store.is_dir(), "selected historical store is missing: " + str(historical_store)
     source = tmp_path / "source"
-    shutil.copytree(P3A6_STORE, source)
+    shutil.copytree(historical_store, source)
     engine = WFDDuckDBPrototype(source, load_protocol_validator(HERE / "protocol"),
                                 runtime_root=tmp_path / "runtime", sandbox=False, writer_host=None)
     policies = {}

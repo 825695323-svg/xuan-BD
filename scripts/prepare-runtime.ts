@@ -58,7 +58,7 @@ export function prepareRuntime(options: PrepareRuntimeOptions): RuntimeLauncher 
     const stat = lstatSync(path, { bigint: true });
     resources[id] = { kind: 'directory', path: part, owned: true, identity: randomUUID(), device: String(stat.dev), inode: String(stat.ino) };
   }
-  json(join(runtimeRoot, '.xuan-runtime.json'), { application: 'xuan-harness', version: 1, identity: runtimeIdentity });
+  json(join(runtimeRoot, '.xuan-runtime.json'), { application: 'xuan-bd', version: 1, identity: runtimeIdentity });
   json(join(runtimeRoot, 'config', 'machine.bindings.json'), { version: 1, revision: 1, runtimeIdentity, resources } satisfies MachineBindingDocument);
   json(join(runtimeRoot, 'config', 'model.json'), model);
   json(join(runtimeRoot, 'config', 'tools.json'), { whisperModelPath: selected.whisper_base!.path });

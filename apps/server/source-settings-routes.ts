@@ -64,6 +64,15 @@ export function createSourceSettingsRouter(services: ApplicationServices) {
       const setting = sourceSettings.get().capture.find(item => item.sourceId === body.captureSourceId)!;
       sourceSettings.assertCaptureEnabled(setting.sourceId);
       action = `capture.${setting.sourceId}.read`; args = { operation: setting.operation, ...setting.parameters }; title = `手动采集 · ${setting.sourceId}`;
+    } else if (body.werssFeedId !== undefined) {
+      if (Object.keys(body).some(key => !['requestId', 'connectionId', 'werssFeedId', 'limit', 'offset'].includes(key))) invalid();
+      action = 'source.werss.read';
+      args = { connectionId: body.connectionId as JsonValue, feedId: body.werssFeedId as JsonValue,
+        limit: body.limit as JsonValue, offset: body.offset as JsonValue };
+      title = '读取 WeRSS 本地缓存 feed';
+    } else if (body.wechatUrl !== undefined) {
+      if (Object.keys(body).some(key => !['requestId', 'wechatUrl'].includes(key)) || typeof body.wechatUrl !== 'string') invalid();
+      action = 'source.wechat.extract'; args = { url: body.wechatUrl }; title = '提取微信公众号文章正文';
     } else {
       if (Object.keys(body).some(key => !['sourceId', 'requestId', 'scopeId', 'parameters', 'apiOperation', 'klineOperation'].includes(key)) || typeof body.scopeId !== 'string' || !body.parameters || typeof body.parameters !== 'object' || Array.isArray(body.parameters)) invalid();
       const parameters = JSON.stringify(body.parameters);

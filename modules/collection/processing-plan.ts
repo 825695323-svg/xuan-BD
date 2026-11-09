@@ -7,19 +7,34 @@ import type { JsonValue } from '../../contracts/task-contracts.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { MaterialService } from './materials/service.js';
 import type { MaterialLocation } from './materials/contracts.js';
+import { readXlsxTableSelection, type XlsxTableSelection } from './data-processing/xlsx-table.js';
+import { readSourceProjection } from './source-reported-table.js';
+import { MAX_SOURCE } from '../../platform/capabilities/conversion/formats.js';
+import { readNumericFormat } from './data-processing/numeric-format.js';
+import { readXbrlSelection } from './data-processing/xbrl-table.js';
+import { readNecessaryTextSelection } from './data-processing/necessary-text.js';
+import { readFinancialPdfSelection, projectFinancialPdf } from './data-processing/financial-pdf.js';
+import { readFinancialCalculation, projectFinancialFixed, type FinancialReader } from './data-processing/financial-fixed.js';
+import { R1_TABULAR_RULE_VERSION, checkR1TabularRows, compileR1TabularDeclaration, isR1TabularDeclaration, parseR1Utc } from './r1-tabular.js';
+import { r1SourceGaps } from './r1-source.js';
+import { adapterColumnType, adapterTypeCompatible, readAdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
+import { decodeAdapterSource } from './endpoint-adapter.js';
+import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
 import {
-  CANDIDATE_LIMITS, CANDIDATE_STAGE_VERSIONS, annotateCandidateTable, checkCandidateTables, cleanCandidateTable,
+  CANDIDATE_LIMITS, CANDIDATE_SELECTION_LIMITS, CANDIDATE_STAGE_VERSIONS, annotateCandidateTable, checkCandidateTables, cleanCandidateTable,
   parseTableSource, structureCandidateTable, type AnnotatedCandidateTable, type CandidateTablePlan,
-  type CleanedCandidateTable, type ParsedCandidateTable, type StructuredCandidateTable,
+  type CandidateCsvSelectionEvidence, type CleanedCandidateTable, type ParsedCandidateTable, type StructuredCandidateTable,
 } from './candidate-pipeline.js';
 import {
   DIMENSION_KEYS, PROCESSING_POLICY, PROCESSING_POLICY_DIGEST, CLASSIFICATION_DIMENSIONS, REVIEW_DIMENSIONS,
   deriveMaterialRouting, deriveOutputRouting, dimensionLabel, emptyDimensions, gapsForDimensions, isPublishAction,
   mergeDimensions, type CustodyState, type DimensionKey, type DimensionSuggestion, type MaterialFacts,
-  type NormalizedDimension, type NormalizedEvidence, type RoutingState,
+  type NormalizedDimension, type NormalizedEvidence, type RoutingState, type StructuredUsage, type UsageQualification,
 } from './processing-routing.js';
+import { ELIGIBILITY_HISTORY_MODES, ELIGIBILITY_PURPOSES, PURPOSE_ELIGIBILITY_RULE_VERSION,
+  evaluatePurposeEligibility, type EligibilityHistoryMode, type EligibilityPurpose, type PurposeEvidenceClaim } from './purpose-eligibility.js';
 
-export const PROCESSING_PLAN_RUNTIME = 'harness.processing-plans';
+export const PROCESSING_PLAN_RUNTIME = 'bd.processing-plans';
 export const PROCESSING_PLAN_VERSION = 'bd-processing-plan/1';
 export const PROCESSING_ACTIONS = Object.freeze({ decide: 'data.processing.decide', plan: 'data.processing.plan',
   execute: 'data.processing.execute', run: 'data.processing.run', recover: 'data.processing.recover' } as const);
@@ -27,6 +42,7 @@ export const PROCESSING_LIMITS = Object.freeze({ maxOutputs: 16, maxMaterials: 3
   maxInputBytes: 131_072, maxObjectBytes: CANDIDATE_LIMITS.maxStructuredBytes, maxPlanBytes: CANDIDATE_LIMITS.maxObjectBytes,
   maxRows: CANDIDATE_LIMITS.maxRows, maxFields: CANDIDATE_LIMITS.maxFields, maxEvidence: 20, maxSuggestions: 40,
   maxRequestIdLength: 160 });
+const NORMALIZATION_SUMMARY_MAX_BYTES = 4096;
 export const PROCESSING_STEP_KINDS = ['parse', 'clean', 'structure', 'annotate', 'check'] as const;
 export type ProcessingStepKind = typeof PROCESSING_STEP_KINDS[number];
 export type ProcessingStepState = 'pending' | 'succeeded' | 'failed' | 'blocked';
@@ -47,17 +63,19 @@ export interface OperatorContext {
   conversation?: { conversationId: string; branchId: string; verifyUserMessage?(messageId: string, quote: string): boolean };
 }
 export interface ProcessingSuggestionInput { dimension: DimensionKey; value: string; proposalId?: string; judgmentId?: string }
-export interface ProcessingEvidenceInput { source: 'material' | 'operator' | 'user-message' | 'model-proposal';
+export interface ProcessingEvidenceInput { source: 'material' | 'material-table' | 'operator' | 'user-message' | 'model-proposal';
   materialId?: string; quote?: string; start?: number; end?: number; field?: string; messageId?: string;
-  proposalId?: string; judgmentId?: string }
+  proposalId?: string; judgmentId?: string; column?: string; scope?: 'header' | 'column_constant'; xlsxSelection?: XlsxTableSelection }
 export interface ProcessingDimensionInput { status: 'known' | 'unknown' | 'conflict'; value?: string; gap?: string;
   evidence?: ProcessingEvidenceInput[] }
 export interface ProcessingMaterialRoutingInput { materialId: string; dimensions?: Partial<Record<DimensionKey, ProcessingDimensionInput>>;
   suggestions?: ProcessingSuggestionInput[]; intendedAction?: 'inspect' | 'publish' }
 export interface ProcessingTargetInput { productRef?: WfdRecord; declaration?: WfdRecord; expectedSnapshotId?: string | null }
+export interface ProcessingUsageInput { purpose?: string; historyMode?: string | null; cutoff?: string | null;
+  perspective?: string | null; messageId?: string; quote?: string }
 export interface ProcessingOutputInput { outputId: string; materialIds: string[]; tables?: CandidateTablePlan[]; target?: ProcessingTargetInput;
   dimensions?: Partial<Record<DimensionKey, ProcessingDimensionInput>>; suggestions?: ProcessingSuggestionInput[]; rejectReason?: string;
-  coverage?: { complete: boolean; gaps: string[]; scope: string }; intendedAction?: 'inspect' | 'publish' }
+  coverage?: { complete: boolean; gaps: string[]; scope: string }; intendedAction?: 'inspect' | 'publish'; usage?: ProcessingUsageInput }
 export interface ProcessingPlanInput { routing: { materials: ProcessingMaterialRoutingInput[] }; outputs: ProcessingOutputInput[];
   previousPlanId?: string }
 export interface ProcessingDecisionInput { materialId: string; dimensions?: Partial<Record<DimensionKey, ProcessingDimensionInput>>;
@@ -67,11 +85,19 @@ interface StepSpec { stepId: string; outputId: string; kind: ProcessingStepKind;
   dependsOn: string[]; implementation: string; parameters: WfdRecord; completion: WfdRecord; input: WfdRecord; gaps: string[]; specDigest: string }
 interface InitializedStep { spec: StepSpec; state: ProcessingStepState; output: ManagedObjectRef | null; outputDigest: string | null;
   checkScope: string[]; gaps: string[]; reusedFrom: { planId: string; stepId: string } | null;
-  startedAt: number | null; completedAt: number | null; error: null }
+  startedAt: number | null; completedAt: number | null; error: null; semantic: ProcessingSemanticEvidence | null;
+  normalization: WfdRecord | null }
+export interface ProcessingSemanticEvidence {
+  quality: 'pending' | 'pass' | 'fail' | 'indeterminate';
+  ruleVersion: string; ruleDigest: string; checkScope: string[]; gaps: string[];
+  coverage: { scope: 'processed_output_rows'; inputRows: number | null; checkedRows: number | null; complete: boolean;
+    sourceSelections?: CandidateCsvSelectionEvidence[] };
+  error?: { code: string; message: string };
+}
 interface NormalizedMaterialRouting { materialId: string; facts: MaterialFacts; dimensions: NormalizedDimension[];
   suggestions: DimensionSuggestion[]; routingState: RoutingState; gaps: string[]; intendedAction: 'inspect' | 'publish' }
 interface NormalizedOutput { outputId: string; materialIds: string[]; tables: CandidateTablePlan[]; target: ProcessingTargetInput | null;
-  intendedAction: 'inspect' | 'publish'; dimensions: NormalizedDimension[]; suggestions: DimensionSuggestion[]; rejectReason: string | null;
+  intendedAction: 'inspect' | 'publish'; usage: StructuredUsage; dimensions: NormalizedDimension[]; suggestions: DimensionSuggestion[]; rejectReason: string | null;
   coverage: { complete: boolean; gaps: string[]; scope: string } | null; adapterGaps: string[]; routingState: RoutingState;
   gaps: string[]; steps: StepSpec[] }
 interface NormalizedPlanInput { requestId: string; previousPlanId: string | null; operator: OperatorContext;
@@ -89,7 +115,8 @@ interface StepRow { plan_id: string; step_id: string; ordinal: number; output_id
   applicability: string; depends_json: string; implementation: string; parameters_json: string; completion_json: string;
   spec_digest: string; state: string; input_json: string; output_json: string | null; output_digest: string | null;
   check_scope_json: string; gaps_json: string; error_json: string | null; reused_from_plan_id: string | null;
-  reused_from_step_id: string | null; started_at: number | null; completed_at: number | null; attempt_task_id: string | null }
+  reused_from_step_id: string | null; started_at: number | null; completed_at: number | null; attempt_task_id: string | null;
+  semantic_json: string | null; normalization_json: string | null }
 interface OutputRow { plan_id: string; output_id: string; state: string; structured_json: string | null; structured_digest: string | null;
   routing_state: string; dimensions_json: string; gaps_json: string; updated_at: number }
 interface DecisionRow { decision_id: string; scope_kind: string; material_id: string; output_id: string | null; plan_id: string | null;
@@ -144,11 +171,15 @@ CREATE INDEX routing_decisions_output ON routing_decisions(plan_id,output_id);
 export class ProcessingPlanService {
   readonly versionBinding: Record<string, string>;
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService; materials: MaterialService;
-    objects: PlanObjectStore }) {
-    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
+    objects: PlanObjectStore; financialReader?: FinancialReader; financialReaderIdentity?(): unknown;
+    /** 端点适配登记：只提供已采用版本的冻结配置与漂移记录。 */
+    adapters?: EndpointAdapterRegistry }) {
+    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
     this.versionBinding = Object.freeze({ processing: PROCESSING_PLAN_VERSION,
       implementation: wfdSha256(Buffer.concat(files)), policy: PROCESSING_POLICY_DIGEST });
     options.database.migrate('collection_processing', 1, SCHEMA);
+    options.database.migrate('collection_processing_semantic_checks', 1, 'ALTER TABLE processing_plan_steps ADD COLUMN semantic_json TEXT;');
+    options.database.migrate('collection_processing_type_changes', 1, 'ALTER TABLE processing_plan_steps ADD COLUMN normalization_json TEXT;');
   }
   private get db() { return this.options.database.connection; }
   private get tasks() { return this.options.tasks(); }
@@ -160,23 +191,52 @@ export class ProcessingPlanService {
       dimensions: DIMENSION_KEYS.map(key => ({ key, label: dimensionLabel(key), statuses: ['known', 'unknown', 'conflict'] })),
       policy: PROCESSING_POLICY,
       steps: [
-        { kind: 'parse', implementation: CANDIDATE_STAGE_VERSIONS.parse, adapters: ['utf8-csv/1', 'utf8-json-table/1'],
+        { kind: 'parse', implementation: CANDIDATE_STAGE_VERSIONS.parse, adapters: ['utf8-csv/1', 'utf8-json-table/1', 'utf8-csv-exact-selection/1', 'xlsx-explicit-selection/1',
+          'bd-xbrl-numeric/1', 'bd-necessary-business-paragraph/1', 'bd-financial-pdf-regions/1', 'bd-financial-fixed/1'],
           rules: ['strict_utf8', 'csv_or_json_row_table', 'unique_nonempty_source_fields', 'explicit_field_mapping', 'explicit_scalar_types', 'trim', 'empty_to_null', 'constant_annotations'],
-          applicability: 'supported UTF-8 CSV/JSON only; other carriers stay unknown and need an adapter', required: true,
+          applicability: 'CSV/JSON tables; explicit XLSX cells; namespace-resolved numeric XBRL subset; reviewed whole UTF-8 business paragraphs; frozen native PDF regions; trusted fixed financial records. Unsupported structures remain blocked.', required: true,
           output: 'parsed table with original values, source types, quotes and locations' },
         { kind: 'clean', implementation: CANDIDATE_STAGE_VERSIONS.clean, rules: ['trim', 'empty_to_null'],
           applicability: 'not_applicable only when neither rule is declared', required: true, output: 'cleaned table with per-change original values' },
         { kind: 'structure', implementation: CANDIDATE_STAGE_VERSIONS.structure,
           rules: ['string', 'safe_integer', 'decimal_string', 'boolean', 'binary64_hex', 'json_number_literal_preservation'],
-          applicability: 'always for supported table sources; unsafe precision blocks', required: true, output: 'typed table retaining original values' },
+          applicability: 'always for supported table sources; unsafe precision blocks', required: true, output: 'typed table retaining original values and bounded actual type-change evidence' },
         { kind: 'annotate', implementation: CANDIDATE_STAGE_VERSIONS.annotate, rules: ['constant_scalars_only', 'no_source_field_override'],
           applicability: 'not_applicable when no constant is declared', required: true, output: 'typed table plus validated constants' },
         { kind: 'check', implementation: CANDIDATE_STAGE_VERSIONS.check,
-          rules: ['strict_utf8_decoding', 'table_shape', 'unique_nonempty_fields', 'explicit_field_mapping', 'explicit_scalar_types', 'finite_scalars', 'decimal_precision_roundtrip', 'row_budget', 'output_digest'],
-          applicability: 'supported UTF-8 CSV/JSON tables independent of routing semantics; semantic gaps remain explicit and are never lifted by a structural check', required: true,
+          rules: ['strict_utf8_decoding', 'table_shape', 'unique_nonempty_fields', 'explicit_field_mapping', 'explicit_scalar_types', 'finite_scalars', 'decimal_precision_roundtrip', 'type_changes_recorded', 'row_budget', 'output_digest'],
+          applicability: 'tables projected by listed adapters independent of routing semantics; semantic gaps remain explicit and are never lifted by a structural check', required: true,
           output: 'candidate-ready {rows} object and structural evidence; business semantics remain explicit gaps' },
       ],
-      notImplemented: ['174 business rules beyond the listed bindings', 'OCR/transcription semantic validation', 'binary/code execution', 'formal database admission', 'archive member expansion'],
+      notImplemented: ['business rule applicability and implementation coverage beyond the listed bindings are unverified', 'OCR/transcription semantic validation', 'binary/code execution', 'formal database admission', 'archive member expansion'],
+      semanticAdapters: [{ protocol: 'wfd.structured-ingest/1.0', mappingKind: 'tabular_rows', ruleVersion: R1_TABULAR_RULE_VERSION,
+        scope: 'explicit general table fields or declared daily/minute market roles; structural artifacts and per-output semantic quality remain separate',
+        publication: 'only a matching pass permits this rule-qualified candidate; source authority and WFD admission remain separate' }],
+      csvSelection: { predicate: 'exact original column/string equality', maxSourceBytes: CANDIDATE_LIMITS.maxObjectBytes,
+        ...CANDIDATE_SELECTION_LIMITS, completion: 'full EOF scan with selected/excluded coverage; no truncation' },
+      endpointAdapter: { contract: 'bd.endpoint-adapter/1', configured: !!this.options.adapters,
+        binding: '{adapterId, version, configDigest}',
+        lifecycle: 'candidate → actual replay (accept+reject samples) → trusted local adoption → only new plans consume the adopted version',
+        carriers: ['json', 'jsonp', 'js-variable-assignment', 'json-embedded-delimited'],
+        charsets: ['utf-8', 'gbk', 'gb18030'],
+        scope: 'one declarative operator for all endpoints; securities and dates are call inputs, never configuration keys',
+        adoptionAuthority: 'trusted local entry only; model-supplied authorization or READY is not adoption evidence',
+        drift: 'success-predicate/container/carrier mismatch fails the step and records an isolated reason; no fallback to another version' },
+      financialFixed: { version: 'bd-financial-fixed/1', operations: ['standardize', 'quarter_difference', 'ttm'],
+        calculation: { version: 'bd-financial-fixed/1', operation: 'one listed operation', inputs: [{ snapshotId: 'exact fixed snapshot ID',
+          productId: 'exact fixed product ID', businessKeys: ['exact logical key from fixed read'] }],
+          compatibilityReview: 'optional {materialId,originalSha256,quote}; required for listed unchanged-net-profit cross-revision cases, using an actual material in this output' },
+        input: 'fixed snapshotId/productId/businessKeys only, read by bound host; no caller-supplied values',
+        scope: 'CAS/CNY registered primary-statement concepts; explicit natural-year adjacent quarters and TTM; additive flows only; reviewed unchanged net profit across revisions',
+        limits: '38 decimal digits, 18 fractional digits; unsupported units, fiscal calendars, concepts and revision compatibility remain blocked' },
+      tableInputs: { common: ['materialId', 'format'], optional: ['fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations', 'numericFormats'],
+        endpointAdapter: 'optional sourceAdapter:{adapterId,version,configDigest}; only an adopted version is resolved and frozen into this plan; format stays the carrier family (csv|json)',
+        dedicated: { xlsx: { required: ['xlsxSelection'], shape: 'sheetName,headerRow,firstDataRow,lastDataRow,firstColumn,lastColumn,columns[{column,header,name,type?}]' },
+          xbrl: { required: ['xbrlSelection'], shape: '{version:"bd-xbrl-numeric/1",reportId,reportVersion,concepts:["{namespaceURI}localName"]}; empty concepts selects all supported numeric facts' },
+          text: { required: ['necessaryTextSelection'], shape: '{version:"bd-necessary-business-paragraph/1",sourceSha256,documentVersion,purpose,reviewBasis,paragraphs:[{start,end,quote}]}; complete original paragraphs only' },
+          pdf: { required: ['pdfSelection'], shape: '{version:"bd-financial-pdf-regions/1",sourceSha256,report:{id,version,subjectScheme,subjectCode,accountingStandard,currency,auditStatus},regions:[{page,yMin,yMax,statement,scope,section,label:[xMin,xMax],expectedLabels,rowBands:[{yMin,yMax}],columns:[{xMin,xMax,dimension,periodType,startDate,endDate,unit,numericFormat}],continuations?:[{rowIndex,columnIndex,page,yMin,yMax,xMin,xMax,quote}]}]}' },
+          'financial-fixed': { required: ['financialCalculation'], shape: 'financialFixed.calculation above; executable only through this managed plan and bound trusted reader' } },
+        numericFormat: '{decimal:"."|",",grouping:"."|","|" "|null,negative:"minus"|"minus_or_parentheses",plus:boolean,percent:"reject"|"as_reported"|"fraction"}; only for explicit decimal_string columns' },
       operatorInput: { requestId: 'stable request identity', operatorId: 'trusted local operator identity', evidence: 'operator-http field evidence or material quote; user-message evidence is accepted only from the trusted conversation host, never from HTTP' },
       reuse: 'same material sha256 + same step implementation/parameters/completion + same policy reuses succeeded step artifacts; changed rules recompute the step and downstream only',
     });
@@ -338,7 +398,7 @@ export class ProcessingPlanService {
     const ref = this.ref(canonicalWfdJson(output.structured));
     if (!this.options.objects.verify(ref)) fail('PROCESSING_ARTIFACT_CHANGED', '结构产物对象不存在或长度不符。');
     return { planId, outputId, ref, materialIds: output.materialIds, target: output.target ?? null,
-      routingState: output.routingState, gaps: output.gaps,
+      routingState: output.routingState, gaps: output.gaps, semantic: output.semantic,
       planDigest: plan.planDigest, executionDigest: plan.executionDigest, policy: plan.policy,
       steps: output.steps.map(step => ({ stepId: step.stepId, kind: step.kind, state: step.state, applicability: step.applicability,
         implementation: step.implementation, specDigest: step.specDigest, outputDigest: step.outputDigest, reusedFrom: step.reusedFrom })),
@@ -485,6 +545,8 @@ export class ProcessingPlanService {
     const raw = readRecord(input, ['routing', 'outputs', 'previousPlanId'], 'PROCESSING_PLAN_INPUT');
     const routing = readRecord(raw.routing, ['materials'], 'PROCESSING_ROUTING_INPUT');
     const materialInputs = readArray(routing.materials, 1, PROCESSING_LIMITS.maxMaterials, 'PROCESSING_MATERIALS');
+    // 适配表源的原句证据须在按声明字符集解码后的同一文本上定位；先按引用取出冻结配置，未采用则留待规范化时明确失败。
+    const adapterTexts = this.preScanAdapterTexts(raw.outputs);
     const facts = new Map<string, MaterialFacts>(), materials: NormalizedMaterialRouting[] = [];
     const seenMaterials = new Set<string>();
     for (const item of materialInputs) {
@@ -493,7 +555,7 @@ export class ProcessingPlanService {
       if (seenMaterials.has(materialId)) fail('PROCESSING_MATERIALS', '同一材料不能在路由输入中重复。');
       seenMaterials.add(materialId);
       const material = this.materialFacts(materialId); facts.set(materialId, material);
-      const dimensions = this.normalizeDimensions(readDimensions(record.dimensions), [material], operator, readSuggestions(record.suggestions));
+      const dimensions = this.normalizeDimensions(readDimensions(record.dimensions), [material], operator, readSuggestions(record.suggestions), adapterTexts);
       const intendedAction = readIntendedAction(record.intendedAction);
       const decision = deriveMaterialRouting({ material, dimensions, rejected: false, outputId: null, intendedAction });
       materials.push({ materialId, facts: material, dimensions, suggestions: dimensions.flatMap(item => item.suggestions),
@@ -502,27 +564,60 @@ export class ProcessingPlanService {
     const outputInputs = readArray(raw.outputs, 1, PROCESSING_LIMITS.maxOutputs, 'PROCESSING_OUTPUTS');
     const outputs: NormalizedOutput[] = [], seenOutputs = new Set<string>(), allSteps: StepSpec[] = [];
     for (const item of outputInputs) {
-      const record = readRecord(item, ['outputId', 'materialIds', 'tables', 'target', 'dimensions', 'suggestions', 'rejectReason', 'coverage', 'intendedAction'], 'PROCESSING_OUTPUT');
+      const record = readRecord(item, ['outputId', 'materialIds', 'tables', 'target', 'dimensions', 'suggestions', 'rejectReason', 'coverage', 'intendedAction', 'usage'], 'PROCESSING_OUTPUT');
       const outputId = readId(record.outputId, 'PROCESSING_OUTPUT_ID');
       if (seenOutputs.has(outputId)) fail('PROCESSING_OUTPUTS', '输出编号不能重复。'); seenOutputs.add(outputId);
       const materialIds = readArray(record.materialIds, 1, CANDIDATE_LIMITS.maxOriginals, 'PROCESSING_OUTPUT_MATERIALS').map(value => readId(value, 'PROCESSING_MATERIAL_ID'));
       if (new Set(materialIds).size !== materialIds.length) fail('PROCESSING_OUTPUTS', '一个输出不能重复引用同一原件。');
       const outputFacts = materialIds.map(materialId => facts.get(materialId) ?? fail('PROCESSING_MATERIAL_NOT_FOUND', `输出引用了未路由的材料 ${materialId}。`));
       const tables = readTables(record.tables, materialIds);
+      for (const table of tables) {
+        if (!table.sourceAdapter) continue;
+        if (!this.options.adapters) fail('PROCESSING_ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记，不能使用声明式适配表源。');
+        const frozen: FrozenAdapterBinding = this.options.adapters.resolve(table.sourceAdapter,
+          { materialId: table.materialId, ...(table.sourceContext === undefined ? {} : { context: table.sourceContext }),
+            ...(table.sourceReceiptTaskId === undefined ? {} : { sourceReceiptTaskId: table.sourceReceiptTaskId }) });
+        table.sourceAdapter = frozen;
+        delete table.sourceContext; delete table.sourceReceiptTaskId;
+        // 适配字段类型是配置声明的一部分；冻结进计划，结构步骤据此转换，不在执行时重新解释。
+        const declared: NonNullable<CandidateTablePlan['types']> = Object.assign(Object.create(null),
+          Object.fromEntries(frozen.config.fields.map(field => [table.fieldMapping?.[field.name] ?? field.name, adapterColumnType(field)])));
+        for (const [name, type] of Object.entries(table.types ?? {})) {
+          if (declared[name] && !adapterTypeCompatible(type, declared[name]!)) fail('PROCESSING_ADAPTER_TYPES', '结构类型声明与已采用适配的字段类型冲突。');
+          declared[name] = type;
+        }
+        table.types = declared;
+      }
+      for (const table of tables) if (table.financialCalculation) {
+        if (!this.options.financialReader || !this.options.financialReaderIdentity) fail('FINANCIAL_FIXED', '财务固定变换没有装配受信固定读取器及连接身份。');
+        const binding = this.options.financialReaderIdentity();
+        if (!binding) fail('FINANCIAL_FIXED', '财务固定读取连接尚未选定。');
+        table.financialReaderBinding = wfdSha256(canonicalWfdJson(binding));
+        const review = table.financialCalculation.compatibilityReview;
+        if (review && !materialIds.includes(review.materialId)) fail('FINANCIAL_FIXED', '跨修订相容性原文必须是本输出明确选择并路由的受管材料。');
+      }
       const target = readTarget(record.target);
+      if (target && /"text_role":"necessary_condition"/u.test(canonicalWfdJson(target)) && !tables.every(table => table.necessaryTextSelection))
+        fail('NECESSARY_TEXT_REVIEW', '目标声明的必要文字必须来自已核定的完整原文选择；产品标签不能代替选择证明。');
       const intendedAction = readIntendedAction(record.intendedAction);
+      const usage = this.normalizeStructuredUsage(record.usage, intendedAction, operator, outputId);
       const rejectReason = record.rejectReason === undefined ? null : readText(record.rejectReason, 1, 2000, 'PROCESSING_REJECT_REASON');
       const coverage = record.coverage === undefined ? null : readCoverage(record.coverage);
       const base = materials.find(material => material.materialId === materialIds[0]!)!;
-      const overrides = record.dimensions === undefined ? [] : this.normalizeDimensions(readDimensions(record.dimensions), outputFacts, operator, readSuggestions(record.suggestions));
+      const overrides = record.dimensions === undefined ? [] : this.normalizeDimensions(readDimensions(record.dimensions), outputFacts, operator, readSuggestions(record.suggestions), adapterTexts);
       const dimensions = overrides.length ? mergeDimensions(base.dimensions, overrides) : structuredClone(base.dimensions);
-      const adapterGaps = tables.flatMap((table, index) => this.tableCapabilityGaps(facts.get(table.materialId)!, table, index));
+      const adapterGaps = [...tables.flatMap((table, index) => this.tableCapabilityGaps(facts.get(table.materialId)!, table, index)),
+        // 未与材料实际取得回执核对时，结构解析可继续，但依赖匹配的算法与发布用途不自动成立。
+        // 完全没有取得上下文时匹配未核，依赖匹配的用途不成立；已标注的合成上下文只记录缺口，不冒称真实回执。
+        ...tables.flatMap(table => table.sourceAdapter && 'match' in table.sourceAdapter && table.sourceAdapter.match
+          && table.sourceAdapter.match.kind === 'unverified' ? table.sourceAdapter.match.gaps : [])];
       const semanticGaps = dimensions.filter(dimension => dimension.status !== 'known').map(dimension => `${dimension.key}: ${dimension.gap ?? '未知'}`);
-      const steps = rejectReason ? [] : this.buildSteps(outputId, materialIds, tables, dimensions, semanticGaps, intendedAction, outputFacts);
-      const outputRouting = deriveOutputRouting({ material: base.facts, dimensions, target: target ? { present: true, kind: target.productRef ? 'productRef' : target.declaration ? 'declaration' : 'none', expectedSnapshotId: target.expectedSnapshotId ?? null } : undefined,
-        rejected: !!rejectReason, outputId, outputState: steps.length ? 'pending' : 'custody_only', intendedAction,
+      const steps = rejectReason ? [] : this.buildSteps(outputId, materialIds, tables, dimensions, semanticGaps, intendedAction, outputFacts, target);
+      const usageQualification = this.usageQualification(usage, base.facts.sha256);
+      const outputRouting = deriveOutputRouting({ material: this.outputMaterialFacts(base.facts, tables), dimensions, target: target ? { present: true, kind: target.productRef ? 'productRef' : target.declaration ? 'declaration' : 'none', expectedSnapshotId: target.expectedSnapshotId ?? null } : undefined,
+        rejected: !!rejectReason, outputId, outputState: steps.length ? 'pending' : 'custody_only', intendedAction, usage: usageQualification,
         processingGaps: steps.flatMap(step => step.gaps), adapterGaps });
-      outputs.push({ outputId, materialIds, tables, target, intendedAction, dimensions, suggestions: dimensions.flatMap(item => item.suggestions),
+      outputs.push({ outputId, materialIds, tables, target, intendedAction, usage, dimensions, suggestions: dimensions.flatMap(item => item.suggestions),
         rejectReason, coverage, adapterGaps, routingState: outputRouting.routingState, gaps: outputRouting.gaps, steps });
       allSteps.push(...steps);
     }
@@ -533,7 +628,7 @@ export class ProcessingPlanService {
     const executionDigest = wfdSha256(canonicalWfdJson({ policy: PROCESSING_POLICY.version,
       materials: materials.map(item => ({ materialId: item.materialId, sha256: item.facts.sha256 })).sort((a, b) => a.materialId.localeCompare(b.materialId)),
       outputs: outputs.map(item => ({ outputId: item.outputId, materialIds: item.materialIds, tables: item.tables, target: item.target,
-        intendedAction: item.intendedAction,
+        intendedAction: item.intendedAction, usage: item.usage,
         dimensions: item.dimensions.map(dimension => ({ key: dimension.key, status: dimension.status, value: dimension.value })) })),
       steps: allSteps.map(step => ({ stepId: step.stepId, specDigest: step.specDigest })) }));
     const previousPlanId = raw.previousPlanId === undefined ? null : readId(raw.previousPlanId, 'PROCESSING_PLAN_ID');
@@ -542,17 +637,86 @@ export class ProcessingPlanService {
       materials: materials.map(material => ({ materialId: material.materialId, sha256: material.facts.sha256,
         dimensions: material.dimensions, suggestions: material.suggestions, intendedAction: material.intendedAction })),
       outputs: outputs.map(output => ({ outputId: output.outputId, materialIds: output.materialIds, tables: output.tables,
-        target: output.target, dimensions: output.dimensions, suggestions: output.suggestions, rejectReason: output.rejectReason,
-        coverage: output.coverage })) }));
+        target: output.target, usage: output.usage, dimensions: output.dimensions, suggestions: output.suggestions,
+        rejectReason: output.rejectReason, coverage: output.coverage })) }));
     if (Buffer.byteLength(canonicalWfdJson({ materials, outputs, steps: allSteps }), 'utf8') > 2 * 1024 * 1024) fail('PROCESSING_INPUT_BUDGET', '计划输入超过持久化预算。');
     return { requestId: operator.requestId, previousPlanId, operator: storedOperator(operator), materials, outputs, steps: allSteps, scopeKey,
       executionDigest, contentDigest, reuseFromPlanId: previousPlanId ?? null };
   }
 
+  /**
+   * 结构化用途：purpose/history 由受信请求字段或结构化 intendedAction 决定，
+   * 不从六维自由文本原话反推；历史必须显式模式/截止。
+   */
+  private normalizeStructuredUsage(raw: unknown, intendedAction: 'inspect' | 'publish', operator: OperatorContext, outputId: string): StructuredUsage {
+    const value = raw === undefined ? {} : readRecord(raw, ['purpose', 'historyMode', 'cutoff', 'perspective', 'messageId', 'quote', 'restriction'], 'PROCESSING_USAGE');
+    const purpose = (value.purpose === undefined
+      ? (intendedAction === 'publish' ? 'current_publish' : 'current_compute')
+      : readText(value.purpose, 1, 80, 'PROCESSING_USAGE')) as EligibilityPurpose;
+    if (!(ELIGIBILITY_PURPOSES as readonly unknown[]).includes(purpose)) fail('PROCESSING_USAGE', '用途须为已登记的共用用途。');
+    const historyMode = value.historyMode === undefined || value.historyMode === null ? null
+      : readText(value.historyMode, 1, 64, 'PROCESSING_USAGE') as EligibilityHistoryMode;
+    if (historyMode !== null && !(ELIGIBILITY_HISTORY_MODES as readonly unknown[]).includes(historyMode)) fail('PROCESSING_USAGE', '历史模式须使用现有 history_mode 稳定名称。');
+    const cutoff = value.cutoff === undefined || value.cutoff === null ? null : readText(value.cutoff, 1, 64, 'PROCESSING_USAGE');
+    if (cutoff !== null && (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u.test(cutoff)
+      || !Number.isFinite(Date.parse(cutoff)))) fail('PROCESSING_USAGE', '历史截止须为含明确时区的有效时刻。');
+    const perspective = value.perspective === undefined || value.perspective === null ? null : readText(value.perspective, 1, 64, 'PROCESSING_USAGE');
+    const historical = purpose.startsWith('historical');
+    if (intendedAction === 'publish' && purpose !== 'current_publish' && purpose !== 'historical_publish') {
+      fail('PROCESSING_USAGE', '发布动作的用途须为 current_publish 或 historical_publish；不能用当前内容用途冒充发布。');
+    }
+    if (intendedAction === 'inspect' && (purpose === 'current_publish' || purpose === 'historical_publish')) {
+      fail('PROCESSING_USAGE', '检查动作不能声明发布用途；发布须由明确 publish 动作。');
+    }
+    if (historical) {
+      if (historyMode === null || cutoff === null) fail('PROCESSING_USAGE', '历史用途须显式选择历史模式并固定截止。');
+      if (historyMode === 'snapshot_contents') fail('PROCESSING_USAGE', '快照内容不是历史可知资格；历史用途须使用实际历史模式与公开/持有证据。');
+      if (perspective !== null && perspective !== historyMode) fail('PROCESSING_USAGE', 'perspective 必须与历史模式一致。');
+    } else if (historyMode !== null || cutoff !== null || perspective !== null) {
+      fail('PROCESSING_USAGE', '当前用途不能携带历史模式/截止/视角；不静默升级资格。');
+    }
+    const authority: 'operator-http' | 'user-message' = operator.source === 'conversation' ? 'user-message' : 'operator-http';
+    let messageId: string | undefined;
+    let quote = `structured action: intendedAction=${intendedAction}; purpose=${purpose}`;
+    if (authority === 'user-message') {
+      messageId = value.messageId === undefined ? undefined : readText(value.messageId, 1, 160, 'PROCESSING_USAGE');
+      const userQuote = value.quote === undefined ? null : readText(value.quote, 1, 4000, 'PROCESSING_USAGE');
+      if (!messageId || !userQuote || !operator.conversation?.verifyUserMessage?.(messageId, userQuote)) {
+        fail('PROCESSING_USAGE_EVIDENCE', '会话发布/历史用途须引用真实用户原话；模型不能自授。');
+      }
+      quote = userQuote;
+    }
+    const claim: PurposeEvidenceClaim = { purpose, authority, quote,
+      observedAtUtc: new Date(operator.observedAt).toISOString().replace('.000Z', 'Z'),
+      evidenceSha256: wfdSha256(canonicalWfdJson({ outputId, intendedAction, purpose, historyMode, cutoff, perspective, requestId: operator.requestId })),
+      ...(authority === 'operator-http' ? { requestId: operator.requestId } : { messageId: messageId! }) };
+    const restriction = value.restriction === undefined ? undefined
+      : isWfdRecord(value.restriction) ? value.restriction as unknown as StructuredUsage['restriction'] : undefined;
+    return { purpose, historyMode, cutoff, perspective, purposeEvidence: [claim],
+      ...(restriction ? { restriction } : {}) };
+  }
+
+  private usageQualification(usage: StructuredUsage, objectSha256: string): UsageQualification {
+    const result = evaluatePurposeEligibility({
+      ruleVersion: PURPOSE_ELIGIBILITY_RULE_VERSION,
+      purpose: usage.purpose, purposeEvidence: usage.purposeEvidence,
+      history: { mode: usage.historyMode, cutoff: usage.cutoff, perspective: usage.perspective },
+      object: { objectSha256, origin: 'managed_original', productId: null, snapshotId: null, recordVersion: objectSha256,
+        definitionRevision: null, contentVerified: true,
+        contentBasis: '处理计划形成时按实际受管材料/结构化对象摘要核对' },
+      publicationTime: null, holdingTime: null, revisions: null, wfdHistory: null,
+      restriction: usage.restriction ?? null, derived: null, wfdDecision: null, boundary: 'candidate',
+    });
+    return { status: result.status, checkedScope: result.checkedScope, evidenceSha256: result.evidenceSha256,
+      historyUse: result.historyUse,
+      gaps: result.gaps.filter(item => item.blocking).map(item => `用途资格: ${item.code}: ${item.message}`) };
+  }
+
   private normalizeDimensions(raw: Partial<Record<DimensionKey, ProcessingDimensionInput>> | null, facts: MaterialFacts[],
-    operator: OperatorContext, suggestions: ProcessingSuggestionInput[]): NormalizedDimension[] {
+    operator: OperatorContext, suggestions: ProcessingSuggestionInput[], adapterTexts?: Map<string, string>): NormalizedDimension[] {
     const result: NormalizedDimension[] = [];
-    const textCache = new Map<string, string | null>();
+    const textCache = new Map<string, string | null>(adapterTexts ?? []);
+    const tableCache = new Map<string, ParsedCandidateTable>();
     for (const key of DIMENSION_KEYS) {
       const input = raw?.[key];
       if (input === undefined) {
@@ -567,7 +731,7 @@ export class ProcessingPlanService {
       const value = record.value === undefined ? null : readText(record.value, 1, 2000, `PROCESSING_DIMENSION_${key}`);
       if (status === 'known' && !value) fail('PROCESSING_DIMENSION', `${dimensionLabel(key)} 为 known 时必须提供明确值。`);
       if (status !== 'known' && value !== null) fail('PROCESSING_DIMENSION', `${dimensionLabel(key)} 的 unknown/conflict 不能携带已确定值。`);
-      const evidence = this.normalizeEvidence(record.evidence, facts, operator, textCache);
+      const evidence = this.normalizeEvidence(record.evidence, facts, operator, textCache, tableCache);
       if (status === 'known' && !evidence.length) fail('PROCESSING_DIMENSION', `${dimensionLabel(key)} 为 known 时必须保留来源证据。`);
       if (key === 'purpose' && status === 'known' && !evidence.some(item => item.source === 'operator-http' || item.source === 'user-message')) {
         fail('PROCESSING_PURPOSE_AUTHORITY', '使用目的必须由真实操作者请求字段或真实用户消息确认；材料文字和模型建议不能自授用途。');
@@ -581,11 +745,35 @@ export class ProcessingPlanService {
     return result;
   }
 
-  private normalizeEvidence(raw: unknown, facts: MaterialFacts[], operator: OperatorContext, textCache: Map<string, string | null>): NormalizedEvidence[] {
+  private normalizeEvidence(raw: unknown, facts: MaterialFacts[], operator: OperatorContext, textCache: Map<string, string | null>,
+    tableCache: Map<string, ParsedCandidateTable>): NormalizedEvidence[] {
     if (raw === undefined) return [];
     const list = readArray(raw, 1, PROCESSING_LIMITS.maxEvidence, 'PROCESSING_EVIDENCE');
     return list.map(item => {
-      const record = readRecord(item, ['source', 'materialId', 'quote', 'start', 'end', 'field', 'messageId', 'proposalId', 'judgmentId'], 'PROCESSING_EVIDENCE');
+      const record = readRecord(item, ['source', 'materialId', 'quote', 'start', 'end', 'field', 'messageId', 'proposalId', 'judgmentId',
+        'column', 'scope', 'xlsxSelection'], 'PROCESSING_EVIDENCE');
+      if (record.source === 'material-table') {
+        const materialId = readId(record.materialId, 'PROCESSING_MATERIAL_ID'), fact = facts.find(item => item.materialId === materialId);
+        if (!fact || fact.format !== 'excel') fail('PROCESSING_EVIDENCE', '表格证据必须引用本计划中的 XLSX 原件与明确选区。');
+        const selection = readXlsxTableSelection(record.xlsxSelection), column = readText(record.column, 1, 256, 'PROCESSING_EVIDENCE_COLUMN');
+        const quote = readText(record.quote, 1, 4000, 'PROCESSING_EVIDENCE_QUOTE');
+        if (!['header', 'column_constant'].includes(String(record.scope))) fail('PROCESSING_EVIDENCE', '工作簿证据须明确为原表头或全选区一致的列声明。');
+        const cacheKey = `${materialId}:${wfdSha256(canonicalWfdJson(selection))}`;
+        if (!tableCache.has(cacheKey)) tableCache.set(cacheKey, parseTableSource(this.options.materials.readOriginal(materialId).bytes,
+          { materialId, format: 'xlsx', xlsxSelection: selection }));
+        const table = tableCache.get(cacheKey)!, index = table.columns.indexOf(column), projection = table.source_projection;
+        if (index < 0 || !projection || projection.evidence.sourceSha256 !== fact.sha256) fail('PROCESSING_EVIDENCE_MISMATCH', '所选工作簿原件、列或投影摘要不符。');
+        const selected = projection.evidence.columns[index]!;
+        if (record.scope === 'header' ? selected.header !== quote
+          : !table.total_rows || table.rows.some(row => row[index]?.original !== quote)) fail('PROCESSING_EVIDENCE_MISMATCH', '工作簿原表头或逐行一致声明与证据不符。');
+        return { source: 'material', materialId, materialSha256: fact.sha256, quote,
+          table: { selectionSha256: wfdSha256(canonicalWfdJson(selection)), projectionSha256: projection.json_sha256,
+            sheetName: projection.evidence.sheetName, sheetPart: projection.evidence.sheetPart, column,
+            scope: record.scope as 'header' | 'column_constant', headerCell: selected.cell.address,
+            firstDataRow: projection.evidence.firstDataRow, lastDataRow: projection.evidence.lastDataRow,
+            selectedRows: projection.evidence.selectedRows } };
+      }
+      if (['column', 'scope', 'xlsxSelection'].some(key => record[key] !== undefined)) fail('PROCESSING_EVIDENCE', '选区字段只适用于明确的工作簿材料证据。');
       if (record.source === 'model-proposal') fail('PROCESSING_EVIDENCE_UNTRUSTED', '模型建议只能作为未采用建议，不能作为 known 维度证据。');
       if (record.source === 'user-message') {
         if (operator.source !== 'conversation' || !operator.conversation) fail('PROCESSING_EVIDENCE_UNTRUSTED', 'user-message 证据只能由受信会话宿主核对；HTTP 操作者不能注入。');
@@ -593,6 +781,9 @@ export class ProcessingPlanService {
         const quote = readText(record.quote, 1, 4000, 'PROCESSING_EVIDENCE_QUOTE');
         if (!operator.conversation.verifyUserMessage?.(messageId, quote)) fail('PROCESSING_EVIDENCE_UNTRUSTED', '用户消息证据不在当前分支真实用户原话中。');
         return { source: 'user-message', messageId, quote };
+      }
+      if (record.source === 'operator' && operator.source === 'conversation') {
+        fail('PROCESSING_EVIDENCE_UNTRUSTED', '会话模型不能自报操作者证据；用户目的须引用本分支真实用户消息。');
       }
       if (record.source !== 'material' && record.source !== 'operator') fail('PROCESSING_EVIDENCE', '证据来源须为 material、operator 或受信 user-message。');
       if (record.source === 'material') {
@@ -636,44 +827,109 @@ export class ProcessingPlanService {
     if (original.sha256 !== material.envelope.sha256) fail('PROCESSING_MATERIAL_CHANGED', '材料原件摘要与信封不一致。');
     // 预览预算（2 MiB/1000 行）只服务只读预览；解析能力按实际选定解析器与完整原件 64 MiB 预算独立核定。
     const detected: string = material.preview.format;
-    const parseFormat = detected === 'csv' || detected === 'json-table' ? detected : null;
     const withinFullBudget = material.envelope.byteLength <= CANDIDATE_LIMITS.maxStructuredBytes;
-    const support = withinFullBudget && parseFormat ? 'supported' : withinFullBudget ? material.preview.support : 'needs_adapter';
+    let jsonArrayRoot = false;
+    if (detected === 'json-table' && withinFullBudget) {
+      const bytes = original.bytes;
+      let offset = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+      while (bytes[offset] === 0x20 || bytes[offset] === 0x09 || bytes[offset] === 0x0a || bytes[offset] === 0x0d) offset++;
+      jsonArrayRoot = bytes[offset] === 0x5b;
+    }
+    const nonTableJson = detected === 'json-table' && withinFullBudget && !jsonArrayRoot;
+    // 现有 JSON 表格解析器只接受根行对象数组；转换信封等根对象不能凭 .json 后缀获得五步资格。
+    const parseFormat = detected === 'csv' || detected === 'json-table' && jsonArrayRoot ? detected : null;
+    const support = nonTableJson ? 'needs_adapter' : withinFullBudget && parseFormat ? 'supported' : withinFullBudget ? material.preview.support : 'needs_adapter';
     return { materialId, filename: material.envelope.filename, sha256: material.envelope.sha256,
       byteLength: material.envelope.byteLength, mediaType: material.envelope.mediaType,
-      format: parseFormat ?? material.preview.format, support,
-      adapter: material.preview.adapter ?? (parseFormat ? { id: parseFormat === 'csv' ? 'utf8-csv' : 'utf8-json-table', version: '1' } : null),
+      format: nonTableJson ? 'json-document' : parseFormat ?? material.preview.format, support,
+      adapter: nonTableJson ? null : material.preview.adapter ?? (parseFormat ? { id: parseFormat === 'csv' ? 'utf8-csv' : 'utf8-json-table', version: '1' } : null),
       custodyState: 'received' };
   }
 
-  /** 表级解析门槛：只看选定解析器格式与完整原件 64 MiB 预算；预览截断、support 或 checks 不参与。 */
-  private tableCapabilityGaps(fact: MaterialFacts, table: CandidateTablePlan, index: number): string[] {
-    const expected = table.format === 'csv' ? 'csv' : 'json-table';
-    const gaps: string[] = [];
-    if (fact.byteLength > CANDIDATE_LIMITS.maxStructuredBytes) {
-      gaps.push(`tables[${index}] ${table.materialId}: 完整原件 ${fact.byteLength} 字节超过 64 MiB 解析预算；未用截断预览提交。`);
+  /**
+   * 适配表源的原句证据只能在其声明字符集解码后的文本上定位。
+   * 这里只按已采用版本解码本计划实际引用的材料；未采用或摘要不符留给规范化阶段明确失败，不猜测编码。
+   */
+  private preScanAdapterTexts(outputs: unknown): Map<string, string> {
+    const texts = new Map<string, string>();
+    if (!this.options.adapters || !Array.isArray(outputs)) return texts;
+    for (const output of outputs) {
+      if (!isWfdRecord(output) || !Array.isArray(output.tables)) continue;
+      for (const table of output.tables) {
+        if (!isWfdRecord(table) || table.sourceAdapter === undefined || typeof table.materialId !== 'string' || texts.has(table.materialId)) continue;
+        try {
+          const frozen = this.options.adapters.resolve(readAdapterBindingRef(table.sourceAdapter));
+          texts.set(table.materialId, decodeAdapterSource(this.options.materials.readOriginal(table.materialId).bytes, frozen.config.carrier.charset).text);
+        } catch { /* 该表会在 readTables/规范化时以明确错误失败；不在预扫描阶段改写结论。 */ }
+      }
     }
-    if (fact.format !== expected) {
+    return texts;
+  }
+
+  /** 完整表保留64 MiB默认；显式选件仅放行其原件保管预算，不拿预览截断提交。 */
+  private tableCapabilityGaps(fact: MaterialFacts, table: CandidateTablePlan, index: number): string[] {
+    // 已冻结端点适配以实际载体解析能力准入；预览格式、扩展名不是拒绝依据，预算与身份仍逐项核对。
+    if (table.sourceAdapter) {
+      const gaps: string[] = [];
+      if (fact.byteLength > CANDIDATE_LIMITS.maxStructuredBytes) gaps.push(`tables[${index}] ${table.materialId}: 完整原件 ${fact.byteLength} 字节超过本次 ${CANDIDATE_LIMITS.maxStructuredBytes} 字节解析预算；未用截断预览提交。`);
+      if (!['csv', 'json'].includes(table.format)) gaps.push(`tables[${index}] ${table.materialId}: 端点适配表源须声明载体族 csv|json，当前 ${table.format}。`);
+      if (table.sourceAdapter.configDigest.length !== 64) gaps.push(`tables[${index}] ${table.materialId}: 适配配置摘要无效。`);
+      return gaps;
+    }
+    const expected = table.format === 'financial-fixed' ? fact.format : table.format === 'csv' ? 'csv' : table.format === 'xlsx' ? 'excel' : table.format === 'pdf' ? 'pdf'
+      : table.format === 'xbrl' || table.format === 'text' ? 'text' : 'json-table';
+    const gaps: string[] = [];
+    const byteBudget = table.format === 'xlsx' ? MAX_SOURCE : table.selection ? CANDIDATE_LIMITS.maxObjectBytes : CANDIDATE_LIMITS.maxStructuredBytes;
+    if (fact.byteLength > byteBudget) {
+      gaps.push(`tables[${index}] ${table.materialId}: 完整原件 ${fact.byteLength} 字节超过本次 ${byteBudget} 字节解析预算；未用截断预览提交。`);
+    }
+    if ((table.format === 'xbrl' ? !/\.(?:xbrl|xml|xhtml)$/iu.test(fact.filename) : fact.format !== expected)
+      || table.format === 'xlsx' && (!table.xlsxSelection || !/\.xlsx$/iu.test(fact.filename))) {
       gaps.push(`tables[${index}] ${table.materialId}: 材料实际格式=${fact.format}，声明格式=${table.format}；缺对应解析器，预览只作线索。`);
     }
     return gaps;
   }
 
+  private outputMaterialFacts(fact: MaterialFacts, tables: CandidateTablePlan[]): MaterialFacts {
+    const selected = tables.find(table => table.materialId === fact.materialId && (table.selection || table.xlsxSelection || table.xbrlSelection || table.necessaryTextSelection || table.pdfSelection || table.financialCalculation || table.sourceAdapter)
+      && this.tableCapabilityGaps(fact, table, 0).length === 0);
+    return selected ? { ...fact, support: 'supported', ...(selected.format === 'xlsx'
+      ? { adapter: { id: 'xlsx-explicit-selection', version: '1' } }
+      : selected.sourceAdapter ? { adapter: { id: selected.sourceAdapter.adapterId, version: selected.sourceAdapter.version } } : {}) } : fact;
+  }
+
   private buildSteps(outputId: string, materialIds: string[], tables: CandidateTablePlan[], dimensions: NormalizedDimension[],
-    semanticGaps: string[], intendedAction: 'inspect' | 'publish', facts: MaterialFacts[]): StepSpec[] {
+    semanticGaps: string[], intendedAction: 'inspect' | 'publish', facts: MaterialFacts[], target: ProcessingTargetInput | null): StepSpec[] {
     const steps: StepSpec[] = [], lastBySource: string[] = [];
     tables.forEach((table, index) => {
       const factsById = new Map(facts.map(fact => [fact.materialId, fact]));
       const fact = factsById.get(table.materialId)!;
       const parseGaps = this.tableCapabilityGaps(fact, table, index);
       const parseId = `parse:${outputId}:${index}`;
+      const dedicatedAdapter = ({ xlsx: 'xlsx-explicit-selection', xbrl: 'bd-xbrl-numeric', text: 'bd-necessary-business-paragraph',
+        pdf: 'bd-financial-pdf-regions', 'financial-fixed': 'bd-financial-fixed' } as Partial<Record<CandidateTablePlan['format'], string>>)[table.format]
+        ?? (table.sourceAdapter ? `endpoint:${table.sourceAdapter.adapterId}` : table.selection ? 'utf8-csv-exact-selection' : undefined);
+      const adapterVersion = table.sourceAdapter ? `${table.sourceAdapter.version}:${table.sourceAdapter.configDigest.slice(0, 12)}`
+        : dedicatedAdapter ? '1' : fact.adapter?.version ?? '0';
       const parse: StepSpec = { stepId: parseId, outputId, kind: 'parse', required: true,
         applicability: parseGaps.length ? 'unknown' : 'applicable', dependsOn: [],
-        implementation: `${CANDIDATE_STAGE_VERSIONS.parse}:${fact.adapter?.id ?? 'unavailable'}:${fact.adapter?.version ?? '0'}`,
+        implementation: `${CANDIDATE_STAGE_VERSIONS.parse}:${dedicatedAdapter ?? fact.adapter?.id ?? 'unavailable'}:${adapterVersion}`,
         parameters: { materialId: table.materialId, format: table.format, fieldMapping: table.fieldMapping ?? {},
-          types: table.types ?? {}, trim: table.trim ?? [], emptyToNull: table.emptyToNull ?? [], annotations: table.annotations ?? {} },
-        completion: { kind: 'parsed_table', source_sha256: fact.sha256, row_count_gt: 0, unique_nonempty_fields: true, original_cells_preserved: true },
-        input: { kind: 'material', materialId: table.materialId, sha256: fact.sha256, media_type: fact.mediaType }, gaps: parseGaps, specDigest: '' };
+          types: table.types ?? {}, trim: table.trim ?? [], emptyToNull: table.emptyToNull ?? [], annotations: table.annotations ?? {},
+          ...(table.sourceAdapter ? { sourceAdapter: table.sourceAdapter } : {}),
+          ...(table.selection ? { selection: table.selection } : {}), ...(table.xlsxSelection ? { xlsxSelection: table.xlsxSelection } : {}),
+          ...(table.numericFormats ? { numericFormats: table.numericFormats } : {}),
+          ...(table.xbrlSelection ? { xbrlSelection: table.xbrlSelection } : {}),
+          ...(table.necessaryTextSelection ? { necessaryTextSelection: table.necessaryTextSelection } : {}),
+          ...(table.pdfSelection ? { pdfSelection: table.pdfSelection } : {}),
+          ...(table.financialCalculation ? { financialCalculation: table.financialCalculation, financialReaderBinding: table.financialReaderBinding } : {}),
+          ...(table.sourceProjection ? { sourceProjection: table.sourceProjection } : {}) },
+        completion: { kind: 'parsed_table', source_sha256: fact.sha256, row_count_gt: 0, unique_nonempty_fields: true, original_cells_preserved: true,
+          ...(table.sourceAdapter ? { adapter_id: table.sourceAdapter.adapterId, adapter_version: table.sourceAdapter.version,
+            adapter_config_digest: table.sourceAdapter.configDigest } : {}) },
+        input: { kind: 'material', materialId: table.materialId, sha256: fact.sha256, media_type: fact.mediaType },
+        gaps: [...parseGaps, ...(table.sourceAdapter && 'match' in table.sourceAdapter && table.sourceAdapter.match?.kind === 'synthetic'
+          ? table.sourceAdapter.match.gaps : [])], specDigest: '' };
       parse.specDigest = stepDigest(parse);
       steps.push(parse);
       const cleanId = `clean:${outputId}:${index}`;
@@ -706,6 +962,11 @@ export class ProcessingPlanService {
     if (tables.length) {
       const checkId = `check:${outputId}`;
       const deps = lastBySource.map(stepId => steps.find(step => step.stepId === stepId)!);
+      const semantic = isR1TabularDeclaration(target?.declaration)
+        ? { ...compileR1TabularDeclaration(target!.declaration), declaration: target!.declaration!,
+          sourceDimensions: dimensions.filter(dimension => dimension.key === 'role' || dimension.key === 'informationNature')
+            .map(({ key, status, value }) => ({ key, status, value })) } : null;
+      const sourceGaps = semantic ? this.tabularSourceGaps(semantic.declaration, semantic.sourceDimensions) : [];
       const publishGap = intendedAction === 'publish' && semanticGaps.length ? ['发布资格未确认：必要语义仍未知，不能由结构检查通过替代。']
         : intendedAction === 'publish' ? ['发布用途仍须真实目标、必要语义与真实权限；候选交接由用户明确授权，本计划只做结构准备。'] : [];
       const check: StepSpec = { stepId: checkId, outputId, kind: 'check', required: true,
@@ -713,11 +974,13 @@ export class ProcessingPlanService {
         implementation: CANDIDATE_STAGE_VERSIONS.check,
         parameters: { sourceCount: tables.length, rowBudget: PROCESSING_LIMITS.maxRows, outputByteBudget: PROCESSING_LIMITS.maxObjectBytes,
           checkScope: ['strict_utf8_decoding', 'table_shape', 'unique_nonempty_fields', 'explicit_field_mapping', 'explicit_scalar_types',
-            'finite_scalars', 'decimal_precision_roundtrip', 'row_budget', 'output_digest'] },
+            'finite_scalars', 'decimal_precision_roundtrip', 'type_changes_recorded', 'row_budget', 'output_digest'],
+          ...(semantic ? { semantic } : {}) },
         completion: { kind: 'structural_table', row_count_lte: PROCESSING_LIMITS.maxRows, output_sha256: true,
-          check_scope: 'structural_only', business_rules_executed: false, semantic_check: false, source_authenticity_verified: false },
+          check_scope: 'structural_only', business_rules_executed: false, semantic_check: false, source_authenticity_verified: false,
+          ...(semantic ? { required_semantic: { ruleVersion: semantic.ruleVersion, ruleDigest: semantic.ruleDigest, quality: 'pass' } } : {}) },
         input: { kind: 'steps', steps: deps.map(step => ({ stepId: step.stepId, specDigest: step.specDigest })) },
-        gaps: [...semanticGaps, ...publishGap,
+        gaps: [...semanticGaps, ...publishGap, ...(semantic?.gaps ?? []), ...sourceGaps,
           '结构检查只证明编码、形状、类型、行预算与摘要；不证明来源真实性、业务语义、单位、时间身份或发布资格。'],
         specDigest: '' };
       check.specDigest = stepDigest(check, ...deps); steps.push(check);
@@ -742,6 +1005,7 @@ export class ProcessingPlanService {
       });
       if (!closed) {
         step.state = 'pending'; step.output = null; step.outputDigest = null; step.checkScope = []; step.reusedFrom = null;
+        step.semantic = null;
         step.startedAt = null; step.completedAt = null;
         step.gaps = [...step.gaps, '前置阶段未复用或旧产物不可核；未借用旧步骤证明。'];
       }
@@ -756,7 +1020,7 @@ export class ProcessingPlanService {
       materials: input.materials.map(material => ({ ...material.facts, dimensions: material.dimensions,
         suggestions: material.suggestions, routingState: material.routingState, gaps: material.gaps, intendedAction: material.intendedAction })),
       outputs: input.outputs.map(output => ({ outputId: output.outputId, materialIds: output.materialIds, tables: output.tables,
-        target: output.target, intendedAction: output.intendedAction, dimensions: output.dimensions, suggestions: output.suggestions, rejectReason: output.rejectReason,
+        target: output.target, intendedAction: output.intendedAction, usage: output.usage, dimensions: output.dimensions, suggestions: output.suggestions, rejectReason: output.rejectReason,
         coverage: output.coverage, adapterGaps: output.adapterGaps, routingState: output.routingState, gaps: output.gaps,
         steps: output.steps.map(step => step.stepId) })),
       steps: input.steps.map(spec => ({ ...spec, reuseFrom: steps.find(step => step.spec.stepId === spec.stepId)?.reusedFrom ?? null })) };
@@ -772,14 +1036,16 @@ export class ProcessingPlanService {
           && ref.sha256 === prior.output_digest) {
           return { spec, state: 'succeeded' as ProcessingStepState, output: ref,
             outputDigest: prior.output_digest, checkScope: parseJson(prior.check_scope_json) as string[], gaps: parseJson(prior.gaps_json) as string[],
-            reusedFrom: { planId: prior.plan_id, stepId: prior.step_id }, startedAt: prior.started_at, completedAt: prior.completed_at, error: null };
+            reusedFrom: { planId: prior.plan_id, stepId: prior.step_id }, startedAt: prior.started_at, completedAt: prior.completed_at, error: null,
+            semantic: prior.semantic_json ? parseJson<ProcessingSemanticEvidence>(prior.semantic_json) : null,
+            normalization: prior.normalization_json ? parseJson<WfdRecord>(prior.normalization_json) : null };
         }
       } catch { /* 旧对象缺失/损坏：退回执行，不复制旧通过。 */ }
     }
     const blocked = spec.applicability === 'unknown';
     return { spec, state: blocked ? 'blocked' as ProcessingStepState : 'pending' as ProcessingStepState, output: null, outputDigest: null,
       checkScope: [], gaps: [...spec.gaps, ...(blocked ? [] : (prior ? ['旧步骤对象损坏、实现变化或身份不符；未复用旧通过。'] : []))],
-      reusedFrom: null, startedAt: null, completedAt: null, error: null };
+      reusedFrom: null, startedAt: null, completedAt: null, error: null, semantic: null, normalization: null };
   }
 
   private initialOutput(output: NormalizedOutput, steps: ReturnType<ProcessingPlanService['initialStep']>[], materialFacts: NormalizedMaterialRouting) {
@@ -790,10 +1056,14 @@ export class ProcessingPlanService {
       : structured ? 'structured' : 'pending';
     const processingGaps = own.flatMap(step => step.spec.kind === 'check' && step.state === 'succeeded' ? step.gaps
       : step.state === 'failed' ? [`${step.spec.stepId}: 失败`] : step.state === 'blocked' ? step.gaps : []);
-    const routing = deriveOutputRouting({ material: materialFacts.facts,
+    const semantic = this.outputSemantic(output.target, check?.semantic ?? null, output.dimensions);
+    const usageDeclaration = output.usage ?? { purpose: output.intendedAction === 'publish' ? 'current_publish' as const : 'current_compute' as const,
+      historyMode: null, cutoff: null, perspective: null, purposeEvidence: [] };
+    const usage = this.usageQualification(usageDeclaration, structured?.sha256 ?? materialFacts.facts.sha256);
+    const routing = deriveOutputRouting({ material: this.outputMaterialFacts(materialFacts.facts, output.tables),
       dimensions: output.dimensions, target: output.target ? { present: true, kind: output.target.productRef ? 'productRef' : output.target.declaration ? 'declaration' : 'none',
         expectedSnapshotId: output.target.expectedSnapshotId ?? null } : undefined, rejected: !!output.rejectReason, outputId: output.outputId,
-      outputState: state, intendedAction: output.intendedAction, processingGaps, adapterGaps: output.adapterGaps });
+      outputState: state, intendedAction: output.intendedAction, usage, processingGaps, adapterGaps: output.adapterGaps, semantic });
     return { outputId: output.outputId, state, structured, structuredDigest: structured?.sha256 ?? null,
       routingState: routing.routingState, gaps: routing.gaps, updatedAt: Date.now() };
   }
@@ -806,13 +1076,18 @@ export class ProcessingPlanService {
       canonicalWfdJson(document.document.materials.map(material => ({ materialId: material.materialId, sha256: material.sha256 }))),
       document.planJson, this.planStatus(document.outputs), document.createdAt, now);
     for (const [index, step] of document.steps.entries()) {
-      this.db.prepare(`INSERT INTO processing_plan_steps VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      this.db.prepare(`INSERT INTO processing_plan_steps (
+        plan_id,step_id,ordinal,output_id,kind,required,applicability,depends_json,implementation,parameters_json,completion_json,
+        spec_digest,state,input_json,output_json,output_digest,check_scope_json,gaps_json,error_json,reused_from_plan_id,
+        reused_from_step_id,started_at,completed_at,attempt_task_id,semantic_json,normalization_json
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         document.document.planId, step.spec.stepId, index, step.spec.outputId, step.spec.kind, Number(step.spec.required),
         step.spec.applicability, canonicalWfdJson(step.spec.dependsOn), step.spec.implementation, canonicalWfdJson(step.spec.parameters),
         canonicalWfdJson(step.spec.completion), step.spec.specDigest, step.state, canonicalWfdJson(step.spec.input),
         step.output ? canonicalWfdJson(step.output) : null, step.outputDigest, canonicalWfdJson(step.checkScope), canonicalWfdJson(step.gaps),
         step.error ? canonicalWfdJson(step.error) : null, step.reusedFrom?.planId ?? null, step.reusedFrom?.stepId ?? null,
-        step.startedAt, step.completedAt, null);
+        step.startedAt, step.completedAt, null, step.semantic ? canonicalWfdJson(step.semantic) : null,
+        step.normalization ? canonicalWfdJson(step.normalization) : null);
     }
     for (const output of document.outputs) {
       this.db.prepare('INSERT INTO processing_plan_outputs VALUES(?,?,?,?,?,?,?,?,?)').run(document.document.planId, output.outputId,
@@ -850,7 +1125,8 @@ export class ProcessingPlanService {
     const started = Date.now(), dependencies = step.dependsOn.map(id => plan.steps.find(item => item.stepId === id)!);
     for (const dependency of dependencies) if (dependency.state !== 'succeeded') fail('PROCESSING_DEPENDENCY', `前置步骤 ${dependency.stepId} 尚未完成；未越过依赖执行。`);
     this.assertActive(context);
-    let computed: { bytes: Buffer; digest: string; checkScope: string[]; gaps: string[]; passthrough?: boolean };
+    let computed: { bytes: Buffer; digest: string; checkScope: string[]; gaps: string[]; passthrough?: boolean; normalization?: WfdRecord };
+    let semantic: ProcessingSemanticEvidence | null = null;
     if (step.applicability === 'not_applicable') {
       if (!dependencies.length || !dependencies[0]!.output) fail('PROCESSING_DEPENDENCY', '不适用步骤缺少可传递的上游产物。');
       if (step.kind === 'annotate') {
@@ -866,10 +1142,33 @@ export class ProcessingPlanService {
       if (!material) fail('PROCESSING_MATERIAL_NOT_FOUND', '解析步骤没有对应材料事实。');
       const original = this.options.materials.readOriginal(params.materialId);
       if (original.sha256 !== material.sha256) fail('PROCESSING_MATERIAL_CHANGED', '解析前材料摘要与计划冻结值不符。');
-      const parsed = parseTableSource(original.bytes, params);
+      if (params.financialCalculation && (!this.options.financialReader || !this.options.financialReaderIdentity
+        || wfdSha256(canonicalWfdJson(this.options.financialReaderIdentity())) !== params.financialReaderBinding)) fail('FINANCIAL_FIXED', '固定计划的财务读取连接身份已变化；未改绑或读取其他实例。');
+      const projection = params.format === 'pdf' ? await projectFinancialPdf(original.bytes, params.pdfSelection!, context.signal)
+        : params.format === 'financial-fixed' ? await projectFinancialFixed(params.financialCalculation!, this.options.financialReader!, context.signal, review => {
+          const material = this.options.materials.readOriginal(review.materialId);
+          const text = decodeText(material.bytes);
+          if (material.sha256 !== review.originalSha256 || !text?.includes(review.quote)) fail('FINANCIAL_FIXED', '跨修订相容性原文或受管材料摘要不符。');
+          const normalized = review.quote.replace(/\s+/gu, '');
+          if (!/(?:更正|调整)/u.test(normalized) || !/(?:不会对|不影响)/u.test(normalized) || !/净利润/u.test(normalized)) fail('FINANCIAL_FIXED', '更正原文没有明确说明净利润不受影响；本版不推断其他科目相容。');
+        }) : null;
+      const projected = projection ? parseTableSource(projection.jsonBytes, { ...params, format: 'json', pdfSelection: undefined, financialCalculation: undefined }) : null;
+      let parsed: ParsedCandidateTable;
+      try {
+        parsed = projected && projection ? { ...projected, format: params.format, source_sha256: original.sha256,
+          adapter: { id: params.format === 'pdf' ? 'bd-financial-pdf-regions' : 'bd-financial-fixed', version: '1' }, financial_evidence: projection.evidence } : parseTableSource(original.bytes, params);
+      } catch (error) {
+        // 适配漂移按实际失败原因隔离；不换配置、不回退到通用解析、不重试其他版本。
+        if (params.sourceAdapter && error instanceof TaskError) this.options.adapters?.recordDrift({ adapterId: params.sourceAdapter.adapterId,
+          version: params.sourceAdapter.version, configDigest: params.sourceAdapter.configDigest, materialId: params.materialId,
+          code: error.code, message: error.message, detail: { planId, stepId, sourceSha256: original.sha256, format: params.format } });
+        throw error;
+      }
       const bytes = Buffer.from(canonicalWfdJson(parsed));
+      const adapterGaps = isWfdRecord(parsed.adapter_evidence) && Array.isArray(parsed.adapter_evidence.gaps)
+        ? (parsed.adapter_evidence.gaps as unknown[]).filter((gap): gap is string => typeof gap === 'string') : [];
       computed = { bytes, digest: wfdSha256(bytes), checkScope: ['strict_utf8_decoding', 'table_shape', 'original_cells_preserved'],
-        gaps: ['未验证来源真实性、业务语义、单位或时间身份。'] };
+        gaps: ['未验证来源真实性、业务语义、单位或时间身份。', ...adapterGaps] };
     } else if (step.kind === 'clean') {
       const parsed = this.readArtifact<ParsedCandidateTable>(dependencies[0]!.output!, 'parsed-table');
       const params = step.parameters as { trim?: string[]; emptyToNull?: string[] };
@@ -877,11 +1176,30 @@ export class ProcessingPlanService {
       computed = { bytes, digest: wfdSha256(bytes), checkScope: ['all_rows', 'changes_recorded', 'original_cells_preserved'],
         gaps: ['未验证清洗规则是否符合业务含义；只执行了显式空白与空值规则。'] };
     } else if (step.kind === 'structure') {
-      const cleaned = this.readArtifact<CleanedCandidateTable>(dependencies[0]!.output!, 'cleaned-table', 'parsed-table');
+      const cleaned = this.readArtifact<CleanedCandidateTable | ParsedCandidateTable>(dependencies[0]!.output!, 'cleaned-table', 'parsed-table');
       const params = step.parameters as { types?: CandidateTablePlan['types'] };
-      const structured = structureCandidateTable(cleaned, params.types ?? {}), bytes = Buffer.from(canonicalWfdJson(structured));
+      // 未显式声明类型时沿用上游产物类型：适配配置声明的 decimal/integer 必须在此实际生效。
+      const structured = structureCandidateTable(cleaned, params.types && Object.keys(params.types).length ? params.types : undefined),
+        bytes = Buffer.from(canonicalWfdJson(structured));
+      const typeChanges: StructuredCandidateTable['type_changes'] = [];
+      const normalizationBase = { state: 'recorded', scope: 'structure_type_changes',
+        clean_changes_total: structured.changes_total, type_changes_total: structured.type_changes_total,
+        decimal_lexeme_changes_total: structured.decimal_lexeme_changes_total,
+        type_change_window_limit: 4, summary_byte_limit: NORMALIZATION_SUMMARY_MAX_BYTES,
+        artifact_change_window_limit: structured.type_change_window_limit,
+        artifact_changes_truncated: structured.type_changes_truncated };
+      for (const change of structured.type_changes.slice(0, 4)) {
+        const candidate = { ...normalizationBase, type_changes: [...typeChanges, change],
+          type_changes_sample_count: typeChanges.length + 1,
+          type_changes_truncated: structured.type_changes_total > typeChanges.length + 1 };
+        if (Buffer.byteLength(canonicalWfdJson(candidate), 'utf8') > NORMALIZATION_SUMMARY_MAX_BYTES) break;
+        typeChanges.push(change);
+      }
       computed = { bytes, digest: wfdSha256(bytes), checkScope: ['finite_scalars', 'precision_checked', 'original_cells_preserved'],
-        gaps: ['未验证类型是否符合外部业务定义；只执行显式类型。'] };
+        gaps: ['未验证类型是否符合外部业务定义；只执行显式类型。'],
+        normalization: { ...normalizationBase, type_changes: typeChanges,
+          type_changes_sample_count: typeChanges.length,
+          type_changes_truncated: structured.type_changes_total > typeChanges.length } };
     } else if (step.kind === 'annotate') {
       const structured = this.readArtifact<StructuredCandidateTable>(dependencies[0]!.output!, 'structured-table');
       const params = step.parameters as { annotations?: Record<string, string | number | boolean | null> };
@@ -892,20 +1210,24 @@ export class ProcessingPlanService {
       const tables = dependencies.map(dependency => this.readArtifact<AnnotatedCandidateTable>(dependency.output!, 'annotated-table', 'structured-table'));
       const checked = checkCandidateTables(tables);
       computed = { bytes: checked.bytes, digest: checked.evidence.structured_sha256, checkScope: checked.evidence.check_scope, gaps: checked.evidence.gaps };
+      semantic = this.checkSemantic(checked.rows, step.parameters);
+      const selections = checked.evidence.sources.flatMap(source => source.selection ? [source.selection] : []);
+      if (semantic && selections.length) semantic.coverage.sourceSelections = selections;
     } else fail('PROCESSING_STEP_KIND', '未知处理步骤。');
     this.assertActive(context);
     if (computed.bytes.byteLength > PROCESSING_LIMITS.maxObjectBytes) fail('PROCESSING_OBJECT_BUDGET', '步骤产物超过对象字节预算。');
     const consume = computed.passthrough ? { toolMs: Math.max(1, Date.now() - started) }
       : { storageBytes: computed.bytes.byteLength, toolMs: Math.max(1, Date.now() - started) };
     context.consumeBudget(consume);
-    const gaps = [...new Set([...(step.gaps ?? []), ...computed.gaps])];
+    const gaps = [...new Set([...(step.gaps ?? []), ...computed.gaps, ...(semantic?.gaps ?? [])])];
     this.options.database.transaction(() => {
       this.assertActive(context);
       const output = computed.passthrough ? dependencies[0]!.output : this.options.objects.put(computed.bytes, 'application/json');
       if (!output) fail('PROCESSING_OBJECT', '步骤产物没有受管对象引用。');
       this.db.prepare(`UPDATE processing_plan_steps SET state='succeeded',output_json=?,output_digest=?,check_scope_json=?,gaps_json=?,
-        error_json=NULL,completed_at=?,attempt_task_id=? WHERE plan_id=? AND step_id=?`).run(canonicalWfdJson(output), computed.digest,
-        canonicalWfdJson(computed.checkScope), canonicalWfdJson(gaps), Date.now(), context.task.id, planId, stepId);
+        error_json=NULL,completed_at=?,attempt_task_id=?,semantic_json=?,normalization_json=? WHERE plan_id=? AND step_id=?`).run(canonicalWfdJson(output), computed.digest,
+        canonicalWfdJson(computed.checkScope), canonicalWfdJson(gaps), Date.now(), context.task.id,
+        semantic ? canonicalWfdJson(semantic) : null, computed.normalization ? canonicalWfdJson(computed.normalization) : null, planId, stepId);
       this.refreshPlan(planId);
     });
     // 阶段产物已持久；真实等待检查点写入并让出事件循环，再重新核对停止、generation 和预算。
@@ -913,6 +1235,77 @@ export class ProcessingPlanService {
     await new Promise<void>(resolve => setImmediate(resolve));
     context.consumeBudget({ toolMs: 1 });
     this.assertActive(context);
+  }
+
+  /** 结构产物与金融证明分别落盘；坏行情不销毁已完成的结构检查。 */
+  private checkSemantic(rows: WfdRecord[], parameters: WfdRecord): ProcessingSemanticEvidence | null {
+    if (parameters.semantic === undefined) return null;
+    const frozen = readRecord(parameters.semantic, ['applicable', 'ruleVersion', 'ruleDigest', 'checkScope', 'gaps', 'declaration', 'sourceDimensions'], 'PROCESSING_SEMANTIC_BINDING');
+    const compiled = compileR1TabularDeclaration(frozen.declaration);
+    const sourceGaps = this.tabularSourceGaps(frozen.declaration,
+      Array.isArray(frozen.sourceDimensions) ? frozen.sourceDimensions as Pick<NormalizedDimension, 'key' | 'status' | 'value'>[] : []);
+    const incomplete = { scope: 'processed_output_rows' as const, inputRows: rows.length, checkedRows: null, complete: false };
+    if (!compiled.applicable || frozen.ruleVersion !== compiled.ruleVersion || frozen.ruleDigest !== compiled.ruleDigest) {
+      return { quality: 'indeterminate', ruleVersion: String(frozen.ruleVersion), ruleDigest: String(frozen.ruleDigest),
+        checkScope: [], gaps: ['原计划冻结的金融规则或目标摘要已变化；须形成关联新计划，未沿旧证明发布。'], coverage: incomplete };
+    }
+    try {
+      const checked = checkR1TabularRows(rows, frozen.declaration);
+      const quality = checked.quality === 'pass' && sourceGaps.length === 0 ? 'pass' : 'indeterminate';
+      return { quality, ruleVersion: checked.ruleVersion, ruleDigest: checked.ruleDigest,
+        checkScope: [...checked.checkScope, 'operator_source_declaration_binding', 'source_acquisition_time_order',
+          'operator_declared_usage_and_handoff_authorization',
+          ...(isWfdRecord(frozen.declaration) && isWfdRecord(frozen.declaration.mapping) && frozen.declaration.mapping.bar
+            ? ['financial_record_role_adoption', 'direct_observation_nature_adoption']
+            : ['declared_material_role_adoption', 'content_nature_adoption'])],
+        gaps: [...checked.gaps, ...sourceGaps],
+        coverage: quality === 'pass' ? { scope: 'processed_output_rows', inputRows: rows.length, checkedRows: rows.length, complete: true } : incomplete };
+    } catch (error) {
+      if (!(error instanceof TaskError)) throw error;
+      return { quality: 'fail', ruleVersion: compiled.ruleVersion, ruleDigest: compiled.ruleDigest, checkScope: [],
+        gaps: [`${error.code}: ${error.message}`], coverage: incomplete, error: { code: error.code, message: error.message } };
+    }
+  }
+
+  private outputSemantic(target: ProcessingTargetInput | null, evidence: ProcessingSemanticEvidence | null,
+    dimensions: Pick<NormalizedDimension, 'key' | 'status' | 'value'>[]): ProcessingSemanticEvidence | null {
+    if (!isR1TabularDeclaration(target?.declaration)) return null;
+    const binding = compileR1TabularDeclaration(target!.declaration);
+    const sourceGaps = this.tabularSourceGaps(target!.declaration, dimensions);
+    if (!evidence) return { quality: 'pending', ruleVersion: binding.ruleVersion, ruleDigest: binding.ruleDigest,
+      checkScope: [], gaps: [...binding.gaps, ...sourceGaps, '本输出金融规则尚未执行；六维已知与结构完成不代替证明。'],
+      coverage: { scope: 'processed_output_rows', inputRows: null, checkedRows: null, complete: false } };
+    if (evidence.ruleVersion !== binding.ruleVersion || evidence.ruleDigest !== binding.ruleDigest) {
+      return { ...evidence, quality: 'indeterminate', checkScope: [],
+        gaps: [...binding.gaps, ...sourceGaps, '当前金融规则、映射或目标与原证明绑定不一致；保留历史证明，禁止当前发布。'],
+        coverage: { ...evidence.coverage, complete: false } };
+    }
+    if (evidence.quality === 'pass' && sourceGaps.length) return { ...evidence, quality: 'indeterminate',
+      gaps: [...evidence.gaps, ...sourceGaps], coverage: { ...evidence.coverage, complete: false } };
+    return evidence;
+  }
+
+  /** 仅核受信操作者的采用声明与来源时间；不签发独立来源真实性或法律许可结论。 */
+  private tabularSourceGaps(declaration: unknown, dimensions: Pick<NormalizedDimension, 'key' | 'status' | 'value'>[]): string[] {
+    const source = isWfdRecord(declaration) && isWfdRecord(declaration.source) ? declaration.source : {};
+    const gaps = r1SourceGaps(source);
+    const requested = parseR1Utc(source.requested_at_utc), acquired = parseR1Utc(source.acquired_at_utc);
+    if (!Number.isFinite(requested) || !Number.isFinite(acquired) || acquired < requested) gaps.push('来源请求/取得时刻须为有效明确 UTC 且取得不早于请求；不以业务日期补造。');
+    const role = dimensions.find(item => item.key === 'role'), nature = dimensions.find(item => item.key === 'informationNature');
+    const mapping = isWfdRecord(declaration) && isWfdRecord(declaration.mapping) ? declaration.mapping : {};
+    const context = isWfdRecord(declaration) && isWfdRecord(declaration.target)
+      && isWfdRecord(declaration.target.definition) && isWfdRecord(declaration.target.definition.semantic_context)
+      ? declaration.target.definition.semantic_context : {};
+    if (mapping.bar) {
+      if (role?.status !== 'known' || !['financial-record', 'financial_record', '金融记录'].includes(role.value ?? '')) gaps.push('行情材料角色须明确采用为金融记录；代码、训练材料或未识别自由文本不能进入行情。');
+      if (nature?.status !== 'known' || !['direct-observation', 'observed_fact', '直接观察'].includes(nature.value ?? '')) gaps.push('行情信息性质须明确采用为直接观察；来源主张、预测或未识别自由文本不能洗成实测行情。');
+    } else {
+      if (role?.status !== 'known' || !role.value?.trim()) gaps.push('通用表格材料角色须由操作者明确采用。');
+      const natureValues = context.content_nature === 'observed_fact'
+        ? ['direct-observation', 'observed_fact', '直接观察'] : [context.content_nature];
+      if (nature?.status !== 'known' || !natureValues.includes(nature.value)) gaps.push('通用表格信息性质须与目标 content_nature 明确一致；来源主张、预测不能洗成已观测事实。');
+    }
+    return gaps;
   }
 
   private markStepFailed(planId: string, stepId: string, taskId: string, error: unknown): void {
@@ -946,11 +1339,15 @@ export class ProcessingPlanService {
         : step.kind === 'check' && step.state === 'succeeded' ? (parseJson(step.gaps_json) as string[])
         : step.state === 'blocked' || step.applicability === 'unknown' ? (parseJson(step.gaps_json) as string[]) : []);
       const material = document.materials.find(item => item.materialId === output.materialIds[0])!;
-      const routing = deriveOutputRouting({ material, dimensions: output.dimensions, target: output.target
+      const semantic = this.outputSemantic(output.target, check?.semantic_json ? parseJson<ProcessingSemanticEvidence>(check.semantic_json) : null, output.dimensions);
+      const usage = output.usage ?? { purpose: output.intendedAction === 'publish' ? 'current_publish' as const : 'current_compute' as const,
+        historyMode: null, cutoff: null, perspective: null, purposeEvidence: [] };
+      const usageQualification = this.usageQualification(usage, structured?.sha256 ?? material.sha256);
+      const routing = deriveOutputRouting({ material: this.outputMaterialFacts(material, output.tables), dimensions: output.dimensions, target: output.target
         ? { present: true, kind: output.target.productRef ? 'productRef' : output.target.declaration ? 'declaration' : 'none',
           expectedSnapshotId: output.target.expectedSnapshotId ?? null } : undefined,
         rejected: !!output.rejectReason, outputId: output.outputId, outputState: state, intendedAction: output.intendedAction,
-        processingGaps, adapterGaps: output.adapterGaps });
+        usage: usageQualification, processingGaps, adapterGaps: output.adapterGaps, semantic });
       this.db.prepare('UPDATE processing_plan_outputs SET state=?,structured_json=?,structured_digest=?,routing_state=?,gaps_json=?,updated_at=? WHERE plan_id=? AND output_id=?')
         .run(state, structured ? canonicalWfdJson(structured) : null, structured?.sha256 ?? null, routing.routingState,
           canonicalWfdJson(routing.gaps), now, planId, output.outputId);
@@ -975,7 +1372,16 @@ export class ProcessingPlanService {
 
   private verifyPlan(planId: string) {
     const verified: { stepId: string; outputDigest: string; state: string }[] = [], corrupt: string[] = [];
-    for (const step of this.stepRows(planId)) {
+    const planRow = this.planRow(planId);
+    if (!planRow) return { planId, verified, corrupt: ['处理计划本身缺失，核对范围不成立'] };
+    // 计划规格里的每一步都必须有持久步骤行；缺行不是「没有问题」，而是核对范围不成立。
+    const steps = this.stepRows(planId), present = new Set(steps.map(step => step.step_id));
+    for (const specification of this.document(planRow).steps ?? []) {
+      if (specification.stepId && !present.has(specification.stepId)) {
+        corrupt.push(`${specification.stepId}: 步骤记录缺失，核对范围不成立`);
+      }
+    }
+    for (const step of steps) {
       if (step.state !== 'succeeded' || !step.output_json) continue;
       const ref = this.ref(step.output_json);
       if (!this.options.objects.verify(ref)) { corrupt.push(`${step.step_id}: 对象缺失或长度不符`); continue; }
@@ -997,7 +1403,12 @@ export class ProcessingPlanService {
     const integrity = [...steps.filter(step => step.output_json).map(step => {
       const ref = this.ref(step.output_json as string); return { stepId: step.step_id, present: this.options.objects.verify(ref) };
     })];
-    return { planId, requestId: requestRow?.client_request_id ?? row.request_key, parentPlanId: row.parent_plan_id, status: row.status, planDigest: row.plan_digest,
+    // 规格里有、持久行里没有的步骤与输出：缺失不是「没有问题」，视图必须显式报出。
+    const missingSteps = (document.steps ?? []).map(specification => specification.stepId)
+      .filter(stepId => !steps.some(step => step.step_id === stepId));
+    const missingOutputs = document.outputs.map(output => output.outputId)
+      .filter(outputId => !outputs.some(item => item.output_id === outputId));
+    return { planId, version: document.version ?? null, requestId: requestRow?.client_request_id ?? row.request_key, parentPlanId: row.parent_plan_id, status: row.status, planDigest: row.plan_digest,
       scopeKey: row.scope_key, executionDigest: document.executionDigest, policy: document.policy, policyDigest: row.policy_digest,
       operator: document.operator, createdAt: row.created_at, updatedAt: row.updated_at, reuseFromPlanId: document.reuseFromPlanId,
       materials: document.materials.map(material => ({ materialId: material.materialId, filename: material.filename, sha256: material.sha256,
@@ -1005,18 +1416,33 @@ export class ProcessingPlanService {
         adapter: material.adapter, custodyState: material.custodyState, routingState: material.routingState, gaps: material.gaps,
         dimensions: material.dimensions, suggestions: material.suggestions })),
       outputs: document.outputs.map(output => {
-        const state = outputs.find(item => item.output_id === output.outputId)!;
+        const state = outputs.find(item => item.output_id === output.outputId);
+        if (!state) {
+          // 输出行已缺失：不能凭空读字段，也不能据此给出发布资格。
+          return { outputId: output.outputId, materialIds: output.materialIds, target: output.target, intendedAction: output.intendedAction,
+            usage: output.usage ?? null, rejectReason: null, routingState: 'needs_review' as const, state: 'missing', structured: null,
+            gaps: ['输出记录缺失：计划规格存在但持久输出行不在，禁止据此发布。'], dimensions: [], semanticGaps: [], semantic: null,
+            publishEligible: false,
+            ...(output.intendedAction === 'publish' ? { publishAuthorization: 'not_evaluated', publishScope: 'planning_only' } : {}),
+            evidenceScope: null, steps: [] };
+        }
         const dimensions = parseJson<NormalizedDimension[]>(state.dimensions_json);
         const semanticGaps = dimensions.filter(item => item.status !== 'known').map(item => `${item.key}: ${item.gap ?? '未知'}`);
+        const check = steps.find(step => step.output_id === output.outputId && step.kind === 'check');
+        const semantic = this.outputSemantic(output.target, check?.semantic_json ? parseJson<ProcessingSemanticEvidence>(check.semantic_json) : null, dimensions);
+        const routingState = semantic && semantic.quality !== 'pass' && state.routing_state === 'ready_candidate' ? 'needs_review' : state.routing_state;
         return { outputId: output.outputId, materialIds: output.materialIds, target: output.target, intendedAction: output.intendedAction,
-          routingState: state.routing_state, state: state.state, structured: state.structured_json ? parseJson<ManagedObjectRef>(state.structured_json) : null,
-          gaps: parseJson<string[]>(state.gaps_json), dimensions, semanticGaps,
-          ...(output.intendedAction === 'publish' ? { publishEligible: state.state === 'structured' && state.routing_state === 'ready_candidate'
-            && semanticGaps.length === 0 && !!output.target, publishAuthorization: 'not_evaluated', publishScope: 'planning_only' } : {}),
+          usage: output.usage ?? null,
+          rejectReason: typeof output.rejectReason === 'string' ? output.rejectReason : null,
+          routingState, state: state.state, structured: state.structured_json ? parseJson<ManagedObjectRef>(state.structured_json) : null,
+          gaps: [...new Set([...parseJson<string[]>(state.gaps_json), ...(semantic?.gaps ?? [])])], dimensions, semanticGaps, semantic,
+          publishEligible: output.intendedAction === 'publish' && state.state === 'structured' && routingState === 'ready_candidate'
+            && semanticGaps.length === 0 && !!output.target && (!semantic || semantic.quality === 'pass'),
+          ...(output.intendedAction === 'publish' ? { publishAuthorization: 'not_evaluated', publishScope: 'planning_only' } : {}),
           evidenceScope: state.state === 'structured' ? 'structural_only' : null,
           steps: steps.filter(step => step.output_id === output.outputId).map(step => this.stepView(step)) };
       }),
-      steps: steps.map(step => this.stepView(step)), integrity };
+      steps: steps.map(step => this.stepView(step)), integrity, missingSteps, missingOutputs };
   }
   private stepView(step: StepRow) {
     return { stepId: step.step_id, outputId: step.output_id, kind: step.kind, required: !!step.required, applicability: step.applicability,
@@ -1024,6 +1450,10 @@ export class ProcessingPlanService {
       completion: parseJson<WfdRecord>(step.completion_json), input: parseJson<WfdRecord>(step.input_json), gaps: parseJson<string[]>(step.gaps_json),
       specDigest: step.spec_digest, output: step.output_json ? parseJson<ManagedObjectRef>(step.output_json) : null, outputDigest: step.output_digest,
       checkScope: parseJson<string[]>(step.check_scope_json), error: step.error_json ? parseJson<WfdRecord>(step.error_json) : null,
+      semantic: step.semantic_json ? parseJson<ProcessingSemanticEvidence>(step.semantic_json) : null,
+      normalization: step.kind === 'structure' ? step.normalization_json ? parseJson<WfdRecord>(step.normalization_json)
+        : { state: 'not_recorded', scope: 'structure_type_changes', clean_changes_total: null,
+          type_changes_total: null, decimal_lexeme_changes_total: null, type_changes_sample_count: null } : null,
       reusedFrom: step.reused_from_plan_id ? { planId: step.reused_from_plan_id, stepId: step.reused_from_step_id } : null,
       startedAt: step.started_at, completedAt: step.completed_at };
   }
@@ -1064,9 +1494,10 @@ export class ProcessingPlanService {
   private task(request: RequestRow): TaskRecord { if (!request.task_id) fail('PROCESSING_TASK_NOT_FOUND', '处理请求尚未绑定任务。'); return this.tasks.get(request.task_id); }
   private document(row: PlanRow) {
     if (wfdSha256(row.plan_json) !== row.plan_digest) fail('PROCESSING_PLAN_CHANGED', '处理计划摘要与持久记录不符。');
-    return parseJson(row.plan_json) as { planId: string; implementation?: string; policy: WfdRecord; operator: WfdRecord; executionDigest: string; reuseFromPlanId: string | null;
+    return parseJson(row.plan_json) as { planId: string; version?: string; implementation?: string; policy: WfdRecord; operator: WfdRecord; executionDigest: string; reuseFromPlanId: string | null;
       materials: (MaterialFacts & { dimensions: NormalizedDimension[]; suggestions: DimensionSuggestion[]; routingState: RoutingState; gaps: string[] })[];
-      outputs: (Omit<NormalizedOutput, 'steps'> & { steps: string[] })[] };
+      outputs: (Omit<NormalizedOutput, 'steps'> & { steps: string[] })[];
+      steps: { stepId: string }[] };
   }
   /** 只有政策、实际实现和逐对象字节都核过的旧步骤才进入复用索引。 */
   private reusablePriorSteps(planId: string): Map<string, StepRow> {
@@ -1085,6 +1516,7 @@ export class ProcessingPlanService {
     return map;
   }
   private priorStepMatches(prior: StepRow, spec: StepSpec): boolean {
+    if (spec.parameters.semantic && !prior.semantic_json) return false;
     let priorParameters: WfdRecord;
     try { priorParameters = digestParameters({ kind: spec.kind, parameters: parseJson<WfdRecord>(prior.parameters_json) }); }
     catch { return false; }
@@ -1161,7 +1593,16 @@ export class ProcessingPlanService {
 
 function digestParameters(spec: Pick<StepSpec, 'kind' | 'parameters'>): WfdRecord {
   return spec.kind === 'parse' ? { materialId: spec.parameters.materialId, format: spec.parameters.format,
-    fieldMapping: spec.parameters.fieldMapping } : spec.parameters;
+    fieldMapping: spec.parameters.fieldMapping, ...(spec.parameters.selection ? { selection: spec.parameters.selection } : {}),
+    ...(spec.parameters.sourceAdapter ? { sourceAdapter: spec.parameters.sourceAdapter } : {}),
+    ...(spec.parameters.xlsxSelection ? { xlsxSelection: spec.parameters.xlsxSelection } : {}),
+    ...(spec.parameters.sourceProjection ? { sourceProjection: spec.parameters.sourceProjection } : {}),
+    ...(spec.parameters.numericFormats ? { numericFormats: spec.parameters.numericFormats } : {}),
+    ...(spec.parameters.xbrlSelection ? { xbrlSelection: spec.parameters.xbrlSelection } : {}),
+    ...(spec.parameters.necessaryTextSelection ? { necessaryTextSelection: spec.parameters.necessaryTextSelection } : {}),
+    ...(spec.parameters.pdfSelection ? { pdfSelection: spec.parameters.pdfSelection } : {}),
+    ...(spec.parameters.financialCalculation ? { financialCalculation: spec.parameters.financialCalculation,
+      financialReaderBinding: spec.parameters.financialReaderBinding } : {}) } : spec.parameters;
 }
 function stepDigest(spec: Omit<StepSpec, 'specDigest'>, ...dependencies: StepSpec[]): string {
   const parameters = digestParameters(spec);
@@ -1234,16 +1675,58 @@ function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[]
   if (value === undefined) return [];
   const list = readArray(value, 1, PROCESSING_LIMITS.maxTablesPerOutput, 'PROCESSING_TABLES');
   return list.map(item => {
-    const record = readRecord(item, ['materialId', 'format', 'fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations'], 'PROCESSING_TABLE');
+    const record = readRecord(item, ['materialId', 'format', 'sourceAdapter', 'sourceContext', 'sourceReceiptTaskId', 'fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations', 'selection', 'xlsxSelection', 'sourceProjection', 'numericFormats', 'xbrlSelection', 'necessaryTextSelection', 'pdfSelection', 'financialCalculation'], 'PROCESSING_TABLE');
     const materialId = readId(record.materialId, 'PROCESSING_MATERIAL_ID');
     if (!materialIds.includes(materialId)) fail('PROCESSING_TABLES', '表源必须属于本输出的原件。');
-    if (record.format !== 'csv' && record.format !== 'json') fail('PROCESSING_TABLES', '当前只支持明确 csv 或 json 表源。');
+    if (!['csv', 'json', 'xlsx', 'xbrl', 'text', 'pdf', 'financial-fixed'].includes(String(record.format))) fail('PROCESSING_TABLES', '表源须明确为受支持格式及其专用选择规则。');
+    const sourceAdapter = record.sourceAdapter === undefined ? undefined : readAdapterBindingRef(record.sourceAdapter);
+    if ((record.sourceContext !== undefined || record.sourceReceiptTaskId !== undefined) && !sourceAdapter)
+      fail('PROCESSING_TABLES', '来源回执上下文只适用于已声明端点适配的表源。');
+    if (record.sourceContext !== undefined && record.sourceReceiptTaskId !== undefined)
+      fail('PROCESSING_TABLES', '同一表源不能同时声明合成上下文与真实取得回执。');
     for (const key of ['fieldMapping', 'types', 'annotations'] as const) if (record[key] !== undefined && !isWfdRecord(record[key])) fail('PROCESSING_TABLES', `${key} 须为明确对象。`);
     for (const key of ['trim', 'emptyToNull'] as const) if (record[key] !== undefined && (!Array.isArray(record[key]) || (record[key] as unknown[]).some(value => typeof value !== 'string'))) fail('PROCESSING_TABLES', `${key} 须为字符串数组。`);
-    return { materialId, format: record.format as 'csv' | 'json', ...(record.fieldMapping ? { fieldMapping: record.fieldMapping as Record<string, string> } : {}),
-      ...(record.types ? { types: record.types as CandidateTablePlan['types'] } : {}),
+    let selection: CandidateTablePlan['selection'];
+    if (record.selection !== undefined) {
+      if (record.format !== 'csv') fail('PROCESSING_SELECTION', '行选件只支持明确 CSV 原件。');
+      const selected = readRecord(record.selection, ['predicate', 'maxSelectedRows', 'maxScannedRows'], 'PROCESSING_SELECTION');
+      const predicate = readRecord(selected.predicate, ['column', 'equals'], 'PROCESSING_SELECTION');
+      selection = { predicate: { column: readText(predicate.column, 1, 256, 'PROCESSING_SELECTION'),
+        equals: readText(predicate.equals, 0, 1_048_576, 'PROCESSING_SELECTION') },
+        maxSelectedRows: readInteger(selected.maxSelectedRows, 1, CANDIDATE_SELECTION_LIMITS.maxSelectedRows, 'PROCESSING_SELECTION'),
+        maxScannedRows: readInteger(selected.maxScannedRows, 1, CANDIDATE_SELECTION_LIMITS.maxScannedRows, 'PROCESSING_SELECTION') };
+    }
+    const xlsxSelection = record.xlsxSelection === undefined ? undefined : readXlsxTableSelection(record.xlsxSelection);
+    const sourceProjection = record.sourceProjection === undefined ? undefined : readSourceProjection(record.sourceProjection);
+    const xbrlSelection = record.xbrlSelection === undefined ? undefined : readXbrlSelection(record.xbrlSelection);
+    const necessaryTextSelection = record.necessaryTextSelection === undefined ? undefined : readNecessaryTextSelection(record.necessaryTextSelection);
+    const pdfSelection = record.pdfSelection === undefined ? undefined : readFinancialPdfSelection(record.pdfSelection);
+    const financialCalculation = record.financialCalculation === undefined ? undefined : readFinancialCalculation(record.financialCalculation);
+    if ((record.format === 'xbrl') !== !!xbrlSelection || (record.format === 'text') !== !!necessaryTextSelection
+      || (record.format === 'pdf') !== !!pdfSelection || (record.format === 'financial-fixed') !== !!financialCalculation) fail('PROCESSING_TABLES', '专用格式须具有同格式的明确投影选择，不能挪用其他格式规则。');
+    if (sourceAdapter && !['csv', 'json'].includes(String(record.format))) fail('PROCESSING_TABLES', '端点适配表源须声明载体族 csv 或 json。');
+    if (sourceAdapter && (selection || xlsxSelection || xbrlSelection || necessaryTextSelection || pdfSelection
+      || financialCalculation || record.numericFormats !== undefined)) fail('PROCESSING_TABLES', '端点适配表源不接受选区、专用投影或区域数值规则。');
+    if (record.numericFormats !== undefined && !isWfdRecord(record.numericFormats)) fail('PROCESSING_NUMERIC_FORMAT', '数值语法须按明确列名逐项声明。');
+    const numericFormats = record.numericFormats === undefined ? undefined : Object.fromEntries(Object.entries(record.numericFormats as WfdRecord).map(([key, format]) => [key, readNumericFormat(format)]));
+    if ((record.format === 'xlsx') !== !!xlsxSelection) fail('PROCESSING_XLSX_SELECTION', 'XLSX 必须提供明确选区，其他格式不能带工作簿选区。');
+    const types: NonNullable<CandidateTablePlan['types']> = Object.assign(Object.create(null), record.types ?? {});
+    for (const column of xlsxSelection?.columns ?? []) if (column.type) {
+      const mapping = record.fieldMapping as Record<string, string> | undefined;
+      const name = mapping && Object.hasOwn(mapping, column.name) ? mapping[column.name]! : column.name;
+      if (types[name] && types[name] !== column.type) fail('PROCESSING_XLSX_TYPES', '选区列类型与结构类型声明冲突。');
+      types[name] = column.type;
+    }
+    return { materialId, format: record.format as CandidateTablePlan['format'], ...(sourceAdapter ? { sourceAdapter } : {}),
+      ...(record.sourceContext !== undefined ? { sourceContext: record.sourceContext } : {}),
+      ...(record.sourceReceiptTaskId !== undefined ? { sourceReceiptTaskId: readId(record.sourceReceiptTaskId, 'PROCESSING_RECEIPT_TASK_ID') } : {}), ...(xlsxSelection ? { xlsxSelection } : {}), ...(record.fieldMapping ? { fieldMapping: record.fieldMapping as Record<string, string> } : {}),
+      ...(numericFormats ? { numericFormats } : {}), ...(xbrlSelection ? { xbrlSelection } : {}),
+      ...(necessaryTextSelection ? { necessaryTextSelection } : {}), ...(pdfSelection ? { pdfSelection } : {}),
+      ...(financialCalculation ? { financialCalculation } : {}),
+      ...(Object.keys(types).length ? { types } : {}),
       ...(record.trim ? { trim: record.trim as string[] } : {}), ...(record.emptyToNull ? { emptyToNull: record.emptyToNull as string[] } : {}),
-      ...(record.annotations ? { annotations: record.annotations as Record<string, string | number | boolean | null> } : {}) };
+      ...(record.annotations ? { annotations: record.annotations as Record<string, string | number | boolean | null> } : {}),
+      ...(selection ? { selection } : {}), ...(sourceProjection ? { sourceProjection } : {}) };
   });
 }
 function readIntendedAction(value: unknown): 'inspect' | 'publish' {

@@ -15,8 +15,8 @@ export function Shell({ page, onNavigate, children, onStopAll, stoppingAll, hasA
   const nav = [{ id: 'conversations' as const, label: t('nav.conversations'), icon: <MorphIcon name="message-square" size={18} strokeWidth={1.6} /> },
     { id: 'capture' as const, label: t('nav.capture'), icon: <Rss size={17} strokeWidth={1.6} aria-hidden="true" /> },
     { id: 'api-sources' as const, label: t('nav.apiSources'), icon: <Cable size={17} strokeWidth={1.6} aria-hidden="true" /> },
-    { id: 'database' as const, label: t('nav.database'), icon: <MorphIcon name="database" size={18} strokeWidth={1.6} /> },
-    { id: 'tools' as const, label: t('nav.tools'), icon: <MorphIcon name="blocks" size={18} strokeWidth={1.6} /> }];
+    { id: 'tools' as const, label: t('nav.tools'), icon: <MorphIcon name="blocks" size={18} strokeWidth={1.6} /> },
+    { id: 'database' as const, label: t('nav.database'), icon: <MorphIcon name="database" size={18} strokeWidth={1.6} /> }];
   return <div className="app-shell" data-page={page} onDragOver={(event) => { if (event.dataTransfer.types.includes('text/uri-list') || event.dataTransfer.types.includes('Files')) event.preventDefault(); }}
     onDrop={(event) => { if (event.defaultPrevented) return; if (event.dataTransfer.types.includes('text/uri-list')) { event.preventDefault(); onRejectedDrop('url'); } else if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); onRejectedDrop('file'); } }}>
     <header className="app-header" />

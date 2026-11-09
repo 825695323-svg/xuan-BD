@@ -1,4 +1,7 @@
-"""Structured-data-only delta: same selection, new day, old/new fixed reads."""
+"""Structured-data-only delta over generated daily rows and actual snapshots.
+
+Same selection, new day, old/new fixed reads; no historical store is required.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -15,23 +18,17 @@ from wfd_sdk.product_bundle import (
     export_structured_delta_bundle, import_structured_bundle,
 )
 from wfd_sdk.product_data_service import WFDDataOnlyService
+from synthetic_daily import SUBJECT, daily_rows
 
 
 HERE = Path(__file__).resolve().parents[1]
-ROOT = HERE.parents[1]
-DAILY60 = ROOT / "03_测试与验证记录/P3_通用入库与更新_2026-10-27/batches/run_20261026T200932Z/store"
-DAILY60_SID = "s_9c6b1cf47d2f782194474fcf"
-DAILY60_PID = "p_1d757ae27ee0b41b3ac63bcb"
-SUBJECT = {"kind": "instrument", "namespace": "wfd.cn", "id": "instrument_000001_a"}
 KEYS = ["daily_000001_20251226", "daily_000001_20251229",
         "daily_000001_20251230", "daily_000001_20251231"]
 
 
 def _rows():
-    snap = json.loads((DAILY60 / f"catalog/snapshots/{DAILY60_SID}.json").read_text())
-    entry = next(e for e in snap["files"] if e["product_id"] == DAILY60_PID)
-    rows = rows_from_parquet((DAILY60 / entry["file_relpath"]).read_bytes())
-    return {row["business_key"]: row for row in rows if row["business_key"] in KEYS}
+    # Each source below really publishes these deterministic generated inputs.
+    return {row["business_key"]: row for row in daily_rows() if row["business_key"] in KEYS}
 
 
 def _make_source(root: Path, row_keys, request_id):
@@ -338,7 +335,7 @@ def test_structured_delta_distinct_content_gets_distinct_target_identity(delta_e
     a_rows = reader.read(a["included_reads"][0]["target_product_id"],
                          snapshot_id=a_report["target_snapshot_id"])["rows"]
     assert next(row for row in a_rows if row["record_id"] == "daily_000001_20251226")[
-        "row"]["values"]["close_price"]["value"] == "11.54"
+        "row"]["values"]["close_price"]["value"] == "100.39"  # unchanged generated baseline
     again = apply_structured_delta_bundle(
         env["tmp"] / "delta_b", env["tmp"] / "target",
         runtime_root=env["tmp"] / "apply_rt", caller_roles={"read"})

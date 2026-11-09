@@ -8,30 +8,27 @@ import type { CollectionService } from '../../modules/collection/service.js';
 import type { FinancialService } from '../../modules/financial/service.js';
 import type { FinancialHostSubmission } from '../../modules/financial/types.js';
 import { financialPublicError } from '../../modules/financial/contracts.js';
-import type { CandidateService } from '../collection/candidate-service.js';
 import type { MaterialService } from '../../modules/collection/materials/service.js';
 import type { MaterialSemanticService } from '../../modules/collection/materials/semantic.js';
 
-export const HARNESS_VERSION = 'xuan-bd-data-service.1';
-export const COLLECTION_HARNESS_VERSION = 'xuan-bd-data-collection.1';
-export const WORKSPACE_HARNESS_VERSION = 'xuan-bd-data-workspace.2';
-export const WORKSPACE_SYSTEM_PROMPT = '你是 xuan BD（数据处理与导入应用）的内置数据服务代理，只负责数据处理、导入交接和已登记的基础数据算法。默认中文。工具发现、契约和计算必须使用 tools_list、tools_describe、tools_call 的同一持久任务入口；插件状态用 plugins_status。只处理用户明确提供的输入或受信宿主已登记的固定快照；金融单位、币种、复权、周期和可得时间不足时不能猜补。计算结果 computed 表示计算完成，未正式入库。通用材料交接先用data.candidates.capabilities发现真实能力，再prepare构造本地候选，只有用户明确交接时submit；status只核原请求。保管、受理、正式提交、固定读回分开报告，未知二进制只保管并返回缺口。原件及有界预览保留本地；上传代码不授予执行权。停止、恢复和插件开关由本机用户控制。报告四行以内，写实际结果和任务引用，完整证据留在程序入口。';
-export const SERVICE_RUNTIME = 'harness.service';
+export const BD_VERSION = 'xuan-bd-data-service.1';
+export const COLLECTION_BD_VERSION = 'xuan-bd-data-collection.2';
+export const WORKSPACE_BD_VERSION = 'xuan-bd-data-workspace.3';
+export const WORKSPACE_SYSTEM_PROMPT = '你是 xuan BD（数据处理与导入应用）的内置数据服务代理，只负责数据处理、导入交接和已登记的基础数据算法。默认中文。工具发现、契约和计算必须使用 tools_list（工具目录）、tools_describe（工具说明）、tools_call（工具调用）的同一持久任务入口；插件状态用 plugins_status（插件状态）。只处理用户明确提供的输入或受信宿主已登记的固定快照；金融单位、币种、复权、周期和可得时间不足时不能猜补。计算结果 computed（已计算）表示计算完成，未正式入库。新数据交接使用 BD 工作台的 R1（结构化交接）受控入口，先核实际装配与加工证据，再由用户单独确认提交；本代理没有因此获得新的 R1 工具。保管、受理、正式提交、固定读回分开报告，未知二进制只保管并返回缺口。原件及有界预览保留本地；上传代码不授予执行权。停止、恢复和插件开关由本机用户控制。工具失败时先读回执里的具体原因，并按原因核对真实能力边界：参数或路径规则错误按回执修正后重试，不能把连续失败当成能力不存在；重试三次仍失败就直接说明受阻原因和已有证据。结论须区分已核实、推断和未知。思考结束后必须在正文给出结论，不能只停在思考里；正文为空会被判为未完成。报告四行以内，写实际结果和任务引用，完整证据留在程序入口。';
+export const SERVICE_RUNTIME = 'bd.service';
 export const SERVICE_TOOLS = ['runtime_status', 'jobs_get', 'test_echo'] as const;
 export const SERVICE_SYSTEM_PROMPT = '你是 xuan BD（数据处理与导入应用）的内置数据服务代理，只负责数据处理、导入交接和已登记的基础数据算法。默认中文。只使用本阶段提供的平台只读工具和合成测试工具；业务事实以工具的持久结果及编号为依据。数据收集、金融工具、外部主体、风险和市场模块均未启用。停止及恢复由用户的程序入口控制，你没有否决权。不要声称已执行工具未证明的操作。';
-export const COLLECTION_SYSTEM_PROMPT = '你是 xuan BD（数据处理与导入应用）的内置数据服务代理，只负责数据处理、导入交接和已登记的基础数据算法。默认中文。当前第二阶段只启用平台查询和宿主已登记的隔离合成数据收集、五步加工及测试数据库交接。使用 collection_run 工具调用受控程序；原件、单位、精度、质量和提交状态以工具的持久事实为准，禁止口头补全。真实来源、生产数据库、金融工具、外部主体、风险和市场模块均未启用。停止及恢复由用户程序入口控制，你没有否决权。报告保持四行以内，只写实际结论和用户要求的任务或结果引用，不展开协议、版本、步骤和表格；不把受理或接收称为正式提交。';
+export const COLLECTION_SYSTEM_PROMPT = '你是 xuan BD（数据处理与导入应用）的内置数据服务代理，只负责数据处理和已登记的基础数据算法。默认中文。当前入口只启用平台查询及宿主已登记的隔离合成材料收集和本地五步加工。collection_run（合成材料处理）只接受 processed（加工完成）；新交接使用 BD 工作台 R1（结构化交接）受控入口并由用户单独确认，不因本提示获得新工具或权限。原件、单位、精度、质量和状态以工具持久事实为准，禁止口头补全。停止及恢复由用户程序入口控制。报告四行以内，写实际结果和任务引用。';
 
 /** 本地服务角色的窄门面；任务、尝试、结果与控制仍由现有 TaskService 唯一持有。 */
-export class HarnessService {
+export class BdService {
   constructor(readonly options: {
     tasks(): TaskService; core: PersonalCore; health: HealthResponse;
     versions?: Record<string, string | null>;
     collection?: CollectionService;
     financial?: FinancialService;
     materials?: MaterialService;
-    candidates?: CandidateService;
     semantics?: MaterialSemanticService;
-    userTestData?: { instanceId: string; principalId: string; datasetId: string; schemaSha256: string };
   }) {}
 
   get toolNames(): readonly string[] { return [...SERVICE_TOOLS, ...(this.options.collection ? ['collection_run'] : []), ...(this.options.financial ? ['tools_list', 'tools_describe', 'tools_call', 'plugins_status'] : [])]; }
@@ -39,13 +36,12 @@ export class HarnessService {
   get isWorkspace(): boolean { return !!(this.options.financial || this.options.materials); }
 
   get versions(): Record<string, string | null> {
-    return { harness: this.isWorkspace ? WORKSPACE_HARNESS_VERSION : this.options.collection ? COLLECTION_HARNESS_VERSION : HARNESS_VERSION, contract: 'harness-service/1', module: 'harness_agent',
+    return { bd: this.isWorkspace ? WORKSPACE_BD_VERSION : this.options.collection ? COLLECTION_BD_VERSION : BD_VERSION, contract: 'bd-service/1', module: 'bd_agent',
       role: 'service', caller: 'local-operator', environment: 'local', ...this.options.versions,
       ...(this.options.collection ? { collectionBinding: digestOperationArgs(this.options.collection.versionBinding) } : {}),
       ...(this.options.financial ? { financialBinding: digestOperationArgs(this.options.financial.versionBinding) } : {}),
       ...(this.options.materials ? { materialsBinding: digestOperationArgs(this.options.materials.versionBinding) } : {}),
-      ...(this.options.semantics ? { semanticsBinding: digestOperationArgs(this.options.semantics.versionBinding) } : {}),
-      ...(this.options.candidates ? { candidatesBinding: digestOperationArgs(this.options.candidates.versionBinding) } : {}) };
+      ...(this.options.semantics ? { semanticsBinding: digestOperationArgs(this.options.semantics.versionBinding) } : {}) };
   }
 
   assertDispatch(): void {
@@ -60,21 +56,17 @@ export class HarnessService {
 
   status(): JsonValue {
     const health = this.options.health;
-    const collection = this.options.collection, userTest = this.options.userTestData, generic = this.options.candidates?.catalog().database;
-    return { ownerService: 'harness_agents', role: 'service', stage: this.isWorkspace ? 3 : collection ? 2 : 1, version: this.versions.harness,
+    const collection = this.options.collection;
+    return { ownerService: 'bd_agents', role: 'service', stage: this.isWorkspace ? 3 : collection ? 2 : 1, version: this.versions.bd,
       control: asJson(this.options.tasks().getControl()),
       model: { provider: health.provider, model: health.model, configured: health.configured,
         availability: 'not_probed', note: '配置可用不代表模型当前在线；实际调用以任务结果为准。' },
       tools: [...this.toolNames],
-      modules: { harness_agent: 'enabled', collection: this.options.candidates ? 'declared_candidates' : userTest ? 'user_test_conversation' : collection ? 'isolated_synthetic' : 'not_enabled', financial_tools: this.options.financial ? 'enabled' : 'not_enabled', materials: this.options.materials ? 'local_review' : 'not_enabled',
+      modules: { bd_agent: 'enabled', collection: collection ? 'isolated_synthetic' : 'not_enabled', financial_tools: this.options.financial ? 'enabled' : 'not_enabled', materials: this.options.materials ? 'local_review' : 'not_enabled',
         external_subject: 'not_enabled', risk: 'not_enabled', market: 'not_enabled' },
-      database: { binding: generic?.available ? 'bound' : DATABASE_PORT_RESERVATION.state, code: generic?.available ? null : DATABASE_PORT_RESERVATION.code,
-        contract: this.options.candidates ? 'wfd.data-service/v1' : 'reserved', realIntegration: generic?.available ? 'adapter_installed_not_probed' : 'not_executed', scope: 'user_test',
-        ...(generic ? { generic: asJson(generic) } : {}),
-        ...(userTest ? { userTest: { ...userTest, binding: 'configured', scope: 'user_test', availability: 'not_probed',
-          entry: 'personal_same_conversation', externalCollection: collection ? 'isolated_synthetic' : 'not_enabled',
-          note: '受信用户测试入口已装配；生产未绑定。本状态不发起实时连接探测，提交以实际回执为准。' } } : {}),
-        ...(collection ? { note: '正式绑定未启用；隔离测试端口另见 collection 状态，运行结果以原任务回执为准。' } : {}) },
+      database: { binding: DATABASE_PORT_RESERVATION.state, code: DATABASE_PORT_RESERVATION.code,
+        contract: 'reserved', realIntegration: 'not_executed',
+        note: '本代理的数据库交接由独立 R1（结构化交接）入口按实际装配与用户确认执行。' },
       ...(collection ? { collection: collection.status() } : {}),
       ...(this.options.financial ? { financial: asJson(this.options.financial.status()) } : {}),
       limits: { modelRequests: this.isWorkspace ? 4 : 2, timeoutMs: 60_000, maxOutputTokens: 1024 },
@@ -99,7 +91,7 @@ export class HarnessService {
   taskView(id: string): Record<string, JsonValue> {
     const task = this.getTask(id);
     const publicFinancial = this.options.financial?.publicTaskView?.(task) as Record<string, JsonValue> | null | undefined;
-    return asJson({ ownerService: 'harness_agents', requestId: task.requestId, jobId: task.id,
+    return asJson({ ownerService: 'bd_agents', requestId: task.requestId, jobId: task.id,
       parentJobId: task.parentTaskId, operation: task.action, status: task.status, version: task.version,
       runId: task.currentRunId, attemptId: task.currentAttemptId, generation: task.generation,
       controlGeneration: task.controlGeneration, approvalId: task.approvalId, versions: task.versions, resultRef: task.resultRef,
@@ -122,43 +114,43 @@ export class HarnessService {
   modelTaskView(id: string): Record<string, JsonValue> {
     const task = this.getTask(id);
     const publicFinancial = this.options.financial?.publicTaskView?.(task);
-    if (publicFinancial) return asJson({ ownerService: 'harness_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
+    if (publicFinancial) return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
       publicContract: publicFinancial, requiresReview: task.requiresReview }) as Record<string, JsonValue>;
     if (task.action === 'jobs.get' && task.status === 'succeeded') {
       const target = object(task.result?.data);
-      return asJson({ ownerService: 'harness_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
+      return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
         queriedTask: { jobId: target.jobId, operation: target.operation, status: target.status, resultRef: target.resultRef,
           requiresReview: target.requiresReview, error: target.error },
         note: '查询仅向模型返回任务状态与结果引用；原件、材料身份摘要与完整计算内容在本机入口查看。' }) as Record<string, JsonValue>;
     }
     if (task.action === 'runtime.status' && task.status === 'succeeded') {
       const status = object(task.result?.data), control = object(status.control);
-      return asJson({ ownerService: 'harness_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
+      return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
         runtime: { ...status, control: { stopped: control.stopped, generation: control.generation,
           activeTaskCount: Array.isArray(control.activeTaskIds) ? control.activeTaskIds.length : null } } }) as Record<string, JsonValue>;
     }
     if (task.action === 'tools.list' && task.status === 'succeeded') {
       const data = task.result?.data;
-      return asJson({ ownerService: 'harness_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
+      return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
         tools: Array.isArray(data) ? data.map(value => { const tool = object(value); return { capabilityId: tool.capabilityId,
           title: tool.title, pluginVersion: tool.pluginVersion, methodVersion: tool.methodVersion, implementationVersion: tool.implementationVersion }; }) : [],
         next: '计算前使用 tools_describe 读取所选方法的精确输入契约。' }) as Record<string, JsonValue>;
     }
     if (task.action === 'tools.call' && task.status === 'succeeded') {
       const result = object(task.result?.data);
-      return asJson({ ownerService: 'harness_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
+      return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
         computation: result.status, persistence: result.persistence, capabilityId: result.capabilityId,
         inputDigest: result.inputDigest, rowCount: Array.isArray(result.rows) ? result.rows.length : null,
         validInterval: result.validInterval, invalidIntervals: result.invalidIntervals,
         lastRows: Array.isArray(result.rows) ? result.rows.slice(-3) : [], limitations: result.limitations }) as Record<string, JsonValue>;
     }
-    if (task.action === 'materials.inspect' || task.action === 'materials.semantic-process') return asJson({ ownerService: 'harness_agents', jobId: task.id, status: task.status,
+    if (task.action === 'materials.inspect' || task.action === 'materials.semantic-process') return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status,
       resultRef: task.resultRef, note: '原件与预览仅供本机查看；模型入口不返回材料内容。' }) as Record<string, JsonValue>;
     if (task.action !== 'collection.run' || task.status !== 'succeeded') return this.taskView(id);
     const data = object(task.result?.data), processed = object(object(data.result).data);
     const receipt = processed.receipt === null ? null : object(processed.receipt);
     const readback = processed.readback === null ? null : object(processed.readback);
-    return asJson({ ownerService: 'harness_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
+    return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
       environment: 'synthetic-test', completionCondition: data.completionCondition,
       collectionTaskId: data.collectionTaskId, collectionResultRef: data.collectionResultRef,
       processingTaskId: data.processingTaskId, processingResultRef: data.processingResultRef,
@@ -183,7 +175,7 @@ export class HarnessService {
       keys(data, ['kind', 'inputId', 'planId', 'completionCondition', 'expectedSnapshotId']);
       if (!['file', 'source'].includes(String(data.kind))) throw new TaskError('INVALID_SERVICE_ARGS', '收集入口须选择已登记的文件或来源。');
       identifier(data.inputId); identifier(data.planId);
-      if (!['processed', 'received', 'committed'].includes(String(data.completionCondition))) throw new TaskError('INVALID_SERVICE_ARGS', '完成条件须明确为加工完成、数据库接收或提交。');
+      if (data.completionCondition !== 'processed') throw new TaskError('INVALID_SERVICE_ARGS', '合成材料入口的完成条件须为加工完成。');
       if (data.expectedSnapshotId !== undefined && data.expectedSnapshotId !== null) identifier(data.expectedSnapshotId);
       this.options.collection.validate(data.kind === 'file' ? 'collection.receive' : 'collection.collect',
         data.kind === 'file' ? { fileInputId: data.inputId } : { sourceId: data.inputId });
@@ -205,7 +197,12 @@ export class HarnessService {
     const namespacedRequest = `service:local-operator:${operation}:${requestId}`;
     const existing = this.requestTask(operation, requestId);
     if (existing) {
-      if (digestOperationArgs(existing.args) !== digestOperationArgs(data) || existing.parentTaskId !== (parentTaskId ?? null)) {
+      this.assertDispatch();
+      if (existing.conversationId !== null || existing.title !== `框架服务：${operation}`
+        || existing.runtimeId !== (operation === 'agent.chat' ? 'pi' : SERVICE_RUNTIME)
+        || existing.action !== (operation === 'agent.chat' ? 'pi.prompt' : operation)
+        || digestOperationArgs(existing.args) !== digestOperationArgs(data) || existing.parentTaskId !== (parentTaskId ?? null)
+        || digestOperationArgs(existing.versions) !== digestOperationArgs(this.versions)) {
         throw new TaskError('REQUEST_CONFLICT', '同一原请求不能使用不同参数或关联任务。');
       }
       return existing;

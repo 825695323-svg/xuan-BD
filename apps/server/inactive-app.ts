@@ -8,10 +8,10 @@ import { CoreError } from '../../platform/runtime/errors.js';
 import { createLocalDataLifecycleRouter } from './local-data-routes.js';
 
 /**
- * 停用/解绑后的最小宿主。
+ * 本地状态库身份校验失败时的最小宿主。
  *
- * 只提供资格读取、原控制记录、停止/重新加载保存入口和静态网页；不打开个人 Core、
- * 个人状态库、模型、浏览器、采集会话或数据库连接，也不自动重建缺失原资料。
+ * 只提供只读资格查询和静态网页；不打开个人 Core、个人状态库、模型、浏览器、
+ * 采集会话或数据库连接，也不自动重建缺失原资料。人工停用/解绑/重新采用已取消。
  */
 
 export interface InactiveLocalHostOptions {
@@ -20,8 +20,6 @@ export interface InactiveLocalHostOptions {
   lifecycle: LocalDataLifecycle;
   dataId: string;
   detail: string;
-  /** 重新加载前的对象身份核对；返回原因即拒绝。 */
-  reloadBlocker?: () => string | null;
   health?: HealthResponse;
 }
 
@@ -50,13 +48,12 @@ export async function startInactiveLocalHost(options: InactiveLocalHostOptions) 
     next();
   });
   const health: HealthResponse = options.health ?? { name: 'xuan BD', backend: 'pi', configured: false,
-    model: null, provider: null, notice: '当前本地资料未加载；仅提供资格核对与重新加载保存入口。' };
+    model: null, provider: null, notice: '本地资料身份未通过核对；仅提供只读状态与重新核对。' };
   app.get('/api/health', (_req, res) => res.json(health));
-  app.use('/api/harness/local-data', express.json({ limit: '160kb' }), createLocalDataLifecycleRouter({
+  app.use('/api/bd/local-data', createLocalDataLifecycleRouter({
     lifecycle: options.lifecycle,
     dataId: options.dataId,
     qualification: () => ({ available: false, detail: options.detail }),
-    assertReload: () => { const blocked = options.reloadBlocker?.(); if (blocked) throw new CoreError('LOCAL_DATA_IDENTITY_UNAVAILABLE', blocked, 409); },
   }));
   app.use('/api', (_req, res) => res.status(404).json({ code: 'LOCAL_DATA_NOT_LOADED', error: '当前本地资料未加载，私有接口不可用。' }));
   const webRoot = resolve(options.webRoot ?? resolve(import.meta.dirname, '../../dist/web'));

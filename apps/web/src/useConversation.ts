@@ -1,19 +1,73 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { ChatMessage, ConversationAttachmentRef, ConversationDisplayMetadataUpdate, ConversationPlugin, ConversationState, ConversationSummary, ConversationVisibility, DraftState, FreezeSendRequestInput, HealthResponse, SendReceipt, SendRequestView, ThinkingLevel } from '../../../contracts/contracts';
+import type { FileReference } from '../../../platform/resources/files';
 import * as api from './api';
 import { Drafts, draftContentSignature } from './drafts';
 import { forgetSend, readRememberedSends, rememberSend } from './send-recovery';
-import { uploadFile } from './platform-api';
-import { localDataGeneration, notifyLocalDataRevoked } from './local-data-context';
+import { isAbsoluteFilePath, registerFile, uploadFile } from './platform-api';
+import { localDataGeneration, localDataRevision, notifyLocalDataRevoked } from './local-data-context';
 
 export type ConnectionPhase = 'connecting' | 'connected' | 'reconnecting';
 export interface ActionIssue { title: string; detail: string }
-export interface ConversationAttachmentTarget { conversationId: string; branchId: string }
+export interface ConversationAttachmentTarget { conversationId: string; branchId: string; generation: number; revision: number }
+/** 本机桥确认的原文件绝对路径，或 null（无路径，走 File 流上传）。 */
+export interface ConversationAttachmentInput { file: File; path: string | null }
 export class AttachmentUploadError extends Error {
-  constructor(readonly failures: Array<{ file: File; message: string; unconfirmed: boolean }>, readonly accepted: ConversationAttachmentRef[]) {
+  constructor(readonly failures: Array<{ file: File; message: string; unconfirmed: boolean; accepted?: ConversationAttachmentRef }>, readonly accepted: ConversationAttachmentRef[]) {
     super(failures.map(item => `${item.file.name}: ${item.message}`).join('\n'));
     this.name = 'AttachmentUploadError';
   }
+}
+/** 附件目标只在捕获时的资料代次/revision 内有效。 */
+export function attachmentContextIsCurrent(target: ConversationAttachmentTarget): boolean {
+  const generation = localDataGeneration();
+  return generation !== null && generation === target.generation && localDataRevision() === target.revision;
+}
+export function assertAttachmentContext(target: ConversationAttachmentTarget, action: string): void {
+  if (!attachmentContextIsCurrent(target)) {
+    throw new api.RequestError(`本地资料上下文已变化，${action}未提交；请重新选择文件。`, 409, 'ATTACHMENT_CONTEXT_CHANGED');
+  }
+}
+/** 显示用：pending 中已接入的 fileRefId 覆盖草稿同 id 行，避免一个附件两行。 */
+export function draftRefsForDisplay(refs: readonly ConversationAttachmentRef[], pending: readonly { acceptedRef?: ConversationAttachmentRef }[]): ConversationAttachmentRef[] {
+  const covered = new Set(pending.flatMap((item) => item.acceptedRef ? [item.acceptedRef.fileRefId] : []));
+  return covered.size ? refs.filter((ref) => !covered.has(ref.fileRefId)) : [...refs];
+}
+/** 32 个名额：唯一引用 + 尚无引用的 pending，不把同一 acceptedRef 计两次。 */
+export function attachmentSlotCount(refs: readonly ConversationAttachmentRef[], pending: readonly { acceptedRef?: ConversationAttachmentRef }[]): number {
+  const ids = new Set(refs.map((ref) => ref.fileRefId));
+  let unresolved = 0;
+  for (const item of pending) {
+    if (item.acceptedRef) ids.add(item.acceptedRef.fileRefId);
+    else unresolved++;
+  }
+  return ids.size + unresolved;
+}
+type DraftWrite = (scope: string, draft: Pick<DraftState, 'key' | 'text' | 'revision' | 'attachmentRefs'>) => Promise<DraftState>;
+const attachmentWriteKey = (scope: string, fileRefId: string) => `${scope}\u0000${fileRefId}`;
+/** 合并附件前记录首次接入时的冻结上下文；同 scope+ref 保留最早的 guard。 */
+export function rememberAttachmentWriteContext(contexts: Map<string, ConversationAttachmentTarget>, scope: string, refs: readonly ConversationAttachmentRef[], target: ConversationAttachmentTarget): void {
+  for (const ref of refs) {
+    const key = attachmentWriteKey(scope, ref.fileRefId);
+    if (!contexts.has(key)) contexts.set(key, { ...target });
+  }
+}
+function attachmentWriteContextError(contexts: ReadonlyMap<string, ConversationAttachmentTarget>, scope: string, refs: readonly ConversationAttachmentRef[]): api.RequestError | null {
+  for (const ref of refs) {
+    const target = contexts.get(attachmentWriteKey(scope, ref.fileRefId));
+    if (target && !attachmentContextIsCurrent(target)) {
+      return new api.RequestError('本地资料上下文已变化，保存附件关联未提交；请重新选择文件。', 409, 'ATTACHMENT_CONTEXT_CHANGED');
+    }
+  }
+  return null;
+}
+/** Drafts 真正调用 api.saveDraft 的写闭包；guard 与 save 之间无 await，guard 失败返回 rejected promise。 */
+export function createAttachmentAwareDraftWrite(contexts: ReadonlyMap<string, ConversationAttachmentTarget>, owners: ReadonlyMap<string, string>, save: DraftWrite): DraftWrite {
+  return async (scope, draft) => {
+    const guardError = attachmentWriteContextError(contexts, scope, draft.attachmentRefs ?? []);
+    if (guardError) return Promise.reject(guardError);
+    return save(owners.get(scope) ?? scope, draft);
+  };
 }
 const selectionKey = 'mashiro.selected-conversation';
 const selectionKeyFor = (pluginId: ConversationPlugin, view: ConversationVisibility) =>
@@ -22,6 +76,9 @@ const legacySelectionKeyFor = (view: ConversationVisibility) => view === 'active
 const detailOf = (error: unknown) => error instanceof Error ? error.message : '本机服务暂时无法完成请求。';
 const mayHaveCommitted = (error: unknown) => error instanceof api.RequestError
   && (error.status === null || error.status >= 500 || (error.status >= 200 && error.status < 300));
+/** 附件回执属于旧本地资料代次时，服务端可能已经保存，不能当成明确未受理去重试。 */
+const attachmentReceiptMayBeStored = (error: unknown) => mayHaveCommitted(error)
+  || (error instanceof api.RequestError && error.code === 'STALE_LOCAL_DATA_GENERATION');
 interface FailedCommand { requestId: string; treeRevision: number; saved?: DraftState; scope: string; branchId: string }
 
 function readingPath(messages: ChatMessage[], headId: string | null): ChatMessage[] {
@@ -36,7 +93,13 @@ function readingPath(messages: ChatMessage[], headId: string | null): ChatMessag
 }
 function mergeReadingWindow(current: ConversationState | undefined, incoming: ConversationState): ConversationState {
   if (!incoming.history || !current?.history || current.branchId !== incoming.branchId) return incoming;
-  const messages = readingPath([...current.messages, ...incoming.messages], incoming.headId);
+  // 迟到的精简帧不能把已经读到的正文清空；同 id 以非空正文为准。
+  const merged = new Map<string, ChatMessage>();
+  for (const message of [...current.messages, ...incoming.messages]) {
+    const previous = merged.get(message.id);
+    merged.set(message.id, previous && !message.text.trim() && previous.text.trim() ? { ...message, text: previous.text } : message);
+  }
+  const messages = readingPath([...merged.values()], incoming.headId);
   const retainCursor = messages[0]?.id === current.messages[0]?.id;
   const history = { ...incoming.history, before: retainCursor ? current.history.before : incoming.history.before,
     hasMore: retainCursor ? current.history.hasMore : incoming.history.hasMore };
@@ -89,9 +152,10 @@ export function useConversation(pluginId: ConversationPlugin = 'pi') {
   const queueRequests = useRef(new Map<string, { requestId: string; expectedRunId?: string }>());
   const failedCommands = useRef(new Map<string, FailedCommand>());
   const draftOwners = useRef(new Map<string, string>());
+  const attachmentWriteContexts = useRef(new Map<string, ConversationAttachmentTarget>());
   const editLoads = useRef(new Map<string, Promise<void>>());
-  const [drafts] = useState(() => new Drafts((scope, draft) => api.saveDraft(
-    draftOwners.current.get(scope) ?? scope, draft), rerender));
+  const [drafts] = useState(() => new Drafts(createAttachmentAwareDraftWrite(
+    attachmentWriteContexts.current, draftOwners.current, api.saveDraft), rerender));
   const mainScope = (id: string, branchId = cache.current.get(id)?.branchId) => JSON.stringify([id, branchId, 'main']);
   const editScope = (id: string, messageId: string, branchId = cache.current.get(id)?.branchId) => JSON.stringify([id, branchId, 'edit', messageId]);
 
@@ -353,52 +417,103 @@ export function useConversation(pluginId: ConversationPlugin = 'pi') {
     return state;
   }, [pluginId]);
   const captureAttachmentTarget = useCallback((): ConversationAttachmentTarget => {
-    const state = getActive(false);
-    return { conversationId: state.conversationId, branchId: state.branchId };
+    const state = getActive(false), generation = localDataGeneration();
+    if (generation === null) throw new api.RequestError('本地资料资格尚未确认，请先完成核对后再添加文件。', 409, 'LOCAL_DATA_CONTEXT_MISSING');
+    return { conversationId: state.conversationId, branchId: state.branchId, generation, revision: localDataRevision() };
   }, [getActive]);
-  const uploadAttachments = useCallback(async (selected: File[], target: ConversationAttachmentTarget) => {
+  /**
+   * 登记与上传两条接入分支的共同收口：按原会话、原分支校验引用，
+   * 再合并并持久化该草稿；任何一条分支都不能绕过 bind。
+   */
+  const linkAttachments = useCallback(async (id: string, target: ConversationAttachmentTarget, refs: ConversationAttachmentRef[]) => {
+    const scope = mainScope(id, target.branchId);
+    assertAttachmentContext(target, '绑定附件引用');
+    const bound = await api.bindDraftReferences(id, target.branchId, refs);
+    if (refs.some((ref) => !bound.some((item) => item.fileRefId === ref.fileRefId && item.version === ref.version))) {
+      throw new Error('原件引用未能确认，草稿仍保留原范围。');
+    }
+    assertAttachmentContext(target, '保存附件关联');
+    const draft = drafts.get(scope);
+    if (!draft) throw new Error('原件已接入，但原草稿关联暂不可用，请在该会话的文件列表核对。');
+    rememberAttachmentWriteContext(attachmentWriteContexts.current, scope, bound, target);
+    drafts.setAttachments(scope, [...new Map([...draft.attachmentRefs, ...bound].map((ref) => [ref.fileRefId, ref])).values()]);
+    assertAttachmentContext(target, '保存附件关联');
+    await drafts.persist(scope);
+    return bound;
+  }, [drafts]);
+  /**
+   * 统一附件接入：有可信本机路径就登记原文件，没有路径才把 File 交给流式上传。
+   * 只使用调用时固定的 target；迟到的结果不会改绑当前会话或当前新分支。
+   */
+  const receiveAttachments = useCallback(async (inputs: ConversationAttachmentInput[], target: ConversationAttachmentTarget) => {
     const id = target.conversationId, state = cache.current.get(id), scope = mainScope(id, target.branchId);
     if (pluginId !== 'pi' || !state || state.pluginId !== 'pi' || state.visibility !== 'active' || state.storageError
       || managementLock.current || pending.current.has(id) || !drafts.get(scope)) throw new Error('原会话草稿暂时无法接收附件，请先核对状态。');
-    if (!selected.length) return [];
-    if (drafts.get(scope)!.attachmentRefs.length + selected.length > 32) throw new Error('每份草稿最多附加 32 个原件，请分次提交。');
-    pending.current.add(id); attachmentUploads.current.add(id); rerender(); setIssue(null);
+    if (!inputs.length) return [];
+    if (drafts.get(scope)!.attachmentRefs.length + inputs.length > 32) throw new Error('每份草稿最多附加 32 个原件，请分次提交。');
+    pending.current.add(id); attachmentUploads.current.add(id); rerender(); if (selectedRef.current === id) setIssue(null);
     const accepted: ConversationAttachmentRef[] = [], failures: AttachmentUploadError['failures'] = [];
     try {
-      for (const file of selected) {
-        let received = false;
+      for (const input of inputs) {
+        let attachment: ConversationAttachmentRef | undefined;
         try {
-          const reference = await uploadFile(id, file), draft = drafts.get(scope);
-          received = true;
-          if (!draft) throw new Error('原件已接收，但原草稿关联暂不可用，请在该会话的文件列表核对。');
-          const attachment: ConversationAttachmentRef = { fileRefId: reference.id, version: reference.version, category: 'unclassified', displayName: reference.displayName };
-          drafts.setAttachments(scope, [...draft.attachmentRefs.filter((ref) => ref.fileRefId !== reference.id), attachment]);
+          assertAttachmentContext(target, '接收附件');
+          let reference: FileReference;
+          if (input.path === null) {
+            // 只有明确没有本机路径时才走上传；body 直接使用 File，不在前端全文缓冲。
+            reference = await uploadFile(id, input.file);
+          } else {
+            const path = input.path;
+            if (!path.trim() || /^(?:blob|data|https?|file):/i.test(path.trim()) || !isAbsoluteFilePath(path)) {
+              throw new Error('没有可用的本机文件路径，请使用应用窗口重新选择文件。');
+            }
+            reference = await registerFile(id, path);
+            if (reference.kind !== 'file') throw new Error('只能加入普通文件，不能添加文件夹。');
+          }
+          attachment = { fileRefId: reference.id, version: reference.version, category: 'unclassified', displayName: reference.displayName };
           accepted.push(attachment);
-          await drafts.persist(scope);
+          await linkAttachments(id, target, [attachment]);
         } catch (error) {
-          failures.push({ file, message: detailOf(error), unconfirmed: received || mayHaveCommitted(error) });
+          failures.push({ file: input.file, message: detailOf(error), unconfirmed: !!attachment || attachmentReceiptMayBeStored(error),
+            ...(attachment ? { accepted: attachment } : {}) });
         }
       }
       if (failures.length) throw new AttachmentUploadError(failures, accepted);
       return accepted;
-    } catch (error) { report(id, '附件接收或草稿关联暂未确认。', error); throw error; }
-    finally { pending.current.delete(id); attachmentUploads.current.delete(id); rerender(); }
-  }, [drafts, report, pluginId]);
+    } catch (error) {
+      report(id, accepted.length ? '原件已接入，草稿关联暂未确认。' : '附件接收暂未确认。', error);
+      throw error;
+    } finally { pending.current.delete(id); attachmentUploads.current.delete(id); rerender(); }
+  }, [drafts, linkAttachments, report, pluginId]);
+  /** 已接收原件只重试草稿关联；必须重新 bind 再 persist，绝不重复上传或登记。 */
+  const retryAttachmentBinding = useCallback(async (reference: ConversationAttachmentRef, target: ConversationAttachmentTarget) => {
+    const id = target.conversationId, state = cache.current.get(id), scope = mainScope(id, target.branchId);
+    if (pluginId !== 'pi' || !state || state.pluginId !== 'pi' || state.visibility !== 'active' || state.storageError
+      || managementLock.current || pending.current.has(id) || !drafts.get(scope)) throw new Error('原草稿暂时无法保存附件关联，请先核对会话状态。');
+    pending.current.add(id); attachmentUploads.current.add(id); rerender(); if (selectedRef.current === id) setIssue(null);
+    try {
+      assertAttachmentContext(target, '重试保存草稿关联');
+      const bound = await linkAttachments(id, target, [reference]);
+      return bound[0];
+    } catch (error) {
+      report(id, '原件已接入，草稿关联暂未确认。', error);
+      throw error;
+    } finally { pending.current.delete(id); attachmentUploads.current.delete(id); rerender(); }
+  }, [drafts, linkAttachments, report, pluginId]);
   const addDraftAttachments = useCallback(async (refs: ConversationAttachmentRef[]) => {
     const state = getActive(false), id = state.conversationId, scope = mainScope(id, state.branchId), draft = drafts.get(scope);
     if (pluginId !== 'pi' || !draft || !api.isConversationAttachmentRefs(refs)) throw new Error('请选择已有的有效原件引用。');
+    const generation = localDataGeneration();
+    if (generation === null) throw new api.RequestError('本地资料资格尚未确认，请先完成核对后再加入引用。', 409, 'LOCAL_DATA_CONTEXT_MISSING');
+    const target: ConversationAttachmentTarget = { conversationId: id, branchId: state.branchId, generation, revision: localDataRevision() };
     const unique = new Map([...draft.attachmentRefs, ...refs].map(ref => [ref.fileRefId, ref]));
     if (unique.size > 32) throw new Error('每份草稿最多附加 32 个原件。');
     pending.current.add(id); attachmentUploads.current.add(id); rerender();
     try {
-      const bound = await api.bindDraftReferences(id, state.branchId, refs);
-      const current = drafts.get(scope);
-      if (!current) throw new Error('引用已核对，但原草稿已变化，请回到原会话查看。');
-      drafts.setAttachments(scope, [...new Map([...current.attachmentRefs, ...bound].map(ref => [ref.fileRefId, ref])).values()]);
-      await drafts.persist(scope);
+      return await linkAttachments(id, target, refs);
     } catch (error) { report(id, '原件引用暂未加入草稿。', error); throw error; }
     finally { pending.current.delete(id); attachmentUploads.current.delete(id); rerender(); }
-  }, [drafts, getActive, pluginId, report]);
+  }, [drafts, getActive, linkAttachments, pluginId, report]);
   const loadEditDraft = useCallback(async (messageId: string, sourceText: string) => {
     if (pluginId !== 'pi') throw new Error('当前插件不能编辑并重新执行历史消息。');
     const id = selectedRef.current;
@@ -925,7 +1040,7 @@ export function useConversation(pluginId: ConversationPlugin = 'pi') {
     sendRequests, checkSendRequest, retrySendRequest, abandonSendRequest,
     attachmentPending: !!selectedId && attachmentUploads.current.has(selectedId),
     canAttach: pluginId === 'pi' && !!conversation && !readOnly && !managementPending && !storageFrozen && !actionPending && !!draft && connection === 'connected',
-    captureAttachmentTarget, uploadAttachments, addDraftAttachments, setThinkingLevel,
+    captureAttachmentTarget, receiveAttachments, retryAttachmentBinding, addDraftAttachments, setThinkingLevel,
     canChangeThinking: pluginId === 'pi' && !!conversation?.thinking && !readOnly && !managementPending && !storageFrozen && !actionPending && connection === 'connected',
     historyLoading, historyError, loadMoreHistory, canReloadPage,
     canSend, canRetrySend: unconfirmedSend && canSubmit, canQueue: pluginId === 'pi' && canSubmit,
@@ -945,9 +1060,16 @@ export function useConversation(pluginId: ConversationPlugin = 'pi') {
     edit: (id: string, text: string) => mutateHistory('edit', id, text),
     retry: (id: string) => mutateHistory('retry', id),
     setDraftText: (text: string) => { if (selectedId && !managementLock.current && cache.current.get(selectedId)?.visibility === 'active') drafts.edit(mainScope(selectedId), text); },
-    removeDraftAttachment: (fileRefId: string) => {
-      if (!selectedId || managementLock.current || pending.current.has(selectedId) || cache.current.get(selectedId)?.visibility !== 'active') return;
-      const scope = mainScope(selectedId), value = drafts.get(scope); if (value) drafts.setAttachments(scope, value.attachmentRefs.filter((ref) => ref.fileRefId !== fileRefId));
+    removeDraftAttachment: (fileRefId: string, target?: ConversationAttachmentTarget) => {
+      const id = target?.conversationId ?? selectedId;
+      const branchId = target?.branchId ?? (id ? cache.current.get(id)?.branchId : undefined);
+      const state = id ? cache.current.get(id) : undefined;
+      if (!id || !branchId || !state || state.visibility !== 'active'
+        || managementLock.current || pending.current.has(id)) return false;
+      const scope = mainScope(id, branchId), value = drafts.get(scope);
+      if (!value) return false;
+      drafts.setAttachments(scope, value.attachmentRefs.filter((ref) => ref.fileRefId !== fileRefId));
+      return true;
     },
     saveDraftNow: () => {
       if (selectedId && !managementLock.current) { const scope = mainScope(selectedId); if (draftWritable(scope)) void drafts.persist(scope).catch(() => {}); }

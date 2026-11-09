@@ -10,8 +10,6 @@ import { LocalAlgorithmService, captureCodeBinding } from '../../modules/financi
 import type { AlgorithmEnvironment, AlgorithmSnapshotPort, ManagedTableReader } from '../../modules/financial/algorithm-types.js';
 import type { MaterialService } from '../../modules/collection/materials/service.js';
 import { createMaterialTableReader } from '../../modules/financial/managed-table.js';
-import { createWfdFixedSnapshotPort } from '../../modules/financial/algorithm-snapshot.js';
-import type { DatabaseLineService } from '../../adapters/database/line-selection.js';
 
 /** 仅可信启动器装配已核第一方代码；浏览器不能传入运行环境或实现路径。 */
 export function localFinancialConfiguration(resources: ResourceBindings): ServiceOptions['configureFinancial'] {
@@ -40,12 +38,10 @@ export interface LocalAlgorithmAssemblyOptions {
   resources: ResourceBindings;
   /** 可直接给端口，或给一个由已装配 MaterialService 构造只读端口的函数。 */
   tables?: ManagedTableReader | ((materials: MaterialService) => ManagedTableReader);
-  /** 固定快照端口，或从已装配数据库线路构造；缺省按显式 databaseSnapshots 装配真实 data.read。 */
+  /** 只接受受信宿主明确装配的固定快照端口；缺少时具体报告未装配。 */
   snapshots?: AlgorithmSnapshotPort | ((context: LocalAlgorithmAssemblyContext) => AlgorithmSnapshotPort | undefined);
   /** 仅隔离合成测试的静态开关；本机预览必须由持久采用记录驱动，静态 true 会被忽略。 */
   enabled?: boolean;
-  /** 由受信宿主显式装配真实 WFD data.read 固定快照端口。 */
-  databaseSnapshots?: boolean;
   environment?: AlgorithmEnvironment;
   expectedAssetsVersion?: string;
   /** 受控采用时冻结的 TS 输入转换/结果校验代码摘要。 */
@@ -56,7 +52,6 @@ export interface LocalAlgorithmAssemblyContext {
   tasks(): TaskService;
   permissions: PermissionService;
   materials?: MaterialService;
-  lines?: DatabaseLineService;
 }
 export type LocalAlgorithmFactory = (context: LocalAlgorithmAssemblyContext) => LocalAlgorithmService;
 
@@ -75,9 +70,7 @@ export function localAlgorithmConfiguration(options: LocalAlgorithmAssemblyOptio
   return context => {
     const tables = typeof options.tables === 'function' ? context.materials ? options.tables(context.materials) : undefined
       : options.tables ?? (context.materials ? createMaterialTableReader(context.materials) : undefined);
-    const snapshots = typeof options.snapshots === 'function' ? options.snapshots(context)
-      : options.snapshots ?? (options.databaseSnapshots && context.lines
-        ? createWfdFixedSnapshotPort({ binding: () => context.lines!.genericCurrent() }) : undefined);
+    const snapshots = typeof options.snapshots === 'function' ? options.snapshots(context) : options.snapshots;
     return new LocalAlgorithmService({ database: context.database, tasks: context.tasks, permissions: context.permissions,
       computeAssetsRoot: assetsRoot, expectedAssetsVersion: bundle.version,
       pythonExecutable, processRuntime, tables, snapshots, environment: options.environment ?? 'local-review',

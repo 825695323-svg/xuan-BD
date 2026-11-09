@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wfd.example/spec/v1.4/wfd-filter-result.schema.json",
+  "title": "WFD structured filter result / 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "protocol_version",
+    "operation",
+    "dataset_id",
+    "snapshot_id",
+    "history_mode",
+    "knowledge_cutoff",
+    "held_scope",
+    "usable_stage",
+    "business_time_range",
+    "query_hash",
+    "status",
+    "objects",
+    "object_count",
+    "indeterminate",
+    "predicate",
+    "order_by",
+    "bindings",
+    "coverage",
+    "scan_receipt",
+    "page",
+    "gaps",
+    "service_identity"
+  ],
+  "properties": {
+    "format_version": {
+      "const": "wfd.filter-objects-result/1"
+    },
+    "protocol_version": {
+      "const": "wfd.filter-objects/1.4-product1"
+    },
+    "operation": {
+      "const": "filter_objects"
+    },
+    "dataset_id": {
+      "type": "string"
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "history_mode": {
+      "enum": [
+        "snapshot_contents",
+        "market_known_at",
+        "system_held_at"
+      ]
+    },
+    "knowledge_cutoff": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "held_scope": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "usable_stage": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "business_time_range": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "query_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "status": {
+      "enum": [
+        "matched",
+        "empty",
+        "ambiguous",
+        "coverage_insufficient",
+        "budget_exceeded"
+      ]
+    },
+    "objects": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "required": [
+          "subject",
+          "values",
+          "record_refs",
+          "predicate_result"
+        ],
+        "properties": {
+          "subject": {
+            "type": "object"
+          },
+          "values": {
+            "type": "object"
+          },
+          "record_refs": {
+            "type": "object"
+          },
+          "predicate_result": {
+            "const": true
+          }
+        }
+      }
+    },
+    "object_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "indeterminate": {
+      "type": "array"
+    },
+    "predicate": {
+      "type": "object"
+    },
+    "order_by": {
+      "type": "array"
+    },
+    "bindings": {
+      "type": "array"
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "products",
+        "data_complete",
+        "basis"
+      ],
+      "properties": {
+        "products": {
+          "type": "array"
+        },
+        "data_complete": {
+          "type": "boolean"
+        },
+        "basis": {
+          "type": "string"
+        }
+      }
+    },
+    "scan_receipt": {
+      "type": "object",
+      "required": [
+        "candidate_rows",
+        "scanned_rows",
+        "matched_records",
+        "matched_objects",
+        "scan_complete",
+        "budget_nodes",
+        "budget_bytes",
+        "row_budget",
+        "byte_budget"
+      ],
+      "properties": {
+        "candidate_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scanned_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "matched_records": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "matched_objects": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "budget_nodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "budget_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "row_budget": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "byte_budget": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scan_complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "page_size",
+        "has_more",
+        "next_cursor",
+        "total_objects",
+        "result_exhausted"
+      ],
+      "properties": {
+        "page_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 8192
+        },
+        "total_objects": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "result_exhausted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "gaps": {
+      "type": "array"
+    },
+    "service_identity": {
+      "type": "object"
+    }
+  }
+}

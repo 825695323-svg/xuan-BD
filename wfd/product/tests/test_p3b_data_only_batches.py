@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from test_r1_data_only import (
 )
 from test_r2a_volume_publication import FakeDetector, VOL_UUID
 from wfd_sdk import product_machine
+from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, load_protocol_validator
 from wfd_sdk.product_batches import (
     BatchChunkConflict, BatchConflict, BatchIncomplete, BatchLimit,
     BatchPermission, ProductBatchLedger,
@@ -94,7 +96,7 @@ def machine_config(tmp_path, *, roles=tuple(sorted(BATCH_ROLES)), store=None,
 
 def machine_handle(config_path, operation, arguments):
     loaded = product_machine._load_config(str(config_path))
-    service = product_machine._build_service(loaded)
+    service = product_machine._build_service(loaded, operation=operation)
     return product_machine._handle(service, loaded, {
         "protocol_version": product_machine.MACHINE_PROTOCOL,
         "request_id": "p3b-" + operation.replace("_", "-"),
@@ -107,20 +109,30 @@ def machine_process(config_path, operation, arguments, env=None):
                "operation": operation, "arguments": arguments}
     run_env = dict(os.environ)
     run_env.update(env or {})
+    # -I omits cwd from sys.path; explicitly select this source root and carry
+    # the parent's fresh prefix so subprocesses cannot consume old co_filename pyc.
+    cache_prefix = sys.pycache_prefix or tempfile.mkdtemp(
+        prefix="p3b-machine-pycache-", dir=Path(config_path).parent)
+    bootstrap = ("import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); "
+                 "runpy.run_module('wfd_sdk.product_machine', run_name='__main__')")
     completed = subprocess.run(
-        [sys.executable, "-m", "wfd_sdk.product_machine",
-         "--config", str(config_path)],
+        [sys.executable, "-I", "-B", "-X", "pycache_prefix=" + str(cache_prefix),
+         "-c", bootstrap, str(HERE), "--config", str(config_path)],
         input=json.dumps(request).encode("utf-8"), stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, cwd=HERE, env=run_env, timeout=120)
-    assert completed.returncode == 0, completed.stderr.decode("utf-8", "replace")
+    assert completed.returncode == 0, (completed.stdout.decode("utf-8", "replace") +
+                                       completed.stderr.decode("utf-8", "replace"))
     return json.loads(completed.stdout.decode("utf-8"))
 
 
 def fresh_machine(tmp_path):
-    store = tmp_path / "store"
-    store.mkdir(parents=True)
-    config = machine_config(tmp_path, store=store, runtime=tmp_path / "runtime")
-    return config
+    store, runtime = tmp_path / "store", tmp_path / "runtime"
+    writer = "p3b-machine"
+    # Provision before connecting: batch_begin must not initialize a formal volume.
+    WFDDuckDBPrototype.initialize_new(
+        store, load_protocol_validator(HERE / "protocol"), runtime_root=runtime,
+        sandbox=False, writer_host=writer)
+    return machine_config(tmp_path, store=store, runtime=runtime, name=writer)
 
 
 def test_native_only_staging_and_forbidden_metadata(tmp_path, monkeypatch):

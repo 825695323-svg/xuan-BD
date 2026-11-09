@@ -4,7 +4,7 @@ import { DirectError } from '../../platform/runtime/file-workspace.js';
 import type { TaskExecutionContext } from '../../platform/jobs/tasks.js';
 import type { DirectRuntimeOptions, DirectRuntimeBundle } from '../../contracts/direct-runtime.js';
 import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
-import { createLocalActions } from '../../platform/capabilities/local-actions.js';
+import { createLocalActions, trustedBundledDependencyRoot } from '../../platform/capabilities/local-actions.js';
 import { createBaiduDriveActions } from '../../plugins/capture-sources/baidu-drive/index.js';
 import { createCustomSourceActions, type CustomSourceRegistry } from '../../plugins/capture-sources/custom-register.js';
 import { createBrowserActions } from '../../platform/capabilities/browser/index.js';
@@ -19,6 +19,7 @@ import { relative } from 'node:path';
 /** 应用装配各能力；注册、参数校验、权限与任务仍共用现有入口。 */
 export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntimeBundle {
   const local = createLocalActions(options, ['assembly']), artifactIdentity = inspectPath(options.artifactRoot);
+  const trustedRootFor = trustedBundledDependencyRoot(options, () => local.configuration().whisperModelPath ?? undefined);
   const protection = new DirectPathProtection(options.protectedPaths ?? [], artifactIdentity.canonicalPath, {
     isRegisteredExecutable: path => options.processRuntime?.isRegisteredExecutable(path) ?? false,
     credentialPaths: () => options.sourceSettings?.credentialPaths() ?? [],
@@ -27,7 +28,9 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
     configuration: options.baiduDrive, processRuntime: options.processRuntime, assertPath: path => protection.assertPath(path) }) : undefined;
   const browser = createBrowserActions({ configuration: options.browser, unavailableReason: options.browserUnavailableReason, files: options.files, artifactRoot: artifactIdentity.canonicalPath });
   const conversion = createConversionActions({ files: options.files, artifactRoot: artifactIdentity.canonicalPath,
-    processRuntime: options.processRuntime, assertPath: path => protection.assertPath(path) });
+    processRuntime: options.processRuntime, assertPath: path => protection.assertPath(path),
+    managedSource: (fileRefId, action) => ['conversion.document', 'pdf.extract'].includes(action)
+      ? options.managedConversionSource?.(fileRefId) ?? null : null });
   const capture = options.capturePrivateArtifactRoot ? createCaptureSourcePlugin({ files: options.files,
     artifactRoot: artifactIdentity.canonicalPath, privateArtifactRoot: options.capturePrivateArtifactRoot,
     sessions: options.captureSessions ? {
@@ -49,6 +52,11 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
     let configuration: unknown = {}, dependencies: unknown = directResourceVersions(options);
     if (sources?.handles(action)) {
       implementation.push('source', 'web'); configuration = sources.configuration(action, args);
+      if (action === 'source.wechat.extract') {
+        implementation.push('process');
+        const scriptPath = options.sourceSettings!.get().wechatExtract.scriptPath;
+        dependencies = directResourceVersions(options, ['python3'], scriptPath ? [scriptPath] : []);
+      }
       if (action === 'source.fetch' && args.sourceId === 'tdx') {
         implementation.push('tdx', 'process'); dependencies = directResourceVersions(options, ['python3', 'security'], options.tdxaidataPackage ? [options.tdxaidataPackage.path] : [], ['temp']);
       }
@@ -71,11 +79,12 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
       dependencies = directResourceVersions(options, [], options.browser ? [options.browser.daemonConfigPath] : []);
     } else if (conversion.handles(action)) {
       implementation.push('conversion');
+      if (['conversion.document', 'pdf.extract'].includes(action)) configuration = { material: options.managedConversionSource?.(String(args.fileRefId)) ?? null };
       if (['conversion.document', 'conversion.structured', 'conversion.archive'].includes(action)) implementation.push('office');
       if (action === 'conversion.document') implementation.push('html');
       if (['conversion.document', 'conversion.archive', 'conversion.pdf_render', 'pdf.extract'].includes(action)) implementation.push('pdf');
       if (['conversion.image', 'conversion.media', 'conversion.subtitle', 'conversion.pdf_render'].includes(action)) implementation.push('media');
-      if (action === 'conversion.media') { implementation.push('process'); dependencies = directResourceVersions(options, ['ffmpeg', 'ffprobe']); }
+      if (action === 'conversion.media') { implementation.push('local', 'bundledTrust', 'process'); dependencies = directResourceVersions(options, ['ffmpeg', 'ffprobe']); }
     } else {
       implementation.push('material', 'materialRead'); configuration = options.conversationMaterialVersions?.(action) ?? null;
       if (['material.read', 'material.process'].includes(action)) implementation.push('materialProcess');
@@ -112,7 +121,12 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
         const customSource = routed.action === 'source.register' && original.task.action === 'source.register'
           && operation.operationId === 'source.register.write' && options.customSources
           && capability.action === 'write' && capability.target.kind === 'file' && capability.target.path === options.customSources.path;
-        if (!producer && !tdxFile && !tdxTemporary && !customSource) protection.assertCapabilities([capability]);
+        const managed = ['conversion.document', 'pdf.extract'].includes(routed.action)
+          ? options.managedConversionSource?.(String((routed.args as Record<string, JsonValue>).fileRefId)) : null;
+        const managedRead = managed && capability.action === 'read' && capability.target.kind === 'file' && capability.target.path === managed.path;
+        if (!producer && !tdxFile && !tdxTemporary && !customSource && !managedRead) {
+          protection.assertCapabilities([capability], requested => trustedRootFor(original.task.action, requested));
+        }
       }
     };
     const context: TaskExecutionContext = { ...original,

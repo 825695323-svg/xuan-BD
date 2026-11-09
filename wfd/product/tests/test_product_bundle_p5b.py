@@ -1,30 +1,33 @@
-"""P5b first batch: delta and reference manifests over the same 0.2 descriptor."""
+"""P5b delta/reference manifests over actually published synthetic daily data.
+
+The baseline, Friday backfill and revisions are created under tmp_path through
+real submit calls; no historical store or handwritten snapshot is restored.
+"""
 from __future__ import annotations
 
 import copy
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, canonical, load_protocol_validator, sha
-from wfd_sdk.duckdb_storage import parquet_from_rows, rows_from_parquet
 from wfd_sdk.gc import GC
-from wfd_sdk.lineage import Lineage, sha_file
 from wfd_sdk.product_bundle import (
     BundledProductService, apply_delta_bundle, export_delta_bundle,
     export_financial_bundle, export_reference_bundle, import_financial_bundle,
     maintain_financial_bundle, register_reference_bundle,
 )
-from wfd_sdk.product_service import WFDProductService
+from wfd_sdk.product_service import SERVICE_VERSION, WFDProductService
+from synthetic_daily import (
+    ACTOR, DATASET, SOURCE_IDS, SUBJECT, known_day, make_daily_store,
+)
 
 
 HERE = Path(__file__).resolve().parents[1]
-ROOT = HERE.parents[1]
-DAILY60 = ROOT / "03_测试与验证记录/P3_通用入库与更新_2026-10-27/batches/run_20261026T200932Z/store"
-DAILY60_SID = "s_9c6b1cf47d2f782194474fcf"
-DAILY60_PID = "p_1d757ae27ee0b41b3ac63bcb"
-SUBJECT = {"kind": "instrument", "namespace": "wfd.cn", "id": "instrument_000001_a"}
+UPDATE_DAY = "2025-10-31"  # Friday; not the former 11/01 Saturday pseudo-session.
+UPDATE_KEY = "daily_000001_20251031"
 
 
 def _policy():
@@ -34,7 +37,7 @@ def _policy():
 
 
 def _policies():
-    return {"market_60": _policy(), "wfd_p2_local_evidence": _policy()}
+    return {source_id: _policy() for source_id in SOURCE_IDS}
 
 
 def _open(store: Path, runtime: Path):
@@ -45,10 +48,10 @@ def _open(store: Path, runtime: Path):
                                      caller_id="p5b-test", can_register=False)
 
 
-def _selection():
+def _selection(product_id):
     return {"products": [{
-        "product_id": DAILY60_PID, "fields": ["close_price"], "subject": SUBJECT,
-        "business_time_range": {"role": "observation", "start": "2025-11-01",
+        "product_id": product_id, "fields": ["close_price"], "subject": SUBJECT,
+        "business_time_range": {"role": "observation", "start": UPDATE_DAY,
                                 "end": "2025-12-31", "timezone": "Asia/Shanghai"}}],
         "evidence": {"mode": "if_licensed"}}
 
@@ -68,99 +71,94 @@ def _target_reader(store: Path, runtime: Path, sid: str):
                                  caller_id="p5b-target", allow_local_multi_dataset=True)
 
 
-def _patch_update(store: Path, source_sid: str):
-    """Clearly marked update fixture: append one daily row, rewrite one file/manifest."""
-    engine, service = _open(store, store.parent / "patch_runtime")
-    snapshot = engine.read_snapshot(source_sid)
-    files = copy.deepcopy(snapshot["files"])
-    for entry in files:
-        if entry["product_id"] != DAILY60_PID:
-            continue
-        rows = rows_from_parquet((store / entry["file_relpath"]).read_bytes())
-        rows.append({
-            "business_key": "daily_000001_20251101", "subject": SUBJECT,
-            "observation_time": {"status": "known", "precision": "day",
-                                 "earliest_utc": "2025-10-31T16:00:00Z",
-                                 "latest_exclusive_utc": "2025-11-01T16:00:00Z",
-                                 "source_timezone": "Asia/Shanghai"},
+def _publish_update(fixture):
+    """Really publish one artificial Friday backfill, reusing the pinned definition."""
+    assert date.fromisoformat(UPDATE_DAY).weekday() == 4
+    service = fixture.service
+    product = next(item for item in service.discover_products(
+        snapshot_id=fixture.snapshot_id)["products"] if item["product_id"] == fixture.product_id)
+    evidence_path = fixture.store.parent / "synthetic-backfill.txt"
+    evidence_path.write_text("Synthetic Friday backfill for delta tests; not market evidence.\n", "utf-8")
+    evidence = service.register_evidence(evidence_path)
+    output = {
+        "output_key": "daily_prices", "logical_domain": "observations", "subject": SUBJECT,
+        "definition_mode": "reuse", "definition_ref": copy.deepcopy(product["definition_ref"]),
+        "new_definition_declaration": None, "input_mode": "partial_observation",
+        "coverage": copy.deepcopy(product["coverage"]), "evidence_refs": [evidence],
+        "payload": {"kind": "tabular_rows", "rows": [{
+            "business_key": UPDATE_KEY, "subject": SUBJECT, "observation_time": known_day(UPDATE_DAY),
             "values": {
-                "close_price": {"data_type": "decimal", "value": "9.99",
-                                "value_state": "valid_value"},
-                "price_adjustment": {"data_type": "text", "value": "unknown",
-                                     "value_state": "valid_value"},
-                "source_basis": {"data_type": "text", "value": "local_compiled_daily",
-                                 "value_state": "valid_value"},
-            },
-        })
-        raw = parquet_from_rows(DAILY60_PID, entry["output_key"], SUBJECT,
-                                "tabular_rows", rows)
-        digest = sha(raw)
-        rel = f"observations/product={DAILY60_PID}/part-{digest[:24]}.parquet"
-        (store / rel).parent.mkdir(parents=True, exist_ok=True)
-        (store / rel).write_bytes(raw)
-        entry.update({"file_relpath": rel, "file_sha256": digest, "row_count": len(rows)})
-        bundle = entry["source_bundle"]
-        output_key = entry["output_key"]
-        bundle.setdefault("_wfd_row_versions", {}).setdefault(output_key, {})[
-            "daily_000001_20251101"] = {
-                "logical_key": "daily_000001_20251101", "revision_id": "r_p5b_fixture_update",
-                "supersedes": None, "input_mode": "partial_observation",
-                "withdrawn": False, "reason": None}
-        bundle.setdefault("row_public_times", {}).setdefault(output_key, {})[
-            "daily_000001_20251101"] = {
-                "status": "known", "precision": "day",
-                "earliest_utc": "2025-10-31T16:00:00Z",
-                "latest_exclusive_utc": "2025-11-01T16:00:00Z",
-                "source_timezone": "Asia/Shanghai"}
-    manifest = {"parent_snapshot_id": source_sid, "files": files}
-    mraw = canonical(manifest)
-    mhash = sha(mraw)
-    mrel = f"catalog/manifests/manifest_{mhash[:24]}.json"
-    (store / mrel).write_bytes(mraw)
-    new_sid = "s_" + sha(canonical(["p5b-update-fixture", source_sid, mhash]))[:24]
-    snap = {"snapshot_id": new_sid, "parent_snapshot_id": source_sid,
-            "manifest_relpath": mrel, "manifest_sha256": mhash, "files": files,
-            "metadata_versions": [], "request_key": "p5b-update-fixture",
-            "request_fingerprint": "p5b-update-fixture",
-            "receipt": {"status": "p5b_update_fixture", "snapshot_id": new_sid,
-                        "parent_snapshot_id": source_sid,
-                        "outputs_success": [DAILY60_PID]}}
-    sraw = canonical(snap)
-    srel = f"catalog/snapshots/{new_sid}.json"
-    (store / srel).write_bytes(sraw)
-    (store / f"catalog/commits/{new_sid}.json").write_bytes(canonical(
-        {"snapshot_id": new_sid, "snapshot_file": srel, "snapshot_sha256": sha(sraw)}))
-    Lineage(store).ensure(new_sid)
-    return new_sid
+                "close_price": {"data_type": "decimal", "value": "99.99", "value_state": "valid_value"},
+                "price_adjustment": {"data_type": "text", "value": "unknown", "value_state": "valid_value"},
+                "source_basis": {"data_type": "text", "value": "synthetic_fixture_not_market_data", "value_state": "valid_value"},
+            }}]},
+    }
+    dependency = {"dataset_id": DATASET, "snapshot_id": fixture.unit_snapshot_id,
+                  "product_id": fixture.unit_product_id, "role": "unit", "required": True}
+    doc = {
+        "protocol_version": "wfd.ingest/1.3-candidate",
+        "request_identity": {"dataset_id": DATASET, "trusted_actor_namespace": ACTOR,
+                             "request_id": "p5b-synthetic-friday-backfill"},
+        "intent": "submit", "producer_namespace": ACTOR,
+        "expected_parent_snapshot_id": fixture.snapshot_id, "outputs": [output],
+        "source_bundle": {
+            "source_id": SOURCE_IDS[0], "source_ids": [SOURCE_IDS[0]],
+            "license": "synthetic_test_only", "usage_scope": "test_only",
+            "raw_source_bytes_custodied": True, "public_time": known_day(UPDATE_DAY),
+            "source_roles": {"daily_prices": [{"source_id": SOURCE_IDS[0],
+                                                 "roles": ["definer", "compiler", "deliverer"]}]},
+            "product_service": {"version": SERVICE_VERSION,
+                                "outputs": {"daily_prices": {"read_dependencies": [dependency]}}},
+        },
+    }
+    doc["request_identity"]["submission_digest"] = "sha256:" + sha(canonical(doc))
+    result = service.submit(doc)
+    assert result["status"] == "published_formal", result
+    assert result["output_results"][0]["product_id"] == fixture.product_id
+    assert fixture.engine.read_snapshot(result["snapshot_id"])["parent_snapshot_id"] == fixture.snapshot_id
+    return result["snapshot_id"]
+
+
+def _revision_ids(rows):
+    return {item["row"]["business_key"]: item["record_ref"]["revision_id"] for item in rows}
 
 
 @pytest.fixture
 def delta_env(tmp_path):
-    source = tmp_path / "source"
-    import shutil
-    shutil.copytree(DAILY60, source)
+    fixture = make_daily_store(tmp_path / "source")
+    source = fixture.store
     engine, service = _open(source, tmp_path / "source_runtime")
-    selection = _selection()
-    full = export_financial_bundle(service, [DAILY60_PID], tmp_path / "full",
-                                   snapshot_id=DAILY60_SID, selection=selection)
+    product_id = fixture.product_id
+    selection = _selection(product_id)
+    full = export_financial_bundle(service, [product_id], tmp_path / "full",
+                                   snapshot_id=fixture.snapshot_id, selection=selection)
     trusted = {sid: {"may_read": True, "may_read_evidence": True,
                      "usage_scope": "local_use"} for sid in _policies()}
     target_service, report = import_financial_bundle(
         tmp_path / "full", tmp_path / "target",
         runtime_root=tmp_path / "target_runtime", allowed_sources=trusted)
     baseline_sid = report["target_snapshot_id"]
-    new_source_sid = _patch_update(source, DAILY60_SID)
+    new_source_sid = _publish_update(fixture)
+    old_source_rows = service.read(product_id, snapshot_id=fixture.snapshot_id)["rows"]
+    new_source_rows = service.read(product_id, snapshot_id=new_source_sid)["rows"]
+    assert len(old_source_rows) == 43 and len(new_source_rows) == 44
+    old_revisions, new_revisions = _revision_ids(old_source_rows), _revision_ids(new_source_rows)
+    assert all(new_revisions[key] == revision for key, revision in old_revisions.items())
+    assert UPDATE_KEY not in old_revisions
+    assert new_revisions[UPDATE_KEY].startswith("r_")
+    assert new_revisions[UPDATE_KEY] not in set(old_revisions.values())
     return {
-        "tmp": tmp_path, "source": source, "service": service,
+        "tmp": tmp_path, "source": source, "service": service, "product_id": product_id,
         "selection": selection, "full": full, "trusted": trusted,
         "target_service": target_service, "baseline_sid": baseline_sid,
         "new_source_sid": new_source_sid,
+        "old_revisions": old_revisions, "new_revisions": new_revisions,
     }
 
 
 def _make_delta(env, destination):
     return export_delta_bundle(
-        env["service"], [DAILY60_PID], destination,
+        env["service"], [env["product_id"]], destination,
         snapshot_id=env["new_source_sid"], baseline_store=env["tmp"] / "target",
         baseline_snapshot_id=env["baseline_sid"], selection=env["selection"])
 
@@ -186,12 +184,16 @@ def test_delta_same_selection_updates_new_and_keeps_old_readable(delta_env):
                             report["target_snapshot_id"])
     baseline_reader = _target_reader(env["tmp"] / "target", env["tmp"] / "read_runtime2",
                                      env["baseline_sid"])
-    assert len(baseline_reader.read(old_main["product_id"],
-                                    snapshot_id=env["baseline_sid"])["rows"]) == 43
+    old_rows = baseline_reader.read(old_main["product_id"],
+                                     snapshot_id=env["baseline_sid"])["rows"]
+    assert len(old_rows) == 43
     new_rows = reader.read(new_main["product_id"],
                            snapshot_id=report["target_snapshot_id"])["rows"]
     assert len(new_rows) == 44
-    assert new_rows[0]["row"]["business_key"] == "daily_000001_20251101"
+    assert new_rows[0]["row"]["business_key"] == UPDATE_KEY
+    assert new_rows[0]["row"]["values"]["close_price"]["value"] == "99.99"
+    assert _revision_ids(old_rows) == env["old_revisions"]
+    assert _revision_ids(new_rows) == env["new_revisions"]
     # Re-applying the same package is the same result, not a second snapshot.
     commits = len(list((env["tmp"] / "target/catalog/commits").glob("*.json")))
     again = apply_delta_bundle(
@@ -273,11 +275,11 @@ def test_delta_interruption_and_repeat_apply(delta_env):
 def test_delta_digest_is_stable_across_page_size_and_generation(delta_env):
     env = delta_env
     second = export_financial_bundle(
-        env["service"], [DAILY60_PID], env["tmp"] / "full2",
+        env["service"], [env["product_id"]], env["tmp"] / "full2",
         snapshot_id=env["new_source_sid"], selection=env["selection"],
         read_limits={"page_size": 1, "max_pages": 400})
     third = export_financial_bundle(
-        env["service"], [DAILY60_PID], env["tmp"] / "full3",
+        env["service"], [env["product_id"]], env["tmp"] / "full3",
         snapshot_id=env["new_source_sid"], selection=env["selection"],
         read_limits={"page_size": 500, "max_pages": 400})
     assert second["selection_digest"] == third["selection_digest"]
@@ -290,19 +292,19 @@ def test_delta_digest_is_stable_across_page_size_and_generation(delta_env):
 
 
 def test_reference_reachable_missing_wrong_dataset_and_protection(tmp_path):
-    source = tmp_path / "source"
     import shutil
-    shutil.copytree(DAILY60, source)
+    fixture = make_daily_store(tmp_path / "source")
+    source = fixture.store
     engine, service = _open(source, tmp_path / "source_runtime")
     reference = export_reference_bundle(
-        service, [DAILY60_PID], tmp_path / "ref",
-        snapshot_id=DAILY60_SID, selection=_selection())
+        service, [fixture.product_id], tmp_path / "ref",
+        snapshot_id=fixture.snapshot_id, selection=_selection(fixture.product_id))
     assert reference["mode"] == "reference"
     assert reference["read_self_contained"] is False
     assert reference["storage_packages"] == []
     reachable = register_reference_bundle(
         tmp_path / "ref", tmp_path / "reachable_target",
-        resolvers={"p3a_batch_real_2026": service}, runtime_root=tmp_path / "rr")
+        resolvers={DATASET: service}, runtime_root=tmp_path / "rr")
     assert reachable["status"] == "registered_reference"
     assert reachable["read_self_contained"] is True
     assert all(item["resolution"] == "reachable" for item in reachable["external_objects"])
@@ -320,7 +322,7 @@ def test_reference_reachable_missing_wrong_dataset_and_protection(tmp_path):
     wrong_engine, wrong_service = _open(wrong, tmp_path / "wrong_runtime")
     wrong_result = register_reference_bundle(
         tmp_path / "ref", tmp_path / "wrong_target",
-        resolvers={"p3a_batch_real_2026": wrong_service}, runtime_root=tmp_path / "wr")
+        resolvers={DATASET: wrong_service}, runtime_root=tmp_path / "wr")
     assert all(item["resolution"] == "wrong_dataset"
                for item in wrong_result["external_objects"])
     roots = GC(source).build_roots()

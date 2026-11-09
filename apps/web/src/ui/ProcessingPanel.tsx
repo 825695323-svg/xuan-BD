@@ -50,7 +50,7 @@ function nextAction(plan: ProcessingPlanView, task: ProcessingTaskView | null, w
   if (pending.length) return words(`下一步：执行「${stepLabel(pending[0], words)}」，或一次运行剩余步骤。`, `Next: run “${stepLabel(pending[0], words)}”, or run the remaining steps.`);
   if (blocked.length) return words('步骤因缺口阻塞；向代理说明缺失信息后可修订计划。', 'Steps are blocked by gaps; tell the agent what is missing so it can revise the plan.');
   if (plan.outputs.some(output => gapsOf(output).length)) return words('结构步骤已完成；仍有缺口，发布前需补齐语义或目标。', 'Structural steps are done; gaps remain before publication.');
-  if (plan.outputs.some(output => output.state === 'structured')) return words('结构产物已形成；发布仍以候选提交和真实授权为准。', 'Structural artifacts exist; publication still requires candidate submission and real authorization.');
+  if (plan.outputs.some(output => output.state === 'structured')) return words('结构产物已形成；交接仍须符合 R1 合同并明确确认。', 'Structural artifacts exist; handoff still requires the R1 contract and explicit confirmation.');
   return words('计划已准备，可运行剩余步骤。', 'The plan is prepared; remaining steps can run.');
 }
 
@@ -89,9 +89,9 @@ export default function ProcessingPanel({ conversationId, branchId }: { conversa
     try {
       const requestId = `ui.processing.${action}.${item.plan.planId}.${Date.now()}`;
       const plan = encodeURIComponent(item.plan.planId);
-      if (action === 'run') await request(`/api/harness/processing/plans/${plan}/run`, 'POST', { requestId });
-      else if (action === 'recover') await request(`/api/harness/processing/plans/${plan}/recover`, 'POST', { requestId });
-      else await request(`/api/harness/processing/plans/${plan}/steps/${encodeURIComponent(stepId ?? '')}/execute`, 'POST', { requestId });
+      if (action === 'run') await request(`/api/bd/processing/plans/${plan}/run`, 'POST', { requestId });
+      else if (action === 'recover') await request(`/api/bd/processing/plans/${plan}/recover`, 'POST', { requestId });
+      else await request(`/api/bd/processing/plans/${plan}/steps/${encodeURIComponent(stepId ?? '')}/execute`, 'POST', { requestId });
       await load();
     } catch (failure) { setError(errorDetail(failure)); }
     finally { setBusy(null); }
@@ -154,14 +154,15 @@ export default function ProcessingPanel({ conversationId, branchId }: { conversa
                 </span>}
                 {gaps.length > 0 && <span className="candidate-output-gap">{words(`缺口：${gaps.slice(0, 3).join('；')}${gaps.length > 3 ? `；还有 ${gaps.length - 3} 项，见详情` : ''}`,
                   `Gaps: ${gaps.slice(0, 3).join('; ')}${gaps.length > 3 ? `; ${gaps.length - 3} more in details` : ''}`)}</span>}
-                {output.state === 'structured' && generation !== null && <a className="processing-artifact" href={`/api/harness/processing/plans/${encodeURIComponent(plan.planId)}/outputs/${encodeURIComponent(output.outputId)}/artifact?localDataGeneration=${generation}`}
+                {output.routingState === 'rejected' && output.rejectReason && <span className="candidate-output-gap">{words('本地用途拒绝理由', 'Local rejection reason')}：{output.rejectReason}</span>}
+                {output.state === 'structured' && generation !== null && <a className="processing-artifact" href={`/api/bd/processing/plans/${encodeURIComponent(plan.planId)}/outputs/${encodeURIComponent(output.outputId)}/artifact?localDataGeneration=${generation}`}
                   target="_blank" rel="noreferrer"><FileJson size={13} aria-hidden="true" />{words('查看结构产物', 'View structural artifact')}</a>}
                 <div className="processing-steps">
                   {output.steps.map(step => <span className="processing-step" data-state={step.state} key={step.stepId} title={step.stepId}>
                     <span>{stepLabel(step, words)}</span>
                     <span className="processing-step-state">{label(stepStateLabels, step.state, words)}</span>
                     {step.state === 'succeeded' && step.output && generation !== null && <a className="processing-step-action" target="_blank" rel="noreferrer"
-                      href={`/api/harness/processing/plans/${encodeURIComponent(plan.planId)}/steps/${encodeURIComponent(step.stepId)}/artifact?localDataGeneration=${generation}`}>{words('产物', 'Artifact')}</a>}
+                      href={`/api/bd/processing/plans/${encodeURIComponent(plan.planId)}/steps/${encodeURIComponent(step.stepId)}/artifact?localDataGeneration=${generation}`}>{words('产物', 'Artifact')}</a>}
                     {step.state === 'pending' && <button type="button" className="text-button processing-step-action" disabled={!!busy}
                       onClick={() => void act(item, 'execute', step.stepId)}>{words('单步执行', 'Run step')}</button>}
                   </span>)}
@@ -188,6 +189,7 @@ export default function ProcessingPanel({ conversationId, branchId }: { conversa
             {plan.outputs.map((output, index) => <div className="candidate-output-detail" key={output.outputId}>
               <strong>{outputLabel(plan, output, index)} · {output.outputId}</strong>
               <small>{words('路由', 'Routing')} {output.routingState} · {words('意图', 'Intent')} {output.intendedAction} · {words('证据范围', 'Evidence scope')} {output.evidenceScope ?? '—'}</small>
+              {output.routingState === 'rejected' && output.rejectReason && <small>{words('本地用途拒绝理由', 'Local rejection reason')}：{output.rejectReason}</small>}
               {output.target && <small>{words('目标', 'Target')} {output.target.productId ?? output.target.kind}{output.target.expectedSnapshotId ? ` · ${output.target.expectedSnapshotId}` : ''}</small>}
               {output.steps.map(step => <small key={step.stepId}>{step.stepId} · {step.kind} · {step.state} · {step.outputDigest ? step.outputDigest.slice(0, 16) : '—'}</small>)}
               {gapsOf(output).map(gap => <small key={gap}>{words('缺口', 'Gap')}：{gap}</small>)}

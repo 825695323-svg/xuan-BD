@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .lineage import Lineage, files_root, sha_file
+from .row_version_objects import reject_unsupported
 
 
 def now() -> str:
@@ -52,6 +53,7 @@ def object_manifest(store: Path, snapshot_id: str, *, include_ancestor_data: boo
     if not snap_path.is_file():
         raise TransferError(f"SNAPSHOT_NOT_FOUND {snapshot_id}")
     snap = json.loads(snap_path.read_text("utf-8"))
+    reject_unsupported(snap, "transfer")
 
     objects, metas = {}, []
     # 元数据：本快照链上的 snapshot/manifest/commit/lineage checkpoint
@@ -68,6 +70,7 @@ def object_manifest(store: Path, snapshot_id: str, *, include_ancestor_data: boo
         sp = store / f"catalog/snapshots/{sid}.json"
         if sp.is_file():
             s = json.loads(sp.read_text("utf-8"))
+            reject_unsupported(s, "transfer")
             mp = store / s["manifest_relpath"]
             if mp.is_file():
                 metas.append({"rel_path": s["manifest_relpath"], "sha256": sha_file(mp), "size": mp.stat().st_size,
@@ -79,6 +82,7 @@ def object_manifest(store: Path, snapshot_id: str, *, include_ancestor_data: boo
         if not sp.is_file():
             return
         s = json.loads(sp.read_text("utf-8"))
+        reject_unsupported(s, "transfer")
         for f in s["files"]:
             rel = f["file_relpath"]
             p = store / rel
@@ -114,6 +118,7 @@ def export_package(store: Path, snapshot_id: str, pkg_dir: Path, *, include_ance
     (pkg_dir / "objects").mkdir(parents=True)
     man = object_manifest(store, snapshot_id, include_ancestor_data=include_ancestor_data)
     snap = json.loads((store / f"catalog/snapshots/{snapshot_id}.json").read_text("utf-8"))
+    reject_unsupported(snap, "transfer")
     for obj in man["objects"]:
         rels = obj["rel_paths"]
         src = store / rels[0]
@@ -429,6 +434,7 @@ def read_guarded(store: Path, snapshot_id: str, rows_loader) -> dict:
     if mm_path.is_file():
         tiers = json.loads(mm_path.read_text("utf-8")).get("objects", {})
     snap = json.loads((store / f"catalog/snapshots/{snapshot_id}.json").read_text("utf-8"))
+    reject_unsupported(snap, "transfer")
     unavailable = []
     for f in snap["files"]:
         h = f["file_sha256"].split(":")[-1]

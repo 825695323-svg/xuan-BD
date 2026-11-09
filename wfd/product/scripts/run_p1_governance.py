@@ -2,11 +2,13 @@
 """Small P1 evidence run: new definition, formal publication, new-instance readback."""
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from run_financial_slice import new_output_directory
 
 ENGINE = Path(__file__).resolve().parents[1]
 PROJECT = ENGINE.parents[1]
@@ -29,8 +31,6 @@ SOURCE = {
     "license": "test_only",
     "may_redistribute": False,
 }
-EVIDENCE = PROJECT / "03_测试与验证记录" / "P1_正式契约与治理_2026-10-27"
-RUN = EVIDENCE / ("run_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
 
 
 def save(path, data):
@@ -51,7 +51,8 @@ def service(root, runtime, roles, caller):
     )
 
 
-def main():
+def main(output):
+    RUN = new_output_directory(output)
     RUN.mkdir(parents=True, exist_ok=False)
     store = RUN / "store"
     source_path = RUN / "source.txt"
@@ -96,15 +97,15 @@ def main():
     summary = {
         "status": "complete",
         "service_version": SERVICE_VERSION,
-        "run_dir": str(RUN.relative_to(PROJECT)),
-        "store": str(store.relative_to(PROJECT)),
+        "run_dir": str(RUN),
+        "store": str(store),
         "request_identity": doc["request_identity"],
         "product_id": pid,
         "snapshot_id": sid,
         "definition_sequence": product.get("definition_sequence"),
         "definition_compatibility": product.get("definition_compatibility"),
         "contract_part_digests": product["contracts"].get("part_digests"),
-        "formal_publication_receipt": str(receipt_path.relative_to(PROJECT)) if receipt_path else None,
+        "formal_publication_receipt": str(receipt_path) if receipt_path else None,
         "formal_publication_verified": bool(formal),
         "formal_checks": formal.get("checks") if formal else None,
         "raw_engine_status": formal.get("raw_engine_status") if formal else None,
@@ -126,4 +127,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True, help="全新工程外输出目录；父目录须存在")
+    main(parser.parse_args().output)

@@ -32,7 +32,7 @@ function readPinned(path: string): string {
 }
 function assertStopped(stateRoot: string): void {
   for (const root of [stateRoot, ...readdirSync(stateRoot, { withFileTypes: true }).filter(x => x.isDirectory()).map(x => join(stateRoot, x.name))]) {
-    if (pathExists(join(root, '.harness-owner.lock'))) fail('存在现行状态所有者锁；维护不会按进程编号或锁龄接管。');
+    if (['.bd-owner.lock', '.harness-owner.lock'].some(name => pathExists(join(root, name)))) fail('存在现行状态所有者锁；维护不会按进程编号或锁龄接管。');
   }
 }
 function inspect(expected: Expected, ignoreMaintenanceLock = false): { plan: DeviceRepairPlan; original: string; document: MachineBindingDocument } {
@@ -44,7 +44,7 @@ function inspect(expected: Expected, ignoreMaintenanceLock = false): { plan: Dev
   const manifestStat = lstatSync(join(root, 'config/machine.bindings.json'));
   if (manifestStat.uid !== process.getuid?.()) fail('维护必须由原绑定文件所有者执行。');
   const document = JSON.parse(original) as MachineBindingDocument;
-  if (marker.application !== 'xuan-harness' || marker.version !== 1 || marker.identity !== expected.runtimeIdentity
+  if (marker.application !== 'xuan-bd' || marker.version !== 1 || marker.identity !== expected.runtimeIdentity
     || document.version !== 1 || document.runtimeIdentity !== expected.runtimeIdentity || document.revision !== expected.revision
     || !document.resources || typeof document.resources !== 'object' || Array.isArray(document.resources)) fail('原实例身份或绑定修订不一致。');
   const roots: RootCheck[] = [], mappings = new Map<string, string>();

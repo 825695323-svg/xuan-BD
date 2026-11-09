@@ -1,8 +1,10 @@
 import type { JsonValue } from '../../contracts/task-contracts.js';
+import type { EligibilityHistoryMode, FixedObjectEvidence, HoldingTimeEvidence, PublicationTimeEvidence, PurposeEligibilityResult,
+  PurposeEvidenceClaim, RestrictionEvidence, RevisionEvidence, WfdDecisionEvidence, WfdHistorySupportEvidence } from '../collection/purpose-eligibility.js';
 
 /** 本模块只服务当前已有的 MA、固定 12/26/9 MACD 和严格看涨吞没；不扩成通用工具平台。 */
 export const ALGORITHM_CONTRACT_VERSION = 'bd-local-algorithms/1';
-export const ALGORITHM_RUNTIME = 'harness.algorithms';
+export const ALGORITHM_RUNTIME = 'bd.algorithms';
 export const ALGORITHM_CALL_ACTION = 'algorithms.calculate';
 export const ALGORITHM_TABLE_ADAPTER_VERSION = 'managed-material-table/1';
 export const ALGORITHM_METHOD_IDS = ['ma', 'macd', 'bullish_engulfing'] as const;
@@ -101,6 +103,13 @@ export interface AlgorithmSnapshotReference {
   semantics: AlgorithmSemantics;
   calendar: AlgorithmCalendar;
   range?: { start: string; end: string };
+  /** 历史请求必须显式指定的现有 WFD 视角与实际截止；缺省只读快照内容。 */
+  perspective?: EligibilityHistoryMode;
+  at?: string;
+  includeHistory?: boolean;
+  /** system_held_at 必须显式固定的实例持有范围与可用阶段。 */
+  heldScope?: string;
+  usableStage?: 'acquired' | 'custodied' | 'published_readable';
   /** 可选现场核对摘要；实际页仍逐页核对并在封闭输入中记录解析后的真实摘要。 */
   expectedRowsSha256?: string;
   expectedRowCount?: number;
@@ -120,10 +129,28 @@ export type AlgorithmParameters =
   | { short_period: 12; long_period: 26; signal_period: 9; init: 'first_valid' }
   | Record<string, never>;
 
+export interface AlgorithmUsage {
+  /** 只接受本机算法当前内容或历史计算两类；发布资格不属于本算法入口。 */
+  purpose: 'current_compute' | 'historical_compute';
+  /** 历史计算必须显式选择现有 WFD 历史模式并固定截止；当前计算保持 null。 */
+  historyMode: EligibilityHistoryMode | null;
+  cutoff: string | null;
+  perspective: string | null;
+  /** 由受信提交上下文写入，不接受请求正文自报。 */
+  purposeEvidence?: PurposeEvidenceClaim[];
+}
+
+/** 真实提交来源：HTTP 操作者或受信会话宿主核对过的用户消息；模型不能自报。 */
+export type AlgorithmSubmissionContext =
+  | { authority: 'operator-http'; requestId: string; observedAtUtc: string }
+  | { authority: 'user-message'; messageId: string; quote: string; observedAtUtc: string };
+
 export interface AlgorithmCallRequest {
   methodId: AlgorithmMethodId;
   parameters: AlgorithmParameters;
   source: AlgorithmSource;
+  /** 缺省保持原有当前内容计算能力，不自动提升历史资格。 */
+  usage?: AlgorithmUsage;
 }
 
 export interface AlgorithmMetadata {
@@ -173,6 +200,18 @@ export interface AlgorithmSnapshotRead {
    * 否则只核对服务端身份/descriptor 并单独证明本地投影摘要。
    */
   verifiedScope: 'server_identity_descriptor_and_projection' | 'server_identity_descriptor_and_full_rows';
+  /** 逐行实际 WFD 资格/公开时间/修订/限制证据；与 rows 同序，供共用规则消费。 */
+  evidence?: AlgorithmSnapshotRowEvidence[];
+}
+
+export interface AlgorithmSnapshotRowEvidence {
+  object: FixedObjectEvidence;
+  publicationTime: PublicationTimeEvidence;
+  holdingTime: HoldingTimeEvidence | null;
+  revision: RevisionEvidence | null;
+  wfdHistory: WfdHistorySupportEvidence;
+  restriction: RestrictionEvidence;
+  wfdDecision: WfdDecisionEvidence | null;
 }
 
 /** 真实 `wfd.data-service/v1` 固定快照只读端口。 */
@@ -212,7 +251,7 @@ export interface AlgorithmResultRow { timestamp: string; available_at: string; [
 export interface AlgorithmComputedResult {
   status: 'computed';
   persistence: 'not_requested';
-  publication: { state: 'not_requested'; route: 'existing_generic_candidate_service'; performed: false };
+  publication: { state: 'not_requested'; performed: false };
   environment: AlgorithmEnvironment;
   taskId: string;
   methodId: AlgorithmMethodId;
@@ -231,6 +270,10 @@ export interface AlgorithmComputedResult {
   gaps: AlgorithmGap[];
   method: JsonValue;
   limitations: string[];
+  /** 使用边界实际执行的共用用途资格：输入冻结后、结果形成后分别保留。 */
+  eligibility: { input: PurposeEligibilityResult; result: PurposeEligibilityResult } | null;
+  /** 实际执行完成时间；历史回放不得倒填为截止前已存在。 */
+  computedAt: string;
   externalActionExecuted: false;
 }
 

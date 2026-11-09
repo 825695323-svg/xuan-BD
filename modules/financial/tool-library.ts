@@ -6,8 +6,23 @@ import {
   ALGORITHM_REGISTRY, ALGORITHM_REGISTRY_NOTE, ALGORITHM_REGISTRY_REGISTERED_AT, ALGORITHM_REGISTRY_VERSION,
   EXECUTABLE_TOOL_IDS, registryCounts,
 } from './algorithm-registry.js';
+import { ALGORITHM_DESIGN_SUMMARY, designFor } from './algorithm-design-dispositions.js';
+import { ALGORITHM_DEFINITION_SUMMARY, definitionFor } from './algorithm-definitions.js';
+import { DESIGN_CATALOG } from './algorithm-design-catalog.js';
 
 const EXECUTABLE = new Set<string>(EXECUTABLE_TOOL_IDS);
+
+/**
+ * 只往视图条目上挂只读定义与设计建议；不写回登记清单，也不改任何运行字段。
+ * 没有对应条目的保持原样，接口消费方按可选字段处理。
+ */
+function withDesign(tools: ToolLibraryTool[]): ToolLibraryTool[] {
+  return tools.map(tool => {
+    const design = designFor(tool.id), definition = definitionFor(tool.id);
+    if (!design && !definition) return tool;
+    return { ...tool, ...(design ? { design } : {}), ...(definition ? { definition } : {}) };
+  });
+}
 
 /**
  * 只读基础算法目录；不读取业务快照、创建计算任务或持久化目录状态。
@@ -31,13 +46,15 @@ export class ToolLibraryService {
         return { ...tool, status: method.status, reason: method.reason };
       });
       const ready = tools.some(tool => tool.status === 'ready');
-      return { tools, status: ready ? 'ready' : 'unavailable', registry,
+      return { tools: withDesign(tools), status: ready ? 'ready' : 'unavailable', registry,
+        design: ALGORITHM_DESIGN_SUMMARY, definitions: ALGORITHM_DEFINITION_SUMMARY, catalog: DESIGN_CATALOG,
         reason: ready ? null : catalog.reason ?? tools.find(tool => tool.reason)?.reason ?? '算法计算入口尚未就绪。' };
     }
     const enabled = this.options.financial?.status().enabled === true;
     const tools = structuredClone(ALGORITHM_REGISTRY).map(tool => EXECUTABLE.has(tool.id) ? { ...tool,
       status: enabled ? 'ready' as const : 'unavailable' as const, reason: enabled ? null : '本机计算资产尚未完成登记或启用。' } : tool);
-    return { tools, status: tools.some(tool => tool.status === 'ready') ? 'ready' : 'unavailable', registry,
+    return { tools: withDesign(tools), status: tools.some(tool => tool.status === 'ready') ? 'ready' : 'unavailable', registry,
+      design: ALGORITHM_DESIGN_SUMMARY, definitions: ALGORITHM_DEFINITION_SUMMARY, catalog: DESIGN_CATALOG,
       reason: enabled ? null : '本机计算资产尚未完成登记或启用。' };
   }
 }

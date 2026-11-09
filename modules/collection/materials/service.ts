@@ -6,9 +6,10 @@ import { TaskError, type TaskExecutionContext, type TaskRecord, type TaskResult,
 import type { JsonValue } from '../../../contracts/task-contracts.js';
 import type { MaterialEnvelope, MaterialEnvironment, MaterialLimits, MaterialParserAdapter, MaterialPreview, MaterialRecord, MaterialSubmitInput } from './contracts.js';
 import { DEFAULT_MATERIAL_ADAPTERS, inspectMaterial, MATERIAL_INSPECTOR_VERSION, MaterialError, materialAdapterCatalog, materialLimits, validateDeclarations } from '../data-processing/material-inspector/index.js';
+import { SHARED_MATERIAL_OBJECTS_SCHEMA } from '../original-storage.js';
 
 const MATERIAL_CUSTODY_LIMIT = 256 * 1024 * 1024;
-export const MATERIAL_RUNTIME = 'harness.materials';
+export const MATERIAL_RUNTIME = 'bd.materials';
 export const MATERIAL_OPERATION = 'materials.inspect';
 interface InputBinding extends MaterialSubmitInput { materialId: string; filename: string; fileRefVersion: number; mediaType: string }
 export interface MaterialServiceOptions {
@@ -24,11 +25,7 @@ CREATE TABLE material_inputs (
  material_id TEXT PRIMARY KEY, task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
  binding_json TEXT NOT NULL, binding_digest TEXT NOT NULL, created_at INTEGER NOT NULL
 );
-CREATE TABLE material_objects (
- material_id TEXT PRIMARY KEY REFERENCES material_inputs(material_id),
- envelope_json TEXT NOT NULL, envelope_digest TEXT NOT NULL, preview_json TEXT NOT NULL, preview_digest TEXT NOT NULL,
- original_bytes BLOB NOT NULL
-);
+${SHARED_MATERIAL_OBJECTS_SCHEMA}
 `;
 
 /** 本表只保存输入与材料事实；运行、审批、停止和恢复状态由唯一 TaskService 拥有。 */
@@ -215,7 +212,7 @@ export class MaterialService {
     }
   }
   private assertDispatch(): void {
-    if (this.tasks.getControl().stopped) throw new TaskError('HARNESS_STOPPED', '服务已停止，材料入口不接受新派发。');
+    if (this.tasks.getControl().stopped) throw new TaskError('BD_STOPPED', '服务已停止，材料入口不接受新派发。');
   }
   private assertActive(context: TaskExecutionContext): void {
     context.signal.throwIfAborted();

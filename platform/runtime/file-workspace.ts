@@ -19,9 +19,11 @@ export interface DirectAuthority {
   assert(): void;
 }
 
-export async function acquireAuthority(context: TaskExecutionContext, operationId: string, args: JsonValue, capabilities: readonly PermissionCapability[]): Promise<DirectAuthority> {
+export async function acquireAuthority(context: TaskExecutionContext, operationId: string, args: JsonValue,
+  capabilities: readonly PermissionCapability[], options: { approvalMode?: 'automatic' | 'review' } = {}): Promise<DirectAuthority> {
   const targets = [...new Map(capabilities.map((capability) => [JSON.stringify(capability.target), capability.target])).values()];
-  const operation: TaskOperation = { operationId, operationVersion: 1, argsDigest: digestOperationArgs(args), targets };
+  const operation: TaskOperation = { operationId, operationVersion: 1, argsDigest: digestOperationArgs(args), targets,
+    ...(options.approvalMode ? { approvalMode: options.approvalMode } : {}) };
   context.signal.throwIfAborted();
   let approvalId: string | undefined;
   try { context.assertAuthorized(operation, capabilities); }
@@ -272,6 +274,13 @@ export class DirectWorkspace {
     // 停止会撤销新动作资格。已知残留留给恢复流程，不借旧授权删除。
     if (this.context.signal.aborted) { await this.recordRetained(); return; }
     this.assertCurrent();
+    const retained = this.files.retireTemporaryDirectory(this.path, this.context.task.id, this.stageIdentity);
+    if (retained) {
+      this.removed = true; // 已解除本工作区所有权，后续由持久保留策略核对回收。
+      await this.context.emit({ type: 'checkpoint', checkpoint: { publishedArtifactIds: [...this.publishedIds],
+        retainedScratch: this.path, scratchReleased: true, temporaryExpiresAt: retained.expiresAt } });
+      return;
+    }
     const effectId = randomUUID();
     await this.context.emit({ type: 'side_effect_started', effectId, description: '清理本次已拥有的暂存目录', operation: { path: this.path } });
     const owner = await root(this.artifactRoot, { mutationSymlinks: 'reject', symlinks: 'reject', assertBeforeMutation: () => this.assertCurrent() });

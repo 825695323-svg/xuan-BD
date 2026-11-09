@@ -15,6 +15,8 @@ import { pinnedGet, resolvePublic, validatePublicWebUrl, assertPublicWebAddress 
 import { eastmoneyMinuteRequest } from '../capture-sources/eastmoney/minute.js';
 import { readTdxMinutes, tdxAvailability, tdxVersions, type TdxPackageBinding } from './providers/tdx/runtime.js';
 import { decodePublicDailyBars, normalizePublicDailyRequest, publicKlineProvider, publicKlineProviders, type PublicDailyProviderId, type PublicKlineOperationId } from './public-kline.js';
+import { cacheUrl, parseWerssFeed, readWerssCache, WERSS_CACHE_LIMIT, WERSS_PROJECTION_VERSION } from './providers/werss/cache.js';
+import { runWechatScript, wechatArticleUrl } from './providers/wechat/script.js';
 
 const MAX = 2 * 1024 * 1024;
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
@@ -23,7 +25,7 @@ const officialHost = (hostname: string) => ['sse.com.cn', 'szse.cn', 'cninfo.com
 interface SourceBytes { url: string; status: number; bytes: Buffer; contentType: string; observedAt: string }
 const accountLanes = new Map<string, Promise<void>>();
 const accountLastCall = new Map<string, number>();
-export const SOURCE_ACTIONS = ['source.fetch', 'source.api.read', 'source.kline.read'] as const;
+export const SOURCE_ACTIONS = ['source.fetch', 'source.api.read', 'source.kline.read', 'source.werss.read', 'source.wechat.extract'] as const;
 
 export interface SourceRuntimeOptions { settings: SourceSettingsService; files: FileReferenceService; artifactRoot: string; processRuntime?: ProcessRuntime; tdxaidataPackage?: TdxPackageBinding }
 export function sourceParameters(args: Record<string, JsonValue>): Record<string, JsonValue> {
@@ -60,6 +62,102 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
       return await operation();
     } finally { release(); if (accountLanes.get(key) === current) accountLanes.delete(key); }
   }
+  async function readWerss(context: TaskExecutionContext, args: Record<string, JsonValue>): Promise<TaskResult> {
+    const connectionId = String(args.connectionId), feedId = String(args.feedId), limit = Number(args.limit), offset = Number(args.offset);
+    const connection = settings.assertWerssConnectionEnabled(connectionId, feedId), expectedDigest = settings.checkIdentity(connectionId);
+    const url = cacheUrl(connection.baseUrl, feedId, limit, offset);
+    const assertCurrent = () => {
+      context.signal.throwIfAborted();
+      if (settings.checkIdentity(connectionId) !== expectedDigest) throw new DirectError('SOURCE_CONFIGURATION_CHANGED', 'WeRSS 连接或启停配置已变化，本次读取已停止。');
+      settings.assertWerssConnectionEnabled(connectionId, feedId);
+    };
+    assertCurrent();
+    const stage = await acquireAuthority(context, 'source.werss.read.stage', { connectionId, feedId, limit, offset },
+      ['read', 'write', 'delete'].map(action => directoryCapability(action as 'read' | 'write' | 'delete', options.artifactRoot)));
+    const workspace = new DirectWorkspace(context, options.files, options.artifactRoot, stage), prefix = `werss-${context.task.id}-${randomUUID()}`;
+    const artifactIds: string[] = [];
+    const publish = async (name: string, bytes: Uint8Array | string) => {
+      assertCurrent();
+      const staged = typeof bytes === 'string' ? await workspace.createText(name, bytes) : await workspace.createBytes(name, bytes);
+      const reference = await workspace.publishFile(staged, prepareDestination(join(options.artifactRoot, `${prefix}-${name}`)),
+        'source.werss.read', { connectionId, feedId, limit, offset }, WERSS_CACHE_LIMIT);
+      artifactIds.push(reference.id); return reference;
+    };
+    try {
+      await workspace.create();
+      const network = await acquireAuthority(context, 'source.werss.read.cache', { connectionId, origin: url.origin },
+        [{ action: 'network', target: { kind: 'network', origin: url.origin } }]);
+      network.assert(); assertCurrent();
+      const response = await serial(connection, async () => {
+        network.assert(); assertCurrent();
+        return readWerssCache(url, context.signal, () => { network.assert(); assertCurrent(); });
+      });
+      network.assert(); assertCurrent();
+      const bytes = response.bytes, raw = await publish('raw.json', bytes), rawSha256 = hash(bytes);
+      const observedAt = response.observedAt, contentType = response.contentType;
+      const responseEvidence = { schemaVersion: 1, source: 'werss-local-cache', connectionId, feedId, limit, offset,
+        requestURL: url.href, observedAt, httpStatus: response.status, contentType, contentEncoding: response.contentEncoding,
+        rawRef: raw.id, rawRefVersion: raw.version, rawSha256, rawBytes: bytes.byteLength,
+        cacheFreshness: 'unknown', historyCoverage: 'unknown', articleCompleteness: 'unknown', license: 'unknown',
+        providerTimeMapping: 'WeRSS item.updated is derived from its DB publish_time with UTC+8 datetime formatting; original string is retained.' };
+      if (response.status !== 200 || response.contentEncoding && response.contentEncoding.toLowerCase() !== 'identity'
+        || !/^application\/(?:[a-z0-9.+-]*\+)?json(?:\s*;|\s*$)/iu.test(contentType)) {
+        await publish('receipt.json', JSON.stringify({ ...responseEvidence, status: 'rejected', reason: response.status === 429 ? 'rate_limited'
+          : response.status >= 300 && response.status < 400 ? 'redirect_not_followed' : response.status === 401 || response.status === 403 ? 'authorization_failed'
+            : response.contentEncoding && response.contentEncoding.toLowerCase() !== 'identity' ? 'compressed_response_not_decoded'
+              : 'http_or_content_type_invalid' }) + '\n');
+        throw new DirectError(response.status === 429 ? 'SOURCE_RATE_LIMITED' : 'WERSS_RESPONSE_REJECTED',
+          'WeRSS 本地缓存端点未返回可接收的 JSON；原响应和失败回执已保留，未重试或跟随跳转。');
+      }
+      let parsed: ReturnType<typeof parseWerssFeed>;
+      try { parsed = parseWerssFeed(bytes, feedId, limit); }
+      catch (error) {
+        await publish('receipt.json', JSON.stringify({ ...responseEvidence, status: 'rejected',
+          reason: error instanceof DirectError ? error.code : 'response_invalid' }) + '\n');
+        throw error;
+      }
+      const articles: Array<{ id: string; index: number; title: string; updatedRaw: string; htmlRef: string; htmlRefVersion: number;
+        htmlSha256: string; textRef: string; textRefVersion: number; textSha256: string; contentJsonPath: string;
+        reasons: string[]; locations: Array<{ selector: string; textNode: number; start: number; end: number }> }> = [];
+      for (const article of parsed.articles) {
+        const html = await publish(`${article.index + 1}-content.html`, article.html);
+        const body = await publish(`${article.index + 1}-visible.txt`, article.text);
+        articles.push({ id: article.id, index: article.index, title: article.title, updatedRaw: article.updated,
+          htmlRef: html.id, htmlRefVersion: html.version, htmlSha256: hash(article.html),
+          textRef: body.id, textRefVersion: body.version, textSha256: hash(article.text),
+          contentJsonPath: `$.items[${article.index}].content`, reasons: article.reasons, locations: article.locations });
+      }
+      const table = parsed.articles.length ? await publish('derived-article-table.json', parsed.articleTable) : null;
+      const locatorText = JSON.stringify({ ...responseEvidence, status: parsed.articles.length ? 'received_page' : 'received_empty',
+        projectionVersion: WERSS_PROJECTION_VERSION, articleTableRef: table?.id ?? null, articleTableRefVersion: table?.version ?? null,
+        articleTableSha256: table ? parsed.articleTableSha256 : null, articles }) + '\n';
+      if (Buffer.byteLength(locatorText) > WERSS_CACHE_LIMIT) throw new DirectError('WERSS_LOCATOR_BUDGET', 'WeRSS 定位回执超出预算，原响应已保留，未截断成成功结果。');
+      const locator = await publish('locator.json', locatorText), locatorSha256 = hash(locatorText);
+      const receiptText = JSON.stringify({ ...responseEvidence,
+        status: parsed.articles.length ? 'received_page' : 'received_empty', locatorRef: locator.id, locatorRefVersion: locator.version,
+        locatorSha256, projectionVersion: WERSS_PROJECTION_VERSION, articleCount: articles.length }) + '\n';
+      const receipt = await publish('receipt.json', receiptText), receiptSha256 = hash(receiptText);
+      await workspace.cleanup();
+      const data = { ...responseEvidence, status: parsed.articles.length ? 'received_page' : 'received_empty',
+        projectionVersion: WERSS_PROJECTION_VERSION,
+        articleCount: articles.length, articleTableRef: table?.id ?? null, articleTableRefVersion: table?.version ?? null,
+        articleTableSha256: table ? parsed.articleTableSha256 : null, locatorRef: locator.id, locatorRefVersion: locator.version,
+        locatorSha256, receiptRef: receipt.id, receiptRefVersion: receipt.version, receiptSha256,
+        articles: articles.map(item => ({ id: item.id, index: item.index, title: item.title.slice(0, 160),
+          titleTruncated: item.title.length > 160, updatedRaw: item.updatedRaw.slice(0, 200),
+          updatedRawTruncated: item.updatedRaw.length > 200,
+          textRef: item.textRef, textRefVersion: item.textRefVersion, textSha256: item.textSha256,
+          htmlRef: item.htmlRef, htmlRefVersion: item.htmlRefVersion, htmlSha256: item.htmlSha256 })),
+        contentIsUntrustedReference: true, modelCalls: 0, readOnly: true, sourceModified: false,
+        guidance: '仅取得单页本机 WeRSS 缓存响应。description 是摘要，textRef 是结构抽取可见文字，articleTableRef 是原值投影；文章完整性、许可、缓存新鲜度和历史覆盖未知。后续材料保管及五步处理须另行执行。' };
+      return { summary: parsed.articles.length ? `已保留 ${articles.length} 篇 WeRSS 缓存文章的原件、可见文字与原值投影。`
+        : 'WeRSS 缓存页为空；已保留原响应与回执，没有生成文章正文。', artifactIds,
+        data: { ...data, modelPreview: data } as unknown as JsonValue };
+    } catch (error) {
+      try { await workspace.cleanup(); } catch { await workspace.recordRetained(); throw new DirectError('WERSS_STAGE_CLEANUP_FAILED', 'WeRSS 暂存清理结果未知，请按原任务检查。', true); }
+      await workspace.recordRetained(); throw error;
+    }
+  }
   const registrations: SkillRegistration[] = [
     { action: 'source.fetch', runtimeId: 'direct', kind: 'direct', modelCalls: 0, title: '下载来源原件',
       description: '从明确选择的来源下载原始响应及页面直接列出的PDF附件，保存原件与来源回执。',
@@ -88,11 +186,58 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
         return { available, reason: '没有已启用的公开K线来源。' };
       },
       validate: args => validateKlineArgs(args) },
+    { action: 'source.werss.read', runtimeId: 'direct', kind: 'direct', modelCalls: 0, title: '读取 WeRSS 本地缓存 feed',
+      description: '按下方已登记连接和 feed 的明确组合读取一页本机缓存；不读取订阅清单或任意 URL。',
+      fields: [{ key: 'connectionId', label: '已登记本地连接', type: 'select', required: true, options: [] },
+        { key: 'feedId', label: '已登记 WeRSS feed', type: 'select', required: true, options: [] },
+        { key: 'limit', label: '本页条数', type: 'number', required: true, minimum: 1, maximum: 20 },
+        { key: 'offset', label: '本页偏移', type: 'number', required: true, minimum: 0, maximum: 1_000_000 }],
+      fieldsForRequest: () => {
+        const current = settings.get(), enabled = current.plugins.some(plugin => plugin.id === 'werss' && plugin.enabled);
+        const connections = enabled ? current.connections.filter(item => item.pluginId === 'werss' && item.enabled) : [];
+        const feedOptions = new Map<string, string[]>();
+        for (const connection of connections) for (const feedId of connection.feedIds ?? []) {
+          feedOptions.set(feedId, [...(feedOptions.get(feedId) ?? []), connection.id]);
+        }
+        return [{ key: 'connectionId', label: '已登记本地连接', type: 'select', required: true,
+          options: connections.map(item => ({ value: item.id, label: `${item.alias} (${item.id})` })) },
+        { key: 'feedId', label: '已登记 WeRSS feed（标签列出所属连接）', type: 'select', required: true,
+          options: [...feedOptions].map(([feedId, ids]) => ({ value: feedId,
+            label: connections.length === 1 ? feedId : `${feedId} · ${ids.join(', ')}` })) },
+        { key: 'limit', label: '本页条数', type: 'number', required: true, minimum: 1, maximum: 20 },
+        { key: 'offset', label: '本页偏移', type: 'number', required: true, minimum: 0, maximum: 1_000_000 }];
+      },
+      permissionSummary: ['只读取明确连接的本机 WeRSS feed 缓存 JSON，不触发 fresh/update 或任意文章链接',
+        '只保留单页原件和结构投影，不声明全文、许可、历史覆盖或发布资格'],
+      available: () => {
+        const current = settings.get(), available = current.plugins.some(item => item.id === 'werss' && item.enabled)
+          && current.connections.some(item => item.pluginId === 'werss' && item.enabled && item.feedIds?.length);
+        return available ? { available: true } : { available: false, reason: 'WeRSS 本地连接和 feed 尚未启用。' };
+      },
+      validate: args => { settings.assertWerssConnectionEnabled(String(args.connectionId), String(args.feedId));
+        cacheUrl('http://127.0.0.1:1', String(args.feedId), Number(args.limit), Number(args.offset)); } },
+    { action: 'source.wechat.extract', runtimeId: 'direct', kind: 'direct', modelCalls: 0, title: '提取微信公众号单篇文章正文',
+      description: '使用本机已核对、已启用的固定 Python 脚本提取一篇公众号文章，保管原 HTML、脚本 JSON、可见正文与回执。',
+      fields: [{ key: 'url', label: '公众号文章短链', type: 'text', required: true, maxLength: 300 }],
+      permissionSummary: ['仅接受 https://mp.weixin.qq.com/s/ 下的单篇短链；不能提交脚本路径、命令或额外参数',
+        '固定使用 --no-ocr，不下载正文图片或运行 OCR；原脚本内部 HTTP 客户端可能跟随站点跳转',
+        '只保管本次页面和正文，不自动清洗、标注、提交 WFD 或声明文章完整性'],
+      available: () => { try { settings.wechatScriptVersion(); options.processRuntime?.path('python3');
+        return options.processRuntime ? { available: true } : { available: false, reason: '本机 Python 程序尚未绑定。' }; }
+      catch { return { available: false, reason: '固定公众号脚本或本机 Python 尚未登记启用。' }; } },
+      validate: args => { wechatArticleUrl(args.url); settings.wechatScriptVersion(); } },
   ];
   return { registrations, handles: (action: string) => SOURCE_ACTIONS.includes(action as typeof SOURCE_ACTIONS[number]),
     configuration(action: string, args: Record<string, JsonValue>): unknown {
+      if (action === 'source.wechat.extract') {
+        const current = settings.get();
+        return { configurationRevision: current.revision, url: wechatArticleUrl(args.url), script: settings.wechatScriptVersion(current),
+          python: options.processRuntime?.path('python3') ?? null, ocr: false };
+      }
+      if (action === 'source.werss.read') return { ...settings.werssConnectionVersion(String(args.connectionId)) as Record<string, unknown>,
+        feedId: args.feedId, limit: args.limit, offset: args.offset, cacheRoute: 'feed/{id}.json?ctype=html&is_update=false' };
       if (action === 'source.kline.read') return settings.connectionVersion(String(args.scopeId), undefined,
-        { operationId: String(args.operation) as SourceOperationId, includePool: sourceParameters(args).adjustment === undefined });
+        { operationId: String(args.operation) as SourceOperationId });
       if (action === 'source.api.read') return settings.connectionVersion(String(args.scopeId), 'ths', { operationId: String(args.operation) as SourceOperationId });
       if (args.sourceId === 'eastmoney') settings.assertCaptureEnabled('eastmoney');
       if (args.sourceId === 'tdx') return { sourceId: 'tdx', scopeId: args.scopeId, combination: settings.connectionVersion(String(args.scopeId), 'tdx', { operationId: 'minute_bars' }),
@@ -102,6 +247,10 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
     async check(connectionId: string): Promise<SourceCheck> {
       const current = settings.get(), connection = current.connections.find(item => item.id === connectionId), configurationDigest = settings.checkIdentity(connectionId);
       if (!connection) throw new DirectError('SOURCE_CONNECTION_UNKNOWN', '没有此共享来源连接。');
+      if (connection.pluginId === 'werss') return settings.saveCheck({ id: connectionId, checkedAt: new Date().toISOString(), configurationRevision: current.revision,
+        configurationDigest, status: connection.enabled && current.plugins.find(item => item.id === 'werss')?.enabled ? 'partial' : 'blocked',
+        reachable: null, authorized: null, capabilityAvailable: null, freshness: 'unknown',
+        reason: '仅核对本机 WeRSS 连接配置；未读取缓存、未发送网络请求，端点可用性尚未验证。' });
       if (connection.pluginId === 'tdx') {
         const verified = settings.checks().find(check => check.id === connectionId && check.configurationDigest === configurationDigest && check.status === 'passed');
         if (verified) return verified;
@@ -124,6 +273,8 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
         status: capabilityAvailable ? 'passed' : 'blocked', reachable, authorized, capabilityAvailable, freshness: 'unknown', reason });
     },
     async execute(context: TaskExecutionContext, action: string, args: Record<string, JsonValue>): Promise<TaskResult> {
+      if (action === 'source.wechat.extract') return runWechatScript(context, args, options);
+      if (action === 'source.werss.read') return readWerss(context, args);
       const p = sourceParameters(args), scopeId = String(args.scopeId), sourceId = String(args.sourceId ?? 'ths');
       const assert = () => { context.signal.throwIfAborted(); if (action === 'source.fetch' && sourceId === 'eastmoney') settings.assertCaptureEnabled('eastmoney'); };
       assert();
@@ -164,23 +315,21 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
           const dailyRequest = p.adjustment === undefined ? null : normalizePublicDailyRequest(p);
           if (dailyRequest && scopeId !== 'CN/A_STOCK') throw new DirectError('SOURCE_SCOPE_UNSUPPORTED', '受控不复权日线目前只登记中国A股范围。');
           const attempts: Array<{ connectionId: string; outcome: string; reason?: string }> = [];
-          const candidates = [
-            ...settings.operationCandidates(scopeId, operation).map(connection => ({ connection, fallback: false })),
-            ...(!dailyRequest ? settings.operationPoolCandidates(scopeId, operation).map(connection => ({ connection, fallback: true })) : []),
-          ];
-          for (const { connection: candidate, fallback } of candidates) {
+          // 只解析并遍历明确配置的主源与备用源；未入选连接不自动补入。
+          const candidates = settings.operationCandidates(scopeId, operation);
+          for (const candidate of candidates) {
             const provider = publicKlineProvider(candidate.pluginId), downloadIdentity = { configurationDigest: settings.checkIdentity(candidate.id), configurationRevision: settings.get().revision };
             try {
-              if (!provider || !provider.operations.some(item => item.id === operation)) throw new DirectError('SOURCE_KIND_UNSUPPORTED', '此连接不支持所选K线类型，已跳过。');
-              if (dailyRequest && (!['tencent', 'eastmoney'].includes(provider.id) || candidate.baseUrl !== provider.baseUrl)) {
-                throw new DirectError('SOURCE_KIND_UNSUPPORTED', '此连接没有匹配的受控不复权日线实现与服务地址，未扩大到可选池。');
-              }
               const assertConnection = () => {
                 context.signal.throwIfAborted();
-                if (fallback) settings.assertOperationFallbackEnabled(candidate.id, scopeId, operation);
-                else settings.assertOperationConnectionEnabled(candidate.id, scopeId, operation);
+                settings.assertOperationConnectionEnabled(candidate.id, scopeId, operation);
               };
+              // 停用先于能力与参数判断；停用连接不会因为其他实现不可用而被绕过。
               assertConnection();
+              if (!provider || !provider.operations.some(item => item.id === operation)) throw new DirectError('SOURCE_KIND_UNSUPPORTED', '此连接不支持所选K线类型，已跳过。');
+              if (dailyRequest && (!['tencent', 'eastmoney'].includes(provider.id) || candidate.baseUrl !== provider.baseUrl)) {
+                throw new DirectError('SOURCE_KIND_UNSUPPORTED', '此连接没有匹配的受控不复权日线实现与服务地址，未扩大来源范围。');
+              }
               const requestURL = provider.buildUrl(operation, p);
               const sourceAuthority = await acquireAuthority(context, `${action}.source`, { connectionId: candidate.id, origin: requestURL.origin }, [
                 { action: 'network', target: { kind: 'network', origin: requestURL.origin } },
@@ -192,7 +341,7 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
               const dailyValidation = decoded ? { decoderVersion: decoded.decoderVersion, symbol: decoded.symbol, adjustment: decoded.adjustment,
                 requestedStart: decoded.requestedStart, requestedEnd: decoded.requestedEnd, actualStart: decoded.actualStart, actualEnd: decoded.actualEnd,
                 recordCount: decoded.recordCount, rawSha256: decoded.rawSha256, database: 'not_submitted', historicalAvailability: 'not_established' } : undefined;
-              attempts.push({ connectionId: candidate.id, outcome: fallback ? 'used_fallback' : 'used' });
+              attempts.push({ connectionId: candidate.id, outcome: 'used' });
               const receipt = { status: 'downloaded', sourceId: candidate.pluginId, connectionId: candidate.id, scopeId, operation, requested: p, observedAt: result.observedAt,
                 actualSource: candidate.id, attempts, sourceReceipts: receipts, sourceConfigurationDigest: context.task.versions.directConfiguration,
                 ...(dailyValidation ? { dailyValidation } : {}) };
@@ -209,8 +358,8 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
               await context.emit({ type: 'progress', message: `连接 ${candidate.alias} 未完成：${safeFailure(error)}`, data: { connectionId: candidate.id } });
             }
           }
-          throw new DirectError('SOURCE_NO_ELIGIBLE_CONNECTION', dailyRequest ? '已配置主备中没有通过本次不复权日线请求核对的连接；原响应已保留，未调用可选池。'
-            : '主备和可选池中都没有完成此请求的公开K线连接。');
+          throw new DirectError('SOURCE_NO_ELIGIBLE_CONNECTION', dailyRequest ? '已配置主备中没有通过本次不复权日线请求核对的连接；原响应已保留，未调用未入选连接。'
+            : '已配置的明确主备中没有完成此请求的公开K线连接。');
         }
         if (action === 'source.api.read') {
           const attempts: Array<{ connectionId: string; outcome: string; reason?: string }> = [];

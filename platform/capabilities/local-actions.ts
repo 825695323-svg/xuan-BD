@@ -2,7 +2,7 @@ import type { ProcessRuntime } from '../runtime/programs.js';
 import type { DirectRuntimeOptions, DirectRuntimeBundle, ShortcutDefinition } from '../../contracts/direct-runtime.js';
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, lstatSync } from 'node:fs';
-import { basename, dirname, extname, join, relative } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve } from 'node:path';
 import { root } from '@openclaw/fs-safe';
 import { extractArchive, resolveArchiveKind } from '@openclaw/fs-safe/archive';
 import { SkillRegistry, type SkillRegistration } from '../plugins/registry.js';
@@ -21,7 +21,8 @@ import { transcribeVideo, validateVideoUrl } from './transcription/video.js';
 import { compareRegisteredFiles } from './files/compare.js';
 import { createTextFile, editTextFile, readTextPage, searchTextFiles } from './files/text.js';
 import { transcriptionSegmentPreview, transcribeLocalFile, type LocalTranscriptionInput, type LocalTranscriptionResult } from './transcription/local.js';
-import { directDependencyVersions, directResourceVersions, guardDirectContext, type DirectImplementation } from '../plugins/direct-versions.js';
+import { directDependencyVersions, directFileVersion, directResourceVersions, guardDirectContext, type DirectImplementation } from '../plugins/direct-versions.js';
+import { BundledResources } from '../resources/bundled.js';
 
 type Arguments = Record<string, JsonValue>;
 const MAX_INPUT_BYTES = 256 * 1024 * 1024;
@@ -30,6 +31,53 @@ const INPUT_DEMUXERS: Record<string, string> = { '.wav': 'wav', '.mp3': 'mp3', '
   '.m4a': 'mov', '.mp4': 'mov', '.mov': 'mov', '.mkv': 'matroska', '.webm': 'matroska', '.png': 'png_pipe', '.jpg': 'jpeg_pipe', '.jpeg': 'jpeg_pipe' };
 const CONVERT_FORMATS = [ { value: 'wav', label: 'WAV 音频（16kHz 单声道）' }, { value: 'mp3', label: 'MP3 音频' }, { value: 'mp4', label: 'MP4 视频' },
   { value: 'png', label: 'PNG 图片（媒体首帧）' }, { value: 'jpg', label: 'JPEG 图片（媒体首帧）' } ];
+
+/** 只给受信视频、转录与媒体转换实现所需的固定随包依赖返回可豁免的包根；不授予任务权限。 */
+export function trustedBundledDependencyRoot(options: Pick<DirectRuntimeOptions, 'resources' | 'processRuntime'>,
+  modelPath: () => string | undefined): (taskAction: string, capability: PermissionCapability) => string | undefined {
+  const resources = options.resources, runtime = options.processRuntime;
+  const unavailable = () => undefined;
+  if (!resources || !runtime || !resources.document.resources.bundle_manifest) return unavailable;
+  let bundle: BundledResources, codeRoot: string, selected: ReturnType<BundledResources['selectedBindings']>;
+  try {
+    codeRoot = resolve(dirname(resources.path('bundle_manifest')), '../..');
+    bundle = new BundledResources(codeRoot);
+    selected = bundle.selectedBindings();
+    if (resources.path('bundle_manifest') !== bundle.manifestPath
+      || ['bundle_manifest', 'yt_dlp', 'ffmpeg', 'ffprobe', 'whisper_cli', 'whisper_base'].some(key => {
+        const actual = resources.document.resources[key], expected = selected[key];
+        return !actual || !expected || actual.kind !== expected.kind || resources.path(key) !== expected.path
+          || actual.sha256 !== expected.sha256 || (key === 'bundle_manifest' && actual.identity !== expected.identity);
+      })) return unavailable;
+  } catch { return unavailable; }
+  const programs = { yt_dlp: 'yt-dlp', ffmpeg: 'ffmpeg', ffprobe: 'ffprobe', whisper_cli: 'whisper-cli' } as const;
+  return (taskAction, capability) => {
+    const mediaConversion = taskAction === 'media.convert' || taskAction === 'conversion.media';
+    if (!['video.transcribe_url', 'audio.transcribe', 'material.transcribe'].includes(taskAction) && !mediaConversion
+      || capability.target.kind !== 'file') return undefined;
+    try {
+      const path = capability.target.path;
+      const key = (Object.keys(programs) as (keyof typeof programs)[]).find(name => resources.path(name) === path);
+      const approvedProgram = key && capability.action === 'execute'
+        && (mediaConversion ? key === 'ffmpeg' || key === 'ffprobe' : taskAction === 'video.transcribe_url' || key !== 'yt_dlp');
+      const approvedModel = !mediaConversion && capability.action === 'read' && path === modelPath()
+        && path === resources.path('whisper_base');
+      if (!approvedProgram && !approvedModel) return undefined;
+      const bindingKey = approvedProgram ? key! : 'whisper_base';
+      const binding = resources.document.resources[bindingKey]!, expected = selected[bindingKey]!;
+      const manifestBinding = resources.document.resources.bundle_manifest!, expectedManifest = selected.bundle_manifest!;
+      const info = lstatSync(path);
+      if (binding.kind !== expected.kind || resources.path(bindingKey) !== expected.path || binding.sha256 !== expected.sha256
+        || manifestBinding.kind !== expectedManifest.kind || resources.path('bundle_manifest') !== expectedManifest.path
+        || manifestBinding.sha256 !== expectedManifest.sha256 || manifestBinding.identity !== expectedManifest.identity
+        || !info.isFile() || info.isSymbolicLink() || info.nlink !== 1
+        || directFileVersion(bundle.manifestPath).sha256 !== bundle.manifestSha256
+        || directFileVersion(path).sha256 !== binding.sha256) return undefined;
+      if (approvedProgram && (!runtime.isRegisteredExecutable(path) || runtime.path(programs[key!]) !== path)) return undefined;
+      return codeRoot;
+    } catch { return undefined; }
+  };
+}
 
 /** 静态动作表、严格菜单路由与 TaskRuntime 共用同一描述；工厂不运行程序或创建目录。 */
 export function createLocalActions(options: DirectRuntimeOptions, hostImplementation: readonly DirectImplementation[] = []): DirectRuntimeBundle {
@@ -46,6 +94,7 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
   });
   let shortcuts = validateShortcuts(options.shortcuts ?? []);
   let configuredModelPath = options.whisperModelPath ? normalizePermissionPath(options.whisperModelPath) : undefined;
+  const trustedRootFor = trustedBundledDependencyRoot(options, () => configuredModelPath);
   let videoMaxMinutes = options.videoMaxMinutes ?? 30, videoMaxBytes = options.videoMaxBytes ?? MAX_INPUT_BYTES;
   const toolFailures = new Map<DirectBinary, { identity: ReturnType<typeof inspectPath>; reason: string }>();
   const registry = new SkillRegistry([...registrations(() => ({ modelPath: configuredModelPath, shortcuts, transcriptionBinaryPaths: binaryPaths(), binaryPaths: binaryPaths(),
@@ -68,7 +117,7 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
       implementation.push('video'); programs.push('yt-dlp');
       configuration = { videoMaxMinutes, videoMaxBytes, whisperModelPath: configuredModelPath ?? null };
     }
-    if (action === 'media.convert') programs.push('ffmpeg', 'ffprobe');
+    if (action === 'media.convert') { implementation.push('bundledTrust'); programs.push('ffmpeg', 'ffprobe'); }
     if (action === 'file.open') programs.push('open');
     if (action === 'spotlight.search') programs.push('mdfind');
     if (action === 'mac.shortcut') {
@@ -86,12 +135,13 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
   const router = new DirectRouter(registry);
   const protectedContext = (input: TaskExecutionContext): TaskExecutionContext => {
     const originalContext = guardDirectContext(registry, input);
+    const taskAction = originalContext.task.action;
     return { ...originalContext,
     assertAuthorized: (operation, capabilities, authorizationOptions) => {
-      protection.assertCapabilities(capabilities);
+      protection.assertCapabilities(capabilities, capability => trustedRootFor(taskAction, capability));
       return originalContext.assertAuthorized(operation, capabilities, authorizationOptions);
     }, requestApproval: async (operation, capabilities, approvalOptions) => {
-      protection.assertCapabilities(capabilities);
+      protection.assertCapabilities(capabilities, capability => trustedRootFor(taskAction, capability));
       return await originalContext.requestApproval(operation, capabilities, approvalOptions);
     } };
   };
@@ -105,7 +155,9 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
       if (!available.available || !modelPath) throw new DirectError('WHISPER_MODEL_UNAVAILABLE', available.reason ?? '未配置有效的本机转录组件。');
       if (!samePathIdentity(inspectPath(artifactRoot), { ...artifactIdentity, invocationPath: artifactRoot, canonicalPath: artifactRoot, links: [] })) throw new DirectError('ARTIFACT_ROOT_CHANGED', '应用产物目录身份已经变化。');
       return await transcribeLocalFile(protectedContext(originalContext), input, { files: options.files, artifactRoot, modelPath,
-        binary: transcriptionBinary, assertPath: path => protection.assertPath(path), runTool: runStagedTool,
+        binary: transcriptionBinary, assertPath: path => protection.assertPath(path),
+        assertModelPath: path => protection.assertPath(path, false,
+          trustedRootFor(originalContext.task.action, fileCapability('read', path))), runTool: runStagedTool,
         convert: conversionArguments, validateModel: validateWhisperHeader, validateProbe: validateMediaProbe });
     },
   };
@@ -132,7 +184,9 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
       if (routed.action === 'web.read_public') return await readPublicWeb(context, { url: String(args.url) }, options.files, artifactRoot, options.publicWeb);
       if (routed.action === 'web.search') return await searchPublicWeb(context, { query: String(args.query), ...(args.limit === undefined ? {} : { limit: Number(args.limit) }) }, options.files, artifactRoot, options.publicWeb);
       if (routed.action === 'video.transcribe_url') return await transcribeVideo(context, String(args.url), { files: options.files, artifactRoot, modelPath, maxMinutes, maxBytes,
-        runTool: runStagedTool, convert: conversionArguments, validateModel: validateWhisperHeader, validateProbe: validateMediaProbe, assertPath: (path) => protection.assertPath(path), binary: transcriptionBinary });
+        runTool: runStagedTool, convert: conversionArguments, validateModel: validateWhisperHeader, validateProbe: validateMediaProbe,
+        assertPath: path => protection.assertPath(path, false, trustedRootFor(context.task.action, fileCapability('read', path))),
+        binary: transcriptionBinary });
       if (routed.action === 'audio.transcribe') {
         const extracted = await localTranscription.execute(context, { fileRefId: String(args.fileRefId), ...(args.destination === undefined ? {} : { destination: String(args.destination) }) });
         return result('本机音视频转录已完成；原件与时间段证据已保留。', {
@@ -340,8 +394,8 @@ function registrations(settings: () => { modelPath: string | undefined; shortcut
     { ...make('video.transcribe_url', '提取公开视频文字', '支持单个 YouTube 或哔哩哔哩公开视频。先取字幕，没有字幕时用本机语音模型；登录、直播、分段流暂不处理。',
       [{ key: 'url', label: '视频 HTTPS 链接', type: 'text', required: true, maxLength: 4096 }], ['逐站批准视频网络访问', '执行固定视频提取工具', '无字幕时另行批准音轨转录', '写入应用文本产物']),
       validate: (args) => { validateVideoUrl(String(args.url)); }, available: () => toolAvailability('yt-dlp', toolFailures, settings().transcriptionBinaryPaths?.['yt-dlp']) },
-    { ...make('web.read_public', '读取公开网页文字', '读取公开 HTTPS 网页并保存文字。页面不执行，登录页面和特殊端口尚不支持。',
-      [{ key: 'url', label: '公开 HTTPS 网址', type: 'text', required: true, maxLength: 4096 }], ['逐跳核对公开网址的网络权限', '写入应用新文本产物', '读写及清理应用暂存']),
+    { ...make('web.read_public', '读取公开网页或 PDF 原件', '读取公开 HTTPS 网页文字；对完整 application/pdf（PDF 响应类型）仅保管 PDF（便携文档）原件与来源定位，返回 fileRefId（文件引用编号），可再用 conversion.document（文档转换）或 pdf.extract（PDF 文字提取）处理原件。材料内容不执行，PDF 尚未提取文字、确认语义或入库；登录页面和特殊端口尚不支持。',
+      [{ key: 'url', label: '公开 HTTPS 网址', type: 'text', required: true, maxLength: 4096 }], ['逐跳核对公开网址的网络权限', '写入应用新文本或 PDF 原件产物', '读写及清理应用暂存']),
       validate: (args) => { validatePublicWebUrl(String(args.url)); } },
     { ...make('web.search', '联网搜索', '用公开必应搜索查询互联网，返回标题、链接和搜索摘要及来源记录。需要最新信息或还没有网址时使用；核实事实再用web.read_public读取选中的原网页。查询会发送给搜索服务，只提交必要关键词，不上传文件、凭据或私有正文；搜索摘要不代表网页全文。',
       [{ key: 'query', label: '搜索关键词', type: 'text', required: true, maxLength: 500 },

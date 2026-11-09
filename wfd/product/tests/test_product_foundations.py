@@ -17,7 +17,10 @@ ROLES = {"evidence_write", "register", "submit", "publish", "read", "read_eviden
          "export", "redistribute"}
 POLICY = {"may_submit": True, "may_publish_formal": True, "may_read": True,
           "may_read_evidence": True, "may_export": True, "may_export_evidence": True,
-          "export_scope": "user_local_validation_only", "usage_scope": "p2_boundary_test"}
+          "export_scope": "user_local_validation_only", "usage_scope": "p2_boundary_test",
+          "allowed_roles": ["definer"],
+          "allowed_authorities": ["wfd.p2.unit_catalogue", "wfd.p2.identity", "fixture",
+                                  "wfd.p2.calendar", "wfd.p2.unit_bindings"]}
 
 
 def boundary_pack():
@@ -272,7 +275,12 @@ def submitted(tmp_path_factory):
     f.validate_pack(pack)
 
     units = f.build_unit_outputs(pack, evidence)
-    first = service.submit(f.make_request(pack["dataset_id"], "units", units))
+    request = f.make_request(pack["dataset_id"], "units", units)
+    request["source_bundle"]["source_roles"] = {
+        output["output_key"]: [{"source_id": f.EVIDENCE_SOURCE_ID, "roles": ["definer"]}]
+        for output in units
+    }
+    first = service.submit(request)
     assert first["status"] == "published_formal", first
     unit = first["output_results"][0]
 
@@ -280,6 +288,10 @@ def submitted(tmp_path_factory):
                + f.build_relation_outputs(pack, evidence)
                + f.build_calendar_output(pack, evidence))
     request = f.make_request(pack["dataset_id"], "identities", outputs)
+    request["source_bundle"]["source_roles"] = {
+        output["output_key"]: [{"source_id": f.EVIDENCE_SOURCE_ID, "roles": ["definer"]}]
+        for output in outputs
+    }
     request["expected_parent_snapshot_id"] = first["snapshot_id"]
     second = service.submit(request)
     assert second["status"] == "published_formal", second
@@ -287,6 +299,10 @@ def submitted(tmp_path_factory):
     bindings, dependencies = f.build_binding_outputs(pack, evidence, unit["product_id"],
                                                       first["snapshot_id"])
     request = f.make_request(pack["dataset_id"], "bindings", bindings, dependencies)
+    request["source_bundle"]["source_roles"] = {
+        output["output_key"]: [{"source_id": f.EVIDENCE_SOURCE_ID, "roles": ["definer"]}]
+        for output in bindings
+    }
     request["expected_parent_snapshot_id"] = second["snapshot_id"]
     third = service.submit(request)
     assert third["status"] == "published_formal", third
@@ -451,3 +467,87 @@ def test_candidate_path_qualification_propagates_to_calendar(submitted):
     assert calendar_unknown["candidate_only"] is True
     assert calendar_unknown["calendars"][0]["calendar_status"] == "candidate_indeterminate"
     assert calendar_unknown["calendars"][0]["association_status"] == "candidate"
+
+
+def test_calendar_builder_observations_do_not_replace_or_infer_dates(tmp_path):
+    engine = WFDDuckDBPrototype(tmp_path / "store", load_protocol_validator(HERE / "protocol"),
+                                runtime_root=tmp_path / "runtime", sandbox=False, writer_host="p2-test")
+    service = WFDProductService(
+        engine, allowed_sources={f.EVIDENCE_SOURCE_ID: copy.deepcopy(POLICY)},
+        caller_roles=ROLES, caller_id="p2-test", trusted_actor_namespaces={"wfd.p2.foundations"})
+    evidence_path = tmp_path / "calendar_evidence.txt"
+    evidence_path.write_text("Synthetic listed trading dates only; no closure or session claims.\n", "utf-8")
+    evidence = {"e": service.register_evidence(evidence_path)}
+    pack = boundary_pack()
+    original_dates = list(pack["calendar"]["dates"])
+
+    def calendar_request(material, request_id, parent=None):
+        outputs = f.build_calendar_output(material, evidence)
+        request = f.make_request(material["dataset_id"], request_id, outputs)
+        request["expected_parent_snapshot_id"] = parent
+        request["source_bundle"]["source_roles"] = {
+            output["output_key"]: [{"source_id": f.EVIDENCE_SOURCE_ID, "roles": ["definer"]}]
+            for output in outputs
+        }
+        return request
+
+    def record(label, receipt):
+        (tmp_path / (label + "_receipt.json")).write_text(
+            json.dumps(receipt, ensure_ascii=False, indent=2, default=str), "utf-8")
+        return receipt
+
+    def publications():
+        return tuple({path.name for path in (service.root / "catalog" / name).glob("*.json")}
+                     for name in ("snapshots", "commits"))
+
+    def assert_dates(snapshot_id, dates):
+        readback = service.read(product_id, snapshot_id=snapshot_id)
+        coverage = readback["products"][0]["coverage"]
+        assert (coverage["basis"], coverage["completeness"], coverage["absence_means"]) == (
+            "observed_partial", "partial", "unknown")
+        values = [item["row"]["values"] for item in readback["rows"]]
+        assert sorted(value["session_date"]["value"] for value in values) == sorted(dates)
+        assert all(set(value) == {"session_date", "is_open", "market_code", "day_type"}
+                   and value["is_open"]["value"] is True
+                   and value["day_type"]["value"] == "trading_day" for value in values)
+
+    request = calendar_request(pack, "calendar-observed")
+    output = request["outputs"][0]
+    assert output["input_mode"] == "partial_observation"
+    assert output["coverage"] == {
+        "scope": {"market_id": pack["calendar"]["market_id"], "range": pack["calendar"]["range"],
+                  "dates": len(original_dates), "claim": "trading_dates_only"},
+        "basis": "observed_partial", "completeness": "partial", "absence_means": "unknown",
+        "coverage_evidence": [evidence["e"]],
+    }
+    first = record("first", service.submit(request))
+    assert first["status"] == "published_formal", first
+    product_id = first["output_results"][0]["product_id"]
+    assert_dates(first["snapshot_id"], original_dates)
+    before_replay = publications()
+    assert all(before_replay), "Actual snapshot and commit inventories must be nonempty"
+    replay = record("replay", service.submit(request))
+    assert replay["engine_receipt"]["idempotent_replay"] is True, replay
+    assert replay["snapshot_id"] == first["snapshot_id"] == engine.head()["snapshot_id"]
+    assert publications() == before_replay
+
+    appended = copy.deepcopy(pack)
+    appended["calendar"].update(dates=["2012-01-06"], range=["2012-01-06", "2012-01-06"])
+    second = record("append", service.submit(
+        calendar_request(appended, "calendar-append", first["snapshot_id"])))
+    assert second["status"] == "published_formal", second
+    assert second["output_results"][0]["product_id"] == product_id
+    assert_dates(second["snapshot_id"], original_dates + appended["calendar"]["dates"])
+    assert_dates(first["snapshot_id"], original_dates)
+
+    before_overlap = publications()
+    rejected = record("overlap", service.submit(
+        calendar_request(pack, "calendar-overlap", second["snapshot_id"])))
+    assert rejected["status"] == "registered_not_published", rejected
+    assert rejected["production_publishable"] is False
+    assert len(rejected["output_results"]) == 1
+    assert rejected["output_results"][0]["publication_state"] == "not_published"
+    assert {error["code"] for item in rejected["output_results"] for error in item.get("errors", [])} == {
+        "DUPLICATE_LOGICAL_KEY_REQUIRES_REVISION"}, rejected
+    assert engine.head()["snapshot_id"] == second["snapshot_id"]
+    assert publications() == before_overlap

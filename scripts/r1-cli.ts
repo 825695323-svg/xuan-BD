@@ -29,7 +29,7 @@ try {
     service = new R1HandoffService({ database });
   } else {
     const resources = new ResourceBindings(resolve(required('runtime-root')));
-    const runtime = createR1HandoffRuntime({ resources, database, connectionId: arg('connection') ?? 'wfd-product-local-20261027' });
+    const runtime = createR1HandoffRuntime({ resources, database, connectionId: arg('connection') });
     service = runtime.service; client = runtime.client; connectionId = runtime.connection.connectionId;
   }
   if (action === 'status') {

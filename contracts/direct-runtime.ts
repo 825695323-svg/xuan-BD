@@ -29,6 +29,8 @@ export interface DirectRuntimeOptions {
   files: FileReferenceService;
   /** 已存在的应用产物目录；初始化与持久权限由 Core 管理。 */
   artifactRoot: string;
+  /** 宿主仅为已保管的上传原件提供精确读身份，不能放宽控制目录或写入权限。 */
+  managedConversionSource?: (fileRefId: string) => { materialId: string; path: string; sha256: string; bytes: number; version: number } | null;
   whisperModelPath?: string;
   processRuntime?: ProcessRuntime;
   /** 只由受信宿主提供实际已装配的位置身份；不接受客户端版本。 */

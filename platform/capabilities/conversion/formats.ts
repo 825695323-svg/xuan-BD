@@ -149,17 +149,20 @@ export function inspectFormat(bytes: Buffer, name: string, requestedEncoding?: s
   } catch { return hit('unknown', 'unknown'); }
 }
 
-/** DOM 只用于本地结构读取；拒绝实体声明，不解析外部资源。 */
-export function parseXml(text: string): Document {
+export interface XmlSpan { name: string; parent: string | null; start: number; openEnd: number; end: number; selfClosing: boolean }
+
+/** 先核原文标签；工作表可只保留行片段，通用 DOM 调用仍使用原 10 万元素预算。 */
+export function scanXml(text: string, options: { maxElements?: number; onElement?(span: XmlSpan): void; onText?(value: string, parent: string | null): void } = {}): number {
   if (Buffer.byteLength(text) > 16_000_000 || /<!DOCTYPE|<!ENTITY/iu.test(text)) return fail('XML_REFUSED', 'XML 超限或含 DTD/实体声明，本轮不读取外部资源。');
   // linkedom 的 XML 模式不会拒绝所有错配标签；先核对原文，避免宽容解析静默修复结构。
-  const stack: string[] = []; let position = 0, roots = 0, elements = 0;
+  const stack: { name: string; start: number; openEnd: number }[] = []; let position = 0, roots = 0, elements = 0;
   while (position < text.length) {
     const start = text.indexOf('<', position), preceding = text.slice(position, start < 0 ? text.length : start);
     if ((!stack.length && preceding.trim()) || /&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[\da-fA-F]+;)/u.test(preceding)) return fail('XML_INVALID', 'XML 根外文本或实体引用无效。');
+    if (preceding) options.onText?.(preceding, stack.at(-1)?.name ?? null);
     if (start < 0) break;
     if (text.startsWith('<!--', start)) { const end = text.indexOf('-->', start + 4); if (end < 0 || text.slice(start + 4, end).includes('--')) return fail('XML_INVALID', 'XML 注释无效。'); position = end + 3; continue; }
-    if (text.startsWith('<![CDATA[', start)) { const end = text.indexOf(']]>', start + 9); if (end < 0 || !stack.length) return fail('XML_INVALID', 'XML CDATA 无效。'); position = end + 3; continue; }
+    if (text.startsWith('<![CDATA[', start)) { const end = text.indexOf(']]>', start + 9); if (end < 0 || !stack.length) return fail('XML_INVALID', 'XML CDATA 无效。'); options.onText?.(text.slice(start + 9, end), stack.at(-1)?.name ?? null); position = end + 3; continue; }
     if (text.startsWith('<?', start)) { const end = text.indexOf('?>', start + 2); if (end < 0) return fail('XML_INVALID', 'XML 处理指令未闭合。'); position = end + 2; continue; }
     let end = start + 1, quote = '';
     for (; end < text.length; end++) { const char = text[end]!; if (quote) { if (char === quote) quote = ''; } else if (char === '"' || char === "'") quote = char; else if (char === '>') break; }
@@ -167,9 +170,12 @@ export function parseXml(text: string): Document {
     const token = text.slice(start + 1, end), closing = token.startsWith('/'), self = /\/\s*$/u.test(token), match = token.match(closing ? /^\/([\p{L}_:][\p{L}\p{N}_.:\-]*)\s*$/u : /^([\p{L}_:][\p{L}\p{N}_.:\-]*)([\s\S]*)$/u);
     if (!match) return fail('XML_INVALID', 'XML 标签名称或声明无效。');
     const name = match[1]!;
-    if (closing) { if (stack.pop() !== name) return fail('XML_INVALID', 'XML 结束标签与原始结构不符。'); }
+    if (closing) {
+      const opened = stack.pop(); if (opened?.name !== name) return fail('XML_INVALID', 'XML 结束标签与原始结构不符。');
+      options.onElement?.({ name, parent: stack.at(-1)?.name ?? null, start: opened.start, openEnd: opened.openEnd, end: end + 1, selfClosing: false });
+    }
     else {
-      if (++elements > 100_000 || stack.length > 128 || !stack.length && ++roots > 1) return fail('XML_LIMIT', 'XML 多根或超过本次节点、深度预算。');
+      if (++elements > (options.maxElements ?? 100_000) || stack.length > 128 || !stack.length && ++roots > 1) return fail('XML_LIMIT', 'XML 多根或超过本次节点、深度预算。');
       let attributes = match[2]!.replace(/\/\s*$/u, ''); const names = new Set<string>();
       while (attributes.length) {
         if (!attributes.trim()) break;
@@ -177,11 +183,18 @@ export function parseXml(text: string): Document {
         if (!found || names.has(found[1]!) || /&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[\da-fA-F]+;)/u.test(found[2] ?? found[3] ?? '')) return fail('XML_INVALID', 'XML 属性或实体引用无效。');
         names.add(found[1]!); attributes = attributes.slice(found[0].length);
       }
-      if (!self) stack.push(name);
+      if (self) options.onElement?.({ name, parent: stack.at(-1)?.name ?? null, start, openEnd: end + 1, end: end + 1, selfClosing: true });
+      else stack.push({ name, start, openEnd: end + 1 });
     }
     position = end + 1;
   }
   if (stack.length || roots !== 1) return fail('XML_INVALID', 'XML 原始标签未闭合或没有根。');
+  return elements;
+}
+
+/** DOM 只用于本地结构读取；拒绝实体声明，不解析外部资源。 */
+export function parseXml(text: string): Document {
+  scanXml(text);
   const doc = new DOMParser().parseFromString(text, 'text/xml') as unknown as Document;
   if (!doc.documentElement || doc.getElementsByTagName('parsererror').length) return fail('XML_INVALID', 'XML 结构无效。');
   return doc;

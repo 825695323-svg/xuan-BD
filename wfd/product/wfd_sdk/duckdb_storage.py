@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+import hashlib
 import importlib
 import json
 from pathlib import Path
+import re
 import tempfile
 from typing import Any
 
@@ -130,9 +132,16 @@ def _native_schema(payload_kind: str, rows: list[dict]) -> list[tuple[str,str,An
             data_type=next(iter(data_types))
             # prefix names to avoid collision with reserved keys.
             safe=''.join(x if (x.isalnum() and x.isascii()) or x == '_' else '_' for x in code)
-            if not safe or len(safe)>60 or not safe[0].isalpha():
+            if not safe or not safe[0].isalpha():
                 raise ValueError('UNSAFE_FIELD_CODE: '+code)
-            cname='metric_'+safe
+            if len(safe) > 60:
+                # Legal logical field codes can exceed the physical-name budget.
+                # Keep them verbatim in row_json and use a disjoint, bounded native name.
+                if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_.:-]{0,127}', code):
+                    raise ValueError('UNSAFE_FIELD_CODE: '+code)
+                cname='mhash_'+hashlib.sha256(code.encode('ascii')).hexdigest()[:48]
+            else:
+                cname='metric_'+safe
             if cname in used or cname+'_state' in used:raise ValueError('NORMALIZED_COLUMN_COLLISION: '+code)
             used.add(cname);used.add(cname+'_state')
             columns.append((cname,_sqltype(data_type,cells), lambda r,k=code,dt=data_type:_cell_value(r.get('values',{}).get(k),dt)))
@@ -215,5 +224,116 @@ def rows_from_parquet(raw:bytes)->list[dict]:
     return _query_parquet(raw,rows=True)
 
 
+def matching_business_keys(paths, wanted):
+    """Exact scalar/tabular JSON business-key collision check, no value hydration."""
+    if not paths or not wanted:
+        return set()
+    duckdb = require_duckdb()
+    with tempfile.TemporaryDirectory(prefix='wfd_key_check_') as tmp:
+        conn = duckdb.connect(database=':memory:')
+        try:
+            conn.execute('SET threads=1')
+            conn.execute("SET memory_limit='64MB'")
+            conn.execute('SET temp_directory=' + _pathstr(Path(tmp)))
+            conn.execute('CREATE TEMP TABLE wanted_keys (key VARCHAR)')
+            conn.executemany('INSERT INTO wanted_keys VALUES (?)', [(key,) for key in wanted])
+            values = conn.execute(
+                "SELECT DISTINCT source.key FROM (SELECT CASE "
+                "WHEN json_type(row_json, '$.business_key')='VARCHAR' "
+                "THEN json_extract_string(row_json, '$.business_key') "
+                "ELSE error('BUSINESS_KEY_INVALID') END AS key FROM read_parquet(?, union_by_name=true)) source "
+                "JOIN wanted_keys wanted ON source.key=wanted.key", [[str(path) for path in paths]]).fetchall()
+            return {row[0] for row in values}
+        finally:
+            conn.close()
+
+
 def parse_footer(raw:bytes)->dict:
     return _query_parquet(raw,rows=False)
+
+
+def selected_rows_page(parts, selections, *, after_position, row_limit, max_row_bytes,
+                       identities_only=False):
+    """Read only selected physical rows through SQL, not a whole-file JSON list.
+
+    The caller has verified immutable files and selected unique current leaves.
+    SQL also checks that every requested identity materializes exactly once.
+    Identity/length metadata is <=5000 for public selected-ref pages and O(N)
+    for the internally derived complete product view, not protocol data rows.
+    Only a bounded keyset and byte-bounded row_json prefix is decoded in Python;
+    this does not claim constant total RAM or bounded catalog/version metadata.
+    """
+    if not selections:
+        return []
+    paths = [str(parts[index]["path"]) for index in sorted({s["part_index"] for s in selections})]
+    duckdb = require_duckdb()
+    with tempfile.TemporaryDirectory(prefix="wfd_fixed_page_") as tmp:
+        conn = duckdb.connect(database=":memory:")
+        try:
+            conn.execute("SET threads=1")
+            conn.execute("SET memory_limit='64MB'")
+            conn.execute("SET temp_directory=" + _pathstr(Path(tmp)))
+            conn.execute("CREATE TEMP TABLE selected (position BIGINT, filename VARCHAR, "
+                         "physical_key VARCHAR, product_id VARCHAR, output_key VARCHAR)")
+            conn.executemany("INSERT INTO selected VALUES (?,?,?,?,?)", [
+                (s["position"], str(parts[s["part_index"]]["path"]), s["physical_key"],
+                 parts[s["part_index"]]["product_id"], parts[s["part_index"]]["output_key"])
+                for s in selections
+            ])
+            join = (" FROM selected s LEFT JOIN read_parquet(?, filename=true, union_by_name=true) p"
+                    " ON p.filename=s.filename AND p.business_key=s.physical_key"
+                    " AND p.product_id=s.product_id AND p.output_key=s.output_key"
+                    " AND p.payload_kind IN ('scalar_rows','tabular_rows') ")
+            metadata = conn.execute(
+                "SELECT s.position, count(p._wfd_row_index), "
+                "min(octet_length(encode(p.row_json)))" + join +
+                "GROUP BY s.position ORDER BY s.position", [paths]).fetchall()
+            if len(metadata) != len(selections) or any(count != 1 or size is None
+                                                       for _, count, size in metadata):
+                raise ValueError("PAGE_RECORD_MATERIALIZATION_MISMATCH")
+            if identities_only:
+                # Internal formal publication only consumes record identities.
+                # Verify those against the actual Parquet row JSON in SQL,
+                # without decoding any accumulated business values in Python.
+                identities = conn.execute(
+                    "SELECT s.position, json_extract_string(p.row_json, '$.business_key')" +
+                    join + "ORDER BY s.position", [paths]).fetchall()
+                by_position = {item["position"]: item for item in selections}
+                if (len(identities) != len(selections) or any(
+                        key != by_position[position]["physical_key"]
+                        for position, key in identities)):
+                    raise ValueError("PAGE_RECORD_IDENTITY_MISMATCH")
+                return [by_position[position] for position, _ in identities]
+            chosen, size = [], 0
+            for position, _, row_bytes in metadata:
+                if position <= after_position:
+                    continue
+                if len(chosen) >= row_limit:
+                    break
+                if size + row_bytes > max_row_bytes:
+                    if not chosen:
+                        raise ValueError("PAGE_ITEM_TOO_LARGE")
+                    break
+                chosen.append(position)
+                size += row_bytes
+            if not chosen:
+                return []
+            # No OFFSET and no all-row JSON fetch: the selected fixed identity
+            # relation and keyset/length bounds are applied by DuckDB itself.
+            result = conn.execute(
+                "SELECT s.position, p.row_json" + join +
+                "WHERE s.position>? AND s.position<=? ORDER BY s.position LIMIT ?",
+                [paths, after_position, chosen[-1], min(row_limit, len(chosen))]).fetchall()
+            if [item[0] for item in result] != chosen:
+                raise ValueError("PAGE_RECORD_MATERIALIZATION_MISMATCH")
+            by_position = {item["position"]: item for item in selections}
+            rows = []
+            for position, raw in result:
+                selection = by_position[position]
+                row = json.loads(raw)
+                if not isinstance(row, dict) or row.get("business_key") != selection["physical_key"]:
+                    raise ValueError("PAGE_RECORD_IDENTITY_MISMATCH")
+                rows.append({**selection, "row": row})
+            return rows
+        finally:
+            conn.close()

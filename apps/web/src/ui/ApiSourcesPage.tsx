@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { setWorkspaceObject } from './workspace-context';
+import { useObjectSelection } from './useStoredSelection';
 import type { DragEvent } from 'react';
+import { Search } from 'lucide-react';
 import type { SourceConnection, SourceOperationId, SourceOperationPolicy, SourceSettingsView } from '../../../../contracts/source-settings';
 import { request } from '../api';
 import {
@@ -7,6 +10,7 @@ import {
   sourceSettingsOperation, type SourceSettingsOperation,
 } from './sourceSettingsClient';
 import { ErrorNote, Modal, SelectMenu, errorDetail, useWords } from './Controls';
+import { DetailDiagnostics, DetailFacts, DetailHeader, ObjectDetailPanel } from './ObjectDetailPanel';
 import { MorphIcon } from './MorphIcon';
 import { RunReceipt, SourceCheckError, SourceCheckLine, useSourceCheck, type SourceRunTask } from './SourceActions';
 import {
@@ -59,6 +63,7 @@ export function ApiSourcesPage() {
   const [layout, setLayout] = useState<Layout>(defaultLayout);
   const [selected, setSelected] = useState<string>(DEFAULT_MARKET);
   const [open, setOpen] = useState<Set<string>>(() => new Set(['region', 'other']));
+  const [marketQuery, setMarketQuery] = useState('');
   const [country, setCountry] = useState<string>('全部');
   const [assetScope, setAssetScope] = useState<string>('全部');
   const [dataCap, setDataCap] = useState<string>('全部');
@@ -74,7 +79,6 @@ export function ApiSourcesPage() {
   const revisionRef = useRef<number | null>(null);
   const savedSnapshot = useRef('');
   const [prefsLoaded, setPrefsLoaded] = useState(false);
-
   useEffect(() => {
     let alive = true;
     void request('/api/ui/preferences').then((value) => {
@@ -185,20 +189,30 @@ export function ApiSourcesPage() {
     <span>{item.label}</span><span className="data-nav-dot" aria-hidden="true" />
   </button>;
 
+  const searching = marketQuery.trim().length > 0;
+  const matchesMarket = (label: string) => !searching || label.toLocaleLowerCase().includes(marketQuery.trim().toLocaleLowerCase());
   const nav = <aside className="data-nav" aria-label={words('接口源分类', 'API source categories')}>
+    <div className="sidebar-search-slot">
+      <div className="data-search data-nav-search">
+        <Search size={15} aria-hidden="true" />
+        <input type="search" aria-label={words('搜索接口源分类', 'Search API source categories')}
+          placeholder={words('搜索接口源…', 'Search API sources…')} value={marketQuery}
+          onChange={(event) => setMarketQuery(event.currentTarget.value)} />
+      </div>
+    </div>
     <div onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); moveTo('root'); }}>
       <button type="button" className="data-nav-item is-group" aria-expanded={open.has('region')} onClick={() => toggle('region')}>
         <span>{words('地区市场', 'Markets')}</span><MorphIcon name={open.has('region') ? 'chevron-up' : 'chevron-down'} size={16} />
       </button>
-      {open.has('region') && <div className="data-nav-children">
-        {layoutOf(layout.root).map((item) => leaf(item, 'root'))}
+      {(open.has('region') || searching) && <div className="data-nav-children">
+        {layoutOf(layout.root).filter((item) => matchesMarket(item.label)).map((item) => leaf(item, 'root'))}
         <button type="button" className={`data-nav-item is-group is-child${open.has('other') ? ' is-open' : ''}`} aria-expanded={open.has('other')}
           onClick={() => toggle('other')} onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); moveTo('other'); }}>
           <span>{words('其他地区', 'Other regions')}</span><MorphIcon name={open.has('other') ? 'chevron-up' : 'chevron-down'} size={14} />
         </button>
-        {open.has('other') && <div className="data-nav-children is-nested" onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); moveTo('other'); }}>
-          {layoutOf(layout.other).map((item) => leaf(item, 'other', 2))}
-          {!layout.other.length && <p className="data-nav-hint">{words('把市场拖到这里收进其他地区', 'Drag a market here')}</p>}
+        {(open.has('other') || searching) && <div className="data-nav-children is-nested" onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); moveTo('other'); }}>
+          {layoutOf(layout.other).filter((item) => matchesMarket(item.label)).map((item) => leaf(item, 'other', 2))}
+          {!layout.other.length && !searching && <p className="data-nav-hint">{words('把市场拖到这里收进其他地区', 'Drag a market here')}</p>}
         </div>}
       </div>}
     </div>
@@ -206,7 +220,7 @@ export function ApiSourcesPage() {
     <button type="button" className="data-nav-item is-group" aria-expanded={open.has('global')} onClick={() => toggle('global')}>
       <span>{words('全球类型', 'Global types')}</span><MorphIcon name={open.has('global') ? 'chevron-up' : 'chevron-down'} size={16} />
     </button>
-    {open.has('global') && <div className="data-nav-children">{GLOBAL_MARKET_LEAVES.map((item) => leaf(item, 'fixed'))}</div>}
+    {(open.has('global') || searching) && <div className="data-nav-children">{GLOBAL_MARKET_LEAVES.filter((item) => matchesMarket(item.label)).map((item) => leaf(item, 'fixed'))}</div>}
   </aside>;
 
   const market = marketOf(selected);
@@ -219,6 +233,14 @@ export function ApiSourcesPage() {
   const scopeConnections = sourceSettings && scopeId
     ? sourceSettings.connections.filter((connection) => connection.scopes.includes(scopeId) || connection.scopes.includes('global'))
     : [];
+  /**
+   * 当前选中的对象：`__market__` 为市场总览，其余为来源连接 id；只影响详情，不改编排或检查状态。
+   * 记忆按市场分区（键里带市场 id），切换市场不会把上一市场的来源带过来；
+   * 来源列表未读回前保持 pending，不先回落到总览。
+   */
+  const selection = useObjectSelection(`xuan.api-sources.object:${selected}`,
+    ['__market__', ...scopeConnections.map((connection) => connection.id)], sourceSettings !== null);
+  const selectedConnectionId = selection.id && selection.id !== '__market__' ? selection.id : null;
   const pluginOf = (connection: SourceConnection) => sourceSettings?.apiPlugins.find((item) => item.id === connection.pluginId);
   const policyIds = policy ? [policy.primary, ...policy.backups].filter((id): id is string => id !== null) : [];
   const configuredSources = scopeConnections.filter((connection) => policyIds.includes(connection.id));
@@ -251,6 +273,23 @@ export function ApiSourcesPage() {
     && (dataCap === '全部' || card.capability === DATA_CAPABILITY_IDS[dataCap]));
   const typeCountZh = visibleCards.length === typeCards.length ? `${typeCards.length} 个` : `${visibleCards.length}/${typeCards.length} 个`;
   const typeCountEn = visibleCards.length === typeCards.length ? `${typeCards.length}` : `${visibleCards.length}/${typeCards.length}`;
+  const selectedConnection = scopeConnections.find((connection) => connection.id === selectedConnectionId) ?? null;
+  const selectedCheck = selectedConnection ? sourceSettings?.checks.find((item) => item.id === selectedConnection.id) : undefined;
+  const selectedOperations = selectedConnection ? pluginOf(selectedConnection)?.operations ?? [] : [];
+  // 该来源在当前市场各接口类型里担任的角色（主源/备用/可选池），直接来自现有编排结果。
+  const selectedRoutes = selectedConnection
+    ? typeCards.filter((card) => [card.primary, ...card.backups, ...card.optional].some((item) => item?.id === selectedConnection.id))
+      .map((card) => ({ label: card.label, role: card.primary?.id === selectedConnection.id ? words('主源', 'Primary')
+        : card.backups.some((item) => item?.id === selectedConnection.id) ? words('备用', 'Backup') : words('可选池', 'Pool') }))
+    : [];
+  // 只发布"当前在看什么"，不写会话、不触发任何 Agent 动作；读取中不冒充已选中总览。
+  useEffect(() => {
+    if (selection.pending) return;
+    setWorkspaceObject(selectedConnection
+      ? { page: 'api-sources', kind: 'supplier', id: selectedConnection.id, label: sourceLabel(selectedConnection), detail: marketLabelOf(selected) }
+      : { page: 'api-sources', kind: 'market', id: selected, label: marketLabelOf(selected) });
+  }, [selectedConnection, selected, selection.pending]);
+  useEffect(() => () => setWorkspaceObject(null), []);
   const supportsType = (connection: SourceConnection, operationId: SourceOperationId) =>
     pluginOf(connection)?.operations.some((operation) => operation.id === operationId) ?? false;
   const queryOriginal = async (requestId: string): Promise<SourceSettingsOperation | null> => {
@@ -411,86 +450,128 @@ export function ApiSourcesPage() {
     <span className="market-filter-label">{label}</span>
     <div className="market-chips">{values.map((value) => <button type="button" key={value} className="market-chip" aria-pressed={active === value} onClick={() => onPick(value)}>{value}</button>)}</div>
   </div>;
-  const marketPanel = market ? <div>
-    <div className="market-head">
-      <h2 className="data-panel-title">{market.label}</h2>
-      <span className="market-state">{configuredSources.length ? words('已配置', 'Configured') : words('未配置', 'Not configured')}</span>
-      {inheritsGlobal && configuredSources.length > 0 && <span className="market-state">{words('继承全局', 'Inherits global')}</span>}
-    </div>
-    {error && <ErrorNote detail={error}>{words('接口源状态暂时无法读取。', 'API source status could not be read.')}</ErrorNote>}
+  /** 摘要只留"当前范围 + 类型数量"；筛选项属于操作，放在主体上方。 */
+  const marketSummary = market ? <div className="market-scope">
+    <span>{[country !== '全部' ? country : '', assetScope !== '全部' ? assetScope : '', dataCap !== '全部' ? dataCap : ''].filter(Boolean).join(' · ') || words('全部范围', 'All scopes')}</span>
+    <span className="market-state">{words(`接口类型：${typeCountZh}`, `API types: ${typeCountEn}`)}</span>
+  </div> : null;
+  const marketFilters = market ? <>
     {!!market.countries?.length && chips(words('国家或地区', 'Country'), ['全部', ...market.countries], country, setCountry)}
     {chips(words('资产范围', 'Asset scope'), ASSET_SCOPES, assetScope, setAssetScope)}
     {chips(words('数据能力', 'Data capability'), DATA_CAPS, dataCap, setDataCap)}
-    <div className="market-scope">
-      <span>{[market.label, country !== '全部' ? country : '', assetScope !== '全部' ? assetScope : '', dataCap !== '全部' ? dataCap : ''].filter(Boolean).join(' · ')}</span>
-      <span className="market-state">{words(`接口类型：${typeCountZh}`, `API types: ${typeCountEn}`)}</span>
+  </> : null;
+  const marketTypes = market ? (typeCards.length ? <>
+    <div className="market-type-legend">
+      <span><span className="source-lamp" data-ok="true" aria-hidden="true" />{words('支持此类型', 'Supports this type')}</span>
+      <span><span className="source-lamp" data-ok="false" aria-hidden="true" />{words('不支持 = 没有这类接口，不能用，执行时跳过', 'Unsupported = no such API; cannot be used, skipped at execution')}</span>
     </div>
-    <div className="source-check-block" aria-label={words('来源连接与检查', 'Source connections and checks')}>
-      <div className="source-check-head"><strong>{words('来源连接与检查', 'Source connections and checks')}</strong><small>{words('检查由用户点击后发起；页面加载只读最近记录。', 'Checks start only on user action; page load reads the latest record.')}</small></div>
-      <SourceCheckError error={sourceCheck.error} />
-      {scopeConnections.length === 0 && <p className="data-empty">{words('当前范围没有已配置来源连接。', 'No source connection is configured for this scope.')}</p>}
-      {scopeConnections.map(connection => {
-        const check = sourceSettings?.checks.find(item => item.id === connection.id);
-        const operations = pluginOf(connection)?.operations ?? [];
-        return <div className="source-check-row" key={connection.id}>
-          <span className="source-lamp" data-ok={check?.status === 'passed'} aria-hidden="true" />
-          <div className="source-check-copy"><strong>{sourceLabel(connection)}</strong>
-            <small>{connection.alias} · {connection.scopes.join(' / ')} · {connection.enabled ? words('已启用', 'Enabled') : words('已停用', 'Disabled')}</small>
-            <SourceCheckLine check={check} /></div>
-          <div className="source-check-actions">
-            <button type="button" className="text-button" disabled={sourceCheck.busy !== null} onClick={() => void sourceCheck.check(connection.id)}>
-              {sourceCheck.busy === connection.id ? words('检查中…', 'Checking…') : words('检查', 'Check')}</button>
-            {connection.enabled && operations.length > 0 && <button type="button" className="text-button" onClick={() => { setRunReceipt(null); setRunError(null); setRunSource(connection); }}>{words('运行…', 'Run…')}</button>}
+    <p className="market-types-note">{saveNotices.some((item) => item.status === 'saving') ? words('保存中…', 'Saving…') : words('主源、备用源各一个，其余来源在可选池；主备不可用时内置代理会从可选池继续查找，未编排时沿用范围主备。', 'One primary and one backup; other sources sit in the pool, which built-in agents fall back to when neither selected source is usable. The scope policy applies until an arrangement is saved.')}</p>
+    {visibleCards.length ? <div className="market-types" aria-label={words('接口类型', 'API types')}>
+      {visibleCards.map((card) => {
+        const assigned = [card.primary, ...card.backups].filter((connection): connection is SourceConnection => !!connection);
+        const supported = assigned.some((connection) => supportsType(connection, card.id));
+        return <article className="market-type-card" data-operation-id={card.id} key={card.id}>
+          <div className="market-type-head">
+            <span className="market-type-name">{card.label}</span>
+            <span className="market-type-cap">{words(...DATA_CAPABILITY_LABELS[card.capability])}</span>
+            <span className="market-type-asset">{words(...ASSET_SCOPE_LABELS[card.assetScope])}</span>
           </div>
-        </div>;
+          <div className="market-type-pair">
+            <div className="market-type-column">
+              <span className="market-type-box-label">{words('主源', 'Primary')}</span>
+              {sourceBox(card, 'primary', card.primary ? [card.primary] : [])}
+            </div>
+            <div className="market-type-column">
+              <span className="market-type-box-label">{words('备用源', 'Backup')}</span>
+              {sourceBox(card, 'backup', card.backups)}
+            </div>
+          </div>
+          <div className="market-type-column market-type-pool-column">
+            <span className="market-type-box-label">{words('可选池', 'Pool')}</span>
+            {sourceBox(card, 'pool', card.optional)}
+          </div>
+          {savePanel(card)}
+          {!supported && <p className="market-type-warning">{words('当前没有支持此类型的已选来源。', 'No selected source supports this type.')}</p>}
+        </article>;
       })}
-    </div>
-    {typeCards.length ? <>
-      <div className="market-type-legend">
-        <span><span className="source-lamp" data-ok="true" aria-hidden="true" />{words('支持此类型', 'Supports this type')}</span>
-        <span><span className="source-lamp" data-ok="false" aria-hidden="true" />{words('不支持 = 没有这类接口，不能用，执行时跳过', 'Unsupported = no such API; cannot be used, skipped at execution')}</span>
-      </div>
-      <p className="market-types-note">{saveNotices.some((item) => item.status === 'saving') ? words('保存中…', 'Saving…') : words('主源、备用源各一个，其余来源在可选池；主备不可用时内置代理会从可选池继续查找，未编排时沿用范围主备。', 'One primary and one backup; other sources sit in the pool, which built-in agents fall back to when neither selected source is usable. The scope policy applies until an arrangement is saved.')}</p>
-      {visibleCards.length ? <div className="market-types" aria-label={words('接口类型', 'API types')}>
-        {visibleCards.map((card) => {
-          const assigned = [card.primary, ...card.backups].filter((connection): connection is SourceConnection => !!connection);
-          const supported = assigned.some((connection) => supportsType(connection, card.id));
-          return <article className="market-type-card" data-operation-id={card.id} key={card.id}>
-            <div className="market-type-head">
-              <span className="market-type-name">{card.label}</span>
-              <span className="market-type-cap">{words(...DATA_CAPABILITY_LABELS[card.capability])}</span>
-              <span className="market-type-asset">{words(...ASSET_SCOPE_LABELS[card.assetScope])}</span>
-            </div>
-            <div className="market-type-pair">
-              <div className="market-type-column">
-                <span className="market-type-box-label">{words('主源', 'Primary')}</span>
-                {sourceBox(card, 'primary', card.primary ? [card.primary] : [])}
-              </div>
-              <div className="market-type-column">
-                <span className="market-type-box-label">{words('备用源', 'Backup')}</span>
-                {sourceBox(card, 'backup', card.backups)}
-              </div>
-            </div>
-            <div className="market-type-column market-type-pool-column">
-              <span className="market-type-box-label">{words('可选池', 'Pool')}</span>
-              {sourceBox(card, 'pool', card.optional)}
-            </div>
-            {savePanel(card)}
-            {!supported && <p className="market-type-warning">{words('当前没有支持此类型的已选来源。', 'No selected source supports this type.')}</p>}
-          </article>;
-        })}
-      </div> : <p className="data-empty">{words('当前资产范围或数据能力下没有匹配的接口类型。', 'No API type matches the current asset scope or data capability.')}</p>}
-    </> : <p className="data-empty">{inheritsGlobal
-      ? words('继承全局，但全局来源未覆盖该范围。', 'Inherits the global default, but it does not cover this scope.')
-      : words('该范围尚未配置接口源。', 'No API source is configured for this scope.')}</p>}
-  </div> : <p className="data-empty">{words('该分类尚未接入数据。', 'No data is connected for this category yet.')}</p>;
+    </div> : <p className="data-empty">{words('当前资产范围或数据能力下没有匹配的接口类型。', 'No API type matches the current asset scope or data capability.')}</p>}
+  </> : <p className="data-empty">{inheritsGlobal
+    ? words('继承全局，但全局来源未覆盖该范围。', 'Inherits the global default, but it does not cover this scope.')
+    : words('该范围尚未配置接口源。', 'No API source is configured for this scope.')}</p>) : null;
 
-  return <div className="data-page" data-settings-revision={sourceSettings?.revision ?? 'unknown'}>
+  const detailPanel = !market
+    ? <section className="data-panel"><p className="data-empty">{words('该分类尚未接入数据。', 'No data is connected for this category yet.')}</p></section>
+    : <ObjectDetailPanel
+      label={words('接口源详情', 'API source detail')}
+      header={selection.pending
+        ? <DetailHeader title={words('正在读取…', 'Loading…')} />
+        : selectedConnection
+          ? <DetailHeader title={sourceLabel(selectedConnection)}
+            status={selectedConnection.enabled ? words('已启用', 'Enabled') : words('已停用', 'Disabled')}
+            tone={selectedConnection.enabled ? 'ready' : 'warning'}
+            meta={`${selectedConnection.alias} · ${selectedConnection.scopes.join(' / ')}`} />
+          : <DetailHeader title={market.label}
+            status={configuredSources.length ? words('已配置', 'Configured') : words('未配置', 'Not configured')}
+            tone={configuredSources.length ? 'ready' : 'neutral'}
+            meta={inheritsGlobal && configuredSources.length > 0 ? words('继承全局默认编排', 'Inherits the global default arrangement') : undefined} />}
+      summary={selection.pending ? undefined : selectedConnection
+        ? <DetailFacts items={[
+          { label: words('数据能力', 'Capabilities'), value: selectedOperations.length ? selectedOperations.map((operation) => operation.label).join(' · ') : words('没有公开运行动作', 'No public operations') },
+          { label: words('来源路由', 'Routing'), value: selectedRoutes.length ? selectedRoutes.map((route) => `${route.label}（${route.role}）`).join(' · ') : words('未编入当前市场的接口类型', 'Not arranged for any API type in this market') },
+          { label: words('最近检查', 'Latest check'), value: <SourceCheckLine check={selectedCheck} /> },
+        ]} />
+        : marketSummary}
+      diagnostics={selectedConnection ? <DetailDiagnostics label={words('来源标识与范围', 'Source identity and scope')}>
+        <dl className="object-detail-facts">
+          <div><dt>{words('连接编号', 'Connection ID')}</dt><dd className="tools-mono">{selectedConnection.id}</dd></div>
+          <div><dt>{words('别名', 'Alias')}</dt><dd>{selectedConnection.alias}</dd></div>
+          <div><dt>{words('范围编号', 'Scope IDs')}</dt><dd className="tools-mono">{selectedConnection.scopes.join(' / ')}</dd></div>
+          <div><dt>{words('适配插件', 'Plugin')}</dt><dd>{pluginOf(selectedConnection)?.shortLabel ?? '—'}</dd></div>
+          <div><dt>{words('检查时间', 'Checked at')}</dt><dd>{selectedCheck ? new Date(selectedCheck.checkedAt).toLocaleString() : '—'}</dd></div>
+        </dl>
+      </DetailDiagnostics> : undefined}>
+      {selection.pending
+        ? <p className="object-detail-note">{words('来源列表尚未读回，暂不显示详情，也不回落到市场总览。',
+          'The source list has not loaded yet; no detail is shown and the market overview is not substituted.')}</p>
+        : selectedConnection ? <div className="supplier-detail-actions">
+          <button type="button" className="text-button" disabled={sourceCheck.busy !== null} onClick={() => void sourceCheck.check(selectedConnection.id)}>
+            {sourceCheck.busy === selectedConnection.id ? words('检查中…', 'Checking…') : words('检查', 'Check')}</button>
+          {selectedConnection.enabled && selectedOperations.length > 0 && <button type="button" className="text-button"
+            onClick={() => { setRunReceipt(null); setRunError(null); setRunSource(selectedConnection); }}>{words('运行…', 'Run…')}</button>}
+        </div> : <>
+          {error && <ErrorNote detail={error}>{words('接口源状态暂时无法读取。', 'API source status could not be read.')}</ErrorNote>}
+          {marketFilters}
+          {marketTypes}
+        </>}
+    </ObjectDetailPanel>;
+
+  return <div className="data-page page-panes page-panes--api" data-settings-revision={sourceSettings?.revision ?? 'unknown'}>
     {nav}
-    <section className="data-panel" aria-label={marketLabelOf(selected)}>
-      {marketPanel}
-      {dragging && <p className="data-drag-hint" role="status">{words('拖到“其他地区”收进去，拖到地区列表放出来', 'Drop on 其他地区 to group it, or on the region list to pull it out')}</p>}
-    </section>
+    <div className="page-cards" aria-label={words('来源', 'Sources')}>
+      <SourceCheckError error={sourceCheck.error} />
+      <div className="object-list">
+        <button type="button" className="object-card" aria-current={!selectedConnection && !selection.pending ? 'true' : undefined} onClick={() => selection.select('__market__')}>
+          <span className="object-card-main">
+            <span className="object-card-title">{words('当前市场总览', 'Market overview')}</span>
+            <span className="object-card-meta">{marketLabelOf(selected)}</span>
+          </span>
+          <span className="object-card-state">{words(`${typeCards.length} 个接口类型`, `${typeCards.length} types`)}</span>
+        </button>
+        {scopeConnections.map((connection) => {
+          return <button type="button" key={connection.id} className="object-card"
+            aria-current={selectedConnectionId === connection.id ? 'true' : undefined} onClick={() => selection.select(connection.id)}>
+            <span className="object-card-main">
+              <span className="object-card-title">{sourceLabel(connection)}</span>
+              <span className="object-card-meta">{connection.alias} · {connection.scopes.join(' / ')}</span>
+            </span>
+            <span className="object-card-state" data-ok={connection.enabled}>{connection.enabled ? words('已启用', 'Enabled') : words('已停用', 'Disabled')}</span>
+          </button>;
+        })}
+        {!scopeConnections.length && <p className="data-empty">{words('当前范围没有已配置来源连接。', 'No source connection is configured for this scope.')}</p>}
+      </div>
+    </div>
+    {detailPanel}
+    {dragging && <p className="data-drag-hint" role="status">{words('拖到“其他地区”收进去，拖到地区列表放出来', 'Drop on 其他地区 to group it, or on the region list to pull it out')}</p>}
     {runSource && sourceSettings && <ApiRunDialog connection={runSource} plugin={sourceSettings.apiPlugins.find(item => item.id === runSource.pluginId) ?? null}
       scopes={sourceSettings.scopes} onClose={() => { setRunSource(null); setRunReceipt(null); setRunError(null); }}
       receipt={runReceipt} onReceipt={setRunReceipt} error={runError} onError={setRunError} />}

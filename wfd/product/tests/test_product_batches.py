@@ -30,15 +30,18 @@ def service(tmp_path, caller="batch-a", namespace="wfd.test.batch"):
     engine = WFDDuckDBPrototype(tmp_path / "store", load_protocol_validator(HERE / "protocol"),
                                 runtime_root=tmp_path / ("runtime_" + caller), sandbox=False,
                                 writer_host=caller)
-    return WFDProductService(engine, allowed_sources={"fixture": copy.deepcopy(POLICY)},
-                             caller_roles=ROLES, caller_id=caller,
-                             unit_registry=UNIT_REGISTRY,
-                             trusted_actor_namespaces={namespace})
+    svc = WFDProductService(engine, allowed_sources={"fixture": copy.deepcopy(POLICY)},
+                            caller_roles=ROLES, caller_id=caller,
+                            unit_registry=UNIT_REGISTRY,
+                            trusted_actor_namespaces={namespace})
+    evidence = tmp_path / "batch-evidence.json"
+    evidence.write_text('{"fixture":"batch-ledger"}\n', encoding="utf-8")
+    svc._batch_ev = svc.register_evidence(evidence)
+    return svc
 
 
 def header_for(svc, batch_id, scope="first", rows_in_header=False):
-    ev = svc.register_evidence(HERE / "tests/expect.json") if not hasattr(svc, "_batch_ev") else svc._batch_ev
-    svc._batch_ev = ev
+    ev = svc._batch_ev
     header = {
         "protocol_version": "wfd.ingest/1.3-candidate",
         "request_identity": {"dataset_id": "batch_test", "trusted_actor_namespace": "wfd.test.batch",

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "resourceMode": "native",
+  "runtimeRoot": "<ABSOLUTE_NEW_RUNTIME_ROOT_OUTSIDE_SOURCE>",
+  "launcherFile": "<ABSOLUTE_NEW_LOCATOR_JSON_OUTSIDE_SOURCE>",
+  "node": "<ABSOLUTE_NODE_EXECUTABLE>",
+  "npmCli": "<ABSOLUTE_NPM_CLI_JS>",
+  "python": "<ABSOLUTE_VENV_PYTHON_EXECUTABLE>",
+  "model": "disabled",
+  "browser": "disabled",
+  "transcription": "disabled"
+}

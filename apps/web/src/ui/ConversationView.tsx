@@ -14,12 +14,12 @@ import BrandAsset from './BrandAsset';
 import MarkdownText from './MarkdownText';
 import QuestionCards from './QuestionCards';
 import { ControlTooltip, ErrorNote, IconButton, errorDetail, useWords } from './Controls';
-import { CandidateTaskResults, ConversationTaskResults, TaskResults, TaskState, isObject, tasksForBranch } from './TaskResults';
+import { TaskResults, TaskState, isObject, tasksForBranch, taskStateText } from './TaskResults';
 import ProcessingPanel from './ProcessingPanel';
-import { dataBrowserApi, type CandidateView } from '../data-browser-api';
 import { localDataGeneration, notifyLocalDataRevoked } from '../local-data-context';
 
 function toMessage(message: ChatMessage): ThreadMessageLike {
+  ((window as unknown as { __tm?: unknown[] }).__tm ??= []).push([message.id.slice(0, 8), (message.text || '').length, message.role, message.status]);
   return { id: message.id, role: message.role, createdAt: new Date(message.createdAt), content: [{ type: 'text', text: message.text }],
     ...(message.role === 'assistant' ? { status: message.status === 'running' ? { type: 'running' as const } : message.status === 'complete' ? { type: 'complete' as const, reason: 'stop' as const }
       : { type: 'incomplete' as const, reason: message.status === 'interrupted' ? 'cancelled' as const : 'error' as const } } : {}),
@@ -27,6 +27,51 @@ function toMessage(message: ChatMessage): ThreadMessageLike {
       agentDisplayName: message.agentDisplayName ?? null } } };
 }
 function MessageText({ text }: TextMessagePartProps) { return <MarkdownText text={text} />; }
+
+const EMPTY_STEPS: readonly TaskRecord[] = [];
+/** 把模型提出的工具任务按创建时间归到最近一条助手消息，形成与模型步骤一致的时间线。 */
+function tasksByAssistantMessage(messages: readonly ChatMessage[], tasks: readonly TaskRecord[]): Map<string, TaskRecord[]> {
+  const assistants = messages.filter((item) => item.role === 'assistant')
+    .map((item) => ({ id: item.id, at: Date.parse(item.createdAt) })).filter((item) => Number.isFinite(item.at));
+  const map = new Map<string, TaskRecord[]>();
+  const firstAssistant = assistants[0]?.id ?? null;
+  for (const task of tasks) {
+    if (task.runtimeId === 'pi' || !Number.isFinite(task.createdAt)) continue;
+    // 任务晚于已加载的最后一条消息时归到最近一条；早于全部消息时归到首条，避免过程行整段丢失。
+    let owner: string | null = firstAssistant;
+    for (const assistant of assistants) if (assistant.at <= task.createdAt) owner = assistant.id;
+    if (!owner) continue;
+    const list = map.get(owner) ?? [];
+    list.push(task);
+    map.set(owner, list);
+  }
+  for (const list of map.values()) list.sort((a, b) => a.createdAt - b.createdAt || a.sequence - b.sequence);
+  return map;
+}
+/** 只显示受控动作的短名称与参数摘要，完整回执仍留在任务记录里。 */
+/** 组标题按整轮实际动作拼，和 DSH 的「执行了命令，修改了文件」一致。 */
+function processTitle(actions: ReadonlySet<string> | undefined, words: (zh: string, en: string) => string): string {
+  const list = actions ? [...actions] : [];
+  const has = (prefix: string) => list.some((action) => action.startsWith(prefix));
+  const parts: string[] = [];
+  if (list.some((action) => ['baidu.drive', 'web.search', 'web.read_public', 'video.transcribe_url'].includes(action))) parts.push(words('执行了命令', 'Executed commands'));
+  if (has('file.') || has('model.files.')) parts.push(words('读写文件', 'Read or wrote files'));
+  if (has('conversion.') || has('material.') || has('data.') || has('image.')) parts.push(words('处理数据', 'Processed data'));
+  if (!parts.length) parts.push(words('思考', 'Thinking'));
+  return parts.join(words('，', ', '));
+}
+function stepLabel(task: TaskRecord): string {
+  const title = task.title.replace(/^模型提出[:：]\s*/u, '');
+  const args = isObject(task.args) ? Object.entries(task.args).filter(([, value]) => value !== undefined && value !== '')
+    .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`).join(' ') : '';
+  const detail = args.length > 90 ? `${args.slice(0, 90)}…` : args;
+  return detail ? `${title} · ${detail}` : title;
+}
+/** 思考行默认收起，标题只放首行摘要；正文点开才展开，和 DSH 的步骤行一致。 */
+function thinkingSummary(text: string): string {
+  const line = text.replace(/\s+/gu, ' ').trim();
+  return line.length > 84 ? `${line.slice(0, 84)}…` : line;
+}
 
 function MessageEditor({ chat }: { chat: Chat }) {
   const words = useWords(), aui = useAui();
@@ -50,31 +95,63 @@ function MessageEditor({ chat }: { chat: Chat }) {
   </form></MessagePrimitive.Root>;
 }
 
-function Message({ chat }: { chat: Chat }) {
+function Message({ chat, steps = EMPTY_STEPS, expanded = false, onToggle, groupTitle }: {
+  chat: Chat; steps?: readonly TaskRecord[]; expanded?: boolean; onToggle?: () => void; groupTitle?: string;
+}) {
   const words = useWords();
   const message = useAuiState((state) => state.message);
   if (message.composer.isEditing) return <MessageEditor chat={chat} />;
   const user = message.role === 'user', status = message.metadata.custom.coreStatus;
-  const source = chat.conversation?.messages.find((item) => item.id === message.id), usage = source?.usage;
-  const run = source?.runId === chat.conversation?.lastRun?.id ? chat.conversation?.lastRun : null;
+  const state = chat.conversation;
+  const source = state?.messages.find((item) => item.id === message.id), usage = source?.usage;
+  const lastRun = state?.lastRun;
+  const run = lastRun && source?.runId === lastRun.id ? lastRun : null;
+  const bodyText = source?.text ?? message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
+  const empty = !bodyText.trim();
+  const budgetReason = !user && status === 'error' && state?.status === 'ERROR' && run?.state === 'failed' && run.failureCode === 'budget'
+    ? state.error?.trim() : null;
   const elapsed = run?.settledAt ? Math.max(0, (Date.parse(run.settledAt) - Date.parse(run.startedAt)) / 1000) : null;
   const metrics = [elapsed !== null && Number.isFinite(elapsed) ? words(`${elapsed.toFixed(1)} 秒`, `${elapsed.toFixed(1)} s`) : '',
-    usage ? words(`输入 ${usage.inputTokens.toLocaleString()} · 输出 ${usage.outputTokens.toLocaleString()} 词元`, `${usage.inputTokens.toLocaleString()} input · ${usage.outputTokens.toLocaleString()} output tokens`) : ''].filter(Boolean).join(' · ');
-  const empty = !message.content.some((part) => part.type === 'text' && part.text.trim());
+    usage && !(status === 'error' && empty && usage.inputTokens === 0 && usage.outputTokens === 0)
+      ? words(`输入 ${usage.inputTokens.toLocaleString()} · 输出 ${usage.outputTokens.toLocaleString()} 词元`, `${usage.inputTokens.toLocaleString()} input · ${usage.outputTokens.toLocaleString()} output tokens`) : ''].filter(Boolean).join(' · ');
   const lastAssistant = [...(chat.conversation?.messages ?? [])].reverse().find((item) => item.role === 'assistant')?.id === message.id;
   const history = chat.conversation?.messages ?? [];
   const index = history.findIndex((item) => item.id === message.id);
   const continued = index >= 0 && history.slice(index + 1).some((item) => item.role === 'assistant');
-  // 空片段后面还有续写时，不单独成卡，避免同一轮被拆成多张输出卡片。
-  if (!user && empty && continued) return null;
-  return <MessagePrimitive.Root className={`message message--${user ? 'user' : 'assistant'}`} data-running={status === 'running'}>
+  const previous = index > 0 ? history[index - 1] : undefined;
+  const runStart = !user && (!previous || previous.role === 'user' || previous.runId !== source?.runId);
+  const thinking = source?.thinking?.trim() ? source.thinking.trim() : '';
+  const hasProcess = !user && (!!thinking || steps.length > 0);
+  const open = expanded || status === 'running';
+  const showSteps = hasProcess && open;
+  const showTitle = hasProcess && runStart;
+  if (!user && empty && continued && !thinking && steps.length === 0) return null;
+  const processOnly = !user && empty && hasProcess;
+  return <MessagePrimitive.Root className={`message message--${user ? 'user' : 'assistant'}${processOnly ? ' message--process' : ''}`} data-running={status === 'running'}>
 
     {!user && status === 'running' && <span className="message-thinking">{words('生成中…', 'Generating…')}</span>}
-    {!user && source?.thinking && <details className="message-reasoning"><summary>{words('思考过程', 'Thinking')}</summary><p>{source.thinking}</p></details>}
-    <div className="message-body">{isConversationAttachmentRefs(message.metadata.custom.attachmentRefs) && <AttachmentList refs={message.metadata.custom.attachmentRefs} />}
+    {hasProcess && <div className="message-process">
+      {showTitle && <button type="button" className="message-process-title" aria-expanded={open} onClick={() => onToggle?.()}>
+        <span className="message-process-chevron">{open ? '▾' : '▸'}</span>
+        {groupTitle ?? words('执行了命令', 'Executed commands')}
+      </button>}
+      {showSteps && <div className="message-steps">
+        {thinking && <details className="message-step message-step--thinking">
+          <summary><span className="message-step-label">{words('思考', 'Thinking')}</span><span className="message-step-name">{thinkingSummary(thinking)}</span></summary>
+          <p className="message-step-text">{thinking}</p>
+        </details>}
+        {steps.map((task) => <div className="message-step" key={task.id} data-state={task.status}>
+          <span className="message-step-label">{words('运行命令', 'Command')}</span>
+          <span className="message-step-name">{stepLabel(task)}</span>
+          <span className={`message-step-state${task.status === 'failed' ? ' danger-text' : ''}`}>{taskStateText(task.status, words)}</span>
+          {task.error?.message && <p className="message-step-detail">{task.error.message}</p>}
+        </div>)}
+      </div>}
+    </div>}
+    {(!empty || user) && <div className="message-body">{isConversationAttachmentRefs(message.metadata.custom.attachmentRefs) && <AttachmentList refs={message.metadata.custom.attachmentRefs} />}
       {empty ? <p className="waiting-response">{status === 'running' ? words('正在等待模型回应…', 'Waiting for the model…') : words('本轮没有输出正文。', 'This run produced no message text.')}</p> : <MessagePrimitive.Parts components={{ Text: MessageText }} />}
-    </div>
-    {status === 'interrupted' && <p className="message-outcome">{words('本轮已停止', 'Run stopped')}</p>}{status === 'error' && <p className="message-outcome danger-text">{words('本轮未完成', 'Run incomplete')}</p>}
+    </div>}
+    {status === 'interrupted' && <p className="message-outcome">{words('本轮已停止', 'Run stopped')}</p>}{status === 'error' && <p className="message-outcome danger-text">{budgetReason || words('本轮未完成', 'Run incomplete')}</p>}
     {!user && lastAssistant && metrics && <p className="message-metrics">{metrics}</p>}
     <div className="message-controls">
       {!chat.conversation?.history && <BranchPickerPrimitive.Root className="branch-picker" hideWhenSingleBranch><ControlTooltip label={words('上一个分支', 'Previous branch')}><BranchPickerPrimitive.Previous aria-label={words('上一个分支', 'Previous branch')} disabled={!chat.canBranch}><ChevronLeft size={14} /></BranchPickerPrimitive.Previous></ControlTooltip><span><BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count /></span><ControlTooltip label={words('下一个分支', 'Next branch')}><BranchPickerPrimitive.Next aria-label={words('下一个分支', 'Next branch')} disabled={!chat.canBranch}><ChevronRight size={14} /></BranchPickerPrimitive.Next></ControlTooltip></BranchPickerPrimitive.Root>}
@@ -86,12 +163,33 @@ function Message({ chat }: { chat: Chat }) {
   </MessagePrimitive.Root>;
 }
 
-function Thread({ chat, tasks, scrollPositions, hidden, linkedCandidates, candidateAvailability, candidateReason }: { chat: Chat; tasks: TaskRecord[]; scrollPositions: Map<string, number>; hidden: boolean;
-  linkedCandidates: CandidateView[]; candidateAvailability: 'available' | 'unavailable' | 'loading'; candidateReason: string | null }) {
+function Thread({ chat, tasks, scrollPositions, hidden }: { chat: Chat; tasks: TaskRecord[]; scrollPositions: Map<string, number>; hidden: boolean }) {
   const words = useWords(), state = chat.conversation!;
   const viewport = useRef<HTMLDivElement>(null), branch = useRef(state.branchId), [atBottom, setAtBottom] = useState(true);
   branch.current = state.branchId;
   const scrollKey = `${state.conversationId}:${state.branchId}`;
+  const stepMap = useMemo(() => tasksByAssistantMessage(state.messages, tasks), [state.messages, tasks]);
+  const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const toggleRun = useCallback((runId: string) => {
+    if (!runId) return;
+    setExpandedRuns((previous) => {
+      const next = new Set(previous);
+      if (next.has(runId)) next.delete(runId); else next.add(runId);
+      return next;
+    });
+  }, []);
+  const runIdOf = useMemo(() => new Map(state.messages.map((message) => [message.id, message.runId ?? ''])), [state.messages]);
+  const runActions = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const message of state.messages) {
+      const list = stepMap.get(message.id);
+      if (!list?.length || !message.runId) continue;
+      const actions = map.get(message.runId) ?? new Set<string>();
+      for (const task of list) actions.add(task.action);
+      map.set(message.runId, actions);
+    }
+    return map;
+  }, [state.messages, stepMap]);
   const repository = useMemo(() => {
     const ids = new Set(state.messageTree.map((message) => message.id));
     return ExportedMessageRepository.fromBranchableArray(state.messageTree.map((message) => ({ message: toMessage(message), parentId: state.history && message.parentId && !ids.has(message.parentId) ? null : message.parentId })), { headId: state.headId });
@@ -118,12 +216,14 @@ function Thread({ chat, tasks, scrollPositions, hidden, linkedCandidates, candid
         {state.history?.hasMore && <div className="history-load"><button type="button" className="text-button" disabled={chat.historyLoading} onClick={() => void older()}>{chat.historyLoading ? words('读取中…', 'Loading…') : words('读取较早消息', 'Load earlier messages')}</button></div>}
         {chat.historyError && <ErrorNote detail={chat.historyError}>{words('较早消息暂时无法读取。', 'Earlier messages could not be loaded.')}</ErrorNote>}
         {!state.messages.length && <div className="conversation-empty"><BrandAsset kind="xuan" size={32} /><p>{words('说点什么，或拖入文件…', 'Send a message or drop files…')}</p></div>}
-        <ThreadPrimitive.Messages>{({ message }) => message.metadata.isOptimistic ? null : <Message chat={chat} />}</ThreadPrimitive.Messages>
+        <ThreadPrimitive.Messages>{({ message }) => message.metadata.isOptimistic ? null : (() => {
+          const runId = runIdOf.get(message.id) ?? '';
+          return <Message chat={chat} steps={stepMap.get(message.id) ?? EMPTY_STEPS} expanded={!!runId && expandedRuns.has(runId)}
+            onToggle={() => toggleRun(runId)} groupTitle={processTitle(runActions.get(runId), words)} />;
+        })()}</ThreadPrimitive.Messages>
         <QuestionCards key={`questions:${scrollKey}`} chat={chat} />
         <TaskResults tasks={results} />
-        <ConversationTaskResults tasks={tasks} conversationId={state.conversationId} />
         <ProcessingPanel conversationId={state.conversationId} branchId={state.branchId} />
-        <CandidateTaskResults items={linkedCandidates} availability={candidateAvailability} reason={candidateReason} />
       </div>
     </ThreadPrimitive.Viewport>
     {!atBottom && <IconButton label={words('跳至最新消息', 'Jump to latest message')} className="jump-to-latest" onClick={() => { viewport.current?.scrollTo({ top: viewport.current.scrollHeight, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}><ArrowDown size={17} /></IconButton>}
@@ -168,12 +268,11 @@ function PendingApprovals() {
   </div>;
 }
 
-export default function ConversationView({ chat, hidden, dispatchBlocked, controlUnconfirmed }: { chat: Chat; hidden: boolean; dispatchBlocked: boolean; controlUnconfirmed: boolean }) {
+export default function ConversationView({ chat, hidden, dispatchBlocked, controlUnconfirmed, compact = false, tasks: sharedTasks }: { chat: Chat; hidden: boolean; dispatchBlocked: boolean; controlUnconfirmed: boolean; compact?: boolean; tasks?: TaskRecord[] }) {
   const words = useWords();
-  const [tasks, setTasks] = useState<TaskRecord[]>([]);
-  const [linkedCandidates, setLinkedCandidates] = useState<CandidateView[]>([]);
-  const [candidateAvailability, setCandidateAvailability] = useState<'available' | 'unavailable' | 'loading'>('loading');
-  const [candidateReason, setCandidateReason] = useState<string | null>(null);
+  // 应用层已订阅真实任务流时直接复用，避免同一会话开两条 SSE 和两份任务状态。
+  const [ownTasks, setOwnTasks] = useState<TaskRecord[]>([]);
+  const shared = sharedTasks !== undefined;
   // 断线静默重连：只有持续 10 秒仍未连上才提示一行淡字。
   const [reconnectHint, setReconnectHint] = useState(false);
   useEffect(() => {
@@ -186,10 +285,11 @@ export default function ConversationView({ chat, hidden, dispatchBlocked, contro
   const refreshResources = useCallback(() => {
     if (!id) return;
     const epoch = ++resourceEpoch.current;
-    void getTasks(id).then((value) => { if (resourceEpoch.current === epoch) setTasks((current) => mergeTasks(current, { tasks: value }, id)); }).catch(() => {});
+    void getTasks(id).then((value) => { if (resourceEpoch.current === epoch) setOwnTasks((current) => mergeTasks(current, { tasks: value }, id)); }).catch(() => {});
   }, [id]);
   useEffect(() => {
-    setTasks([]); ++resourceEpoch.current;
+    if (shared) return;
+    setOwnTasks([]); ++resourceEpoch.current;
     if (!id) return;
     const generation = localDataGeneration();
     if (generation === null) return;
@@ -197,27 +297,17 @@ export default function ConversationView({ chat, hidden, dispatchBlocked, contro
     const source = new EventSource(`/api/tasks/events?conversationId=${encodeURIComponent(id)}&localDataGeneration=${generation}`);
     source.addEventListener('tasks', (event) => {
       if (disposed || localDataGeneration() !== generation) return;
-      try { const update = readTaskUpdate((event as MessageEvent<string>).data); setTasks((current) => mergeTasks(current, update, id)); } catch { refreshResources(); }
+      try { const update = readTaskUpdate((event as MessageEvent<string>).data); setOwnTasks((current) => mergeTasks(current, update, id)); } catch { refreshResources(); }
     });
     source.addEventListener('lifecycle', () => {
       if (disposed) return;
       notifyLocalDataRevoked('本地资料资格已停用。');
       source.close();
-      setTasks([]);
+      setOwnTasks([]);
     });
     return () => { disposed = true; ++resourceEpoch.current; source.close(); };
-  }, [id, refreshResources]);
+  }, [id, refreshResources, shared]);
   const state = chat.conversation;
-  useEffect(() => {
-    const conversationId = state?.conversationId, branchId = state?.branchId;
-    if (!conversationId || !branchId) { setLinkedCandidates([]); setCandidateAvailability('available'); setCandidateReason(null); return; }
-    let alive = true, timer = 0;
-    const load = () => { void dataBrowserApi.conversationCandidates(conversationId, branchId).then(value => {
-      if (!alive) return; setLinkedCandidates(value.items); setCandidateAvailability(value.availability); setCandidateReason(value.reason);
-    }).catch((failure) => { if (alive) { setLinkedCandidates([]); setCandidateAvailability('unavailable'); setCandidateReason(errorDetail(failure)); } }); };
-    load(); timer = window.setInterval(load, 6_000);
-    return () => { alive = false; window.clearInterval(timer); };
-  }, [state?.conversationId, state?.branchId]);
   const [manualCollapsed, setManualCollapsed] = useState<boolean | null>(null);
   const [narrow, setNarrow] = useState(false);
   const pageRef = useRef<HTMLDivElement>(null);
@@ -231,7 +321,8 @@ export default function ConversationView({ chat, hidden, dispatchBlocked, contro
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
-  const sidebarCollapsed = manualCollapsed ?? narrow;
+  // 工作台窄栏里由外部固定收起会话列表；页面主区域仍按容器宽度自动判断。
+  const sidebarCollapsed = compact || (manualCollapsed ?? narrow);
   const dispatchReady = !dispatchBlocked && !controlUnconfirmed;
   const controlledChat = { ...chat, canSend: chat.canSend && dispatchReady, canRetrySend: chat.canRetrySend && dispatchReady, canQueue: chat.canQueue && dispatchReady,
     canSteer: chat.canSteer && dispatchReady, canSteerQueued: chat.canSteerQueued && dispatchReady, canInterrupt: chat.canInterrupt && dispatchReady,
@@ -239,7 +330,7 @@ export default function ConversationView({ chat, hidden, dispatchBlocked, contro
   return <div ref={pageRef} className="conversation-page" data-sidebar-collapsed={sidebarCollapsed} hidden={hidden}>
     {sidebarCollapsed ? null : <ConversationList chat={chat} />}
     <div className="conversation-main">
-      {sidebarCollapsed && <div className="conversation-toolbar">
+      {sidebarCollapsed && !compact && <div className="conversation-toolbar">
         <IconButton label={words('展开会话列表', 'Show conversation list')} onClick={() => setManualCollapsed(false)}><MorphIcon name="panel-left-open" size={17} /></IconButton>
         <span className="conversation-toolbar-title">{words('会话', 'Conversations')}</span>
       </div>}
@@ -249,7 +340,7 @@ export default function ConversationView({ chat, hidden, dispatchBlocked, contro
         {reconnectHint && <p className="reconnect-hint" role="status">{words('重连中…', 'Reconnecting…')}</p>}
         {chat.health && !chat.health.configured && chat.health.backend !== 'demo' && <p className="connection-notice">{words('模型尚未配置，可以先保存草稿。', 'The model is not configured. You can save a draft.')}</p>}
       </div>}
-      {state ? <Thread key={state.conversationId} chat={controlledChat} tasks={tasks} scrollPositions={scrollPositions.current} hidden={hidden} linkedCandidates={linkedCandidates} candidateAvailability={candidateAvailability} candidateReason={candidateReason} />
+      {state ? <Thread key={state.conversationId} chat={controlledChat} tasks={sharedTasks ?? ownTasks} scrollPositions={scrollPositions.current} hidden={hidden} />
         : <div className="conversation-loading" role="status"><BrandAsset kind="xuan" size={32} /><p>{chat.selectedId || chat.newPending ? words('正在读取会话…', 'Loading conversation…') : words('说点什么，或拖入文件…', 'Send a message or drop files…')}</p>{!chat.selectedId && !chat.listLoading && <button type="button" className="text-button" disabled={chat.newPending} onClick={() => void chat.newConversation()}>{words('新建会话', 'New conversation')}</button>}</div>}
       {chat.readOnly && state && <div className="read-only-bar"><p>{state.visibility === 'archived' ? words('此会话已归档。', 'This conversation is archived.') : words('此会话位于最近删除。', 'This conversation is in Recently deleted.')}</p><button type="button" className="text-button" disabled={chat.managementPending} onClick={() => void chat.changeVisibility(state.conversationId, 'active').catch(() => {})}>{words('恢复并继续会话', 'Restore and continue')}</button></div>}
       <PendingApprovals />

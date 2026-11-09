@@ -21,7 +21,7 @@ export interface BundledAdoptionRequest {
   enableModelImages?: true;
   root: ExpectedRoot;
 }
-type DatabasePlan = { path: string; beforeSettings: Row[]; afterSettings: Row[]; protectedState?: string };
+type DatabasePlan = { path: string; beforeSettings: Row[]; afterSettings: Row[]; protectedState?: string; operationId?: string };
 type RootPlan = ExpectedRoot & { before: string; after?: string; mode: number; uid: number; gid: number; bindingChanged: boolean; capabilities: Capability[]; databases: DatabasePlan[];
   model?: { path: string; before: string; after: string; mode: number; uid: number; gid: number } };
 type Journal = { version: 1; id: string; phase: 'preparing' | 'prepared' | 'committed'; requestSha256: string; manifestSha256: string; launcherSha256: string; root: RootPlan };
@@ -56,7 +56,7 @@ function documentAt(root: RootPlan): MachineBindingDocument {
   directory(root.runtimeRoot); const marker = JSON.parse(pinned(join(root.runtimeRoot, '.xuan-runtime.json'))), raw = pinned(join(root.runtimeRoot, 'config/machine.bindings.json'));
   if (raw !== root.before && raw !== root.after) fail('原绑定已出现本维护范围之外的变化。');
   const document = JSON.parse(raw) as MachineBindingDocument;
-  if (marker.application !== 'xuan-harness' || marker.version !== 1 || marker.identity !== root.runtimeIdentity || document.runtimeIdentity !== root.runtimeIdentity
+  if (marker.application !== 'xuan-bd' || marker.version !== 1 || marker.identity !== root.runtimeIdentity || document.runtimeIdentity !== root.runtimeIdentity
     || document.version !== 1 || !document.resources || ![root.expectedRevision, root.expectedRevision + 1].includes(document.revision)) fail('运行根身份或原修订不符。');
   if (root.model && (root.model.path !== join(resolve(root.runtimeRoot, document.resources.config!.path), 'model.json')
     || ![root.model.before, root.model.after].includes(pinned(root.model.path)))) fail('模型配置出现本次明确图像声明之外的变化。');
@@ -72,12 +72,16 @@ function documentAt(root: RootPlan): MachineBindingDocument {
   return document;
 }
 const quoted = (value: string) => '"' + value.replaceAll('"', '""') + '"';
-function protectedState(db: DatabaseSync): string {
+function protectedState(db: DatabaseSync, operationId: string): string {
   const hash = createHash('sha256');
   hash.update(encode(db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all()));
   for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'tool_settings' ORDER BY name").all()) {
-    hash.update(String(row.name)); const statement = db.prepare(`SELECT * FROM ${quoted(String(row.name))}`); statement.setReadBigInts(true);
-    for (const item of statement.iterate()) hash.update(encode(item) + '\n');
+    const name = String(row.name);
+    hash.update(name);
+    const statement = db.prepare(name === 'tool_settings_operations'
+      ? `SELECT * FROM ${quoted(name)} WHERE request_id IS NULL OR request_id<>? ORDER BY request_id` : `SELECT * FROM ${quoted(name)}`);
+    statement.setReadBigInts(true);
+    for (const item of name === 'tool_settings_operations' ? statement.iterate(operationId) : statement.iterate()) hash.update(encode(item) + '\n');
   }
   return hash.digest('hex');
 }
@@ -104,12 +108,31 @@ function databasePlan(path: string, model: string): DatabasePlan {
     const beforeSettings = settings(db); if (beforeSettings.length !== 1) fail('原工具设置没有唯一记录。');
     const value = JSON.parse(beforeSettings[0]!.body), changed = value.whisperModelPath !== model;
     const afterSettings = changed ? [{ ...beforeSettings[0], revision: Number(beforeSettings[0]!.revision) + 1, body: JSON.stringify({ ...value, whisperModelPath: model }) }] : beforeSettings;
-    return { path, beforeSettings, afterSettings, ...(changed ? { protectedState: protectedState(db) } : {}) };
+    if (!changed) return { path, beforeSettings, afterSettings };
+    const operationId = randomUUID();
+    if (db.prepare('SELECT 1 FROM tool_settings_operations WHERE request_id=?').get(operationId)) fail('本次维护操作编号已被占用。');
+    return { path, beforeSettings, afterSettings, operationId, protectedState: protectedState(db, operationId) };
   } finally { db.close(); }
 }
 function assertDatabase(db: DatabaseSync, plan: DatabasePlan): void {
-  if (plan.protectedState && protectedState(db) !== plan.protectedState) fail('工具设置以外的状态已变化，不能续接维护。');
-  if (![encode(plan.beforeSettings), encode(plan.afterSettings)].includes(encode(settings(db)))) fail('工具设置出现维护范围外变更。');
+  const current = encode(settings(db)), before = encode(plan.beforeSettings), after = encode(plan.afterSettings);
+  if (![before, after].includes(current)) fail('工具设置出现维护范围外变更。');
+  if (!plan.protectedState) return;
+  const operationId = plan.operationId ?? fail('本次工具设置维护缺少操作编号。');
+  if (protectedState(db, operationId) !== plan.protectedState) fail('工具设置以外的状态或既有操作回执已变化，不能续接维护。');
+  const operation = db.prepare('SELECT * FROM tool_settings_operations WHERE request_id=?').get(operationId) as Row | undefined;
+  if (!operation) { if (current !== before) fail('工具设置缺少本次维护操作回执。'); return; }
+  const previousRevision = Number(plan.beforeSettings[0]!.revision), savedRevision = Number(plan.afterSettings[0]!.revision);
+  const value = JSON.parse(String(plan.afterSettings[0]!.body));
+  if (operation.content_hash !== sha(JSON.stringify({ revision: previousRevision, value }))
+    || operation.expected_revision !== previousRevision || operation.body !== plan.afterSettings[0]!.body
+    || operation.adopted_revision !== null || operation.error !== null
+    || typeof operation.created_at !== 'string' || typeof operation.updated_at !== 'string') fail('本次工具设置操作回执与维护计划不一致。');
+  if (operation.status === 'prepared' && operation.saved_revision === null && operation.result_body === null && current === before) return;
+  if (operation.status === 'saved' && operation.saved_revision === savedRevision && current === after
+    && typeof operation.result_body === 'string'
+    && encode(JSON.parse(operation.result_body)) === encode({ ...value, revision: savedRevision })) return;
+  fail('本次工具设置操作回执与维护阶段不一致。');
 }
 function affected(action: string | undefined, capabilities: readonly Capability[]): boolean {
   if (!capabilities.length) return false;
@@ -275,7 +298,8 @@ export async function adoptBundledResources(request: BundledAdoptionRequest, res
       if (!plan.protectedState) continue;
       const db = new CoreDatabase(plan.path); databases.push(db); assertQuiescent(db.connection, root.capabilities); assertDatabase(db.connection, plan);
       if (encode(settings(db.connection)) !== encode(plan.afterSettings)) {
-        const service = new ToolSettingsService(db), { revision, ...value } = service.get(); service.update({ ...value, whisperModelPath: whisperModel }, revision);
+        const service = new ToolSettingsService(db), { revision, ...value } = service.get();
+        service.prepareOperation(plan.operationId!, { ...value, whisperModelPath: whisperModel }, revision).commit();
       }
       assertDatabase(db.connection, plan); if (encode(settings(db.connection)) !== encode(plan.afterSettings)) fail('工具设置 API 结果与维护计划不一致。');
     }

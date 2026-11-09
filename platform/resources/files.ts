@@ -1,8 +1,9 @@
+import { TemporaryRetention } from './temporary-retention.js';
 import type { ResourceBindings, ResourceReference } from './bindings.js';
 import { randomUUID } from 'node:crypto';
 import { constants, type BigIntStats } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { basename, sep } from 'node:path';
 import type { CoreDatabase } from '../state/database.js';
 import { inspectPath, PermissionService, samePathIdentity, type OperationScope, type PathIdentity } from '../security/permissions.js';
 
@@ -61,6 +62,7 @@ export class FileReferenceService {
   private readonly permissions: PermissionService;
   private readonly now: () => number;
   private readonly resources?: ResourceBindings;
+  private retention?: TemporaryRetention;
 
   constructor(options: { database: CoreDatabase; permissions: PermissionService; now?: () => number; resources?: ResourceBindings }) {
     this.database = options.database;
@@ -69,6 +71,26 @@ export class FileReferenceService {
     this.resources = options.resources;
     this.database.migrate('files', 1, SCHEMA);
   }
+
+  configureTemporaryRetention(root: string, additionalReferenceGuard?: (path: string) => boolean) { this.retention = new TemporaryRetention(this.database, root, this.now, additionalReferenceGuard); }
+  startTemporaryRetention() { this.retention?.start(); }
+  closeTemporaryRetention() { this.retention?.close(); }
+  temporaryRetentionStatus() { return this.retention?.status() ?? null; }
+  retireTemporaryDirectory(path: string, taskId: string, identity: PathIdentity) { return this.retention?.retire(path, taskId, identity) ?? null; }
+  hasReferenceWithin(path: string): boolean {
+    const prefix = path + sep, db = this.database.connection;
+    if (db.prepare(`SELECT 1 FROM file_references WHERE invocation_path=? OR substr(invocation_path,1,?)=?
+      OR json_extract(metadata,'$.canonicalPath')=? OR substr(json_extract(metadata,'$.canonicalPath'),1,?)=? LIMIT 1`)
+      .get(path, prefix.length, prefix, path, prefix.length, prefix)) return true;
+    const resource = this.resources?.reference(path);
+    if (!resource) return false;
+    const relativePrefix = resource.relative + '/';
+    return !!db.prepare(`SELECT 1 FROM file_references WHERE json_extract(metadata,'$.resource.root')=?
+      AND json_extract(metadata,'$.resource.identity')=? AND (json_extract(metadata,'$.resource.relative')=?
+      OR substr(json_extract(metadata,'$.resource.relative'),1,?)=?) LIMIT 1`)
+      .get(resource.root, resource.identity, resource.relative, relativePrefix.length, relativePrefix);
+  }
+
 
   register(input: { path: string; source: FileReferenceSource; displayName?: string } & FileRelations): FileReference {
     if (!['user-selected', 'user-attached', 'generated'].includes(input.source)) throw new FileReferenceError('INVALID_SOURCE', '文件引用需要明确来源。');

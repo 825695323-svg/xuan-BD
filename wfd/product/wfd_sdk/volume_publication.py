@@ -757,7 +757,7 @@ class VolumePublisher:
         except Exception as exc:
             raise PreparationError("R1_STATUS_READ_FAILED",
                                    f"{type(exc).__name__}: {exc}") from exc
-        if status.get("state") != "published_formal":
+        if status.get("state") not in {"published_formal", "partially_published_formal"}:
             raise PreparationError(
                 "R1_NOT_FORMAL", f"state={status.get('state')!r}, snapshot={status.get('snapshot_id')!r}"
             )
@@ -816,6 +816,8 @@ class VolumePublisher:
         commit_rel = f"catalog/commits/{instance.snapshot_id}.json"
         commit_raw = (prep_root / commit_rel).read_bytes()
         commit = json.loads(commit_raw.decode("utf-8"))
+        if str(commit.get("snapshot_file", "")).startswith("wfd.snapshot-file/"):
+            raise PreparationError("ROW_VERSION_OBJECT_OPERATION_UNSUPPORTED", "volume publication")
         if commit.get("snapshot_id") != instance.snapshot_id:
             raise PreparationError("COMMIT_SNAPSHOT_ID_MISMATCH", str(commit.get("snapshot_id")))
         if commit.get("snapshot_file") != snapshot_rel:
@@ -843,7 +845,7 @@ class VolumePublisher:
                 "EXPECTED_PARENT_MISMATCH", f"input={instance.expected_parent!r} snapshot={parent!r}"
             )
 
-        output_results = [item for item in status_record.get("output_results", [])
+        output_results = [item for item in service._publication_results(status_record.get("output_results", []))
                           if item.get("publication_state") == "published_formal"]
         if not output_results:
             raise PreparationError("R1_NO_FORMAL_OUTPUTS", key)
@@ -1260,6 +1262,8 @@ class VolumePublisher:
         if commit.get("snapshot_id") != sid:
             raise PublicationError("TARGET_COMMIT_SNAPSHOT_MISMATCH", str(commit.get("snapshot_id")))
         snapshot_rel = commit.get("snapshot_file")
+        if str(snapshot_rel).startswith("wfd.snapshot-file/"):
+            raise PublicationError("ROW_VERSION_OBJECT_OPERATION_UNSUPPORTED", "volume publication")
         _safe_relpath(str(snapshot_rel))
         _reject_symlink_path(self.root, str(snapshot_rel))
         snapshot_path = self.root / str(snapshot_rel)

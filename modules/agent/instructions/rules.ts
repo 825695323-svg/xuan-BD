@@ -7,8 +7,8 @@ import type { FrozenRunConfiguration } from '../../../contracts/ui-contracts.js'
 const AGENTS_FILE = new URL('./AGENTS.md', import.meta.url);
 
 /** 与已审核正文绑定；规则改版同步更新版本与可信摘要。 */
-export const INTERNAL_AGENT_RULES = Object.freeze({ id: 'xuan-harness-internal-agent', version: 15,
-  digest: '522911aec45bbc3dda2bb8b2613ed27cf4baeee1c0b927f947569bfca2e08326' });
+export const INTERNAL_AGENT_RULES = Object.freeze({ id: 'xuan-bd-internal-agent', version: 17,
+  digest: '9651321f74451fb58f9dbf07af464aa97107703bf42c23a637c9222b6f8c4d28' });
 
 export function captureInternalAgentRules(): Pick<FrozenRunConfiguration, 'internalAgentRules' | 'internalAgentRulesText'> {
   let body: string;

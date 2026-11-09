@@ -17,7 +17,8 @@ from typing import Any, Mapping
 from . import product_calendar
 from .duckdb_sdk import WFDDuckDBPrototype, canonical, load_protocol_validator, sha
 from .product_data_service import (
-    DATA_ONLY_PROFILE, WFDDataOnlyService, validate_data_only_metadata,
+    DATA_ONLY_PROFILE, WFDDataOnlyService, validate_data_only_metadata, fixed_read_page_capabilities,
+    fixed_read_product_page_capabilities,
 )
 from .product_holdings import HoldingLedger
 from .volume_publication import (
@@ -86,7 +87,7 @@ class WFDVolumeService:
     def _target_service(self):
         self._verify_volume()
         if self._read_service is None:
-            engine = WFDDuckDBPrototype(
+            engine = WFDDuckDBPrototype.open_existing(
                 self.root, load_protocol_validator(self.protocol_root),
                 runtime_root=self.runtime_root / "target_read",
                 sandbox=False, read_only=True,
@@ -127,7 +128,10 @@ class WFDVolumeService:
                     "sample_path": schema["sample_path"],
                 },
                 "operations": {
-                    "submit": {"supported": True}, "fixed_read": {"supported": True},
+                    "submit": {"supported": True, "protocol": "wfd.structured-ingest/1.0",
+                               "duplicate_policies": ["skip_identical_append"]}, "fixed_read": {"supported": True},
+                    "fixed_read_page": fixed_read_page_capabilities(),
+                    "fixed_read_product_page": fixed_read_product_page_capabilities(),
                     "request_status": {"supported": True}, "recovery": {"supported": True},
                     "contract_discovery": {"supported": True},
                     "read_product": {"supported": True},
@@ -143,7 +147,7 @@ class WFDVolumeService:
         caps["volume"] = {
             "binding": self.binding.to_dict(),
             "target_read_only": True,
-            "operations": ["submit", "recovery", "request_status", "fixed_read",
+            "operations": ["submit", "recovery", "request_status", "fixed_read", "fixed_read_page", "fixed_read_product_page",
                            "contract_discovery", "read_product", "query_capabilities"],
             "source_evidence_upload": False,
             "trace": False,
@@ -152,13 +156,18 @@ class WFDVolumeService:
         return caps
 
     def structured_schema_info(self):
-        raw = (self.protocol_root / "schemas/wfd-structured-ingest.schema.json").read_bytes()
+        # P2 selects the additive ingest schema explicitly on the volume seam too,
+        # so the reported identity is the same one the preparation store validates.
+        entry = WFDDataOnlyService.structured_schema_entry
+        raw = (self.protocol_root / Path(entry).relative_to("protocol")).read_bytes()
         data = json.loads(raw)
         return {
             "schema_id": data.get("$id"),
             "schema_sha256": "sha256:" + sha(raw),
             "schema_canonical_sha256": "sha256:" + sha(canonical(data)),
             "protocol_version": "wfd.structured-ingest/1.0",
+            "spec_version": "1.1",
+            "additive_over": "https://wfd.example/spec/1.0/wfd-structured-ingest.schema.json",
             "profile": DATA_ONLY_PROFILE,
             "sample_path": "protocol/samples/wfd-structured-ingest.example.json",
         }
@@ -167,6 +176,16 @@ class WFDVolumeService:
         self._require("read")
         self._verify_volume()
         return self._target_service().read(product_id, **kwargs)
+
+    def read_page(self, product_id, **kwargs):
+        self._require("read")
+        self._verify_volume()
+        return self._target_service().read_page(product_id, **kwargs)
+
+    def read_product_page(self, product_id, **kwargs):
+        self._require("read")
+        self._verify_volume()
+        return self._target_service().read_product_page(product_id, **kwargs)
 
     def discover_products(self, **kwargs):
         self._require("read")
@@ -355,7 +374,7 @@ class WFDVolumeService:
                 "contract_refs": copy.deepcopy(item.get("contract_refs")),
                 "contract_bundle_ref": copy.deepcopy(item.get("contract_bundle_ref")),
             })
-        return {
+        return self._duplicate_status({
             "protocol_version": "wfd.structured-ingest/1.0",
             "profile": DATA_ONLY_PROFILE,
             "service_version": record.get("service_version"),
@@ -369,11 +388,20 @@ class WFDVolumeService:
             "formal_publication_verified": True,
             "idempotent_replay": True,
             "errors": [],
+            **({"duplicate_policy": record["duplicate_policy"]} if record.get("duplicate_policy") else {}),
             "volume": {"binding": self.binding.to_dict(),
                        "source": "target_immutable_formal_receipt"},
-        }
+        })
 
     def request_status(self, request_identity):
+        self._require("read")
+        self._verify_volume()
+        plan = self._duplicate_plan(request_identity)
+        if plan and plan["result"].get("state") in {"unchanged", "conflicts_pending", "rejected"}:
+            return {**copy.deepcopy(plan["result"]), "idempotent_replay": True}
+        return self._duplicate_status(self._request_status(request_identity))
+
+    def _request_status(self, request_identity):
         self._require("read")
         identity = dict(request_identity)
         formal = self._formal_status(identity)
@@ -1089,7 +1117,7 @@ class WFDVolumeService:
             return
         from .product_holdings import HoldingLedger
         ledger = HoldingLedger(self.root, self.binding.instance_id)
-        for output in status.get("output_results", []):
+        for output in WFDDataOnlyService._publication_results(status.get("output_results", [])):
             ledger.record_batch(
                 snapshot_id=status.get("snapshot_id"),
                 product_id=output.get("product_id"),
@@ -1099,6 +1127,91 @@ class WFDVolumeService:
                 readable_at=stages.get("published_readable"),
                 proof={"kind": "r2_publish", "snapshot_id": status.get("snapshot_id"),
                        "request_key": key})
+
+    def _duplicate_plan_path(self, key):
+        return self.runtime_root / "duplicate_requests" / self.binding.instance_id / f"{key}.json"
+
+    def _duplicate_plan(self, identity):
+        path = self._duplicate_plan_path(self._request_key(identity))
+        if not path.is_file():
+            return None
+        plan = _read_json(path)
+        if (plan.get("instance_id") != self.binding.instance_id
+                or plan.get("volume_uuid") != self.binding.volume_uuid):
+            raise ValueError("DUPLICATE_PLAN_INSTANCE_MISMATCH")
+        if plan.get("request_identity") != dict(identity):
+            raise ValueError("REQUEST_ID_CONFLICT")
+        return plan
+
+    def _save_duplicate_plan(self, identity, document, result):
+        from .writerlock import writer_lock
+        with writer_lock(self.root):
+            return self._save_duplicate_plan_locked(identity, document, result)
+
+    def _save_duplicate_plan_locked(self, identity, document, result):
+        self._verify_volume(write=True)
+        key = self._request_key(identity)
+        fingerprint = sha(canonical(document))
+        existing = self._duplicate_plan(identity)
+        if existing is not None:
+            if existing.get("input_fingerprint") != fingerprint:
+                raise ValueError("REQUEST_ID_CONFLICT")
+            return existing
+        if result.get("new_snapshot_created") is False:
+            parent = document.get("expected_parent_snapshot_id")
+            if parent is None:
+                state_path = self.root / "catalog/state.json"
+                if state_path.is_file():
+                    if self._target_service().snapshot_status().get("snapshot_id") is not None:
+                        raise ValueError("PARENT_CHANGED:target is no longer empty")
+                elif any(self.root.iterdir()):
+                    raise ValueError("FORMAL_VOLUME_NOT_INITIALIZED:nonempty target cannot be treated as empty")
+            else:
+                self._source_state(parent)
+        plan = {"format_version": "wfd.duplicate-request-plan/1",
+                "instance_id": self.binding.instance_id, "volume_uuid": self.binding.volume_uuid,
+                "request_identity": dict(identity), "input_fingerprint": fingerprint,
+                "parent_snapshot_id": document.get("expected_parent_snapshot_id"),
+                "result": copy.deepcopy(result)}
+        _atomic_write(self._duplicate_plan_path(key), canonical(plan) + b"\n")
+        return plan
+
+    def _duplicate_status(self, status):
+        identity = status.get("request_identity") or {}
+        plan = self._duplicate_plan(identity)
+        if not plan:
+            if status.get("duplicate_policy"):
+                return {**status, "state": "recovery_conflict", "output_results": [],
+                        "errors": [{"code": "DUPLICATE_PLAN_UNAVAILABLE",
+                                    "message": "Original row classifications are unavailable in the trusted native request plan"}]}
+            return status
+        if status.get("state") in {"rejected", "storage_inconsistent", "recovery_conflict"}:
+            return status
+        result = {**copy.deepcopy(plan["result"]), **copy.deepcopy(status)}
+        outcomes = copy.deepcopy(plan["result"].get("output_results") or [])
+        actual = {item["output_key"]: item for item in status.get("output_results", [])}
+        succeeded = {key for key, item in actual.items()
+                     if item.get("publication_state") == "published_formal"}
+        for item in outcomes:
+            if item.get("inserted_records"):
+                item["publication_state"] = ("published_formal" if item["output_key"] in succeeded
+                                              else "committed_pending_activation")
+            for row in item.get("row_results", []):
+                if row.get("publication_output_key"):
+                    row["state"] = (row["intended_state"] if row["publication_output_key"] in succeeded
+                                    else "pending_publication")
+                if row["state"] in {"inserted", "duplicate_skipped"}:
+                    row.setdefault("snapshot_id", status.get("snapshot_id") or plan.get("parent_snapshot_id"))
+            item["snapshot_id"] = status.get("snapshot_id") or plan.get("parent_snapshot_id")
+            item["row_summary"] = WFDDataOnlyService._row_summary(item.get("row_results", []))
+        summary = WFDDataOnlyService._row_summary([row for item in outcomes for row in item.get("row_results", [])])
+        state = status.get("state")
+        if state == "published_formal" and (summary["conflict_pending"] or any(item.get("errors") for item in outcomes)):
+            state = "partially_published_formal"
+        result.update(output_results=outcomes, row_summary=summary, state=state,
+                      new_snapshot_created=bool(status.get("snapshot_id") and
+                                                status["snapshot_id"] != plan.get("parent_snapshot_id")))
+        return result
 
     def _intent_path(self, key):
         return self.root / "catalog/product_service/data_only_publication_intents" / f"{key}.json"
@@ -1136,6 +1249,8 @@ class WFDVolumeService:
                                for item in results if not item.get("errors")]}
         if not payload["outputs"]:
             raise ValueError("RECOVERY_PLAN_EMPTY")
+        if any("row_results" in item for item in results):
+            payload["duplicate_policy"] = "skip_identical_append"
         self._verify_volume(write=True)
         from .writerlock import writer_lock
         with writer_lock(self.root):
@@ -1226,12 +1341,14 @@ class WFDVolumeService:
                                  "fixed_readback_verified": True, "engine_not_sandbox": True,
                                  "active_head_matches": state.get("active_head") == sid,
                                  "historically_activated": sid in history}}
+            if intent.get("duplicate_policy"):
+                record["duplicate_policy"] = intent["duplicate_policy"]
             self._verify_volume(write=True)
             from .writerlock import writer_lock
             with writer_lock(self.root):
                 _atomic_write(formal_path, canonical(record) + b"\n")
         status = self._formal_status(identity, document)
-        if status and status.get("state") == "published_formal":
+        if status and status.get("state") in {"published_formal", "partially_published_formal"}:
             from datetime import datetime, timezone
             now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             proof_path = self._stage_proof_path(key)
@@ -1240,7 +1357,7 @@ class WFDVolumeService:
             if not stages.get("published_readable"):
                 stages["published_readable"] = now
                 self._write_stage_proof(key, identity, sid,
-                                        [r for output in status.get("output_results", [])
+                                        [r for output in WFDDataOnlyService._publication_results(status.get("output_results", []))
                                          for r in output.get("records", [])],
                                         "published_readable", now)
             if any(stages.get(name) for name in ("acquired", "custodied", "published_readable")):
@@ -1249,7 +1366,7 @@ class WFDVolumeService:
 
     def _open_prep(self, prep_root):
         engine = WFDDuckDBPrototype(
-            prep_root, load_protocol_validator(self.protocol_root),
+            prep_root, load_protocol_validator(self.protocol_root, entry="wfd-data-only-write.schema.json"),
             runtime_root=self.runtime_root / "prep_runtime" / sha(canonical(str(prep_root)))[:16],
             sandbox=False, writer_host=self.binding.writer_host,
         )
@@ -1257,7 +1374,127 @@ class WFDVolumeService:
             engine, caller_roles=self.caller_roles, caller_id=self.caller_id,
             unit_registry=self.unit_registry,
             trusted_actor_namespaces=self.trusted_actor_namespaces,
+            write_targets_document=self._target_write_targets(),
+            write_target_reserved_families=self._target_reserved_families(),
+            adjustment_anchors_document=self._target_adjustment_anchors(),
+            basis_price_catalog=self._target_basis_catalog(),
         )
+
+    def _target_adjustment_anchors(self):
+        """The target's own registered anchors: a preparation store never decides them."""
+        from . import adjustment_anchors
+        try:
+            return adjustment_anchors.load(self.root)
+        except (OSError, ValueError) as exc:
+            code = str(exc).split(":", 1)[0] or "ADJUSTMENT_ANCHOR_UNREGISTERED"
+            raise ValueError(code + ":" + str(exc)) from exc
+
+    def _target_basis_catalog(self):
+        """The target's own catalog for resolving an anchor's basis price (P2-R2).
+
+        Same rule as the anchor catalog and the write-target bindings: a
+        preparation store never decides what the basis price of a target write
+        was; it is read from the target volume at the pinned snapshot.  Returned
+        as a lazy factory: the target read service is opened only when a write
+        actually cites a product-anchored basis price, so a plain submission
+        performs exactly the same volume reads as before.
+        """
+        from . import basis_prices
+        return lambda: basis_prices.StoreCatalog(self.root, self._target_service())
+
+    def _target_reserved_families(self):
+        """Families already holding product records at the target."""
+        reserved = {}
+        product_dir = self.root / "catalog/product_service/products"
+        if not product_dir.is_dir():
+            return reserved
+        for path in product_dir.rglob("definition_*.json"):
+            if path.name.startswith("._"):
+                continue
+            try:
+                record = _read_json(path)
+            except (OSError, ValueError):
+                continue
+            dataset_id = record.get("dataset_id")
+            family = record.get("product_family_id")
+            product_id = record.get("product_id")
+            if not (isinstance(dataset_id, str) and isinstance(family, str)
+                    and isinstance(product_id, str)):
+                continue
+            ids = reserved.setdefault(dataset_id, {}).setdefault(family, [])
+            if product_id not in ids:
+                ids.append(product_id)
+        for families in reserved.values():
+            for ids in families.values():
+                ids.sort()
+        return reserved
+
+    def register_write_target(self, dataset_id, product_id, definition_ref=None,
+                              reason="explicit registration", snapshot_id=None):
+        """Explicit first-bind / rebind against the target volume."""
+        self._require("register")
+        self._require("publish")
+        self._verify_volume(write=True)
+        result = self._target_service()._register_write_target_body(
+            dataset_id, product_id, definition_ref=definition_ref,
+            reason=str(reason), snapshot_id=snapshot_id)
+        self._read_service = None
+        return result
+
+    def register_adjustment_anchor(self, dataset_id, anchor_id, **kwargs):
+        """Explicit anchor registration against the target volume catalog."""
+        self._require("register")
+        self._require("publish")
+        self._verify_volume(write=True)
+        result = self._target_service()._register_adjustment_anchor_body(
+            dataset_id, anchor_id, **kwargs)
+        self._read_service = None
+        return result
+
+    # ------------------------------------------------------------- write target
+    def _target_write_targets(self):
+        """The target's own bindings: the prep store never decides them."""
+        from . import write_targets as binding_catalog
+        try:
+            return binding_catalog.load(self.root)
+        except (OSError, ValueError) as exc:
+            raise ValueError("WRITE_TARGET_QUERY_FAILED:" + str(exc)) from exc
+
+    def _adopt_prep_write_targets(self, prep_root):
+        """Carry first-publication bindings into the target catalog.
+
+        Only families that the target does not bind yet are adopted; an
+        existing binding is never replaced by a preparation store.
+        """
+        from . import write_targets as binding_catalog
+        prep_path = Path(prep_root) / binding_catalog.RELATIVE_PATH
+        if not prep_path.is_file() or prep_path.is_symlink():
+            return {"adopted": [], "skipped": []}
+        try:
+            prep_doc = json.loads(prep_path.read_text("utf-8"))
+        except (OSError, ValueError) as exc:
+            return {"adopted": [], "skipped": [], "error": str(exc)}
+        target_doc = binding_catalog.load(self.root)
+        bound = {(entry.get("dataset_id"), entry.get("product_family_id"))
+                 for entry in target_doc.get("entries") or [] if isinstance(entry, dict)}
+        adopted, skipped = [], []
+        for entry in prep_doc.get("entries") or []:
+            if not isinstance(entry, dict):
+                continue
+            key = (entry.get("dataset_id"), entry.get("product_family_id"))
+            if key in bound:
+                skipped.append({"dataset_id": key[0], "product_family_id": key[1],
+                                "reason": "already bound at target"})
+                continue
+            clone = copy.deepcopy(entry)
+            clone["sequence"] = int(target_doc.get("sequence") or 0) + 1
+            binding_catalog.write_entry(self.root, target_doc, clone)
+            target_doc = binding_catalog.load(self.root)
+            bound.add(key)
+            adopted.append({"dataset_id": key[0], "product_family_id": key[1],
+                            "product_id": clone.get("product_id"),
+                            "bound_snapshot_id": clone.get("bound_snapshot_id")})
+        return {"adopted": adopted, "skipped": skipped}
 
     def _rejected_document(self, document, exc):
         identity = (document.get("request_identity")
@@ -1291,6 +1528,13 @@ class WFDVolumeService:
         self._require("submit")
         self._verify_volume(write=True)
         identity = dict(document.get("request_identity") or {})
+        duplicate_plan = self._duplicate_plan(identity)
+        if duplicate_plan:
+            if (duplicate_plan.get("request_identity") != identity
+                    or duplicate_plan.get("input_fingerprint") != sha(canonical(document))):
+                return self._rejected_document(document, ValueError("REQUEST_ID_CONFLICT"))
+            if duplicate_plan["result"].get("state") in {"unchanged", "conflicts_pending", "rejected"}:
+                return {**copy.deepcopy(duplicate_plan["result"]), "idempotent_replay": True}
         existing = self._formal_status(identity, document)
         if existing is not None:
             if existing.get("state") == "published_formal":
@@ -1321,7 +1565,9 @@ class WFDVolumeService:
                 return self._rejected_document(document, exc)
         prep_service = self._open_prep(prep_root)
         result = prep_service.submit(document)
-        if result.get("state") != "published_formal":
+        if document.get("duplicate_policy") == "skip_identical_append":
+            self._save_duplicate_plan(identity, document, result)
+        if result.get("state") not in {"published_formal", "partially_published_formal"}:
             return result
         instance = PreparationInstance(
             prep_root=prep_root,
@@ -1349,10 +1595,10 @@ class WFDVolumeService:
         fingerprint = sha(canonical(document))
         self._write_target_intent(key, identity, fingerprint,
                                   document.get("expected_parent_snapshot_id"),
-                                  result.get("output_results", []))
+                                  WFDDataOnlyService._publication_results(result.get("output_results", [])))
         from datetime import datetime, timezone
         stage_times = {}
-        proof_records = [record for output in result.get("output_results", [])
+        proof_records = [record for output in WFDDataOnlyService._publication_results(result.get("output_results", []))
                          for record in output.get("records", [])]
         def observe(stage, details):
             at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1389,9 +1635,14 @@ class WFDVolumeService:
                 "volume": {"binding": self.binding.to_dict(),
                            "publisher": published},
             }
+        write_target_adoption = None
+        try:
+            write_target_adoption = self._adopt_prep_write_targets(prep_root)
+        except (OSError, ValueError, VolumeError) as exc:
+            write_target_adoption = {"adopted": [], "skipped": [], "error": str(exc)}
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        records = [record for output in target.get("output_results", [])
+        records = [record for output in WFDDataOnlyService._publication_results(target.get("output_results", []))
                    for record in output.get("records", [])]
         self._write_stage_proof(key, identity, target.get("snapshot_id"),
                                 records, "published_readable", now)
@@ -1401,6 +1652,8 @@ class WFDVolumeService:
             "volume": published.get("volume"),
             "head": published.get("head"),
         }
+        if write_target_adoption is not None:
+            target["write_target_adoption"] = write_target_adoption
         shutil.rmtree(prep_root, ignore_errors=True)
         return target
 

@@ -1,6 +1,6 @@
 {
   "name": "xuan-bd",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "engines": {
@@ -8,9 +8,14 @@
   },
   "scripts": {
     "web": "node --import tsx scripts/web.ts",
-    "workspace": "node --import tsx scripts/harness-workspace.ts",
+    "workspace": "node --import tsx scripts/bd-workspace.ts",
     "typecheck": "tsc --noEmit",
-    "build": "npm run typecheck && vite build --configLoader runner"
+    "build": "npm run typecheck && vite build --configLoader runner",
+    "local:check": "node scripts/local-web.mjs check",
+    "local:prepare": "node scripts/local-web.mjs prepare",
+    "local:web": "node scripts/local-web.mjs start",
+    "test": "node scripts/test-local.mjs",
+    "test:python": "node scripts/test-local.mjs --python-only"
   },
   "dependencies": {
     "@assistant-ui/react": "0.15.23",
@@ -31,6 +36,7 @@
     "react-dom": "19.3.0",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",
+    "saxes": "6.0.0",
     "typebox": "1.3.27",
     "undici": "8.10.2",
     "yaml": "2.9.0"

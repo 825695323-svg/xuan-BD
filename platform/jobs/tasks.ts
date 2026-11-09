@@ -200,7 +200,7 @@ ALTER TABLE task_budgets ADD COLUMN confirmed_cost_micros INTEGER NOT NULL DEFAU
 ALTER TABLE task_budgets ADD COLUMN tool_ms INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE task_budgets ADD COLUMN storage_bytes INTEGER NOT NULL DEFAULT 0;
 `;
-const DEFAULT_BUDGET: TaskBudgetLimits = { maxActiveMs: 900_000, maxNoProgressMs: 120_000, maxAttempts: 32, maxModelRequests: 8,
+const DEFAULT_BUDGET: TaskBudgetLimits = { maxActiveMs: 900_000, maxNoProgressMs: 120_000, maxAttempts: 32, maxModelRequests: 32,
   maxTokens: null, maxEstimatedCostMicros: null, maxConfirmedCostMicros: null, maxToolMs: null, maxStorageBytes: null };
 const BUDGET_DIMENSIONS = [
   { input: 'modelRequests', limit: 'maxModelRequests', state: 'modelRequests', column: 'model_requests', limitColumn: 'max_model_requests', error: 'MODEL_BUDGET_EXHAUSTED', label: '模型请求' },
@@ -891,7 +891,7 @@ export class TaskService {
       if (command === 'retry' && !['failed', 'cancelled', 'interrupted', 'paused', 'succeeded'].includes(current.status)) throw new TaskError('INVALID_TASK_STATE', '任务当前不能重试。');
       if (current.status === 'succeeded' && this.hasActiveDependents(current.id)) throw new TaskError('DEPENDENT_BUSY', '依赖此成果的任务仍在运行，请等待或停止相关任务后重试。');
       const control = this.controlsAllTasks || current.ownerRole === 'service' ? this.getControl() : null;
-      if (control?.stopped) throw new TaskError('HARNESS_STOPPED', '服务角色已停止；先核对状态并明确恢复控制。');
+      if (control?.stopped) throw new TaskError('BD_STOPPED', '服务角色已停止；先核对状态并明确恢复控制。');
       this.assertDeadline(current, 'dispatch');
       const budget = this.getBudget(taskId); this.assertBudgetAvailable(budget);
       if (budget.attempts >= budget.maxAttempts) throw new TaskError('TASK_ATTEMPT_BUDGET_EXHAUSTED', '同一目标的累计尝试预算已耗尽。');
@@ -1458,9 +1458,9 @@ export class TaskService {
     this.dispatchGuard?.assertAction(active.taskId, active.generation);
     this.assertBudgetAvailable(this.getBudget(active.taskId));
     if (this.controlsAllTasks || active.ownerRole === 'service') {
-      if (this.serviceStopRequested) throw new TaskError('HARNESS_STOPPED', '本进程服务角色已停止，当前尝试不能派发新动作。');
+      if (this.serviceStopRequested) throw new TaskError('BD_STOPPED', '本进程服务角色已停止，当前尝试不能派发新动作。');
       const control = this.getControl();
-      if (control.stopped) throw new TaskError('HARNESS_STOPPED', '服务角色已停止，当前尝试不能派发新动作。');
+      if (control.stopped) throw new TaskError('BD_STOPPED', '服务角色已停止，当前尝试不能派发新动作。');
       if (control.generation !== active.controlGeneration) throw new TaskError('CONTROL_GENERATION_CONFLICT', '当前尝试的控制资格已经过期。');
     }
   }
@@ -1630,7 +1630,7 @@ const FAILURE_RULES: readonly { category: TaskFailureCategory; match: RegExp }[]
   { category: 'version_conflict', match: /(VERSION_CONFLICT$|VERSION_CHANGED$|VERSION_MISSING$|^STALE_|CONTROL_GENERATION_CONFLICT$|^FINANCIAL_IMPLEMENTATION_CHANGED$|^FINANCIAL_SNAPSHOT_MISMATCH$)/u },
   { category: 'storage', match: /(^STORAGE_|^PERSISTENCE_FAILED$|_STORAGE_|^INVALID_TASK_STORAGE$|^READBACK_)/u },
   { category: 'external_unknown', match: /(UNKNOWN_RESULT$|^RESULT_UNKNOWN$|^STOP_UNCONFIRMED$|^RECOVERY_|^HANDOFF_UNKNOWN$|_PENDING$|^CANCELLATION_)/u },
-  { category: 'stopped', match: /(^TASK_STOPPED$|_STOPPED$|^TASK_PAUSED$|_CANCELLED$|^HARNESS_STOPPED$|^TASK_SERVICE_CLOSED$|^STOP_)/u },
+  { category: 'stopped', match: /(^TASK_STOPPED$|_STOPPED$|^TASK_PAUSED$|_CANCELLED$|^BD_STOPPED$|^TASK_SERVICE_CLOSED$|^STOP_)/u },
   { category: 'capability', match: /(NOT_CONFIGURED$|UNAVAILABLE$|NOT_SUPPORTED$|NOT_ENABLED$|NOT_SELECTED$|UNBOUND$|_REQUIRED$|^WORKER_RECORD_MISSING$|^RUNTIME_NOT_|^SERVICE_NOT_READY$)/u },
 ];
 const FAILURE_NEXT_ACTION: Record<TaskFailureCategory, string> = {

@@ -2,13 +2,13 @@ import type { JsonValue } from '../../contracts/task-contracts.js';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { WfdProductMachineClient } from '../../adapters/database/wfd-product-machine.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
-import type { AlgorithmSnapshotPort, AlgorithmSnapshotRead, AlgorithmSnapshotReference } from './algorithm-types.js';
+import type { AlgorithmSnapshotPort, AlgorithmSnapshotRead, AlgorithmSnapshotReference, AlgorithmSnapshotRowEvidence } from './algorithm-types.js';
+import { wfdFixedReadEvidence } from '../collection/purpose-eligibility.js';
 
 /**
  * 新 WFD 产品服务的固定快照端口。
  *
- * 与旧 `wfd.data-service/v1` generic-transport 完全分开：只通过
- * `wfd.product-machine/0.1` 公开薄入口读取。这里不再把调用者声明的
+ * 通过 `wfd.product-machine/0.1`（产品机器协议）公开薄入口固定读取。调用者声明的
  * definitionRevision / semantics 当事实：
  *
  * - 定义版本、合同摘要、声明字段和时间轴来自该固定快照的 `contract_discovery`
@@ -168,13 +168,31 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
       const reply = await options.client.read({
         snapshotId: fixed.snapshotId,
         productId: fixed.productId,
+        ...(fixed.perspective ? { perspective: fixed.perspective } : {}),
+        ...(fixed.at ? { at: fixed.at } : {}),
+        ...(fixed.heldScope ? { heldScope: fixed.heldScope } : {}),
+        ...(fixed.usableStage ? { usableStage: fixed.usableStage } : {}),
+        ...(fixed.includeHistory !== undefined ? { includeHistory: fixed.includeHistory } : {}),
         rowProjection: 'full',
       }, context.signal);
       const result = reply.result;
       if (result.snapshot_id !== fixed.snapshotId) {
         throw new TaskError('ALGORITHM_SNAPSHOT_MISMATCH', '产品服务固定读取返回的 snapshot_id 与请求不同。');
       }
+      if (fixed.perspective !== undefined && result.perspective !== fixed.perspective) {
+        throw new TaskError('ALGORITHM_SNAPSHOT_PERSPECTIVE_MISMATCH', JSON.stringify({
+          requested: fixed.perspective, actual: result.perspective ?? null,
+          action: '历史/持有视角必须由实际 WFD 读取实际执行并返回；不能在本机改写视角标签。',
+        }));
+      }
+      if (fixed.at !== undefined && (typeof result.at !== 'string' || result.at !== fixed.at)) {
+        throw new TaskError('ALGORITHM_SNAPSHOT_CUTOFF_MISMATCH', JSON.stringify({
+          requested: fixed.at, actual: result.at ?? null,
+          action: '历史截止必须由实际 WFD 读取固定并返回；不能用业务日期或当前时间替代。',
+        }));
+      }
       const rawRows = Array.isArray(result.rows) ? result.rows.filter(isWfdRecord) : [];
+      const diagnostics = Array.isArray(result.diagnostics) ? result.diagnostics : [];
       const declaredRows = typeof result.row_count === 'number' ? result.row_count : null;
       if (declaredRows === null || rawRows.length !== declaredRows) {
         throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '产品服务固定读取返回的行数与声明不一致；拒绝截断采用。');
@@ -183,6 +201,13 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
         throw new TaskError('ALGORITHM_SNAPSHOT_MISMATCH', '固定读取结果含其他产品行；拒绝跨产品采用。');
       }
       if (rawRows.length === 0) {
+        if (fixed.perspective !== undefined && fixed.perspective !== 'snapshot_contents') {
+          throw new TaskError('ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', JSON.stringify({
+            product_id: fixed.productId, snapshot_id: fixed.snapshotId,
+            perspective: fixed.perspective, at: fixed.at ?? null, diagnostics: diagnostics.slice(0, 64),
+            action: '该固定快照没有在所请求历史视角/截止下合格的具体版本；不退回当前版本或快照内容。',
+          }));
+        }
         throw new TaskError('ALGORITHM_SNAPSHOT_EMPTY', '固定快照产品没有行；算法入口不接受空输入。');
       }
       if (fixed.expectedRowCount !== undefined && rawRows.length !== fixed.expectedRowCount) {
@@ -269,7 +294,31 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
         },
         transport: reply.transport,
         discoveryTransport: discovery.transport,
+        historicalRead: {
+          requestedPerspective: fixed.perspective ?? 'snapshot_contents',
+          requestedAt: fixed.at ?? null,
+          actualPerspective: result.perspective ?? null,
+          actualAt: result.at ?? null,
+          includeHistory: result.include_history ?? null,
+          diagnostics: diagnostics.slice(0, 64),
+        },
       } as unknown as JsonValue;
+      // 逐行提取实际 WFD 资格、公开/持有时间、修订状态和治理证据，供共用用途资格规则消费。
+      // 调用者不能覆盖这些字段；没有实际返回就保持空，不按声明补齐。
+      const evidence: AlgorithmSnapshotRowEvidence[] = rawRows.map(row => {
+        const bundle = wfdFixedReadEvidence({
+          objectSha256: projectionSha256,
+          product: product as WfdRecord,
+          result: result as WfdRecord,
+          row: row as WfdRecord,
+          contentBasis: `WFD fixed_read 实际产品/定义/合同/字段/分页核对，本地选定值投影 ${projectionSha256}`,
+          checkedAtUtc: new Date().toISOString(),
+          usableStage: fixed.usableStage ?? null,
+        });
+        return { object: bundle.object, publicationTime: bundle.publicationTime, holdingTime: bundle.holdingTime,
+          revision: bundle.revision, wfdHistory: bundle.wfdHistory, restriction: bundle.restriction,
+          wfdDecision: bundle.wfdDecision };
+      });
       // 该 union 是既有 AlgorithmSnapshotRead 的固定枚举；只有在本端口已逐行核对
       // 定义/合同/声明字段且语义 supported 后才会返回。更精确的范围见
       // resolution.verification.scope；rowsSha256 仍为 null。
@@ -278,6 +327,7 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
         rows: valueRows as Record<string, JsonValue>[],
         resolution,
         verifiedScope: 'server_identity_descriptor_and_projection',
+        evidence,
       };
     },
   };
@@ -555,6 +605,7 @@ function projectEnvelopeRow(row: WfdRecord): WfdRecord {
     product_id: row.product_id ?? null,
     business_key: inner.business_key ?? null,
     observation_time: inner.observation_time ?? null,
+    public_time: inner.public_time ?? null,
     subject: row.subject ?? inner.subject ?? null,
     record_ref: row.record_ref ?? null,
     revision: row.revision ?? null,

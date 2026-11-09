@@ -45,21 +45,32 @@ export function createUiRouter(services: ApplicationServices) {
     if (passed) sourceIssues.push('已通过检查的端点可达与授权已核验；其他能力及数据及时性仍须按任务核对。');
     if (!enabledSourceIds.length) sourceIssues.push('所有来源连接与采集源均已停用。');
     const toolState = financial?.status();
-    const database = (companion?.databaseLines ?? services.databaseLines)?.status();
-    const selectedDatabase = database?.selected;
+    const toolLibrary = companion?.toolLibrary ?? services.toolLibrary;
+    const algorithms = companion?.algorithms ?? services.algorithms;
+    // 这里只读采用账本；完整目录可能解析大表，不由运行态轮询触发。
+    const adoption = algorithms?.adoptionStatus();
+    const hasToolLibrary = !!toolLibrary || !!algorithms || !!toolState;
+    const database = (companion?.r1Workspace ?? services.r1Workspace)?.capabilities();
+    const selectedDatabase = database?.connection;
     return [
       { id: 'data_sources', name: '数据源', status: sourceStatus,
         source: 'sourceSettings.checks', scope: '共享来源配置与最近实际检查；此状态读取不发起网络调用',
         checkedAt: currentChecks.map(check => check.checkedAt).sort().at(-1) ?? null, observedAt: now, staleAfterMs: 5 * 60_000,
         issues: sourceIssues, settingsTarget: 'sources' },
       { id: 'database', name: '数据库', status: selectedDatabase ? 'unknown' : 'missing',
-        source: selectedDatabase ? `databaseLines.status:${selectedDatabase.connectionId}:${selectedDatabase.instanceId}` : `DatabasePort:${DATABASE_PORT_RESERVATION.code}`,
-        scope: selectedDatabase ? `已装配连接 ${selectedDatabase.connectionId}，实例 ${selectedDatabase.instanceId}，用途 ${selectedDatabase.purpose}；材料提交与质量须分别核对` : '当前没有已装配的数据库连接', checkedAt: null, observedAt: now, staleAfterMs: null,
-        issues: [selectedDatabase ? database?.dispatchBlocked ? '连接已装配，当前派发因维护或原业务账未齐而封闭；未发起网络或权限探测。' : '连接已装配；本次状态读取不发起网络或权限探测。' : '数据库连接尚未装配。'], settingsTarget: 'storage' },
-      { id: 'tool_library', name: '工具库', status: toolState ? 'unknown' : 'missing',
-        source: toolState ? 'financial.plugins.status' : 'missing: financial catalog', scope: '登记目录、启用状态和实现版本；不代表所有工具已运行或OCR已接入',
+        source: selectedDatabase ? `r1.capabilities:${selectedDatabase.connectionId}:${selectedDatabase.profile}` : `DatabasePort:${DATABASE_PORT_RESERVATION.code}`,
+        scope: selectedDatabase ? `已装配连接 ${selectedDatabase.connectionId}，范围 ${selectedDatabase.profile}，用途 ${selectedDatabase.mode}；材料提交与质量须分别核对` : '当前没有已装配的数据库连接', checkedAt: null, observedAt: now, staleAfterMs: null,
+        issues: [selectedDatabase ? '连接已装配；本次状态读取不发起网络或权限探测。' : '数据库连接尚未装配。'], settingsTarget: 'storage' },
+      { id: 'tool_library', name: '工具库', status: hasToolLibrary ? 'unknown' : 'missing',
+        source: algorithms ? 'algorithms.adoptionStatus' : toolLibrary ? 'toolLibrary.registry' : toolState ? 'financial.plugins.status' : 'missing: algorithm catalog',
+        scope: '基础算法目录装配与采用状态；输入、权限、真实执行和发布资格仍须分别核对',
         checkedAt: null, observedAt: now, staleAfterMs: null,
-        issues: [toolState ? toolState.enabled ? '金融插件已启用；未提供当前运行依赖的综合检查时间。' : '金融插件已登记但未启用。' : '金融工具目录未装配。'], settingsTarget: 'plugins' },
+        issues: [adoption ? adoption.state === 'adopted'
+          ? '基础算法目录与受控入口已装配，采用记录与当前实现一致；本次状态读取未核验输入、执行权限或真实运行结果。'
+          : `基础算法目录与受控入口已装配；${adoption.reason ?? '尚未核对采用状态。'}`
+          : toolLibrary ? '只读基础算法目录已装配；受控计算入口尚未装配。'
+            : toolState ? toolState.enabled ? '金融插件已启用；未提供当前运行依赖的综合检查时间。' : '金融插件已登记但未启用。'
+              : '基础算法目录未装配。'], settingsTarget: 'plugins' },
     ];
   }
   function runtime(): UiRuntimeView {
@@ -87,7 +98,8 @@ export function createUiRouter(services: ApplicationServices) {
   router.get('/settings', (_req, res) => {
     const health = services.options.health, thinking = services.core.getState().thinking;
     const tools = services.direct.registry.list(), collection = companion?.collection ?? services.collection;
-    const selectedDatabase = (companion?.databaseLines ?? services.databaseLines)?.status().selected;
+    const selectedRuntime = companion?.r1Runtime ?? services.r1Runtime;
+    const selectedDatabase = (companion?.r1Workspace ?? services.r1Workspace)?.capabilities().connection;
     const settings: UiSettingsView = {
       model: { id: health.model, displayName: health.model === 'deepseek-flash' ? 'DeepSeek-V41-Flash' : health.model,
         provider: health.provider, configured: health.configured, availability: health.configured ? 'not_probed' : 'not_configured',
@@ -102,14 +114,14 @@ export function createUiRouter(services: ApplicationServices) {
         location('tools', 'tools', '受控工具实现与锁定依赖', services.options.codeRoot ?? services.options.projectRoot),
         location('tool-settings', 'tools', '通用工具设置；与会话配置共用核心存储', services.database.path),
         location('sources', 'sources', '收集输入、分页状态与处理证据；来源定义由受信宿主登记', collection ? (companion ?? services).database.path : null),
-        location('database', 'database', selectedDatabase ? `已装配数据库连接 ${selectedDatabase.connectionId}；实例 ${selectedDatabase.instanceId}；用途 ${selectedDatabase.purpose}` : '外部数据库连接尚未装配', selectedDatabase?.libraryRoot ?? selectedDatabase?.runtimeRoot ?? null, 'external', 'not_checked'),
+        location('database', 'database', selectedDatabase ? `已装配数据库连接 ${selectedDatabase.connectionId}；范围 ${selectedDatabase.profile}；用途 ${selectedDatabase.mode}` : '外部数据库连接尚未装配', selectedRuntime?.connection.store ?? null, 'external', 'not_checked'),
         location('evidence', 'evidence', '本机任务回执、尝试结果与证据关联；与任务状态共用核心存储', services.database.path),
-        ...(companion ? [location('workspace-core', 'system', '本Harness服务任务与独立控制记录', companion.database.path, 'workspace_service'),
+        ...(companion ? [location('workspace-core', 'system', '本Bd服务任务与独立控制记录', companion.database.path, 'workspace_service'),
           location('workspace-materials', 'data', '材料服务原件工作副本', companion.attachmentRoot, 'workspace_service'),
           location('workspace-artifacts', 'evidence', '材料与金融工具产物', companion.artifactRoot, 'workspace_service')] : []),
       ],
       sources: { status: 'registered', source: 'sourceSettings',
-        note: '接口连接、主备组合与八站采集共用一份设置；可用性按最近实际检查与原任务结果分别核对。',
+        note: '接口连接、主备组合与已登记站点采集共用一份设置；可用性按最近实际检查与原任务结果分别核对。',
         items: services.sourceSettings.get().connections.map(({ id, pluginId, alias, enabled, scopes }) => ({ id, pluginId, alias, enabled, scopes })) },
       plugins: tools.filter(tool => ['material.ocr', 'material.transcribe'].includes(tool.action)).map(tool => ({
         id: tool.action, title: tool.title, available: tool.availability.available, reason: tool.availability.reason ?? null, source: 'direct.registry' })),
@@ -130,13 +142,13 @@ export function createUiRouter(services: ApplicationServices) {
       await services.core.abort(body.runId, body.conversationId);
     } else {
       if (body.conversationId !== undefined || body.runId !== undefined) throw new CoreError('INVALID_STOP', '全部停止不接受外部任务或运行范围。', 400);
-      const controls = await Promise.allSettled(owners.map(owner => owner.tasks.stopControl('本机用户请求全部停止本 Harness。')));
+      const controls = await Promise.allSettled(owners.map(owner => owner.tasks.stopControl('本机用户请求全部停止本 BD。')));
       controls.forEach(result => { if (result.status === 'rejected') issues.push(result.reason instanceof Error ? result.reason.message : '停止记录未确认。'); });
       // abort先同步收紧活动run，响应不把尚待远端取消收束的任务说成已停止。
       for (const run of currentRuns()) void services.core.abort(run.id, run.conversationId).catch(() => {});
       const unresolved = owners.reduce((count, owner) => count + Number(owner.core.store.one<{ count: number }>(
         "SELECT COUNT(*) AS count FROM tasks WHERE requires_review=1 OR status='needs_review'")!.count), 0);
-      if (unresolved) issues.push(`本 Harness 有 ${unresolved} 个任务结果待核；本地停止不代表远端结果已确认。`);
+      if (unresolved) issues.push(`本 BD 有 ${unresolved} 个任务结果待核；本地停止不代表远端结果已确认。`);
     }
     const view = runtime();
     const confirmed = body.scope === 'current'
@@ -147,16 +159,18 @@ export function createUiRouter(services: ApplicationServices) {
   router.post('/resume', async (req, res) => {
     const body = object(req.body); exact(body, ['personalGeneration', 'workspaceGeneration']);
     const view = runtime();
-    if (view.control.activeCount) throw new CoreError('CONTROL_BUSY', '本 Harness 仍有未收束任务，请先核对实际结果。');
+    if (view.control.activeCount) throw new CoreError('CONTROL_BUSY', '本 BD 仍有未收束任务，请先核对实际结果。');
     if (body.personalGeneration !== view.control.personal.generation || (companion && body.workspaceGeneration !== view.control.workspace?.generation)
       || (!companion && body.workspaceGeneration !== undefined)) throw new CoreError('CONTROL_GENERATION_CONFLICT', '停止状态已变化，请重新核对后再恢复。');
     try {
-      if (companion) companion.tasks.resumeControl(Number(body.workspaceGeneration), '本机用户明确恢复本 Harness 新增派发。');
-      services.tasks.resumeControl(Number(body.personalGeneration), '本机用户明确恢复本 Harness 新增派发。');
+      if (companion) companion.tasks.resumeControl(Number(body.workspaceGeneration), '本机用户明确恢复本 BD 新增派发。');
+      services.tasks.resumeControl(Number(body.personalGeneration), '本机用户明确恢复本 BD 新增派发。');
+      companion?.segments?.reconcileConversions();
+      services.segments?.reconcileConversions();
     } catch {
       // 两个原角色状态库没有分布式事务；部分恢复失败立即同步收紧所有闸门。
-      await Promise.allSettled(owners.map(owner => owner.tasks.stopControl('恢复结果未确认，本 Harness 保持停止；请重新核对控制代次。')));
-      throw new CoreError('CONTROL_RESUME_UNCONFIRMED', '恢复未能全部持久确认，本 Harness 已重新请求停止；请核对当前控制状态后再恢复。', 503);
+      await Promise.allSettled(owners.map(owner => owner.tasks.stopControl('恢复结果未确认，本 BD 保持停止；请重新核对控制代次。')));
+      throw new CoreError('CONTROL_RESUME_UNCONFIRMED', '恢复未能全部持久确认，本 BD 已重新请求停止；请核对当前控制状态后再恢复。', 503);
     }
     res.json(runtime());
   });

@@ -1,8 +1,8 @@
 import { readPinnedFile, FILE_TRANSFER_LIMIT } from '../../platform/resources/pinned-read.js';
 import express from 'express';
-import { createHash, randomUUID } from 'node:crypto';
-import type { BigIntStats } from 'node:fs';
-import { basename, extname, join, relative } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { relative } from 'node:path';
+import { registerUploadedAttachment } from './attachment-upload.js';
 import { root } from '@openclaw/fs-safe';
 import { ConfigError, CoreError } from '../../platform/runtime/errors.js';
 import type { ApplicationServices } from './services.js';
@@ -17,8 +17,8 @@ import { resourceContentHash } from '../../modules/agent/personal-resources.js';
 /** 操作者审批复用各自账本；服务审批用显式前缀进入既有审批条，不建立跨库授权。 */
 export function createApprovalRouter(services: ApplicationServices, companion?: ApplicationServices) {
   const router = express.Router();
-  const owners = [{ services, prefix: '', scope: services.harness ? 'service' : 'personal' },
-    ...(companion?.harness ? [{ services: companion, prefix: 'service:', scope: 'service' }] : [])];
+  const owners = [{ services, prefix: '', scope: services.bd ? 'service' : 'personal' },
+    ...(companion?.bd ? [{ services: companion, prefix: 'service:', scope: 'service' }] : [])];
   const ownerFor = (reference: string) => {
     const owner = reference.startsWith('service:') ? owners.find(entry => entry.prefix === 'service:') : owners[0];
     if (!owner) throw new CoreError('APPROVAL_OWNER_UNAVAILABLE', '原审批所属服务未装配，不能换用个人权限账本。', 404);
@@ -179,7 +179,7 @@ export function createPlatformRouter(services: ApplicationServices) {
   router.get('/personal-resources', (_req, res) => res.json({ resources: services.personalResources.list(), selection: services.personalResources.getSelection() }));
   router.post('/personal-resources', (req, res) => {
     const body = object(req.body); exact(body, ['title', 'body']);
-    const title = string(body.title), text = string(body.body), id = `harness-agent-${randomUUID()}`;
+    const title = string(body.title), text = string(body.body), id = `bd-agent-${randomUUID()}`;
     res.status(201).json(services.personalResources.register({ id, profileId: id, kind: 'persona', title, body: text,
       originalBody: text, version: 1, enabled: true, adaptationNotes: ['本机用户明确创建内置 Agent 人设；不增加任何权限。'],
       source: { kind: 'user', identifier: 'local-operator', revision: '1', contentHash: resourceContentHash(text) } }));
@@ -230,27 +230,8 @@ export function createPlatformRouter(services: ApplicationServices) {
     direct.assertPublicPath(path);
     res.status(201).json(files.register({ path, source: 'user-selected', ...(conversationId ? { conversationId } : {}) }));
   });
-  router.post('/files/upload', (req, _res, next) => {
-    if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity') throw new CoreError('INVALID_UPLOAD', '附件不接受压缩的请求正文。', 400);
-    if (Number(req.headers['content-length']) > FILE_TRANSFER_LIMIT) throw new CoreError('UPLOAD_TOO_LARGE', '附件上限为 25 MB；更大的文件请登记本机路径。', 413);
-    next();
-  }, express.raw({ type: 'application/octet-stream', limit: FILE_TRANSFER_LIMIT, inflate: false }), async (req, res) => {
-    if (!Buffer.isBuffer(req.body) || !req.body.length) throw new CoreError('INVALID_UPLOAD', '请选择一个非空文件。', 400);
-    const conversationId = string(req.query.conversationId), name = string(req.query.name);
-    core.getState(conversationId);
-    if (!name.trim() || name === '.' || name === '..' || name.length > 512 || name !== basename(name) || /[\\\u0000-\u001f\u007f]/u.test(name)) throw new CoreError('INVALID_FILE_NAME', '文件名无效。', 400);
-    const suffix = extname(name).slice(0, 20).replace(/[^.a-zA-Z0-9_-]/g, '');
-    const localName = `${randomUUID()}${suffix}`, path = join(services.attachmentRoot, localName);
-    direct.assertPublicPath(path, true);
-    const owner = await root(services.attachmentRoot, { symlinks: 'reject', mutationSymlinks: 'reject', hardlinks: 'reject' });
-    await owner.create(localName, req.body, { atomic: true, private: true, durable: 'file',
-      assertBeforeMutation: () => { if (!core.healthy) throw new CoreError('STORAGE_UNAVAILABLE', '存储暂时不可用，附件未确认保存。', 503); direct.assertPublicPath(path, true); } });
-    // 登记失败时保留已发布附件，不能盲删可能被另一动作替换的路径。
-    direct.assertPublicPath(path);
-    const reference = files.register({ path, source: 'user-attached', displayName: name, conversationId });
-    const stored = await readPinnedFile(owner, localName, reference, () => { direct.assertPublicPath(path); files.verify(reference.id); });
-    if (!stored.equals(req.body)) throw new CoreError('UPLOAD_CHANGED', '附件落盘后的字节未能核对，请重新查看文件状态。');
-    res.status(201).json(reference);
+  router.post('/files/upload', async (req, res) => {
+    res.status(201).json(await registerUploadedAttachment(services, req, res));
   });
   router.post('/files/:id/observe', (req, res) => res.json(files.observe(req.params.id)));
   router.get('/files/:id', (req, res) => res.json(presentFile(files.getRef(req.params.id))));

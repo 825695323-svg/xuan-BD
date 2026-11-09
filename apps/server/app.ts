@@ -1,8 +1,7 @@
-import { createHarnessRouter } from './harness-routes.js';
+import { createBdRouter } from './bd-routes.js';
 import express, { type ErrorRequestHandler } from 'express';
 import { existsSync } from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { FILE_TRANSFER_LIMIT } from '../../platform/resources/pinned-read.js';
 import { resolve } from 'node:path';
 import { CoreError } from '../../platform/runtime/errors.js';
 import type { PersonalCore } from '../../modules/agent/runtime/core.js';
@@ -23,13 +22,13 @@ import { MaterialError } from '../../modules/collection/data-processing/material
 import { createUiRouter } from './ui-routes.js';
 import { createConversationDisplayMetadataRouter } from './conversation-display-metadata-routes.js';
 import { createDataBrowserRouter } from './data-browser-routes.js';
-import { createDatabaseLineRouter } from './database-line-routes.js';
 import { createCaptureSourceRouter } from './capture-source-routes.js';
 import { createSourceSettingsRouter } from './source-settings-routes.js';
 import { createToolLibraryRouter } from './tool-library-routes.js';
 import { createAlgorithmRouter } from './algorithm-routes.js';
 import { createLocalDataLifecycleRouter } from './local-data-routes.js';
 import type { LocalDataLifecycle } from '../../platform/runtime/local-data-lifecycle.js';
+import release from '../../BD_RELEASE.json' with { type: 'json' };
 
 const modelSendRoute: SendRequestRoute = { kind: 'model', ruleId: null, ruleRevision: null, action: null, subjectDigest: null, versionsDigest: null };
 
@@ -61,13 +60,9 @@ export function createApp(core: PersonalCore, health: HealthResponse, services?:
     next();
   });
   // 控制入口先于私有门禁挂载：停用后仍需能读取资格、停止和原控制记录。
-  if (services?.localData && services.localDataId && !services.harness) app.use('/api/harness/local-data', express.json({ limit: '160kb' }), createLocalDataLifecycleRouter({
-    lifecycle: services.localData, dataId: services.localDataId, verify: services.localDataVerify,
-    assertReload: services.database?.path && services.database.path !== ':memory:' ? ({ dataId }) => {
-      if (services.localData!.identityStatus(dataId, services.database.path) !== 'matched') {
-        throw new CoreError('LOCAL_DATA_IDENTITY_UNAVAILABLE', '原个人资料身份未核对，不能保存重新加载。', 409);
-      }
-    } : undefined }));
+  // 本地资料接口只提供身份与代次的只读查询；人工停用、解绑、重新采用已取消。
+  if (services?.localData && services.localDataId && !services.bd) app.use('/api/bd/local-data', createLocalDataLifecycleRouter({
+    lifecycle: services.localData, dataId: services.localDataId }));
   // 私有读取/写/流统一代次门禁；静态网页与健康检查不受影响。
   const privateLifecycle = services?.localData;
   const privateRequestContext = new AsyncLocalStorage<{ generation: number }>();
@@ -153,9 +148,9 @@ export function createApp(core: PersonalCore, health: HealthResponse, services?:
     privateRequestContext.run({ generation: generation! }, next);
   };
   app.use('/api', privateGuard);
-  const harnessServices = services?.harness ? services : services?.options.workspaceServices;
-  app.use('/api/harness', createHarnessApiRouter(harnessServices, privateRecheck));
-  if (services?.harness) {
+  const bdServices = services?.bd ? services : services?.options.workspaceServices;
+  app.use('/api/bd', createBdApiRouter(bdServices, privateRecheck));
+  if (services?.bd) {
     // 服务角色只保留自己的窄路由，不挂载个人会话、文件、权限或网页入口。
     app.use(serviceRouteUnavailable);
     app.use(serviceErrors);
@@ -170,6 +165,7 @@ export function createApp(core: PersonalCore, health: HealthResponse, services?:
     return limit === undefined ? state : core.projectStateWindow(state, limit);
   };
   app.get('/api/health', (_req, res) => res.json(health));
+  app.get('/api/release', (_req, res) => res.json(release));
   if (services) {
     app.get('/api/questions', (req, res) => {
       const { conversationId, branchId } = req.query;
@@ -430,7 +426,6 @@ export function createApp(core: PersonalCore, health: HealthResponse, services?:
     }
     res.json(await core.abort(req.body.runId));
   });
-  if (services && privateLifecycle) app.use('/api/files/upload', express.raw({ type: 'application/octet-stream', limit: FILE_TRANSFER_LIMIT, inflate: false }), privateRecheck);
   if (services) app.use('/api', createPlatformRouter(services));
   app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在。' }));
   if (options.serveWeb !== false) {
@@ -457,22 +452,21 @@ export function createApp(core: PersonalCore, health: HealthResponse, services?:
 }
 
 /** 两种宿主共用同一相对路由；只使用传入的服务实例和原状态，不经过回环代理。 */
-export function createHarnessApiRouter(services?: ApplicationServices, recheck?: express.RequestHandler) {
+export function createBdApiRouter(services?: ApplicationServices, recheck?: express.RequestHandler) {
   const router = express.Router();
   router.use((req, res, next) => {
-    if (!['GET', 'HEAD', 'POST'].includes(req.method)) {
+    const algorithmSettingsUpdate = req.method === 'PUT' && req.path === '/r1/batches/algorithm-settings';
+    if (!['GET', 'HEAD', 'POST'].includes(req.method) && !algorithmSettingsUpdate) {
       res.status(405).json({ code: 'WORKSPACE_METHOD_UNAVAILABLE', error: '此操作不属于工作台入口。' }); return;
     }
     next();
   });
   router.use(express.json({ limit: '160kb' }));
   if (recheck) router.use(recheck);
-  if (services?.harness) {
+  if (services?.bd) {
     router.use(createApprovalRouter(services));
-    if (services.databaseLines) router.use('/database-lines', createDatabaseLineRouter(services.databaseLines,
-      services.options.resources ? { runtimeRoot: services.options.resources.runtimeRoot, runtimeIdentity: services.options.resources.document.runtimeIdentity } : undefined));
-    if (services.harness.isWorkspace) router.use(createWorkspaceRouter(services));
-    router.use(createHarnessRouter(services.harness));
+    if (services.bd.isWorkspace) router.use(createWorkspaceRouter(services));
+    router.use(createBdRouter(services.bd, () => services.segments?.reconcileConversions()));
   }
   // 未知工作台路径在此结束，不能继续匹配个人接口或网页回退。
   router.use(serviceRouteUnavailable);

@@ -1,9 +1,9 @@
 """P4a1 targeted checks: bounded fixed-snapshot product reads.
 
-These tests exercise the new query boundary only.  They reuse the already
-verified real stores/snapshots from P3a5, P1b and the 0.2 release for read-back,
-then use small synthetic stores for projection, time, pagination, budget and
-history semantics.  The storage engine and the shared product service are not
+Core projection, time, pagination, budget and history semantics use small
+synthetic stores.  The real P3a5/P1b/0.2 read-back is a separate integration
+requiring an explicitly selected --wfd-history-root; no historical directory is
+implicitly discovered.  The storage engine and shared service are not
 re-validated as a whole.
 """
 from __future__ import annotations
@@ -27,8 +27,6 @@ from wfd_sdk.product_service import SERVICE_VERSION, WFDProductService
 
 
 HERE = Path(__file__).resolve().parents[1]
-ROOT = HERE.parents[1]
-EVIDENCE_ROOT = ROOT / "03_测试与验证记录"
 
 ALL_ROLES = {"evidence_write", "register", "submit", "publish",
              "read", "read_evidence", "export", "redistribute"}
@@ -201,13 +199,13 @@ def real_query(store, snapshot_id, tmp_path, label):
         }
         for source_id in sorted(source_ids)
     }
-    engine = WFDDuckDBPrototype(
+    engine = WFDDuckDBPrototype.open_existing(
         store, load_protocol_validator(HERE / "protocol"),
         runtime_root=tmp_path / f"runtime_{label}",
-        sandbox=False, writer_host=label)
+        read_only=True, sandbox=False, writer_host=None)
     service = WFDProductService(
         engine, allowed_sources=policy, caller_roles=READ_ROLES,
-        caller_id=label)
+        caller_id=label, can_register=False)
     return ProductQuery(service), snapshot
 
 
@@ -222,16 +220,16 @@ def product_bindings(snapshot):
 # ---------------------------------------------------------------------------
 # 1. Real verified fixed samples read back through the new boundary
 # ---------------------------------------------------------------------------
-def test_real_verified_fixed_samples_read_back(tmp_path):
-    p3a5_store = (EVIDENCE_ROOT / "P3_通用入库与更新_2026-10-27" /
+@pytest.mark.integration
+def test_real_verified_fixed_samples_read_back(tmp_path, wfd_history_root):
+    p3a5_store = (wfd_history_root / "P3_通用入库与更新_2026-10-27" /
                   "run_20261027_p3a5/store")
-    p1b_store = (EVIDENCE_ROOT / "P1_正式契约与治理_2026-10-27" /
+    p1b_store = (wfd_history_root / "P1_正式契约与治理_2026-10-27" /
                  "p1b_real_slice2/store")
-    v02_store = (EVIDENCE_ROOT / "金融产品建设_2026-10-27" /
+    v02_store = (wfd_history_root / "金融产品建设_2026-10-27" /
                  "run_20261026T164019Z/store")
     for store in (p3a5_store, p1b_store, v02_store):
-        if not store.is_dir():
-            pytest.skip("verified real store missing: " + str(store))
+        assert store.is_dir(), "selected historical store is missing: " + str(store)
 
     # P3a5: actual market close from the verified real slice.
     p3a5_sid = "s_99eb1926ff005636c2e6b8e2"

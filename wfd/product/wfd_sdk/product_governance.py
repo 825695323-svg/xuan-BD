@@ -179,7 +179,7 @@ def normalize_unit_registry(registry):
 
 
 _NUMERIC_DIMENSIONS = {"money", "quantity", "money_per_share", "ratio", "ordinal", "number"}
-_TEXT_DIMENSIONS = {"text", "identifier", "date", "currency_code", "timezone"}
+_TEXT_DIMENSIONS = {"text", "identifier", "date", "datetime", "currency_code", "timezone"}
 
 
 def _dimension_issue(data_type, unit, definition, path):
@@ -568,10 +568,36 @@ def normalize_semantic_context(declaration, payload_kind, *, allow_deterministic
         if not isinstance(adjustment, dict):
             issues.append(issue("SEMANTIC_PRICE_ADJUSTMENT_INVALID", "price_adjustment must be an object", "semantic_context.financial.price_adjustment"))
         else:
-            if adjustment.get("direction") not in {None, "raw", "adjusted", "unknown"}:
+            direction = adjustment.get("direction")
+            if direction not in {None, "raw", "adjusted", "unknown"}:
                 issues.append(issue("SEMANTIC_PRICE_ADJUSTMENT_INVALID", "direction must be raw/adjusted/unknown", "semantic_context.financial.price_adjustment.direction"))
-            if adjustment.get("direction") == "adjusted" and not _ref_like(adjustment.get("anchor_ref")):
-                issues.append(issue("SEMANTIC_ADJUSTMENT_ANCHOR_REQUIRED", "Adjusted prices need anchor_ref", "semantic_context.financial.price_adjustment.anchor_ref"))
+            method = adjustment.get("method")
+            anchor = adjustment.get("anchor_ref")
+            # P2: a method without an anchor cannot decide whether two series share
+            # one caliber, and an anchor without a method cannot either.  A declared
+            # method therefore only exists on an `adjusted` declaration.
+            if direction == "adjusted":
+                if method not in {"qfq", "hfq"}:
+                    issues.append(issue("SEMANTIC_ADJUSTMENT_METHOD_REQUIRED",
+                                        "Adjusted prices need method=qfq|hfq",
+                                        "semantic_context.financial.price_adjustment.method"))
+                if not _ref_like(anchor):
+                    issues.append(issue("SEMANTIC_ADJUSTMENT_ANCHOR_REQUIRED", "Adjusted prices need anchor_ref", "semantic_context.financial.price_adjustment.anchor_ref"))
+            elif direction in {"raw", "unknown"}:
+                if anchor is not None:
+                    issues.append(issue("SEMANTIC_ADJUSTMENT_ANCHOR_FORBIDDEN",
+                                        "Only adjusted prices carry an anchor_ref; "
+                                        + direction + " must not declare one",
+                                        "semantic_context.financial.price_adjustment.anchor_ref"))
+                if method is not None:
+                    issues.append(issue("SEMANTIC_ADJUSTMENT_METHOD_FORBIDDEN",
+                                        "Only adjusted prices carry a method; "
+                                        + direction + " must not declare one",
+                                        "semantic_context.financial.price_adjustment.method"))
+            elif method is not None or anchor is not None:
+                issues.append(issue("SEMANTIC_PRICE_ADJUSTMENT_INVALID",
+                                    "method/anchor_ref need an explicit direction",
+                                    "semantic_context.financial.price_adjustment"))
     if financial:
         axes["financial"] = financial
     axes["relation"] = _normalize_axis(raw.get("relation"), {

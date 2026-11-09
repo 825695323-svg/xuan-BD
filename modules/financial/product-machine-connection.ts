@@ -14,11 +14,9 @@ import type { AlgorithmSnapshotPort } from './algorithm-types.js';
  * namespace、角色、来源策略和单位仍只由 config_path 指向的受控配置提供。BD 侧
  * 不接受请求或调用方覆盖这些根。
  */
-export interface ProductMachineConnectionProfile {
+interface ProductMachineConnectionProfileBase {
   id: string;
   kind: 'wfd-product-machine';
-  mode: 'user_test';
-  purpose: 'user_test';
   protocol: 'wfd.product-machine/0.1';
   config_path: string;
   store: string;
@@ -27,6 +25,8 @@ export interface ProductMachineConnectionProfile {
   entry_path: string;
   harness_binding: { root: string; root_id: string };
 }
+export type ProductMachineConnectionProfile = ProductMachineConnectionProfileBase &
+  ({ mode: 'user_test'; purpose: 'user_test' } | { mode: 'production'; purpose: 'production' });
 
 export interface ResolvedProductMachineConnection {
   connectionId: string;
@@ -69,18 +69,23 @@ const absoluteDir = (value: unknown, label: string): string => {
   return value;
 };
 
-export function parseProductMachineConnectionProfile(value: unknown): ProductMachineConnectionProfile {
-  if (!record(value) || value.kind !== 'wfd-product-machine' || value.mode !== 'user_test'
-    || value.purpose !== 'user_test' || value.protocol !== 'wfd.product-machine/0.1'
+export function parseProductMachineConnectionProfile(value: unknown,
+  options: { allowProduction?: boolean } = {}): ProductMachineConnectionProfile {
+  if (!record(value) || value.kind !== 'wfd-product-machine'
+    || !((value.mode === 'user_test' && value.purpose === 'user_test')
+      || (options.allowProduction === true && value.mode === 'production' && value.purpose === 'production'))
+    || value.protocol !== 'wfd.product-machine/0.1'
     || typeof value.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value.id)) {
-    return fail('连接不是受控 WFD 产品机器 user_test 连接。');
+    return fail('连接不是当前入口允许的受控 WFD 产品机器连接。');
   }
-  const harness = record(value.harness_binding) ? value.harness_binding : {};
+  const bd = record(value.harness_binding) ? value.harness_binding : {};
+  const usage = value.mode === 'production'
+    ? { mode: 'production' as const, purpose: 'production' as const }
+    : { mode: 'user_test' as const, purpose: 'user_test' as const };
   return {
     id: value.id,
     kind: 'wfd-product-machine',
-    mode: 'user_test',
-    purpose: 'user_test',
+    ...usage,
     protocol: 'wfd.product-machine/0.1',
     config_path: absoluteFile(value.config_path, 'config_path'),
     store: absoluteDir(value.store, 'store'),
@@ -88,20 +93,21 @@ export function parseProductMachineConnectionProfile(value: unknown): ProductMac
     python_path: absoluteProgram(value.python_path, 'python_path'),
     entry_path: absoluteFile(value.entry_path, 'entry_path'),
     harness_binding: {
-      root: typeof harness.root === 'string' ? harness.root : '',
-      root_id: typeof harness.root_id === 'string' ? harness.root_id : '',
+      root: typeof bd.root === 'string' ? bd.root : '',
+      root_id: typeof bd.root_id === 'string' ? bd.root_id : '',
     },
   };
 }
 
 export function resolveProductMachineConnection(resources: ResourceBindings,
-  connectionId = 'wfd-product-local-20261027'): ResolvedProductMachineConnection {
+  connectionId: string,
+  options: { allowProduction?: boolean } = {}): ResolvedProductMachineConnection {
   const registryPath = resources.document.resources.connections_registry
     ? resources.path('connections_registry') : fail('connections_registry 尚未绑定。');
   const registry = readConnectionRegistry(registryPath);
   const raw = registeredConnection(registry, connectionId);
   if (!raw) return fail(`连接 ${connectionId} 尚未在受控登记中。`);
-  const profile = parseProductMachineConnectionProfile(raw);
+  const profile = parseProductMachineConnectionProfile(raw, options);
   if (profile.id !== connectionId) return fail('连接登记 id 与选择不一致。');
   if (profile.harness_binding.root !== resources.runtimeRoot
     || profile.harness_binding.root_id !== resources.document.runtimeIdentity) {

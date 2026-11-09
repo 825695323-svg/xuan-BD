@@ -890,6 +890,10 @@
           "type": "string"
         }
       }
+    },
+    "duplicate_policy": {
+      "const": "skip_identical_append",
+      "description": "Opt-in append: skip strictly identical business rows and retain conflicting rows without overwriting. Omitted requests preserve strict duplicate rejection."
     }
   },
   "required": [

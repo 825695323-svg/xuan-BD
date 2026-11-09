@@ -1,6 +1,0 @@
-{
-  "dataset_id": "wfd_cn_000001_financial_products",
-  "trusted_actor_namespace": "wfd.financial_products",
-  "request_id": "market",
-  "submission_digest": "sha256:ce3f20c5c64182ae0eec0c349504945b393b1fb19cd0ea73add83433abc1b3d9"
-}

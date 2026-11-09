@@ -115,21 +115,22 @@ export function readStateEnvelope(data: string): StateEnvelope {
 }
 export async function request(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' = 'GET', body?: unknown): Promise<unknown> {
   let response: Response;
-  const privateRequest = !path.startsWith('/api/harness/local-data') && !path.startsWith('/api/health');
+  const privateRequest = !path.startsWith('/api/bd/local-data') && !path.startsWith('/api/health');
   // 请求发出前固定本页已核实的 dataId 代次与撤销 epoch；迟到回执不能进入新上下文。
   const generation = privateRequest ? localDataGeneration() : null;
   const revision = privateRequest ? localDataRevision() : 0;
   const sameContext = () => localDataRevision() === revision && localDataGeneration() === generation;
   const stale = () => new RequestError('本次请求的回执属于旧本地资料代次，未用于当前界面。', 409, 'STALE_LOCAL_DATA_GENERATION');
   const headers: Record<string, string> = {};
-  if (method !== 'GET') { headers['Content-Type'] = 'application/json'; headers['x-mashiro-client'] = 'web'; }
+  const binary = body instanceof Blob;
+  if (method !== 'GET') { headers['Content-Type'] = binary ? 'application/octet-stream' : 'application/json'; headers['x-mashiro-client'] = 'web'; }
   if (generation !== null) headers['x-local-data-generation'] = String(generation);
   try {
     response = await fetch(path, {
       method, credentials: 'same-origin', cache: 'no-store', keepalive: method === 'PUT',
       signal: AbortSignal.timeout(method === 'GET' ? 8_000 : 30_000),
       headers,
-      ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
+      ...(method === 'GET' ? {} : { body: binary ? body : JSON.stringify(body) }),
     });
   } catch { throw new RequestError('未收到本机服务的确认，请检查连接状态。'); }
   let value: unknown;

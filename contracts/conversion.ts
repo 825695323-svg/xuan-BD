@@ -11,7 +11,7 @@ export interface ConversionPayload {
   status: ConversionStatus;
   content: JsonValue;
   issues: ConversionIssue[];
-  /** 仅为原文顺序拼接的便利视图；完整结构始终在 content 中。 */
+  /** 仅为原文顺序拼接的便利视图；新版 PDF 持久产物从 content.pages[].originalItems 按需重建。 */
   text?: string;
 }
 export interface ConversionSource {
@@ -24,8 +24,8 @@ export interface ConversionSource {
   encoding?: string;
 }
 export interface ConversionEnvelope extends ConversionPayload {
-  schemaVersion: '1.0';
-  implementation: { name: 'harness-native-conversion'; version: '1.0.0' };
+  schemaVersion: '1.0' | '1.1';
+  implementation: { name: 'harness-native-conversion'; version: '1.0.0' | '1.1.0' };
   source: ConversionSource;
   operation: string;
 }

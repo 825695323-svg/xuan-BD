@@ -1,16 +1,19 @@
-import { accessSync, constants, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 import { delimiter, dirname, join } from 'node:path';
 import { userInfo } from 'node:os';
 import type { ResourceBindings, ResourceReference } from '../resources/bindings.js';
+import { TEMPORARY_RETENTION_DAYS } from '../resources/temporary-retention.js';
 import { CAPTURE_SOURCE_IDS } from '../../plugins/capture-sources/contracts.js';
 
 const PROGRAMS = { open: 'open', mdfind: 'mdfind', shortcuts: 'shortcuts',
   ffmpeg: 'ffmpeg', ffprobe: 'ffprobe', 'whisper-cli': 'whisper_cli', 'yt-dlp': 'yt_dlp', python3: 'python', bdpan: 'bdpan', security: 'security',
-  node: 'node', browser_engine: 'browser_engine', taskkill: 'taskkill' } as const;
+  node: 'node', 'polars-python': 'polars_python', browser_engine: 'browser_engine', taskkill: 'taskkill' } as const;
 export type RegisteredProgramName = keyof typeof PROGRAMS;
 type Identity = { path: string; canonical: string; device: bigint; inode: bigint; size: bigint; mtime: bigint; ctime: bigint };
 type DirectoryIdentity = Pick<Identity, 'path' | 'canonical' | 'device' | 'inode'>;
+// 个人与工作台共用进程暂存根；同进程内必须一起核对全部状态库引用。
+const temporaryReferenceGuards = new Map<string, Map<string, (path: string) => boolean>>();
 
 /** 仅受信宿主持有；位置登记不代替任务权限。无 PATH 搜索、安装或替代程序。 */
 export class ProcessRuntime {
@@ -20,6 +23,8 @@ export class ProcessRuntime {
   readonly #captureDirectories = new Map<string, DirectoryIdentity>();
   readonly #nativeCaptureHomes = new Set<string>();
   readonly #resources: ResourceBindings;
+  #retentionTimer?: ReturnType<typeof setInterval>;
+
   constructor(resources: ResourceBindings) {
     this.#resources = resources;
     for (const name of Object.keys(PROGRAMS) as RegisteredProgramName[]) {
@@ -28,6 +33,94 @@ export class ProcessRuntime {
     for (const name of ['system_root', 'browser_home']) {
       try { this.#directories.set(name, this.inspectDirectory(name)); } catch { /* 缺少专用资源时拒绝对应执行。 */ }
     }
+  }
+  /** 只清理已明确收束、记录到期时间且对象身份一致的进程暂存。 */
+  registerTemporaryReferenceGuard(owner: string, guard: (path: string) => boolean) {
+    const key = this.temporaryGuardKey();
+    let guards = temporaryReferenceGuards.get(key);
+    if (!guards) { guards = new Map(); temporaryReferenceGuards.set(key, guards); }
+    guards.set(owner, guard);
+    const path = this.temporaryOwnersPath();
+    const existing = lstatSync(path, { throwIfNoEntry: false });
+    const record = existing ? this.temporaryOwners() : { runtimeIdentity: this.#resources.document.runtimeIdentity,
+      rootIdentity: this.#resources.document.resources.temp?.identity, rootObjects: this.temporaryRoots(), owners: [] as string[] };
+    if (!record || existing && (!existing.isFile() || existing.isSymbolicLink() || existing.nlink !== 1)) return;
+    if (!record.owners.includes(owner)) {
+      record.owners.push(owner); record.owners.sort();
+      writeFileSync(path, JSON.stringify(record) + '\n', { flag: existing ? 'w' : 'wx', mode: 0o600 });
+    }
+  }
+  hasTemporaryReference(path: string): boolean {
+    try {
+      const record = this.temporaryOwners(), guards = temporaryReferenceGuards.get(this.temporaryGuardKey());
+      if (!record || !record.owners.length || !guards || record.owners.some(owner => !guards.has(owner))) return true;
+      return record.owners.some(owner => guards.get(owner)!(path));
+    } catch { return true; }
+  }
+  private temporaryRoots() {
+    return Object.fromEntries((['temp', 'downloads'] as const).map(name => {
+      const root = this.inspectDirectory(name);
+      return [name, { path: root.path, identity: this.#resources.document.resources[name]?.identity,
+        device: String(root.device), inode: String(root.inode) }];
+    }));
+  }
+  private temporaryGuardKey(): string { return this.#resources.document.runtimeIdentity + ':' + JSON.stringify(this.temporaryRoots()); }
+  private temporaryOwnersPath(): string {
+    const digest = createHash('sha256').update(this.temporaryGuardKey()).digest('hex').slice(0, 24);
+    return this.#resources.resolve(this.reference('temp', '.bd-temporary-owners-' + digest + '.json'));
+  }
+  private temporaryOwners(): { runtimeIdentity: string; rootIdentity: string; rootObjects: ReturnType<ProcessRuntime['temporaryRoots']>; owners: string[] } | null {
+    try {
+      const path = this.temporaryOwnersPath(), stat = lstatSync(path);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 65536) return null;
+      const record = JSON.parse(readFileSync(path, 'utf8'));
+      return record.runtimeIdentity === this.#resources.document.runtimeIdentity && record.rootIdentity === this.#resources.document.resources.temp?.identity
+        && JSON.stringify(record.rootObjects) === JSON.stringify(this.temporaryRoots())
+        && Array.isArray(record.owners) && record.owners.every((owner: unknown) => typeof owner === 'string' && owner.length > 0) ? record : null;
+    } catch { return null; }
+  }
+  startTemporaryRetention() {
+    if (this.#retentionTimer) return;
+    this.sweepTemporary();
+    this.#retentionTimer = setInterval(() => { this.sweepTemporary(); }, 60 * 60 * 1000); this.#retentionTimer.unref();
+  }
+  closeTemporaryRetention() { if (this.#retentionTimer) clearInterval(this.#retentionTimer); this.#retentionTimer = undefined; }
+  sweepTemporary(now = Date.now()): number {
+    if (!this.temporaryOwners()) return 0;
+    let names: string[];
+    try { names = readdirSync(this.#resources.path('temp')).filter(name => /^[a-f0-9-]{36}$/u.test(name)).sort(); }
+    catch { return 0; }
+    let removed = 0;
+    for (const id of names) {
+      if (removed >= 200) break;
+      try {
+        const temporary = this.#resources.resolve(this.reference('temp', id)), downloads = this.#resources.resolve(this.reference('downloads', id));
+        const marker = join(temporary, 'process.json'), markerStat = lstatSync(marker);
+        if (!markerStat.isFile() || markerStat.isSymbolicLink() || markerStat.nlink !== 1 || markerStat.size > 8192) continue;
+        const record = JSON.parse(readFileSync(marker, 'utf8'));
+        if (record.version !== 1 || record.runtimeIdentity !== this.#resources.document.runtimeIdentity
+          || record.resourceIdentities?.temp !== this.#resources.document.resources.temp?.identity
+          || record.resourceIdentities?.downloads !== this.#resources.document.resources.downloads?.identity
+          || JSON.stringify(record.rootObjects) !== JSON.stringify(this.temporaryRoots())
+          || record.id !== id || record.state !== 'released' || record.temporary !== temporary || record.downloads !== downloads
+          || !Number.isSafeInteger(record.releasedAt) || record.expiresAt !== record.releasedAt + TEMPORARY_RETENTION_DAYS * 86400000 || record.expiresAt > now) continue;
+        if (record.pid !== undefined) {
+          if (!Number.isSafeInteger(record.pid) || record.pid <= 0) continue;
+          try { process.kill(record.pid, 0); continue; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') continue; }
+        }
+        const roots = [['downloads', downloads], ['temp', temporary]] as const;
+        if (roots.some(([, path]) => this.hasTemporaryReference(path))) continue;
+        if (!roots.every(([key, path]) => { const stat = lstatSync(path, { bigint: true }); return stat.isDirectory() && !stat.isSymbolicLink()
+          && realpathSync(path) === path && record.roots?.[key]?.device === String(stat.dev) && record.roots?.[key]?.inode === String(stat.ino); })) continue;
+        for (const [key, path] of roots) {
+          const stat = lstatSync(this.#resources.resolve(this.reference(key, id)), { bigint: true });
+          if (!stat.isDirectory() || stat.isSymbolicLink() || record.roots[key].device !== String(stat.dev) || record.roots[key].inode !== String(stat.ino)) throw Error('暂存身份变化。');
+          rmSync(path, { recursive: true });
+        }
+        removed++;
+      } catch { /* 非本策略记录、占用、缺失或身份变化均保留，不按目录年龄猜测。 */ }
+    }
+    return removed;
   }
   path(name: RegisteredProgramName): string {
     const expected = this.#identities.get(name);
@@ -169,15 +262,28 @@ export class ProcessRuntime {
       }
     };
     let processIdentity: { pid: number; startIdentity: string } | undefined;
+    let currentState = 'prepared';
     return { executable, env, temporary, downloads, assertCurrent,
       record: (state: string, process?: { pid: number; startIdentity: string }) => {
         assertCurrent();
-        processIdentity = process ?? processIdentity;
+        processIdentity = process ?? processIdentity; currentState = state;
         const marker = join(temporary, 'process.json'), stat = lstatSync(marker);
         if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error('进程记录已替换。');
         writeFileSync(marker, JSON.stringify({ version: 1, id, program: name, temporary, downloads, state, ...processIdentity }) + '\n');
       },
-      cleanup: () => { assertCurrent(); for (const root of roots) rmSync(root.path, { recursive: true }); },
+      cleanup: () => {
+        assertCurrent();
+        if (currentState === 'unknown') throw Error('原进程收束未知，不能释放恢复现场。');
+        const marker = join(temporary, 'process.json'), stat = lstatSync(marker);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw Error('进程记录已替换。');
+        const releasedAt = Date.now();
+        writeFileSync(marker, JSON.stringify({ version: 1, id, program: name, temporary, downloads, state: 'released',
+          runtimeIdentity: this.#resources.document.runtimeIdentity, rootObjects: this.temporaryRoots(), resourceIdentities: {
+            temp: this.#resources.document.resources.temp?.identity, downloads: this.#resources.document.resources.downloads?.identity },
+          ...processIdentity, releasedAt, expiresAt: releasedAt + TEMPORARY_RETENTION_DAYS * 86400000,
+          roots: Object.fromEntries(roots.map(root => [root.path === temporary ? 'temp' : 'downloads',
+            { device: String(root.stat.dev), inode: String(root.stat.ino) }])) }) + '\n');
+      },
     };
     } catch (error) {
       for (const root of roots) {

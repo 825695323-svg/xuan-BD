@@ -1,8 +1,8 @@
-> 本交付保留方法和字段契约；文中历史样例路径只作格式参考，本包不携带逐股样本。统一命令及当前验证范围见外部说明.txt。
-
 # 日线指标契约
 
-本模块提供 22 个有限日线计算。调用 `calculate.py --request examples/indicators/MA.normal.json` 可运行示例。请求为 `version=1`、`kind="indicator"`、`operation`、必填对象 `params`，以及 `data` 或相对于请求文件的 `data_file`。正常和错误请求各 22 件，关键预期值见 `examples/indicators/expected.json`。正常例使用随包固定数据库样本；边界例明确使用人工合成数据。
+本文件说明现存计算资产的实现契约；[代码资产目录](../能力目录.json)不代表应用已放行全部操作，实际可调用范围以[受控登记](../../../../../modules/financial/algorithm-registry.ts)及当前采用状态为准。
+
+本模块提供 22 个有限日线计算。源码入口为 [calculate.py](../calculate.py)（统一计算入口）。请求为 `version=1`、`kind="indicator"`、`operation`（计算标识）、必填对象 `params`（参数），以及 `data`（内嵌数据）或相对于请求文件的 `data_file`（数据文件路径）。
 
 `data={metadata,rows}`。元数据须声明序列、日频、时区、价格单位、复权类别与依据、窗口首尾，以及所供观测连续。日期严格递增且唯一。价格为正有限数；成交量为非负有限数，并声明 `volume_unit`（成交量单位）。本模块不排序、不补日、不复权、不换量单位。`observations_are_consecutive`（所供观测连续）不证明完整交易日历，也不证明历史时点可得性。
 
@@ -70,5 +70,3 @@ values 的字段为：EMA/SMA 的 `previous`；MACD 的 `ema_short,ema_long,dea`
 ## 输出与验证边界
 
 `rows`（结果逐条记录）保留输入日期，`diagnostics`（诊断）列出空值及零分母，`method`（方法说明）包含归一化参数、精确定义、初始化规则和窗口策略。常量线只是数值参考，不自动产生买卖信号。主入口追加执行标志为 false。
-
-随包三份数据库样本各 300 条，覆盖 22×3 次运行。独立复算和手算边界可运行 `python3 -B verification/indicators_math.py`；该检查使用十进制高精度闭式权重、标准统计函数和手工预期，验证数学定义及关键前缀，不证明市场效果、历史时点可得性或任何未声明的外部默认行为。

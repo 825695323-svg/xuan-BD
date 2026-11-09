@@ -40,8 +40,8 @@ export function validateBaiduArgs(args: Args): Operation {
 }
 function remotePath(value: JsonValue | undefined, own = true): string {
   if (typeof value !== 'string' || !value.startsWith('/') || value.length > 2048 || /[\u0000-\u001f\\]/u.test(value)
-    || value.split('/').some(part => part === '..' || part === '.' || part === '~')
-    || (own && value !== '/apps/bdpan' && !value.startsWith('/apps/bdpan/'))) invalid();
+    || value.split('/').some(part => part === '..' || part === '.' || part === '~')) invalid('自有网盘路径须以 / 开头，不能包含 . .. ~ 或反斜杠。');
+  if (own && value !== '/apps/bdpan' && !value.startsWith('/apps/bdpan/')) invalid('自有网盘路径只接受 /apps/bdpan 或 /apps/bdpan/ 下的路径；列根目录写 /apps/bdpan，不是 /。');
   return value as string;
 }
 function shareUrl(value: JsonValue | undefined): string {
@@ -58,7 +58,9 @@ function fileIds(value: JsonValue | undefined): string[] {
   if (!ids.length || ids.length > 100 || ids.some(id => !/^[0-9]{1,25}$/u.test(id)) || new Set(ids).size !== ids.length) invalid();
   return ids;
 }
-function invalid(): never { throw new DirectError('BAIDU_ARGS_INVALID', '百度网盘参数无效或超出该动作范围。'); }
+function invalid(reason?: string): never {
+  throw new DirectError('BAIDU_ARGS_INVALID', reason ? `百度网盘参数无效：${reason}` : '百度网盘参数无效或超出该动作范围。');
+}
 
 export function createBaiduDriveActions(options: { files: FileReferenceService; artifactRoot: string; configuration?: BaiduDriveConfiguration;
   processRuntime?: ProcessRuntime; assertPath(path: string): void; runTool?: typeof runDirectProcess }) {

@@ -1,0 +1,37 @@
+{
+  "format": "xuan-bd.stage-release/1",
+  "release_id": "XUAN-BD/0.2.2",
+  "version": "0.2.2",
+  "status": "candidate",
+  "stage_accepted": false,
+  "overall_production_accepted": false,
+  "deployment": "local_web",
+  "verified_platforms": [
+    "darwin-arm64"
+  ],
+  "scope": [
+    "material_custody_and_processing",
+    "r1_structured_handoff_and_fixed_readback",
+    "registered_fixed_calculations",
+    "structured_and_document_retrieval",
+    "selected_evidence_archive_and_recovery",
+    "fixed_snapshot_company_relation_rules_events"
+  ],
+  "execution_policy": {
+    "query": "duckdb_via_wfd",
+    "calculation": "one_registered_default_implementation_per_method",
+    "publication": "wfd_only",
+    "automatic_engine_fallback": false
+  },
+  "excluded": [
+    "full_million_row_capacity_acceptance",
+    "row_version_object_format_adoption",
+    "strict_historical_temporal_qualification",
+    "windows_runtime_acceptance",
+    "external_harness_integration",
+    "simulation_clock_sandbox_and_execution",
+    "rule_priority_and_exception_interpreter",
+    "universal_source_or_company_coverage"
+  ],
+  "verification_record": "BD-naming-and-guidance-20261106"
+}

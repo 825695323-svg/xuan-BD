@@ -15,8 +15,8 @@ const pendingUploads = new WeakMap<WorkspaceServices, Map<string, Promise<string
 /** Same durable intake for the manual HTTP entry and the trusted conversation bridge. */
 export async function acceptWorkspaceMaterial(services: WorkspaceServices,
   input: { bytes: Buffer; name: string; category: 'unclassified' | 'data' | 'tool'; requestId: string }): Promise<string> {
-  const { harness, materials, database, tasks, files, permissions } = services;
-  if (!harness || !materials) throw new TaskError('SERVICE_ROLE_REQUIRED', '材料服务尚未装配。');
+  const { bd, materials, database, tasks, files, permissions } = services;
+  if (!bd || !materials) throw new TaskError('SERVICE_ROLE_REQUIRED', '材料服务尚未装配。');
   const { bytes, name, category, requestId } = input;
   id(requestId);
   if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MATERIAL_CUSTODY_LIMIT) throw new TaskError('MATERIAL_BYTE_BUDGET', '材料超过字节预算或为空。');
@@ -33,7 +33,7 @@ export async function acceptWorkspaceMaterial(services: WorkspaceServices,
     let row = db.prepare('SELECT * FROM harness_material_uploads WHERE request_id=?').get(requestId) as UploadRow | undefined;
     if (row && row.args_digest !== digest) throw new TaskError('REQUEST_CONFLICT', '原请求已绑定另一份原件或类别；请核对原请求。');
     if (row?.task_id) return row.task_id;
-    harness.assertDispatch();
+    bd.assertDispatch();
     if (!row) {
       const suffix = extname(name).slice(0, 20).replace(/[^.a-zA-Z0-9_-]/g, '');
       db.prepare('INSERT INTO harness_material_uploads VALUES(?,?,?,?,?,?)').run(requestId, digest, `${randomUUID()}${suffix}`, null, null, Date.now());
@@ -44,7 +44,7 @@ export async function acceptWorkspaceMaterial(services: WorkspaceServices,
       const generation = tasks.getControl().generation;
       const check = () => {
         if (!services.core.healthy) throw new CoreError('STORAGE_UNAVAILABLE', '存储暂时不可用，原件尚未确认接收。', 503);
-        harness.assertDispatch();
+        bd.assertDispatch();
         if (tasks.getControl().generation !== generation) throw new TaskError('STALE_CONTROL', '上传期间停止控制已变化；请按原请求核对。');
       };
       check();

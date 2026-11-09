@@ -48,6 +48,8 @@ export interface MaterialCell {
   sourceType: 'string' | 'number' | 'boolean' | 'null' | 'missing';
   original: MaterialScalar;
   proposed: MaterialScalar;
+  /** 端点适配按声明单位换算后的值；original 保持载体原值，不因换算被覆盖。 */
+  converted?: MaterialScalar;
   location: MaterialLocation;
   quote: string;
 }

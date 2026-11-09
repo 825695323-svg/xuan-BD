@@ -581,6 +581,7 @@ def build_relation_outputs(pack, evidence):
 
 
 def build_calendar_output(pack, evidence):
+    """Observe listed open dates; omission proves neither closure nor withdrawal."""
     calendar = pack["calendar"]
     labels = calendar.get("evidence_labels") or []
     rows = []
@@ -595,8 +596,8 @@ def build_calendar_output(pack, evidence):
                     rows, _ev(evidence, labels),
                     _coverage({"market_id": calendar["market_id"], "range": calendar.get("range"),
                                "dates": len(rows), "claim": "trading_dates_only"},
-                              "complete", _ev(evidence, labels), "unknown", "declared_full"),
-                    input_mode="complete_snapshot")]
+                              "partial", _ev(evidence, labels), "unknown", "observed_partial"),
+                    input_mode="partial_observation")]
 
 
 def build_binding_outputs(pack, evidence, unit_product, unit_snapshot_id):

@@ -306,6 +306,46 @@ def query_request(snapshot_id, operation, *, history_mode="snapshot_contents",
     return value
 
 
+def test_company_context_explicit_zero_depth_keeps_focus_only(tmp_path):
+    engine = WFDDuckDBPrototype(
+        tmp_path / "store", load_protocol_validator(
+            HERE / "protocol", entry="wfd-data-only-write.schema.json"),
+        runtime_root=tmp_path / "runtime", sandbox=False, writer_host="depth-test")
+    service = WFDDataOnlyService(
+        engine, caller_roles=ALL_ROLES, caller_id="depth-test", unit_registry=UNITS,
+        trusted_actor_namespaces={NAMESPACE})
+    document = fixture_document()
+    document["outputs"] = [item for item in document["outputs"]
+                           if item["output_key"] in {"fin", "quote", "relations"}]
+    relations = next(item for item in document["outputs"]
+                     if item["output_key"] == "relations")
+    relations["payload"]["rows"] = relations["payload"]["rows"][:1]
+    assert sum(len(item["payload"]["rows"])
+               for item in document["outputs"]) == 3
+    published = service.submit(document)
+    assert published["state"] == "published_formal", published
+    query = ProductQuery(service)
+    base = query_request(published["snapshot_id"], "read_company_context",
+                         page_size=10, max_nodes=20, max_scan_bytes=1_048_576)
+    results = {"default": query.execute(base),
+               "zero": query.execute(dict(base, max_depth=0)),
+               "one": query.execute(dict(base, max_depth=1)),
+               "graph_zero": query.execute(dict(
+                   base, operation="read_relation_graph", max_depth=0))}
+    (tmp_path / "company-depth-results.json").write_text(
+        json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    expected = {json.dumps(ENTITY, sort_keys=True),
+                json.dumps(INSTRUMENT, sort_keys=True)}
+    for key in ("default", "one"):
+        assert {json.dumps(identity, sort_keys=True)
+                for identity in results[key]["identities"]} == expected
+    assert results["zero"]["identities"] == [ENTITY]
+    assert results["zero"]["edges"] == []
+    assert all(row["subject"] == ENTITY for row in results["zero"]["rows"])
+    assert results["graph_zero"]["nodes"] == [{"identity": ENTITY, "depth": 0}]
+    assert results["graph_zero"]["edges"] == []
+
+
 BD_KEYS = {
     "source_binding", "evidence_refs", "evidence", "source_ids", "source_id",
     "source_roles", "original_path", "original_local_path", "local_path",

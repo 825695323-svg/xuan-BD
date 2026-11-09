@@ -53,9 +53,9 @@ export function createCaptureSourcePlugin(options:CaptureSourcePluginOptions) {
       ...[...parameters].map(([key,definition]):SkillField=>definition.kind==='integer'?{key,label:key,type:'number',minimum:definition.min,maximum:definition.max}
         :definition.kind==='enum'?{key,label:key,type:'select',options:definition.values!.map(value=>({value,label:value}))}:{key,label:key,type:'text',maxLength:4096})];
     return{action:actionFor(sourceId),runtimeId:'direct',kind:'direct',modelCalls:0,title:`${CAPTURE_SOURCES[sourceId].label}采集`,
-      description:sourceId==='bilibili'?'按BV编号采集视频简介或一页评论，保留固定转录可用的视频页面引用；站点网页自用接口只作本站采集内部步骤。视频转录需另行调用固定转录能力。'
+      description:sourceId==='bilibili'?'按BV编号采集视频简介或一页评论，或读取选定页视频检索、热门视频与热搜词条。只有明确BV编号的视频操作提供转录引用；站点网页自用接口只作本站采集内部步骤，视频转录另行调用固定能力。'
         :sourceId==='wechat'?'按明确公众号文章链接提取正文、图片原属性与链接定位；图片链接保留，识字需另行调用固定OCR（文字识别）。'
-        :sourceId==='eastmoney'?'按6位代码读取东方财富股吧的帖子列表或单帖正文，保留标题、作者、时间、阅读与评论数；只取社区文本，不取行情与新闻。'
+        :sourceId==='eastmoney'?'按6位代码读取东方财富股吧帖子列表或单帖正文，或读取选定页7×24快讯标题、摘要、时间和链接；不读取行情，不把快讯摘要当全文。'
         :sourceId==='xueqiu'?'读取雪球热门讨论列表，或单条讨论正文与回复；本站需要有效登录态，风控或未登录时明确返回提示，不代读或转交任何凭据。'
         :'通过本站独立会话与固定脚本读取选定内容。部分脚本使用站点网页自用接口或页面运行状态；分页、预览截断与登录验证单独记录。',fields,
       permissionSummary:['本站账号目录独立，仅复用原已保存登录态或原公开模式；登录态控制待用户重新设定','不引导打开登录、确认保存、取消登录、改选仅公开或清除账号，也不自动恢复这些动作；遇登录页或验证码只说明受阻，不读取会话凭据','本地保存不证明站点仍认可登录；页面或列表成功不证明完整正文和附件已取得','只执行摘要核对的固定站点脚本及受限参数；逐请求核对网络来源和公网地址','完整原件仅放受保护的本任务证据区；正文结果按原文件权限发布','不执行清洗、自动纠错、入库或定时采集；未知关闭结果沿原任务核对'],
@@ -120,6 +120,7 @@ export function captureResultStatus(rule:CaptureSiteRule,capture:CapturePageResu
   let scope='fixed-site-operation';
   if(rule.operation.includes('comments')){scope='selected-comment-page';reasons.push('selected-page-only');if(!Array.isArray(result.comments))reasons.push('comment-result-shape-unverified');}
   else if(rule.sourceId==='bilibili'&&rule.operation==='video-info'){scope='video-description';if(typeof result.description!=='string'||result.bvid!==new URL(capture.sourceURL).pathname.split('/')[2])reasons.push('video-description-shape-unverified');}
+  else if(rule.sourceId==='bilibili'&&rule.operation==='search'){scope='selected-video-search-results';reasons.push('selected-page-only');if(!Array.isArray(result.items))reasons.push('search-result-shape-unverified');}
   else if(rule.sourceId==='bilibili'&&rule.operation==='trending'){scope='trending-keywords';if(!Array.isArray(result.items)||result.items.length===0)reasons.push('trending-shape-unverified');}
   else if(rule.sourceId==='bilibili'){scope='popular-video-ranking';if(!Array.isArray(result.items)||result.items.length===0)reasons.push('ranking-shape-unverified');}
   else if(rule.sourceId==='wechat'){scope='captured-article-dom';if(typeof result.bodyText!=='string'||!result.bodyText.trim()||!Array.isArray(result.images)||!Array.isArray(result.links))reasons.push('article-result-shape-unverified');}
@@ -128,6 +129,9 @@ export function captureResultStatus(rule:CaptureSiteRule,capture:CapturePageResu
   else if(rule.sourceId==='zhihu'){scope='zhihu-hot-list';if(!Array.isArray(result.items)||result.items.length===0)reasons.push('hot-list-shape-unverified');}
   else if(rule.sourceId==='weibo'&&rule.operation==='hot'){scope='weibo-hot-search';if(!Array.isArray(result.items)||result.items.length===0)reasons.push('hot-search-shape-unverified');}
   else if(rule.sourceId==='xiaohongshu'){scope='selected-note';if(typeof result.note_id!=='string'||typeof result.desc!=='string')reasons.push('note-result-shape-unverified');}
+  else if(rule.sourceId==='douyin'||rule.sourceId==='baidu'){scope=`${rule.sourceId}-hot-list`;reasons.push('requested-prefix-only');if(!Array.isArray(result.items))reasons.push('hot-list-shape-unverified');}
+  else if(rule.sourceId==='sogouwechat'){scope='selected-wechat-search-previews';reasons.push('selected-page-only','script-summary-preview-200');if(!Array.isArray(result.items))reasons.push('search-result-shape-unverified');}
+  else if(rule.sourceId==='eastmoney'&&rule.operation==='news'){scope='selected-news-page';reasons.push('selected-page-only','script-digest-preview');if(!Array.isArray(result.items))reasons.push('news-result-shape-unverified');}
   else if(rule.sourceId==='eastmoney'&&rule.operation==='guba-list'){scope='guba-post-list';if(!Array.isArray(result.posts))reasons.push('post-list-shape-unverified');}
   else if(rule.sourceId==='eastmoney'){scope='selected-post-body';if(typeof result.text!=='string'||!result.text.trim())reasons.push('post-body-shape-unverified');}
   else if(rule.sourceId==='xueqiu'&&rule.operation==='hot'){scope='hot-discussion-list';if(!Array.isArray(result.items))reasons.push('discussion-list-shape-unverified');}
@@ -138,7 +142,7 @@ export function captureResultStatus(rule:CaptureSiteRule,capture:CapturePageResu
 // 模型与普通分享产物均只使用明确允许字段；原站点返回、原始链接和HTML（网页源码）在私有证据中保留。
 const PUBLIC_KEYS=new Set(['sourceURL','finalURL','sourceUrl','apiSourceUrl','bvid','aid','title','description','author','name','author_id','author_headline','note_id','desc','type','url','images','links','attributes','src','data-src','data-original','data-backsrc','srcset','href','data-type','data-w','data-h','alt','locator','index','text','resolvedHref','resolvedSrc','bodyText','bodyLocator','publishedText','completenessScope','lazyImagesDownloaded','imageTextRecognized','page','total','count','sort','top_comments','comments','rpid','user','user_mid','user_level','content','like','reply_count','time','sub_replies','post_id','max_id','has_more','id','created_at','likes_count','screen_name','verified','reply_to','uid','likes','collects','shares','tags','created_time','last_update_time','ip_location','cursor','sub_comment_count','detail','excerpt','answer_count','follower_count','visit_count','comment_count','topics','answers_total','answers','rank','voteup_count','updated_time','query','results','snippet','error','code','status','hint',
   'items','posts','postId','abstract','read','reply','publishedAt','external','bar','authorId','createdAt','reposts','replies','commentsError',
-  'view','danmaku','coin','favorite','share','category','duration','pubDate','keyword','showName','isHot','word','hotValue','rawHot','label','isNew','top','heat','trend','answerCount','followerCount']);
+  'play','hot','activeTime','tag','account','summary','digest','view','danmaku','coin','favorite','share','category','duration','pubDate','keyword','showName','isHot','word','hotValue','rawHot','label','isNew','top','heat','trend','answerCount','followerCount']);
 function redactText(value:string):string {
   return value.replace(/https?:\/\/[^\s"'<>\])]+/giu,raw=>{try{const url=new URL(raw);url.username='';url.password='';for(const key of [...url.searchParams.keys()])if(/token|password|secret|auth|cookie|api.?key|signature/iu.test(key))url.searchParams.delete(key);return url.href;}catch{return'[链接无法安全展示]';}})
     .replace(/\bBearer\s+\S+/giu,'Bearer [已隐藏]').replace(/((?:access[_-]?token|refresh[_-]?token|xsec[_-]?token|api[_-]?key|password|secret|cookie|authorization)\s*[:=]\s*)[^\s"'&,;]+/giu,'$1[已隐藏]');
@@ -154,6 +158,11 @@ export function projectCaptureResult(value:unknown,depth=0):JsonValue {
   if(object(value))return Object.fromEntries(Object.entries(value).filter(([key])=>PUBLIC_KEYS.has(key)).map(([key,child])=>[key,projectCaptureResult(child,depth+1)]));
   if(typeof value==='string')return redactText(value);
   return typeof value==='number'&&Number.isFinite(value)||typeof value==='boolean'||value===null?value as JsonValue:null;
+}
+
+export function captureMediaReference(rule:CaptureSiteRule,args:Record<string,string>) {
+  if(rule.sourceId!=='bilibili'||!['video-info','comments'].includes(rule.operation)||!/^BV[a-z0-9]{10}$/iu.test(args.bvid??''))return undefined;
+  return{kind:'public-video-page',url:`https://www.bilibili.com/video/${args.bvid}/`,bvid:args.bvid,transcriptionAction:'video.transcribe_url',transcribed:false};
 }
 
 async function ensurePrivateTaskRoot(context:TaskExecutionContext,base:string):Promise<string> {
@@ -182,7 +191,7 @@ async function publishCapture(context:TaskExecutionContext,options:CaptureSource
     const raw=await publish(privateWorkspace,'source.json',JSON.stringify(privateEvidence,null,2)+'\n',16*1024*1024),dom=capture.domHTML?await publish(privateWorkspace,'dom.html',capture.domHTML):undefined;
     const text=object(publicResult)&&typeof publicResult.bodyText==='string'?publicResult.bodyText:JSON.stringify(publicResult,null,2)+'\n';
     const resultFile=await publish(publicWorkspace,'result.json',JSON.stringify(publicResult,null,2)+'\n'),body=await publish(publicWorkspace,'body.txt',text);
-    const mediaReference=rule.sourceId==='bilibili'?{kind:'public-video-page',url:`https://www.bilibili.com/video/${args.bvid}/`,bvid:args.bvid,transcriptionAction:'video.transcribe_url',transcribed:false}:undefined;
+    const mediaReference=captureMediaReference(rule,args);
     const provenance={schemaVersion:1,sourceId:rule.sourceId,operation:rule.operation,sourceURL:redactText(capture.sourceURL),finalURL:redactText(capture.finalURL),scriptSha256:rule.sha256,method:rule.method,status:classification.status,complete:classification.status==='complete',completenessScope:classification.scope,reasons:classification.reasons,
       resultRef:resultFile.id,textRef:body.id,sourceEvidence:'protected-task-evidence',...(mediaReference?{mediaReference}:{}),transformation:rule.sourceId==='wechat'?'structural-extraction-only':'legacy-site-projection',modelCalls:0,readOnly:true,contentIsUntrustedReference:true};
     const locator=await publish(publicWorkspace,'source.json',JSON.stringify(provenance,null,2)+'\n');

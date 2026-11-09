@@ -1,7 +1,6 @@
 import { FileCheck2, ShieldAlert } from 'lucide-react';
 import type { MaterialSemanticRecord } from '../../../../modules/collection/materials/semantic-contracts';
 import type { TaskRecord } from '../../../../contracts/task-contracts';
-import type { CandidateView } from '../data-browser-api';
 import { useWords } from './Controls';
 
 export const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -97,64 +96,6 @@ export function ConversationTaskResults({ tasks, conversationId }: { tasks: read
           <dl><dt>{words('操作', 'Operation')}</dt><dd>{task.action}</dd><dt>{words('任务', 'Task')}</dt><dd>{task.id}</dd><dt>{words('原请求', 'Request')}</dt><dd>{task.requestId}</dd>
             <dt>{words('状态', 'Status')}</dt><dd>{task.status}{task.requiresReview ? words(' · 待核', ' · unconfirmed') : ''}</dd>
             {task.error?.code && <><dt>{words('错误码', 'Error code')}</dt><dd>{task.error.code}</dd></>}</dl>
-        </details>
-      </div></article>;
-    })}
-  </section>;
-}
-
-const outputStateLabels: Record<string, [string, string]> = {
-  committed: ['正式提交成功', 'Committed'], stored_not_committed: ['已保管，未提交', 'Stored, not committed'],
-  custody_only: ['仅保管原件', 'Custody only'], prepared: ['本地候选已构造', 'Prepared locally'],
-  rejected: ['数据库拒绝', 'Rejected'], cancelled: ['已取消', 'Cancelled'], unknown: ['结果待核', 'Outcome unconfirmed'],
-};
-const candidateStateLabels: Record<string, [string, string]> = {
-  not_sent: ['尚未向数据库发送', 'Not sent'], prepared: ['已准备请求', 'Request prepared'], uploading: ['正在保管原件', 'Uploading originals'],
-  dispatched: ['已派发，等待回执', 'Dispatched'], accepted: ['数据库已受理', 'Accepted'], received: ['输入已保管', 'Input stored'],
-  verified: ['回执已核对', 'Receipt verified'], stored_not_committed: ['已保管，未提交', 'Stored, not committed'],
-  rejected: ['数据库拒绝', 'Rejected'], unknown: ['结果待核', 'Outcome unconfirmed'], cancelled: ['已取消', 'Cancelled'],
-};
-
-/** 工作台候选只按会话/分支的获准关联进入；空列表与不可用分别显示。 */
-export function CandidateTaskResults({ items, availability, reason }: {
-  items: CandidateView[]; availability: 'available' | 'unavailable' | 'loading'; reason?: string | null;
-}) {
-  const words = useWords();
-  if (availability === 'loading') return <p className="task-linked-note">{words('正在读取本分支关联的工作台候选…', 'Reading workbench candidates linked to this branch…')}</p>;
-  if (availability === 'unavailable') return <p className="task-linked-note" role="status">{reason ?? words('工作台候选关联暂时不可读，没有混入其他会话任务。', 'Linked workbench candidates are unavailable; tasks from other conversations are not mixed in.')}</p>;
-  if (!items.length) return null;
-  return <section className="task-results task-results--candidates" aria-label={words('本会话关联的工作台候选', 'Workbench candidates linked to this conversation')}>
-    {items.map(item => {
-      const database = candidateStateLabels[item.database.state] ?? null;
-      const partial = item.database.committed > 0 && (item.database.storedNotCommitted > 0 || item.database.rejected > 0);
-      return <article className="result-row" key={item.taskId}><FileCheck2 size={19} aria-hidden="true" /><div className="result-copy">
-        <div className="result-heading"><span>{item.title}</span><span className="task-state" data-state={item.status === 'failed' ? 'failed' : partial || item.requiresReview ? 'needs_review' : 'succeeded'}>
-          {taskStateText(item.status, words)}{partial ? words(' · 部分完成', ' · partial') : ''}</span></div>
-        {item.approvalId && <p className="result-approval"><ShieldAlert size={14} aria-hidden="true" />{words('等待本机操作者在会话审批条处理；这里不新建批准权。', 'Waiting in the existing approval strip; no new approval authority here.')}</p>}
-        <p>{item.progress?.message ?? item.blockedReason ?? item.error?.message
-          ?? (database ? words(`数据库：${database[0]}`, `Database: ${database[1]}`) : words('候选状态待核。', 'Candidate status unconfirmed.'))}</p>
-        {item.outputs.length > 0 && <ul className="candidate-outputs">{item.outputs.map(output => {
-          const label = outputStateLabels[output.state] ?? [output.state, output.state];
-          return <li key={output.outputId} data-state={output.state}>
-            <span className="candidate-output-name">{output.outputId}</span>
-            <span className="candidate-output-state">{words(label[0], label[1])}</span>
-            {output.coverage && !output.coverage.complete && <span className="candidate-output-gap">{words(`缺项：${output.coverage.gaps.join('；') || '范围未完成'}`, `Gaps: ${output.coverage.gaps.join('; ') || 'scope incomplete'}`)}</span>}
-            {output.issues.length > 0 && <span className="candidate-output-gap">{output.issues.map(issue => issue.message).join('；')}</span>}
-            {output.readback?.state === 'verified' && <span className="candidate-output-readback">{words(`固定读回 ${output.readback.rows} 行`, `Fixed readback ${output.readback.rows} rows`)}</span>}
-          </li>;
-        })}</ul>}
-        <small>{partial ? words('已提交与未提交输出分别列出，不把部分成功说成整批入库。', 'Committed and uncommitted outputs are listed separately; a partial result is not reported as a full commit.')
-          : words('正式提交只认数据库 commit_id 与 snapshot_id，并核对固定读回；前端动画不算入库。', 'A commit requires the database commit_id and snapshot_id plus a fixed readback; frontend feedback is not a commit.')}</small>
-        <details className="result-details"><summary>{words('查看身份与逐输出详情', 'Identity and per-output details')}</summary>
-          <dl><dt>{words('任务', 'Task')}</dt><dd>{item.taskId}</dd><dt>{words('原请求', 'Request')}</dt><dd>{item.requestId}</dd>
-            {item.database.requestId && <><dt>{words('数据库请求', 'Database request')}</dt><dd>{item.database.requestId}</dd></>}
-            {item.database.instanceId && <><dt>{words('实例', 'Instance')}</dt><dd>{item.database.instanceId}</dd></>}
-            <dt>{words('数据库状态', 'Database state')}</dt><dd>{item.database.state}</dd></dl>
-          {item.outputs.map(output => <div className="candidate-output-detail" key={output.outputId}><strong>{output.outputId}</strong>
-            <small>{output.productId ?? words('产品尚未确定', 'No product yet')} · {output.snapshotId ?? words('快照尚未形成', 'No snapshot yet')}</small>
-            {output.commitId && <small>{words('提交', 'Commit')} {output.commitId}</small>}
-            {output.readback && <small>{words('读回摘要', 'Readback digest')} {output.readback.rowsSha256}</small>}
-          </div>)}
         </details>
       </div></article>;
     })}

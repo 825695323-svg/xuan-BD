@@ -33,12 +33,21 @@ PROFILES = {"legacy", "data_only"}
 CONTEXT_QUERY_OPERATIONS = ("read_company_context", "read_relation_graph",
                             "read_applicable_rules", "read_event_timeline")
 QUERY_MACHINE_OPERATIONS = ("read_product",) + CONTEXT_QUERY_OPERATIONS
+FIXED_PAGE_OPERATIONS = {"fixed_read_page", "fixed_read_product_page"}
 DATA_ONLY_OPERATIONS = {"capabilities", "service_capabilities", "schema",
-                        "contract_discovery", "fixed_read", "submit",
+                        "contract_discovery", "snapshot_status", "review_definition", "fixed_read", "fixed_read_page", "fixed_read_product_page", "submit",
                         "request_status", "recovery", "query_capabilities",
-                        "read_product", "batch_begin", "batch_put_chunk",
+                        "resolve_write_target", "register_write_target",
+                        "resolve_adjustment_anchor", "register_adjustment_anchor",
+                        "read_product", "filter_objects", "batch_begin", "batch_put_chunk",
                         "batch_status", "batch_finalize",
+                        "usage_status", "usage_audit_read", "usage_suspend",
+                        "usage_authorize_repair", "usage_resolve",
                         *CONTEXT_QUERY_OPERATIONS}
+# 正式用途治理：只暴露给 data_only；写操作要求 publish 且复用 WFD writer_lock。
+USAGE_OPERATIONS = {"usage_status", "usage_audit_read", "usage_suspend",
+                    "usage_authorize_repair", "usage_resolve"}
+USAGE_WRITE_OPERATIONS = {"usage_suspend", "usage_authorize_repair", "usage_resolve"}
 DATA_ONLY_CALLER_ROLES = {"read", "register", "submit", "publish"}
 MAX_INPUT_BYTES = 1_048_576
 MAX_OUTPUT_BYTES = 33_554_432
@@ -50,7 +59,9 @@ BATCH_PHASES = {"collecting", "ready", "finalizing", "finalized",
                 "finalized_pending", "finalized_partial", "finalized_sandbox",
                 "submit_unknown", "rejected"}
 WRITE_OPERATIONS = {"submit", "recovery", "evidence_ingest",
-                    "batch_begin", "batch_put_chunk", "batch_finalize"}
+                    "batch_begin", "batch_put_chunk", "batch_finalize",
+                    "register_write_target", "register_adjustment_anchor",
+                    *USAGE_WRITE_OPERATIONS}
 # Operations whose results carry one entry per output and therefore need a
 # bounded, pageable view when the configured response budget is smaller than
 # the full service result.
@@ -64,14 +75,23 @@ SUPPORTED = {
     "service_capabilities": "原样返回当前 WFDProductService.capabilities()，含真实 schema 闭包。",
     "schema": "返回当前 ingest/query schema 身份与摘要，不返回未完成的规则。",
     "contract_discovery": "按固定 snapshot_id 发现实际产品与已绑定合同。",
+    "review_definition": "只读受理定义意向；按当前固定快照退回缺少的产品族或字段，正式准入仍由 submit 执行。",
+    "snapshot_status": "data_only：只读核对已打开实例的权威活动快照；仅确认合法初始化空库时返回 null。",
     "fixed_read": "按固定 snapshot_id 读取真实产品行；system_held_at 必须带 held_scope/usable_stage/at，不使用 latest/current。",
+    "fixed_read_page": "data_only：固定snapshot/product与唯一record_refs的有界SQL页；仅无日历资格scalar_rows，不改变fixed_read。",
+    "fixed_read_product_page": "data_only：固定snapshot/product整产品唯一当前非撤销叶的有界SQL页；仅无日历资格scalar_rows。",
     "submit": "经 WFDProductService.submit 做同服务 schema/来源/合同/权限校验，返回逐输出结果；超出响应上限时返回有界状态摘要与续读位置。",
+    "resolve_write_target": "只读查询数据集的正式写入目标绑定：bound/never_registered/family_without_target/conflict/query_failed；不从相似度自动选中既有产品。",
+    "register_write_target": "显式登记或改绑正式写入目标（产品族+产品+定义版本）；不隐式改绑，写前核登记与发布双权限。",
+    "resolve_adjustment_anchor": "只读解析复权锚点引用：存在/撤回、版本与摘要、数据集与主体范围、方法、适用区间、版本适用性；不合规时返回具体码而不改写任何东西。",
+    "register_adjustment_anchor": "显式登记一版复权锚点（方法、基准时点、基准价格来源、适用区间、公司行动截止）；只追加，旧版本永不改写，写前核登记与发布双权限。",
     "request_status": "按原 request_identity 读回持久状态与恢复动作；可用 output_offset/output_limit/output_detail 分页读取逐输出结果。",
     "recovery": "按同一 request_identity 和原文档重试；幂等重放不产生第二个快照。",
     "evidence_ingest": "接收被配置允许的内容字节并交给既有 custody 机制，不接受本机路径。",
     "trace": "读取固定定义、合同与已保管证据核验位置。",
     "query_capabilities": "动态返回 ProductQuery.capabilities()；data_only 公开 read_product 与四个有界上下文操作。",
     "read_product": "经 ProductQuery.execute 做固定快照、字段、分页与资源预算读取；inner operation 必须与外层一致。",
+    "filter_objects": "固定快照、受信字段绑定的多对象与受限复合Decimal筛选；兼容1.4-candidate；业务库只读。",
     "read_company_context": "data_only：读取公司相关身份、财务/行情/关系/事件上下文；只返回 WFD 数据与记录/版本身份。",
     "read_relation_graph": "data_only：最多三层、有界的固定历史资格关系读取；未知/未来资格不扩展身份集合。",
     "read_applicable_rules": "data_only：有限主体/市场、有效期、历史资格与冲突并列；不提供优先级/例外解释器。",
@@ -80,6 +100,11 @@ SUPPORTED = {
     "batch_put_chunk": "data_only：结构化行分块；乱序/重传幂等/异内容冲突/行字节预算与旧账本一致。",
     "batch_status": "data_only：只返回阶段、接收/缺失/预算摘要；长块列表有界分页，不重复完整 submit 结果。",
     "batch_finalize": "data_only：按声明顺序组装同原文档并经同一 service.submit 封存；大输出沿 request_status 分页续读。",
+    "usage_status": "只读列出 WFD catalog 中持久的用途暂停事项、修复票据与解决说明；每次从磁盘重核，不缓存。",
+    "usage_audit_read": "显式指定事项编号的审计/技术固定复现：返回带已知问题诊断的旧固定内容，结果明确不可发布、不可计算。",
+    "usage_suspend": "正式登记用途暂停事项（错误类型、原因、证据摘要、精确产品/快照/记录版本范围）；与 submit 共用 writer_lock。",
+    "usage_authorize_repair": "宿主在真实任务审批通过后签发精确修复票据：绑定不可变文档摘要、原请求身份、精确前驱集合与确认摘要。",
+    "usage_resolve": "按已核验的新版本追加解决说明；旧已知错误版本的已知问题与限制永久保留，多事项限制叠加。",
 }
 UNSUPPORTED = {
     "packages": "P5 包合同尚未完成；不支持导入/导出金融产品包。",
@@ -159,6 +184,24 @@ def _action_for(code):
         return "只能读取固定合同已声明的 value 字段；不要用 caller 字段名扩权。"
     if code in {"SCAN_BUDGET_EXCEEDED", "ROW_BUDGET_EXCEEDED"}:
         return "本次读取超过受控资源预算；缩小字段/产品范围或提高操作者配置的预算。"
+    if code.startswith("ADJUSTMENT_ANCHOR_UNREGISTERED"):
+        return "该复权锚点未在 catalog/product_service/adjustment_anchors 登记；先显式 register_adjustment_anchor，不要靠提交里出现摘要自动创建。"
+    if code.startswith("ADJUSTMENT_ANCHOR_RETIRED"):
+        return "该锚点版本已撤回；已发布数据仍按原版本解释，新写入请用当前有效版本并显式改绑目标。"
+    if code.startswith("ADJUSTMENT_ANCHOR_DIGEST_MISMATCH"):
+        return "引用里的 version/digest 与登记记录不一致；按已登记摘要重发引用，不要猜版本。"
+    if code.startswith("ADJUSTMENT_ANCHOR_SCOPE_MISMATCH"):
+        return "锚点的 dataset_id/instrument_scope 未覆盖本次主体；为这批证券登记对应锚点，不要放宽范围。"
+    if code.startswith("ADJUSTMENT_ANCHOR_METHOD_MISMATCH"):
+        return "声明方法与锚点方法不一致（qfq 锚点不得用于 hfq）；核对口径或登记对应方法的锚点。"
+    if code.startswith("ADJUSTMENT_ANCHOR_NOT_APPLICABLE"):
+        return "本批业务时点落在锚点适用区间之外（或业务时点不可判定）；核对 applicability 与业务日期。"
+    if code.startswith("ADJUSTMENT_ANCHOR_VERSION_NOT_APPLICABLE"):
+        return "该锚点版本已被更新版本取代；新写入只能用当前版本，改绑是显式操作。"
+    if code.startswith("ADJUSTMENT_HISTORY_INELIGIBLE"):
+        return "历史回放时点早于锚点的公司行动截止时点，会提前暴露未来公司行动形成的调整结果；缩小锚点截止或改用事后口径的锚点。"
+    if code.startswith("WRITE_TARGET_METHOD_MISMATCH"):
+        return "该写入目标的复权方法与本次声明不一致；qfq 与 hfq 是不同产品身份，需另建目标而不是复用本目标。"
     if code in {"RECOVERY_NOT_FOUND", "REQUEST_STATUS_NOT_FOUND"}:
         return "该 request_identity 尚无持久请求状态；不能以 recovery 代替首次 submit。"
     return ("请按 error.code/details 核对请求参数和受控连接配置；写操作请用同一 "
@@ -357,7 +400,13 @@ def _load_config(path):
     }
 
 
-def _build_service(config):
+def _build_service(config, *, operation=None):
+    """Open only an existing store, with access fixed by this one request.
+
+    Possessing a write role is not itself a request to write or initialize.
+    In particular capability/schema/query requests always use a read-only
+    engine. New stores are provisioned explicitly outside this machine API.
+    """
     sys.path.insert(0, config["project_root"])
     try:
         from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, load_protocol_validator
@@ -377,10 +426,24 @@ def _build_service(config):
             unit_registry=config["units"],
             trusted_actor_namespaces={config["caller"]["trusted_actor_namespace"]},
         )
-    engine = WFDDuckDBPrototype(
-        Path(config["store"]), load_protocol_validator(Path(config["protocol_root"])),
+    role = ("evidence_write" if operation == "evidence_ingest"
+            else "register" if operation in {"register_write_target",
+                                             "register_adjustment_anchor"} else "submit")
+    store_write = operation in WRITE_OPERATIONS
+    if config.get("profile") == "data_only":
+        # Collecting chunks writes only the native batch ledger.  Even a
+        # submit-capable caller must not touch the official store until finalize.
+        store_write = operation in {"submit", "recovery", "batch_finalize",
+                                    "register_write_target",
+                                    "register_adjustment_anchor"}
+    writable = store_write and role in config["caller"]["roles"]
+    engine = WFDDuckDBPrototype.open_existing(
+        Path(config["store"]), load_protocol_validator(
+            Path(config["protocol_root"]),
+            entry=("wfd-data-only-write.schema.json" if config.get("profile") == "data_only"
+                   else "wfd-ingest.schema.json")),
         runtime_root=Path(config["runtime"]), sandbox=False,
-        writer_host=config["caller"]["caller_id"],
+        read_only=not writable, writer_host=config["caller"]["caller_id"],
     )
     if config.get("profile") == "data_only":
         return WFDDataOnlyService(
@@ -524,6 +587,9 @@ def _recovery_action(state):
         "partially_committed_pending_head": "activate_committed_snapshot_inspect_rejected_outputs",
         "published_formal": "none_already_formal",
         "published_sandbox": "none_sandbox_not_formal",
+        "unchanged": "none_identical_records_skipped",
+        "conflicts_pending": "confirm_conflicts_then_explicit_revision_new_request",
+        "partially_published_formal": "confirm_unpublished_conflicts_do_not_republish_accepted_rows",
         "rejected": "fix_request_or_policy_then_new_submission",
     }.get(state, "inspect_request_status")
 
@@ -575,10 +641,30 @@ def _compact_metadata_output(item):
     return compact
 
 
-def _compact_output(item, detail="summary"):
+def _duplicate_output_page(item, offset, limit):
+    value = copy.deepcopy(item)
+    rows = item["row_results"]
+    offset = min(offset, len(rows))
+    selected = rows[offset:offset + limit]
+    identities = {(row.get("record_id"), row.get("record_version")) for row in selected}
+    value["row_results"] = copy.deepcopy(selected)
+    for name in ("records", "inserted_records"):
+        if name in value:
+            value[name] = [row for row in value[name]
+                           if (row.get("record_id"), row.get("record_version")) in identities]
+    value.update(row_results_total=len(rows), row_results_offset=offset,
+                 row_results_included=len(selected),
+                 row_results_complete=offset == 0 and len(selected) == len(rows),
+                 next_row_offset=offset + len(selected) if offset + len(selected) < len(rows) else None)
+    return value
+
+
+def _compact_output(item, detail="summary", row_offset=0, row_limit=256):
     if not isinstance(item, dict):
         return item
     if detail == "full":
+        if isinstance(item.get("row_results"), list):
+            return _duplicate_output_page(item, row_offset, row_limit)
         return copy.deepcopy(item)
     contract = item.get("contract_ref") if isinstance(item.get("contract_ref"), dict) else {}
     compact = {
@@ -595,6 +681,9 @@ def _compact_output(item, detail="summary"):
     }
     if item.get("metadata_only") is True:
         compact.update(_compact_metadata_output(item))
+    if isinstance(item.get("row_results"), list):
+        compact.update(row_summary=copy.deepcopy(item.get("row_summary")),
+                       row_results_total=len(item["row_results"]), row_results_complete=False)
     return compact
 
 
@@ -663,7 +752,8 @@ def _page_meta(offset, included, total, *, operation, identity, detail, requeste
     }
 
 
-def _status_view(status, identity, offset, limit, detail="summary", include_record=False):
+def _status_view(status, identity, offset, limit, detail="summary", include_record=False,
+                 row_offset=0, row_limit=256):
     outputs = status.get("output_results")
     if not isinstance(outputs, list):
         outputs = []
@@ -698,7 +788,7 @@ def _status_view(status, identity, offset, limit, detail="summary", include_reco
         "formal_publication_verified": bool(
             status.get("formal_publication_verified")
             or (formal and formal.get("path"))),
-        "output_results": [_compact_output(item, detail)
+        "output_results": [_compact_output(item, detail, row_offset, row_limit)
                            for item in outputs[offset:offset + included]],
         "view": "bounded_page",
         "bounded": True,
@@ -713,6 +803,9 @@ def _status_view(status, identity, offset, limit, detail="summary", include_reco
         result["formal_publication"]["record"] = copy.deepcopy(record)
     if status.get("service_identity") is not None:
         result["service_identity"] = status["service_identity"]
+    for key in ("duplicate_policy", "row_summary", "new_snapshot_created"):
+        if key in status:
+            result[key] = copy.deepcopy(status[key])
     result["identity"] = identity
     result.update(_page_meta(offset, included, total, operation="request_status",
                              identity=result["request_identity"], detail=detail,
@@ -812,7 +905,7 @@ def _submit_view(result, included, offset=0, detail="summary"):
     total = len(outputs)
     offset = max(0, min(offset, total))
     included = min(included, max(0, total - offset))
-    keep = ("status", "request_key", "snapshot_id",
+    keep = ("status", "state", "request_key", "snapshot_id", "duplicate_policy", "row_summary", "new_snapshot_created",
             "publication_summary", "formal_publication_receipt",
             "formal_publication_checks", "formal_publication_verified",
             "idempotent_replay", "service_version", "production_publishable",
@@ -878,6 +971,31 @@ def _trim_bounded_page(response, limit):
     offset = result.get("outputs_offset", 0)
     detail = result.get("pagination", {}).get("detail", "summary")
     identity = result.get("request_identity")
+    if len(outputs) == 1 and isinstance(outputs[0].get("row_results"), list):
+        original = outputs[0]
+        rows = original["row_results"]
+        count = len(rows)
+        while count > 0:
+            page = _duplicate_output_page(original, 0, count)
+            row_offset = original.get("row_results_offset", 0)
+            total_rows = original.get("row_results_total", len(rows))
+            page.update(row_results_total=total_rows, row_results_offset=row_offset,
+                        row_results_complete=row_offset == 0 and count == total_rows,
+                        next_row_offset=row_offset + count if row_offset + count < total_rows else None)
+            candidate_result = {**result, "output_results": [page]}
+            candidate = _bounded_envelope(response, candidate_result, limit)
+            if _json_bytes(candidate) <= max(4096, limit - 1024):
+                return candidate
+            count //= 2
+        page = _compact_output(original, "summary")
+        page.update(row_results=[], records=[], inserted_records=[], row_results_included=0,
+                    row_results_total=original.get("row_results_total", len(rows)),
+                    row_results_offset=original.get("row_results_offset", 0),
+                    next_row_offset=None,
+                    row_result_error={"code": "ROW_RESULT_TOO_LARGE",
+                                      "row_index": rows[0].get("row_index") if rows else None,
+                                      "message": "One fixed row result exceeds the configured response budget"})
+        return _bounded_envelope(response, {**result, "output_results": [page]}, limit)
     for count in range(len(outputs), -1, -1):
         candidate_result = copy.deepcopy(result)
         candidate_result["output_results"] = copy.deepcopy(outputs[:count])
@@ -1115,6 +1233,41 @@ def _evidence_ingest(service, config, arguments):
             "input_mode": "trusted_content_bytes_not_local_path"}
 
 
+def _review_definition(service, namespace, args):
+    """Answer a BD admission enquiry. No registration, submission or lock acquisition."""
+    subject, fields = args["subject"], args["field_codes"]
+    if not isinstance(subject, dict) or set(subject) != {"kind", "id", "namespace"}:
+        raise ValueError("REQUEST_INVALID:subject")
+    identifiers = [args["dataset_id"], args["semantic_code"], *subject.values()]
+    if not isinstance(fields, list) or not 1 <= len(fields) <= 256:
+        raise ValueError("REQUEST_INVALID:field_codes")
+    if not all(isinstance(x, str) and REQUEST_ID.fullmatch(x) for x in identifiers + fields):
+        raise ValueError("REQUEST_INVALID:definition_review_identifiers")
+    if len(set(fields)) != len(fields):
+        raise ValueError("REQUEST_INVALID:duplicate_field")
+    head = service.snapshot_status()["snapshot_id"]
+    if args["snapshot_id"] != head:
+        raise ValueError("PARENT_CHANGED:definition_review")
+    products = service.discover_products(snapshot_id=head, subject=subject)["products"] if head else []
+    family = [p for p in products if p["dataset_id"] == args["dataset_id"]
+              and p["logical_domain"] == "observations"
+              and p["declaration"]["semantic_code"] == args["semantic_code"]
+              and p["declaration"]["definition_authority"] == namespace]
+    missing = list(fields)
+    code = "FAMILY_DEFINITION_REQUIRED"
+    if family:
+        latest = max(family, key=lambda p: p.get("definition_sequence", 0))
+        if latest["payload_kind"] != "tabular_rows":
+            raise ValueError("PRODUCT_LAYOUT_REVIEW_REQUIRED:existing family uses a different payload kind")
+        existing = {f["field_code"] for f in latest["declaration"].get("field_definitions", [])}
+        missing = [field for field in fields if field not in existing]
+        code = "FIELD_DEFINITION_REQUIRED" if missing else "CANDIDATE_FIELDS_PRESENT"
+    return {"protocol": "wfd.definition-review/1", "snapshot_id": head, "dataset_id": args["dataset_id"],
+            "subject": subject, "semantic_code": args["semantic_code"], "field_codes": fields,
+            "disposition": "return_to_bd" if missing else "candidate_found", "code": code,
+            "product_ids": sorted({p["product_id"] for p in family}), "missing_fields": missing}
+
+
 def _handle(service, config, request):
     request_id, operation, arguments = _request_object(request)
     identity = _caller_identity(config, service)
@@ -1124,13 +1277,27 @@ def _handle(service, config, request):
         raise _Unsupported(operation, request_id, identity, service_identity)
     if config.get("profile") == "data_only" and operation not in DATA_ONLY_OPERATIONS:
         raise ValueError("EXTERNAL_METADATA_OPERATION_UNSUPPORTED:" + operation)
-    if config.get("profile") != "data_only" and operation in CONTEXT_QUERY_OPERATIONS:
+    if config.get("profile") != "data_only" and operation in (*CONTEXT_QUERY_OPERATIONS, *FIXED_PAGE_OPERATIONS, "snapshot_status", "review_definition"):
         raise _Unsupported(operation, request_id, identity, service_identity)
-    # Batch permission precedes argument/header/namespace/store inspection.
-    if operation in {"batch_begin", "batch_put_chunk", "batch_finalize"}:
+    # Permission precedes any submit/evidence writer lock (creating a lock
+    # file is already a store write), as well as argument/header inspection.
+    if operation in {"submit", "recovery", "batch_begin", "batch_put_chunk", "batch_finalize"}:
         service.require_permission("submit")
-    elif operation == "batch_status":
+    elif operation == "evidence_ingest":
+        service.require_permission("evidence_write")
+    elif operation in {"register_write_target", "register_adjustment_anchor"}:
+        # 正式写入目标登记与复权锚点登记都改变后续正式写入的语义，按登记+发布双权限核对。
+        service.require_permission("register")
+        service.require_permission("publish")
+    elif operation in USAGE_WRITE_OPERATIONS:
+        # 用途治理写操作是正式发布级动作；不因只读 caller 或正文自称授权放行。
+        service.require_permission("publish")
+    elif operation in {"usage_status", "usage_audit_read"}:
         service.require_permission("read")
+    elif operation in {"batch_status", "snapshot_status", "review_definition"}:
+        service.require_permission("read")
+    if operation in USAGE_OPERATIONS and config.get("profile") != "data_only":
+        raise ValueError("USAGE_GOVERNANCE_PROFILE_REQUIRED")
     if operation == "capabilities":
         _exact(arguments, set(), set())
         result = _capabilities(service, config, identity, service_identity)
@@ -1151,6 +1318,14 @@ def _handle(service, config, request):
                 "service_version": service_caps.get("service_version"),
                 "contract_version": service_caps.get("contract_version"),
             }
+    elif operation == "snapshot_status":
+        _exact(arguments, set(), set())
+        result = {**service.snapshot_status(), "connection_id": config["connection_id"],
+                  "trusted_actor_namespace": config["caller"]["trusted_actor_namespace"]}
+    elif operation == "review_definition":
+        keys = {"snapshot_id", "dataset_id", "subject", "semantic_code", "field_codes"}
+        _exact(arguments, keys, keys)
+        result = _review_definition(service, config["caller"]["trusted_actor_namespace"], arguments)
     elif operation == "contract_discovery":
         _exact(arguments, {"snapshot_id", "subject"}, {"snapshot_id"})
         discovered = service.discover_products(
@@ -1164,6 +1339,40 @@ def _handle(service, config, request):
             "source_ids": discovered.get("source_ids", []),
             "service_identity": service_identity,
         }
+    elif operation in FIXED_PAGE_OPERATIONS:
+        service.require_permission("read")
+        page_cap = service.capabilities().get("operations", {}).get(operation, {})
+        if page_cap.get("supported") is not True:
+            raise _Unsupported(operation, request_id, identity, service_identity)
+        selected = operation == "fixed_read_page"
+        required = {"snapshot_id", "product_id"} | ({"record_refs"} if selected else set())
+        _exact(arguments, required | {"page_size", "max_page_bytes", "cursor"}, required)
+        # Include all machine-added result fields in the service's page budget.
+        # The outer envelope still has the unchanged configured 32MiB ceiling.
+        extras = {"service_identity": service_identity, "row_projection": "full",
+                  "row_projection_note": ("no row or product fields dropped; selected fixed identity page"
+                                          if selected else "no row or product fields dropped; fixed full-product view page")}
+        envelope = {"protocol_version": MACHINE_PROTOCOL, "request_id": request_id,
+                    "operation": operation, "ok": True, "result": None, "error": None,
+                    "identity": identity, "service": service_identity, "elapsed_ms": 999999999999}
+        budget = config["max_response_bytes"] - _json_bytes(envelope) - 16
+        reader = service.read_page if selected else service.read_product_page
+        result = reader(arguments["product_id"],
+                        **{key: value for key, value in arguments.items() if key != "product_id"},
+                        _machine_result_fields=extras, _result_budget=budget)
+        if _json_bytes(result) > arguments.get("max_page_bytes", 1_048_576):
+            raise ValueError("PAGE_RESULT_TOO_LARGE")
+    elif operation == "filter_objects":
+        from wfd_sdk.filter_objects import FilterRejected, run as _run_filter_objects
+        try:
+            result = _run_filter_objects(service, config, arguments,
+                                         lambda: _query(service, config), service_identity)
+            if result.get("protocol_version") == "wfd.filter-objects/1.4-product1":
+                from wfd_sdk.filter_plan import validate_result
+                validate_result(result, config["protocol_root"])
+        except FilterRejected as rejected:
+            from wfd_sdk.product_query import ProductQueryError
+            raise ProductQueryError(rejected.code, rejected.message, rejected.details) from None
     elif operation == "fixed_read":
         _exact(arguments, {"snapshot_id", "product_id", "perspective", "at", "subject",
                            "include_history", "row_projection", "held_scope",
@@ -1193,6 +1402,48 @@ def _handle(service, config, request):
         result["row_projection"] = "full"
         result["row_projection_note"] = "no row or product fields dropped; service public projection passed through"
         result["service_identity"] = service_identity
+    elif operation == "resolve_write_target":
+        _exact(arguments, {"dataset_id", "snapshot_id"}, {"dataset_id"})
+        service.require_permission("read")
+        result = service.resolve_write_target(
+            arguments["dataset_id"], arguments.get("snapshot_id"))
+        result["service_identity"] = service_identity
+    elif operation == "register_write_target":
+        _exact(arguments, {"dataset_id", "product_id", "definition_ref", "reason",
+                           "snapshot_id"}, {"dataset_id", "product_id"})
+        result = service.register_write_target(
+            arguments["dataset_id"], arguments["product_id"],
+            definition_ref=arguments.get("definition_ref"),
+            reason=arguments.get("reason") or "explicit registration",
+            snapshot_id=arguments.get("snapshot_id"))
+        result["service_identity"] = service_identity
+    elif operation == "resolve_adjustment_anchor":
+        _exact(arguments, {"dataset_id", "anchor_ref", "anchor_id", "version"},
+               {"dataset_id"})
+        service.require_permission("read")
+        if arguments.get("anchor_ref") is None and arguments.get("anchor_id") is None:
+            raise ValueError("REQUEST_INVALID:anchor_ref or anchor_id is required")
+        result = service.resolve_adjustment_anchor(
+            arguments["dataset_id"], anchor_ref=arguments.get("anchor_ref"),
+            anchor_id=arguments.get("anchor_id"), version=arguments.get("version"))
+        result["service_identity"] = service_identity
+    elif operation == "register_adjustment_anchor":
+        _exact(arguments, {"dataset_id", "anchor_id", "method", "basis_at",
+                           "basis_price_ref", "applicability", "corporate_action_cutoff",
+                           "instrument_scope", "status", "supersedes", "reason"},
+               {"dataset_id", "anchor_id", "method", "basis_at", "basis_price_ref",
+                "applicability", "corporate_action_cutoff"})
+        result = service.register_adjustment_anchor(
+            arguments["dataset_id"], arguments["anchor_id"],
+            method=arguments["method"], basis_at=arguments["basis_at"],
+            basis_price_ref=arguments["basis_price_ref"],
+            applicability=arguments["applicability"],
+            corporate_action_cutoff=arguments["corporate_action_cutoff"],
+            instrument_scope=arguments.get("instrument_scope"),
+            status=arguments.get("status") or "active",
+            supersedes=arguments.get("supersedes"),
+            reason=arguments.get("reason") or "explicit registration")
+        result["service_identity"] = service_identity
     elif operation == "submit":
         _exact(arguments, {"document"}, {"document"})
         document = arguments["document"]
@@ -1203,7 +1454,7 @@ def _handle(service, config, request):
                   "service_identity": service_identity}
     elif operation == "request_status":
         _exact(arguments, {"request_identity", "output_offset", "output_limit",
-                           "output_detail"}, {"request_identity"})
+                           "output_detail", "row_offset", "row_limit"}, {"request_identity"})
         request_identity = arguments["request_identity"]
         if not isinstance(request_identity, dict) or request_identity.get("trusted_actor_namespace") != config["caller"]["trusted_actor_namespace"]:
             raise ValueError("REQUEST_INVALID:request_identity namespace must match the trusted connection")
@@ -1212,11 +1463,14 @@ def _handle(service, config, request):
         page_limit = _bounded_int(arguments.get("output_limit"), "output_limit",
                                   DEFAULT_OUTPUT_PAGE, 1, MAX_OUTPUT_PAGE)
         detail = arguments.get("output_detail", "summary")
+        row_offset = _bounded_int(arguments.get("row_offset"), "row_offset", 0, 0, 10_000_000)
+        row_limit = _bounded_int(arguments.get("row_limit"), "row_limit", 256, 1, 1000)
         if detail not in {"summary", "full"}:
             raise ValueError("REQUEST_INVALID:output_detail must be summary or full")
         status = service.request_status(request_identity)
-        if any(key in arguments for key in ("output_offset", "output_limit", "output_detail")):
-            result = _status_view(status, request_identity, offset, page_limit, detail)
+        if any(key in arguments for key in ("output_offset", "output_limit", "output_detail", "row_offset", "row_limit")):
+            result = _status_view(status, request_identity, offset, page_limit, detail,
+                                  row_offset=row_offset, row_limit=row_limit)
             result["service_identity"] = service_identity
         else:
             result = {**status, "service_identity": service_identity,
@@ -1238,6 +1492,45 @@ def _handle(service, config, request):
                   "service_identity": service_identity}
     elif operation == "evidence_ingest":
         result = _evidence_ingest(service, config, arguments)
+    elif operation in USAGE_OPERATIONS:
+        from wfd_sdk import usage_suspension
+        if operation == "usage_status":
+            _exact(arguments, set(), set())
+            result = usage_suspension.status(service.root)
+        elif operation == "usage_audit_read":
+            # 只允许固定 snapshot_contents 技术复现；不接受历史游标、知识截止或
+            # 调用方自造的 audit 标记，且必须显式指定已登记事项编号。
+            _exact(arguments, {"snapshot_id", "product_id", "issue_id"}, {"snapshot_id", "issue_id"})
+            for forbidden in ("at", "include_history", "perspective", "row_projection"):
+                if forbidden in arguments:
+                    raise ValueError("USAGE_AUDIT_READ_SCOPE_INVALID")
+            issue_id = arguments["issue_id"]
+            if not isinstance(issue_id, str) or not issue_id:
+                raise ValueError("USAGE_AUDIT_ISSUE_INVALID")
+            known = usage_suspension.status(service.root)
+            if not any(item["issue_id"] == issue_id for item in known["issues"]):
+                raise ValueError("USAGE_AUDIT_ISSUE_NOT_FOUND")
+            service._usage_audit_issue_id = issue_id
+            try:
+                read = service.read(arguments.get("product_id"),
+                                    snapshot_id=arguments["snapshot_id"])
+            finally:
+                service._usage_audit_issue_id = None
+            result = dict(read)
+            governance = result.get("usage_governance")
+            if not isinstance(governance, dict) or governance.get("audit_reproduction") is not True:
+                raise ValueError("USAGE_AUDIT_READ_NOT_GOVERNED")
+            result["usage_scope"] = "explicit_audit_reproduction"
+            result["publishable"] = False
+            result["compute_eligible"] = False
+            result["service_identity"] = service_identity
+        elif operation == "usage_suspend":
+            result = usage_suspension.suspend(service.root, arguments.get("declaration"))
+        elif operation == "usage_authorize_repair":
+            result = usage_suspension.authorize_repair(service.root, arguments.get("declaration"))
+        else:
+            result = usage_suspension.resolve(service.root, arguments.get("declaration"))
+        result = {**result, "service_identity": service_identity}
     elif operation == "query_capabilities":
         _exact(arguments, set(), set())
         result = _query(service, config).capabilities()
@@ -1299,6 +1592,14 @@ def _handle(service, config, request):
         "service": service_identity,
         "elapsed_ms": int((time.monotonic() - started) * 1000),
     }
+    if operation in {"submit", "recovery", "batch_finalize"}:
+        state = result.get("state") or result.get("status") or result.get("request_state")
+        response["business_outcome"] = {
+            "state": state, "snapshot_id": result.get("snapshot_id"),
+            "published_formal": state == "published_formal",
+            "request_handled": True,
+            "note": "ok describes the request envelope; only business state and verified publication prove a publish",
+        }
     return _fit_response(response, config["max_response_bytes"])
 
 
@@ -1373,11 +1674,17 @@ def _capabilities(service, config, identity, service_identity):
         }
     except Exception as exc:
         query_scope = {"error": type(exc).__name__ + ": " + str(exc)}
+    from wfd_sdk.filter_plan import capabilities as filter_capabilities
+    page_caps = {name: service_caps.get("operations", {}).get(name, {}) for name in FIXED_PAGE_OPERATIONS}
+    page_available = {name for name, caps in page_caps.items() if data_only and caps.get("supported") is True}
     if data_only:
         operations = {
             name: {"supported": True, "description": SUPPORTED[name]}
             for name in sorted(DATA_ONLY_OPERATIONS)
+            if name not in FIXED_PAGE_OPERATIONS or name in page_available
         }
+        for name in page_available:
+            operations[name].update(page_caps[name])
         unsupported = (
             [{"operation": name, "reason": "not exposed by data_only profile"}
              for name in sorted(set(SUPPORTED) - DATA_ONLY_OPERATIONS)]
@@ -1388,7 +1695,7 @@ def _capabilities(service, config, identity, service_identity):
     else:
         operations = {
             name: {"supported": True, "description": SUPPORTED[name]}
-            for name in sorted(set(SUPPORTED) - set(CONTEXT_QUERY_OPERATIONS))
+            for name in sorted(set(SUPPORTED) - set(CONTEXT_QUERY_OPERATIONS) - FIXED_PAGE_OPERATIONS)
         }
         unsupported = (
             [{"operation": name,
@@ -1397,6 +1704,10 @@ def _capabilities(service, config, identity, service_identity):
             + [{"operation": name, "reason": reason}
                for name, reason in sorted(UNSUPPORTED.items())]
         )
+    for name in sorted(FIXED_PAGE_OPERATIONS - page_available):
+        unsupported.append({"operation": name,
+                            "reason": "requires a data_only service with " + name + " capability"})
+    operations["filter_objects"].update(filter_capabilities(config["protocol_root"]))
     return {
         "machine_protocol": MACHINE_PROTOCOL,
         "service_identity": service_identity,
@@ -1434,8 +1745,11 @@ def _capabilities(service, config, identity, service_identity):
             "request_identity_source": "trusted constructor configuration only",
             "role_source": ("trusted constructor configuration only; compute is an explicit "
                             "existing service role and is never granted by the request or by default"),
-            "read_only": False,
+            "read_only": True if config.get("volume") else service.engine.read_only,
             "mode": "bounded_read_write_machine_boundary",
+            "store_open": ("open_existing_read_only" if config.get("volume") or service.engine.read_only
+                           else "open_existing_writable"),
+            "store_initialization": "not exposed; explicit owner-authorized provisioning only",
             "write_operations": sorted(WRITE_OPERATIONS),
             "job_id": None,
             "note": "request_status 读回产品服务持久请求状态；本入口不创建异步 job，也不返回虚构 jobid。",
@@ -1531,8 +1845,9 @@ def main(argv=None):
     response = None
     try:
         config = _load_config(args.config)
-        service = _build_service(config)
         request = _read_json_bounded(sys.stdin.buffer, config["max_request_bytes"])
+        _, operation, _ = _request_object(request)
+        service = _build_service(config, operation=operation)
         response = _handle(service, config, request)
         _write_response(response, config["max_response_bytes"])
         return 0

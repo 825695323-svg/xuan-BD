@@ -54,9 +54,9 @@ export class ConversationFinancialBridge {
     for (const link of links) {
       try {
         if (financialDigest(this.normalizedInput(this.callInput(JSON.parse(link.local_args) as Record<string, JsonValue>))) !== digest) continue;
-        const original = this.options.companion.harness!.getTask(link.service_task_id);
+        const original = this.options.companion.bd!.getTask(link.service_task_id);
         if (original.action !== 'tools.call' || financialDigest(original.args) !== digest
-          || this.options.companion.harness!.hasUnresolvedResult(original)) return true;
+          || this.options.companion.bd!.hasUnresolvedResult(original)) return true;
       } catch {
         // An unreadable linked identity is not evidence that its unknown result was reconciled.
         return true;
@@ -68,7 +68,7 @@ export class ConversationFinancialBridge {
     let input: unknown;
     try { input = JSON.parse(String(args.callJson)); }
     catch { throw new TaskError('INVALID_FINANCIAL_ARGS', '金融调用参数不是有效 JSON（结构化文本）。'); }
-    return this.options.companion.harness!.validate('tools.call', input);
+    return this.options.companion.bd!.validate('tools.call', input);
   }
   private normalizedInput(value: Record<string, JsonValue>): JsonValue {
     const financial = this.options.companion.financial;
@@ -84,14 +84,14 @@ export class ConversationFinancialBridge {
     }
   }
   private observe(context: TaskExecutionContext, task: TaskRecord): Promise<void> {
-    return context.emit({ type: 'checkpoint', checkpoint: { kind: 'conversation-financial', ownerService: 'harness_agents',
+    return context.emit({ type: 'checkpoint', checkpoint: { kind: 'conversation-financial', ownerService: 'bd_agents',
       serviceTaskId: task.id, serviceOperation: task.action, serviceStatus: task.status,
       requiresReview: task.requiresReview, serviceResultRef: task.resultRef, serviceError: json(task.error) } });
   }
   private registration(action: string, title: string, description: string, fields: SkillRegistration['fields']): SkillRegistration {
     return { action, title, description, fields, runtimeId: 'direct', kind: 'direct', modelCalls: 0,
       permissionSummary: ['当前会话及当前模型的显式审批', '金融服务独立核对执行权限与停止状态', '不启用插件、不执行上传代码、不正式入库'],
-      available: () => this.options.companion.financial && this.options.companion.harness
+      available: () => this.options.companion.financial && this.options.companion.bd
         ? { available: true } : { available: false, reason: '本机金融服务尚未装配。' } };
   }
   async execute(context: TaskExecutionContext): Promise<TaskResult> {
@@ -99,9 +99,9 @@ export class ConversationFinancialBridge {
     if (!this.handles(action)) throw new TaskError('UNKNOWN_ACTION', '没有此金融会话动作。');
     const origin = this.options.origin(context.task.id);
     if (!origin) throw new TaskError('FINANCIAL_CONVERSATION_REQUIRED', '金融会话动作须经当前会话的受控工具调用。');
-    const companion = this.options.companion, harness = companion.harness!;
+    const companion = this.options.companion, bd = companion.bd!;
     const authority = await acquireAuthority(context, action, args, []);
-    authority.assert(); harness.assertDispatch();
+    authority.assert(); bd.assertDispatch();
     let serviceTask: TaskRecord;
     if (action === 'financial.result') {
       const links = this.options.database.connection.prepare('SELECT * FROM conversation_financial_calls WHERE service_task_id=? AND operation=?')
@@ -110,7 +110,7 @@ export class ConversationFinancialBridge {
         const owner = JSON.parse(link.origin_json) as ModelTaskOrigin;
         return owner.conversationId === origin.conversationId && owner.branchId === origin.branchId;
       })) throw new TaskError('FINANCIAL_RESULT_NOT_BOUND', '原金融任务不属于当前会话与分支。');
-      serviceTask = harness.getTask(String(args.serviceTaskId));
+      serviceTask = bd.getTask(String(args.serviceTaskId));
       if (serviceTask.action !== 'tools.call') throw new TaskError('FINANCIAL_RESULT_NOT_BOUND', '原编号没有绑定金融计算。');
     } else {
       const operation = OPERATIONS[action]!;
@@ -126,7 +126,7 @@ export class ConversationFinancialBridge {
             throw new TaskError('FINANCIAL_HOST_RESOLUTION_ASYNC_UNSUPPORTED', '原金融业务步骤尚未同步核对。');
           }
           if (value !== null) {
-            const original = harness.getTask((value as TaskRecord).id);
+            const original = bd.getTask((value as TaskRecord).id);
             if (original.action !== 'tools.call' || original.runtimeId !== companion.financial!.runtime.id
               || financialDigest(original.args) !== financialDigest(normalized)) throw new TaskError('FINANCIAL_STABLE_CALL_MISMATCH', '原业务任务与当前固定方法、版本、输入或参数不一致。');
             resolved = original;
@@ -138,9 +138,9 @@ export class ConversationFinancialBridge {
       const publicRequestId = action === 'financial.call' && input && typeof input === 'object'
         && 'protocol_version' in input ? String((input as Record<string, unknown>).request_id) : null;
       // 本地父ID不当作服务父任务；真实来源在持久登记后、启动前独立绑定。
-      serviceTask = resolved ?? harness.submit(operation, input, publicRequestId ?? `conversation:${context.task.id}`, undefined,
+      serviceTask = resolved ?? bd.submit(operation, input, publicRequestId ?? `conversation:${context.task.id}`, undefined,
         operation === 'tools.call' ? { beforeStart: task => {
-          authority.assert(); harness.assertDispatch();
+          authority.assert(); bd.assertDispatch();
           const bound: unknown = this.options.bindFinancialTask?.(task.id, origin);
           if (bound && typeof bound === 'object' && 'then' in bound) {
             if (bound instanceof Promise) void bound.catch(() => {});
@@ -162,17 +162,17 @@ export class ConversationFinancialBridge {
       } finally {
         context.signal.removeEventListener('abort', stop);
         if (cancellation) await cancellation;
-        serviceTask = harness.getTask(serviceTask.id);
+        serviceTask = bd.getTask(serviceTask.id);
         await this.observe(context, serviceTask);
       }
-      if (harness.hasUnresolvedResult(serviceTask)) throw new TaskError('MODEL_ACTION_REQUIRES_REVIEW', `金融服务任务 ${serviceTask.id} 结果尚待核对；未确认成功，也不能重提相同计算。`);
+      if (bd.hasUnresolvedResult(serviceTask)) throw new TaskError('MODEL_ACTION_REQUIRES_REVIEW', `金融服务任务 ${serviceTask.id} 结果尚待核对；未确认成功，也不能重提相同计算。`);
       context.signal.throwIfAborted();
       if (serviceTask.status !== 'succeeded' || serviceTask.requiresReview || !serviceTask.resultRef || !serviceTask.result) {
         throw new TaskError('FINANCIAL_SERVICE_NOT_SUCCEEDED', `金融服务任务 ${serviceTask.id} 实际状态为 ${serviceTask.status}；请按原编号核对。`);
       }
     }
-    authority.assert(); harness.assertDispatch();
-    const stored = harness.getTask(serviceTask.id);
+    authority.assert(); bd.assertDispatch();
+    const stored = bd.getTask(serviceTask.id);
     if (stored.version !== serviceTask.version || stored.resultRef !== serviceTask.resultRef) throw new TaskError('FINANCIAL_RESULT_CHANGED', '金融任务在读取期间变化，请按原编号核对。');
     if (serviceTask.action === 'tools.call' && serviceTask.status === 'succeeded' && !serviceTask.requiresReview && serviceTask.resultRef && serviceTask.result) {
       const observed: unknown = this.options.observeFinancialResult?.(origin, serviceTask);
@@ -182,12 +182,12 @@ export class ConversationFinancialBridge {
       }
     }
     return { summary: action === 'financial.call' ? serviceTask.result!.summary : `已读取金融服务任务的实际状态：${serviceTask.status}。`,
-      data: json({ kind: 'conversation-financial', ownerService: 'harness_agents',
+      data: json({ kind: 'conversation-financial', ownerService: 'bd_agents',
         conversationSource: { conversationId: origin.conversationId, branchId: origin.branchId, messageId: origin.messageId, runId: origin.parentRunId },
         serviceTaskId: serviceTask.id, serviceOperation: serviceTask.action, serviceStatus: serviceTask.status,
         serviceResultRef: serviceTask.resultRef, serviceError: serviceTask.error, requiresReview: serviceTask.requiresReview,
         result: serviceTask.result, publicContract: companion.financial?.publicTaskView?.(serviceTask) ?? null,
-        modelPreview: harness.modelTaskView(serviceTask.id) }) };
+        modelPreview: bd.modelTaskView(serviceTask.id) }) };
   }
 }
 function json(value: unknown): JsonValue { return JSON.parse(JSON.stringify(value)) as JsonValue; }

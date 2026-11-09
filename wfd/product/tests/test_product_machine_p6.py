@@ -1,11 +1,13 @@
 """Targeted P6 machine-boundary tests.
 
-These tests cover the adapter's own trust boundary and operation registry; the
-real multi-process submit/read/batch evidence lives in
-``03_测试与验证记录/P6_公开机器入口扩展_2026-10-27/run_p6m1.py``.
+Protocol/configuration/serialization unit checks remain separate from the
+actual adapter checks below, which explicitly generate a new daily store under
+tmp_path.  No historical script, product ID or store is implicitly selected.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import stat
@@ -14,13 +16,15 @@ from pathlib import Path
 import pytest
 
 from wfd_sdk import product_machine as machine
+from synthetic_daily import ACTOR, SOURCE_IDS, make_daily_store, source_policy
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _config(tmp_path, **overrides):
-    store = tmp_path / "store"
+    # Empty default directories are only for config-shape unit checks, not opens.
+    store = Path(overrides.get("store", tmp_path / "store"))
     store.mkdir(exist_ok=True)
     config = {
         "protocol_version": "wfd.product-machine-config/0.1",
@@ -51,6 +55,100 @@ def _config(tmp_path, **overrides):
     path.write_text(json.dumps(config), "utf-8")
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     return path
+
+
+def _daily_config(tmp_path, *, roles=None):
+    fixture = make_daily_store(tmp_path / "daily_fixture")
+    policies = {source_id: {**source_policy(), "may_export": False,
+                            "may_export_evidence": False, "may_redistribute": False}
+                for source_id in SOURCE_IDS}
+    caller = {"caller_id": "synthetic-daily", "trusted_actor_namespace": ACTOR,
+              "roles": (list(roles) if roles is not None else
+                        ["read", "read_evidence", "evidence_write", "register", "submit", "publish"])}
+    config = machine._load_config(_config(
+        tmp_path, store=str(fixture.store), caller=caller, sources=policies))
+    return fixture, config
+
+
+def _tree_snapshot(root):
+    return {path.relative_to(root).as_posix():
+            (path.stat().st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest())
+            for path in sorted(root.rglob("*")) if path.is_file()}
+
+
+def _machine_request(operation, arguments):
+    return {"protocol_version": "wfd.product-machine/0.1", "request_id": "p6-synthetic-check",
+            "operation": operation, "arguments": arguments}
+
+
+def test_daily_machine_default_open_is_reader_even_with_write_roles(tmp_path):
+    fixture, config = _daily_config(tmp_path)
+    before = _tree_snapshot(fixture.store)
+    # Deliberately omit operation: an initialized daily store must still open read-only.
+    service = machine._build_service(config)
+    assert service.engine.read_only is True
+    response = machine._handle(service, config, _machine_request("fixed_read", {
+        "product_id": fixture.product_id, "snapshot_id": fixture.snapshot_id}))
+    assert response["ok"] is True
+    assert response["result"]["row_count"] == 43
+    assert response["result"]["snapshot_id"] == fixture.snapshot_id
+    assert response["result"]["rows"][-1]["row"]["values"]["close_price"]["value"] == "100.42"
+    with pytest.raises(machine._Unsupported):
+        machine._handle(service, config, _machine_request("export", {}))
+    assert _tree_snapshot(fixture.store) == before
+    assert not Path(config["runtime"]).exists()
+
+
+def test_daily_machine_missing_store_is_not_implicitly_initialized(tmp_path):
+    config = machine._load_config(_config(tmp_path))
+    store = Path(config["store"])
+    assert list(store.iterdir()) == []
+    with pytest.raises(FileNotFoundError, match="FORMAL_VOLUME_NOT_INITIALIZED"):
+        machine._build_service(config)
+    assert list(store.iterdir()) == []
+    assert not Path(config["runtime"]).exists()
+
+
+def test_daily_machine_read_roles_cannot_delegate_submit_or_evidence(tmp_path):
+    fixture, config = _daily_config(tmp_path, roles=["read", "read_evidence"])
+    before = _tree_snapshot(fixture.store)
+    for operation, permission in [("submit", "submit"), ("evidence_ingest", "evidence_write")]:
+        service = machine._build_service(config, operation=operation)
+        assert service.engine.read_only is True
+        with pytest.raises(PermissionError, match="CALLER_PERMISSION_DENIED:" + permission):
+            machine._handle(service, config, _machine_request(operation, {}))
+    assert _tree_snapshot(fixture.store) == before
+    assert not Path(config["runtime"]).exists()
+
+
+def test_daily_machine_source_permission_rejects_real_fixed_read(tmp_path):
+    fixture, config = _daily_config(tmp_path)
+    config["sources"][SOURCE_IDS[0]]["may_read"] = False
+    before = _tree_snapshot(fixture.store)
+    service = machine._build_service(config, operation="fixed_read")
+    assert service.engine.read_only is True
+    with pytest.raises(PermissionError, match="SOURCE_READ_PERMISSION_MISSING:" + SOURCE_IDS[0]):
+        machine._handle(service, config, _machine_request("fixed_read", {
+            "product_id": fixture.product_id, "snapshot_id": fixture.snapshot_id}))
+    assert _tree_snapshot(fixture.store) == before
+    assert not Path(config["runtime"]).exists()
+
+
+def test_daily_machine_evidence_write_requires_explicit_operation(tmp_path):
+    fixture, config = _daily_config(tmp_path)
+    service = machine._build_service(config, operation="evidence_ingest")
+    assert service.engine.read_only is False
+    head = service.engine.head()["snapshot_id"]
+    raw = b"Actual P6 machine evidence bytes, synthetic fixture only."
+    response = machine._handle(service, config, _machine_request("evidence_ingest", {
+        "content_base64": base64.b64encode(raw).decode("ascii"), "original_name": "p6-evidence.txt"}))
+    assert response["ok"] is True
+    result = response["result"]
+    digest = hashlib.sha256(raw).hexdigest()
+    assert result["content_sha256"] == "sha256:" + digest
+    assert result["ref_kind"] == "content" and result["size"] == len(raw)
+    assert (fixture.store / "evidence/sha256" / digest).read_bytes() == raw
+    assert service.engine.head()["snapshot_id"] == head == fixture.snapshot_id
 
 
 def test_public_operation_registry_covers_machine_boundary():

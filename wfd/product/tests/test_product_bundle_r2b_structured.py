@@ -1,4 +1,8 @@
-"""R2b structured-only package: real daily slice, physical scan, isolated read."""
+"""R2b structured-only package: generated daily slice, physical scan, isolated read.
+
+Synthetic rows are published into actual disposable stores; no historical market
+store, product identity or evidence directory is needed by these core checks.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -14,14 +18,10 @@ from wfd_sdk.product_bundle import (
     _verify_structured_bundle, export_structured_bundle, import_structured_bundle,
 )
 from wfd_sdk.product_data_service import WFDDataOnlyService
+from synthetic_daily import SUBJECT, daily_rows
 
 
 HERE = Path(__file__).resolve().parents[1]
-ROOT = HERE.parents[1]
-DAILY60 = ROOT / "03_测试与验证记录/P3_通用入库与更新_2026-10-27/batches/run_20261026T200932Z/store"
-DAILY60_SID = "s_9c6b1cf47d2f782194474fcf"
-DAILY60_PID = "p_1d757ae27ee0b41b3ac63bcb"
-SUBJECT = {"kind": "instrument", "namespace": "wfd.cn", "id": "instrument_000001_a"}
 
 
 def _open(store: Path, runtime: Path):
@@ -38,12 +38,8 @@ def _open(store: Path, runtime: Path):
 def _make_daily_slice(tmp_path):
     store = tmp_path / "daily_store"
     engine, service = _open(store, tmp_path / "daily_runtime")
-    source_snapshot = json.loads(
-        (DAILY60 / f"catalog/snapshots/{DAILY60_SID}.json").read_text())
-    entry = next(item for item in source_snapshot["files"]
-                 if item["product_id"] == DAILY60_PID)
-    rows = rows_from_parquet((DAILY60 / entry["file_relpath"]).read_bytes())
-    picked = [row for row in rows if row["business_key"] in {
+    # Generated rows, then a real publication under tmp_path (not a copied store).
+    picked = [row for row in daily_rows() if row["business_key"] in {
         "daily_000001_20251229", "daily_000001_20251230", "daily_000001_20251231"}]
     definition = {
         "semantic_code": "r2b.daily.close",
@@ -96,7 +92,7 @@ def _make_daily_slice(tmp_path):
     return store, service, result["snapshot_id"], result["output_results"][0]["product_id"]
 
 
-def test_structured_full_real_daily_field_subset_and_physical_scan(tmp_path):
+def test_structured_full_synthetic_daily_field_subset_and_physical_scan(tmp_path):
     source, service, snapshot_id, product_id = _make_daily_slice(tmp_path)
     selection = {"products": [{
         "product_id": product_id, "fields": ["close_price"], "subject": SUBJECT,

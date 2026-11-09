@@ -28,7 +28,7 @@ BATCH_FORMAT = "wfd.product-batch/0.1"
 _DIGEST = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
 _DATA_ONLY_HEADER_KEYS = {
     "protocol_version", "request_identity", "intent", "producer_namespace",
-    "expected_parent_snapshot_id", "outputs", "consistency_groups",
+    "expected_parent_snapshot_id", "outputs", "consistency_groups", "duplicate_policy",
 }
 _DATA_ONLY_OUTPUT_KEYS = {
     "output_key", "logical_domain", "subject", "definition_mode",
@@ -168,16 +168,21 @@ class ProductBatchLedger:
 
     # -- header/chunk validation ----------------------------------------
     @staticmethod
-    def _scan_forbidden(value, path="header"):
+    def _scan_forbidden(value, path="header", parent=None):
         if isinstance(value, dict):
             for key, child in value.items():
-                if key in FORBIDDEN_EXTERNAL_KEYS or key in _BATCH_FORBIDDEN_EXTRA:
+                # P2: `method` is a declaration axis inside price_adjustment
+                # (qfq/hfq), not external execution metadata.  The exemption is
+                # limited to that exact parent; every other `method` key stays
+                # forbidden so external traces cannot ride in on the new field.
+                if (key in FORBIDDEN_EXTERNAL_KEYS or key in _BATCH_FORBIDDEN_EXTRA) \
+                        and not (key == "method" and parent == "price_adjustment"):
                     raise BatchError("BATCH_EXTERNAL_METADATA_FORBIDDEN:"
                                      + path + "." + str(key))
-                ProductBatchLedger._scan_forbidden(child, path + "." + str(key))
+                ProductBatchLedger._scan_forbidden(child, path + "." + str(key), key)
         elif isinstance(value, list):
             for index, child in enumerate(value):
-                ProductBatchLedger._scan_forbidden(child, f"{path}[{index}]")
+                ProductBatchLedger._scan_forbidden(child, f"{path}[{index}]", parent)
 
     @staticmethod
     def _validate_expected_chunks(keys, expected_chunks):
@@ -633,6 +638,8 @@ class ProductBatchLedger:
                 "partially_published_formal": "finalized_partial",
                 "published_sandbox": "finalized_sandbox",
                 "partially_published_sandbox": "finalized_partial",
+                "unchanged": "finalized",
+                "conflicts_pending": "finalized_partial",
                 "published_commit_pending_head": "finalized_pending",
                 "published_commit_pending_formal": "finalized_pending",
                 "published_formal_pending_receipt": "finalized_pending",
@@ -815,6 +822,9 @@ class ProductBatchLedger:
             "service_version": result.get("service_version"),
             "input_fingerprint": fingerprint,
         }
+        for name in ("duplicate_policy", "row_summary", "new_snapshot_created"):
+            if name in result:
+                record["submit"][name] = copy.deepcopy(result[name])
         record["phase"] = phase
         record["updated_at"] = _now()
         self._atomic_json(self._record_path(batch_id), record)
@@ -844,4 +854,7 @@ class ProductBatchLedger:
             result["service_version"] = submit.get("service_version")
             result["status_detail"] = self._status_from_record(
                 record, chunk_offset=0, chunk_limit=20)
+            for name in ("duplicate_policy", "row_summary", "new_snapshot_created"):
+                if name in submit:
+                    result[name] = copy.deepcopy(submit[name])
         return result

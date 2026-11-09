@@ -144,11 +144,12 @@ export function createCaptureSessionService(options: CaptureSessionOptions): Cap
         if (record.state === 'login_open') record = { ...record, state: 'unknown' };
         if (record.state === 'saved' && (!record.expiresAt || record.expiresAt <= Date.now() / 1000)) record = { ...record, state: 'expired' };
       }
-      const ownerPath = join(homeFor(id), '.harness-browser-owner.json');
+      if (['.harness-browser-owner.json', '.harness-browser.lock'].some(name => exists(join(homeFor(id), name)))) record = { ...record, state: 'unknown' };
+      const ownerPath = join(homeFor(id), '.bd-browser-owner.json');
       if (exists(ownerPath) && !live.has(id)) {
         const owner: unknown = JSON.parse((await readBrowserBoundFile(ownerPath, 16_000)).toString('utf8'));
-        if (!object(owner) || owner.runtimeIdentity !== options.runtimeIdentity || owner.homeRoot !== homeFor(id) || owner.state !== 'stopped'
-          || exists(join(homeFor(id), '.harness-browser.lock'))) record = { ...record, state: 'unknown' };
+        if (!object(owner) || owner.application !== 'xuan-bd-browser' || owner.runtimeIdentity !== options.runtimeIdentity || owner.homeRoot !== homeFor(id) || owner.state !== 'stopped'
+          || exists(join(homeFor(id), '.bd-browser.lock'))) record = { ...record, state: 'unknown' };
       }
     } catch { record = { ...empty(id), state: 'unknown' }; }
     const resolved = asPublic(record); cached.set(id, resolved); return resolved;

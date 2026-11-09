@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { ResourceBindings } from '../resources/bindings.js';
 import { DatabaseSync } from 'node:sqlite';
 
-export interface HarnessRuntimeProfile { version: 1; runtimeRoot: string; runtimeIdentity: string }
+export interface BdRuntimeProfile { version: 1; runtimeRoot: string; runtimeIdentity: string }
 export interface RuntimeLauncher { version: 1; runtimeRoot: string; runtimeIdentity: string }
 function fail(code: string, message: string): never { throw Object.assign(new Error(message), { code }); }
 function readPinned(path: string): string {
@@ -51,7 +51,7 @@ export function acquireRuntimeStartupFence(launcherFile: string, runtimeRoot: st
     if (released) fail('RUNTIME_FENCE_RELEASED', '应用启动围栏已释放。');
     const actual = lstatSync(path, { bigint: true }), owner = JSON.parse(readPinned(path));
     if (actual.dev !== identity.dev || actual.ino !== identity.ino || owner.token !== token) fail('RUNTIME_GUARD_CHANGED', '应用启动围栏身份已变化。');
-    const locator = readRuntimeLauncher(launcherFile), profile = readHarnessRuntime(runtimeRoot);
+    const locator = readRuntimeLauncher(launcherFile), profile = readBdRuntime(runtimeRoot);
     if (locator.runtimeRoot !== profile.runtimeRoot || locator.runtimeIdentity !== profile.runtimeIdentity) fail('RUNTIME_LOCATOR_MISMATCH', '启动根与本应用固定身份不一致，请先核对启动定位记录。');
   };
   const release = () => {
@@ -67,7 +67,7 @@ export function acquireRuntimeStartupFence(launcherFile: string, runtimeRoot: st
 export function assertRuntimeStopped(runtimeRoot: string): void {
   const resources = new ResourceBindings(runtimeRoot), state = resources.path('state');
   const visit = (root: string, depth: number) => {
-    if (lstatSync(join(root, '.harness-owner.lock'), { throwIfNoEntry: false })) fail('RUNTIME_IN_USE', '应用仍有状态所有者或未核遗留锁，拒绝维护或切换。');
+    if (['.bd-owner.lock', '.harness-owner.lock'].some(name => lstatSync(join(root, name), { throwIfNoEntry: false }))) fail('RUNTIME_IN_USE', '应用仍有状态所有者或未核遗留锁，拒绝维护或切换。');
     if (depth) for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (entry.isSymbolicLink()) fail('UNSAFE_RUNTIME_ROOT', '状态根的角色或所有者路径不能穿过符号链接。');
       if (entry.isDirectory()) visit(join(root, entry.name), depth - 1);
@@ -101,7 +101,7 @@ export function assertRuntimeQuiescent(runtimeRoot: string): void {
   }
 }
 /** 应用身份只来自既有运行标记与本机绑定，不保存数据库用途或重复运行档案。 */
-export function readHarnessRuntime(runtimeRoot: string): HarnessRuntimeProfile {
+export function readBdRuntime(runtimeRoot: string): BdRuntimeProfile {
   realDirectory(runtimeRoot);
   const resources = new ResourceBindings(runtimeRoot), state = resources.path('state');
   for (const entry of readdirSync(state, { withFileTypes: true })) {
@@ -120,7 +120,7 @@ export function readRuntimeLauncher(launcherFile: string): RuntimeLauncher {
     || Object.keys(value).sort().join(',') !== 'runtimeIdentity,runtimeRoot,version') fail('INVALID_RUNTIME_LAUNCHER', '启动定位仅登记本应用的固定运行根和身份。');
   const locator = value as RuntimeLauncher;
   if (locator.version !== 1 || typeof locator.runtimeRoot !== 'string' || typeof locator.runtimeIdentity !== 'string' || !locator.runtimeIdentity) fail('INVALID_RUNTIME_LAUNCHER', '启动定位记录缺少固定运行身份。');
-  const profile = readHarnessRuntime(absolute(locator.runtimeRoot));
+  const profile = readBdRuntime(absolute(locator.runtimeRoot));
   if (profile.runtimeIdentity !== locator.runtimeIdentity) fail('RUNTIME_LOCATOR_MISMATCH', '启动定位与运行根身份不一致。');
   return locator;
 }

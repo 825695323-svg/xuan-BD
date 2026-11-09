@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_product_query import (  # noqa: E402
-    EVIDENCE_ROOT, HERE, READ_ROLES, SOURCE_POLICY, base_document, field,
+    HERE, READ_ROLES, SOURCE_POLICY, base_document, field,
     known_day, new_service, real_query, request, submit_ok, sync_source_roles,
 )
 from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, load_protocol_validator  # noqa: E402
@@ -20,8 +20,6 @@ from wfd_sdk.product_query import (  # noqa: E402
 from wfd_sdk.product_service import WFDProductService  # noqa: E402
 
 
-P3A6_STORE = (EVIDENCE_ROOT / "P3_通用入库与更新_2026-10-27" /
-              "run_20261027_p3a6/store")
 P3A6_SID = "s_75ba1080a80c944a7cb5e89e"
 P3A6_DATASET = "p3a_real_2026_v2"
 ENTITY = {"kind": "entity", "namespace": "wfd.cn", "id": "entity_000001"}
@@ -55,7 +53,7 @@ def p4b_request(dataset_id, snapshot_id, operation, subject, **overrides):
     return value
 
 
-def real_service(store, snapshot_id, label, *, may_read=None, may_read_evidence=None):
+def real_service(store, snapshot_id, tmp_path, label, *, may_read=None, may_read_evidence=None):
     snapshot = json.loads((store / f"catalog/snapshots/{snapshot_id}.json").read_text("utf-8"))
     source_ids = set()
     for entry in snapshot["files"]:
@@ -74,25 +72,21 @@ def real_service(store, snapshot_id, label, *, may_read=None, may_read_evidence=
                                   else may_read_evidence.get(source_id, True)),
             "usage_scope": "local_use", "license": "local_use_only",
         }
-    engine = WFDDuckDBPrototype(
+    engine = WFDDuckDBPrototype.open_existing(
         store, load_protocol_validator(HERE / "protocol"),
-        runtime_root=Path(str(engine_runtime(store, label))),
-        sandbox=False, writer_host=label)
+        runtime_root=tmp_path / f"runtime_{label}",
+        read_only=True, sandbox=False, writer_host=None)
     service = WFDProductService(engine, allowed_sources=policy,
-                                caller_roles=READ_ROLES, caller_id=label)
+                                caller_roles=READ_ROLES, caller_id=label, can_register=False)
     return ProductQuery(service)
 
 
-def engine_runtime(store, label):
-    # Keep runtime outside the real store; caller owns the temp directory.
-    import tempfile
-    return Path(tempfile.mkdtemp(prefix=f"wfd_p4b_{label}_"))
-
-
-def test_real_p3a6_company_context_event_graph_rules_and_trace(tmp_path):
-    if not P3A6_STORE.is_dir():
-        pytest.skip("P3a6 verified store is missing")
-    query = real_service(P3A6_STORE, P3A6_SID, "p4b_real")
+@pytest.mark.integration
+def test_real_p3a6_company_context_event_graph_rules_and_trace(tmp_path, wfd_history_root):
+    p3a6_store = (wfd_history_root / "P3_通用入库与更新_2026-10-27" /
+                  "run_20261027_p3a6/store")
+    assert p3a6_store.is_dir(), "selected historical store is missing: " + str(p3a6_store)
+    query = real_service(p3a6_store, P3A6_SID, tmp_path, "p4b_real")
 
     company = query.execute(p4b_request(
         P3A6_DATASET, P3A6_SID, "read_company_context", ENTITY, max_depth=1))
@@ -141,7 +135,7 @@ def test_real_p3a6_company_context_event_graph_rules_and_trace(tmp_path):
 
     # A denied source produces an explicit product gap; no row/field detail leaks.
     denied = real_service(
-        P3A6_STORE, P3A6_SID, "p4b_denied",
+        p3a6_store, P3A6_SID, tmp_path, "p4b_denied",
         may_read={"cninfo_1225022887": False})
     denied_result = denied.execute(p4b_request(
         P3A6_DATASET, P3A6_SID, "read_company_context", ENTITY, max_depth=1))

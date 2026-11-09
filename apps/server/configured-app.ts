@@ -10,18 +10,16 @@ import { startLocalServer } from './boot.js';
 import { createApplicationServices, type ApplicationServices, type ServiceOptions } from './services.js';
 import { loadToolConfiguration } from '../../platform/config/tools.js';
 import { digestOperationArgs } from '../../platform/security/permissions.js';
-import { HARNESS_VERSION, COLLECTION_HARNESS_VERSION, WORKSPACE_HARNESS_VERSION, SERVICE_SYSTEM_PROMPT, COLLECTION_SYSTEM_PROMPT, WORKSPACE_SYSTEM_PROMPT } from '../../modules/agent/service.js';
+import { BD_VERSION, COLLECTION_BD_VERSION, WORKSPACE_BD_VERSION, SERVICE_SYSTEM_PROMPT, COLLECTION_SYSTEM_PROMPT, WORKSPACE_SYSTEM_PROMPT } from '../../modules/agent/service.js';
 import { localAlgorithmConfiguration, localFinancialConfiguration } from './financial-configuration.js';
 import { createMaterialTableReader } from '../../modules/financial/managed-table.js';
 import { ResourceBindings, launcherPath } from '../../platform/resources/bindings.js';
-import { BundledResources } from '../../platform/resources/bundled.js';
+import { applicationResources } from '../../platform/resources/local-web.js';
 import { startBrowserHost, type BrowserHost } from '../../platform/capabilities/browser/host.js';
 import { createCaptureSessionService, type CaptureSessionService } from '../../plugins/capture-sources/session.js';
 import { CustomSourceRegistry } from '../../plugins/capture-sources/custom-register.js';
-import type { NativeUserCycleConfiguration } from '../../adapters/database/user-cycle-config.js';
-import { startRegisteredDatabaseLineHosts, type NativeDatabaseLineConfiguration } from '../../adapters/database/native-lines.js';
-import { acquireRuntimeStartupFence, readHarnessRuntime } from '../../platform/runtime/runtime-profile.js';
-import { LocalDataLifecycle, type LocalDataSettlementContext, type LocalDataSettler, type LocalDataSettlementResult } from '../../platform/runtime/local-data-lifecycle.js';
+import { acquireRuntimeStartupFence, readBdRuntime } from '../../platform/runtime/runtime-profile.js';
+import { LocalDataLifecycle } from '../../platform/runtime/local-data-lifecycle.js';
 import { startInactiveLocalHost } from './inactive-app.js';
 import { LocalDataLifecycleError } from '../../platform/runtime/errors.js';
 
@@ -35,7 +33,6 @@ export interface ConfiguredApplicationOptions {
   /** 同一进程内 personal/workspace 共享的唯一本地资料控制；不另建第二份控制库。 */
   sharedLocalData?: LocalDataLifecycle;
   /** 只由已核父 reload 装配传递；子服务不能用客户端字段声明。 */
-  sharedLocalDataReloadGeneration?: number;
   /** 打包后的界面资源位置；缺省沿用 codeRoot/dist/web。 */
   webRoot?: string;
   port?: number;
@@ -50,14 +47,11 @@ export interface ConfiguredApplicationOptions {
   configureFinancial?: ServiceOptions['configureFinancial'];
   configureAlgorithms?: ServiceOptions['configureAlgorithms'];
   materials?: ServiceOptions['materials'];
-  userTestDatabase?: NativeUserCycleConfiguration;
-  databaseInitialConfiguration?: NativeDatabaseLineConfiguration;
-  databaseLineConfigurations?: ServiceOptions['databaseLineConfigurations'];
   /** 同一应用个人宿主已拥有并核验的浏览器；独立服务不另起浏览器或采用全机守护进程。 */
   sharedBrowser?: ServiceOptions['browser'];
   sharedBrowserUnavailableReason?: string;
   /** 可信网页或桌面宿主装配；独立状态与任务，通过同源窄接口供主导航使用。 */
-  workspaceCompanion?: { configureFinancial?: ServiceOptions['configureFinancial']; configureAlgorithms?: ServiceOptions['configureAlgorithms']; userTestDatabase?: NativeUserCycleConfiguration; databaseInitialConfiguration?: NativeDatabaseLineConfiguration; databaseLineConfigurations?: ServiceOptions['databaseLineConfigurations'] };
+  workspaceCompanion?: { configureFinancial?: ServiceOptions['configureFinancial']; configureAlgorithms?: ServiceOptions['configureAlgorithms'] };
 }
 
 export interface ConfiguredApplication {
@@ -65,6 +59,33 @@ export interface ConfiguredApplication {
   mode: 'pi' | 'demo';
   /** 可向界面公开的状态，不包含密钥或完整模型配置。 */
   health: HealthResponse;
+}
+
+/** 启动身份准入判定；集中处理首次绑定、身份行缺失、状态库缺失/替换与独立服务角色例外。 */
+export type StartupIdentity = 'matched' | 'missing' | 'replaced' | 'unbound';
+export interface StartupIdentityInput {
+  service: boolean;
+  /** 独立服务角色必须共享主宿主已核验的控制实例，不能自行跳过身份核验。 */
+  sharedControl: boolean;
+  identity: StartupIdentity;
+  /** 仅当本次确实新建了控制记录（register 让记录数 +1）时为 true。 */
+  firstBinding: boolean;
+  active: boolean;
+  adopted: boolean;
+}
+export function startupIdentityDecision(input: StartupIdentityInput): { allowed: boolean; detail: string | null } {
+  if (!input.active || !input.adopted) return { allowed: false, detail: '当前本地资料控制记录不是活动采用状态；未加载个人内容。' };
+  if (input.service) {
+    if (!input.sharedControl) return { allowed: false, detail: '独立服务角色没有共享已核验的本地资料控制实例；不能加载。' };
+    return input.identity === 'matched' ? { allowed: true, detail: null }
+      : { allowed: false, detail: '独立服务角色共享的控制实例身份未匹配；不能加载。' };
+  }
+  if (input.identity === 'matched') return { allowed: true, detail: null };
+  if (input.identity === 'unbound') return input.firstBinding
+    ? { allowed: true, detail: null }
+    : { allowed: false, detail: '已有控制记录缺少状态库身份绑定；不能自动重新绑定或替换原资料。' };
+  if (input.identity === 'missing') return { allowed: false, detail: '原个人资料位置缺失或与采用记录不一致；不会自动重建。' };
+  return { allowed: false, detail: '原个人资料对象身份已被替换；不会自动加载或重建。' };
 }
 
 /** 网站与桌面子进程共用装配；先占用入口的边界由 startLocalServer 保持。 */
@@ -77,12 +98,8 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
   const workspaceRoot = resolve(options.workspaceRoot);
   const codeRoot = resolve(options.codeRoot ?? workspaceRoot);
   const resources = new ResourceBindings(workspaceRoot);
-  const bundle = new BundledResources(codeRoot);
-  bundle.assertBindings(resources);
-  readHarnessRuntime(workspaceRoot);
-  for (const database of [options.databaseInitialConfiguration, options.userTestDatabase, ...(options.databaseLineConfigurations ?? [])].filter(item => item !== undefined)) {
-    if ('libraryRoot' in database && database.libraryRoot && database.harnessRootId !== resources.document.runtimeIdentity) throw new Error('数据库保管连接未绑定当前应用固定身份。');
-  }
+  const assets = applicationResources(codeRoot, resources);
+  readBdRuntime(workspaceRoot);
   const processRuntime = new ProcessRuntime(resources);
   if (options.role !== undefined && !['personal', 'service'].includes(options.role)) throw new Error('角色无效。');
   if (options.serviceStateRoot && options.role !== 'service') throw new Error('独立状态位置仅供服务角色使用。');
@@ -120,7 +137,6 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
   const controlDatabasePath = resolve(workspaceRoot, 'control', 'local-data-lifecycle.sqlite');
   const personalDatabasePath = service ? resolve(serviceStateRoot, 'core.sqlite')
     : resolve(resources.path('state'), 'personal', 'core.sqlite');
-  let settleImpl: LocalDataSettler | undefined;
   let localDataLifecycle: LocalDataLifecycle | undefined = options.sharedLocalData;
   // 启动资格先读控制记录；停用/解绑/身份不匹配时在打开个人状态库之前转为最小宿主。
   if (service && !localDataLifecycle) {
@@ -132,14 +148,11 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
       cleanupRoots: [resolve(resources.path('state'), 'personal'), resolve(resources.path('state'), 'workspace'),
         resolve(resources.path('task_files'), 'personal'), resolve(resources.path('task_files'), 'workspace')],
       dataIdFromTask: () => localDataId,
-      settle: async (context) => {
-        if (!settleImpl) throw new LocalDataLifecycleError('LOCAL_DATA_SETTLE_NOT_READY', '停用收束组件尚未装配。');
-        return settleImpl(context);
-      },
     });
   }
   const lifecycle = localDataLifecycle!;
   let record: ReturnType<LocalDataLifecycle['status']> | null = null;
+  let firstBinding = false;
   try { record = lifecycle.status(localDataId); }
   catch (error) {
     if (!(error instanceof LocalDataLifecycleError) || error.code !== 'LOCAL_DATA_UNKNOWN') throw error;
@@ -147,47 +160,34 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
     if (lifecycle.list().length) record = null;
   }
   if (!service && !record) {
-    if (lifecycle.list().length) {
+    const existing = lifecycle.list().length;
+    if (existing) {
       return { running: await startInactiveLocalHost({ port: options.port, webRoot, lifecycle, dataId: localDataId,
         detail: '控制记录属于其他运行身份；当前身份没有采用记录，不能自动重建或替换原资料。' }), mode: 'pi', health: inactiveHealth() };
     }
+    // 只有 register 确实让控制记录数 +1 才算本次新建；重复登记只读回，不获得首次绑定资格。
     record = lifecycle.register(localDataId);
+    firstBinding = lifecycle.list().length === existing + 1;
   }
   if (!record) throw new Error('本地资料控制记录不可用。');
-  const parentReload = service && Number.isSafeInteger(options.sharedLocalDataReloadGeneration)
-    && record.generation === options.sharedLocalDataReloadGeneration
-    && (record.status === 'inactive' || record.status === 'unbound' || record.status === 'deactivating')
-    && !!record.reloadPending;
-  if (service && (record.status !== 'active' || !record.adopted) && !parentReload) {
-    throw Object.assign(new Error('共享本地资料控制不是活动采用状态，独立服务拒绝打开个人内容。'), { code: 'LOCAL_DATA_DEACTIVATED' });
-  }
+  // 启动门禁只核对本地状态库对象身份；不再判断停用/解绑/重新加载等人工流程状态。
   const identity = service ? 'matched' as const : lifecycle.identityStatus(localDataId, personalDatabasePath);
-  const activeLoad = record.status === 'active' && record.adopted && !record.reloadPending;
-  const reloadLoad = (record.status === 'inactive' || record.status === 'unbound' || record.status === 'deactivating')
-    && !!record.reloadPending && identity === 'matched';
-  const canLoad = service || (activeLoad && (identity === 'matched' || identity === 'unbound')) || reloadLoad;
-  if (!canLoad) {
-    const detail = identity === 'missing' ? '原个人资料位置缺失或与采用记录不一致；不会自动重建。'
-      : identity === 'replaced' ? '原个人资料对象身份已被替换；不会自动加载或重建。'
-      : record.status === 'deactivating' ? '停用尚未确认收束；当前仅提供安全控制入口。'
-      : record.status === 'unbound' ? '此本地资料已解除采用关系；重新采用需明确受信入口。'
-      : record.reloadPending ? '已保存重新加载；需重启后核对同一原身份再实际加载。'
-      : '当前本地资料未启用；仅提供资格核对与重新加载保存入口。';
-    return { running: await startInactiveLocalHost({ port: options.port, webRoot, lifecycle, dataId: localDataId, detail,
-      health: inactiveHealth(),
-      reloadBlocker: () => {
-        const current = lifecycle.identityStatus(localDataId, personalDatabasePath);
-        return current === 'matched' ? null : current === 'missing' ? '原个人资料缺失，不能保存重新加载。'
-          : current === 'replaced' ? '原个人资料对象身份已变化，不能保存重新加载。' : '尚未核对原个人资料身份，不能保存重新加载。';
-      } }), mode: 'pi', health: inactiveHealth() };
+  const decision = startupIdentityDecision({ service: !!service, sharedControl: !!options.sharedLocalData,
+    identity, firstBinding, active: record.status === 'active', adopted: record.adopted });
+  if (!decision.allowed) {
+    return { running: await startInactiveLocalHost({ port: options.port, webRoot, lifecycle, dataId: localDataId,
+      detail: decision.detail ?? '本地资料身份未通过核对，已停止加载。', health: inactiveHealth() }), mode: 'pi', health: inactiveHealth() };
   }
   // 直接读取既有模型参数，不加载旧网页入口或演示环境配置。
-  const env: NodeJS.ProcessEnv = { MASHIRO_BACKEND: 'pi', MASHIRO_CONFIG: resolve(resources.path('config'), 'model.json') };
+  const env: NodeJS.ProcessEnv = { MASHIRO_BACKEND: 'pi',
+    ...(!assets.modelDisabled ? { MASHIRO_CONFIG: resolve(resources.path('config'), 'model.json') } : {}) };
   const configuration = await loadAppConfiguration(workspaceRoot, env, processRuntime);
-  const modelConfigurationVersion = digestOperationArgs({ provider: configuration.pi.provider, model: configuration.pi.model,
-    customModel: configuration.pi.customModel, defaultThinkingLevel: configuration.pi.defaultThinkingLevel,
-    credentialReference: configuration.credentialReference ?? null });
-  const tools = { ...(service ? {} : await loadToolConfiguration(workspaceRoot, resources.path('config'))), whisperModelPath: bundle.model('whisper_base') };
+  if (assets.modelDisabled) configuration.health.notice = '本地 Web 基础数据宿主；模型代理明确未启用，不读取模型配置或凭据。' + (assets.transcriptionUnavailableReason ?? '');
+  const modelConfigurationVersion = assets.modelDisabled ? digestOperationArgs({ resourceMode: 'native', model: 'disabled' })
+    : digestOperationArgs({ provider: configuration.pi.provider, model: configuration.pi.model,
+      customModel: configuration.pi.customModel, defaultThinkingLevel: configuration.pi.defaultThinkingLevel,
+      credentialReference: configuration.credentialReference ?? null });
+  const tools = { ...(service ? {} : await loadToolConfiguration(workspaceRoot, resources.path('config'))), whisperModelPath: assets.whisperModelPath };
   const { mode, health } = configuration;
   const registry = new BackendRegistry();
   let services: ApplicationServices | undefined;
@@ -199,7 +199,7 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
     ...configuration.pi,
     ...(service ? { systemPrompt: workspace ? WORKSPACE_SYSTEM_PROMPT : options.configureCollection ? COLLECTION_SYSTEM_PROMPT : SERVICE_SYSTEM_PROMPT,
       customModel: configuration.pi.customModel ? { ...configuration.pi.customModel, maxTokens: 1024 } : undefined } : {}),
-    maxModelRequests: service ? modelRequests : 8,
+    maxModelRequests: service ? modelRequests : 32,
     toolFactory: (context) => currentServices().modelTools.toolFactory(context),
     beforeModelRequest: (...args) => currentServices().modelTools.beforeModelRequest(...args),
     projectToolResult: (...args) => currentServices().modelTools.projectToolResult(...args),
@@ -207,45 +207,19 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
     contextProvider: (input, signal) => currentServices().modelContext(input, signal),
   }));
   let companion: ConfiguredApplication | undefined;
-  let databaseHost: Awaited<ReturnType<typeof startRegisteredDatabaseLineHosts>> | undefined;
   let captureSessions: CaptureSessionService | undefined;
-  let captureUnavailableReason: string | undefined;
+  let captureUnavailableReason: string | undefined = assets.browserUnavailableReason;
   let browserHost: BrowserHost | undefined;
   let browserCleanup: (() => Promise<void>) | undefined;
-  let browserUnavailableReason = options.sharedBrowserUnavailableReason;
+  let browserUnavailableReason = options.sharedBrowserUnavailableReason ?? assets.browserUnavailableReason;
   let running: Awaited<ReturnType<typeof startLocalServer>>;
-  let companionReloadGeneration: number | undefined;
   const customSources = new CustomSourceRegistry(join(resources.path('config'), 'custom-sources.json'));
   let baiduDrive: { binaryPath: string; configPath: string; tokenKeyPath?: string } | undefined;
   try {
     const binaryPath = processRuntime.path('bdpan');
     baiduDrive = registeredBaiduDriveConfiguration(readConnectionRegistry(resources.document.resources.connections_registry ? resources.path('connections_registry') : undefined), binaryPath);
   } catch { /* bdpan 未登记：网盘动作保持不可用，不影响其他能力。 */ }
-  // 真实收束钩子在组件装配完成后注入；控制实例本身已按启动资格提前打开。
-  settleImpl = context => settleOwnedLocalData(context, {
-    services: () => services,
-    closeCapture: async () => { await captureSessions?.close(); return !!captureSessions; },
-    closeBrowser: async () => { if (!browserCleanup) return false; const close = browserCleanup; browserCleanup = undefined; await close(); return true; },
-  });
   const openLocalDataControl = (): LocalDataLifecycle => lifecycle;
-  const verifyLocalData = !service ? async (input: { dataId: string; operationId: string }) => {
-    const controller = lifecycle;
-    if (!controller) throw new LocalDataLifecycleError('LOCAL_DATA_LIFECYCLE_NOT_WIRED', '本地资料控制尚未打开。');
-    const record = controller.status(input.dataId);
-    const operation = record.lastOperation;
-    if (!operation || operation.operationId !== input.operationId || operation.dataId !== input.dataId) {
-      throw new LocalDataLifecycleError('OPERATION_NOT_FOUND', '没有找到该资料的停用操作。');
-    }
-    // 客户端只能请求核对；这里由宿主重新取消/查询任务并复查组件关闭证据。
-    const result = await settleOwnedLocalData({ dataId: input.dataId, operationId: input.operationId, generation: operation.generation,
-      reason: operation.reason, signal: AbortSignal.timeout(30_000) }, {
-      services: () => services,
-      closeCapture: async () => { await captureSessions?.close(); return !!captureSessions; },
-      closeBrowser: async () => { if (!browserCleanup) return false; const close = browserCleanup; browserCleanup = undefined; await close(); return true; },
-    });
-    return controller.reconcile({ dataId: input.dataId, operationId: input.operationId, outcome: result.outcome,
-      evidence: result.evidence, pendingTaskIds: result.pendingTaskIds, executionStopped: result.executionStopped === true });
-  } : undefined;
   try { running = await startLocalServer({
     backend: registry.get(mode), registry, health, port: options.port, listen: options.listen, webRoot,
     databasePath: service ? resolve(serviceStateRoot, 'core.sqlite') : resolve(resources.path('state'), 'personal', mode === 'demo' ? 'demo.sqlite' : 'core.sqlite'),
@@ -255,24 +229,22 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
       const controller = openLocalDataControl();
       const latest = controller.status(localDataId);
       const latestIdentity = service ? 'matched' as const : controller.identityStatus(localDataId, personalDatabasePath);
-      const allowedActive = latest.status === 'active' && latest.adopted && !latest.reloadPending
-        && (latestIdentity === 'matched' || latestIdentity === 'unbound');
-      const allowedReload = (latest.status === 'inactive' || latest.status === 'unbound' || latest.status === 'deactivating')
-        && !!latest.reloadPending && latestIdentity === 'matched';
-      if (!(allowedActive || allowedReload)) {
-        throw new LocalDataLifecycleError('LOCAL_DATA_QUALIFICATION_CHANGED', '启动准备期间本地资料资格已变化，未打开个人内容。');
+      const latestDecision = startupIdentityDecision({ service: !!service, sharedControl: !!options.sharedLocalData,
+        identity: latestIdentity, firstBinding, active: latest.status === 'active', adopted: latest.adopted });
+      if (!latestDecision.allowed) {
+        throw new LocalDataLifecycleError('LOCAL_DATA_QUALIFICATION_CHANGED',
+          `启动准备期间本地资料资格已变化，未打开个人内容。${latestDecision.detail ?? ''}`);
       }
-      if (!service) companionReloadGeneration = allowedReload ? latest.generation : undefined;
-      if (!service) {
+      if (!service && !assets.browserUnavailableReason) {
         try {
           captureSessions = createCaptureSessionService({ processRuntime, runtimeIdentity: resources.document.runtimeIdentity,
-            homeRoot: resources.path('browser_home'), logsRoot: join(resources.path('state'), 'capture-sources'), ...bundle.browser() });
+            homeRoot: resources.path('browser_home'), logsRoot: join(resources.path('state'), 'capture-sources'), ...assets.browser() });
         } catch {
           captureUnavailableReason = '采集源独立会话资源尚未就绪，请核对当前运行根绑定。';
         }
         try {
           browserHost = await startBrowserHost({ processRuntime, runtimeIdentity: resources.document.runtimeIdentity,
-            homeRoot: resources.path('browser_home'), ...bundle.browser(), headless: true,
+            homeRoot: resources.path('browser_home'), ...assets.browser(), headless: true,
             onCleanupAvailable: cleanup => { browserCleanup = cleanup; } });
         } catch (error) {
           const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'BROWSER_HOST_UNAVAILABLE';
@@ -280,47 +252,36 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
         }
       }
       if (!options.workspaceCompanion) return;
-      const supplied = options.workspaceCompanion.databaseInitialConfiguration ?? options.workspaceCompanion.userTestDatabase
-        ?? options.workspaceCompanion.databaseLineConfigurations?.[0];
-      if (!supplied) databaseHost = await startRegisteredDatabaseLineHosts(resources, processRuntime);
-      const initialDatabase = supplied ?? databaseHost?.initialConfiguration;
-      const additionalDatabases = [...(databaseHost?.configurations ?? []), ...(options.workspaceCompanion.databaseLineConfigurations ?? [])]
-        .filter(configuration => configuration !== initialDatabase);
       companion = await startConfiguredApplication({ workspaceRoot, codeRoot, webRoot, role: 'service',
         launcherFile: options.launcherFile,
         ...(localDataLifecycle ? { sharedLocalData: localDataLifecycle } : {}),
-        ...(companionReloadGeneration !== undefined ? { sharedLocalDataReloadGeneration: companionReloadGeneration } : {}),
         sharedBrowser: browserHost?.configuration, sharedBrowserUnavailableReason: browserUnavailableReason,
         listen: false, serviceStateRoot: resolve(resources.path('state'), 'workspace'), serviceFilesRoot: resolve(resources.path('task_files'), 'workspace'),
         materials: { environment: 'local-review' }, configureFinancial: options.workspaceCompanion.configureFinancial ?? localFinancialConfiguration(resources),
         configureAlgorithms: options.workspaceCompanion.configureAlgorithms ?? localAlgorithmConfiguration({ projectRoot: codeRoot, resources,
-          tables: materialService => createMaterialTableReader(materialService), databaseSnapshots: true }),
-        ...(initialDatabase?.mode === 'user_test' && initialDatabase.inputDatasetId ? { userTestDatabase: { ...initialDatabase, mode: 'user_test', inputDatasetId: initialDatabase.inputDatasetId } as NativeUserCycleConfiguration } : {}),
-        ...(initialDatabase && 'connectionId' in initialDatabase ? { databaseInitialConfiguration: initialDatabase as NativeDatabaseLineConfiguration } : {}),
-        databaseLineConfigurations: additionalDatabases });
+          tables: materialService => createMaterialTableReader(materialService) }),
+      });
 
     },
     beforeShutdown: async () => {
-      // 先收束可能仍在交接的个人任务，随后关闭配套服务，最后关闭本宿主持有的数据库进程。
+      // 先收束个人任务，再关闭配套工作台、采集与浏览器资源。
       await settleOwnedResources([
-        () => databaseHost || browserCleanup || captureSessions ? services?.tasks.dispose() : undefined,
-        () => databaseHost || browserCleanup || captureSessions ? running?.core.dispose() : undefined,
+        () => companion || browserCleanup || captureSessions ? services?.tasks.dispose() : undefined,
+        () => companion || browserCleanup || captureSessions ? running?.core.dispose() : undefined,
         () => companion?.running.shutdown(),
         () => captureSessions?.close(),
         () => !service ? browserCleanup?.() : undefined,
         () => !service ? localDataLifecycle?.close() : undefined,
-        () => databaseHost?.shutdown(),
       ]);
     },
     initializeServices: (core, database) => (services = createApplicationServices(core, database, {
       projectRoot: workspaceRoot, codeRoot, resources, processRuntime,
       privateRoot: service ? options.serviceFilesRoot ?? resolve(resources.path('task_files'), 'service') : resolve(resources.path('task_files'), mode === 'demo' ? 'demo' : 'personal'),
       role: options.role,
-      ...(lifecycle ? { localData: { lifecycle, dataId: localDataId,
-        verify: verifyLocalData ?? (async () => { throw new LocalDataLifecycleError('LOCAL_DATA_VERIFY_NOT_WIRED', '当前宿主尚未装配本地资料核对入口。'); }) } } : {}),
+      ...(lifecycle ? { localData: { lifecycle, dataId: localDataId } } : {}),
       localDataControlPath: controlDatabasePath,
       ...(service ? { controlStateRoot: serviceStateRoot } : {}),
-      ...(service ? { serviceVersions: { harness: workspace ? WORKSPACE_HARNESS_VERSION : options.configureCollection ? COLLECTION_HARNESS_VERSION : HARNESS_VERSION, model: `${health.provider}/${health.model}`,
+      ...(service ? { serviceVersions: { bd: workspace ? WORKSPACE_BD_VERSION : options.configureCollection ? COLLECTION_BD_VERSION : BD_VERSION, model: `${health.provider}/${health.model}`,
         modelConfiguration: modelConfigurationVersion,
         budget: `requests=${modelRequests};output=1024;timeout_ms=60000` } } : {}),
       health, credentialReference: configuration.credentialReference,
@@ -329,9 +290,6 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
       modelInput: configuration.pi.customModel?.input,
       configureCollection: options.configureCollection,
       configureFinancial: options.configureFinancial, configureAlgorithms: options.configureAlgorithms, materials: options.materials,
-      userTestDatabase: options.userTestDatabase,
-      databaseInitialConfiguration: options.databaseInitialConfiguration,
-      databaseLineConfigurations: options.databaseLineConfigurations,
       workspaceServices: companion?.running && 'services' in companion.running ? companion.running.services : undefined,
       browser: browserHost?.configuration ?? options.sharedBrowser, browserUnavailableReason,
       captureSessions, captureUnavailableReason, customSources,
@@ -339,7 +297,7 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
       ...tools,
     })),
   }); } catch (error) {
-    try { await settleOwnedResources([() => companion?.running.shutdown(), () => captureSessions?.close(), () => !service ? browserCleanup?.() : undefined, () => !service ? localDataLifecycle?.close() : undefined, () => databaseHost?.shutdown()]); }
+    try { await settleOwnedResources([() => companion?.running.shutdown(), () => captureSessions?.close(), () => !service ? browserCleanup?.() : undefined, () => !service ? localDataLifecycle?.close() : undefined]); }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], '启动失败且自有资源清理未全部确认。'); }
     throw error;
   }
@@ -347,7 +305,6 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
     const owner = running as Awaited<ReturnType<typeof startLocalServer>>;
     try {
       if (owner.database?.path && owner.database.path !== ':memory:') lifecycle.bindIdentity(localDataId, owner.database.path);
-      if (reloadLoad) lifecycle.markReloadLoaded(localDataId);
     } catch (error) {
       // 身份记录或实际加载确认失败时不能留下已打开的个人 Core/浏览器/任务。
       await owner.shutdown().catch(() => {});
@@ -362,87 +319,6 @@ function inactiveHealth(): HealthResponse {
     notice: '当前本地资料未加载；仅提供资格核对与重新加载保存入口。' };
 }
 
-
-type HostSettlementDeps = {
-  services: () => ApplicationServices | undefined;
-  closeCapture: () => Promise<boolean>;
-  closeBrowser: () => Promise<boolean>;
-};
-
-/**
- * 宿主真实收束：personal/workspace 任务统一取消并复查，采集会话与浏览器按原关闭接口退出。
- * 只返回已核实的证据；任何未退出、待核任务或收束异常都保持未决，不删文件/凭据/外部结果。
- */
-async function settleOwnedLocalData(context: LocalDataSettlementContext, deps: HostSettlementDeps): Promise<LocalDataSettlementResult> {
-  const current = deps.services();
-  if (!current) return { outcome: 'unresolved', evidence: '宿主服务尚未装配，不能确认任务与组件收束。', pendingTaskIds: [] };
-  const serviceOwners = [current, current.options.workspaceServices].filter((item): item is ApplicationServices => !!item);
-  const owners = serviceOwners.map((owner) => owner.tasks);
-  const pairs = owners.flatMap((tasks) => tasks.list({ limit: 1000 }).map((task) => ({ tasks, task })));
-  if (owners.some((tasks) => tasks.list({ limit: 1000 }).length >= 1000)) {
-    return { outcome: 'unresolved', evidence: '任务列表达到 1,000 条查询上限，不能确认全部收束。', pendingTaskIds: [] };
-  }
-  const active = pairs.filter(({ task }) => ['running', 'waiting_approval', 'pausing', 'cancelling'].includes(task.status));
-  const stopped = await Promise.allSettled(active.map(({ tasks, task }) => tasks.cancel(task.id)));
-  const stopFailed = stopped.some((result) => result.status === 'rejected');
-  let executingNow = 0, unconfirmedWorkers = 0, executionFactsFailed = false;
-  const executionTaskIds = new Set<string>();
-  for (const owner of serviceOwners) {
-    try {
-      const facts = owner.tasks.executionFacts();
-      executingNow += facts.executing;
-      unconfirmedWorkers += facts.unconfirmedWorkers;
-      for (const taskId of facts.unconfirmedTaskIds) executionTaskIds.add(taskId);
-    } catch { executionFactsFailed = true; }
-  }
-  // 任务服务之外，个人/工作台 Core 自己的模型运行与待发队列也必须真实收束。
-  const coreResults = await Promise.allSettled(serviceOwners.map((owner) => Promise.race([
-    owner.core.quiesceForDeactivation('本地资料已停用；当前模型运行与待发队列不自动继续或重放。'),
-    new Promise<never>((_resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('CORE_SETTLE_TIMEOUT')), 15_000);
-      timer.unref();
-    }),
-  ])));
-  let remainingRuns = 0, heldQueued = 0;
-  for (const result of coreResults) {
-    if (result.status === 'rejected') { remainingRuns += 1; continue; }
-    remainingRuns += result.value.remainingRuns;
-    heldQueued += result.value.heldQueued;
-  }
-  const pending = new Set<string>(executionTaskIds);
-  let activeNow = 0;
-  for (const { tasks, task } of pairs) {
-    let latest;
-    try { latest = tasks.get(task.id); } catch { pending.add(task.id); activeNow += 1; continue; }
-    if (['running', 'waiting_approval', 'pausing', 'cancelling'].includes(latest.status)) activeNow += 1;
-    if (latest.requiresReview || latest.status === 'needs_review'
-      || ['running', 'waiting_approval', 'pausing', 'cancelling'].includes(latest.status)) pending.add(latest.id);
-  }
-  for (let index = 0; index < stopped.length; index += 1) if (stopped[index]!.status === 'rejected') pending.add(active[index]!.task.id);
-  let capture = false, browser = false;
-  const notes: string[] = [];
-  try { capture = await deps.closeCapture(); notes.push(capture ? '采集会话关闭已确认。' : '本次无独立采集会话。'); }
-  catch (error) { notes.push(`采集会话关闭未确认：${describe(error)}`); }
-  try { browser = await deps.closeBrowser(); notes.push(browser ? '浏览器宿主退出已确认。' : '本次无宿主浏览器进程。'); }
-  catch (error) { notes.push(`浏览器宿主退出未确认：${describe(error)}`); }
-  let approvals = 0;
-  for (const owner of serviceOwners) {
-    try { approvals += owner.permissions.listApprovals().filter((item) => item.status === 'pending').length; }
-    catch (error) { notes.push(`审批资格核对失败：${describe(error)}`); approvals += 1; }
-  }
-  const executionStopped = remainingRuns === 0 && activeNow === 0 && approvals === 0
-    && executingNow === 0 && unconfirmedWorkers === 0 && !stopFailed && !executionFactsFailed
-    && !notes.some((note) => note.includes('未确认') || note.includes('失败'));
-  const evidence = `任务：关联 ${pairs.length}，请求停止 ${active.length}，待核 ${pending.size}；` +
-    `Core 模型运行未收束 ${remainingRuns}，保留待发队列 ${heldQueued}；实际 drive 未退出 ${executingNow}，tool worker 未确认退出 ${unconfirmedWorkers}，停止调用失败 ${stopFailed ? 1 : 0}；` +
-    `执行器${executionStopped ? '已停' : '未确认停止'}；${notes.join('')}待批审批 ${approvals}；ProcessRuntime 无常驻子进程登记，执行由任务尝试收束；未删除文件、凭据或外部数据库。`;
-  const unresolved = pending.size > 0 || !executionStopped;
-  return { outcome: unresolved ? 'unresolved' : 'settled', evidence, pendingTaskIds: [...pending], executionStopped };
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 /** 创建前解析已存在祖先，防止状态目录别名绕过角色隔离。 */
 async function canonicalFuturePath(path: string): Promise<string> {

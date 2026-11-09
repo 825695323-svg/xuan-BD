@@ -6,9 +6,11 @@ import type { BaiduDriveConfiguration } from '../../plugins/capture-sources/baid
 export interface LocalConnectionRegistry {
   path: string;
   credentialRegistryPath?: string;
+  manualIngestConnectionId?: string;
   connections: Record<string, unknown>[];
 }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+const CONNECTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 
 /** 只读取已绑定登记的元数据和安全引用，不打开所引用的凭据文件。 */
 export function readConnectionRegistry(path?: string): LocalConnectionRegistry | undefined {
@@ -23,7 +25,16 @@ export function readConnectionRegistry(path?: string): LocalConnectionRegistry |
     || value.credential_registry !== undefined && (typeof value.credential_registry !== 'string' || !isAbsolute(value.credential_registry) || value.credential_registry.includes('\0'))) {
     throw new ConfigError('连接登记缺少明确清单或有效凭据登记引用。');
   }
-  return { path, connections: value.connections.filter(object),
+  const connections = value.connections.filter(object);
+  const selected = value.manual_ingest_connection_id;
+  if (selected !== undefined && (typeof selected !== 'string' || !CONNECTION_ID.test(selected))) {
+    throw new ConfigError('手动投喂连接编号格式无效。');
+  }
+  if (selected !== undefined && connections.filter(connection => connection.id === selected).length !== 1) {
+    throw new ConfigError('手动投喂连接须唯一且已经登记。');
+  }
+  return { path, connections,
+    ...(selected !== undefined ? { manualIngestConnectionId: selected } : {}),
     ...(typeof value.credential_registry === 'string' ? { credentialRegistryPath: value.credential_registry } : {}) };
 }
 

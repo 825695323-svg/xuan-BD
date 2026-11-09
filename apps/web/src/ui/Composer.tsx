@@ -4,22 +4,66 @@ import { ArrowLeft, ArrowUp, Check, ChevronDown, ChevronRight, ChevronUp, Corner
 import { DropdownMenu, Popover } from 'radix-ui';
 import type { ConversationAttachmentRef, PendingInput, ThinkingLevel } from '../../../../contracts/contracts';
 import { RequestError } from '../api';
-import { AttachmentUploadError } from '../useConversation';
+import { hasNativeFileBridge, resolveNativeFilePaths } from '../platform-api';
+import { AttachmentUploadError, attachmentSlotCount, draftRefsForDisplay } from '../useConversation';
 import type { Chat } from './ConversationList';
 import { ControlTooltip, ErrorNote, IconButton, errorDetail, thinkingLabel, useWords } from './Controls';
 import { usePreferences } from './Preferences';
 
 type AttachmentTarget = ReturnType<Chat['captureAttachmentTarget']>;
-type Upload = { id: string; file: File; target: AttachmentTarget; state: 'waiting' | 'receiving' | 'failed'; error?: string; unconfirmed?: boolean; acceptedRef?: string };
-const sameScope = (a: AttachmentTarget, b: AttachmentTarget | null) => !!b && a.conversationId === b.conversationId && a.branchId === b.branchId;
+export type PendingAttachmentView = {
+  id: string;
+  file: File;
+  state: 'resolving' | 'waiting' | 'receiving' | 'linking' | 'failed';
+  error?: string;
+  unconfirmed?: boolean;
+  acceptedRef?: ConversationAttachmentRef;
+  /** 桥解析失败时没有值；null 表示明确没有本机路径。 */
+  path?: string | null;
+};
+type Upload = PendingAttachmentView & { target: AttachmentTarget };
+type AttachmentScope = Pick<AttachmentTarget, 'conversationId' | 'branchId'>;
+const sameScope = (a: AttachmentScope, b: AttachmentScope | null) => !!b && a.conversationId === b.conversationId && a.branchId === b.branchId;
 
-export function AttachmentList({ refs, onRemove, disabled, draft = false }: { refs: readonly ConversationAttachmentRef[]; onRemove?(id: string): void; disabled?: boolean; draft?: boolean }) {
+export function hasDirectoryDrop(event: { dataTransfer: DataTransfer }) {
+  return [...event.dataTransfer.items].some((item) => item.kind === 'file' && item.webkitGetAsEntry?.()?.isDirectory === true);
+}
+
+function pendingStatus(item: PendingAttachmentView, words: (zh: string, en: string) => string): string {
+  if (item.state === 'resolving') return words('正在读取原文件路径 · 尚未发送', 'Resolving local path · Not sent');
+  if (item.state === 'waiting') return words('等待接入 · 尚未发送', 'Waiting to add · Not sent');
+  if (item.state === 'receiving') return words('正在加入草稿 · 尚未发送', 'Adding to draft · Not sent');
+  if (item.state === 'linking') return words('正在保存草稿关联 · 尚未发送', 'Saving draft link · Not sent');
+  if (item.state === 'failed' && item.path === undefined) return words('未能取得原文件路径 · 尚未发送', 'Could not resolve local path · Not sent');
+  if (item.acceptedRef) return words('原件已接入 · 草稿关联待核 · 尚未发送', 'Source added · Draft link unconfirmed · Not sent');
+  if (item.unconfirmed) return words('接收结果待核 · 尚未发送', 'Receipt unconfirmed · Not sent');
+  return words('接收失败 · 尚未发送', 'Could not receive file · Not sent');
+}
+
+export function AttachmentList({ refs, pending = [], onRemove, onRemovePending, onRetryPending, onRetryDraftLink, disabled, draft = false }: {
+  refs: readonly ConversationAttachmentRef[];
+  pending?: readonly PendingAttachmentView[];
+  onRemove?(id: string): void;
+  onRemovePending?(id: string): void;
+  onRetryPending?(id: string): void;
+  onRetryDraftLink?(id: string): void;
+  disabled?: boolean;
+  draft?: boolean;
+}) {
   const words = useWords();
-  if (!refs.length) return null;
+  if (!refs.length && !pending.length) return null;
   return <ul className="attachment-list" aria-label={draft ? words('草稿附件', 'Draft attachments') : words('消息附件', 'Message attachments')}>
     {refs.map((ref) => <li className="attachment-item" key={`${ref.fileRefId}:${ref.version}`}><FileText size={17} aria-hidden="true" /><div className="attachment-copy"><span title={ref.displayName}>{ref.displayName ?? words('原件引用', 'Source reference')}</span>
       <small>{draft ? words('已加入草稿 · 尚未发送', 'Added to draft · Not sent') : words('任务输入引用', 'Task input reference')}</small></div>
       {onRemove && <IconButton label={`${words('移除附件', 'Remove attachment')} · ${ref.displayName ?? ref.fileRefId}`} disabled={disabled} onClick={() => onRemove(ref.fileRefId)}><X size={14} /></IconButton>}
+    </li>)}
+    {pending.map((item) => <li className="attachment-item" data-failed={item.state === 'failed'} key={item.id}>
+      <FileText size={17} aria-hidden="true" /><div className="attachment-copy"><span title={item.file.name}>{item.file.name}</span>
+        <small>{pendingStatus(item, words)}</small>
+        {item.error && <details><summary>{words('查看原因', 'View reason')}</summary><p>{item.error}</p></details>}</div>
+      {item.state === 'failed' && !item.unconfirmed && !item.acceptedRef && onRetryPending && <IconButton label={item.path === undefined ? words('重试读取原文件路径', 'Retry reading local path') : words('重试接收', 'Retry receiving')} onClick={() => onRetryPending(item.id)}><RefreshCw size={14} /></IconButton>}
+      {item.state === 'failed' && item.acceptedRef && onRetryDraftLink && <IconButton label={words('重试保存草稿关联', 'Retry saving draft link')} onClick={() => onRetryDraftLink(item.id)}><RefreshCw size={14} /></IconButton>}
+      {item.state !== 'receiving' && item.state !== 'linking' && onRemovePending && <IconButton label={`${words('移除此待接收项', 'Remove pending file')} · ${item.file.name}`} onClick={() => onRemovePending(item.id)}><X size={14} /></IconButton>}
     </li>)}
   </ul>;
 }
@@ -168,13 +212,14 @@ export default function Composer({ chat, dispatchBlocked, controlUnconfirmed = f
   const { sendShortcut, loading: preferencesLoading, ready: preferencesReady, saving: preferencesSaving } = usePreferences();
   const [uploads, setUploads] = useState<Upload[]>([]), [dragging, setDragging] = useState(false), [sendError, setSendError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<'input' | 'send'>('input');
-  const fileInput = useRef<HTMLInputElement>(null), textInput = useRef<HTMLTextAreaElement>(null), fileTarget = useRef<AttachmentTarget | null>(null), dragDepth = useRef(0), receiving = useRef(false), submitLocks = useRef(new Set<string>()), composition = useRef(false);
+  const fileInput = useRef<HTMLInputElement>(null), textInput = useRef<HTMLTextAreaElement>(null), fileTarget = useRef<AttachmentTarget | null>(null), dragDepth = useRef(0), receiving = useRef(false), attachmentBusy = useRef(new Set<string>()), submitLocks = useRef(new Set<string>()), composition = useRef(false);
   const chatRef = useRef(chat); chatRef.current = chat;
   const uploadsRef = useRef(uploads); uploadsRef.current = uploads;
   const activeTarget = chat.conversation ? { conversationId: chat.conversation.conversationId, branchId: chat.conversation.branchId } : null;
   const activeScope = activeTarget ? `${activeTarget.conversationId}:${activeTarget.branchId}` : null;
   const scopeRef = useRef(activeScope); scopeRef.current = activeScope;
   const currentUploads = uploads.filter((upload) => sameScope(upload.target, activeTarget));
+  const visibleDraftRefs = draftRefsForDisplay(chat.draft?.attachmentRefs ?? [], currentUploads);
   const writable = !!chat.draft && !chat.readOnly && !chat.managementPending && !chat.storageFrozen;
   const modeAvailable = chat.unconfirmedSend ? chat.canRetrySend : chat.isRunning ? chat.canQueue : chat.canSend;
   const sendReady = writable && modeAvailable && !chat.attachmentPending && !currentUploads.length && !dispatchBlocked && !controlUnconfirmed && preferencesReady && !preferencesLoading && !preferencesSaving;
@@ -213,29 +258,55 @@ export default function Composer({ chat, dispatchBlocked, controlUnconfirmed = f
     return () => window.removeEventListener('beforeunload', protect);
   }, [hasPendingFiles]);
 
+  /**
+   * 加号与拖放共用此入口：先固定目标，再按同一批实际 File 对象向本机桥取路径。
+   * 没有桥时直接上传；桥存在但解析失败时留在失败态，不静默改成上传。
+   */
   const enqueue = useCallback((files: File[], target: AttachmentTarget) => {
     if (!files.length) return;
-    setUploads((current) => [...current, ...files.map((file) => ({ id: crypto.randomUUID(), file, target, state: 'waiting' as const }))]);
+    const active = chatRef.current.conversation;
+    const targetRefs = active && active.conversationId === target.conversationId && active.branchId === target.branchId
+      ? chatRef.current.draft?.attachmentRefs ?? [] : [];
+    const queued = uploadsRef.current.filter((upload) => sameScope(upload.target, target));
+    if (attachmentSlotCount(targetRefs, queued) + files.length > 32) throw new Error('每份草稿最多附加 32 个原件，请分次提交。');
+    setSendError(null);
+    const native = hasNativeFileBridge();
+    const items: Upload[] = files.map((file) => ({ id: crypto.randomUUID(), file, target,
+      state: native ? 'resolving' : 'waiting', path: native ? undefined : null }));
+    setUploads((current) => [...current, ...items]);
+    if (!native) return;
+    void resolveNativeFilePaths(files).then((paths) => {
+      const byId = new Map(items.map((item, index) => [item.id, paths ? paths[index] ?? null : null]));
+      setUploads((current) => current.map((item) => {
+        const path = byId.get(item.id);
+        return path === undefined || item.state !== 'resolving' ? item : { ...item, state: 'waiting', path };
+      }));
+    }).catch((failure: unknown) => {
+      const ids = new Set(items.map((item) => item.id));
+      setUploads((current) => current.map((item) => ids.has(item.id) && item.state === 'resolving'
+        ? { ...item, state: 'failed', path: undefined, error: errorDetail(failure), unconfirmed: false } : item));
+    });
   }, []);
   useEffect(() => {
     if (receiving.current) return;
-    const next = uploads.find((upload) => upload.state === 'waiting');
+    const next = uploads.find((upload) => upload.state === 'waiting' && upload.path !== undefined);
     if (!next) return;
     receiving.current = true;
+    attachmentBusy.current.add(next.id);
     setUploads((current) => current.map((item) => item.id === next.id ? { ...item, state: 'receiving' } : item));
-    void chatRef.current.uploadAttachments([next.file], next.target).then(() => {
+    void chatRef.current.receiveAttachments([{ file: next.file, path: next.path ?? null }], next.target).then(() => {
       setUploads((current) => current.filter((item) => item.id !== next.id));
     }).catch((failure: unknown) => {
       const unconfirmed = failure instanceof AttachmentUploadError ? failure.failures.some((item) => item.unconfirmed) : failure instanceof RequestError && (failure.status === null || failure.status >= 500);
-      const acceptedRef = failure instanceof AttachmentUploadError ? failure.accepted.at(-1)?.fileRefId : undefined;
+      const acceptedRef = failure instanceof AttachmentUploadError ? failure.failures[0]?.accepted : undefined;
       setUploads((current) => current.map((item) => item.id === next.id ? { ...item, state: 'failed', error: errorDetail(failure), unconfirmed, acceptedRef } : item));
-    }).finally(() => { receiving.current = false; setUploads((current) => [...current]); });
+    }).finally(() => { receiving.current = false; attachmentBusy.current.delete(next.id); setUploads((current) => [...current]); });
   }, [uploads]);
   useEffect(() => {
     if (!chat.draft || chat.draft.dirty || chat.draft.saving || chat.draft.error || chat.draft.conflict) return;
     const known = new Set(chat.draft.attachmentRefs.map((ref) => ref.fileRefId));
-    if (uploads.some((upload) => sameScope(upload.target, activeTarget) && upload.acceptedRef && known.has(upload.acceptedRef)))
-      setUploads((current) => current.filter((upload) => !sameScope(upload.target, activeTarget) || !upload.acceptedRef || !known.has(upload.acceptedRef)));
+    if (uploads.some((upload) => sameScope(upload.target, activeTarget) && upload.acceptedRef && known.has(upload.acceptedRef.fileRefId)))
+      setUploads((current) => current.filter((upload) => !sameScope(upload.target, activeTarget) || !upload.acceptedRef || !known.has(upload.acceptedRef.fileRefId)));
   }, [chat.draft, chat.selectedId, chat.conversation?.branchId, uploads]);
   useEffect(() => { const input = textInput.current; if (input) { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 188)}px`; } }, [chat.draft?.text, chat.selectedId]);
   useEffect(() => { setSendError(null); }, [chat.selectedId, chat.conversation?.branchId, chat.isRunning]);
@@ -260,6 +331,47 @@ export default function Composer({ chat, dispatchBlocked, controlUnconfirmed = f
     try { fileTarget.current = chat.captureAttachmentTarget(); fileInput.current?.click(); }
     catch (failure) { setErrorKind('input'); setSendError(errorDetail(failure)); }
   }
+  function retryResolve(id: string) {
+    const item = uploadsRef.current.find((upload) => upload.id === id);
+    if (!item || item.state !== 'failed' || item.path !== undefined) return;
+    setUploads((current) => current.map((upload) => upload.id === id ? { ...upload, state: 'resolving', error: undefined } : upload));
+    void resolveNativeFilePaths([item.file]).then((paths) => {
+      const path = paths ? paths[0] ?? null : null;
+      setUploads((current) => current.map((upload) => upload.id === id && upload.state === 'resolving' ? { ...upload, state: 'waiting', path } : upload));
+    }).catch((failure: unknown) => {
+      setUploads((current) => current.map((upload) => upload.id === id && upload.state === 'resolving'
+        ? { ...upload, state: 'failed', error: errorDetail(failure), unconfirmed: false } : upload));
+    });
+  }
+  function retryPending(id: string) {
+    const item = uploadsRef.current.find((upload) => upload.id === id);
+    if (!item || item.unconfirmed || item.acceptedRef) return;
+    if (item.path === undefined) { retryResolve(id); return; }
+    setUploads((current) => current.map((upload) => upload.id === id
+      ? { ...upload, state: 'waiting', error: undefined, acceptedRef: undefined } : upload));
+  }
+  async function retryDraftLink(id: string) {
+    const item = uploadsRef.current.find((upload) => upload.id === id);
+    if (!item?.acceptedRef || attachmentBusy.current.has(id)) return;
+    attachmentBusy.current.add(id);
+    setUploads((current) => current.map((upload) => upload.id === id ? { ...upload, state: 'linking', error: undefined } : upload));
+    try {
+      await chatRef.current.retryAttachmentBinding(item.acceptedRef, item.target);
+      setUploads((current) => current.filter((upload) => upload.id !== id));
+    } catch (failure) {
+      setUploads((current) => current.map((upload) => upload.id === id ? { ...upload, state: 'failed', error: errorDetail(failure) } : upload));
+    } finally { attachmentBusy.current.delete(id); }
+  }
+  function removePending(id: string) {
+    const item = uploadsRef.current.find((upload) => upload.id === id);
+    if (!item || attachmentBusy.current.has(id) || item.state === 'receiving' || item.state === 'linking') return;
+    if (item.acceptedRef && !chatRef.current.removeDraftAttachment(item.acceptedRef.fileRefId, item.target)) {
+      setErrorKind('input');
+      setSendError(words('草稿暂时无法移除该附件，请稍后重试。', 'The draft attachment could not be removed right now. Try again shortly.'));
+      return;
+    }
+    setUploads((current) => current.filter((upload) => upload.id !== id));
+  }
   function isFileDrag(event: { dataTransfer: DataTransfer }) { return event.dataTransfer.types.includes('Files'); }
   function isUrlDrag(event: { dataTransfer: DataTransfer }) { return event.dataTransfer.types.includes('text/uri-list') || /^https?:\/\//i.test(event.dataTransfer.getData('text/plain').trim()); }
   return <div className="composer-zone" hidden={hidden}>
@@ -275,20 +387,14 @@ export default function Composer({ chat, dispatchBlocked, controlUnconfirmed = f
       onDragLeave={(event) => { if (!isFileDrag(event)) return; event.preventDefault(); dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) setDragging(false); }}
       onDragOver={(event) => { if (isUrlDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'none'; return; } if (!isFileDrag(event)) return; event.preventDefault(); event.dataTransfer.dropEffect = writable ? 'copy' : 'none'; }}
       onDrop={(event) => { if (isUrlDrag(event) && !isFileDrag(event)) { event.preventDefault(); setErrorKind('input'); setSendError(words('网址不会自动下载。请在消息中说明需要访问的范围。', 'URLs are not downloaded on drop. Describe the intended access in your message.')); return; } if (!isFileDrag(event)) return; event.preventDefault(); dragDepth.current = 0; setDragging(false);
+        if (hasDirectoryDrop(event)) { setErrorKind('input'); setSendError(words('文件夹不能加入会话，请拖入文件。', 'Folders cannot be added. Drop files instead.')); return; }
         try { if (!writable) throw new Error(words('当前草稿暂时无法接收文件。', 'This draft cannot receive files right now.')); enqueue([...event.dataTransfer.files], chat.captureAttachmentTarget()); }
         catch (failure) { setErrorKind('input'); setSendError(errorDetail(failure)); }
       }}>
       {dragging && <div className="drop-target" aria-hidden="true">{words('松开以加入草稿', 'Drop to add to draft')}</div>}
-      <AttachmentList refs={chat.draft?.attachmentRefs ?? []} onRemove={chat.removeDraftAttachment} disabled={chat.actionPending || !writable} draft />
-      {currentUploads.length > 0 && <ul className="attachment-list pending-attachments" aria-label={words('正在接收的文件', 'Incoming files')}>
-        {currentUploads.map((upload) => <li className="attachment-item" data-failed={upload.state === 'failed'} key={upload.id}><FileText size={17} /><div className="attachment-copy"><span title={upload.file.name}>{upload.file.name}</span>
-          <small>{upload.state === 'failed' ? upload.unconfirmed ? words('接收结果待核 · 尚未发送', 'Receipt unconfirmed · Not sent') : words('接收失败 · 尚未发送', 'Could not receive file · Not sent') : upload.state === 'receiving' ? words('接收并保存中 · 尚未发送', 'Receiving and saving · Not sent') : words('等待接收 · 尚未发送', 'Waiting to receive · Not sent')}</small>
-          {upload.error && <details><summary>{words('查看原因', 'View reason')}</summary><p>{upload.error}</p></details>}</div>
-          {upload.state === 'failed' && !upload.unconfirmed && <IconButton label={words('重试接收', 'Retry receiving')} onClick={() => setUploads((current) => current.map((item) => item.id === upload.id ? { ...item, state: 'waiting', error: undefined } : item))}><RefreshCw size={14} /></IconButton>}
-          {upload.state === 'failed' && upload.acceptedRef && <IconButton label={words('重试保存草稿关联', 'Retry saving draft link')} onClick={chat.saveDraftNow}><RefreshCw size={14} /></IconButton>}
-          {upload.state !== 'receiving' && <IconButton label={`${words('移除此待接收项', 'Remove pending file')} · ${upload.file.name}`} onClick={() => setUploads((current) => current.filter((item) => item.id !== upload.id))}><X size={14} /></IconButton>}
-        </li>)}
-      </ul>}
+      <AttachmentList refs={visibleDraftRefs} pending={currentUploads} onRemove={chat.removeDraftAttachment}
+        onRemovePending={removePending} onRetryPending={retryPending} onRetryDraftLink={(id) => void retryDraftLink(id)}
+        disabled={chat.actionPending || !writable} draft />
       <textarea ref={textInput} className="composer-input" aria-label={words('消息', 'Message')} placeholder={words('说点什么，或拖入文件…', 'Send a message or drop files…')} rows={2} maxLength={32_000} value={chat.draft?.text ?? ''} disabled={!writable}
         onChange={(event) => chat.setDraftText(event.currentTarget.value)} onBlur={chat.saveDraftNow} onCompositionStart={() => { composition.current = true; }} onCompositionEnd={() => { composition.current = false; }}
         onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && slash?.length) { event.preventDefault(); slash[0].run(); return; }
@@ -296,7 +402,7 @@ export default function Composer({ chat, dispatchBlocked, controlUnconfirmed = f
           const matches = sendShortcut === 'mod-enter' ? event.metaKey || event.ctrlKey : !event.metaKey && !event.ctrlKey && !event.altKey;
           if (matches) { event.preventDefault(); void submit(); }
         }} />
-      <div className="composer-toolbar"><div className="composer-leading"><IconButton label={words('添加文件', 'Add files')} className="attach-trigger" disabled={!writable || chat.actionPending} onClick={addFiles}><Plus size={21} strokeWidth={1.6} /></IconButton></div>
+      <div className="composer-toolbar"><div className="composer-leading"><IconButton label={words('添加文件', 'Add files')} className="attach-trigger" disabled={!writable || !chat.canAttach || chat.actionPending} onClick={addFiles}><Plus size={21} strokeWidth={1.6} /></IconButton></div>
         <div className="composer-trailing"><ContextIndicator chat={chat} /><ModelSelector chat={chat} />
           <div className="composer-send-controls">
             {chat.isRunning && hasInput && !chat.unconfirmedSend && <DropdownMenu.Root><DropdownMenu.Trigger asChild><IconButton className="send-options-trigger" label={words('发送选项', 'Send options')} disabled={!sendReady}><ChevronDown size={14} /></IconButton></DropdownMenu.Trigger>
@@ -309,7 +415,15 @@ export default function Composer({ chat, dispatchBlocked, controlUnconfirmed = f
             </button></ControlTooltip>
           </div>
         </div></div>
-      <input type="file" ref={fileInput} multiple hidden onChange={(event) => { const files = [...(event.currentTarget.files ?? [])]; event.currentTarget.value = ''; const target = fileTarget.current; fileTarget.current = null; if (target) enqueue(files, target); }} />
+      <input type="file" ref={fileInput} multiple hidden onChange={(event) => {
+        const files = [...(event.currentTarget.files ?? [])];
+        event.currentTarget.value = '';
+        const target = fileTarget.current;
+        fileTarget.current = null;
+        if (!target) return;
+        try { enqueue(files, target); }
+        catch (failure) { setErrorKind('input'); setSendError(errorDetail(failure)); }
+      }} />
     </form>
     {chat.draft?.conflict && <div className="draft-conflict" role="alert"><p>{words('草稿在其他页面已有新版本，当前输入已保留。', 'This draft has a newer version in another window. Your current input is preserved.')}</p><div>
       <button type="button" className="text-button" onClick={() => chat.resolveDraftConflict('local')}>{words('保留当前输入', 'Keep current input')}</button><button type="button" className="text-button" onClick={() => chat.resolveDraftConflict('saved')}>{words('载入已保存草稿', 'Load saved draft')}</button></div></div>}

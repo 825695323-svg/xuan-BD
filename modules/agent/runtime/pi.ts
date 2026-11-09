@@ -279,7 +279,9 @@ function messageFailure(message: AssistantMessage, tools?: ReadonlySet<string>):
   if (calls.some((call) => !tools?.has(call.name)) || message.stopReason === 'deferred') return 'protocol';
   if (message.stopReason === 'error') return 'provider';
   if (message.stopReason === 'length') return 'length';
-  if (message.stopReason !== 'aborted' && !calls.length && !messageText(message).trim()) return 'empty';
+  // 只有思考没有正文时仍是一次完整回复（思考本身是可用输出）；两者都空才算空响应。
+  const thinking = message.content.some((part) => part.type === 'thinking' && typeof part.thinking === 'string' && part.thinking.trim());
+  if (message.stopReason !== 'aborted' && !calls.length && !messageText(message).trim() && !thinking) return 'empty';
   return undefined;
 }
 
@@ -430,7 +432,8 @@ export function wrapPiSession(session: AgentSession, apiKey?: string, owner?: Pi
     }
     if (!supportsControlledModelApi(model.api)) throw new ImageOcrError('MODEL_IMAGE_UNSUPPORTED', '当前模型协议尚未完成受控图像请求验证。');
     if (!controls.beforeModelRequest || !controls.contextIdentity) throw new ImageOcrError('OCR_AGENT_REQUIRED', '图片识别需要当前宿主同时装配原模型请求预算与当前授权围栏。');
-    const verified = prepareOcrImage(Buffer.from(image.data, 'base64'));
+    const imageBytes = Buffer.from(image.data, 'base64');
+    const verified = prepareOcrImage(imageBytes);
     if (verified.data !== image.data || verified.mimeType !== image.mimeType || verified.imageSha256 !== image.imageSha256) {
       throw new ImageOcrError('MODEL_IMAGE_INVALID', '图片字节、格式或固定摘要不一致。');
     }
@@ -450,7 +453,9 @@ export function wrapPiSession(session: AgentSession, apiKey?: string, owner?: Pi
       const messages = [{ role: 'system' as const, content: OCR_SYSTEM_PROMPT, timestamp: Date.now() },
         { role: 'user' as const, content: [{ type: 'text' as const, text: OCR_USER_PROMPT },
           { type: 'image' as const, data: image.data, mimeType: image.mimeType }], timestamp: Date.now() }];
-      if (assembledContextBudget(messages, [], model).total > model.contextWindow) throw new ImageOcrError('MODEL_IMAGE_LIMIT', '原图、OCR规则与当前模型生成预留超过上下文预算；不会截断或缩图。');
+      const budget = assembledContextBudget(messages, [], model);
+      if (budget.total > budget.limit) throw new ImageOcrError('MODEL_IMAGE_LIMIT',
+        `原图 ${imageBytes.length} 字节；UTF-8 输入上界 ${budget.inputUpperBound}、生成预留 ${budget.outputReserve}、协议预留 ${budget.protocolReserve}，合计 ${budget.total} 超过当前模型窗口 ${budget.limit}。不会截断或缩图；若来源为视频，可明确用 media.convert 转成 JPG 有损首帧视图，再按实际大小核对。`);
       if (pending.requestCount >= pending.allowedRequests) {
         pending.budgetExceeded = true;
         throw new ImageOcrError('MODEL_REQUEST_INVALID', '图片识别与当前代理共用的模型请求预算已耗尽。');
@@ -938,9 +943,9 @@ export function createPiBackend(config: PiBackendConfig): Backend {
       }
       const custom = configured.customModel;
       const maxModelRequests = configured.maxModelRequests ?? 1;
-      if (!Number.isSafeInteger(maxModelRequests) || maxModelRequests < 1 || maxModelRequests > 8
+      if (!Number.isSafeInteger(maxModelRequests) || maxModelRequests < 1 || maxModelRequests > 32
         || (!configured.toolFactory && maxModelRequests !== 1) || (configured.toolFactory && configured.maxModelRequests === undefined)) {
-        throw new ConfigError('工具模式需显式配置1到8次模型请求；普通聊天固定为1次，另加已接受的引导。');
+        throw new ConfigError('工具模式需显式配置1到32次模型请求；普通聊天固定为1次，另加已接受的引导。');
       }
       if (custom) {
         if (custom.api !== 'openai-completions' || ![1, 2].includes(custom.input.length) || custom.input[0] !== 'text'

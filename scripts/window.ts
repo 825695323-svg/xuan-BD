@@ -5,6 +5,7 @@ import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { launcherPath, locateRuntimeRoot, ResourceBindings } from '../platform/resources/bindings.js';
 import { ProcessRuntime } from '../platform/runtime/programs.js';
+import { ChromiumPipe, NativeFilesAdapter } from '../platform/runtime/native-files.js';
 
 const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const url = 'http://127.0.0.1:4317/';
@@ -31,7 +32,7 @@ function windowContext(args: readonly string[], environment: NodeJS.ProcessEnv) 
     url, runtimeRoot, launcherFile, runtimeIdentity: resources.document.runtimeIdentity, bindingRevision: resources.document.revision,
     nodeProgram: runtime.path('node'), browserProgram: runtime.path('browser_engine'), profilePath, logPath, profileReference, logReference,
     serviceArgs: ['--import', 'tsx', resolve(projectRoot, 'scripts/web.ts'), `--runtime-root=${runtimeRoot}`, `--launcher=${launcherFile}`],
-    browserArgs: [`--app=${url}`, `--user-data-dir=${profilePath}`, '--no-first-run', '--no-default-browser-check'],
+    browserArgs: [`--app=${url}`, `--user-data-dir=${profilePath}`, '--no-first-run', '--no-default-browser-check', '--remote-debugging-pipe'],
   } };
 }
 
@@ -85,11 +86,44 @@ export async function runWindow(args: readonly string[] = process.argv.slice(2))
   mkdirSync(profile, { recursive: true, mode: 0o700 });
   if (!lstatSync(profile).isDirectory()) throw new Error('窗口浏览器资料必须是普通目录。');
   resources.resolve(plan.profileReference);
-  await detached(runtime.path('browser_engine'), plan.browserArgs);
+  // 独立受信子进程持有私有管道，系统启动器仍在窗口创建后返回。
+  const log = openSync(resources.resolve(plan.logReference), constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
+  try {
+    const stat = fstatSync(log);
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error('窗口日志必须是无多重链接的普通文件。');
+    resources.resolve(plan.logReference);
+    await detached(runtime.path('node'), ['--import', 'tsx', fileURLToPath(import.meta.url), '--native-file-window',
+      `--runtime-root=${plan.runtimeRoot}`, `--launcher=${plan.launcherFile}`], log);
+  } finally { closeSync(log); }
+}
+
+async function runNativeFileWindow(args: readonly string[]): Promise<void> {
+  const { resources, runtime, plan } = windowContext(args, process.env);
+  resources.resolve(plan.profileReference);
+  const child = spawn(runtime.path('browser_engine'), plan.browserArgs, {
+    cwd: projectRoot, stdio: ['ignore', 'inherit', 'inherit', 'pipe', 'pipe'],
+  });
+  await new Promise<void>((accept, reject) => { child.once('error', reject); child.once('spawn', accept); });
+  const input = child.stdio[4], output = child.stdio[3];
+  if (!input || !('read' in input) || !output || !('write' in output)) throw new Error('应用窗口私有管道未能创建。');
+  const pipe = new ChromiumPipe(output, input), adapter = new NativeFilesAdapter(pipe, plan.url);
+  child.once('exit', pipe.close);
+  child.once('error', pipe.close);
+  child.unref();
+  try {
+    await adapter.ready;
+    console.info(`本机文件原路径桥已就绪 pid=${process.pid}`);
+    await pipe.closed;
+  }
+  finally { await adapter.dispose(); pipe.close(); }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { await runWindow(); }
+  try {
+    const args = process.argv.slice(2);
+    if (args[0] === '--native-file-window') await runNativeFileWindow(args.slice(1));
+    else await runWindow(args);
+  }
   catch (error) {
     console.error(error instanceof Error ? error.message : 'xuan BD 窗口启动失败，请核对本机配置。');
     process.exitCode = 1;

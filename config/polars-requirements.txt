@@ -1,0 +1,4 @@
+# Explicit optional fixed-calculation executor; never installed by bootstrap/check.
+# Validated separately from the default WFD/native environment.
+polars==2.0.0
+polars-runtime-32==2.0.0

@@ -41,6 +41,13 @@ CONTRACT_ROLE_BODY = {
 }
 REVISION_MODES = {"source_correction", "processing_repair", "withdrawal"}
 APPEND_MODES = {"complete_snapshot", "partial_observation", "explicit_increment"}
+_UNPROVIDED_COVERAGE_BASE = object()
+CURRENT_ONLY_BUSINESS = "current_only_business"
+
+
+def current_only_business(declaration):
+    context = (declaration or {}).get("semantic_context") or {}
+    return (context.get("version_axis") or {}).get("revision_mode") == CURRENT_ONLY_BUSINESS
 
 
 def _second_now():
@@ -80,6 +87,8 @@ class WFDProductService:
             raise ValueError("TRUSTED_ACTOR_NAMESPACE_INVALID")
         self.trusted_actor_namespaces = frozenset(namespaces)
         self.can_register = bool(can_register and self.has_permission("register"))
+        # 显式审计/技术固定复现的事项编号；只由受控机器入口在单次请求内设置。
+        self._usage_audit_issue_id = None
 
     def has_permission(self, permission):
         return permission in self.caller_roles
@@ -675,19 +684,33 @@ class WFDProductService:
         return True
 
     @staticmethod
+    def _current_business_contracts(contracts, declaration):
+        if current_only_business(declaration):
+            contracts["read"].update(perspectives=["snapshot_contents"],
+                                     business_snapshot="active_head", include_history=False,
+                                     technical_fixed_snapshot_read=True)
+            contracts["publication"]["business_view"] = "unique_current_leaf"
+        return contracts
+
+    @staticmethod
     def _definition_relation(prior, declaration):
         if prior is None:
             return "initial"
         if prior.get("declaration") == declaration:
             return "same"
         old, new = prior.get("declaration", {}), declaration
-        old_non_fields = {k: v for k, v in old.items() if k != "field_definitions"}
-        new_non_fields = {k: v for k, v in new.items() if k != "field_definitions"}
+        field_keys = {"field_definitions", "field_semantic_context"}
+        old_non_fields = {k: v for k, v in old.items() if k not in field_keys}
+        new_non_fields = {k: v for k, v in new.items() if k not in field_keys}
         if old_non_fields != new_non_fields:
             return "breaking"
         old_fields = {f.get("field_code"): f for f in old.get("field_definitions", []) if isinstance(f, dict)}
         new_fields = {f.get("field_code"): f for f in new.get("field_definitions", []) if isinstance(f, dict)}
-        if set(old_fields).issubset(new_fields) and all(new_fields[k] == v for k, v in old_fields.items()):
+        old_contexts = old.get("field_semantic_context") or {}
+        new_contexts = new.get("field_semantic_context") or {}
+        if (set(old_fields).issubset(new_fields)
+                and all(new_fields[k] == v for k, v in old_fields.items())
+                and all(new_contexts.get(k) == old_contexts.get(k) for k in old_fields)):
             return "compatible_additive"
         return "breaking"
 
@@ -903,6 +926,8 @@ class WFDProductService:
                     "derived_submission": "not_required",
                     "dependencies": [],
                 }
+        if data_only:
+            self._current_business_contracts(contracts, declaration)
         record = {"service_version": SERVICE_VERSION, "product_id": pid,
                   "dataset_id": dataset_id, "logical_domain": output["logical_domain"],
                   "subject": output["subject"], "payload_kind": output["payload"]["kind"],
@@ -1150,6 +1175,8 @@ class WFDProductService:
                     "execution": "external", "derived_submission": "verified_fixed_lineage",
                     "dependencies": [],
                 }
+        if data_only:
+            self._current_business_contracts(bound["contracts"], bound["declaration"])
         bound["contracts"] = self._contracts_with_parts(bound["contracts"])
         bound["contract_refs"], bound["contract_bundle_ref"] = self._build_contract_refs(
             bound, bound["contracts"])
@@ -1207,7 +1234,9 @@ class WFDProductService:
         superseded = {item["revision"].get("supersedes") for item in items}
         return [item for item in items if item["record_ref"]["revision_id"] not in superseded]
 
-    def _prepare_versions(self, out, product, extension, head_id, fingerprint, source=None):
+    def _prepare_versions(self, out, product, extension, head_id, fingerprint, source=None, *,
+                          prior_coverage_ref=_UNPROVIDED_COVERAGE_BASE,
+                          _current_rows=_UNPROVIDED_COVERAGE_BASE):
         mode = out["input_mode"]
         if mode not in APPEND_MODES | REVISION_MODES | {"coverage_revision"}:
             raise ValueError("INPUT_MODE_NOT_IMPLEMENTED:" + mode)
@@ -1220,10 +1249,13 @@ class WFDProductService:
             raise ValueError("DUPLICATE_BUSINESS_KEY")
         if mode in REVISION_MODES and set(revisions) != logical_keys:
             raise ValueError("REVISION_PREDECESSOR_REQUIRED")
-        current = self._read(product["product_id"], snapshot_id=head_id, include_history=True)["rows"] if head_id else []
+        current = (_current_rows if _current_rows is not _UNPROVIDED_COVERAGE_BASE else
+                   self._read(product["product_id"], snapshot_id=head_id, include_history=True)["rows"] if head_id else [])
         by_key = {}
         for item in current:
             by_key.setdefault(item["record_ref"]["logical_key"], []).append(item)
+        if extension.get("_wfd_data_only") is True and current_only_business(product["declaration"]):
+            self._check_current_bar_keys(out, product, current, key_field)
         leaves = {key: self._version_leaves(items) for key, items in by_key.items()}
         coverage = out.get("coverage", {})
         physical, versions = copy.deepcopy(out), {}
@@ -1275,8 +1307,11 @@ class WFDProductService:
                 raise ValueError("COVERAGE_METADATA_PAYLOAD_REQUIRED")
             if not current:
                 raise ValueError("COVERAGE_REVISION_REQUIRES_EXISTING")
-            predecessor = (product.get("coverage_predecessor_ref")
-                           or (current[0].get("coverage_ref") if current else None))
+            # Explicit current coverage (including None) is not its historical predecessor.
+            # Omitted keywords retain the old private-call fallback for other profiles.
+            predecessor = ((product.get("coverage_predecessor_ref")
+                            or (current[0].get("coverage_ref") if current else None))
+                           if prior_coverage_ref is _UNPROVIDED_COVERAGE_BASE else prior_coverage_ref)
             requested = coverage.get("predecessor_ref")
             if requested is not None and requested != predecessor:
                 raise ValueError("COVERAGE_PREDECESSOR_MISMATCH")
@@ -1346,6 +1381,42 @@ class WFDProductService:
         if any(v.get("supersedes") or v.get("input_mode") in REVISION_MODES | {"coverage_revision"} for v in versions.values()):
             physical["input_mode"] = "explicit_increment"
         return physical, versions
+
+    @staticmethod
+    def _check_current_bar_keys(out, product, current, key_field):
+        frequency = product["declaration"]["semantic_context"]["time"]["frequency"]
+        subject = product["subject"]
+
+        def identity(row):
+            time = row.get("observation_time") or {}
+            if (row.get("subject", subject) != subject or time.get("status") != "known"
+                    or time.get("precision") != frequency):
+                raise ValueError("CURRENT_ONLY_BUSINESS_KEY_CONFLICT:subject or business interval")
+            try:
+                start, end = [datetime.fromisoformat(time[key].replace("Z", "+00:00"))
+                              for key in ("earliest_utc", "latest_exclusive_utc")]
+            except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                raise ValueError("CURRENT_ONLY_BUSINESS_KEY_CONFLICT:business interval") from exc
+            if start.tzinfo is None or end.tzinfo is None or end <= start:
+                raise ValueError("CURRENT_ONLY_BUSINESS_KEY_CONFLICT:business interval")
+            return (canonical(subject), start.astimezone(timezone.utc).isoformat(),
+                    end.astimezone(timezone.utc).isoformat(), frequency)
+
+        key_to_interval, interval_to_key = {}, {}
+        for item in current:
+            key = item["record_ref"]["logical_key"]
+            interval = identity(item["row"])
+            key_to_interval[key] = interval
+            interval_to_key[interval] = key
+        batch_intervals = set()
+        for row in out["payload"]["rows"]:
+            key, interval = row[key_field], identity(row)
+            if ((key in key_to_interval and key_to_interval[key] != interval)
+                    or (interval in interval_to_key and interval_to_key[interval] != key)
+                    or interval in batch_intervals):
+                raise ValueError("CURRENT_ONLY_BUSINESS_KEY_CONFLICT:one key per business interval")
+            batch_intervals.add(interval)
+        return batch_intervals
 
     def _admit_output(self, out, source, policies):
         errors = []
@@ -2729,9 +2800,15 @@ class WFDProductService:
                         product["coverage"] = copy.deepcopy(out.get("coverage"))
                         product["coverage_ref"] = ("sha256:" + sha(canonical(product["coverage"]))
                                                    if product.get("coverage") is not None else None)
-                        product["coverage_predecessor_ref"] = ((prior_product or {}).get("coverage_ref")
-                                                               or ("sha256:" + sha(canonical((prior_product or {}).get("coverage")))
-                                                                   if (prior_product or {}).get("coverage") is not None else None))
+                        prior_coverage = (prior_product or {}).get("coverage")
+                        prior_coverage_ref = ((prior_product or {}).get("coverage_ref")
+                                              or ("sha256:" + sha(canonical(prior_coverage))
+                                                  if prior_coverage is not None else None))
+                        # Unchanged coverage preserves lineage rather than inventing a self-predecessor.
+                        product["coverage_predecessor_ref"] = (
+                            prior_product.get("coverage_predecessor_ref")
+                            if prior_product and prior_coverage_ref is not None
+                            and product["coverage_ref"] == prior_coverage_ref else prior_coverage_ref)
                         item["contract_ref"] = product["contract_ref"]
                         item["contract_refs"] = copy.deepcopy(product.get("contract_refs"))
                         item["contract_bundle_ref"] = copy.deepcopy(product.get("contract_bundle_ref"))
@@ -2750,7 +2827,8 @@ class WFDProductService:
                 if not errors:
                     try:
                         engine_out, versions = self._prepare_versions(out, product, extensions.get("outputs", {}).get(out["output_key"], {}),
-                                                                     head["snapshot_id"] if head else None, fingerprint, source)
+                                                                     head["snapshot_id"] if head else None, fingerprint, source,
+                                                                     prior_coverage_ref=prior_coverage_ref)
                     except ValueError as exc:
                         errors.append(_issue(str(exc).split(":")[0], str(exc)))
                 if errors:
@@ -3014,7 +3092,23 @@ class WFDProductService:
         }
 
     def _public_read_result(self, result):
+        # 正式用途治理的唯一共用闸口：data_only.fixed_read、固定分页、
+        # system_held、整产品页与 ProductQuery 的批次优化路径都汇于此。
+        # 每次调用都从 catalog 重读当前事项，不缓存到进程启动时。
+        from . import usage_suspension
+        governance = usage_suspension.enforce_read(
+            self.root, result, audit_issue_id=self._usage_audit_issue_id)
         public = copy.deepcopy(result)
+        if governance is not None:
+            notes = list(public.get("diagnostics") or [])
+            for issue in governance["known_issues"]:
+                notes.append({"code": "USAGE_KNOWN_ISSUE", "decision": "audit_reproduction",
+                              "diagnostic_source": "usage_governance",
+                              "message": issue["reason"], "issue_id": issue["issue_id"],
+                              "error_type": issue["error_type"], "issue_state": issue["state"],
+                              "publishable": False, "compute_eligible": False})
+            public["diagnostics"] = notes
+            public["usage_governance"] = governance
         rows = []
         for item in result.get("rows", []):
             item_public = {key: copy.deepcopy(value) for key, value in item.items()
@@ -3219,11 +3313,12 @@ class WFDProductService:
             self._check_dependencies(product["contracts"]["read"].get("dependencies", []), product["dataset_id"], checked_dependencies)
             contract_ref = product.get("contract_ref")
             products[(product["product_id"], (contract_ref or {}).get("digest", "legacy"))] = product
+            versions = source.get("_wfd_row_versions", {}).get(entry["output_key"], {})
             for physical_row in block["rows"]:
                 row = copy.deepcopy(physical_row)
                 key_field = "event_id" if entry["payload_kind"] == "event_records" else "business_key"
                 physical_key = row[key_field]
-                version = source.get("_wfd_row_versions", {}).get(entry["output_key"], {}).get(physical_key)
+                version = versions.get(physical_key)
                 if version is None:
                     # Deterministic compatibility identity for already-published
                     # 0.1 records; no source file or old snapshot is rewritten.

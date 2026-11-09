@@ -274,11 +274,23 @@ def test_forecast_rating_actual_computed_business_definition_and_templates(tmp_p
 
 
 def test_bd_unavailable_read_and_machine_data_only_profile(tmp_path):
-    service = make_data_service(tmp_path, roles={"read", "register", "submit", "publish"})
+    # Provision this new fixture explicitly; machine requests only open existing stores.
+    validator = load_protocol_validator(HERE / "protocol")
+    engine = WFDDuckDBPrototype.initialize_new(
+        tmp_path / "store", validator, runtime_root=tmp_path / "runtime",
+        sandbox=False, writer_host="r1-test")
+    service = WFDDataOnlyService(
+        engine, caller_roles={"read", "register", "submit", "publish"}, caller_id="r1-test",
+        unit_registry=UNITS, trusted_actor_namespaces={NAMESPACE})
     result = service.submit(request([scalar_output("m1", "r1.bd", "10")], "r1-bd"))
     assert result["state"] == "published_formal"
     pid, sid = result["output_results"][0]["product_id"], result["snapshot_id"]
-    read_only = make_data_service(tmp_path, roles={"read"})
+    read_engine = WFDDuckDBPrototype.open_existing(
+        tmp_path / "store", validator, runtime_root=tmp_path / "runtime",
+        read_only=True, sandbox=False, writer_host="r1-test")
+    read_only = WFDDataOnlyService(
+        read_engine, caller_roles={"read"}, caller_id="r1-test", unit_registry=UNITS,
+        trusted_actor_namespaces={NAMESPACE})
     assert read_only.read(pid, snapshot_id=sid)["rows"][0]["record_id"] == "row-m1"
 
     # P6 data_only profile: same service, no evidence/trace operations.
@@ -295,7 +307,8 @@ def test_bd_unavailable_read_and_machine_data_only_profile(tmp_path):
     }
     config_path.write_text(json.dumps(config), encoding="utf-8")
     loaded = product_machine._load_config(str(config_path))
-    machine_service = product_machine._build_service(loaded)
+    machine_service = product_machine._build_service(loaded, operation="capabilities")
+    assert machine_service.engine.read_only is True
     caps = product_machine._handle(machine_service, loaded, {
         "protocol_version": product_machine.MACHINE_PROTOCOL,
         "request_id": "caps", "operation": "capabilities", "arguments": {}})
@@ -306,7 +319,8 @@ def test_bd_unavailable_read_and_machine_data_only_profile(tmp_path):
             "protocol_version": product_machine.MACHINE_PROTOCOL,
             "request_id": "bad", "operation": "evidence_ingest",
             "arguments": {"content_base64": "eA=="}})
-    schema = product_machine._handle(machine_service, loaded, {
+    schema_service = product_machine._build_service(loaded, operation="schema")
+    schema = product_machine._handle(schema_service, loaded, {
         "protocol_version": product_machine.MACHINE_PROTOCOL,
         "request_id": "schema", "operation": "schema", "arguments": {}})
     assert schema["result"]["protocol_version"] == DATA_ONLY_PROTOCOL
@@ -314,7 +328,10 @@ def test_bd_unavailable_read_and_machine_data_only_profile(tmp_path):
     head = machine_service.engine.head()["snapshot_id"]
     machine_doc = request([scalar_output("m2", "r1.machine", "20")],
                           "r1-machine-submit", parent=head)
-    submitted = product_machine._handle(machine_service, loaded, {
+    submit_service = product_machine._build_service(loaded, operation="submit")
+    assert submit_service.engine.read_only is False
+    assert submit_service.engine.writer_host == service.engine.writer_host == "r1-test"
+    submitted = product_machine._handle(submit_service, loaded, {
         "protocol_version": product_machine.MACHINE_PROTOCOL,
         "request_id": "submit", "operation": "submit",
         "arguments": {"document": machine_doc}})
@@ -322,14 +339,17 @@ def test_bd_unavailable_read_and_machine_data_only_profile(tmp_path):
     assert submitted["result"]["state"] == "published_formal", submitted
     machine_pid = submitted["result"]["output_results"][0]["product_id"]
     machine_sid = submitted["result"]["snapshot_id"]
-    fixed = product_machine._handle(machine_service, loaded, {
+    fixed_service = product_machine._build_service(loaded, operation="fixed_read")
+    assert fixed_service.engine.read_only is True
+    fixed = product_machine._handle(fixed_service, loaded, {
         "protocol_version": product_machine.MACHINE_PROTOCOL,
         "request_id": "fixed", "operation": "fixed_read",
         "arguments": {"snapshot_id": machine_sid, "product_id": machine_pid}})
     assert fixed["ok"] is True
     assert fixed["result"]["rows"][0]["record_id"] == "row-m2"
     assert fixed["result"]["rows"][0]["record_version"].startswith("r_")
-    replay = product_machine._handle(machine_service, loaded, {
+    replay_service = product_machine._build_service(loaded, operation="submit")
+    replay = product_machine._handle(replay_service, loaded, {
         "protocol_version": product_machine.MACHINE_PROTOCOL,
         "request_id": "replay", "operation": "submit",
         "arguments": {"document": machine_doc}})
@@ -456,3 +476,26 @@ def test_query_deterministic_and_recovery_boundaries(tmp_path):
     assert recovered["state"] == "published_formal"
     assert recovered["formal_publication_verified"] is True
     assert recovered["idempotent_replay"] is True
+
+
+def test_derived_measurement_uses_the_bound_data_only_protocol(tmp_path):
+    from wfd_sdk.duckdb_sdk import business_validate
+    engine = WFDDuckDBPrototype(tmp_path / "store", load_protocol_validator(
+        HERE / "protocol", entry="wfd-data-only-write.schema.json"),
+        runtime_root=tmp_path / "runtime", sandbox=False, writer_host="derived-observation-test")
+    service = WFDDataOnlyService(engine, caller_roles=ALL_ROLES, caller_id="r1-test",
+                                 unit_registry=UNITS, trusted_actor_namespaces={NAMESPACE})
+    algorithm = {"mathematical_definition": "arithmetic mean of three selected observations",
+                 "window": {"type": "observation_rows", "count": 3}, "definition_version": "1.0.0"}
+    out = scalar_output("m", "derived.mean.test", "12.25", nature="deterministic_derived",
+                        measurement="derived", algorithm=algorithm)
+    internal = service._internal_output(out)
+    assert "DERIVED_LINEAGE_REQUIRED" in {issue["code"] for issue in business_validate(internal)}
+    incomplete = copy.deepcopy(internal)
+    del incomplete["new_definition_declaration"]["algorithm_definition"]
+    assert "DERIVED_LINEAGE_REQUIRED" in {issue["code"] for issue in business_validate(incomplete, data_only_write=True)}
+    result = service.submit(request([out], "derived-with-business-definition"))
+    assert result["state"] == "published_formal", result
+    product = service.read(result["output_results"][0]["product_id"], snapshot_id=result["snapshot_id"])["products"][0]
+    assert product["declaration"]["algorithm_definition"] == algorithm
+    assert "derived_lineage" not in product

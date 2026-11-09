@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { ImageOcrError, readOcrImage } from './ocr.js';
 import { AgentEvidenceService, evidenceDigest, type EvidenceScope, type EvidenceSource } from './evidence.js';
 import { contextEvidenceText, taskCompletionSource } from './trusted-context.js';
-import { basename, relative, sep } from 'node:path';
+import { basename, extname, relative, resolve, sep } from 'node:path';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { Type } from 'typebox';
 import type { AgentToolResult, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { ToolResultMessage } from '@earendil-works/pi-ai';
@@ -23,11 +24,10 @@ import type { AgentQuestionService } from './questions.js';
 import type { AgentSkillAttemptScope, AgentSkillBinding, AgentSkillRecord, AgentSkillRunScope } from '../../contracts/agent-skill-contracts.js';
 import { skillResourceDigest } from './agent-skills.js';
 import { piTaskRequestId } from './runtime/pi-task-runtime.js';
-import type { HarnessService } from './service.js';
+import type { BdService } from './service.js';
 import { mediaPluginCatalog, type MaterialMediaPluginDescriptor } from '../collection/materials/plugins.js';
 import type { ConversationFinancialBridge } from '../financial/conversation-bridge.js';
 import type { ConversationAlgorithmBridge } from '../financial/conversation-algorithms.js';
-import type { ConversationDataCycleBridge } from '../collection/conversation-data-cycle.js';
 import { BusinessGoalError, type BusinessGoalService } from '../../platform/jobs/business-goals.js';
 import { FINANCIAL_PUBLIC_CALL_SCHEMA } from '../financial/contracts.js';
 import { directImplementationVersion, guardDirectContext } from '../../platform/plugins/direct-versions.js';
@@ -49,6 +49,7 @@ const SKILL_TEXT_ACTION = 'model.skills.read';
 const PERSONAL_TOOLS: Readonly<Record<string, string>> = Object.freeze({
   ask_user: 'model.question.ask', core_tasks_list: 'model.tasks.list', core_task_get: 'model.tasks.get',
   core_task_cancel: 'model.tasks.cancel', core_goal_status: 'model.goal.status',
+  core_code_search: 'model.source.search', core_code_read: 'model.source.read',
 });
 const SKILL_OUTPUT_SCHEMA = Type.Object({ ok: Type.Literal(true), kind: Type.Union([Type.Literal('skill-catalogue'), Type.Literal('skill-text')]),
   data: Type.Object({}, { additionalProperties: true }), truncated: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
@@ -57,21 +58,47 @@ const MODEL_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIO
   'material.read', 'material.process', 'material.ocr', 'material.transcribe',
   'baidu.drive', 'browser.control',
   'financial.list', 'financial.describe', 'financial.call', 'financial.result', 'financial.status',
-  'data.prepare', 'data.submit', 'data.status', 'results.publish',
-  'data.candidates.capabilities', 'data.candidates.prepare', 'data.candidates.submit', 'data.candidates.status', 'data.candidates.resume', 'data.candidates.cancel',
-  'algorithms.capabilities', 'algorithms.calculate', 'algorithms.status', 'algorithms.prepare_candidate',
+  'algorithms.capabilities', 'algorithms.calculate', 'algorithms.status',
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
-  'algorithms.capabilities', 'algorithms.calculate', 'algorithms.status', 'algorithms.prepare_candidate']);
+  'data.adapters.capabilities', 'data.adapters.propose', 'data.adapters.replay', 'data.adapters.adopt',
+  'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
+  'algorithms.capabilities', 'algorithms.calculate', 'algorithms.status']);
 // 固定实现只读原件或生成新产物；其中的程序、暂存清理及观测回执仍属于同一受控动作。
 // 这里只分类已存在的工具，不改变其登记、启用、参数校验或版本资格。
 const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIONS, ...SOURCE_ACTIONS, 'source.register',
   METADATA_ACTION, EVIDENCE_ACTION, 'file.read', 'file.glob', 'file.grep', 'file.write', 'file.copy', 'file.compare',
   'media.convert', 'pdf.extract', 'image.ocr', 'audio.transcribe', 'archive.extract', 'spotlight.search',
   'web.read_public', 'web.search', 'video.transcribe_url', 'material.read', 'material.process', 'material.ocr', 'material.transcribe',
-  'financial.list', 'financial.describe', 'financial.call', 'financial.result', 'financial.status', 'data.prepare', 'data.status', 'data.candidates.capabilities', 'data.candidates.prepare', 'data.candidates.status',
+  'financial.list', 'financial.describe', 'financial.call', 'financial.result', 'financial.status',
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
-  'algorithms.capabilities', 'algorithms.calculate', 'algorithms.status', 'algorithms.prepare_candidate']);
+  // 适配候选提交、重放与采用都是写入或权限动作：保留审核，不进入自动动作集合。
+  'data.adapters.capabilities',
+  'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
+  'algorithms.capabilities', 'algorithms.calculate', 'algorithms.status']);
 const SHARE_NOTICE = '本次选定资料及动作结果将按当前权限发送给当前模型，大结果按证据分页读取；删除和修改既有内容仍需审核。';
+const SAFE_TASK_FAILURES: Readonly<Record<string, string>> = Object.freeze({
+  PROCESSING_EVIDENCE: '处理证据须带source：原件使用material及当前materialId与真实quote；用户消息使用user-message及本分支messageId与真实quote。',
+  PROCESSING_DIMENSIONS: 'dimensionsJson须直接以role、informationNature、businessObject、objectTime、purpose、structureGranularity为根；不要包dimensions或materials。',
+  PROCESSING_DIMENSION: '六维判断须用known、unknown或conflict；known要有明确value和可核证据，未知不能携带已确定值。',
+  PROCESSING_EVIDENCE_UNTRUSTED: '会话模型不能自报operator证据或伪造用户消息；使用目的须引用本分支真实用户原话。',
+  PROCESSING_EVIDENCE_MISMATCH: '证据quote或位置与已保管原文不符；重新核对真实原句和位置。',
+  PROCESSING_EVIDENCE_AMBIGUOUS: '证据原句在原文中重复；须给出准确start/end，不自动猜选。',
+  PROCESSING_PURPOSE_AUTHORITY: '使用目的须由真实用户消息确认；材料原文和模型建议不能自授用途。',
+  MATERIAL_WEB_PROVENANCE: '网页正文引用缺少可核对的来源证据或产物身份已变化；按原网址建立新的受控读取任务，再核正文textRef，不重放旧任务。',
+  MATERIAL_WEB_BODY_REQUIRED: '网页材料须使用成功任务实际返回的正文textRef；原始网页或来源定位不能替代正文。若任务无textRef（如PDF），先按已登记合同执行conversion.document或pdf.extract取得文字。',
+  MATERIAL_WEB_GATE: '网页任务仅取得验证码或登录提示，当前材料接续停止且不自动重试；须由用户提供可访问的正文来源，不绕过访问门。',
+  MATERIAL_BINDING_MISMATCH: '提案中的 materialId 和 originalSha256 必须与当前所选原件的 material.read 回执一致；请重新执行 material.read，使用其返回的身份，不沿用旧提案。',
+  MATERIAL_PROPOSAL_INVALID: 'proposalJson 须为单个有效的 JSON 对象；请重新执行 material.read 核对当前材料身份和提案合同后再提交。',
+  FILE_TOO_LARGE: '文件超过本次读取上限；核对当前文件大小及动作合同，按实际格式选用受控能力，不自动扩大预算。',
+  MODEL_IMAGE_LIMIT: '图像请求或识字文字超过本机受控预算，本次未形成可用结果；不会自动截断、缩图或重试。若是视频帧，可先核已登记media.convert的format=jpg是否可用，生成有损首帧派生视图并核实际大小；原件不改。',
+});
+// 源码只读检索：给模型核对实现与规则的能力，只读、不可越出工程根、不碰凭据与运行数据。
+const SOURCE_FILE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs', '.json', '.md', '.yml', '.yaml', '.css', '.html', '.py', '.sh', '.command', '.cmd']);
+const SOURCE_SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.pytest_cache', 'staging', 'work', 'tmp', 'resources', '.codegraph']);
+const SOURCE_MAX_FILE_BYTES = 512 * 1024;
+const SOURCE_MAX_FILES = 4000;
+const SOURCE_RESULT_BYTES = 12_000;
+const SOURCE_SECRET_PATH = /(^|\/)(\.env[^/]*|[^/]*(credential|secret|token|password)[^/]*)$/iu;
 const schema = `
 CREATE TABLE model_tool_calls (
  id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, branch_id TEXT NOT NULL,
@@ -143,14 +170,16 @@ export interface CoreModelToolOptions {
   questions?: AgentQuestionService;
   getTaskForRun?: (chatRunId: string) => TaskRecord | null;
   budgetTaskForInput?: (input: Readonly<BackendInput>) => TaskRecord | null;
-  service?: HarnessService;
+  service?: BdService;
   conversationFinancial?: ConversationFinancialBridge;
   conversationAlgorithms?: ConversationAlgorithmBridge;
-  conversationDataCycle?: ConversationDataCycleBridge;
   businessGoals?: BusinessGoalService;
   now?: () => number;
   selectedAttachmentsForInput?: (input: Readonly<BackendInput>) => readonly { fileRefId: string; version: number }[];
+  canSelectGeneratedMaterial?: (fileRefId: string, input: Readonly<BackendInput>) => boolean;
   mediaPlugins?: () => MaterialMediaPluginDescriptor[];
+  /** 只读源码检索的根；缺省时该能力不可用。 */
+  codeRoot?: string;
 }
 export class ModelToolError extends TaskError {
   constructor(code: string, message: string) { super(code, message); this.name = 'ModelToolError'; }
@@ -175,7 +204,7 @@ export class CoreModelTools {
     ...this.personalTools(factory),
     {
       name: 'list_actions', label: '查看允许的受控动作',
-      description: '按query筛选动作名称或说明，分页返回实际参数、权限与可用状态；用nextOffset续读，done=true表示完整。首次执行前读取相关契约，版本未变时复用。图片识字共用当前模型和总预算；没有任意命令、应用或快捷指令入口。',
+      description: 'query（查询词）先去首尾空白，再按不区分大小写的整段子串匹配动作名、标题或说明，不按空格拆词；回执query是规范化值。total（匹配总数）与done（本次查询完成）只指当前query，空query才是全部动作。0项请改短关键字或精确action（动作编号），或空query沿nextOffset（下一页偏移）分页；续页保持同一query。返回实际参数、权限与可用状态。首次执行前读取相关契约，版本未变时复用。图片识字共用当前模型和总预算；没有任意命令、应用或快捷指令入口。',
       parameters: Type.Object({ query: Type.Optional(Type.String({ maxLength: 100 })), offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 10000 })),
         limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })) }, { additionalProperties: false }), executionMode: 'sequential',
       execute: async (toolCallId, params, signal) => this.catalogue(factory, toolCallId, params, signal),
@@ -226,23 +255,36 @@ export class CoreModelTools {
   readonly projectToolResult = (result: Readonly<ToolResultMessage>, input: Readonly<BackendInput>, signal: AbortSignal | undefined, model: Readonly<PiModelInfo>): ToolResultMessage => {
     this.assertParent(input, signal);
     if (result.isError) {
+      const original = result.content.filter(part => part.type === 'text').map(part => part.text).join('');
+      let text = '本次工具执行失败，不能据此判断已完成或要求重新批准旧资料。请核对当前参数、任务状态与失败原因。';
+      let code = 'MODEL_ACTION_FAILED';
+      // 参数校验在建立任务之前就会失败，没有 model_tool_calls 记录；先按原始回执识别公开码，避免原因被默认文案覆盖。
+      let recognized = false;
+      for (const publicCode of ['MODEL_RESULT_TOO_LARGE', 'MODEL_ARGS_INVALID', 'MODEL_ACTION_UNAVAILABLE', 'MODEL_ACTION_NOT_ALLOWED',
+        'MODEL_FILE_NOT_SELECTED', 'MODEL_ACTION_STOPPED', 'MODEL_ACTION_REQUIRES_REVIEW', 'MODEL_SHARE_NOT_APPROVED', 'MODEL_SHARE_REVOKED', 'MODEL_IMAGE_LIMIT']) {
+        const safe = publicError(publicCode).message;
+        if (original === safe || original.startsWith(`${safe}具体原因：`)) { code = publicCode; text = original; recognized = true; break; }
+      }
       const failure = this.db.prepare('SELECT * FROM model_tool_calls WHERE parent_run_id=? AND parent_generation=? AND tool_call_id=? AND tool_name=?')
         .get(input.runId, input.generation, result.toolCallId, result.toolName) as unknown as CallRow | undefined;
-      let text = '本次工具执行失败，不能据此判断已完成或要求重新批准旧资料。请核对当前参数、任务状态与失败原因。';
       if (failure?.conversation_id === input.conversationId && failure.branch_id === input.branchId && failure.model_digest === this.channel(model).digest) {
         const task = failure.task_id ? this.options.getTasks().get(failure.task_id) : null;
-        if (task?.status === 'cancelled') text = '原任务已取消，不得自行重试。';
-        else if (task?.error?.code === 'APPROVAL_DENIED') text = '用户已拒绝原任务动作，不得重试或换路径规避。';
-        else {
-          const original = result.content.filter(part => part.type === 'text').map(part => part.text).join('');
-          for (const code of ['MODEL_RESULT_TOO_LARGE', 'MODEL_ARGS_INVALID', 'MODEL_ACTION_UNAVAILABLE', 'MODEL_ACTION_NOT_ALLOWED',
-            'MODEL_FILE_NOT_SELECTED', 'MODEL_ACTION_STOPPED', 'MODEL_ACTION_REQUIRES_REVIEW', 'MODEL_SHARE_NOT_APPROVED', 'MODEL_SHARE_REVOKED']) {
-            const safe = publicError(code).message;
-            if (original === safe) { text = safe; break; }
+        if (task?.status === 'cancelled') { code = 'MODEL_ACTION_STOPPED'; text = '原任务已取消，不得自行重试。'; }
+        else if (task?.error?.code === 'APPROVAL_DENIED') { code = 'APPROVAL_DENIED'; text = '用户已拒绝原任务动作，不得重试或换路径规避。'; }
+        else if (!recognized) {
+          const bound = failure.tool_name === 'perform_action' && task?.status === 'failed' && task.runtimeId === 'direct'
+            && task.action === failure.action && task.requestId === failure.task_request_id && task.conversationId === input.conversationId;
+          const taskCode = bound ? task.error?.code : undefined;
+          const failureDetail = taskCode ? safeFailureDetail(task?.error?.message) : undefined;
+          if (taskCode && Object.hasOwn(SAFE_TASK_FAILURES, taskCode)) {
+            code = taskCode; text = SAFE_TASK_FAILURES[taskCode]!;
+          } else if (failureDetail) {
+            // 受控插件的固定中文原因直接交给模型；错误码保持稳定，避免把内部码当契约。
+            text = `本次动作未完成：${failureDetail}`;
           }
         }
       }
-      return projectedResult(result, JSON.stringify({ ok: false, message: text, localPersistence: unknownLocalPersistence() }), { modelToolFailed: true });
+      return projectedResult(result, JSON.stringify({ ok: false, code, message: text, localPersistence: unknownLocalPersistence() }), { modelToolFailed: true });
     }
     if (result.toolName === CONTEXT_TOOL) {
       try {
@@ -287,6 +329,12 @@ export class CoreModelTools {
       let text = call.preview_json;
       if (call.tool_name === 'perform_action' && call.task_id && call.ticket_json) {
         const view = JSON.parse(text) as Record<string, JsonValue>, task = this.options.getTasks().get(call.task_id);
+        if (call.action === 'material.process') {
+          const semantic = this.materialProcessReplay(task);
+          view.data = semantic.data;
+          view.summary = semantic.summary;
+          view.taskStatus = task.status;
+        }
         view.localPersistence = this.localPersistence(call, task);
         text = JSON.stringify(Buffer.byteLength(JSON.stringify(view), 'utf8') > MAX_RESULT_BYTES ? this.pagePreview(call, view) : view);
       }
@@ -311,15 +359,27 @@ export class CoreModelTools {
         execute: (id: string, args: unknown, signal?: AbortSignal) => this.personalTool(factory, id, 'ask_user', args, signal),
       }] : []),
       { name: 'core_tasks_list', label: '查看本会话任务',
-        description: '查询本会话个人任务的真实状态与结果引用，不读取文件正文，不恢复或重试任务。查询无变化时不要重复轮询。',
+        description: '查询本会话个人任务的真实状态，并返回 rejectedCalls：被参数或契约校验拒绝的调用及原因。后续 core_task_get 的 taskId 必须取任务 id；resultRef 是不透明结果引用，不是任务编号。不读取文件正文，不恢复或重试任务。查询无变化时不要重复轮询；被拒原因要看 rejectedCalls，不要换写法盲试。',
         parameters: Type.Object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 30 })) }, { additionalProperties: false }),
         executionMode: 'sequential', execute: (id, args, signal) => this.personalTool(factory, id, 'core_tasks_list', args, signal) },
       { name: 'core_task_get', label: '查看任务状态',
-        description: '按原任务编号核对本会话个人任务状态、是否待人工核验及结果引用。成功状态不代表外部业务正式提交；完整结果按已授权证据入口读取。',
+        description: 'taskId 只取 core_tasks_list 返回的任务 id，不能取 resultRef 或其后缀。按原任务编号核对状态；同分支祖先成功 WeRSS 或公众号提取任务只返回可再经 material.read 核验的正文候选，不读取原始附件或重抓取。',
         parameters: taskId, executionMode: 'sequential', execute: (id, args, signal) => this.personalTool(factory, id, 'core_task_get', args, signal) },
       { name: 'core_task_cancel', label: '取消本会话任务',
         description: '在用户要求停止或任务已不再需要时取消本会话个人任务并等待收束；不能取消当前代理自身或祖先任务。返回needs_review（待核验）时不能声称外部动作已取消。',
         parameters: taskId, executionMode: 'sequential', execute: (id, args, signal) => this.personalTool(factory, id, 'core_task_cancel', args, signal) },
+      { name: 'core_code_search', label: '检索工程源码',
+        description: '在 xuan BD 工程源码内按字面量检索（只读）：返回命中文件、行号与整行文本。用来核对动作实现、字段规则、错误文案和可用操作名；不执行代码、不升级权限、不读凭据或运行数据。动作目录查不到时先用它看实现，不要断定能力不存在。',
+        parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 120 }),
+          glob: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }, { additionalProperties: false }),
+        executionMode: 'sequential' as const, execute: (id, args, signal) => this.personalTool(factory, id, 'core_code_search', args, signal) },
+      { name: 'core_code_read', label: '读取工程源码',
+        description: '只读打开工程内单个文本文件的指定行范围（默认前 120 行）。用于核对实现细节；不能读凭据、二进制或工程外路径。',
+        parameters: Type.Object({ path: Type.String({ minLength: 1, maxLength: 512 }),
+          offset: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000_000 })),
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })) }, { additionalProperties: false }),
+        executionMode: 'sequential' as const, execute: (id, args, signal) => this.personalTool(factory, id, 'core_code_read', args, signal) },
       { name: 'core_goal_status', label: '查看当前业务目标',
         description: '只读当前输入已绑定的业务目标状态、完成条件与累计预算；没有已建目标时返回null。不会新建目标、清零预算或解除冻结。',
         parameters: Type.Object({}, { additionalProperties: false }), executionMode: 'sequential',
@@ -331,16 +391,20 @@ export class CoreModelTools {
     const input = factory.getCurrentInput(); this.assertParent(input, signal); validId(toolCallId);
     const action = PERSONAL_TOOLS[name];
     if (!action || !isObject(params)) throw publicError('MODEL_ARGS_INVALID');
-    const keys = name === 'ask_user' ? ['question', 'options'] : name === 'core_tasks_list' ? ['limit'] : name === 'core_goal_status' ? [] : ['taskId'];
+    const keys = name === 'ask_user' ? ['question', 'options'] : name === 'core_tasks_list' ? ['limit']
+      : name === 'core_code_search' ? ['query', 'glob', 'limit'] : name === 'core_code_read' ? ['path', 'offset', 'limit']
+      : name === 'core_goal_status' ? [] : ['taskId'];
     if (Object.keys(params).some(key => !keys.includes(key))) throw publicError('MODEL_ARGS_INVALID');
     const args = params as Record<string, JsonValue>, channel = this.channel(factory.model);
     const payloadDigest = digestOperationArgs({ name, action, args, inputId: input.inputId, messageId: input.messageId,
       branchId: input.branchId, modelDigest: channel.digest });
     let call = this.reserve(input, toolCallId, name, action, args, payloadDigest, channel.model, channel.digest);
+    try {
     if (!call.preview_json) {
       const tasks = this.options.getTasks();
       const taskView = (task: TaskRecord): JsonValue => ({ id: task.id, action: task.action, status: task.status,
-        requiresReview: task.requiresReview, resultRef: task.resultRef, createdAt: task.createdAt, updatedAt: task.updatedAt });
+        requiresReview: task.requiresReview, resultRef: task.resultRef, createdAt: task.createdAt, updatedAt: task.updatedAt,
+        ...(['source.werss.read', 'source.wechat.extract'].includes(task.action) ? { taskId: task.id, resultRefIsTaskId: false } : {}) });
       let preview: JsonValue;
       if (name === 'ask_user') {
         if (!this.options.questions || typeof params.question !== 'string' || (params.options !== undefined &&
@@ -350,7 +414,12 @@ export class CoreModelTools {
       } else if (name === 'core_tasks_list') {
         const limit = params.limit ?? 15;
         if (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 30) throw publicError('MODEL_ARGS_INVALID');
-        preview = { ok: true, tasks: tasks.list({ conversationId: input.conversationId, ownerRole: 'personal', limit: Number(limit) }).map(taskView) };
+        preview = { ok: true, tasks: tasks.list({ conversationId: input.conversationId, ownerRole: 'personal', limit: Number(limit) }).map(taskView),
+          rejectedCalls: this.rejectedCalls(input.conversationId) };
+      } else if (name === 'core_code_search') {
+        preview = this.searchSource(args);
+      } else if (name === 'core_code_read') {
+        preview = this.readSource(args);
       } else if (name === 'core_goal_status') {
         const goal = this.options.businessGoals?.forInput(input);
         preview = { ok: true, goal: goal ? { id: goal.id, state: goal.state, revision: goal.revision,
@@ -358,6 +427,9 @@ export class CoreModelTools {
       } else {
         if (typeof params.taskId !== 'string') throw publicError('MODEL_ARGS_INVALID');
         validId(params.taskId);
+        if (params.taskId.startsWith('task-result:') || this.db.prepare(`SELECT 1 FROM task_runs r
+          JOIN tasks t ON t.id=r.task_id WHERE r.id=? AND t.conversation_id=? LIMIT 1`)
+          .get(params.taskId, input.conversationId)) throw publicError('MODEL_TASK_ID_REQUIRED');
         let task = tasks.get(params.taskId);
         if (task.ownerRole !== 'personal' || task.conversationId !== input.conversationId) throw publicError('MODEL_ACTION_NOT_ALLOWED');
         if (name === 'core_task_cancel') {
@@ -369,15 +441,88 @@ export class CoreModelTools {
           }
           this.assertParent(input, signal); task = await tasks.cancel(task.id);
         }
-        preview = { ok: true, task: taskView(task) };
+        const candidates = name === 'core_task_get' ? this.werssTaskCandidates(task, input) : null;
+        preview = { ok: true, task: { ...taskView(task) as Record<string, JsonValue>,
+          ...(candidates ? { sourceMaterialCandidates: candidates } : {}) } };
       }
       this.assertParent(input, signal);
       this.db.prepare("UPDATE model_tool_calls SET preview_json=?,state='returned',updated_at=? WHERE id=? AND task_id IS NULL AND ticket_json IS NULL")
         .run(JSON.stringify(bounded(preview)), this.now(), call.id);
       call = this.getCall(call.id);
     }
+    } catch (error) {
+      this.markCallRejected(call.id, error);
+      throw error;
+    }
     this.assertParent(input, signal);
     return { ...toolResult(JSON.parse(call.preview_json!)), details: shareMarker(call) };
+  }
+
+  /** 仅给同分支祖先的成功 WeRSS 任务找回材料候选；真正原件核验仍在 material.read。 */
+  private werssTaskCandidates(task: TaskRecord, input: Readonly<BackendInput>): JsonValue | null {
+    if (task.action === 'source.wechat.extract') return this.wechatTaskCandidates(task, input);
+    if (task.action !== 'source.werss.read' || task.status !== 'succeeded' || task.requiresReview || !task.result
+      || task.ownerRole !== 'personal' || task.conversationId !== input.conversationId || !this.options.canSelectGeneratedMaterial) return null;
+    const origin = this.taskOrigin(task.id);
+    if (!origin || origin.conversationId !== input.conversationId || origin.branchId !== input.branchId) return null;
+    const ancestor = this.db.prepare(`WITH RECURSIVE path(id,parent_id) AS (
+      SELECT id,parent_id FROM messages WHERE id=? AND conversation_id=?
+      UNION SELECT m.id,m.parent_id FROM messages m JOIN path p ON m.id=p.parent_id WHERE m.conversation_id=?)
+      SELECT id FROM path WHERE id=? LIMIT 1`)
+      .get(input.messageId, input.conversationId, input.conversationId, origin.messageId);
+    if (!ancestor) return null;
+    const data = isObject(task.result.data) ? task.result.data : null;
+    if (!data || data.source !== 'werss-local-cache' || data.status !== 'received_page' || !Array.isArray(data.articles)) {
+      return { status: 'unavailable', reason: '原任务没有可核对的文章正文候选；保留原任务，不自动重新读取来源。', items: [] };
+    }
+    const items: Record<string, JsonValue>[] = [];
+    const add = (fileRefId: unknown, version: unknown, sha256: unknown, role: 'article-table' | 'visible-text', articleId?: unknown) => {
+      if (typeof fileRefId !== 'string' || !Number.isSafeInteger(version) || typeof sha256 !== 'string'
+        || !/^[a-f0-9]{64}$/u.test(sha256) || !task.result!.artifactIds?.includes(fileRefId)
+        || !this.options.canSelectGeneratedMaterial?.(fileRefId, input)) return;
+      try {
+        const reference = this.options.files.verify(fileRefId);
+        if (reference.version !== version || reference.source !== 'generated' || reference.kind !== 'file'
+          || !reference.relations.some(relation => relation.kind === 'task' && relation.id === task.id)) return;
+        items.push({ role, fileRefId, fileRefVersion: reference.version, sha256,
+          ...(role === 'visible-text' && typeof articleId === 'string' ? { articleId } : {}) });
+      } catch { /* 原引用已失效时只保留原任务状态。 */ }
+    };
+    add(data.articleTableRef, data.articleTableRefVersion, data.articleTableSha256, 'article-table');
+    for (const article of data.articles.slice(0, 20)) if (isObject(article)) {
+      add(article.textRef, article.textRefVersion, article.textSha256, 'visible-text', article.id);
+    }
+    return items.length ? { status: 'available', items,
+      nextAction: '使用所需 fileRefId 调用 material.read，逐层核验原响应、正文、定位与回执；此列表不是原件验证或重新获取。' }
+      : { status: 'unavailable', items: [], reason: '原任务产物引用当前不可核对；保留原任务和结果引用，不自动重新读取来源。' };
+  }
+
+  private wechatTaskCandidates(task: TaskRecord, input: Readonly<BackendInput>): JsonValue | null {
+    if (task.status !== 'succeeded' || task.requiresReview || !task.result || task.ownerRole !== 'personal'
+      || task.conversationId !== input.conversationId || !this.options.canSelectGeneratedMaterial) return null;
+    const origin = this.taskOrigin(task.id);
+    if (!origin || origin.conversationId !== input.conversationId || origin.branchId !== input.branchId) return null;
+    const ancestor = this.db.prepare(`WITH RECURSIVE path(id,parent_id) AS (
+      SELECT id,parent_id FROM messages WHERE id=? AND conversation_id=?
+      UNION SELECT m.id,m.parent_id FROM messages m JOIN path p ON m.id=p.parent_id WHERE m.conversation_id=?)
+      SELECT id FROM path WHERE id=? LIMIT 1`)
+      .get(input.messageId, input.conversationId, input.conversationId, origin.messageId);
+    if (!ancestor) return null;
+    const data = isObject(task.result.data) ? task.result.data : null;
+    if (!data || data.source !== 'wechat-fixed-script' || data.status !== 'extracted'
+      || typeof data.textRef !== 'string' || typeof data.textSha256 !== 'string'
+      || !task.result.artifactIds?.includes(data.textRef)
+      || !this.options.canSelectGeneratedMaterial(data.textRef, input)) {
+      return { status: 'unavailable', items: [], reason: '原任务缺少可核对的公众号正文候选；不自动重抓取。' };
+    }
+    try {
+      const reference = this.options.files.verify(data.textRef);
+      if (reference.version !== data.textRefVersion || reference.source !== 'generated' || reference.kind !== 'file'
+        || !reference.relations.some(relation => relation.kind === 'task' && relation.id === task.id)) throw new Error('reference');
+      return { status: 'available', items: [{ role: 'visible-text', fileRefId: reference.id,
+        fileRefVersion: reference.version, sha256: data.textSha256 }],
+        nextAction: '使用 fileRefId 调用 material.read 核验原页面、脚本 JSON、正文及回执；此候选不是原件验证。' };
+    } catch { return { status: 'unavailable', items: [], reason: '公众号正文引用当前不可核对；保留原任务。' }; }
   }
 
   private serviceTools(factory: PiToolFactoryContext): readonly ToolDefinition[] {
@@ -394,11 +539,11 @@ export class CoreModelTools {
         execute: (id, args, signal) => this.executeServiceTool(factory, id, 'test_echo', args, signal) },
       ...(this.options.service?.toolNames.includes('collection_run') ? [{
         name: 'collection_run', label: '处理已登记的合成材料',
-        description: '从宿主已登记的合成文件或分页来源取得原件，经固定五步受控程序加工，达到明确完成条件。只接受登记编号；真实数据和生产绑定未启用。返回收集、加工、数据库真实回执及固定读回引用。',
+        description: '从宿主已登记的合成文件或分页来源取得原件，经固定五步受控程序完成本地加工。只接受登记编号；旧数据库首次交接已退出。本动作返回原收集与加工引用，不发起新入库。',
         parameters: Type.Object({ kind: Type.Union([Type.Literal('file'), Type.Literal('source')]),
           inputId: Type.String({ minLength: 1, maxLength: 160 }), planId: Type.String({ minLength: 1, maxLength: 160 }),
           expectedSnapshotId: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 160 }), Type.Null()])),
-          completionCondition: Type.Union([Type.Literal('processed'), Type.Literal('received'), Type.Literal('committed')]) }, { additionalProperties: false }),
+          completionCondition: Type.Literal('processed') }, { additionalProperties: false }),
         executionMode: 'sequential' as const,
         execute: (id: string, args: unknown, signal?: AbortSignal) => this.executeServiceTool(factory, id, 'collection_run', args, signal),
       }] : []),
@@ -578,7 +723,7 @@ export class CoreModelTools {
   private pagePreview(call: CallRow, value: Record<string, JsonValue>): JsonValue {
     const task = this.options.getTasks().get(call.task_id!);
     const localPersistence = this.localPersistence(call, task);
-    value = { ...value, localPersistence, artifactIds: task.result!.artifactIds ?? [],
+    value = { ...value, taskStatus: task.status, localPersistence, artifactIds: task.result!.artifactIds ?? [],
       summary: value.summary ?? `${this.options.registry.get(call.action).title}已完成。${localPersistence.statement}` };
     const text = JSON.stringify(value);
     if (Buffer.byteLength(text, 'utf8') <= MAX_RESULT_BYTES) return bounded(value);
@@ -586,7 +731,7 @@ export class CoreModelTools {
       subject: task.ownerRole, modelDigest: call.model_digest };
     const reference = this.evidence.retain(scope, { callId: call.id, runId: call.parent_run_id, inputId: call.input_id, messageId: call.message_id }, text);
     const firstPage = this.evidence.read(scope, { ...reference }, source => { this.assertCallParent(call); this.assertEvidenceOrigin(scope, source); });
-    return { ok: true, taskId: call.task_id, complete: false, summary: value.summary!, localPersistence,
+    return { ok: true, taskId: call.task_id, taskStatus: task.status, complete: false, summary: value.summary!, localPersistence,
       artifactIds: task.result!.artifactIds ?? [], evidence: firstPage as unknown as JsonValue,
       note: '完整结果按固定摘要保管；使用core_evidence_read续取nextCursor，done=true表示已读到末尾。' };
   }
@@ -612,6 +757,37 @@ export class CoreModelTools {
         : '本任务结果已记入本机任务记录；本次未产生新的文件产物。此项不表示未保管原件或内部记录，也不表示已提交正式数据库。' };
   }
 
+  /** 旧分享视图只由原任务的受信记录重新澄清；缺身份时保留未知。 */
+  private materialProcessReplay(task: TaskRecord): { data: JsonValue; summary: string } {
+    const source = task.result?.data;
+    const unknown = { data: { status: 'unknown', applied: 'unknown', semanticTaskStatus: 'unknown',
+      localProposal: { status: 'unknown', readback: 'unavailable' }, formalIngest: 'unknown' } as JsonValue,
+      summary: '原材料处理回执缺少可核对的语义记录；本地提案、业务应用和正式交付状态待核。' };
+    if (task.status !== 'succeeded' || task.requiresReview || !isObject(source)
+      || source.kind !== 'conversation-material' || !isObject(source.modelPreview)
+      || !isObject(source.semanticRecord)) return unknown;
+    const record = source.semanticRecord, envelope = record.envelope, result = record.result;
+    if (!isObject(envelope) || !isObject(result) || typeof envelope.proposalId !== 'string'
+      || typeof envelope.serviceTaskId !== 'string' || typeof envelope.originalSha256 !== 'string'
+      || typeof source.materialId !== 'string' || typeof source.serviceTaskId !== 'string' || typeof source.fileRefId !== 'string'
+      || envelope.materialId !== source.materialId || envelope.serviceTaskId !== source.serviceTaskId
+      || source.modelPreview.proposalId !== envelope.proposalId || result.formalIngest !== false
+      || typeof result.status !== 'string' || typeof result.applied !== 'boolean') return unknown;
+    try {
+      const link = this.db.prepare('SELECT material_id,sha256,file_ref_id FROM conversation_material_links WHERE material_id=?').get(source.materialId);
+      const call = this.db.prepare('SELECT service_task_id,material_id,operation FROM conversation_material_calls WHERE local_task_id=?').get(task.id);
+      if (!link || link.material_id !== source.materialId || link.sha256 !== envelope.originalSha256 || link.file_ref_id !== source.fileRefId
+        || !call || call.service_task_id !== envelope.serviceTaskId || call.material_id !== source.materialId
+        || call.operation !== 'material.process') return unknown;
+    } catch { return unknown; }
+    const { persistence: _legacyDelivery, localPersistence: _untrustedPersistence, ...preview } = source.modelPreview as Record<string, JsonValue>;
+    return { data: { ...preview, proposalId: envelope.proposalId, materialId: envelope.materialId,
+      serviceTaskId: envelope.serviceTaskId, semanticTaskId: envelope.serviceTaskId, semanticTaskStatus: 'succeeded',
+      localProposal: { status: 'saved', readback: 'task_result', proposalId: envelope.proposalId },
+      status: result.status, applied: result.applied, formalIngest: false } as JsonValue,
+      summary: `原任务结果中的语义提案记录可读；${result.applied ? '已应用受控清洗' : '未应用清洗'}，未正式入库。` };
+  }
+
   private catalogue(factory: PiToolFactoryContext, toolCallId: string, params: unknown, signal?: AbortSignal): AgentToolResult {
     try {
       const input = factory.getCurrentInput(); this.assertParent(input, signal); validId(toolCallId);
@@ -635,14 +811,19 @@ export class CoreModelTools {
               available: skill.availability.available, reason: skill.availability.reason ?? null, modelCalls: skill.modelCalls, permissionSummary: skill.permissionSummary,
               ...(plugin ? { plugin } : {}) };
           });
+        const scope = 'query先去首尾空白，再按不区分大小写的整段子串匹配动作名、标题或说明，不按空格拆词；回执query为规范化值。total和done只指当前query的匹配集合。0项请改短关键字或精确action，或以空query沿nextOffset分页查看全部。';
+        const page = (actions: typeof all) => {
+          const next = args.offset + actions.length;
+          return { ok: true, query: args.query, actions, total: all.length, offset: args.offset,
+            nextOffset: next < all.length ? next : null, done: next >= all.length, scope };
+        };
         const actions: typeof all = [];
         for (const action of all.slice(args.offset, args.offset + args.limit)) {
-          if (Buffer.byteLength(JSON.stringify([...actions, action]), 'utf8') > MAX_RESULT_BYTES - 1000) break;
+          if (Buffer.byteLength(JSON.stringify(page([...actions, action])), 'utf8') > MAX_RESULT_BYTES - 1000) break;
           actions.push(action);
         }
         if (!actions.length && args.offset < all.length) throw publicError('MODEL_RESULT_TOO_LARGE');
-        const next = args.offset + actions.length;
-        preview = { ok: true, actions, total: all.length, offset: args.offset, nextOffset: next < all.length ? next : null, done: next >= all.length } as unknown as JsonValue;
+        preview = page(actions) as unknown as JsonValue;
       }
       const result = toolResult(preview);
       this.options.database.transaction(() => {
@@ -951,8 +1132,7 @@ export class CoreModelTools {
       if (call.tool_name !== 'perform_action') throw publicError('MODEL_ACTION_FAILED');
       const controlled = this.controlledContext(context, call);
       const result = this.options.conversationFinancial?.handles(context.task.action)
-        ? await this.options.conversationFinancial.execute(controlled) : this.options.conversationDataCycle?.handles(context.task.action)
-          ? await this.options.conversationDataCycle.execute(controlled) : this.options.conversationAlgorithms?.handles(context.task.action)
+        ? await this.options.conversationFinancial.execute(controlled) : this.options.conversationAlgorithms?.handles(context.task.action)
             ? await this.options.conversationAlgorithms.execute(controlled) : await runtime.execute(controlled);
       this.saveResultProof(context, call, result);
       return result;
@@ -1055,12 +1235,141 @@ export class CoreModelTools {
       this.assertParent(input, signal);
       return toolResult(preview, shareMarker(this.getCall(call.id)));
     } catch (error) {
+      if (!call) this.recordRejectedCall(factory, toolCallId, name, params, error);
       if (call && (signal?.aborted || !this.options.core.isRunActive(call.parent_run_id, Number(call.parent_generation)))) {
         if (call.task_id) await this.options.getTasks().cancel(call.task_id).catch(() => {});
       }
       if (error instanceof ModelToolError) throw error;
       throw publicError('MODEL_ACTION_FAILED');
     }
+  }
+
+  /** 只读检索工程源码；根目录与白名单由宿主固定，模型只能给查询词。 */
+  private searchSource(params: Record<string, JsonValue>): Record<string, JsonValue> {
+    const query = typeof params.query === 'string' ? params.query.trim() : '';
+    if (!query || query.length > 120) throw publicError('MODEL_ARGS_INVALID');
+    const glob = typeof params.glob === 'string' && params.glob.trim() ? params.glob.trim().replace(/^\*\*?\//u, '').slice(0, 120) : null;
+    const limit = Number.isSafeInteger(params.limit) ? Number(params.limit) : 5;
+    if (limit < 1 || limit > 10) throw publicError('MODEL_ARGS_INVALID');
+    const needle = query.toLowerCase();
+    const files: { path: string; matches: { line: number; text: string }[] }[] = [];
+    let scanned = 0, truncated = false, bytes = 0;
+    for (const file of this.walkSource()) {
+      if (scanned >= SOURCE_MAX_FILES) { truncated = true; break; }
+      if (glob && !file.endsWith(glob)) continue;
+      scanned += 1;
+      let text: string;
+      try { text = readFileSync(resolve(this.sourceRoot(), file), 'utf8'); } catch { continue; }
+      if (text.length > SOURCE_MAX_FILE_BYTES) continue;
+      const lines = text.split('\n'), hits: { line: number; text: string }[] = [];
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i]!;
+        if (!line.toLowerCase().includes(needle)) continue;
+        hits.push({ line: i + 1, text: line.trim().slice(0, 240) });
+        if (hits.length >= 20) break;
+      }
+      if (!hits.length) continue;
+      files.push({ path: file, matches: hits });
+      bytes += hits.reduce((sum, hit) => sum + hit.text.length + file.length, 0);
+      if (files.length >= limit || bytes >= SOURCE_RESULT_BYTES) { truncated = true; break; }
+    }
+    return { ok: true, query, scope: '工程源码（只读）', files, scannedFiles: scanned, truncated };
+  }
+
+  /** 只读打开工程内单个文本文件的指定行范围。 */
+  private readSource(params: Record<string, JsonValue>): Record<string, JsonValue> {
+    const path = typeof params.path === 'string' ? params.path.trim() : '';
+    if (!path || path.length > 512 || path.includes('\u0000')) throw publicError('MODEL_ARGS_INVALID', '源码路径须为工程内的相对路径，长度不超过 512。');
+    const root = this.sourceRoot(), absolute = resolve(root, path);
+    if (absolute !== root && !absolute.startsWith(root + sep)) throw publicError('MODEL_FILE_NOT_SELECTED', '源码读取不能越出工程根，请用相对路径。');
+    const relativePath = relative(root, absolute);
+    if (!SOURCE_FILE_EXTENSIONS.has(extname(absolute).toLowerCase()) || SOURCE_SECRET_PATH.test(relativePath)
+      || relativePath.split('/').some((part) => SOURCE_SKIP_DIRS.has(part))) throw publicError('MODEL_FILE_NOT_SELECTED',
+        '源码读取只支持工程内的文本源码文件；node_modules、dist、构建产物、凭据类路径与二进制一律拒绝。');
+    let text: string;
+    try {
+      const stat = statSync(absolute);
+      if (!stat.isFile() || stat.size > SOURCE_MAX_FILE_BYTES) throw new Error('unreadable');
+      text = readFileSync(absolute, 'utf8');
+    } catch { throw publicError('MODEL_FILE_NOT_SELECTED', '文件不可读或超过 512 KiB 上限。'); }
+    const offset = Number.isSafeInteger(params.offset) && Number(params.offset) > 0 ? Number(params.offset) : 1;
+    const limit = Number.isSafeInteger(params.limit) ? Number(params.limit) : 120;
+    if (limit < 1 || limit > 300) throw publicError('MODEL_ARGS_INVALID');
+    const lines = text.split('\n'), slice = lines.slice(offset - 1, offset - 1 + limit);
+    const nextOffset = offset - 1 + slice.length < lines.length ? offset + slice.length : null;
+    return { ok: true, path: relativePath, offset, limit, totalLines: lines.length, nextOffset, text: slice.join('\n').slice(0, 24_000) };
+  }
+
+  private sourceRoot(): string {
+    const root = this.options.codeRoot;
+    if (!root) throw publicError('MODEL_ACTION_UNAVAILABLE');
+    return resolve(root);
+  }
+
+  /** 固定根下的只读遍历；跳过依赖、构建产物与凭据类路径。 */
+  private *walkSource(): Generator<string> {
+    const root = this.sourceRoot();
+    const stack: string[] = [''];
+    while (stack.length) {
+      const current = stack.pop() as string;
+      let entries;
+      try { entries = readdirSync(resolve(root, current), { withFileTypes: true }); } catch { continue; }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        const path = current ? `${current}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) { if (!SOURCE_SKIP_DIRS.has(entry.name)) stack.push(path); continue; }
+        if (!entry.isFile() || !SOURCE_FILE_EXTENSIONS.has(extname(entry.name).toLowerCase())) continue;
+        if (SOURCE_SECRET_PATH.test(path)) continue;
+        yield path;
+      }
+    }
+  }
+
+  /** 参数或契约校验失败发生在建立任务之前；留一条 rejected 调用，模型可据此反查试过什么、为什么被拒。 */
+  private recordRejectedCall(factory: PiToolFactoryContext, toolCallId: string, name: string, params: unknown, error: unknown): void {
+    try {
+      const input = factory.getCurrentInput(), channel = this.channel(factory.model);
+      const detail = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+      const reason = safeFailureDetail(detail) ?? '参数或契约校验未通过。';
+      const action = isObject(params) && typeof params.action === 'string' && params.action ? params.action : name;
+      const args = (isObject(params) ? params : { value: String(params).slice(0, 200) }) as JsonValue;
+      const digest = digestOperationArgs({ name, action, args, inputId: input.inputId, messageId: input.messageId,
+        branchId: input.branchId, modelDigest: channel.digest });
+      const now = this.now();
+      this.db.prepare(`INSERT INTO model_tool_calls(id,conversation_id,branch_id,parent_run_id,parent_generation,input_id,message_id,tool_call_id,tool_name,action,args_json,payload_digest,model_json,model_digest,selection_json,task_request_id,preview_json,state,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(parent_run_id,parent_generation,tool_call_id) DO UPDATE SET state='rejected', args_json=excluded.args_json,
+          payload_digest=excluded.payload_digest, preview_json=excluded.preview_json, updated_at=excluded.updated_at`)
+        .run(randomUUID(), input.conversationId, input.branchId, input.runId, input.generation, input.inputId, input.messageId,
+          toolCallId, name, action, JSON.stringify(args), digest, JSON.stringify(channel.model), channel.digest, '[]',
+          `model-tool-rejected:${randomUUID()}`,
+          JSON.stringify({ ok: false, code: 'MODEL_ARGS_INVALID', message: reason }), 'rejected', now, now);
+    } catch { /* 诊断记录尽力而为，不能掩盖原始错误。 */ }
+  }
+
+  /** 调用在返回预览前失败时把记录收口成 rejected，避免长期占用 reserved 状态。 */
+  private markCallRejected(callId: string, error: unknown): void {
+    try {
+      const code = (error as { code?: string } | null)?.code ?? 'MODEL_ACTION_FAILED';
+      const message = safeFailureDetail(error instanceof Error ? error.message : undefined) ?? '本次调用未完成。';
+      this.db.prepare("UPDATE model_tool_calls SET state='rejected', preview_json=?, updated_at=? WHERE id=? AND state='reserved'")
+        .run(JSON.stringify({ ok: false, code, message }), this.now(), callId);
+    } catch { /* 收口尽力而为，不掩盖原始错误。 */ }
+  }
+
+  /** 只读最近被拒调用，供模型核对参数规则，不重放也不创建任务。 */
+  private rejectedCalls(conversationId: string): JsonValue[] {
+    try {
+      const rows = this.db.prepare(`SELECT tool_name,action,args_json,preview_json,created_at FROM model_tool_calls
+        WHERE conversation_id=? AND state='rejected' ORDER BY created_at DESC LIMIT 5`).all(conversationId) as unknown as Array<{
+        tool_name: string; action: string; args_json: string; preview_json: string | null; created_at: number }>;
+      return rows.map((row) => {
+        let args: JsonValue = null, reason: string | null = null;
+        try { args = JSON.parse(row.args_json) as JsonValue; } catch { args = null; }
+        try { reason = (JSON.parse(row.preview_json ?? '{}') as { message?: string }).message ?? null; } catch { reason = null; }
+        return { tool: row.tool_name, action: row.action, args, reason, createdAt: row.created_at };
+      });
+    } catch { return []; }
   }
 
   private prepare(name: string, params: unknown, known?: CallRow): { action: string; args: JsonValue } {
@@ -1102,7 +1411,8 @@ export class CoreModelTools {
     } catch (error) {
       if (error instanceof ModelToolError) throw error;
       if (error instanceof TaskError && error.code === 'SKILL_UNAVAILABLE') throw publicError('MODEL_ACTION_UNAVAILABLE');
-      throw publicError('MODEL_ARGS_INVALID');
+      // 动作参数/合同校验的真实原因回给模型，避免只看到“执行失败”后反复猜参数。
+      throw publicError('MODEL_ARGS_INVALID', error instanceof Error ? error.message : undefined);
     }
   }
 
@@ -1115,8 +1425,11 @@ export class CoreModelTools {
       const previous = this.db.prepare('SELECT * FROM model_tool_calls WHERE parent_run_id=? AND parent_generation=? AND tool_call_id=?')
         .get(input.runId, input.generation, toolCallId) as unknown as CallRow | undefined;
       if (previous) {
-        if (previous.payload_digest !== digest) throw publicError('MODEL_TOOL_CALL_CONFLICT');
-        return previous;
+        if (previous.state === 'rejected') this.db.prepare('DELETE FROM model_tool_calls WHERE id=?').run(previous.id);
+        else {
+          if (previous.payload_digest !== digest) throw publicError('MODEL_TOOL_CALL_CONFLICT');
+          return previous;
+        }
       }
       const unresolved = this.db.prepare('SELECT task_id FROM model_tool_calls WHERE conversation_id=? AND action=? AND args_json=? AND task_id IS NOT NULL')
         .all(input.conversationId, action, JSON.stringify(args));
@@ -1127,6 +1440,10 @@ export class CoreModelTools {
       const serviceTool = !!this.options.service?.toolNames.includes(name);
       const metadataOnly = name === EVIDENCE_TOOL || name === 'list_actions' || name === SKILL_CATALOGUE_TOOL || name === SKILL_TEXT_TOOL || Object.hasOwn(PERSONAL_TOOLS, name) || serviceTool;
       const bound = metadataOnly ? undefined : this.options.selectedAttachmentsForInput?.(input);
+      const selectedWerssOutput = (reference: FileReference): boolean => reference.source !== 'generated'
+        || !reference.relations.some(relation => relation.kind === 'task'
+          && ['source.werss.read', 'source.wechat.extract'].includes(String(this.options.database.connection.prepare('SELECT action FROM tasks WHERE id=?').get(relation.id)?.action)))
+        || this.options.canSelectGeneratedMaterial?.(reference.id, input) === true;
       const carried = new Map<string, FileReference>();
       if (!metadataOnly) {
         const priorCalls = this.db.prepare("SELECT * FROM model_tool_calls WHERE parent_run_id=? AND parent_generation=? AND conversation_id=? AND branch_id=? AND model_digest=? AND state='returned' AND ticket_json IS NOT NULL")
@@ -1139,13 +1456,14 @@ export class CoreModelTools {
           } catch { /* 过期、被撤回或已变化的旧结果不能扩大本次选择。 */ }
         }
       }
-      const attached = metadataOnly ? [] : bound?.length
+      const attached = (metadataOnly ? [] : bound?.length
         ? bound.map(item => {
           const ref = this.options.files.getRef(item.fileRefId);
           if (ref.version !== item.version && carried.get(ref.id)?.version !== ref.version) throw publicError('MODEL_SHARE_REVOKED');
           return ref;
-        }) : this.options.files.getRefs({ conversationId: input.conversationId, limit: 1000 });
-      if (!metadataOnly) for (const reference of carried.values()) if (!attached.some(item => item.id === reference.id)) attached.push(reference);
+        }) : this.options.files.getRefs({ conversationId: input.conversationId, limit: 1000 })).filter(selectedWerssOutput);
+      if (!metadataOnly) for (const reference of carried.values()) if (selectedWerssOutput(reference)
+        && !attached.some(item => item.id === reference.id)) attached.push(reference);
       let selection: FileReference[];
       if (name === EVIDENCE_TOOL) {
         const scope = this.scope(input, model, modelDigest), source = this.evidence.source(scope, String((args as Record<string, JsonValue>).evidenceId));
@@ -1161,8 +1479,20 @@ export class CoreModelTools {
         const ids = this.options.registry.get(action).fields.filter((field) => field.type === 'file' || field.type === 'directory')
           .map((field) => arguments_[field.key]).filter((value): value is string => typeof value === 'string');
         selection = ids.map((id) => {
-          const reference = attached.find((candidate) => candidate.id === id);
+          let reference = attached.find((candidate) => candidate.id === id);
+          if (!reference && (action === 'material.read' || action === 'material.process')
+            && id === arguments_.fileRefId && this.options.canSelectGeneratedMaterial?.(id, input)) {
+            reference = this.options.files.getRef(id);
+            if (reference.source !== 'generated' || reference.kind !== 'file'
+              || !reference.relations.some(relation => relation.kind === 'conversation' && relation.id === input.conversationId)) {
+              throw publicError('MODEL_FILE_NOT_SELECTED');
+            }
+          }
           if (!reference) throw publicError('MODEL_FILE_NOT_SELECTED');
+          if ((action === 'material.read' || action === 'material.process') && reference.source === 'generated'
+            && reference.relations.some(relation => relation.kind === 'task'
+              && ['source.werss.read', 'source.wechat.extract'].includes(String(this.options.database.connection.prepare('SELECT action FROM tasks WHERE id=?').get(relation.id)?.action)))
+            && !this.options.canSelectGeneratedMaterial?.(reference.id, input)) throw publicError('MODEL_FILE_NOT_SELECTED');
           return reference;
         });
       }
@@ -1390,6 +1720,11 @@ export class CoreModelTools {
       data.issueCount = source.issues.length;
       data.issuesTruncated = source.issues.length > 50 || source.issues.some(value => isObject(value)
         && (String(value.code).length > 100 || String(value.message).length > 1000));
+      if (call.action === 'conversion.structured' && source.source.detectedType === 'xlsx' && source.modelPreview !== undefined) {
+        if (!isObject(source.modelPreview) || source.modelPreview.format !== 'xlsx'
+          || Buffer.byteLength(JSON.stringify(source.modelPreview)) > 6_000) throw publicError('MODEL_ACTION_FAILED');
+        data.modelPreview = source.modelPreview;
+      }
       if (typeof source.text === 'string') data.text = source.text.slice(0, 16000);
       if (Number.isSafeInteger(source.characterCount) && Number(source.characterCount) >= 0) data.characterCount = Number(source.characterCount);
       data.truncated = source.truncated === true || typeof source.text === 'string' && source.text.length > 16000;
@@ -1398,11 +1733,13 @@ export class CoreModelTools {
         : source.status === 'partial' ? '原件转换部分完成，须核对未确认项。' : '原件转换失败，已保留来源和失败原因。';
       return this.pagePreview(call, { ok: true, taskId: task.id, action: call.action, summary, data, artifactIds: task.result.artifactIds ?? [] });
     }
-    if (call.action.startsWith('data.candidates.') || call.action.startsWith('data.processing.') || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(call.action) || call.action === 'material.read' || call.action === 'material.process' || call.action === 'material.transcribe' || call.action === 'baidu.drive' || call.action === 'browser.control' || call.action === 'web.read_public' || call.action === 'web.search' || this.options.conversationFinancial?.handles(call.action) || this.options.conversationDataCycle?.handles(call.action) || this.options.conversationAlgorithms?.handles(call.action)) {
+    if (call.action.startsWith('data.processing.') || call.action.startsWith('data.adapters.') || call.action.startsWith('data.r1.') || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(call.action) || call.action === 'material.read' || call.action === 'material.process' || call.action === 'material.transcribe' || call.action === 'baidu.drive' || call.action === 'browser.control' || call.action === 'web.read_public' || call.action === 'web.search' || this.options.conversationFinancial?.handles(call.action) || this.options.conversationAlgorithms?.handles(call.action)) {
       // The closed host bridge constructs this bounded projection; no arbitrary result body is shared.
       if (!isObject(source.modelPreview)) throw publicError('MODEL_ACTION_FAILED');
       const { localPersistence: _untrustedPersistence, ...modelPreview } = source.modelPreview as Record<string, JsonValue>;
-      return this.pagePreview(call, { ok: true, taskId: task.id, action: call.action, data: modelPreview });
+      return this.pagePreview(call, { ok: true, taskId: task.id, action: call.action,
+        ...(call.action === 'material.process' && typeof source.summary === 'string' ? { summary: source.summary.slice(0, 500) } : {}),
+        data: modelPreview });
     }
     for (const key of ['text', 'characters', 'characterCount', 'truncated', 'fileRefId', 'directoryRefId', 'fileCount', 'bytes', 'size', 'sha256', 'modelCalls', 'format', 'sampleRate', 'channels', 'pages', 'title', 'url', 'duration', 'method', 'mime', 'extractor']) {
       const value = source[key];
@@ -1545,7 +1882,8 @@ function unknownLocalPersistence(): Record<string, JsonValue> {
   return { scope: 'local-task-artifacts', status: 'unknown', taskRecord: 'unknown', currentFiles: 'unknown',
     statement: '本机保存状态无法按当前权限和文件证明核实；不能声称当前已保存，也不能据此声称从未保存。' };
 }
-function modelActionApprovalMode(action: string, args: Record<string, JsonValue>): NonNullable<OperationScope['approvalMode']> {
+export function isModelActionAllowed(action: string): boolean { return MODEL_ACTIONS.has(action); }
+export function modelActionApprovalMode(action: string, args: Record<string, JsonValue>): NonNullable<OperationScope['approvalMode']> {
   if (AUTOMATIC_ACTIONS.has(action)) return 'automatic';
   if (action === 'browser.control' && ['status', 'extract_url'].includes(String(args.operation))) return 'automatic';
   if (action === 'baidu.drive' && ['whoami', 'ls', 'search', 'transfer-list', 'download'].includes(String(args.operation))) return 'automatic';
@@ -1604,12 +1942,13 @@ function projectedResult(result: Readonly<ToolResultMessage>, text: string, deta
   return { role: result.role, toolCallId: result.toolCallId, toolName: result.toolName, timestamp: result.timestamp,
     isError: result.isError, content: [{ type: 'text', text }], details };
 }
-function publicError(code: string): ModelToolError {
+function publicError(code: string, argument?: string): ModelToolError {
   const messages: Record<string, string> = {
     MODEL_ARGS_INVALID: '工具参数无效，请使用动作表的字段和当前会话引用编号。',
+    MODEL_TASK_ID_REQUIRED: 'resultRef 是不透明结果引用，不是任务编号；请使用 core_tasks_list 返回的 id 作为 core_task_get 的 taskId。',
     MODEL_IMAGE_UNSUPPORTED: '当前代理模型的实际配置不支持图像输入；不会另选供应商、模型或本机OCR引擎。',
     MODEL_IMAGE_FORMAT_UNSUPPORTED: '当前代理OCR只接受PNG、JPEG、GIF或WebP原图；HEIC、TIFF和BMP尚不支持。',
-    MODEL_IMAGE_LIMIT: '原图或识别文字超过当前模型与应用预算；不会自动缩图、截断或降档。',
+    MODEL_IMAGE_LIMIT: SAFE_TASK_FAILURES.MODEL_IMAGE_LIMIT,
     MODEL_IMAGE_EMPTY: '当前模型没有识别到可用文字。',
     MODEL_IMAGE_REQUEST_FAILED: '当前代理图像请求未完整结束；不会自动重试或切换引擎。',
     MODEL_ACTION_UNAVAILABLE: '此动作尚未接入或当前不可用；请查看动作目录中的状态与原因。本次未启动新的执行，也未生成新结果。',
@@ -1629,5 +1968,15 @@ function publicError(code: string): ModelToolError {
     MODEL_RESULT_TOO_LARGE: '工具预览超过分享预算，完整结果保留在本机。',
     MODEL_SKILL_RESOURCE_REVOKED: '当前任务没有可核对的所选技能资源资格；仅当前绑定版本的登记文本可读取。',
   };
-  return new ModelToolError(code, messages[code] ?? '受控模型工具拒绝了本次请求。');
+  const base = messages[code] ?? '受控模型工具拒绝了本次请求。';
+  const detail = safeFailureDetail(argument);
+  return new ModelToolError(code, detail ? `${base}具体原因：${detail}` : base);
+}
+/** 只回传受控源码里的短中文原因；堆栈、路径、链接和凭据一律不进入模型上下文。 */
+function safeFailureDetail(message: string | undefined): string | undefined {
+  if (!message) return undefined;
+  const text = message.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim();
+  if (!text || text.length > 200 || /https?:\/\//iu.test(text) || /(^|[\s"'(])\/(Users|Applications|Volumes|private|tmp)\b/u.test(text)
+    || /\bBearer\b/iu.test(text) || /\b(api[_-]?key|access[_-]?token|refresh[_-]?token)\b/iu.test(text)) return undefined;
+  return text;
 }

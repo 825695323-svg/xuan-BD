@@ -33,7 +33,8 @@ from referencing import Registry, Resource
 from .duckdb_sdk import canonical, sha
 from .product_governance import NULL_STATES
 from . import product_calendar
-from .product_service import SERVICE_VERSION
+from .product_service import SERVICE_VERSION, current_only_business
+from . import row_version_objects
 
 
 PROTOCOL_VERSION = "wfd.read/1.3-product1"
@@ -607,7 +608,7 @@ class ProductQuery:
             marker = json.loads(commit_bytes.decode("utf-8"))
             if marker.get("snapshot_id") != snapshot_id:
                 raise ValueError("commit marker snapshot id mismatch")
-            snapshot_path = self._rooted(marker["snapshot_file"])
+            snapshot_path = self._rooted(row_version_objects.snapshot_relative(marker, snapshot_id))
             snapshot_bytes = snapshot_path.read_bytes()
             if sha(snapshot_bytes) != marker["snapshot_sha256"]:
                 raise ValueError("snapshot digest mismatch")
@@ -621,6 +622,10 @@ class ProductQuery:
             manifest = json.loads(manifest_bytes.decode("utf-8"))
             if manifest.get("files") != snapshot.get("files"):
                 raise ValueError("manifest/snapshot file list mismatch")
+            row_version_objects.project_snapshot(self.root, snapshot)
+            # Equality above binds the physical lists. Reuse only the validated
+            # source projections; iteration/canonical bytes remain physical.
+            manifest["files"] = snapshot["files"]
         except ProductQueryError:
             raise
         except (OSError, KeyError, TypeError, ValueError, AttributeError,
@@ -634,6 +639,27 @@ class ProductQuery:
 
     def _preflight_snapshot(self, snapshot_id):
         return self._snapshot_metadata(snapshot_id)
+
+    def fixed_filter_products(self, *, snapshot_id, product_ids, max_scan_bytes):
+        """Authorize fixed filter bindings without an unbudgeted payload discovery.
+
+        The ordinary service discovery verifies all snapshot payloads. A
+        bounded filter instead reads the same authenticated metadata chain,
+        then delegates every value/qualification decision to execute().
+        """
+        self.service.require_permission("read")
+        _, manifest, commit_bytes, snapshot_bytes, manifest_bytes = self._preflight_snapshot(snapshot_id)
+        object_bytes = row_version_objects.reference_inventory(manifest)["unique_bytes"]
+        metadata_bytes = commit_bytes + snapshot_bytes + manifest_bytes + object_bytes
+        if metadata_bytes > max_scan_bytes:
+            raise ProductQueryError("SCAN_BUDGET_EXCEEDED", "Fixed filter metadata exceeds the scan allowance",
+                                    {"required_scan_bytes": metadata_bytes, "max_scan_bytes": max_scan_bytes})
+        selected = set(product_ids)
+        entries = [entry for entry in manifest["files"] if entry.get("product_id") in selected]
+        self._authorize_metadata_sources(self._source_ids_from_entries(entries), require_nonempty=bool(entries))
+        products = self._manifest_products(entries)
+        return {"products": list(products.values()), "metadata_bytes": metadata_bytes,
+                **({"row_version_object_validation_bytes": object_bytes} if object_bytes else {})}
 
     def _manifest_products(self, entries):
         products = {}
@@ -800,6 +826,8 @@ class ProductQuery:
                     "product_id": entry.get("product_id"),
                     "read_role": "dependency_snapshot_verification",
                 })
+            object_inventory = row_version_objects.reference_inventory(manifest)
+            object_read_bytes = 2 * (object_inventory["unique_bytes"] + object_inventory["occurrence_bytes"])
             plan.append({
                 "snapshot_id": dependency["snapshot_id"],
                 "product_id": dependency["product_id"],
@@ -808,7 +836,8 @@ class ProductQuery:
                 "commit_bytes": commit_bytes,
                 "snapshot_bytes": snapshot_bytes,
                 "manifest_bytes": manifest_bytes,
-                "metadata_bytes": 2 * (commit_bytes + snapshot_bytes + manifest_bytes),
+                "metadata_bytes": 2 * (commit_bytes + snapshot_bytes + manifest_bytes) + object_read_bytes,
+                **({"row_version_object_bytes": object_read_bytes} if object_read_bytes else {}),
                 "verification_payload_bytes": payload_bytes,
                 "candidate_rows": candidate_rows,
                 "files": files,
@@ -993,6 +1022,23 @@ class ProductQuery:
             return "contained"
         return "overlap"
 
+    def _cursor_window(self, rows, last, page_size):
+        """Rows are already sorted by _sort_key; retain only the requested slice.
+
+        This removes a second linear suffix allocation, not the underlying
+        service scan or full semantic projection. bisect_right semantics keep
+        all keys equal to the last cursor excluded, as the original > filter.
+        """
+        left, right = 0, len(rows)
+        if last is not None:
+            while left < right:
+                middle = (left + right) // 2
+                if self._sort_key(rows[middle]) <= last:
+                    left = middle + 1
+                else:
+                    right = middle
+        return rows[left:left + page_size], len(rows) - left
+
     # ------------------------------------------------------------------ projection
     def _project(self, request, result, manifest_products, *, subject, fields,
                  business_range):
@@ -1022,102 +1068,17 @@ class ProductQuery:
             diagnostics.append(copied)
         projected_rows = []
         units = {}
+        # Fixed product objects are immutable within this projection only.
+        # Do not reuse across snapshots/requests or merge distinct contracts.
+        field_maps = {}
 
         for item in result.get("rows", []):
-            item_subject = item.get("subject")
-            if subject is not None and canonical(item_subject) != canonical(subject):
-                continue
-            key = (item.get("product_id"),
-                   (item.get("contract_ref") or {}).get("digest", "legacy"))
-            product = all_products.get(key)
-            if product is None and len(all_products) == 1:
-                product = next(iter(all_products.values()))
-            if product is None:
-                diagnostics.append(self._diagnostic(
-                    "PRODUCT_CONTRACT_UNAVAILABLE",
-                    "No fixed product contract is available for this row",
-                    item, decision="indeterminate"))
-                continue
-
-            role = business_range["role"] if business_range else \
-                ((product.get("declaration") or {}).get("time_role") or "observation")
-            business_time, time_code, time_message = self._row_business_time(
-                item.get("row") or {}, role, product)
-            if time_code:
-                if business_range is not None:
-                    diagnostics.append(self._diagnostic(
-                        time_code, time_message, item,
-                        decision="indeterminate",
-                        business_time_role=role))
-                    continue
-                # Without a range the time is only envelope metadata; keep the
-                # explicit unknown/not_applicable object instead of turning it
-                # into an unqualified null or silently dropping the row.
-                business_time = copy.deepcopy(business_time) if isinstance(
-                    business_time, dict) else None
-            if business_range is not None:
-                decision = self._time_decision(business_time, business_range)
-                if decision == "disjoint":
-                    continue
-                if decision != "contained":
-                    diagnostics.append(self._diagnostic(
-                        "BUSINESS_TIME_OVERLAP_QUERY_RANGE",
-                        "Business-time interval is not fully contained in the requested range",
-                        item, decision="indeterminate",
-                        business_time_role=role,
-                        business_time=copy.deepcopy(business_time),
-                        requested_range=copy.deepcopy(business_range),
-                        time_decision=decision))
-                    continue
-
-            field_map = _declaration_fields(product)
-            missing = [field for field in fields if field not in field_map]
-            if missing:
-                diagnostics.append(self._diagnostic(
-                    "FIELD_NOT_DEFINED_IN_ROW_CONTRACT",
-                    "Requested field is not declared by this fixed product contract",
-                    item, decision="indeterminate",
-                    missing_fields=missing,
-                    contract_ref=copy.deepcopy(item.get("contract_ref"))))
-                continue
-
-            values, invalid = {}, None
-            for field in fields:
-                cell, code, message = self._project_cell(
-                    item.get("row") or {}, field, field_map[field], product)
-                if code:
-                    invalid = (field, code, message)
-                    break
-                values[field] = cell
-                unit_code = cell["unit"]["unit_code"]
-                if unit_code not in units:
-                    units[unit_code] = copy.deepcopy(cell["unit"])
-            if invalid:
-                diagnostics.append(self._diagnostic(
-                    invalid[1], invalid[2], item,
-                    decision="indeterminate", field_code=invalid[0]))
-                continue
-
-            projected_rows.append({
-                "product_id": item.get("product_id"),
-                "subject": copy.deepcopy(item_subject),
-                "business_time": copy.deepcopy(business_time),
-                "business_time_role": role,
-                "times": {
-                    key: copy.deepcopy((item.get("row") or {})[key])
-                    for key in ("observation_time", "event_time", "public_time",
-                                "expected_time", "effective_period")
-                    if isinstance(item.get("row"), dict) and key in item["row"]
-                },
-                "values": values,
-                "eligibility": copy.deepcopy(item.get("eligibility")),
-                "revision": copy.deepcopy(item.get("revision")),
-                "revision_state": item.get("revision_state"),
-                "record_ref": copy.deepcopy(item.get("record_ref")),
-                "contract_ref": copy.deepcopy(item.get("contract_ref")),
-                "source_binding": copy.deepcopy(item.get("source_binding")),
-                "evidence_refs": copy.deepcopy(item.get("evidence_refs", [])),
-            })
+            projected = self._project_row(
+                item, all_products, subject=subject, fields=fields,
+                business_range=business_range, field_maps=field_maps,
+                diagnostics=diagnostics, units=units)
+            if projected is not None:
+                projected_rows.append(projected)
 
         projected_rows.sort(key=self._sort_key)
         diagnostics.sort(key=lambda item: (
@@ -1125,6 +1086,145 @@ class ProductQuery:
             str(item.get("business_key") or ""),
             str(item.get("code") or item.get("reason") or "")))
         return projected_rows, diagnostics, all_products, units
+
+    def _project_batch_window(self, request, batches, manifest_products, *,
+                              subject, fields, business_range, last=None):
+        """Streaming reducer for execute's metadata-gated data-only batch path.
+
+        Batch row projections are released after consumption. Diagnostics and
+        product metadata remain full-domain; this is not constant total RAM.
+        """
+        import heapq
+        products, units, diagnostics, source_ids = dict(manifest_products), {}, [], set()
+        total = remaining = 0
+
+        def candidates():
+            nonlocal total, remaining
+            for batch in batches:
+                rows, notes, fixed, batch_units = self._project(
+                    request, batch, products, subject=subject,
+                    fields=fields, business_range=business_range)
+                products.update(fixed)
+                units.update(batch_units)
+                diagnostics.extend(notes)
+                for row in rows:
+                    total += 1
+                    source_ids.update((row.get("source_binding") or {}).get("source_ids", []) or [])
+                    if last is None or self._sort_key(row) > last:
+                        remaining += 1
+                        yield row
+
+        window = heapq.nsmallest(request["page_size"] + 1, candidates(), key=self._sort_key)
+        diagnostics.sort(key=lambda item: (
+            str(item.get("product_id") or ""),
+            str(item.get("business_key") or ""),
+            str(item.get("code") or item.get("reason") or "")))
+        return {"rows": window[:request["page_size"]], "total_rows": total,
+                "remaining_rows": remaining, "has_more": remaining > request["page_size"],
+                "products": products, "units": units, "diagnostics": diagnostics,
+                "source_ids": sorted(source_ids)}
+
+    def _project_row(self, item, all_products, *, subject, fields,
+                     business_range, field_maps, diagnostics, units):
+        """One authoritative row decision; accumulators belong to one projection."""
+        item_subject = item.get("subject")
+        if subject is not None and canonical(item_subject) != canonical(subject):
+            return None
+        key = (item.get("product_id"),
+               (item.get("contract_ref") or {}).get("digest", "legacy"))
+        product = all_products.get(key)
+        if product is None and len(all_products) == 1:
+            product = next(iter(all_products.values()))
+        if product is None:
+            diagnostics.append(self._diagnostic(
+                "PRODUCT_CONTRACT_UNAVAILABLE",
+                "No fixed product contract is available for this row",
+                item, decision="indeterminate"))
+            return None
+
+        role = business_range["role"] if business_range else \
+            ((product.get("declaration") or {}).get("time_role") or "observation")
+        business_time, time_code, time_message = self._row_business_time(
+            item.get("row") or {}, role, product)
+        if time_code:
+            if business_range is not None:
+                diagnostics.append(self._diagnostic(
+                    time_code, time_message, item,
+                    decision="indeterminate",
+                    business_time_role=role))
+                return None
+            # Without a range the time is only envelope metadata; keep the
+            # explicit unknown/not_applicable object instead of turning it
+            # into an unqualified null or silently dropping the row.
+            business_time = copy.deepcopy(business_time) if isinstance(
+                business_time, dict) else None
+        if business_range is not None:
+            decision = self._time_decision(business_time, business_range)
+            if decision == "disjoint":
+                return None
+            if decision != "contained":
+                diagnostics.append(self._diagnostic(
+                    "BUSINESS_TIME_OVERLAP_QUERY_RANGE",
+                    "Business-time interval is not fully contained in the requested range",
+                    item, decision="indeterminate",
+                    business_time_role=role,
+                    business_time=copy.deepcopy(business_time),
+                    requested_range=copy.deepcopy(business_range),
+                    time_decision=decision))
+                return None
+
+        product_identity = id(product)
+        if product_identity not in field_maps:
+            field_maps[product_identity] = _declaration_fields(product)
+        field_map = field_maps[product_identity]
+        missing = [field for field in fields if field not in field_map]
+        if missing:
+            diagnostics.append(self._diagnostic(
+                "FIELD_NOT_DEFINED_IN_ROW_CONTRACT",
+                "Requested field is not declared by this fixed product contract",
+                item, decision="indeterminate",
+                missing_fields=missing,
+                contract_ref=copy.deepcopy(item.get("contract_ref"))))
+            return None
+
+        values, invalid = {}, None
+        for field in fields:
+            cell, code, message = self._project_cell(
+                item.get("row") or {}, field, field_map[field], product)
+            if code:
+                invalid = (field, code, message)
+                break
+            values[field] = cell
+            unit_code = cell["unit"]["unit_code"]
+            if unit_code not in units:
+                units[unit_code] = copy.deepcopy(cell["unit"])
+        if invalid:
+            diagnostics.append(self._diagnostic(
+                invalid[1], invalid[2], item,
+                decision="indeterminate", field_code=invalid[0]))
+            return None
+
+        return {
+            "product_id": item.get("product_id"),
+            "subject": copy.deepcopy(item_subject),
+            "business_time": copy.deepcopy(business_time),
+            "business_time_role": role,
+            "times": {
+                key: copy.deepcopy((item.get("row") or {})[key])
+                for key in ("observation_time", "event_time", "public_time",
+                            "expected_time", "effective_period")
+                if isinstance(item.get("row"), dict) and key in item["row"]
+            },
+            "values": values,
+            "eligibility": copy.deepcopy(item.get("eligibility")),
+            "revision": copy.deepcopy(item.get("revision")),
+            "revision_state": item.get("revision_state"),
+            "record_ref": copy.deepcopy(item.get("record_ref")),
+            "contract_ref": copy.deepcopy(item.get("contract_ref")),
+            "source_binding": copy.deepcopy(item.get("source_binding")),
+            "evidence_refs": copy.deepcopy(item.get("evidence_refs", [])),
+        }
+
 
     @staticmethod
     def _diagnostic(code, message, item, *, decision, **extra):
@@ -1228,7 +1328,8 @@ class ProductQuery:
         return files, total_bytes, total_rows
 
     def _budget_preflight(self, request, entries, manifest, commit_bytes,
-                          snapshot_bytes, manifest_bytes, dependency_plan):
+                          snapshot_bytes, manifest_bytes, dependency_plan,
+                          *, bounded_product_pages=False):
         max_scan_bytes = request["max_scan_bytes"]
         max_nodes = request["max_nodes"]
         if max_scan_bytes > MAX_SCAN_BYTES:
@@ -1247,31 +1348,61 @@ class ProductQuery:
                                      "ceiling": MAX_PAGE_SIZE})
 
         product_paths = {entry["file_relpath"] for entry in entries}
+        verification_entries = entries if bounded_product_pages else manifest["files"]
         selected_files, selected_verify_bytes, _ = self._stat_manifest_files(
-            manifest["files"], snapshot_id=request["snapshot_id"],
-            read_role="selected_snapshot_verification",
+            verification_entries, snapshot_id=request["snapshot_id"],
+            read_role="fixed_product_page_verification" if bounded_product_pages else "selected_snapshot_verification",
             product_paths=product_paths)
         _, selected_product_bytes, candidate_rows = self._stat_manifest_files(
             entries, snapshot_id=request["snapshot_id"],
             read_role="selected_product_read")
-        selected_metadata_bytes = 3 * (commit_bytes + snapshot_bytes + manifest_bytes)
+        metadata_reads = 2 if bounded_product_pages else 3
+        selected_metadata_bytes = metadata_reads * (commit_bytes + snapshot_bytes + manifest_bytes)
+        object_validation_bytes = metadata_reads * row_version_objects.reference_inventory(manifest)["unique_bytes"]
+        # Applicability reads each selected version map once; the bounded page
+        # reads it once again. The generic product read additionally computes
+        # its content digest and resolves revisions. Count every such object
+        # read instead of treating an on-disk getter as an in-memory lookup.
+        object_get_bytes = (2 if bounded_product_pages else 3) * row_version_objects.reference_inventory({"files": entries})["occurrence_bytes"]
+        selected_metadata_bytes += object_validation_bytes + object_get_bytes
+        contract_metadata_bytes = 0
+        if bounded_product_pages:
+            for entry in entries:
+                product = entry["source_bundle"]["_wfd_product_bindings"][entry["output_key"]]["product"]
+                for role, ref in (product.get("contract_refs") or {}).items():
+                    digest = ref["digest"].removeprefix("sha256:")
+                    contract_metadata_bytes += self._rooted(
+                        f"catalog/product_service/contracts/{role}/{digest}.json").stat().st_size
+                bundle = product.get("contract_bundle_ref")
+                if bundle:
+                    digest = bundle["digest"].removeprefix("sha256:")
+                    contract_metadata_bytes += 2 * self._rooted(
+                        f"catalog/product_service/contract_bundles/{digest}.json").stat().st_size
         dependency_payload_bytes = sum(
             item["verification_payload_bytes"] for item in dependency_plan)
         dependency_metadata_bytes = sum(item["metadata_bytes"] for item in dependency_plan)
-        payload_bytes = (selected_verify_bytes + selected_product_bytes
+        # A fixed product page verifies target files, then SQL scans its
+        # selected-identity metadata and bounded row JSON. No unrelated
+        # product payload is read by this explicitly admitted path.
+        product_read_bytes = selected_product_bytes * (2 if bounded_product_pages else 1)
+        payload_bytes = (selected_verify_bytes + product_read_bytes
                          + dependency_payload_bytes)
-        metadata_bytes = selected_metadata_bytes + dependency_metadata_bytes
+        metadata_bytes = selected_metadata_bytes + dependency_metadata_bytes + contract_metadata_bytes
         required_scan_bytes = payload_bytes + metadata_bytes
         read_plan = {
             "selected_snapshot": {
                 "snapshot_id": request["snapshot_id"],
-                "metadata_reads": 3,
+                "metadata_reads": metadata_reads,
                 "commit_bytes": commit_bytes,
                 "snapshot_bytes": snapshot_bytes,
                 "manifest_bytes": manifest_bytes,
                 "metadata_bytes": selected_metadata_bytes,
+                **({"row_version_object_validation_bytes": object_validation_bytes,
+                    "row_version_object_get_bytes": object_get_bytes}
+                   if object_validation_bytes or object_get_bytes else {}),
+                **({"contract_metadata_bytes": contract_metadata_bytes} if bounded_product_pages else {}),
                 "verification_payload_bytes": selected_verify_bytes,
-                "product_read_payload_bytes": selected_product_bytes,
+                "product_read_payload_bytes": product_read_bytes,
                 "candidate_rows": candidate_rows,
             },
             "dependencies": dependency_plan,
@@ -1286,14 +1417,14 @@ class ProductQuery:
         evidence = {
             "preflight": "before_payload_read",
             "within_budget": True,
-            "scope": "selected_snapshot_all_files_plus_product_read_plus_declared_dependencies",
+            "scope": "fixed_product_pages_with_snapshot_metadata" if bounded_product_pages else "selected_snapshot_all_files_plus_product_read_plus_declared_dependencies",
             "conservative": False,
             "file_range_pushdown": False,
             "row_range_pushdown": False,
-            "verification_scope": "selected_snapshot_and_declared_read_dependencies_only",
+            "verification_scope": "fixed_snapshot_metadata_and_target_product_files" if bounded_product_pages else "selected_snapshot_and_declared_read_dependencies_only",
             "unrelated_snapshots_scanned": False,
             "candidate_file_count": len(entries),
-            "verification_file_count": len(manifest["files"]),
+            "verification_file_count": len(verification_entries),
             "candidate_rows": candidate_rows,
             "payload_bytes": payload_bytes,
             "metadata_bytes": metadata_bytes,
@@ -1305,11 +1436,15 @@ class ProductQuery:
             "files": all_files,
             "read_plan": read_plan,
             "hard_execution_time_ms": False,
-            "note": "The selected snapshot's files are verified once by read_snapshot; "
+            "note": ("Each bounded tabular batch reserves snapshot metadata twice (query preflight and fixed product page), "
+                    "and target payload bytes three times (streamed SHA plus two SQL scans). "
+                    "Contract files (including both bundle reads) are counted per binding. "
+                    "No unrelated product payload is read; catalog metadata remains fully verified and counted."
+                    if bounded_product_pages else "The selected snapshot's files are verified once by read_snapshot; "
                     "the selected product payload is read and verified once by read_product; "
                     "declared read-dependency snapshots are dereferenced and verified once. "
                     "Commit/snapshot/manifest metadata repeat reads are counted (selected 3x, "
-                    "each dependency 2x). No unrelated newer snapshot is scanned.",
+                    "each dependency 2x). No unrelated newer snapshot is scanned."),
         }
         if required_scan_bytes > max_scan_bytes:
             raise ProductQueryError(
@@ -1365,6 +1500,19 @@ class ProductQuery:
     @staticmethod
     def _first_meta(products):
         return next(iter(products.values()))
+
+    def _current_business_policy(self, request, products):
+        if not self._data_only_projection() or not any(
+                current_only_business(product.get("declaration")) for product in products.values()):
+            return
+        if (request["history_mode"] != "snapshot_contents"
+                or request.get("knowledge_cutoff") is not None or request.get("include_history")):
+            raise ProductQueryError("CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED",
+                                    "This basic-market product exposes only current business values")
+        head = self.service.engine.head()
+        if head is None or request["snapshot_id"] != head["snapshot_id"]:
+            raise ProductQueryError("CURRENT_ONLY_BUSINESS_HEAD_REQUIRED",
+                                    "Current business queries must select the active HEAD; pinned old snapshots are technical reads")
 
     def _p4b_session(self, request):
         if (request["history_mode"] == "system_held_at"
@@ -1436,6 +1584,12 @@ class ProductQuery:
             })
             cache[product_id] = {"status": "permission_denied"}
             return cache[product_id]
+        try:
+            self._current_business_policy(request, session["metas"][product_id])
+        except ProductQueryError as exc:
+            session["gaps"].append({"code": exc.code, "product_id": product_id, "scope": "product"})
+            cache[product_id] = {"status": "failed"}
+            return cache[product_id]
         remaining_bytes = request["max_scan_bytes"] - session["budget"]["required_scan_bytes"]
         remaining_rows = request["max_nodes"] - session["budget"]["candidate_rows"]
         if remaining_bytes <= 0 or remaining_rows <= 0:
@@ -1477,12 +1631,15 @@ class ProductQuery:
         try:
             read_kwargs = {"product_id": product_id, "snapshot_id": request["snapshot_id"],
                            "perspective": request["history_mode"],
-                           "at": session["cutoff_at"], "verify_contract_files": False,
-                           "fields": request.get("fields") or None,
-                           "business_time_range": session["business_range"]}
-            if request["history_mode"] == "system_held_at":
-                read_kwargs["held_scope"] = request.get("held_scope")
-                read_kwargs["usable_stage"] = request.get("usable_stage")
+                           "at": session["cutoff_at"], "verify_contract_files": False}
+            if self._data_only_projection():
+                # Calendar/instance qualification is a data_only service contract.
+                # Legacy projection and time filtering remain bounded in this query layer.
+                read_kwargs["fields"] = request.get("fields") or None
+                read_kwargs["business_time_range"] = session["business_range"]
+                if request["history_mode"] == "system_held_at":
+                    read_kwargs["held_scope"] = request.get("held_scope")
+                    read_kwargs["usable_stage"] = request.get("usable_stage")
             result = self.service.read(**read_kwargs)
         except PermissionError:
             session["permission_denied"].append(product_id)
@@ -1922,7 +2079,7 @@ class ProductQuery:
     def _read_company_context(self, request):
         session = self._p4b_session(request)
         focus = self._context_focus(request)
-        max_depth = int(request.get("max_depth") or 1)
+        max_depth = int(request.get("max_depth", 1))
         max_edges = int(request.get("max_edges") or 1000)
         relation_edges, diagnostics = [], []
         for product_id, products in session["metas"].items():
@@ -2427,11 +2584,18 @@ class ProductQuery:
                  "product_dataset_id": next(iter(datasets)),
                  "product_id": request["product_id"]})
 
+        self._current_business_policy(request, manifest_products)
+
         dependency_plan = self._dependency_plan(request, manifest_products)
         self._validate_business_time_role(business_range, manifest_products)
+        perspective = request["history_mode"]
+        batch_gate = getattr(self.service, "_query_batches_supported", None)
+        use_batches = self._data_only_projection() and callable(batch_gate) and batch_gate(
+            perspective=perspective, entries=entries, products=manifest_products)
+        bounded_tabular = use_batches and all(entry.get("payload_kind") == "tabular_rows" for entry in entries)
         budget = self._budget_preflight(
             request, entries, manifest, commit_bytes, snapshot_bytes,
-            manifest_bytes, dependency_plan)
+            manifest_bytes, dependency_plan, bounded_product_pages=bounded_tabular)
 
         available = {}
         for product in manifest_products.values():
@@ -2446,53 +2610,110 @@ class ProductQuery:
                  "missing_fields": missing_fields,
                  "available_fields": sorted(available)})
 
-        perspective = request["history_mode"]
-        try:
-            read_kwargs = {"snapshot_id": request["snapshot_id"],
-                           "perspective": perspective, "at": cutoff_at,
-                           "verify_contract_files": False,
-                           "fields": sorted(request["fields"]),
-                           "business_time_range": business_range}
-            if perspective == "system_held_at":
-                read_kwargs["held_scope"] = request.get("held_scope")
-                read_kwargs["usable_stage"] = request.get("usable_stage")
-            result = self.service.read(request["product_id"], **read_kwargs)
-        except PermissionError:
-            raise
-        except ValueError as exc:
-            text = str(exc)
-            code = text.split(":", 1)[0].strip() or "READ_FAILED"
-            if not all(part and (part.replace("_", "").isalnum())
-                       for part in code.split(".")):
-                code = "READ_FAILED"
-            raise ProductQueryError(code, text,
-                                    {"snapshot_id": request["snapshot_id"],
-                                     "product_id": request["product_id"]}) from exc
-        except (OSError, RuntimeError) as exc:
-            raise ProductQueryError("READ_FAILED", str(exc),
-                                    {"snapshot_id": request["snapshot_id"],
-                                     "product_id": request["product_id"]}) from exc
-        if result.get("snapshot_id") != request["snapshot_id"]:
-            raise ProductQueryError(
-                "SNAPSHOT_SELECTION_MISMATCH",
-                "Service returned a different snapshot than the fixed request",
-                {"request_snapshot_id": request["snapshot_id"],
-                 "result_snapshot_id": result.get("snapshot_id")})
+        if use_batches:
+            batch_count = 0
+            single_pass_bytes = budget["required_scan_bytes"]
 
-        rows, diagnostics, products, units = self._project(
-            request, result, manifest_products,
-            subject=request.get("subject"),
-            fields=sorted(request["fields"]),
-            business_range=business_range)
+            def reserve_batch():
+                nonlocal batch_count
+                required = single_pass_bytes * (batch_count + 1)
+                if required > request["max_scan_bytes"]:
+                    raise ProductQueryError(
+                        "SCAN_BUDGET_EXCEEDED",
+                        "Additional batch exceeds the conservative fixed-read scan allowance",
+                        {"required_scan_bytes": required,
+                         "max_scan_bytes": request["max_scan_bytes"],
+                         "completed_batches": batch_count,
+                         "accounting": "bounded_product_page_allowance_per_batch" if bounded_tabular else "whole_fixed_read_allowance_per_batch"})
+                batch_count += 1
+                if batch_count > 1:
+                    budget.update({
+                        "required_scan_bytes": required, "conservative": True,
+                        "payload_bytes": budget["read_plan"]["payload_bytes"] * batch_count,
+                        "metadata_bytes": budget["read_plan"]["metadata_bytes"] * batch_count,
+                        "batch_count": batch_count,
+                        "read_plan_scope": "single_batch_base_allowance",
+                        "fixed_snapshot_metadata_bytes": budget["read_plan"]["selected_snapshot"]["metadata_bytes"] * batch_count,
+                        "single_pass_required_scan_bytes": single_pass_bytes,
+                        "scope": "bounded_product_page_allowance_per_batch" if bounded_tabular else "whole_fixed_read_allowance_per_batch",
+                        "note": ("Each batch reserves its complete fixed-product-page allowance, including the query preflight again conservatively. "
+                                if bounded_tabular else "Each batch reserves a complete legacy fixed-read allowance; ") +
+                                "this conservatively covers repeated part verification and metadata, "
+                                "not measured operating-system or SQL physical IO."})
 
-        all_rows = rows
-        total_rows = len(all_rows)
-        if cursor is not None:
-            last = tuple(cursor["last"])
-            rows = [item for item in all_rows if self._sort_key(item) > last]
+            try:
+                reduced = self._project_batch_window(
+                    request, self.service._iter_query_batches(
+                        request["product_id"], snapshot_id=request["snapshot_id"],
+                        before_batch=reserve_batch),
+                    manifest_products, subject=request.get("subject"),
+                    fields=sorted(request["fields"]), business_range=business_range,
+                    last=tuple(cursor["last"]) if cursor is not None else None)
+            except (PermissionError, ProductQueryError):
+                raise
+            except ValueError as exc:
+                text = str(exc)
+                code = text.split(":", 1)[0].strip() or "READ_FAILED"
+                if not all(part and (part.replace("_", "").isalnum())
+                           for part in code.split(".")):
+                    code = "READ_FAILED"
+                raise ProductQueryError(code, text,
+                                        {"snapshot_id": request["snapshot_id"],
+                                         "product_id": request["product_id"]}) from exc
+            except (OSError, RuntimeError) as exc:
+                raise ProductQueryError("READ_FAILED", str(exc),
+                                        {"snapshot_id": request["snapshot_id"],
+                                         "product_id": request["product_id"]}) from exc
+            page_rows, total_rows = reduced["rows"], reduced["total_rows"]
+            remaining_rows, has_more = reduced["remaining_rows"], reduced["has_more"]
+            diagnostics, products, units = reduced["diagnostics"], reduced["products"], reduced["units"]
+            source_ids = reduced["source_ids"]
+        else:
+            try:
+                read_kwargs = {"snapshot_id": request["snapshot_id"],
+                               "perspective": perspective, "at": cutoff_at,
+                               "verify_contract_files": False}
+                if self._data_only_projection():
+                    read_kwargs["fields"] = sorted(request["fields"])
+                    read_kwargs["business_time_range"] = business_range
+                    if perspective == "system_held_at":
+                        read_kwargs["held_scope"] = request.get("held_scope")
+                        read_kwargs["usable_stage"] = request.get("usable_stage")
+                result = self.service.read(request["product_id"], **read_kwargs)
+            except (PermissionError, ProductQueryError):
+                raise
+            except ValueError as exc:
+                text = str(exc)
+                code = text.split(":", 1)[0].strip() or "READ_FAILED"
+                if not all(part and (part.replace("_", "").isalnum())
+                           for part in code.split(".")):
+                    code = "READ_FAILED"
+                raise ProductQueryError(code, text,
+                                        {"snapshot_id": request["snapshot_id"],
+                                         "product_id": request["product_id"]}) from exc
+            except (OSError, RuntimeError) as exc:
+                raise ProductQueryError("READ_FAILED", str(exc),
+                                        {"snapshot_id": request["snapshot_id"],
+                                         "product_id": request["product_id"]}) from exc
+            if result.get("snapshot_id") != request["snapshot_id"]:
+                raise ProductQueryError(
+                    "SNAPSHOT_SELECTION_MISMATCH",
+                    "Service returned a different snapshot than the fixed request",
+                    {"request_snapshot_id": request["snapshot_id"],
+                     "result_snapshot_id": result.get("snapshot_id")})
 
-        page_rows = rows[:request["page_size"]]
-        has_more = len(rows) > len(page_rows)
+            rows, diagnostics, products, units = self._project(
+                request, result, manifest_products,
+                subject=request.get("subject"),
+                fields=sorted(request["fields"]),
+                business_range=business_range)
+
+            all_rows = rows
+            total_rows = len(all_rows)
+            last = tuple(cursor["last"]) if cursor is not None else None
+            page_rows, remaining_rows = self._cursor_window(
+                all_rows, last, request["page_size"])
+            has_more = remaining_rows > len(page_rows)
         next_cursor = None
         if has_more and page_rows:
             next_cursor = self._encode_cursor(
@@ -2521,11 +2742,12 @@ class ProductQuery:
 
         product_envelope = self._product_envelope(
             request["product_id"], products, sorted(request["fields"]))
-        source_ids = sorted({
-            source_id
-            for item in all_rows
-            for source_id in (item.get("source_binding") or {}).get("source_ids", []) or []
-        })
+        if not use_batches:
+            source_ids = sorted({
+                source_id
+                for item in all_rows
+                for source_id in (item.get("source_binding") or {}).get("source_ids", []) or []
+            })
         return {
             "format_version": RESULT_FORMAT,
             "protocol_version": PROTOCOL_VERSION,
@@ -2559,7 +2781,7 @@ class ProductQuery:
                 "page_size": request["page_size"],
                 "returned_rows": len(page_rows),
                 "total_rows": total_rows,
-                "remaining_rows": len(rows),
+                "remaining_rows": remaining_rows,
                 "has_more": has_more,
                 "next_cursor": next_cursor,
                 "cursor_applied": cursor is not None,

@@ -23,7 +23,21 @@ export async function pdfNative(bytes: Buffer, signal: AbortSignal): Promise<Con
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
       signal.throwIfAborted();
       const page = await document.getPage(pageNumber), viewport = page.getViewport({ scale: 1 });
-      const content = await page.getTextContent({ includeMarkedContent: true, disableNormalization: true });
+      let content: Awaited<ReturnType<typeof page.getTextContent>>;
+      try { content = await page.getTextContent({ includeMarkedContent: true, disableNormalization: true }); }
+      catch (error) {
+        if (signal.aborted) throw error;
+        const reason = error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300);
+        issues.push({ code: 'PDF_TEXT_EXTRACT_FAILED', message: `此页原文字层解析失败（pdfjs-dist：${reason}）；未生成文字或推测结构，其余页面继续按原生文字项处理。`, location: { page: pageNumber } });
+        outputText += pageNumber > 1 ? '\f' : '';
+        pages.push({ page: pageNumber, pageLabel: labels?.[pageNumber - 1] ?? null, width: viewport.width, height: viewport.height,
+          rotation: page.rotate, coordinateSystem: 'PDF-user-space/origin-native/transform-retained', originalView: safeJson(page.view),
+          extraction: { status: 'failed', code: 'PDF_TEXT_EXTRACT_FAILED' }, originalItems: [],
+          readingOrder: { basis: 'unavailable', structureTree: null, nativeItemIndexes: [], geometricCandidateItemIndexes: [] },
+          tableCandidates: [], footnoteCandidates: [], links: [], styles: {}, text: '' });
+        page.cleanup();
+        continue;
+      }
       if ((totalItems += content.items.length) > 200_000) throw new DirectError('PDF_TEXT_LIMIT', 'PDF 原文字项超过本次预算。');
       const items = content.items.map((item, index) => ({ index, ...safeJson(item) as Record<string, JsonValue> }));
       const textItems = content.items.flatMap((item, index) => 'str' in item ? [{ index, text: item.str, x: item.transform[4]!, y: item.transform[5]!, width: item.width, height: item.height, endOfLine: item.hasEOL }] : []);

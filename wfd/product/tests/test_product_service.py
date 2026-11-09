@@ -21,6 +21,12 @@ SOURCE_POLICY = {
 UNIT_REGISTRY = {"vehicle": {"dimension": "quantity"}, "share": {"dimension": "quantity"}}
 
 
+def fixture_source_roles(outputs, source_id="fixture"):
+    """Explicit legacy fixture declaration, never a service/submit wrapper."""
+    return {out["output_key"]: [{"source_id": source_id, "roles": ["definer"]}]
+            for out in outputs}
+
+
 def make_service(tmp_path):
     engine = WFDDuckDBPrototype(tmp_path / "store", load_protocol_validator(HERE / "protocol"),
                                runtime_root=tmp_path / "runtime", sandbox=False, writer_host="test")
@@ -32,7 +38,10 @@ def make_service(tmp_path):
     evidence_path.write_text("Synthetic product-layer fixture, not real financial data.")
     evidence = service.register_evidence(evidence_path)
     doc = json.loads((HERE / "fixtures/port_annual_autos.json").read_text())
-    doc["source_bundle"] = {"source_id": "fixture", "license": "test_only"}
+    doc["source_bundle"] = {
+        "source_id": "fixture", "license": "test_only",
+        "source_roles": fixture_source_roles(doc["outputs"]),
+    }
     doc["outputs"][0]["payload"]["rows"] = doc["outputs"][0]["payload"]["rows"][:1]
     doc["outputs"][0]["evidence_refs"] = [evidence]
     doc["source_bundle"]["product_service"] = {
@@ -101,6 +110,7 @@ def test_partial_admission_reports_partial_publication(tmp_path):
     bad = copy.deepcopy(doc["outputs"][0])
     bad.update(output_key="missing_evidence", evidence_refs=[])
     doc["outputs"].append(bad)
+    doc["source_bundle"]["source_roles"] = fixture_source_roles(doc["outputs"])
     doc["source_bundle"]["product_service"]["outputs"][bad["output_key"]] = {"read_dependencies": []}
     result = service.submit(doc)
     assert result["status"] == "partially_published_formal"
@@ -134,6 +144,7 @@ def test_output_times_are_bound_to_their_own_files_and_batch_keys(tmp_path):
     duplicate = copy.deepcopy(second)
     duplicate["output_key"] = "duplicate"
     doc["outputs"] = [first, second, duplicate]
+    doc["source_bundle"]["source_roles"] = fixture_source_roles(doc["outputs"])
     doc["source_bundle"]["product_service"]["outputs"] = {
         out["output_key"]: {"read_dependencies": []} for out in doc["outputs"]}
     doc["source_bundle"]["row_public_times"] = {
@@ -167,6 +178,7 @@ def test_company_view_scopes_metadata_and_excludes_invalid_relation(tmp_path):
         "object": security, "relation_type": "has_security", "effective_period": unknown, "public_time": known_time(2020)}]}
     outputs.append(relation)
     doc["outputs"] = outputs
+    doc["source_bundle"]["source_roles"] = fixture_source_roles(outputs)
     doc["source_bundle"]["product_service"]["outputs"] = {
         out["output_key"]: {"read_dependencies": []} for out in outputs}
     doc["source_bundle"].update(public_time=known_time(2020), row_public_times={"other": {"other": unknown}})
@@ -294,6 +306,7 @@ def test_company_listing_calendar_queries_apply_historical_eligibility(tmp_path)
         "is_open": {"data_type": "boolean", "value_state": "valid_value", "value": True}}}]}
     outputs.append(calendar)
     doc["outputs"] = outputs
+    doc["source_bundle"]["source_roles"] = fixture_source_roles(outputs)
     doc["source_bundle"]["product_service"]["outputs"] = {
         out["output_key"]: {"read_dependencies": []} for out in outputs}
     doc["source_bundle"]["public_time"] = known_time(2020)

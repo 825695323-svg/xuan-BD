@@ -6,7 +6,6 @@ import { TaskError, type TaskExecutionContext, type TaskRecord, type TaskResult,
 import type { JsonValue } from '../../contracts/task-contracts.js';
 import { canonical, captureAssets, executeFinancialAssets, financialDigest, verifyAssets, type FinancialAssetBundle } from '../../plugins/financial/local-compute/assets.js';
 import { assertMacdToolResult, describeFinancialPublicContract, financialPublicError, financialPublicResult, requireFinancialComputedResult, validateFinancialPublicCall, type FinancialPublicCall } from './contracts.js';
-import type { FinancialPublicationEvidence } from '../../adapters/database/wfd-publication.js';
 import { FINANCIAL_CAPABILITIES, FINANCIAL_CONTRACT_VERSION, FINANCIAL_MACD_FIELDS, FINANCIAL_MACD_LIMITATIONS, FINANCIAL_MACD_PARAMETERS, FINANCIAL_PLUGIN_ID, FINANCIAL_PLUGIN_VERSION, FINANCIAL_RUNTIME,
   type FinancialCallArgs, type FinancialCapabilityId, type FinancialComputedCandidate, type FinancialData, type FinancialEnvironment,
   type FinancialHostSubmission, type FinancialPluginStatus, type FinancialServiceOptions, type FinancialSnapshotInput, type FinancialToolDescription } from './types.js';
@@ -226,10 +225,15 @@ export class FinancialService {
     if (publicRequest && publicRequest.request_id !== requestId) throw new TaskError('REQUEST_CONFLICT', '外层请求编号须与公共请求身份一致。');
     const previous = this.requestTask(operation, requestId);
     if (previous) {
-      if (financialDigest(previous.args) !== financialDigest(data) || (previous.parentTaskId ?? undefined) !== parentTaskId
+      this.assertDispatch();
+      const call = this.callRow(previous.id), versions = { ...this.versionBinding, method: data.methodVersion,
+        permission: String(call.permission_version), pluginState: String(call.plugin_state_version) };
+      if (previous.conversationId !== null || previous.title !== `金融计算：${METHODS[data.capabilityId].title}`
+        || previous.action !== operation || financialDigest(previous.versions) !== financialDigest(versions)
+        || financialDigest(previous.args) !== financialDigest(data) || (previous.parentTaskId ?? undefined) !== parentTaskId
         || financialDigest(this.publicRequest(previous.id)) !== financialDigest(publicRequest)) throw new TaskError('REQUEST_CONFLICT', '相同计算请求身份不能换输入、参数、版本或公共合同。');
+      this.assertBinding(previous);
       this.bindBeforeStart(host, previous);
-      if (previous.status === 'ready') { this.assertDispatch(); this.assertBinding(previous); return this.tasks.start(previous.id); }
       return previous;
     }
     this.assertDispatch();
@@ -272,18 +276,6 @@ export class FinancialService {
       sealedInput: call.sealed_json ? JSON.parse(call.sealed_json) : null, inputDigest: call.sealed_digest,
       rawToolResult: call.raw_result_json ? JSON.parse(call.raw_result_json) : null, implementation: { version: bundle.version, hashes: bundle.hashes },
       publicRequest: this.publicRequest(taskId) });
-  }
-  publicationEvidence(taskId: string): FinancialPublicationEvidence {
-    const task = this.getTask(taskId), computed = requireFinancialComputedResult(task), call = this.callRow(taskId), bundle = this.loadBundle(call.implementation_version);
-    if (computed.capabilityId === FINANCIAL_CAPABILITIES[2]) throw new TaskError('FINANCIAL_PUBLICATION_UNSUPPORTED', 'MACD尚无已登记的数据库派生保存目标，本轮只提供临时计算结果。');
-    const attempt = task.currentRunId ? this.tasks.getAttempts(task.currentRunId).find(item => item.id === task.currentAttemptId) : undefined;
-    if (!attempt?.endedAt || !call.sealed_json || !call.raw_result_json) throw new TaskError('FINANCIAL_PUBLICATION_EVIDENCE_INVALID', '原计算结束时刻、封闭输入或保管结果字节不可取回。');
-    return { sealedInput: JSON.parse(call.sealed_json) as JsonValue, rawResultBytes: Buffer.from(call.raw_result_json),
-      methodEvidence: json({ methodVersion: computed.methodVersion, contractVersion: computed.contractVersion, method: computed.method,
-        source: METHODS[computed.capabilityId].source, independentReference: METHODS[computed.capabilityId].reference, fileHashes: bundle.hashes }),
-      environmentEvidence: json({ version: 'financial-environment/1', environment: call.environment, runtimeDigest: call.runtime_digest,
-        implementationVersion: call.implementation_version, taskVersions: task.versions, pythonFlags: ['-I', '-S', '-B'], firstPartyOnly: true }),
-      computedAt: new Date(attempt.endedAt).toISOString(), parametersVersion: 'financial-parameters/1', environmentVersion: 'financial-environment/1' };
   }
   readonly runtime: TaskRuntime = { id: FINANCIAL_RUNTIME, execute: context => this.execute(context) };
 
@@ -401,7 +393,7 @@ export class FinancialService {
     if (args.input.kind === 'snapshot' && canonical(this.snapshotBinding) !== call.snapshot_binding_json) throw new TaskError('FINANCIAL_SNAPSHOT_BINDING_CHANGED', '原任务固定快照端口合同已变化。');
     this.loadBundle(call.implementation_version);
   }
-  private assertDispatch(): void { if (this.tasks.getControl().stopped) throw new TaskError('HARNESS_STOPPED', '服务已停止新的金融计算和读取派发。'); }
+  private assertDispatch(): void { if (this.tasks.getControl().stopped) throw new TaskError('BD_STOPPED', '服务已停止新的金融计算和读取派发。'); }
   private assertActive(context: TaskExecutionContext): void {
     context.signal.throwIfAborted(); this.assertDispatch();
     if (!this.tasks.isRunActive(context.runId, context.generation)) throw new TaskError('STALE_FINANCIAL_ATTEMPT', '此计算尝试已失去当前运行所有权。');

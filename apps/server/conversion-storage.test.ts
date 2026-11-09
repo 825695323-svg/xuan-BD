@@ -1,0 +1,62 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import test from 'node:test';
+import { createFullChainFixture, grantSelectedFile, openFullChainHost, startDirect } from './full-chain-test-support.js';
+
+test('文档转换默认仅结构产物；显式 TXT 导出保持完整正文、来源与主产物目标语义', async () => {
+  const parent = realpathSync(mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'conversion-storage-')));
+  const previous = process.env.XUAN_FULL_CHAIN_ROOT;
+  process.env.XUAN_FULL_CHAIN_ROOT = parent;
+  const fixture = createFullChainFixture({ name: 'document-exports' });
+  if (previous === undefined) delete process.env.XUAN_FULL_CHAIN_ROOT; else process.env.XUAN_FULL_CHAIN_ROOT = previous;
+  const host = await openFullChainHost(fixture);
+  try {
+    const sourcePath = join(parent, 'source.txt'), original = Buffer.from(' 文本原值🙂\n第二行\n');
+    writeFileSync(sourcePath, original);
+    const source = grantSelectedFile(host, sourcePath, 'isolated-text-original');
+    const first = startDirect(host, 'conversion.document', { fileRefId: source.id }, 'default-structure');
+    const finished = await host.settled(first.id);
+    assert.equal(finished.status, 'succeeded');
+    const data = finished.result!.data as any;
+    assert.equal(data.artifacts.length, 1);
+    assert.equal(data.textReference, undefined);
+    assert.equal(data.fileRefId, data.structuredReference.fileRefId);
+    assert.equal(data.text, original.toString('utf8'));
+    const stored = JSON.parse(readFileSync(host.services.files.verify(data.fileRefId).invocationPath, 'utf8'));
+    assert.equal(stored.schemaVersion, '1.1');
+    assert.equal(stored.implementation.version, '1.1.0');
+    assert.equal(stored.text, original.toString('utf8'));
+    const destination = join(host.services.artifactRoot, 'explicit-structure.json');
+    const requested = startDirect(host, 'conversion.document', { fileRefId: source.id, textExport: 'txt', destination }, 'explicit-txt');
+    const exported = await host.settled(requested.id);
+    assert.equal(exported.status, 'succeeded');
+    const result = exported.result!.data as any;
+    assert.equal(result.artifacts.length, 2);
+    assert.equal(host.services.files.verify(result.structuredReference.fileRefId).invocationPath, destination);
+    const text = readFileSync(host.services.files.verify(result.textReference.fileRefId).invocationPath);
+    assert.deepEqual(text, original);
+    assert.equal(createHash('sha256').update(text).digest('hex'), result.textReference.sha256);
+    assert.equal(result.source.fileRefId, source.id);
+    assert.equal(result.source.sha256, createHash('sha256').update(original).digest('hex'));
+    assert.deepEqual(readFileSync(sourcePath), original);
+    // 沿用公开 PDF 测试的坏目录夹具：失败只能保留失败结构，不能制造正文或导出。
+    const invalidPath = join(parent, 'invalid.pdf');
+    writeFileSync(invalidPath, '%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n');
+    const invalid = grantSelectedFile(host, invalidPath, 'isolated-invalid-pdf');
+    const invalidTask = startDirect(host, 'conversion.document', { fileRefId: invalid.id, textExport: 'txt' }, 'invalid-pdf');
+    const failed = await host.settled(invalidTask.id);
+    assert.equal(failed.status, 'succeeded');
+    const failure = failed.result!.data as any;
+    assert.equal(failure.status, 'failed');
+    assert.equal(failure.artifacts.length, 1);
+    assert.equal(failure.textReference, undefined);
+    assert.ok(failure.issues.some((issue: any) => issue.code === 'CONVERSION_PARSE_FAILED'));
+    const failureEnvelope = JSON.parse(readFileSync(host.services.files.verify(failure.fileRefId).invocationPath, 'utf8'));
+    assert.equal(failureEnvelope.status, 'failed');
+    assert.equal(failureEnvelope.content.textRepresentation, undefined);
+    assert.equal(Object.hasOwn(failureEnvelope, 'text'), false);
+  } finally { await host.close(); rmSync(parent, { recursive: true, force: true }); }
+});

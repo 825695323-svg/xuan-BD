@@ -8,8 +8,8 @@ import { PermissionError, digestOperationArgs, type PermissionCapability } from 
 import { TaskError, type TaskExecutionContext, type TaskRecord, type TaskResult, type TaskRuntime, type TaskService } from '../../platform/jobs/tasks.js';
 import type { ProcessRuntime } from '../../platform/runtime/programs.js';
 import type { JsonValue, TaskEffectRecord, TaskRecoveryResult } from '../../contracts/task-contracts.js';
-import type { AlgorithmCandidateBinding, AlgorithmCandidateDraft, AlgorithmResultLineage, AlgorithmResultReference, VerifiedAlgorithmResult } from '../../contracts/workspace-services.js';
 import { canonical, captureAssets, executeFinancialAssets, financialDigest, verifyAssets, type FinancialAssetBundle } from '../../plugins/financial/local-compute/assets.js';
+import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import {
   ALGORITHM_CALL_ACTION, ALGORITHM_CONTRACT_VERSION, ALGORITHM_METHODS, ALGORITHM_METHOD_IDS, ALGORITHM_RUNTIME,
   ALGORITHM_TABLE_ADAPTER_VERSION, type AlgorithmBar, type AlgorithmCalendar, type AlgorithmCallRequest, type AlgorithmCatalogView,
@@ -17,10 +17,14 @@ import {
   type AlgorithmFixedSnapshotSource, type AlgorithmGap, type AlgorithmInvalidInterval, type AlgorithmManagedTableSource, type AlgorithmMetadata, type AlgorithmMethodId,
   type AlgorithmResultRow, type AlgorithmSemantics, type AlgorithmSnapshotPort, type AlgorithmSnapshotReference, type AlgorithmSource,
   type AlgorithmAdoptionRecord, type AlgorithmAdoptionView,
-  type AlgorithmTaskView, type ManagedTableData, type ManagedTableCell, type ManagedTableReader,
+  type AlgorithmSubmissionContext, type AlgorithmUsage, type AlgorithmTaskView, type ManagedTableData, type ManagedTableCell, type ManagedTableReader,
 } from './algorithm-types.js';
+import {
+  ELIGIBILITY_HISTORY_MODES, PURPOSE_ELIGIBILITY_RULE_VERSION, combinePurposeEligibilityResults,
+  evaluatePurposeEligibility, materialPublicationTimeEvidence,
+  type DerivedInputEvidence, type PurposeEligibilityInput, type PurposeEligibilityResult, type PurposeEvidenceClaim,
+} from '../collection/purpose-eligibility.js';
 
-const CANDIDATE_PROJECTION_VERSION = 'algorithm-candidate/1';
 const PARAMETERS: Record<AlgorithmMethodId, JsonValue> = {
   ma: { type: 'object', required: ['period'], additionalProperties: false, properties: { period: { type: 'integer', minimum: 1, maximum: 10000 } } },
   macd: { type: 'object', required: ['short_period', 'long_period', 'signal_period', 'init'], additionalProperties: false,
@@ -91,7 +95,17 @@ interface CallRow {
   result_json: string | null; result_digest: string | null;
   state: string; created_at: number; updated_at: number;
 }
-interface SealedInput { data: AlgorithmData; reference: JsonValue; raw: JsonValue | null }
+interface SealedInput {
+  data: AlgorithmData;
+  reference: JsonValue;
+  raw: JsonValue | null;
+  /** 共用用途资格：输入冻结后的判定、实际派生依赖可得时间。 */
+  eligibility?: PurposeEligibilityResult | null;
+  /** 冻结当时的完整判定输入；恢复执行时按当前规则/证据重判，不复用旧结论。 */
+  eligibilityInputs?: PurposeEligibilityInput[];
+  derivedInputs?: DerivedInputEvidence[];
+  restriction?: PurposeEligibilityInput['restriction'];
+}
 
 export interface LocalAlgorithmServiceOptions {
   database: CoreDatabase;
@@ -230,20 +244,26 @@ export class LocalAlgorithmService {
         codeFiles: this.codeBinding.files, binding: 'source-code', bindingRequired: false },
       execution: { pythonDigest: this.runtimeDigest, permission: permission.permission, reason: permission.reason },
       methods, inputs: { managedTables: tableState, fixedSnapshots: snapshotState },
-      limitations: ['复权工具和分钟/日线加工没有受控实现，不在本次可调用方法内；缺少复权基准、时区或日历完整性时返回明确缺项。',
+      limitations: ['本算法入口不提供复权工具或分钟/日线加工；缺少复权基准、时区或日历完整性时返回明确缺项。限定日线/分钟任务另由数据库固定计算入口提供。',
         '固定快照只按真实 wfd.data-service/v1 data.read 固定实例/产品/快照/定义/分页读取；不读 latest、不写 WFD。',
-        '计算结果不自动发布；发布必须另经既有通用候选服务，本模块没有数据库写者。'] };
+        '计算结果保留在原任务，本模块没有数据库写者。旧通用候选已停止新建和首次提交；新计算与发布须使用数据库固定计算及 R1 结构化交接入口，并符合其支持范围。'] };
   }
 
-  submit(requestId: string, value: unknown): AlgorithmTaskView {
+  submit(requestId: string, value: unknown, submission?: AlgorithmSubmissionContext): AlgorithmTaskView {
     identifier(requestId, '请求编号');
-    const request = normalizeRequest(value);
-    const digest = financialDigest(request);
+    const normalized = normalizeRequest(value);
     const existing = this.callByRequest(requestId);
     if (existing) {
-      if (existing.request_digest !== digest) throw new TaskError('REQUEST_CONFLICT', '相同计算请求编号不能换方法、参数、输入表或语义。');
+      // 用途证据的受理时间不是请求身份的一部分；重复同一请求必须仍可复开，
+      // 不能因本次受理时间不同而误报冲突。
+      const stored = this.requestOf(existing);
+      if (financialDigest(withoutPurposeEvidence(stored)) !== financialDigest(normalized)) {
+        throw new TaskError('REQUEST_CONFLICT', '相同计算请求编号不能换方法、参数、输入表或语义。');
+      }
       return this.reopenOrView(existing);
     }
+    const request = attachPurposeEvidence(normalized, submission, this.now());
+    const digest = financialDigest(request);
     this.assertEnabled(); this.assertDispatch();
     const method = ALGORITHM_METHODS[request.methodId];
     const versions = { ...this.versionBinding, method: method.version, implementation: this.bundle.version };
@@ -272,103 +292,6 @@ export class LocalAlgorithmService {
       requiresReview: task.requiresReview, createdAt: new Date(task.createdAt).toISOString(), updatedAt: new Date(task.updatedAt).toISOString(),
       result, error: task.error ? { code: task.error.code, message: task.error.message } : null,
       publication: { state: 'not_requested' }, guidance: guidanceFor(task) };
-  }
-
-  /**
-   * 候选唯一接受的只读读取器：按原任务身份、持久结果摘要和未发布状态重新核对，再由原结果确定性
-   * 重建 WFD 可用对象字节。引用中的对象摘要和字节长度必须与受信投影一致；调用方不能传 rows。
-   */
-  readCandidateResult(reference: AlgorithmResultReference): VerifiedAlgorithmResult {
-    if (!reference || reference.kind !== 'algorithm-result' || reference.mediaType !== 'application/json'
-      || typeof reference.taskId !== 'string' || !/^[a-f0-9]{64}$/u.test(reference.resultDigest)
-      || !/^[a-f0-9]{64}$/u.test(reference.objectSha256) || !Number.isSafeInteger(reference.byteLength)) {
-      throw new TaskError('ALGORITHM_RESULT_REFERENCE', '候选结果引用只接受原算法任务、结果摘要、对象摘要和字节长度。');
-    }
-    const projection = this.candidateProjection(reference.taskId);
-    if (projection.ref.resultDigest !== reference.resultDigest || projection.ref.objectSha256 !== reference.objectSha256
-      || projection.ref.byteLength !== reference.byteLength) {
-      throw new TaskError('ALGORITHM_RESULT_CHANGED', '候选引用的原结果摘要、对象摘要或字节长度与受信读取器不符。');
-    }
-    return { reference: projection.ref, bytes: projection.bytes, lineage: this.candidateLineage(projection) };
-  }
-
-  /**
-   * 从原算法任务准备一个候选输入草稿。只核对并投影，不调用 CandidateService，更不提交。
-   * 目标命名空间、声明或已有产品引用由受信桥在真实能力范围内显式提供。
-   */
-  prepareCandidate(taskId: string, binding: AlgorithmCandidateBinding): AlgorithmCandidateDraft {
-    if (!binding || typeof binding.outputId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/u.test(binding.outputId)
-      || typeof binding.namespace !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(binding.namespace)) {
-      throw new TaskError('ALGORITHM_CANDIDATE_TARGET', '候选目标需明确输出编号和实际授权命名空间。');
-    }
-    const projection = this.candidateProjection(taskId);
-    const verified = this.readCandidateResult(projection.ref);
-    const output: Record<string, unknown> = { outputId: binding.outputId, namespace: binding.namespace, materialIds: [],
-      algorithmResult: projection.ref,
-      ...(binding.productRef ? { productRef: binding.productRef } : {}),
-      ...(binding.declaration ? { declaration: binding.declaration } : {}),
-      ...(binding.expectedSnapshotId !== undefined ? { expectedSnapshotId: binding.expectedSnapshotId } : {}) };
-    return { input: { outputs: [output] }, reference: projection.ref, lineage: verified.lineage };
-  }
-
-  private candidateProjection(taskId: string) {
-    const task = this.getTask(taskId);
-    if (task.status !== 'succeeded' || task.requiresReview) {
-      throw new TaskError('ALGORITHM_RESULT_NOT_READY', '原算法任务尚未成功收束，不能作为候选来源。');
-    }
-    const row = this.callRow(task.id);
-    this.assertTaskIdentity(task, row);
-    if (!row.result_digest) throw new TaskError('ALGORITHM_RESULT_MISSING', '原算法任务没有持久结果摘要。');
-    const result = this.loadResult(task, row);
-    if (result.status !== 'computed' || result.persistence !== 'not_requested'
-      || result.publication?.state !== 'not_requested' || result.publication?.performed !== false) {
-      throw new TaskError('ALGORITHM_PUBLICATION_CONFLICT', '原结果已进入发布路径；不能用候选桥重复保存。');
-    }
-    const built = this.candidateObject(result);
-    const bytes = Buffer.from(canonical(built.object), 'utf8');
-    const ref: AlgorithmResultReference = { kind: 'algorithm-result', taskId: task.id, resultDigest: row.result_digest,
-      objectSha256: createHash('sha256').update(bytes).digest('hex'), byteLength: bytes.byteLength, mediaType: 'application/json' };
-    return { task, row, result, built, bytes, ref };
-  }
-
-  /**
-   * 把持久结果投影成 WFD 可声明的真实表示：时间保持字符串，null 保持预热/缺失，布尔保持形态，
-   * 其余数值使用 16 位大写端序 IEEE-754 十六进制，不把 binary64 静默改写成十进制文本。
-   */
-  private candidateObject(result: AlgorithmComputedResult) {
-    const fields = result.methodId === 'macd' ? ['DIFF', 'DEA', 'MACD', 'ZERO'] : result.methodId === 'ma' ? ['MA'] : ['bullish_engulfing'];
-    const representations: Record<string, string> = { timestamp: 'string/date', available_at: 'string/date-time' };
-    for (const field of fields) representations[field] = result.methodId === 'bullish_engulfing' ? 'boolean' : 'binary64_hex_be/v1';
-    const rows: Record<string, JsonValue>[] = result.rows.map((row, index) => {
-      const output: Record<string, JsonValue> = { timestamp: row.timestamp, available_at: row.available_at };
-      for (const field of fields) {
-        const value = row[field];
-        if (value === null) { output[field] = null; continue; }
-        if (result.methodId === 'bullish_engulfing') {
-          if (typeof value !== 'boolean') throw new TaskError('ALGORITHM_OUTPUT_INVALID', `第 ${index + 1} 行 ${field} 不是布尔值。`);
-          output[field] = value;
-        } else {
-          if (typeof value !== 'number' || !Number.isFinite(value)) throw new TaskError('ALGORITHM_OUTPUT_INVALID', `第 ${index + 1} 行 ${field} 不是有限数值。`);
-          output[field] = binary64Hex(value);
-        }
-      }
-      return output;
-    });
-    // WFD 通用结构化结果只接受恰好 {rows}，并拒绝未声明的 JSON 浮点。所有谱系放在算法任务的
-    // verification evidence/provenance 中；rows 使用声明的 binary64_hex 表示，不丢原值。
-    const object: Record<string, JsonValue> = { rows: json(rows) };
-    return { object, rows, representations };
-  }
-
-  private candidateLineage(projection: ReturnType<LocalAlgorithmService['candidateProjection']>): AlgorithmResultLineage {
-    const { result, row, built, ref } = projection;
-    return { taskId: result.taskId, resultDigest: row.result_digest!, objectSha256: ref.objectSha256,
-      methodId: result.methodId, methodVersion: result.methodVersion, implementationVersion: result.implementationVersion,
-      contractVersion: result.contractVersion, environment: result.environment, parameters: json(result.parameters),
-      inputDigest: result.inputDigest, source: json(result.source), rows: result.rows.length, rowCount: result.rows.length,
-      validInterval: json(result.validInterval), invalidIntervals: json(result.invalidIntervals), coverage: json(result.coverage),
-      gaps: json(result.gaps), limitations: json(result.limitations), publication: json(result.publication),
-      representation: { version: 'wfd-field-representation/1', fields: built.representations, rowsSha256: financialDigest(built.rows) } };
   }
 
   resume(taskId: string, expectedVersion: number): AlgorithmTaskView {
@@ -430,19 +353,44 @@ export class LocalAlgorithmService {
       const sealed = JSON.parse(row.sealed_json) as SealedInput;
       if (financialDigest(sealed) !== row.sealed_digest) throw new TaskError('ALGORITHM_INPUT_CHANGED', '原任务封闭输入与摘要不符。');
       validateData(sealed.data);
+      if (!Array.isArray(sealed.eligibilityInputs) || !sealed.eligibilityInputs.length) {
+        throw new TaskError('ALGORITHM_ELIGIBILITY_EVIDENCE_MISSING', '原封闭输入没有可重判的共用用途资格证据；不能复用旧资格继续执行。');
+      }
+      const revalidated = assertEligibilityResult(combinePurposeEligibilityResults(
+        sealed.eligibilityInputs.map(item => evaluatePurposeEligibility(item))));
+      if (!sealed.eligibility || sealed.eligibility.evidenceSha256 !== revalidated.evidenceSha256) {
+        throw new TaskError('ALGORITHM_ELIGIBILITY_CHANGED', '共用用途规则/证据重判结果与原冻结资格不同；保留原号查询，不沿旧资格执行。');
+      }
       return sealed;
     }
     let data: AlgorithmData, reference: JsonValue;
+    let eligibility: PurposeEligibilityResult, derivedInputs: DerivedInputEvidence[];
+    let eligibilityInputs: PurposeEligibilityInput[] = [];
+    let restriction: PurposeEligibilityInput['restriction'] = null;
     if (request.source.kind === 'managed_table') {
-      const resolved = this.resolveManagedTable(request.source);
+      const resolved = this.resolveManagedTable(request.source, request.usage);
       data = resolved.data;
       reference = json(this.managedReference(request.source, data, resolved.table, resolved.numeric));
+      const managedSource = request.source;
+      const input = managedTableEligibilityInput(request, managedSource, resolved.latestAvailableAtUtc);
+      eligibility = assertEligibilityResult(evaluatePurposeEligibility(input));
+      eligibilityInputs = [input];
+      derivedInputs = data.rows.map((item, index) => ({ ref: item.timestamp,
+        latestAvailableAtUtc: item.available_at,
+        basis: `受管表逐行可得时间(${index}); 来源保留原值`,
+        evidenceSha256: wfdSha256(canonicalWfdJson({ material: managedSource.materialSha256, timestamp: item.timestamp,
+          available_at: item.available_at })) }));
     } else {
-      const resolved = await this.snapshotRead(context, request.source);
+      const resolved = await this.snapshotRead(context, request.source, request);
       data = resolved.data;
       reference = resolved.reference;
+      eligibility = resolved.eligibility;
+      eligibilityInputs = resolved.eligibilityInputs;
+      derivedInputs = resolved.derivedInputs;
+      restriction = resolved.restriction;
     }
-    const sealed: SealedInput = { data, reference, raw: null };
+    const sealed: SealedInput = { data, reference, raw: null, eligibility, eligibilityInputs, derivedInputs,
+      ...(restriction !== undefined ? { restriction } : {}) };
     validateData(sealed.data);
     const sealedJson = canonical(sealed);
     if (Buffer.byteLength(sealedJson) > 400_000) throw new TaskError('ALGORITHM_INPUT_BUDGET', '封闭输入超过本包保管预算。');
@@ -459,23 +407,47 @@ export class LocalAlgorithmService {
     return JSON.parse(updated.sealed_json) as SealedInput;
   }
 
-  private async snapshotRead(context: TaskExecutionContext, source: AlgorithmFixedSnapshotSource): Promise<{ data: AlgorithmData; reference: JsonValue }> {
-    if (!this.snapshots) throw new TaskError('ALGORITHM_SNAPSHOT_UNBOUND', '固定快照端口尚未装配；当前只支持本地已受管表或已发现通用数据线路。');
+  private async snapshotRead(context: TaskExecutionContext, source: AlgorithmFixedSnapshotSource, request: AlgorithmCallRequest):
+    Promise<{ data: AlgorithmData; reference: JsonValue; eligibility: PurposeEligibilityResult;
+      eligibilityInputs: PurposeEligibilityInput[]; derivedInputs: DerivedInputEvidence[];
+      restriction: PurposeEligibilityInput['restriction'] }> {
+    if (!this.snapshots) throw new TaskError('ALGORITHM_SNAPSHOT_UNBOUND', '固定快照端口尚未装配；当前只支持本地已受管表。');
     const reference = source.reference;
+    // 历史用途与实际读取视角/截止必须逐项绑定；不能只改用途标签。
+    const usage = request.usage;
+    if (usage?.purpose === 'historical_compute') {
+      if (!usage.historyMode || !usage.cutoff) throw new TaskError('ALGORITHM_HISTORY_BINDING_REQUIRED', '历史算法请求须显式选择历史模式并固定截止。');
+      if (reference.perspective !== usage.historyMode || reference.at !== usage.cutoff) {
+        throw new TaskError('ALGORITHM_HISTORY_BINDING_REQUIRED', '固定快照读取视角/截止与本次历史用途不一致；不接受只改用途或只改标签。');
+      }
+      if (reference.includeHistory === true) throw new TaskError('ALGORITHM_HISTORY_INCLUDE_UNSUPPORTED', '本算法入口只接受截止时唯一有效叶；不把全部历史修订混入同一序列。');
+      if (usage.historyMode === 'system_held_at' && (!reference.heldScope || !reference.usableStage)) {
+        throw new TaskError('ALGORITHM_HOLDING_BINDING_REQUIRED', 'system_held_at 须显式固定 held_scope 与 usable_stage，并由实际 WFD 持有台账返回。');
+      }
+    } else if (reference.perspective !== undefined && reference.perspective !== 'snapshot_contents') {
+      throw new TaskError('ALGORITHM_HISTORY_PURPOSE_REQUIRED', '固定快照带了历史视角但请求用途不是历史计算；不静默升级资格。');
+    } else if (reference.at !== undefined) {
+      throw new TaskError('ALGORITHM_HISTORY_PURPOSE_REQUIRED', '固定快照带了历史截止但请求用途不是历史计算；不静默升级资格。');
+    }
     const read = await this.snapshots.read(structuredClone(reference), { signal: context.signal, taskId: context.task.id });
     if (financialDigest(read.reference) !== financialDigest(reference)) throw new TaskError('ALGORITHM_SNAPSHOT_MISMATCH', '快照读取返回的固定身份、字段或范围与请求不同。');
+    if (!Array.isArray(read.evidence) || read.evidence.length !== read.rows.length) {
+      throw new TaskError('ALGORITHM_SNAPSHOT_ELIGIBILITY_EVIDENCE_MISSING', '固定快照端口未返回逐行实际资格/公开时间/修订/限制证据；不能调用共用规则前先假报通过。');
+    }
     const numeric = newNumericEvidence();
-    const asOf = new Date(this.now()).toISOString();
+    const asOf = usage?.purpose === 'historical_compute' && usage.cutoff ? new Date(usage.cutoff).toISOString() : new Date(this.now()).toISOString();
     const rows: AlgorithmBar[] = [];
-    const selected: Array<{ timestamp: string; row: Record<string, JsonValue> }> = [];
-    for (const row of read.rows) {
+    const rowAvailableAt = new Map<number, string>();
+    const selected: Array<{ timestamp: string; row: Record<string, JsonValue>; evidenceIndex: number }> = [];
+    for (const [evidenceIndex, row] of read.rows.entries()) {
       const timestamp = parseDay(jsonText(row, reference.fieldMapping.timestamp, 'timestamp'), reference.dateFormat);
       if (reference.range && (timestamp < reference.range.start || timestamp > reference.range.end)) continue;
-      selected.push({ timestamp, row });
+      selected.push({ timestamp, row, evidenceIndex });
     }
     if (!selected.length) throw new TaskError('ALGORITHM_EMPTY_RANGE', '固定快照的明确范围没有可用数据行。');
     if (selected.length > 512) throw new TaskError('ALGORITHM_INPUT_BUDGET', `本次选定 ${selected.length} 条日线观测，超过当前算法入口 512 条上限；未截断采用，请缩小明确范围。`);
-    for (const { timestamp, row } of selected) {
+    const eligibilityInputs: PurposeEligibilityInput[] = [];
+    for (const { timestamp, row, evidenceIndex } of selected) {
       const close = jsonNumber(row, reference.fieldMapping.close, 'close', timestamp, numeric);
       const open = optionalJsonNumber(row, reference.fieldMapping.open, 'open', timestamp, numeric);
       const high = optionalJsonNumber(row, reference.fieldMapping.high, 'high', timestamp, numeric);
@@ -486,8 +458,24 @@ export class LocalAlgorithmService {
         : zonedInstant(timestamp, reference.semantics.availability.closeTime, reference.semantics.timezone);
       if (Date.parse(available_at) > Date.parse(asOf)) throw new TaskError('ALGORITHM_TIME_UNAVAILABLE', `第 ${timestamp} 条数据的可得时刻晚于本次计算声明时刻。`);
       if (zonedDay(Date.parse(available_at), reference.semantics.timezone) < timestamp) throw new TaskError('ALGORITHM_TIME_UNAVAILABLE', `第 ${timestamp} 条数据的可得时刻早于业务日期。`);
+      rowAvailableAt.set(evidenceIndex, available_at);
       rows.push({ timestamp, close, ...(open === undefined ? {} : { open }), ...(high === undefined ? {} : { high }),
         ...(low === undefined ? {} : { low }), available_at, bar_closed: true as const });
+      const evidence = read.evidence[evidenceIndex]!;
+      eligibilityInputs.push({
+        ruleVersion: PURPOSE_ELIGIBILITY_RULE_VERSION,
+        purpose: usage?.purpose ?? 'current_compute',
+        purposeEvidence: usage?.purposeEvidence ?? null,
+        history: { mode: usage?.historyMode ?? null, cutoff: usage?.cutoff ?? null, perspective: usage?.perspective ?? null },
+        object: evidence.object,
+        publicationTime: evidence.publicationTime,
+        holdingTime: evidence.holdingTime,
+        revisions: evidence.revision ? [evidence.revision] : null,
+        wfdHistory: evidence.wfdHistory,
+        restriction: evidence.restriction,
+        derived: null,
+        wfdDecision: evidence.wfdDecision,
+      });
     }
     assertStrictDates(rows, reference.calendar);
     const metadata: AlgorithmMetadata = { series_id: ('wfd.' + reference.productId + '.' + reference.snapshotId).replace(/[^A-Za-z0-9_.:@+-]/gu, '_'),
@@ -500,11 +488,31 @@ export class LocalAlgorithmService {
       synthetic: reference.semantics.synthetic };
     const data: AlgorithmData = { metadata, rows };
     validateData(data);
+    const eligibility = assertEligibilityResult(combinePurposeEligibilityResults(eligibilityInputs.map(item => evaluatePurposeEligibility(item))));
+    const derivedInputs = selected.map(({ timestamp, evidenceIndex }) => {
+      const bundle = read.evidence![evidenceIndex]!;
+      const publication = bundle.publicationTime;
+      const availableAt = rowAvailableAt.get(evidenceIndex) ?? null;
+      const historyMode = request.usage?.historyMode ?? null;
+      // 历史模式决定依赖可得证据：holding 用实际 held_at，market_known 用公开时间与逐行 available_at 较晚者。
+      const latest = historyMode === 'system_held_at'
+        ? bundle.holdingTime?.status === 'known' ? bundle.holdingTime.receivedAtUtc : null
+        : [publication.latestExclusiveUtc ?? publication.earliestUtc, availableAt]
+          .filter((item): item is string => typeof item === 'string' && Number.isFinite(Date.parse(item)))
+          .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+      return { ref: timestamp, latestAvailableAtUtc: latest,
+        basis: historyMode === 'system_held_at'
+          ? `actual held_at=${bundle.holdingTime?.receivedAtUtc ?? 'unknown'}; mode=system_held_at`
+          : `${publication.basis}; actual available_at=${availableAt ?? 'unknown'}; takes later of both`,
+        evidenceSha256: wfdSha256(canonicalWfdJson({ publication: publication.evidenceSha256, availableAt,
+          heldAt: bundle.holdingTime?.receivedAtUtc ?? null })) };
+    });
     return { data, reference: json({ ...reference, range: { start: metadata.window_start, end: metadata.window_end },
-      resolution: read.resolution, numeric: numericEvidence(numeric) }) };
+      resolution: read.resolution, numeric: numericEvidence(numeric) }), eligibility,
+      eligibilityInputs, derivedInputs, restriction: read.evidence[0]!.restriction };
   }
 
-  private resolveManagedTable(source: AlgorithmManagedTableSource): { data: AlgorithmData; table: ManagedTableData; numeric: JsonValue } {
+  private resolveManagedTable(source: AlgorithmManagedTableSource, usage?: AlgorithmCallRequest['usage']): { data: AlgorithmData; table: ManagedTableData; numeric: JsonValue; latestAvailableAtUtc: string } {
     if (!this.tables) throw new TaskError('ALGORITHM_TABLE_UNBOUND', '已受管表读取端口尚未装配。');
     const table = this.tables.read(source.materialId);
     if (table.sha256 !== source.materialSha256) throw new TaskError('ALGORITHM_TABLE_CHANGED', '受管材料摘要与本次明确选择不同，拒绝读取。');
@@ -523,7 +531,7 @@ export class LocalAlgorithmService {
     if (!parsed.length) throw new TaskError('ALGORITHM_EMPTY_RANGE', '明确范围或受管表没有可用数据行。');
     if (parsed.length > 512) throw new TaskError('ALGORITHM_INPUT_BUDGET', `本次选定 ${parsed.length} 条日线观测，超过当前算法入口 512 条上限；未截断采用，请缩小明确范围。`);
     const numeric = newNumericEvidence();
-    const asOf = new Date(this.now()).toISOString();
+    const asOf = usage?.purpose === 'historical_compute' && usage.cutoff ? new Date(usage.cutoff).toISOString() : new Date(this.now()).toISOString();
     const rows: AlgorithmBar[] = parsed.map(({ timestamp, row }) => {
       const close = cellNumber(table, row, source.fieldMapping.close, 'close', timestamp, numeric);
       const open = optionalNumber(table, row, source.fieldMapping.open, 'open', timestamp, numeric);
@@ -547,7 +555,9 @@ export class LocalAlgorithmService {
       bar_closed: true, observations_are_consecutive: true,
       calendar_verification: source.calendar.mode === 'dense' ? 'dense' : source.calendar.mode === 'declared' ? 'declared' : 'not_verified',
       synthetic: source.semantics.synthetic };
-    return { data: { metadata, rows }, table, numeric: numericEvidence(numeric) };
+    const latestAvailable = Math.max(...rows.map(item => Date.parse(item.available_at)));
+    return { data: { metadata, rows }, table, numeric: numericEvidence(numeric),
+      latestAvailableAtUtc: new Date(latestAvailable).toISOString() };
   }
 
   private managedReference(source: AlgorithmManagedTableSource, data: AlgorithmData, table: ManagedTableData, numeric: JsonValue): Record<string, unknown> {
@@ -578,8 +588,27 @@ export class LocalAlgorithmService {
     const validInterval = leading < normalized.rows.length ? { start: normalized.rows[leading]!.timestamp, end: normalized.rows.at(-1)!.timestamp } : null;
     const rawResult = record(raw, '计算结果'), diagnostics = rawResult.diagnostics;
     if (!Array.isArray(diagnostics)) throw new TaskError('ALGORITHM_OUTPUT_INVALID', '原计算结果缺少诊断数组。');
+    const computedAt = new Date(this.now()).toISOString();
+    const resultObjectSha256 = wfdSha256(canonical({ methodId: request.methodId, methodVersion: method.version,
+      parameters: request.parameters, rows: normalized.rows }));
+    const derived: DerivedInputEvidence[] = sealed.derivedInputs ?? [];
+    const resultEligibility = evaluatePurposeEligibility({
+      ruleVersion: PURPOSE_ELIGIBILITY_RULE_VERSION,
+      purpose: request.usage?.purpose ?? 'current_compute',
+      purposeEvidence: request.usage?.purposeEvidence ?? null,
+      history: { mode: request.usage?.historyMode ?? null, cutoff: request.usage?.cutoff ?? null,
+        perspective: request.usage?.perspective ?? null },
+      object: { objectSha256: resultObjectSha256, origin: 'derived_candidate', productId: null, snapshotId: null,
+        recordVersion: null, definitionRevision: method.version, contentVerified: true,
+        contentBasis: '算法结果行按本次冻结输入、参数与实现实际计算并逐行核对；结果未发布' },
+      publicationTime: null, holdingTime: null, revisions: null, wfdHistory: null,
+      restriction: sealed.restriction ?? null, wfdDecision: null,
+      derived: { methodVersion: method.version, businessTime: sealed.data.metadata.window_end, inputs: derived,
+        computedAtUtc: computedAt, computedAtBasis: '实际算法任务完成时间', publishedAtUtc: null, usableAtUtc: null,
+        resultObjectSha256 },
+    });
     const result: AlgorithmComputedResult = { status: 'computed', persistence: 'not_requested',
-      publication: { state: 'not_requested', route: 'existing_generic_candidate_service', performed: false },
+      publication: { state: 'not_requested', performed: false },
       environment: task.versions.environment === 'synthetic-test' ? 'synthetic-test' : task.versions.environment === 'local-review' ? 'local-review' : this.environment,
       taskId: task.id, methodId: request.methodId, methodVersion: method.version,
       contractVersion: ALGORITHM_CONTRACT_VERSION, implementationVersion: row.implementation_version,
@@ -589,6 +618,8 @@ export class LocalAlgorithmService {
         windowStart: sealed.data.metadata.window_start, windowEnd: sealed.data.metadata.window_end },
       diagnostics: json(diagnostics) as JsonValue[], gaps,
       method: json(rawResult.method ?? {}),
+      eligibility: sealed.eligibility ? { input: sealed.eligibility, result: resultEligibility } : null,
+      computedAt,
       limitations: [...method.limitations, '仅按所供连续观测；未独立核对供应方日历、复权或历史可得性。',
         '结果为本地计算候选，未请求数据库发布；发布须另经既有通用候选服务。'],
       externalActionExecuted: false };
@@ -734,22 +765,144 @@ export class LocalAlgorithmService {
     }
   }
   private assertEnabled(): void { if (!this.isEnabled()) throw new TaskError('ALGORITHM_NOT_ENABLED', '算法计算入口尚未经受控采用启用。'); }
-  private assertDispatch(): void { if (this.tasks.getControl().stopped) throw new TaskError('HARNESS_STOPPED', '服务已停止新的算法计算派发。'); }
+  private assertDispatch(): void { if (this.tasks.getControl().stopped) throw new TaskError('BD_STOPPED', '服务已停止新的算法计算派发。'); }
   private assertActive(context: TaskExecutionContext): void {
     context.signal.throwIfAborted(); this.assertDispatch();
     if (!this.tasks.isRunActive(context.runId, context.generation)) throw new TaskError('STALE_ALGORITHM_ATTEMPT', '此计算尝试已失去当前运行所有权。');
   }
 }
 
+function withoutPurposeEvidence(request: AlgorithmCallRequest): AlgorithmCallRequest {
+  if (!request.usage) return request;
+  const { purposeEvidence, ...usage } = request.usage;
+  return { ...request, usage };
+}
+
+/** 由真实提交来源写入用途证据；请求正文不能自报 authority，模型建议不能自授历史/发布用途。 */
+function attachPurposeEvidence(request: AlgorithmCallRequest, submission: AlgorithmSubmissionContext | undefined, now: number): AlgorithmCallRequest {
+  const usage = request.usage;
+  if (!usage) return request;
+  if (!submission) {
+    if (usage.purpose === 'historical_compute') {
+      throw new TaskError('ALGORITHM_PURPOSE_EVIDENCE_REQUIRED', '历史算法用途须由真实操作者请求或受信用户消息提交；模型自报不能成立。');
+    }
+    return request;
+  }
+  const observedAt = Date.parse(submission.observedAtUtc);
+  if (!Number.isFinite(observedAt) || observedAt > now + 300_000) {
+    throw new TaskError('ALGORITHM_PURPOSE_EVIDENCE_REQUIRED', '用途证据时间无效或明显晚于本次受理。');
+  }
+  if (submission.authority === 'operator-http') {
+    if (!submission.requestId) throw new TaskError('ALGORITHM_PURPOSE_EVIDENCE_REQUIRED', 'HTTP 用途证据缺少原请求编号。');
+  } else if (!submission.messageId || !submission.quote.trim()) {
+    throw new TaskError('ALGORITHM_PURPOSE_EVIDENCE_REQUIRED', '用户消息用途证据缺少消息编号或原话。');
+  }
+  const claim: PurposeEvidenceClaim = {
+    purpose: usage.purpose,
+    authority: submission.authority,
+    quote: submission.authority === 'user-message' ? submission.quote : `本机操作者请求 ${usage.purpose}`,
+    observedAtUtc: new Date(observedAt).toISOString().replace('.000Z', 'Z'),
+    evidenceSha256: wfdSha256(canonical(submission)),
+    ...(submission.authority === 'operator-http' ? { requestId: submission.requestId } : { messageId: submission.messageId }),
+  };
+  return { ...request, usage: { ...usage, purposeEvidence: [claim] } };
+}
+
+function normalizeUsage(value: unknown): AlgorithmUsage {
+  const usage = record(value, 'usage');
+  exact(usage, ['purpose', 'historyMode', 'cutoff', 'perspective'], 'usage');
+  if (usage.purpose !== 'current_compute' && usage.purpose !== 'historical_compute') {
+    throw new TaskError('INVALID_ALGORITHM_USAGE', '用途须为 current_compute 或 historical_compute；发布资格不属于本算法入口。');
+  }
+  if (usage.historyMode !== null && !(ELIGIBILITY_HISTORY_MODES as readonly unknown[]).includes(usage.historyMode)) {
+    throw new TaskError('INVALID_ALGORITHM_USAGE', '历史模式须使用现有 history_mode 稳定名称。');
+  }
+  if (usage.perspective !== null && (typeof usage.perspective !== 'string' || !usage.perspective.trim())) {
+    throw new TaskError('INVALID_ALGORITHM_USAGE', 'perspective 须为明确文本或 null。');
+  }
+  if (usage.cutoff !== null && (typeof usage.cutoff !== 'string' || !Number.isFinite(Date.parse(usage.cutoff))
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u.test(usage.cutoff))) {
+    throw new TaskError('INVALID_ALGORITHM_USAGE', '历史截止须为含明确时区的有效时刻或 null。');
+  }
+  if (usage.purpose === 'historical_compute') {
+    if (usage.historyMode === null || usage.cutoff === null) {
+      throw new TaskError('INVALID_ALGORITHM_USAGE', '历史计算须显式选择历史模式并固定截止；不能默认快照内容。');
+    }
+    if (usage.perspective !== null && usage.perspective !== usage.historyMode) {
+      throw new TaskError('INVALID_ALGORITHM_USAGE', 'perspective 必须与历史模式一致。');
+    }
+  } else if (usage.historyMode !== null || usage.cutoff !== null || usage.perspective !== null) {
+    throw new TaskError('INVALID_ALGORITHM_USAGE', '当前内容计算不能携带历史模式/截止/视角；不静默升级资格。');
+  }
+  return {
+    purpose: usage.purpose,
+    historyMode: usage.historyMode as AlgorithmUsage['historyMode'],
+    cutoff: usage.cutoff as string | null,
+    perspective: usage.perspective as string | null,
+  };
+}
+
+function managedTableEligibilityInput(request: AlgorithmCallRequest, source: AlgorithmManagedTableSource, latestAvailableAtUtc: string): PurposeEligibilityInput {
+  const usage = request.usage;
+  const latestMs = Date.parse(latestAvailableAtUtc);
+  const start = Number.isFinite(latestMs) ? new Date(latestMs).toISOString().replace('.000Z', 'Z') : null;
+  return {
+    ruleVersion: PURPOSE_ELIGIBILITY_RULE_VERSION,
+    purpose: usage?.purpose ?? 'current_compute',
+    purposeEvidence: usage?.purposeEvidence ?? null,
+    history: { mode: usage?.historyMode ?? null, cutoff: usage?.cutoff ?? null, perspective: usage?.perspective ?? null },
+    object: { objectSha256: source.materialSha256, origin: 'managed_original', productId: null, snapshotId: null,
+      recordVersion: source.materialSha256, definitionRevision: null, contentVerified: true,
+      contentBasis: `受管表按材料摘要 ${source.materialSha256} 读取完整原件，非目录预览` },
+    // 只有实际 available_at 列可以充当来源文件公开时间证据；bar_close 的收盘时间
+    // 是请求声明，不是具体版本公开回执，历史用途必须由共用规则明确拒绝。
+    publicationTime: source.semantics.availability.kind === 'column'
+      ? materialPublicationTimeEvidence({
+        objectSha256: source.materialSha256, recordVersion: source.materialSha256,
+        earliestUtc: start,
+        latestExclusiveUtc: start === null ? null : new Date(latestMs + 1000).toISOString().replace('.000Z', 'Z'),
+        precision: 'second', sourceTimezone: source.semantics.timezone,
+        basis: '受管表可用 available_at 列取最晚；来源字段，未独立核验',
+        evidenceSha256: wfdSha256(canonicalWfdJson({ materialSha256: source.materialSha256, latestAvailableAtUtc, kind: 'column' })),
+      })
+      : { authority: 'declared_bar_close', status: 'known', objectSha256: source.materialSha256,
+        recordVersion: source.materialSha256, earliestUtc: null, latestExclusiveUtc: null, precision: null,
+        sourceTimezone: source.semantics.timezone,
+        basis: 'bar_close 为输入可得性声明，不是该材料具体版本的实际公开字段或回执',
+        evidenceSha256: wfdSha256(canonicalWfdJson({ materialSha256: source.materialSha256, latestAvailableAtUtc, kind: 'bar_close' })),
+        independentlyVerified: false },
+    holdingTime: null,
+    revisions: null,
+    wfdHistory: null,
+    restriction: null,
+    derived: null,
+    wfdDecision: null,
+  };
+}
+
+function assertEligibilityResult(result: PurposeEligibilityResult): PurposeEligibilityResult {
+  if (result.status === 'eligible') return result;
+  const payload = canonicalWfdJson({
+    ruleVersion: result.ruleVersion, status: result.status, purpose: result.purpose,
+    history: result.history, historyUse: result.historyUse, timings: result.timings,
+    gaps: result.gaps.filter(item => item.blocking), checks: result.checks,
+    evidenceSha256: result.evidenceSha256,
+  });
+  throw new TaskError(result.status === 'ineligible' ? 'PURPOSE_ELIGIBILITY_INELIGIBLE' : 'PURPOSE_ELIGIBILITY_INSUFFICIENT', payload);
+}
+
 function normalizeRequest(value: unknown): AlgorithmCallRequest {
   const request = record(value, '计算请求');
-  exact(request, ['methodId', 'parameters', 'source'], '计算请求');
+  exact(request, ['methodId', 'parameters', 'source'], '计算请求', ['usage']);
   const methodId = request.methodId;
   if (!(ALGORITHM_METHOD_IDS as readonly unknown[]).includes(methodId)) throw new TaskError('INVALID_ALGORITHM_METHOD', '未知方法；当前只支持 MA、固定 12/26/9 MACD 和严格看涨吞没。');
   assertEnabledParameters(methodId as AlgorithmMethodId, request.parameters);
   const source = normalizeSource(request.source, methodId as AlgorithmMethodId);
-  if (Buffer.byteLength(canonical({ methodId, parameters: request.parameters, source })) > 100_000) throw new TaskError('ALGORITHM_INPUT_BUDGET', '计算请求超过本包预算。');
-  return JSON.parse(canonical({ methodId, parameters: request.parameters, source })) as AlgorithmCallRequest;
+  const usage = request.usage === undefined ? undefined : normalizeUsage(request.usage);
+  if (Buffer.byteLength(canonical({ methodId, parameters: request.parameters, source, ...(usage ? { usage } : {}) })) > 100_000) {
+    throw new TaskError('ALGORITHM_INPUT_BUDGET', '计算请求超过本包预算。');
+  }
+  return JSON.parse(canonical({ methodId, parameters: request.parameters, source, ...(usage ? { usage } : {}) })) as AlgorithmCallRequest;
 }
 function assertEnabledParameters(methodId: AlgorithmMethodId, value: unknown): void {
   const params = record(value, 'parameters');
@@ -850,7 +1003,7 @@ function normalizeSnapshot(source: Record<string, unknown>, methodId: AlgorithmM
   if (source.kind !== 'fixed_snapshot') throw new TaskError('ALGORITHM_INPUT_SOURCE_UNSUPPORTED', '固定快照来源类型无效。');
   const reference = record(source.reference, '固定快照引用');
   exact(reference, ['kind', 'instanceId', 'productId', 'snapshotId', 'definitionRevision', 'fieldMapping', 'semantics', 'calendar'],
-    '固定快照引用', ['fields', 'dateFormat', 'range', 'expectedRowsSha256', 'expectedRowCount', 'expectedDefinitionSha256', 'contractDigest']);
+    '固定快照引用', ['fields', 'dateFormat', 'range', 'perspective', 'at', 'includeHistory', 'heldScope', 'usableStage', 'expectedRowsSha256', 'expectedRowCount', 'expectedDefinitionSha256', 'contractDigest']);
   if (reference.kind !== 'wfd_fixed_snapshot') throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '固定快照须声明 kind:wfd_fixed_snapshot。');
   for (const [label, value] of [['实例', reference.instanceId], ['产品', reference.productId],
     ['快照', reference.snapshotId], ['定义修订', reference.definitionRevision]] as const) {
@@ -886,6 +1039,43 @@ function normalizeSnapshot(source: Record<string, unknown>, methodId: AlgorithmM
     range = { start: validDay(raw.start, 'range.start'), end: validDay(raw.end, 'range.end') };
     if (range.start > range.end) throw new TaskError('INVALID_ALGORITHM_INPUT', '范围开始不能晚于结束。');
   }
+  let perspective: AlgorithmSnapshotReference['perspective'];
+  if (reference.perspective !== undefined) {
+    if (!(ELIGIBILITY_HISTORY_MODES as readonly unknown[]).includes(reference.perspective)) {
+      throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '固定快照历史视角须使用现有 history_mode 稳定名称。');
+    }
+    perspective = reference.perspective as AlgorithmSnapshotReference['perspective'];
+  }
+  let at: string | undefined;
+  if (reference.at !== undefined) {
+    if (typeof reference.at !== 'string' || !Number.isFinite(Date.parse(reference.at))
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u.test(reference.at)) {
+      throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '固定快照历史截止须为含明确时区的有效时刻。');
+    }
+    at = reference.at;
+  }
+  if (perspective !== undefined && perspective !== 'snapshot_contents' && at === undefined) {
+    throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '历史视角必须同时声明截止；不能只改视角标签。');
+  }
+  if (at !== undefined && (perspective === undefined || perspective === 'snapshot_contents')) {
+    throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '历史截止必须搭配非快照内容的历史视角；不能只改截止。');
+  }
+  const includeHistory = reference.includeHistory === undefined ? undefined : reference.includeHistory;
+  if (includeHistory !== undefined && typeof includeHistory !== 'boolean') throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', 'includeHistory 须为布尔值。');
+  let heldScope: string | undefined;
+  if (reference.heldScope !== undefined) {
+    if (typeof reference.heldScope !== 'string' || !reference.heldScope.trim() || reference.heldScope.length > 256) {
+      throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', 'heldScope 须为明确有界文本。');
+    }
+    heldScope = reference.heldScope;
+  }
+  let usableStage: AlgorithmSnapshotReference['usableStage'];
+  if (reference.usableStage !== undefined) {
+    if (!['acquired', 'custodied', 'published_readable'].includes(String(reference.usableStage))) {
+      throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', 'usableStage 须为 acquired/custodied/published_readable。');
+    }
+    usableStage = reference.usableStage as AlgorithmSnapshotReference['usableStage'];
+  }
   const sha = (value: unknown, label: string) => {
     if (typeof value !== 'string' || !/^[a-f0-9]{64}$/u.test(value)) throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', `${label}须为小写 SHA-256。`);
     return value;
@@ -901,7 +1091,9 @@ function normalizeSnapshot(source: Record<string, unknown>, methodId: AlgorithmM
     productId: String(reference.productId), snapshotId: String(reference.snapshotId),
     definitionRevision: String(reference.definitionRevision), fields, fieldMapping: mapping as unknown as AlgorithmFieldMapping,
     ...(reference.dateFormat === undefined ? {} : { dateFormat: dateFormat as AlgorithmDateFormats }), semantics, calendar,
-    ...(range ? { range } : {}), ...(expectedRowsSha256 ? { expectedRowsSha256 } : {}),
+    ...(range ? { range } : {}), ...(perspective ? { perspective } : {}), ...(at ? { at } : {}),
+    ...(includeHistory === undefined ? {} : { includeHistory }), ...(heldScope ? { heldScope } : {}),
+    ...(usableStage ? { usableStage } : {}), ...(expectedRowsSha256 ? { expectedRowsSha256 } : {}),
     ...(expectedRowCount === undefined ? {} : { expectedRowCount }), ...(expectedDefinitionSha256 ? { expectedDefinitionSha256 } : {}),
     ...(contractDigest ? { contractDigest } : {}) };
   return { kind: 'fixed_snapshot', reference: normalized };
@@ -1212,18 +1404,18 @@ function required<T>(value: T | undefined, label: string): T {
   return value;
 }
 function describeError(error: unknown): string { return error instanceof Error && error.message ? error.message.slice(0, 1000) : String(error).slice(0, 1000); }
-function binary64Hex(value: number): string {
-  const bytes = Buffer.alloc(8); bytes.writeDoubleBE(value, 0); return bytes.toString('hex');
-}
-
 /** 冻结实际参与输入转换、时间解释和结果校验的 TS 模块字节；只用于执行绑定，历史结果读取不比较它。 */
 export function captureCodeBinding(): { version: string; files: Record<string, string> } {
   const current = fileURLToPath(import.meta.url), extension = extname(current), directory = dirname(current);
   const files: Record<string, string> = {};
-  for (const name of ['algorithm-service', 'algorithm-types', 'managed-table', 'algorithm-snapshot'] as const) {
-    const path = join(directory, `${name}${extension}`);
-    files[`${name}${extension}`] = createHash('sha256').update(readFileSync(path)).digest('hex');
-  }
+  const selected: Array<[string, string]> = [
+    [`algorithm-service${extension}`, join(directory, `algorithm-service${extension}`)],
+    [`algorithm-types${extension}`, join(directory, `algorithm-types${extension}`)],
+    [`managed-table${extension}`, join(directory, `managed-table${extension}`)],
+    [`product-machine-snapshot${extension}`, join(directory, `product-machine-snapshot${extension}`)],
+    [`purpose-eligibility${extension}`, fileURLToPath(new URL(`../collection/purpose-eligibility${extension}`, import.meta.url))],
+  ];
+  for (const [name, path] of selected) files[name] = createHash('sha256').update(readFileSync(path)).digest('hex');
   return { version: `sha256:${financialDigest(files)}`, files };
 }
 function binaryDigest(path: string): string { return createHash('sha256').update(readFileSync(path)).digest('hex'); }

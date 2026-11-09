@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .lineage import Lineage
+from .row_version_objects import reject_unsupported, RowVersionObjectError
 
 DATA_DIRS = ("observations", "foundation", "events", "evidence_blobs")
 CLOSURE_DIRS = ("catalog",)
@@ -101,6 +102,16 @@ class GC:
     def valid_snapshots(self) -> dict:
         """只认证据自洽的快照：commit→snapshot→manifest→文件 全部 hash 一致。"""
         snaps, commits, valid = self.snapshots(), self.commits(), {}
+        # This GC does not yet traverse row-version objects. Never skip an
+        # unsupported current snapshot and fall back to an older graph head.
+        try:
+            for snapshot in snaps.values():
+                reject_unsupported(snapshot, "gc")
+            if any(str(marker.get("snapshot_file", "")).startswith("wfd.snapshot-file/")
+                   for marker in commits.values()):
+                raise RowVersionObjectError("ROW_VERSION_OBJECT_OPERATION_UNSUPPORTED:gc")
+        except RowVersionObjectError as exc:
+            raise ClosureError(str(exc)) from exc
         for sid, marker in commits.items():
             snap = snaps.get(sid)
             if snap is None:

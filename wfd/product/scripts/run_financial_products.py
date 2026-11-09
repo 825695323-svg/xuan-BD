@@ -14,7 +14,8 @@ from pathlib import Path
 ENGINE = Path(__file__).resolve().parents[1]
 PROJECT = ENGINE.parents[1]
 sys.path.insert(0, str(ENGINE))
-from run_financial_slice import day_time, interval, value, field, definition, UNKNOWN
+from run_financial_slice import (day_time, interval, value, field, definition, UNKNOWN,
+                                 new_output_directory, selected_directory, selected_file)
 from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, load_protocol_validator, canonical, sha
 from wfd_sdk.product_service import WFDProductService, SERVICE_VERSION
 
@@ -165,7 +166,10 @@ def build(data, evidence):
 
 def run(data, output):
     data = copy.deepcopy(data)
-    semantic_path = ENGINE / "fixtures/financial_products/declared_units.json"
+    output = new_output_directory(output, *(source["path"] for source in data["sources"]))
+    directory = output / datetime.now(timezone.utc).strftime("run_%Y%m%dT%H%M%SZ")
+    directory.mkdir(parents=True, exist_ok=False)
+    semantic_path = directory / "declared_units.json"
     save(semantic_path, {"version": "wfd.financial-units/1", "nature": "declared_reference_semantics",
                          "units": [dict(zip(("unit_code", "meaning", "dimension", "base_unit", "scale_decimal"), row)) for row in UNITS],
                          "source_basis": {name: data[name]["source_ids"] for name in ("market", "calendar", "financial")}})
@@ -174,8 +178,6 @@ def run(data, output):
                              "provider": "WFD基础语义声明", "url": None, "license": "user_defined",
                              "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                              "nature": "declared_reference_semantics"})
-    directory = output / datetime.now(timezone.utc).strftime("run_%Y%m%dT%H%M%SZ")
-    directory.mkdir(parents=True, exist_ok=False)
     policy = {s["source_id"]: {"may_submit": True, "may_publish_formal": True,
                                "may_read": True, "may_read_evidence": True,
                                "may_export": True, "may_export_evidence": True,
@@ -313,7 +315,14 @@ def run(data, output):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--inputs", type=Path, default=ENGINE / "fixtures/financial_products/inputs.json")
-    parser.add_argument("--output", type=Path, default=PROJECT / "03_测试与验证记录/金融产品建设_2026-10-27")
+    parser.add_argument("--inputs", type=Path, required=True, help="明确选择的既有 inputs.json")
+    parser.add_argument("--materials-root", type=Path, required=True, help="本次明确选择的既有原包根")
+    parser.add_argument("--output", type=Path, required=True, help="全新工程外输出目录；父目录须存在")
     args = parser.parse_args()
-    raise SystemExit(run(json.loads(args.inputs.read_text("utf-8")), args.output))
+    materials = selected_directory(args.materials_root)
+    inputs = selected_file(args.inputs)
+    output = new_output_directory(args.output, materials, inputs)
+    data = json.loads(inputs.read_text("utf-8"))
+    for source in data["sources"]:
+        source["path"] = str(selected_file(source["path"], materials, inputs.parent))
+    raise SystemExit(run(data, output))

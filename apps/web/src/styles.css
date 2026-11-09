@@ -130,7 +130,8 @@ button svg, a svg { flex-shrink: 0; }
 .data-nav-search { flex: 0 0 auto; width: 100%; height: 34px; padding: 0 12px; border-radius: 8px; }
 .data-nav-search input { font-size: .84rem; }
 .sidebar-search-slot { flex: 0 0 auto; padding: 10px 16px 8px; }
-.data-nav > .sidebar-search-slot { margin: -10px -8px 0; }
+/* 数据页三栏（算法/接口源/采集源）共用：搜索框贴顶，到首目录固定 8px，不依赖子元素 margin。 */
+.data-nav > .sidebar-search-slot { margin: -10px -8px 8px; padding-bottom: 0; }
 .sidebar-search-slot select { width: 100%; min-width: 0; height: 32px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; font-size: .88rem; }
 .source-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); grid-auto-rows: 1fr; gap: 12px; align-content: start; max-width: 1000px; }
 .source-card { display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 104px; padding: 14px 14px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2); }
@@ -204,6 +205,31 @@ button svg, a svg { flex-shrink: 0; }
 .message-reasoning { color: var(--muted); margin-bottom: 13px; font-size: .88rem; }
 .message-reasoning summary, .conversation-task-process summary { cursor: pointer; width: fit-content; }
 .message-reasoning > p { margin-top: 9px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; line-height: 1.7; }
+/* 只有过程行的消息：紧凑排布，不出现复制/重试控件，也不描整条焦点框。 */
+.message--process { margin-bottom: 6px; }
+.message--process .message-controls { display: none; }
+.message--process .message-body { display: none; }
+/* 思考与工具步骤按模型实际顺序平铺成过程行，不再收成一段折叠正文或卡片。 */
+.message-process { margin-bottom: 12px; }
+.message-process-title { display: flex; align-items: baseline; gap: 6px; margin: 0 0 6px; padding: 0; border: 0; background: none;
+  color: var(--muted); font: inherit; font-size: .78rem; line-height: 1.6; text-align: left; cursor: pointer; opacity: .85; }
+.message-process-title:hover { opacity: 1; }
+.message-process-chevron { font-size: .9em; opacity: .7; }
+.message-steps { display: flex; flex-direction: column; gap: 6px; }
+.message-step { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; color: var(--muted); font-size: .84rem; line-height: 1.6; }
+.message-step--thinking { display: block; }
+.message-step--thinking > summary { cursor: pointer; display: flex; flex-wrap: nowrap; align-items: baseline; gap: 8px; outline: none; }
+.message-step--thinking > summary::before { content: '▸'; color: var(--muted); opacity: .55; font-size: .78em; }
+.message-step--thinking[open] > summary::before { content: '▾'; }
+.message-step--thinking > summary .message-step-label { flex: 0 0 auto; }
+.message-step--thinking > summary .message-step-name { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.message-step--thinking > summary:hover .message-step-name { opacity: 1; }
+.message-step-label { color: var(--muted); opacity: .9; }
+.message-step-label::after { content: ' ·'; opacity: .55; }
+.message-step-name { color: var(--ink); opacity: .82; overflow-wrap: anywhere; }
+.message-step-state { margin-left: auto; opacity: .68; font-size: .78rem; }
+.message-step-detail { flex-basis: 100%; margin: 2px 0 0; opacity: .8; overflow-wrap: anywhere; }
+.message-step-text { margin: 6px 0 0; padding-left: 3.4em; max-height: 320px; overflow-y: auto; white-space: pre-wrap; line-height: 1.7; opacity: .82; }
 .message-metrics { color: var(--muted); font-size: .74rem; margin-top: 10px; line-height: 1.5; }
 .conversation-task-process { margin: 18px 0; color: var(--muted); font-size: .85rem; }
 .conversation-task-process > summary span { opacity: .8; }
@@ -459,9 +485,6 @@ button svg, a svg { flex-shrink: 0; }
 
 
 /* 采集源卡片：关注按钮移到右上，去掉额外操作行与聚焦蓝框 */
-.source-follow { flex: 0 0 auto; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: .74rem; }
-.source-follow:hover { color: var(--ink); border-color: color-mix(in srgb, var(--ink) 30%, var(--line)); }
-.source-follow[aria-pressed="true"] { color: var(--ink); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .market-chip:focus, .market-chip:focus-visible { outline: none; box-shadow: none; }
 
 
@@ -483,15 +506,11 @@ button svg, a svg { flex-shrink: 0; }
 .source-head-right { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; }
 .source-tail { flex: 0 0 46px; display: inline-flex; align-items: center; justify-content: center; }
 
-.source-follow { width: 46px; justify-content: center; }
-
-
 /* 加号挂在 logo 右下角；关注紧贴指示灯左侧 */
 .source-logo-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
 .source-logo-add { position: absolute; right: -5px; bottom: -5px; width: 16px; height: 16px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--muted); }
 .source-logo-add:hover { color: var(--ink); border-color: color-mix(in srgb, var(--ink) 35%, var(--line)); }
 .source-logo-add[data-open="true"] { color: var(--accent); border-color: var(--accent); }
-.source-follow { width: auto; padding: 2px 9px; }
 
 /* 数据库页：线路、能力、候选与逐输出回执。只显示服务事实，不铺第二套状态账本。 */
 .database-nav-label { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
