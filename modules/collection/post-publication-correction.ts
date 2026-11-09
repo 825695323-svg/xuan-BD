@@ -145,6 +145,7 @@ export class PostPublicationCorrectionService {
     const gaps: string[] = [];
     const items: ImpactItem[] = [];
     const scanned = this.scanPlans(binding, gaps);
+    if (scanned === null) return this.storeImpact(row, [], gaps);
     for (const plan of scanned) {
       const requests = this.db.prepare(`SELECT request_id,state,document_json,receipt_json,local_refs_json
         FROM r1_handoff_attempts WHERE request_id IN (SELECT request_id FROM r1_workspace_requests WHERE plan_id=? AND output_id=?)
@@ -208,15 +209,23 @@ export class PostPublicationCorrectionService {
     return this.storeImpact(row, items, gaps);
   }
 
-  private scanPlans(binding: CorrectionBinding, gaps: string[]): { planId: string; outputId: string }[] {
+  private scanPlans(binding: CorrectionBinding, gaps: string[]): { planId: string; outputId: string }[] | null {
     // 直接扫描真实持久步骤表，不走加工计划视图或前 20 条摘要。
+    const exact = binding.planOutput;
     const rows = this.db.prepare(`SELECT s.plan_id,s.output_id,s.parameters_json
       FROM processing_plan_steps s JOIN processing_plans p ON p.plan_id=s.plan_id
-      WHERE s.kind='parse' ORDER BY p.created_at,s.ordinal,s.rowid`).all() as unknown as {
-        plan_id: string; output_id: string; parameters_json: string }[];
+      WHERE s.kind='parse' ${exact ? 'AND s.plan_id=? AND s.output_id=?' : ''}
+      ORDER BY p.created_at,s.ordinal,s.rowid LIMIT ?`)
+      .iterate(...(exact ? [exact.planId, exact.outputId] : []), MAX_SCAN_ROWS + 1);
+    let scanned = 0;
     const matched: { planId: string; outputId: string }[] = [];
     const seen = new Set<string>();
-    for (const entry of rows) {
+    for (const row of rows) {
+      if (++scanned > MAX_SCAN_ROWS) {
+        gaps.push('plan_scan_over_budget');
+        return null;
+      }
+      const entry = row as unknown as { plan_id: string; output_id: string; parameters_json: string };
       const key = entry.plan_id + '\u0000' + entry.output_id;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -224,14 +233,10 @@ export class PostPublicationCorrectionService {
       try { parameters = JSON.parse(entry.parameters_json) as WfdRecord; }
       catch { gaps.push(`plan:${entry.plan_id}:parse_parameters_unreadable`); continue; }
       const adapter = parameters.sourceAdapter;
-      if (binding.planOutput) {
-        if (entry.plan_id === binding.planOutput.planId && entry.output_id === binding.planOutput.outputId)
-          matched.push({ planId: entry.plan_id, outputId: entry.output_id });
-      } else if (binding.adapter && isWfdRecord(adapter)
+      if (exact || (binding.adapter && isWfdRecord(adapter)
         && adapter.adapterId === binding.adapter.adapterId && adapter.version === binding.adapter.version
-        && sameAdapterDigest(adapter.configDigest, binding.adapter.configDigest))
+        && sameAdapterDigest(adapter.configDigest, binding.adapter.configDigest)))
         matched.push({ planId: entry.plan_id, outputId: entry.output_id });
-      if (rows.length > MAX_SCAN_ROWS) { gaps.push('plan_scan_over_budget'); break; }
     }
     if (!matched.length) gaps.push('no_plan_matches_error_binding');
     return matched;
@@ -267,6 +272,7 @@ export class PostPublicationCorrectionService {
           affectedIndices.add(index);
         }
         if (!affectedIndices.size) continue;
+        const proofSha256 = wfdSha256(canonicalWfdJson(proof as unknown as WfdRecord));
         const handoffRequestIds = this.derivedHandoffRequests(String(calc.requestId ?? ''), row.batch_id);
         if (!handoffRequestIds.length) gaps.push(`derived:${row.batch_id}:no_handoff_request`);
         for (const [index, line] of proof.lineage.entries()) {
@@ -284,7 +290,7 @@ export class PostPublicationCorrectionService {
             businessKey: line.businessKey, originalProductId: source.productId,
             sourceIndex: line.sourceIndex, handoffRequestIds,
             calculation: { batchId: row.batch_id, calculationId: calc.calculationId ?? 'legacy',
-              proofSha256: wfdSha256(canonicalWfdJson(proof as unknown as WfdRecord)) } });
+              proofSha256 } });
           void index;
         }
       }
@@ -329,6 +335,13 @@ export class PostPublicationCorrectionService {
 
   /** 暂停声明由已冻结影响清单确定性重建；恢复只重用同一声明，不新增范围。 */
   private suspensionDeclaration(row: CaseRow, impact: { items: ImpactItem[]; gaps: string[] }): WfdRecord {
+    if (impact.gaps.includes('plan_scan_over_budget')) {
+      // Older versions could freeze a partial scan. An unsent case may be scanned again.
+      if (row.state === 'impact_frozen')
+        this.db.prepare("UPDATE correction_cases SET state='impact_incomplete',updated_at=? WHERE case_id=?")
+          .run(Date.now(), row.case_id);
+      fail('CORRECTION_SUSPEND_SCOPE', '计划扫描超出预算，影响范围未完整核对，不能据此暂停。');
+    }
     const scopes = new Map<string, { product_id: string; snapshot_id: string; record_versions: string[] }>();
     for (const item of impact.items) {
       if (!item.productId || !item.snapshotId || !item.recordVersion) {
@@ -594,7 +607,7 @@ export class PostPublicationCorrectionService {
       planId: input.planId, outputId: input.outputId, originalSha256: input.originalSha256,
       materialId, originalRequestId: String(originals[0]!.requestId),
       sourceRevision: input.sourceRevision ?? null, expectedParentSnapshotId: input.expectedParentSnapshotId,
-      document, documentSha256, requestIdentity: document.request_identity, valueFields,
+      document, documentSha256, requestIdentity: document.request_identity, valueFields, verificationFormat: 'by_calculation',
       revisionCount: (document.outputs as WfdRecord[]).reduce((count, item) =>
         count + Object.keys((item.revisions as WfdRecord) ?? {}).length, 0),
       recompute: impact.items.filter(item => item.kind === 'derived').map(item => ({
@@ -1178,6 +1191,7 @@ export class PostPublicationCorrectionService {
     const docOutputs = document.outputs as WfdRecord[];
     const resultOutputs = result.output_results as WfdRecord[];
     const verifiedOutputs: WfdRecord[] = [];
+    const readbackByRow = new Map<string, { output: WfdRecord; row: WfdRecord }>();
     const sourceFixedRows: WfdRecord[] = [];
     const impactForCommit = row.impact_json ? JSON.parse(row.impact_json) as { items: ImpactItem[] } : { items: [] };
     const originalProductIds = new Set(impactForCommit.items.filter(item => item.kind === 'original')
@@ -1238,9 +1252,12 @@ export class PostPublicationCorrectionService {
       }
       if (!oldSnapshotId) oldSnapshotId = String((((docRevisions[Object.keys(docRevisions)[0]!] as WfdRecord)
         .previous) as WfdRecord).snapshot_id);
-      verifiedOutputs.push({ outputKey: String(docOutput.output_key), productId, records,
+      const verifiedOutput = { outputKey: String(docOutput.output_key), productId, records,
         fixedRows, snapshotId: newSnapshotId, valueField: valueField ?? '', tabular: hasTabular,
-        definitionDigest: String((output.definition_ref as WfdRecord)?.digest ?? '') });
+        definitionDigest: String((output.definition_ref as WfdRecord)?.digest ?? '') };
+      verifiedOutputs.push(verifiedOutput);
+      for (const key of expected.keys()) readbackByRow.set(canonicalWfdJson([productId, key]),
+        { output: verifiedOutput, row: fixedByKey.get(key)! });
       if (originalProductIds.has(productId)) sourceFixedRows.push(...fixedRows);
       allRecords.push(...records);
     }
@@ -1253,33 +1270,35 @@ export class PostPublicationCorrectionService {
         fail('CORRECTION_AUDIT_ELIGIBLE', '旧快照审计复现被标记为可发布或可计算。');
     }
     // 受影响派生复算：使用更正后真实输入记录版本，按原方法版本与完整窗口/预热重算。
-    const recomputed = await this.recomputeDerived(caseId, frozen, document, sourceFixedRows);
+    const { byItem, recomputed } = this.recomputeDerived(frozen, sourceFixedRows);
     const verification = { caseId, state: 'fix_readback_verified', newSnapshotId,
       products: verifiedOutputs.map(item => item.productId), recordCount: allRecords.length,
       oldSnapshotId, oldSnapshotRetained: true, oldIssueRetained: true, recomputed,
       methodVersionsPreserved: true,
       substitution: allRecords.map(item => ({ recordId: item.record_id, recordVersion: item.record_version })) };
     const verificationDigest = wfdSha256(canonicalWfdJson(verification as unknown as WfdRecord));
-    const items = this.db.prepare(`SELECT item_id,kind,business_key,product_id FROM correction_items WHERE case_id=?
+    const items = this.db.prepare(`SELECT item_id,kind,business_key,product_id,record_version FROM correction_items WHERE case_id=?
       ORDER BY item_id`).all(caseId) as unknown as { item_id: string; kind: string;
-        business_key: string; product_id: string }[];
-    // 先逐项核固定读回与派生重算，再解决 WFD 事项；不能先把事项关闭后再补核。
-    for (const item of items) {
-      const verified = verifiedOutputs.find(output => output.productId === item.product_id
-        && (output.fixedRows as WfdRecord[]).some(row => String((row.record_ref as WfdRecord).logical_key) === item.business_key));
-      if (!verified) fail('CORRECTION_ITEM_UNVERIFIED', `事项 ${item.item_id} 没有固定读回身份；未解决。`);
+        business_key: string; product_id: string; record_version: string }[];
+    // Freeze the per-row readback evidence before asking WFD to resolve the issue.
+    const verifiedItems = items.map(item => {
+      const verified = readbackByRow.get(canonicalWfdJson([item.product_id, item.business_key]));
+      if (!verified) return fail('CORRECTION_ITEM_UNVERIFIED', `事项 ${item.item_id} 没有固定读回身份；未解决。`);
+      const { output, row: fixedRow } = verified;
       if (item.kind === 'derived') {
-        const recompute = recomputed.find(entry => entry.itemId === item.item_id);
+        const recompute = byItem.get(item.item_id);
         const expectedLine = Array.isArray(recompute?.affectedRows)
           ? (recompute.affectedRows as WfdRecord[]).find(row => String(row.businessKey) === item.business_key) : undefined;
-        const fixedRow = (verified.fixedRows as WfdRecord[]).find(row =>
-          String((row.record_ref as WfdRecord).logical_key) === item.business_key);
-        const fixedValue = fixedRow ? this.fixedRowValue(fixedRow.row as WfdRecord, verified, frozen, item.business_key) : '';
+        const fixedValue = this.fixedRowValue(fixedRow.row as WfdRecord, output, frozen, item.business_key);
         if (!recompute || recompute.state !== 'recomputed_pending_formal_replacement' || !expectedLine
           || expectedLine.value === null || String(expectedLine.value) !== fixedValue)
           fail('CORRECTION_DERIVED_UNVERIFIED', `派生事项 ${item.item_id} 的重算/读回未通过；未解决。`);
       }
-    }
+      return { itemId: item.item_id, verificationDigest, caseId, outputKey: output.outputKey,
+        productId: item.product_id, definitionDigest: output.definitionDigest, businessKey: item.business_key,
+        previousRecordVersion: item.record_version, recordVersion: (fixedRow.record_ref as WfdRecord).revision_id,
+        newSnapshotId, state: 'fix_readback_verified' };
+    });
     // 先持久已发布但尚未本地收口的结果；解决响应丢失时重开可复用同一 WFD 回执。
     const pendingResult = { state: 'published_pending_local', wfd_result: result, verification };
     this.db.prepare(`UPDATE correction_cases SET result_json=?,updated_at=? WHERE case_id=?`)
@@ -1304,49 +1323,15 @@ export class PostPublicationCorrectionService {
     if (resolvedReceipt && String(resolvedReceipt.state) !== 'resolved')
       fail('CORRECTION_RESOLVE_FAILED', 'WFD 未登记已核验的新版本；保持暂停。');
     this.recordCorrectionAssociations(caseId, document, verifiedOutputs, frozen, result);
-    const unfinished: string[] = [];
+    const resolved = { ...verification, state: 'resolved', verificationDigest, unfinished: [] };
     this.options.database.transaction(() => {
-      for (const item of items) {
-        const verified = verifiedOutputs.find(output => output.productId === item.product_id
-          && (output.fixedRows as WfdRecord[]).some(row => String((row.record_ref as WfdRecord).logical_key) === item.business_key));
-        if (!verified) {
-          unfinished.push(item.item_id);
-          this.db.prepare(`UPDATE correction_items SET state='still_suspended',gaps_json=? WHERE case_id=? AND item_id=?`)
-            .run(canonicalWfdJson(['readback_missing_or_unverified']), caseId, item.item_id);
-          continue;
-        }
-        if (item.kind === 'derived') {
-          // 派生正式替代必须同时核对：固定读回值、原 proof 的精确窗口结果、
-          // 更正后输入记录版本与事项完成范围；任一项不符保持 suspended。
-          const recompute = recomputed.find(entry => entry.itemId === item.item_id);
-          const expectedLine = Array.isArray(recompute?.affectedRows)
-            ? (recompute.affectedRows as WfdRecord[]).find(row => String(row.businessKey) === item.business_key) : undefined;
-          const fixedRow = (verified.fixedRows as WfdRecord[]).find(row =>
-            String((row.record_ref as WfdRecord).logical_key) === item.business_key);
-          const fixedValue = fixedRow ? this.fixedRowValue(fixedRow.row as WfdRecord, verified, frozen, item.business_key) : '';
-          if (!recompute || recompute.state !== 'recomputed_pending_formal_replacement' || !expectedLine
-            || expectedLine.value === null || String(expectedLine.value) !== fixedValue) {
-            unfinished.push(item.item_id);
-            this.db.prepare(`UPDATE correction_items SET state='still_suspended',gaps_json=?,verification_json=? WHERE case_id=? AND item_id=?`)
-              .run(canonicalWfdJson(['derived_formal_replacement_unverified']), canonicalWfdJson({
-                state: 'still_suspended', reason: 'derived_formal_replacement_unverified',
-                recomputation: recompute ?? null } as unknown as WfdRecord), caseId, item.item_id);
-            continue;
-          }
-        }
-        this.db.prepare(`UPDATE correction_items SET state='corrected',gaps_json=?,verification_json=? WHERE case_id=? AND item_id=?`)
-          .run(canonicalWfdJson([]), canonicalWfdJson({ ...verification, outputKey: verified.outputKey,
-            productId: verified.productId, definitionDigest: verified.definitionDigest } as unknown as WfdRecord),
-          caseId, item.item_id);
-      }
-      const state = unfinished.length ? 'verified' : 'resolved';
-      const gaps = unfinished.length ? [`unfinished_items:${unfinished.join(',')}`] : [];
-      this.db.prepare(`UPDATE correction_cases SET state=?,gaps_json=?,result_json=?,updated_at=? WHERE case_id=?`)
-        .run(state, canonicalWfdJson(gaps), canonicalWfdJson({ ...verification, state,
-          unfinished } as unknown as WfdRecord), Date.now(), caseId);
+      const update = this.db.prepare(`UPDATE correction_items SET state='corrected',gaps_json=?,verification_json=?
+        WHERE case_id=? AND item_id=?`);
+      for (const item of verifiedItems) update.run('[]', canonicalWfdJson(item), caseId, item.itemId);
+      this.db.prepare(`UPDATE correction_cases SET state='resolved',gaps_json=?,result_json=?,updated_at=? WHERE case_id=?`)
+        .run('[]', canonicalWfdJson(resolved as unknown as WfdRecord), Date.now(), caseId);
     });
-    return { ...verification, state: unfinished.length ? 'verified' : 'resolved',
-      verificationDigest, ...(unfinished.length ? { unfinished } : {}) };
+    return resolved;
   }
 
   /**
@@ -1488,83 +1473,99 @@ export class PostPublicationCorrectionService {
    * 单位、窗口与完整预热；仅替换已更正输入的有效值，按原窗口重新计算。
    * 未受影响系列不生成修订；缺 proof/未知算法/范围外保持暂停，不假报完成。
    */
-  private async recomputeDerived(caseId: string, frozen: FrozenRepair, document: WfdRecord,
-    fixedRows: WfdRecord[]): Promise<WfdRecord[]> {
-    const out: WfdRecord[] = [];
-    for (const target of frozen.recompute) {
-      const proof = this.options.batches.calculationEvidence(target.calculation.batchId, target.calculation.calculationId);
-      if (!proof || wfdSha256(canonicalWfdJson(proof as unknown as WfdRecord)) !== target.calculation.proofSha256) {
-        out.push({ itemId: target.itemId, state: 'still_suspended', reason: 'proof_missing_or_changed' }); continue;
+  private recomputeDerived(frozen: FrozenRepair, fixedRows: WfdRecord[]) {
+    const groups = new Map<string, { calculation: FrozenRepair['recompute'][number]['calculation'];
+      itemIds: string[]; proof: WfdRecord }>();
+    const byItem = new Map<string, WfdRecord>();
+    for (const { calculation, itemId } of frozen.recompute) {
+      const key = canonicalWfdJson(calculation);
+      let group = groups.get(key);
+      if (!group) {
+        group = { calculation, itemIds: [], proof: this.recomputeSeries(calculation, fixedRows) };
+        groups.set(key, group);
       }
-      const expectedVersion = sourceObservationMAMethodVersion(proof);
-      if (proof.codeDigest !== sourceObservationMACodeDigest() || proof.method !== 'source_observation_ma') {
-        out.push({ itemId: target.itemId, state: 'still_suspended', reason: 'implementation_or_algorithm_unknown' }); continue;
-      }
-      if (proof.lineage.length > SOURCE_OBSERVATION_MA_LIMITS.maxRows) {
-        out.push({ itemId: target.itemId, state: 'still_suspended', reason: 'recompute_over_budget' }); continue;
-      }
-      const correctedValues = new Map<string, { value: string; recordVersion: string }>();
-      for (const row of fixedRows) {
-        const ref = row.record_ref as WfdRecord;
-        // 公共固定读取返回 row（业务值）而不暴露内部 values/单位单元；
-        // 单位来自原 proof.unitCode，版本来自 record_ref.revision_id。
-        const actual = isWfdRecord(row.row) ? row.row : {};
-        const values = isWfdRecord(actual.values) ? actual.values : null;
-        // 表格原报的 values 以字段编码为键；proof.valueColumn 是原列名，
-        // 单数值列的来源表按其唯一数值单元格定位，不能因此漏掉更正输入。
-        const numericCodes = values ? Object.keys(values).filter(code => isWfdRecord(values[code])
-          && ['decimal', 'integer'].includes(String((values[code] as WfdRecord).data_type))) : [];
-        const tabularCell = values && isWfdRecord(values[proof.valueColumn]) ? values[proof.valueColumn] as WfdRecord
-          : values && numericCodes.length === 1 ? values[numericCodes[0]!] as WfdRecord : null;
-        const candidate = actual[proof.valueColumn] ?? actual.value_decimal ?? actual.value
-          ?? (tabularCell ? tabularCell.value : undefined);
-        if (candidate !== undefined && candidate !== null && !isWfdRecord(candidate))
-          correctedValues.set(String(ref.logical_key),
-            { value: String(candidate), recordVersion: String(ref.revision_id ?? row.record_version ?? '') });
-      }
-      const lineage = proof.lineage.map(line => ({ ...line }));
-      const affected = new Set(lineage.filter(line => correctedValues.has(line.businessKey)).map(line => line.businessKey));
-      let changed = 0;
-      for (const line of lineage) {
-        const corrected = correctedValues.get(line.businessKey);
-        if (corrected !== undefined) {
-          if (line.inputValue !== corrected.value) changed++;
-          line.inputValue = corrected.value;
-          // 输入记录版本必须随更正后真实固定行更新；只改值不改版本会伪造谱系。
-          line.recordVersion = corrected.recordVersion;
-        }
-      }
-      // 按原窗口定义重算：完整观测行窗口、不足窗口预热、缺失窗口未知，不舍弃前置预热。
-      // 复用 source_observation_ma 的精确十进制 + 最终 half_even，不先截断输入。
-      for (const line of lineage) {
-        const window = lineage.slice(line.windowStart, line.windowStart + line.windowCount);
-        line.status = line.windowCount < proof.period ? 'warmup'
-          : window.some(item => item.inputValue === null) ? 'window_missing' : 'valid';
-        line.value = line.status === 'valid'
-          ? meanExactDecimal(window.map(item => String(item.inputValue))) : null;
-      }
-      const affectedRows = lineage.filter(line => affected.has(line.businessKey)
-        || lineage.some(other => affected.has(other.businessKey)
-          && line.windowStart < other.windowStart + other.windowCount
-          && other.windowStart < line.windowStart + line.windowCount));
-      out.push({ itemId: target.itemId, methodVersion: expectedVersion, preservedMethodVersion: expectedVersion,
-        unitCode: proof.unitCode, period: proof.period, valueColumn: proof.valueColumn,
-        windowKind: proof.windowKind, affectedBusinessKeys: [...affected].sort(),
-        changedInputs: changed, rows: lineage.length,
-        inputRecordVersions: Object.fromEntries([...correctedValues].map(([key, value]) => [key, value.recordVersion])),
-        affectedRows: affectedRows.map(line => ({ businessKey: line.businessKey, value: line.value,
-          status: line.status, recordVersion: line.recordVersion, windowStart: line.windowStart,
-          windowCount: line.windowCount })),
-        warmup: lineage.filter(line => line.status === 'warmup').length,
-        state: 'recomputed_pending_formal_replacement',
-        note: '按原方法版本、完整窗口与更正后输入记录版本重算；正式替代仅限已批准受影响输出，未受影响系列版本不变。' });
+      group.itemIds.push(itemId);
+      byItem.set(itemId, group.proof);
     }
-    void document; void caseId;
-    return out;
+    // Older frozen repairs must reproduce the digest previously submitted to WFD.
+    const recomputed = frozen.verificationFormat === 'by_calculation'
+      ? [...groups.values()].map(({ calculation, itemIds, proof }) => ({ calculation, itemIds, ...proof }))
+      : frozen.recompute.map(({ itemId }) => ({ itemId, ...byItem.get(itemId)! }));
+    return { byItem, recomputed };
+  }
+
+  private recomputeSeries(calculation: FrozenRepair['recompute'][number]['calculation'], fixedRows: WfdRecord[]): WfdRecord {
+    const proof = this.options.batches.calculationEvidence(calculation.batchId, calculation.calculationId);
+    if (!proof || wfdSha256(canonicalWfdJson(proof as unknown as WfdRecord)) !== calculation.proofSha256) {
+      return { state: 'still_suspended', reason: 'proof_missing_or_changed' };
+    }
+    const expectedVersion = sourceObservationMAMethodVersion(proof);
+    if (proof.codeDigest !== sourceObservationMACodeDigest() || proof.method !== 'source_observation_ma') {
+      return { state: 'still_suspended', reason: 'implementation_or_algorithm_unknown' };
+    }
+    if (proof.lineage.length > SOURCE_OBSERVATION_MA_LIMITS.maxRows) {
+      return { state: 'still_suspended', reason: 'recompute_over_budget' };
+    }
+    const correctedValues = new Map<string, { value: string; recordVersion: string }>();
+    for (const row of fixedRows) {
+      const ref = row.record_ref as WfdRecord;
+      // 公共固定读取返回 row（业务值）而不暴露内部 values/单位单元；
+      // 单位来自原 proof.unitCode，版本来自 record_ref.revision_id。
+      const actual = isWfdRecord(row.row) ? row.row : {};
+      const values = isWfdRecord(actual.values) ? actual.values : null;
+      // 表格原报的 values 以字段编码为键；proof.valueColumn 是原列名，
+      // 单数值列的来源表按其唯一数值单元格定位，不能因此漏掉更正输入。
+      const numericCodes = values ? Object.keys(values).filter(code => isWfdRecord(values[code])
+        && ['decimal', 'integer'].includes(String((values[code] as WfdRecord).data_type))) : [];
+      const tabularCell = values && isWfdRecord(values[proof.valueColumn]) ? values[proof.valueColumn] as WfdRecord
+        : values && numericCodes.length === 1 ? values[numericCodes[0]!] as WfdRecord : null;
+      const candidate = actual[proof.valueColumn] ?? actual.value_decimal ?? actual.value
+        ?? (tabularCell ? tabularCell.value : undefined);
+      if (candidate !== undefined && candidate !== null && !isWfdRecord(candidate))
+        correctedValues.set(String(ref.logical_key),
+          { value: String(candidate), recordVersion: String(ref.revision_id ?? row.record_version ?? '') });
+    }
+    const lineage = proof.lineage.map(line => ({ ...line }));
+    const affected = new Set(lineage.filter(line => correctedValues.has(line.businessKey)).map(line => line.businessKey));
+    let changed = 0;
+    for (const line of lineage) {
+      const corrected = correctedValues.get(line.businessKey);
+      if (corrected !== undefined) {
+        if (line.inputValue !== corrected.value) changed++;
+        line.inputValue = corrected.value;
+        // 输入记录版本必须随更正后真实固定行更新；只改值不改版本会伪造谱系。
+        line.recordVersion = corrected.recordVersion;
+      }
+    }
+    // 按原窗口定义重算：完整观测行窗口、不足窗口预热、缺失窗口未知，不舍弃前置预热。
+    // 复用 source_observation_ma 的精确十进制 + 最终 half_even，不先截断输入。
+    for (const line of lineage) {
+      const window = lineage.slice(line.windowStart, line.windowStart + line.windowCount);
+      line.status = line.windowCount < proof.period ? 'warmup'
+        : window.some(item => item.inputValue === null) ? 'window_missing' : 'valid';
+      line.value = line.status === 'valid'
+        ? meanExactDecimal(window.map(item => String(item.inputValue))) : null;
+    }
+    const affectedRows = lineage.filter(line => affected.has(line.businessKey)
+      || lineage.some(other => affected.has(other.businessKey)
+        && line.windowStart < other.windowStart + other.windowCount
+        && other.windowStart < line.windowStart + line.windowCount));
+    return { methodVersion: expectedVersion, preservedMethodVersion: expectedVersion,
+      unitCode: proof.unitCode, period: proof.period, valueColumn: proof.valueColumn,
+      windowKind: proof.windowKind, affectedBusinessKeys: [...affected].sort(),
+      changedInputs: changed, rows: lineage.length,
+      inputRecordVersions: Object.fromEntries([...correctedValues].map(([key, value]) => [key, value.recordVersion])),
+      affectedRows: affectedRows.map(line => ({ businessKey: line.businessKey, value: line.value,
+        status: line.status, recordVersion: line.recordVersion, windowStart: line.windowStart,
+        windowCount: line.windowCount })),
+      warmup: lineage.filter(line => line.status === 'warmup').length,
+      state: 'recomputed_pending_formal_replacement',
+      note: '按原方法版本、完整窗口与更正后输入记录版本重算；正式替代仅限已批准受影响输出，未受影响系列版本不变。' };
   }
 }
 
 interface FrozenRepair {
+  verificationFormat?: 'by_calculation';
   caseId: string; impactSha256: string; errorBindingDigest: string; document: WfdRecord;
   documentSha256: string; planId: string; outputId: string; originalSha256: string;
   valueFields?: WfdRecord; materialId?: string; originalRequestId?: string; sourceRevision?: WfdRecord | null;

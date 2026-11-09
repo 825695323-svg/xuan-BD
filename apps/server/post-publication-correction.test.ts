@@ -19,7 +19,6 @@ import { createFullChainFixture, openFullChainHost, type FullChainHost } from '.
  * 本测试不冒充完整加工五步之外的业务来源真实性，也不冒充供应商原件。
  */
 const enabled = !!process.env.WFD_PYTHON && !!process.env.XUAN_FULL_CHAIN_ROOT;
-const ERROR_DIGEST = 'sha256:' + 'a'.repeat(64);
 const ERROR_ADAPTER = { adapterId: 'correction.bad.adapter', version: '1', configDigest: 'b'.repeat(64) };
 const FIXED_ADAPTER = { adapterId: 'correction.fixed.adapter', version: '2', configDigest: 'c'.repeat(64) };
 
@@ -370,7 +369,7 @@ test('错误适配绑定按真实裸 hex 配置摘要匹配计划', { skip: !ena
     assert.equal(intake.status, 'succeeded', JSON.stringify(intake.error));
     const materialId = host.services.materials!.getByTask(intake.id)!.envelope.materialId;
     const published = await publish(host, 'digest');
-    seedAssociations(host, published.doc, published.receipt, 'digest', materialId);
+    const seeded = seedAssociations(host, published.doc, published.receipt, 'digest', materialId);
     const capabilities = await host.call('/corrections/capabilities');
     await host.call('/corrections/cases', { requestId: 'digest-register', input: {
       caseId: 'case-digest', kind: 'processing_repair', errorType: 'mapping_error',
@@ -380,7 +379,25 @@ test('错误适配绑定按真实裸 hex 配置摘要匹配计划', { skip: !ena
     assert.equal(impact.state, 'impact_frozen', JSON.stringify(impact.gaps));
     assert.equal(impact.items.some((item: WfdRecord) => item.productId ===
       (published.receipt.output_results as WfdRecord[]).find(entry => entry.output_key === 'series_a')!.product_id), true);
-    void ERROR_DIGEST;
+    // A legacy case may already have frozen a partial scan: do not send it to WFD.
+    const db = host.database.connection;
+    db.prepare(`UPDATE correction_cases SET impact_json=json_insert(impact_json,'$.gaps[#]','plan_scan_over_budget')
+      WHERE case_id='case-digest'`).run();
+    const legacyRejection = await host.call('/corrections/cases/case-digest/suspend', { requestId: 'digest-suspend' }, 409);
+    assert.equal(legacyRejection.code, 'CORRECTION_SUSPEND_SCOPE');
+    assert.equal(host.services.corrections!.view('case-digest').state, 'impact_incomplete');
+    // The proven association precedes the scan cutoff; it cannot authorize freezing a prefix.
+    db.prepare(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<19999)
+      INSERT INTO processing_plan_steps(plan_id,step_id,ordinal,output_id,kind,required,applicability,
+        depends_json,implementation,parameters_json,completion_json,spec_digest,state,input_json,check_scope_json,gaps_json)
+      SELECT ?, 'extra-'||i,i,'extra-'||i,'parse',1,'applicable','[]','impl','{}','{}','digest','completed','{}','[]','[]' FROM n`)
+      .run(seeded.series_b!.planId);
+    const overBudget = await host.call('/corrections/cases/case-digest/impact', { requestId: 'digest-rescan' });
+    assert.equal(overBudget.state, 'impact_incomplete');
+    assert.equal(overBudget.itemCount, 0);
+    assert.ok(overBudget.gaps.includes('plan_scan_over_budget'));
+    const budgetRejection = await host.call('/corrections/cases/case-digest/suspend', { requestId: 'digest-suspend-again' }, 409);
+    assert.equal(budgetRejection.code, 'CORRECTION_STATE');
   } finally {
     await host.close().catch(() => {});
   }
@@ -487,13 +504,23 @@ test('受影响均线派生：正式暂停、精确重算、正式替代与固�
           reason: '按来源字段位置对照矩阵重新映射，第一位置为交易日、第三位置为收盘价；派生窗口按原定义重算。' } });
       assert.equal(prepared.view.state, 'prepared');
       assert.equal(prepared.view.items.filter((item: WfdRecord) => item.kind === 'derived').length, 1);
+      // Seed the format of a pending repair prepared by a previous version before authorization.
+      const frozenRow = host.database.connection.prepare('SELECT frozen_json FROM correction_cases WHERE case_id=?')
+        .get('case-derived')!;
+      const legacyFrozen = JSON.parse(String(frozenRow.frozen_json)) as WfdRecord;
+      delete legacyFrozen.verificationFormat;
+      const legacyJson = canonicalWfdJson(legacyFrozen), legacyDigest = wfdSha256(legacyJson);
+      host.database.connection.prepare('UPDATE correction_cases SET frozen_json=?,frozen_sha256=? WHERE case_id=?')
+        .run(legacyJson, legacyDigest, 'case-derived');
       const task = await host.call('/corrections/cases/case-derived/authorize', { requestId: 'derived-authorize',
-        input: { frozenSha256: prepared.frozenSha256, confirmationDigest: prepared.documentSha256 } }, 202);
+        input: { frozenSha256: legacyDigest, confirmationDigest: prepared.documentSha256 } }, 202);
       const waiting = await waitTask(host, task.id, ['waiting_approval'], 'derived approve');
       host.services.tasks.approve(waiting.approvalId!);
       const done = await waitTask(host, task.id, ['succeeded', 'failed', 'cancelled', 'needs_review'], 'derived done');
       assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
       const view = await host.call('/corrections/cases/case-derived');
+      assert.equal(view.result.recomputed[0].itemId, view.items.find((item: WfdRecord) => item.kind === 'derived').itemId);
+      assert.equal(view.result.recomputed[0].itemIds, undefined, 'keep the legacy verification digest input');
       assert.equal(view.state, 'resolved', JSON.stringify(view));
       assert.ok(view.items.every((item: WfdRecord) => item.state === 'corrected'), JSON.stringify(view.items));
       const newSnapshot = String((view.result as WfdRecord).newSnapshotId);
