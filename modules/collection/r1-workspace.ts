@@ -1,4 +1,4 @@
-import type { R1CapabilitiesView, R1ConnectionIdentity, R1PrepareInput, R1RequestView, R1ScalarMapping } from '../../contracts/r1-contracts.js';
+import type { R1CapabilitiesView, R1ConnectionIdentity, R1PrepareInput, R1RequestSummary, R1RequestView, R1RowSummary, R1ScalarMapping } from '../../contracts/r1-contracts.js';
 import type { JsonValue } from '../../contracts/task-contracts.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
 import { TaskError, type TaskExecutionContext, type TaskRecord, type TaskResult, type TaskRuntime, type TaskService } from '../../platform/jobs/tasks.js';
@@ -171,21 +171,27 @@ export class R1WorkspaceService {
     return this.get(input.requestId);
   }
 
-  list(): R1RequestView[] {
-    return this.db.prepare('SELECT request_id FROM r1_workspace_requests ORDER BY created_at DESC,rowid DESC LIMIT 20').all()
-      .map(row => this.get(String(row.request_id)));
+  list(): R1RequestSummary[] {
+    return this.db.prepare(`WITH recent AS (
+      SELECT request_id,created_at,rowid FROM r1_workspace_requests ORDER BY created_at DESC,rowid DESC LIMIT 20
+    ) SELECT a.request_id AS requestId,a.state,json_array_length(a.document_json,'$.outputs[0].payload.rows') AS rowCount,
+      json_extract(a.error_json,'$.code') AS errorCode
+      FROM recent JOIN r1_handoff_attempts a ON a.request_id=recent.request_id
+      ORDER BY recent.created_at DESC,recent.rowid DESC`).all() as unknown as R1RequestSummary[];
   }
   get(requestId: string): R1RequestView {
-    const row = this.requireRow(requestId), binding = this.savedBinding(row), attempt = this.options.handoff.attempt(requestId);
+    const row = this.requireRow(requestId), binding = this.savedBinding(row);
+    const { attempt, local } = this.options.handoff.attemptWithExplanation(requestId);
+    const rowSummary = (local.receipt as { row_summary?: R1RowSummary } | undefined)?.row_summary;
     const document = JSON.parse(String(attempt.document_json)) as WfdRecord;
     const output = (document.outputs as WfdRecord[])[0]!, payload = output.payload as WfdRecord;
     const rows = Array.isArray(payload.rows) ? payload.rows as WfdRecord[] : [];
     return { requestId, state: String(attempt.state), datasetId: String(attempt.dataset_id), outputKey: String(output.output_key),
       documentSha256: String(attempt.document_sha256), connection: binding, planId: row.plan_id, outputId: row.output_id,
       ...(document.duplicate_policy === 'skip_identical_append' ? { duplicatePolicy: 'skip_identical_append' as const } : {}),
-      ...(attempt.receipt_json && isWfdRecord(JSON.parse(String(attempt.receipt_json)).row_summary) ? { rowSummary: JSON.parse(String(attempt.receipt_json)).row_summary } : {}),
+      ...(isWfdRecord(rowSummary) ? { rowSummary } : {}),
       rowCount: rows.length, previewRows: rows.slice(0, 5), submitTaskId: row.submit_task_id,
-      requiresRecovery: UNKNOWN_STATES.has(String(attempt.state)), local: this.options.handoff.localExplanation(requestId),
+      requiresRecovery: UNKNOWN_STATES.has(String(attempt.state)), local,
       error: attempt.error_json ? JSON.parse(String(attempt.error_json)) as WfdRecord : null };
   }
   submit(requestId: string, confirmationDigest: string): TaskRecord {

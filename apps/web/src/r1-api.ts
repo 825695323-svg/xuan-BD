@@ -1,4 +1,4 @@
-import type { R1CapabilitiesView, R1PrepareInput, R1ProductDiscovery, R1ProductRead, R1ProductReadInput, R1RequestView, R1SnapshotStatus } from '../../../contracts/r1-contracts';
+import type { R1CapabilitiesView, R1PrepareInput, R1ProductDiscovery, R1ProductRead, R1ProductReadInput, R1RequestSummary, R1RequestView, R1SnapshotStatus } from '../../../contracts/r1-contracts';
 import type { MaterialCategory } from '../../../modules/collection/materials/contracts';
 import { request, RequestError } from './api';
 import { readBdJob } from './bd-api';
@@ -70,9 +70,13 @@ export const r1Api = {
     const value = await request('/api/bd/r1/check', 'POST', {});
     if (!object(value) || typeof value.supported !== 'boolean') throw new RequestError('data_only 能力核对失败。'); return value;
   },
-  list: async () => {
+  list: async (): Promise<R1RequestSummary[]> => {
     const value = await request('/api/bd/r1/requests');
-    if (!object(value) || !Array.isArray(value.items) || value.items.length > 20) throw new RequestError('R1 原请求列表无法核对。'); return value.items.map(view);
+    if (!object(value) || !Array.isArray(value.items) || value.items.length > 20
+      || !value.items.every(item => object(item) && typeof item.requestId === 'string' && typeof item.state === 'string'
+        && typeof item.rowCount === 'number' && Number.isSafeInteger(item.rowCount) && item.rowCount >= 0
+        && (item.errorCode === null || typeof item.errorCode === 'string'))) throw new RequestError('R1 原请求列表无法核对。');
+    return value.items;
   },
   get: async (id: string) => view(await request(`/api/bd/r1/requests/${encodeURIComponent(id)}`)),
   prepare: async (input: R1PrepareInput) => view(await request('/api/bd/r1/prepare', 'POST', input)),

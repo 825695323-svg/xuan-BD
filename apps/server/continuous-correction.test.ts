@@ -40,7 +40,7 @@ function csv(rows: string[][]): Buffer {
 }
 
 test('continuous correction: a real source correction supersedes the published row, recomputes the derived series and reopens',
-  { skip: !enabled, timeout: 240_000 }, async () => {
+  { skip: !enabled, timeout: 240_000 }, async t => {
     const fixture = createFullChainFixture({ name: 'continuous-correction', machine: true,
       units: { date: { dimension: 'date' }, cny_per_share: { dimension: 'money_per_share' } } });
     let host = await openFullChainHost(fixture);
@@ -135,6 +135,7 @@ test('continuous correction: a real source correction supersedes the published r
             revisionBasis: '供应商后续版本更正同一交易日收盘价', usageScope: 'isolated continuous correction verification',
             originalSha256: newSha, previousOriginalSha256: previousSha } } }).catch((error: unknown) => error);
       assert.ok(!(prepared instanceof Error), prepared instanceof Error ? prepared.message : '');
+      const proofReads = t.mock.method(host.services.r1Batches!, 'calculationEvidence');
       const authorized = await host.call('/corrections/cases/case-continuous/authorize', { requestId: 'continuous-authorize',
         input: { frozenSha256: prepared.frozenSha256, confirmationDigest: prepared.documentSha256 } }, 202);
       const waiting = await waitTask(host, authorized.id, ['waiting_approval'], 'continuous approval');
@@ -143,6 +144,16 @@ test('continuous correction: a real source correction supersedes the published r
       const view = await host.call('/corrections/cases/case-continuous');
       assert.equal(view.state, 'resolved', JSON.stringify(view));
       assert.ok(view.items.every((item: WfdRecord) => item.state === 'corrected'), JSON.stringify(view.items));
+      assert.equal(proofReads.mock.callCount(), 1, 'two output windows of one proof are recomputed together');
+      assert.equal(view.result.recomputed.length, 1);
+      assert.equal(view.result.recomputed[0].itemIds.length, 2);
+      for (const item of view.items) {
+        assert.equal(item.verification.verificationDigest, view.result.verificationDigest);
+        assert.equal(item.verification.previousRecordVersion, item.recordVersion);
+        assert.ok(item.verification.recordVersion);
+        assert.notEqual(item.verification.recordVersion, item.recordVersion);
+        assert.equal(item.verification.recomputed, undefined);
+      }
       const newSnapshot = String((view.result as WfdRecord).newSnapshotId);
       const cellValue = (row: WfdRecord) => {
         const values = isWfdRecord(row.values) ? row.values : null;

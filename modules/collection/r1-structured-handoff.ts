@@ -650,6 +650,10 @@ export class R1HandoffService {
   }
 
   localExplanation(requestId: string): WfdRecord {
+    return this.attemptWithExplanation(requestId).local;
+  }
+
+  attemptWithExplanation(requestId: string): { attempt: WfdRecord; local: WfdRecord } {
     const attempt = this.attempt(requestId);
     const refs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
     const originals = refs.originalIds.map(originalId => {
@@ -659,10 +663,11 @@ export class R1HandoffService {
       return row;
     });
     const associations = this.db.prepare('SELECT * FROM r1_record_associations WHERE request_id=? ORDER BY product_id,record_id,record_version').all(requestId);
-    return { state: attempt.state, request_id: requestId, local_refs: refs, originals, associations,
+    const local = { state: attempt.state, request_id: requestId, local_refs: refs, originals, associations,
       ...(attempt.receipt_json ? { receipt: JSON.parse(String(attempt.receipt_json)) as WfdRecord } : {}),
       readback: this.readback.progress(requestId),
       note: 'BD 可在 WFD 不可用时独立解释该 request 的原件/来源/加工/证据；association 为空时未拿到实际 WFD 行身份。' };
+    return { attempt, local };
   }
 
   /** Exact, already verified row/version association; never caller-supplied evidence mapping. */

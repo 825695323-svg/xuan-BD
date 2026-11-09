@@ -32,7 +32,7 @@ def _rows():
 
 
 def _make_source(root: Path, row_keys, request_id):
-    engine = WFDDuckDBPrototype(root / "store", load_protocol_validator(HERE / "protocol"),
+    engine = WFDDuckDBPrototype(root / "store", load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
                                 runtime_root=root / "runtime", sandbox=False, writer_host="r2b")
     service = WFDDataOnlyService(
         engine, caller_roles={"read", "read_evidence", "submit", "register",

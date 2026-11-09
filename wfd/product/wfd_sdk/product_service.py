@@ -779,22 +779,6 @@ class WFDProductService:
                             "digest": "sha256:" + sha(canonical({"code": code, "definition": definition}))}
         return result
 
-    def _persistent_unit_definitions(self, declaration):
-        codes = []
-        top = declaration.get("unit_code")
-        if top not in {None, "", "per_field", "not_applicable"}:
-            codes.append(top)
-        for field in declaration.get("field_definitions", []):
-            code = field.get("unit_code") if isinstance(field, dict) else None
-            if code not in {None, "", "per_field", "not_applicable"}:
-                codes.append(code)
-        result = {}
-        for code in sorted(set(codes)):
-            definition = copy.deepcopy(self.unit_registry.get(code, {}))
-            result[code] = {"definition": definition,
-                            "digest": "sha256:" + sha(canonical({"code": code, "definition": definition}))}
-        return result
-
     @staticmethod
     def _data_only_dependencies(declaration, dataset_id, extension):
         compiled = product_calendar.dependencies(declaration, dataset_id)

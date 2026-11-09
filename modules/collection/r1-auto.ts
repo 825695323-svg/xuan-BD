@@ -275,6 +275,9 @@ export class R1AutoService {
 
   list(): R1AutoView[] { return this.records().map(item => this.view(item)); }
   get(requestId: string): R1AutoView { return this.view(this.require(requestId)); }
+  isAssociated(requestId: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM r1_auto_requests WHERE request_id=? AND json_extract(record_json,'$.state')='associated'").get(requestId);
+  }
   resumeAccepted(requestId:string,lookupId:string,confirmationDigest:string) {
     const item=this.require(requestId);this.assertBinding(item);this.assertDispatch();
     const handoff=item.revisions.at(-1)?.handoffRequestId;

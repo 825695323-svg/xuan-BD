@@ -76,7 +76,7 @@ def _submit(service, dataset, request_id, row_keys):
 
 
 def _make_source(store, dataset, request_id, row_keys, caller_roles=None):
-    engine = WFDDuckDBPrototype(store, load_protocol_validator(HERE / "protocol"),
+    engine = WFDDuckDBPrototype(store, load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
                                 runtime_root=store.parent / (store.name + "_rt"),
                                 sandbox=False, writer_host="r2b-ref")
     service = WFDDataOnlyService(
