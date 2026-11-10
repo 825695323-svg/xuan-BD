@@ -76,6 +76,9 @@ export function createArtifactArchiveActions(options: {
   const db = options.database.connection;
   const find = (task: string, file: string) => db.prepare('SELECT * FROM artifact_archive_receipts WHERE source_task_id=? AND file_ref_id=?')
     .get(task, file) as ArchiveRow | undefined;
+  const validRemote = (remote: CloudObject | null, target: string, bytes: number): remote is CloudObject =>
+    !!remote && remote.kind === 'file' && remote.path === target && remote.size === bytes
+    && /^[0-9]{1,30}$/u.test(remote.id);
   const lookup = async (session: Awaited<ReturnType<CloudCustodyBackend['open']>>, target: string): Promise<CloudObject | null> => {
     if (session.lookup) return session.lookup(target);
     const directory = posix.dirname(target);
@@ -127,7 +130,7 @@ export function createArtifactArchiveActions(options: {
           allowUpload: !row, verifyBytes: false });
         if (row) {
           const found = await lookup(session, row.target_path);
-          if (!found || found.kind !== 'file' || found.size !== row.byte_length
+          if (!validRemote(found, row.target_path, row.byte_length)
             || row.remote_id && found.id !== row.remote_id) return result(row, 'needs_review');
           db.prepare("UPDATE artifact_archive_receipts SET state='confirmed',remote_id=? WHERE source_task_id=? AND file_ref_id=?")
             .run(found.id, input.sourceTaskId, input.fileRefId);
@@ -146,8 +149,8 @@ export function createArtifactArchiveActions(options: {
         try {
           const uploaded = await session.put(bytes, target);
           const confirmed = await lookup(session, target);
-          if (!confirmed || confirmed.kind !== 'file' || confirmed.path !== target
-            || confirmed.size !== bytes.length || confirmed.id !== uploaded.id) return result(row, 'needs_review');
+          if (!validRemote(confirmed, target, bytes.length) || uploaded.id !== confirmed.id
+            || uploaded.md5 && confirmed.md5 && uploaded.md5 !== confirmed.md5) return result(row, 'needs_review');
           db.prepare("UPDATE artifact_archive_receipts SET state='confirmed',remote_id=? WHERE source_task_id=? AND file_ref_id=?")
             .run(confirmed.id, input.sourceTaskId, reference.id);
           return result({ ...row, state: 'confirmed', remote_id: confirmed.id }, 'confirmed');
