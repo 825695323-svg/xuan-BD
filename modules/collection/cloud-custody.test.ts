@@ -164,7 +164,7 @@ test('classification preview and a controlled manual topic freeze the exact sour
     const frozen = JSON.parse(String(f.db.connection.prepare('SELECT binding_json FROM cloud_custody_requests WHERE task_id=?').get(result.task.id)!.binding_json));
     assert.deepEqual(frozen.automaticEvidenceClassification, { topic: preview.topic, basis: preview.basis });
     assert.equal(frozen.requestedInput.evidenceTopic, '财报'); assert.deepEqual(frozen.input.authorization, input.authorization);
-    assert.equal(posix.dirname(drive.writes[0]!), classification.directory); assert.deepEqual(drive.listings, []);
+    assert.equal(posix.dirname(drive.writes[0]!), classification.directory); assert.deepEqual(drive.listings, [classification.directory]);
     assert.throws(() => f.custody.submit({ ...input, evidenceTopic: '资讯' }, 'manual-topic'), { code: 'REQUEST_CONFLICT' });
     await f.close(); f = open(root, drive);
     f.db.connection.prepare('UPDATE material_objects SET original_bytes=? WHERE material_id=?').run(Buffer.from('broken'), materialId);
@@ -184,7 +184,7 @@ test('automatic classification uses the held original bytes to choose the market
     const result = await f.run(request(materialId, { scopePath: evidenceRoot, verifyBytes: true, allowUpload: true }));
     assert.equal(result.record.state, 'uploaded_metadata_checked'); assert.deepEqual(result.record.evidenceClassification, preview);
     assert.equal(result.record.input.evidenceTopic, undefined); assert.equal(posix.dirname(drive.writes[0]!), preview.directory);
-    assert.deepEqual(drive.listings, []); assert.deepEqual(f.materials.readOriginal(materialId).bytes, daily);
+    assert.deepEqual(drive.listings, [preview.directory]); assert.deepEqual(f.materials.readOriginal(materialId).bytes, daily);
   } finally { await f.close(); }
 });
 
@@ -217,7 +217,7 @@ test('the default source-original leaf is created only when an authorized file w
     const result = await f.run(request(materialId, { scopePath: archiveDirectory, verifyBytes: true, allowUpload: true }));
     assert.equal(result.record.state, 'uploaded_metadata_checked'); assert.equal(result.record.directoryPreparation, 'ready');
     assert.deepEqual(drive.preparations, [{ path: archiveDirectory, create: false }, { path: archiveDirectory, create: true }]);
-    assert.deepEqual(drive.listings, []); assert.equal(drive.writes.length, 1);
+    assert.deepEqual(drive.listings, [archiveDirectory]); assert.equal(drive.writes.length, 1);
   } finally { await f.close(); }
 });
 
@@ -264,7 +264,7 @@ test('same-content archive requests share the first verified evidence object acr
     assert.equal(second.record.remoteObject!.path, first.record.remoteObject!.path);
     assert.equal(second.record.evidenceClassification!.directory, evidenceRoot + '/资讯/来源原件');
     assert.equal(second.record.archiveReference!.taskId, first.task.id);
-    assert.deepEqual(drive.listings, []); assert.deepEqual(drive.reads, [first.record.remoteObject!.path]);
+    assert.deepEqual(drive.listings, [first.record.remoteObject!.path.replace(/\/[^/]+$/u, '')]); assert.deepEqual(drive.reads, []);
     assert.deepEqual(drive.preparations, []); assert.equal(drive.copies.length, 1); assert.equal(drive.writes.length, 0);
     assert.deepEqual(f.db.connection.prepare('SELECT scope_path FROM cloud_custody_upload_claims ORDER BY scope_path').all().map(row => row.scope_path),
       [evidenceRoot]);
@@ -274,7 +274,7 @@ test('same-content archive requests share the first verified evidence object acr
     assert.equal(f.custody.view(restored.id).record.archiveReference!.taskId, first.task.id);
     assert.deepEqual(f.custody.readRestored(restored.id).bytes, original);
     assert.deepEqual(drive.preparations, []); assert.equal(drive.copies.length, 1);
-    assert.equal(f.custody.audit(second.task.id).some(item => item.event === 'archive_reference_verified'), true);
+    assert.equal(f.custody.audit(second.task.id).some(item => item.event === 'archive_reference_metadata_checked'), true);
   } finally { await f.close(); }
 });
 
@@ -343,7 +343,7 @@ test('restoring a source_verified object in another evidence topic does not turn
     const archived = await f.run(request(otherMaterial, { scopePath: evidenceRoot, evidenceTopic: '行情', verifyBytes: true, allowUpload: true }));
     assert.equal(archived.record.state, 'uploaded_metadata_checked', JSON.stringify(archived.record.gaps));
     assert.equal(archived.record.archiveReference, undefined);
-    assert.deepEqual(drive.reads, [archived.record.remoteObject!.path]);
+    assert.deepEqual(drive.reads, []);
     assert.equal(drive.writes.length, 1); assert.equal(drive.copies.length, 0);
   } finally { await f.close(); }
 });
@@ -362,8 +362,8 @@ test('restoring an unresolved evidence archive target provides a verified receip
     assert.equal(shared.record.state, 'reused_metadata_checked');
     assert.equal(shared.record.archiveReference!.taskId, recovery.id);
     assert.equal(shared.record.remoteObject!.id, restored.record.remoteObject!.id);
-    assert.deepEqual(drive.reads, [restored.record.remoteObject!.path]);
-    assert.deepEqual(drive.listings, []); assert.deepEqual(drive.preparations, []);
+    assert.deepEqual(drive.reads, []);
+    assert.deepEqual(drive.listings, [restored.record.remoteObject!.path.replace(/\/[^/]+$/u, '')]); assert.deepEqual(drive.preparations, []);
     assert.equal(drive.copies.length, 1); assert.equal(drive.writes.length, 0);
   } finally { await f.close(); }
 });
@@ -383,7 +383,7 @@ test('archive reuse and content claims remain separate when either account bindi
       assert.equal(second.record.archiveReference, undefined);
       assert.equal(posix.dirname(second.record.remoteObject!.path), evidenceRoot + '/资讯/来源原件');
       assert.equal(secondDrive.writes.length, 1); assert.equal(secondDrive.copies.length, 0);
-      assert.deepEqual(secondDrive.reads, [second.record.remoteObject!.path]);
+      assert.deepEqual(secondDrive.reads, []);
       assert.equal(f.custody.view(first.task.id).record.remoteObject!.path, first.record.remoteObject!.path);
     } finally { await f.close(); }
   }
@@ -468,7 +468,7 @@ test('default name-only check never downloads or recursively scans subdirectorie
   try {
     const materialId = await f.material(), result = await f.run(request(materialId));
     assert.equal(result.record.state, 'source_metadata_checked'); assert.equal(result.record.verifiedSha256, null);
-    assert.equal(result.record.coverage.globalExistence, 'unknown'); assert.equal(result.record.coverage.skippedDirectories, 1);
+    assert.equal(result.record.coverage.globalExistence, 'unknown'); assert.equal(result.record.coverage.skippedDirectories, 0, '匹配的直接子文件已找到后没有继续枚举后续目录');
     assert.deepEqual(drive.listings, [folder]); assert.equal(drive.reads.length, 0); assert.equal(drive.writes.length, 0);
     assert.equal(result.record.metadataConfirmed, true, '只读查询按文件名、大小和远端编号确认来源，不上传');
     assert.throws(() => f.custody.submit({ ...request(materialId), authorization: { status: 'authorized', basis: '已授权' } }, 'stateword'), { code: 'CLOUD_AUTHORIZATION_REQUIRED' });
@@ -832,7 +832,7 @@ else throw Error('fixture forbids other commands');
     assert.equal(uploaded.task.status, 'succeeded', JSON.stringify(uploaded.task.error)); assert.equal(uploaded.record.state, 'uploaded_metadata_checked', JSON.stringify(uploaded.record.gaps));
     assert.equal(sha(readFileSync(join(driveRoot, uploaded.record.remoteObject!.id))), sha(otherBytes));
     const calls = readFileSync(join(driveRoot, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    assert.equal(calls.filter(item => item.command === 'upload').length, 1); assert.equal(calls.filter(item => item.command === 'download').length, 5);
+    assert.equal(calls.filter(item => item.command === 'upload').length, 1); assert.equal(calls.filter(item => item.command === 'download').length, 0);
     assert.equal(calls.filter(item => item.command === 'cp').length, 1); assert.equal(calls.filter(item => item.command === 'mkdir').length, 2);
     assert.deepEqual(calls.find(item => item.command === 'cp').args, ['selected/renamed.csv', '证据盘/待分类/来源原件']);
     assert.ok(calls.filter(item => item.command === 'mkdir').every(item => !item.args[0].startsWith('/')));
