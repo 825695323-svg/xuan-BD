@@ -14,7 +14,7 @@ import type { PersonalCore } from '../agent/runtime/core.js';
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
 
 export const CONVERSATION_R1_VERSION = 'bd.conversation-r1/1';
-const ACTIONS = ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check', 'data.r1.submit'] as const;
+const ACTIONS = ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check'] as const;
 const SOURCE_FIELDS = ['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope'] as const;
 const MAX_ANCESTORS = 1024;
 interface Scope { origin: ModelTaskOrigin; input: BackendInput; messages: Set<string> }
@@ -107,21 +107,6 @@ export class ConversationR1Bridge {
     const link = this.ownedLink(String(args.requestId), scope);
     // A local get intentionally reads the frozen receipt, not today's connection. Recovery below rechecks
     // the original binding in R1Workspace; neither path silently substitutes a new default profile.
-    if (action === ACTIONS[6]) {
-      const prepared = port.get(link.request_id); this.assertView(prepared, link);
-      if (prepared.documentSha256 !== args.confirmationDigest)
-        fail('R1_CONFIRMATION_CHANGED', '正式发布摘要与冻结文档不一致，禁止换内容提交。');
-      assert();
-      const submitted = port.submit(link.request_id, prepared.documentSha256);
-      const settled = await interruptible(this.options.companion.tasks.wait(submitted.id), context.signal);
-      assert();
-      const final = port.get(link.request_id); this.assertView(final, link);
-      if (settled.status !== 'succeeded' || final.state !== 'associated' || final.requiresRecovery)
-        return this.result('原R1提交未完成全部正式固定读回；保留原号及回执，不宣称已入库。', {
-          ...this.requestView(final), taskId: submitted.id, taskStatus: settled.status, published: false });
-      return this.result('R1正式发布已由WFD完成固定读回及逐行关联。', {
-        ...this.requestView(final), taskId: submitted.id, taskStatus: settled.status, published: true });
-    }
     if (action === ACTIONS[2]) {
       const found = port.get(link.request_id); this.assertView(found, link); assert();
       return this.result('已读取本会话原本地R1回执；没有重提或实时探测。', this.requestView(found));
