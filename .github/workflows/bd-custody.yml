@@ -1,0 +1,36 @@
+name: BD custody verification
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/bd-custody.yml'
+      - 'modules/collection/**'
+      - 'plugins/storage/**'
+      - 'plugins/capture-sources/baidu-drive/**'
+      - 'apps/server/cloud-*.test.ts'
+      - 'apps/web/src/ui/CloudCustodyPanel.tsx'
+      - 'package*.json'
+  push:
+    branches:
+      - codex/baidu-skill-metadata-archive
+
+permissions:
+  contents: read
+
+jobs:
+  custody:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck and production build
+        run: npm run build
+      - name: Focused Baidu custody and restoration tests
+        run: |
+          node --import tsx --test             modules/collection/cloud-custody.test.ts             modules/collection/baidu-drive-copy.test.ts             modules/collection/cloud-algorithm-evidence.test.ts             apps/server/cloud-custody.test.ts             apps/server/cloud-evidence.test.ts
