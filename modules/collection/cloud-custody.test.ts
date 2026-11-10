@@ -278,26 +278,36 @@ test('same-content archive requests share the first verified evidence object acr
   } finally { await f.close(); }
 });
 
-test('a registered evidence object is rechecked by its frozen identity and bytes without fallback on change or loss', async () => {
+test('archive reuse rejects changed identity or absence, while same-size content drift is caught on explicit restore', async () => {
   for (const fault of ['id', 'bytes', 'missing'] as const) {
     const drive = new FixtureDrive(), source = drive.add(folder + '/source.csv', original), f = open(newRoot(), drive);
     try {
       const firstMaterial = await f.material(), otherMaterial = await f.material();
-      const first = await f.run(request(firstMaterial, { sourceRemotePath: source.path, evidenceTopic: '财报', verifyBytes: true, allowUpload: true }));
+      const first = await f.run(request(firstMaterial, { sourceRemotePath: source.path, evidenceTopic: '财报', verifyBytes: false, allowUpload: true }));
       const remote = first.record.remoteObject!, object = drive.objects.get(remote.path)!;
       if (fault === 'id') object.object = { ...object.object, id: '987654321' };
       else if (fault === 'bytes') object.bytes = sameLengthOther;
       else drive.objects.delete(remote.path);
       drive.listings.length = 0; drive.preparations.length = 0; drive.reads.length = 0;
-      const result = await f.run(request(otherMaterial, { sourceRemotePath: source.path, evidenceTopic: '资讯', verifyBytes: true, allowUpload: true }));
-      assert.equal(result.record.state, 'needs_review', fault);
+      const result = await f.run(request(otherMaterial, { sourceRemotePath: source.path, evidenceTopic: '资讯', verifyBytes: false, allowUpload: true }));
       assert.equal(result.record.archiveReference!.taskId, first.task.id);
-      assert.equal(result.record.remoteObject!.id, remote.id);
-      assert.equal(result.record.verifiedSha256, null);
-      assert.equal(result.record.gaps[0]!.code, fault === 'bytes' ? 'CLOUD_ARCHIVE_REFERENCE_UNVERIFIED' : 'CLOUD_OBJECT_CHANGED');
-      assert.deepEqual(drive.listings, []); assert.deepEqual(drive.preparations, []);
-      assert.deepEqual(drive.reads, [remote.path]); assert.equal(drive.modes.at(-1), false);
+      assert.equal(drive.reads.length, 0, '元数据复用绝不能静默下载');
       assert.equal(drive.writes.length, 0); assert.equal(drive.copies.length, 1);
+      if (fault !== 'bytes') {
+        assert.equal(result.record.state, 'needs_review', fault);
+        assert.equal(result.record.metadataConfirmed, undefined);
+        assert.equal(result.record.gaps[0]!.code, 'CLOUD_ARCHIVE_METADATA_CHANGED');
+      } else {
+        // 同名、同大小、相同 fs_id 不能证明内容未变；只有明确恢复时能发现篡改。
+        assert.equal(result.record.state, 'reused_metadata_checked');
+        assert.equal(result.record.verifiedSha256, null);
+        const recovery = f.custody.recover(result.task.id, result.task.version, 'corrupt-archive-restore');
+        await f.tasks.wait(recovery.id);
+        const restored = f.custody.view(recovery.id);
+        assert.equal(restored.record.state, 'needs_review');
+        assert.equal(restored.record.gaps[0]!.code, 'CLOUD_ARCHIVE_REFERENCE_UNVERIFIED');
+        assert.deepEqual(drive.reads, [remote.path]);
+      }
     } finally { await f.close(); }
   }
 });
