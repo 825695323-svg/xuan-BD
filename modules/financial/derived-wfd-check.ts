@@ -48,7 +48,10 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     || !sourceRows || !Array.isArray(result.rows) || sourceRows.length !== result.rows.length
     || !result.rows.length || result.rows.length > 5000 || !fields || !Array.isArray(fields.definitions))
     fail('DERIVED_SOURCE_INVALID', '缺少真实 WFD 固定快照、字段定义或等长来源行版本；不按模型声明补齐。');
-  if (resolution?.snapshotId !== src.snapshotId || resolution?.productId !== verifiedSrc.productId
+  const verifiedSrc = src as WfdRecord;
+  const verifiedFields = fields as WfdRecord;
+  const verifiedSourceRows = sourceRows as unknown[];
+  if (resolution?.snapshotId !== verifiedSrc.snapshotId || resolution?.productId !== verifiedSrc.productId
     || resolution?.instanceId !== verifiedSrc.instanceId
     || resolution?.rowCount !== result.rows.length || result.coverage.suppliedRows !== result.rows.length)
     fail('DERIVED_SOURCE_MISMATCH', '算法结果与实际 WFD 快照读取的产品、快照或记录数量不一致。');
@@ -79,14 +82,14 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
       || !isWfdRecord(observed.subject) || canonicalWfdJson(observed.subject) !== canonicalWfdJson(productSubject))
       fail('DERIVED_SOURCE_ROW_INVALID', `第 ${i+1} 条 WFD 来源缺业务键、时态或一致主体。`);
     const validObserved = observed as WfdRecord;
-     const time = validObserved.observation_time as WfdRecord, start = time.earliest_utc, end = time.latest_exclusive_utc;
+    const time = validObserved.observation_time as WfdRecord, start = time.earliest_utc, end = time.latest_exclusive_utc;
     if (time.status !== 'known' || typeof start !== 'string' || typeof end !== 'string'
       || !Number.isFinite(Date.parse(start)) || !Number.isFinite(Date.parse(end)) || Date.parse(start) >= Date.parse(end))
       fail('DERIVED_SOURCE_TIME_INVALID', `第 ${i+1} 条 WFD 来源业务时间不是可核对的已知区间。`);
     if (!/^\d{4}-\d{2}-\d{2}$/u.test(data.timestamp))
       fail('DERIVED_TIMESTAMP_INVALID', `第 ${i+1} 条算法日期格式不符合日频合同。`);
     const parts = new Intl.DateTimeFormat('en-US', { timeZone: result.metadata.timezone,
-      year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(start));
+      year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(String(start)));
     const part = (type: string) => parts.find(value => value.type === type)?.value ?? '';
     const day = [part('year'), part('month'), part('day')].join('-');
     if (day !== data.timestamp)
