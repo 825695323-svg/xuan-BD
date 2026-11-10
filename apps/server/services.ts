@@ -43,6 +43,7 @@ import { PolarsFixedService } from '../../modules/collection/polars-fixed-servic
 import { FixedCalculationService } from '../../modules/collection/fixed-calculation-service.js';
 import { StructuredRetrievalService } from '../../modules/collection/structured-retrieval.js';
 import { CloudCustodyService } from '../../modules/collection/cloud-custody.js';
+import { createArtifactArchiveActions } from '../../modules/collection/artifact-archive.js';
 import { createBaiduCustodyBackend, type CloudCustodyBackend } from '../../plugins/storage/baidu-drive.js';
 import { MaterialSemanticService } from '../../modules/collection/materials/semantic.js';
 import { SegmentService } from '../../modules/collection/segments/service.js';
@@ -271,6 +272,12 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   let modelTools!: CoreModelTools;
   const businessGoals = new BusinessGoalService({ database, isRunActive: (id, generation) => core.isRunActive(id, generation) });
   core.configureAcceptedInputObserver(commandId => businessGoals.observeAcceptedInput(commandId, { inTransaction: true }));
+  const archiveBackend = options.cloudCustodyBackend ?? createBaiduCustodyBackend({ configuration: options.baiduDrive,
+    processRuntime: options.processRuntime, files, artifactRoot });
+  const artifactArchive = createArtifactArchiveActions({ database, files, tasks: () => {
+    if (!tasks) throw new TaskError('SERVICE_NOT_READY', '任务服务尚未准备好。');
+    return tasks;
+  }, backend: archiveBackend });
   const mediaAdapters = [createMaterialTranscriptionAdapter(() => direct?.localTranscription)];
   const conversationMaterials = options.workspaceServices ? new ConversationMaterialBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
@@ -306,6 +313,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     agentImageOcrAvailability: () => !options.health.configured ? { available: false, reason: '当前模型通道或凭据尚不可用，无法识字。' }
       : options.modelInput && !options.modelInput.includes('image') ? { available: false, reason: '当前绑定模型配置未声明图像输入；不能识字、改模型或调用原生兜底。' }
       : { available: true },
+    artifactArchive,
     conversationMaterials: conversationMaterials || conversationProcessing || conversationR1 ? { registrations: conversationMaterials?.registrations ?? [],
       handles: action => !!conversationR1?.handles(action) || !!conversationProcessing?.handles(action) || !!conversationMaterials?.handles(action),
       execute: (context, action, args) => conversationR1?.handles(action) ? conversationR1.execute(context, action, args)
@@ -391,8 +399,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     database, tasks: currentTasks, permissions }) : undefined;
   const materials = options.materials ? new MaterialService({ ...options.materials, database, tasks: currentTasks, files }) : undefined;
   const cloudCustody = materials ? new CloudCustodyService({ database, tasks: currentTasks, materials, files, processing: () => processing, algorithms: () => algorithms,
-    backend: options.cloudCustodyBackend ?? createBaiduCustodyBackend({ configuration: options.baiduDrive,
-      processRuntime: options.processRuntime, files, artifactRoot }) }) : undefined;
+    backend: archiveBackend }) : undefined;
   // 算法服务必须能读取已装配材料与数据库线路；采用记录在服务内核对，目录读取不会自动启用。
   const algorithms = options.configureAlgorithms ? options.configureAlgorithms({ database, tasks: currentTasks,
     permissions, materials }) : undefined;
