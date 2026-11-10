@@ -6,6 +6,8 @@ on:
       - '.github/workflows/bd-custody.yml'
       - 'modules/collection/**'
       - 'platform/capabilities/browser/**'
+      - 'platform/capabilities/transcription/**'
+      - 'platform/capabilities/conversion/**'
       - 'plugins/capture-sources/index.ts'
       - 'plugins/storage/**'
       - 'plugins/capture-sources/baidu-drive/**'
@@ -16,6 +18,7 @@ on:
     branches:
       - codex/baidu-skill-metadata-archive
       - codex/unified-artifact-skill-archive
+      - codex/artifact-restore-video-temp
 
 permissions:
   contents: read
@@ -42,6 +45,7 @@ jobs:
           node --import tsx --test \
             platform/capabilities/browser/raw-page-dedup.test.ts \
             modules/collection/artifact-archive.test.ts \
+            modules/collection/artifact-restore.test.ts \
             modules/collection/cloud-custody.test.ts \
             modules/collection/baidu-drive-copy.test.ts \
             modules/collection/cloud-algorithm-evidence.test.ts \
