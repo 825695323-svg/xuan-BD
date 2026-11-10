@@ -309,7 +309,7 @@ export class CloudCustodyService {
       save('archive_reference_frozen', { reference });
       if (session) { await session.close(); session = undefined; }
       session = await this.options.backend!.open(context, { ...binding.input,
-        sourceRemotePath: reference.remoteObject.path, verifyBytes: false, allowUpload: false });
+        sourceRemotePath: reference.remoteObject.path, verifyBytes: binding.mode === 'restore', allowUpload: false });
       const remote = await session.lookup?.(reference.remoteObject.path)
         ?? await scan(posix.dirname(reference.remoteObject.path), reference.remoteObject.path);
       if (!remote || remote.id !== reference.remoteObject.id || !metadataMatches(remote, reference.remoteObject.path)
