@@ -162,7 +162,7 @@ test('real managed-table algorithm evidence archives and restores full persisten
         assert.throws(() => host.custody.submit({ ...input, materialId: unrelated.materialId }, 'reject-' + unrelated.materialId), { code: 'CLOUD_EVIDENCE_SOURCE_MISMATCH' });
       }
       const archive = host.custody.submit(input, 'algorithm-evidence-archive'); await host.tasks.wait(archive.id);
-      const archived = host.custody.view(archive.id); assert.equal(archived.record.state, 'uploaded_verified', JSON.stringify(archived));
+      const archived = host.custody.view(archive.id); assert.equal(archived.record.state, 'uploaded_metadata_checked', JSON.stringify(archived));
       assert.equal(archived.record.evidenceClassification?.purpose, '加工证据');
       assert.equal(archived.record.evidence!.original.materialId, material.materialId);
       assert.equal(archived.record.evidence!.original.sha256, material.sha256);
