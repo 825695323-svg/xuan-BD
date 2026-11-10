@@ -24,7 +24,6 @@ const labels: Record<R1BatchView['items'][number]['state'], string> = {
 };
 const batchLabels: Record<R1BatchView['state'], string> = { awaiting_upload: '等待下一件原文件', running: '按原清单依次推进',
   awaiting_answers: '其余已逐件办理，尚有事实待补', recovering: '等待核清原提交结果', completed: '本批已逐件办理', conflicts_pending: '其余已逐件办理，冲突保留待确认', stopped: '本批已停止', blocked: '本批受阻' };
-const meanLabels: Record<NonNullable<R1BatchView['calculation']>['state'], string> = { waiting_inputs: '等待完整原报读回', calculating: '正在计算', custody: '正在保管计算产物', stopped: '已停止', processing: '加工与发布中', associated: '已发布并固定读回', blocked: '派生受阻', recovering: '原交接结果待核对' };
 const fields = [['source_id', '来源身份'], ['provider', '提供者'], ['requested_url', '来源系列地址'],
   ['requested_at_utc', '请求时间（UTC，协调世界时）'], ['acquired_at_utc', '取得时间（UTC，协调世界时）'], ['usage_scope', '本批获准用途']] as const;
 type SelectedFile = { file: File; manifest: R1BatchFile; classification: R1AlgorithmClassification | null };
@@ -37,7 +36,6 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
   const [selected, setSelected] = useState<SelectedFile[]>([]), [datasetId, setDatasetId] = useState('');
   const [directoryName, setDirectoryName] = useState('');
   const [selectedColumns, setSelectedColumns] = useState('');
-  const [meanProof, setMeanProof] = useState<{ calculationId: string; proof: Record<string, unknown> } | null>(null);
   const [consent, setConsent] = useState(false), [datePolicy, setDatePolicy] = useState(false), [duplicateBatch, setDuplicateBatch] = useState(false);
   const [busy, setBusy] = useState(false), [hashing, setHashing] = useState(false), [error, setError] = useState<string | null>(null);
   const activeRef = useRef(activeId), busyRef = useRef(false), selectionEpoch = useRef(0), mounted = useRef(true), sectionRef = useRef<HTMLElement>(null);
@@ -51,7 +49,7 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
   }, [focus?.nonce]);
   useEffect(() => { setConsent(false); }, [source, datasetId, datePolicy, selectedColumns]);
   const selectBatch = useCallback((id: string) => {
-    activeRef.current = id; setMeanProof(null); remember(id); setActiveId(id); setCurrent(null); setError(null); setConsent(false); setDuplicateBatch(false); attempted.current.clear();
+    activeRef.current = id; remember(id); setActiveId(id); setCurrent(null); setError(null); setConsent(false); setDuplicateBatch(false); attempted.current.clear();
   }, []);
   const accept = useCallback((view: R1BatchView) => {
     if (!mounted.current) return;
@@ -228,21 +226,7 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
           </td><td><code>{item.materialId ?? item.custodyTaskId ?? '—'}</code><p className="r1-help"><code>{item.auto ? item.autoRequestId : '—'}</code></p>
             <button type="button" className="text-button" disabled={locked || !item.auto} onClick={() => void action(async () => onOpenAuto(await r1AutoApi.get(item.autoRequestId)))}>{words('查看并补答', 'Inspect and answer')}</button></td></tr>)}
         </tbody></table></div>
-        {(current.calculations ?? (current.calculation ? [current.calculation] : [])).map(calculation => <div className="r1-proof" key={calculation.calculationId}>
-          <h4>{words('本批均线', 'Batch moving average')}{calculation.kind && ` · ${kindLabels[calculation.kind]}`}</h4>
-          <p>{calculation.selection.valueColumn} · {calculation.selection.period} {words('期', 'observations')} · {meanLabels[calculation.state]}</p>
-          {calculation.productId && <p>{words('派生产品', 'Derived product')} <code>{calculation.productId}</code></p>}
-          {calculation.snapshotId && <p>{words('派生固定快照', 'Fixed derived snapshot')} <code>{calculation.snapshotId}</code></p>}
-          {calculation.error && <p className="danger-text">{calculation.error.code} · {calculation.error.message}</p>}
-          {calculation.proof && <p>{words('实际输出', 'Actual output')} {calculation.proof.counts.rows} {words('行，有效均值', 'rows, valid means')} {calculation.proof.counts.valid} · {words('窗口不足', 'Warmup')} {calculation.proof.counts.warmup} · {words('窗口含缺值', 'Missing in window')} {calculation.proof.counts.windowMissing}</p>}
-          {calculation.proof && <button type="button" className="text-button" disabled={locked} onClick={() => void action(async () => {
-            const proof = await r1AutoApi.calculationEvidence(current.batchId, calculation.calculationId);
-            setMeanProof({ calculationId: calculation.calculationId, proof });
-          })}>{words('读取原始记录与窗口明细', 'Read source record and window details')}</button>}
-          {meanProof?.calculationId === calculation.calculationId && <details open><summary>{words('固定输入、行版本与窗口', 'Fixed inputs, record versions and windows')}</summary><pre className="database-text-preview">{JSON.stringify(meanProof.proof, null, 2)}</pre></details>}
-          {calculation.auto && <button type="button" className="text-button" disabled={locked} onClick={() => void action(async () => onOpenAuto(await r1AutoApi.get(calculation.auto!.requestId)))}>{words('查看均线交接回执', 'Inspect moving average handoff')}</button>}
-        </div>)}
-        <details><summary>{words('本批冻结来源、用途与历史规则', 'Frozen source, purpose and legacy rules')}</summary><pre className="database-text-preview">{JSON.stringify({ source: current.source, datasetId: current.datasetId, datePolicy: current.datePolicy, sourceValueColumns: current.sourceValueColumns, algorithmRouting: current.algorithmRouting }, null, 2)}</pre></details>
+        <details><summary>{words('本批冻结来源与用途', 'Frozen source and purpose')}</summary><pre className="database-text-preview">{JSON.stringify({ source: current.source, datasetId: current.datasetId, datePolicy: current.datePolicy, sourceValueColumns: current.sourceValueColumns }, null, 2)}</pre></details>
       </>}
       <div className="r1-actions"><button type="button" className="text-button" disabled={locked} onClick={() => void action(async () => {
         accept(await r1AutoApi.advanceBatch(activeId)); attempted.current.clear();
