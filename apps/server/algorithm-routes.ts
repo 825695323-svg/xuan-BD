@@ -25,14 +25,6 @@ export function createAlgorithmRouter(services: AlgorithmRouteServices) {
     if (Object.keys(req.query).length) throw new CoreError('INVALID_ALGORITHM_QUERY', '采用状态不接受检索参数。', 400);
     res.json(services.algorithms ? services.algorithms.adoptionStatus() : unavailableAdoption('算法计算入口尚未装配；不能记录采用。'));
   });
-  router.post('/adoption', (req, res) => {
-    const body = objectBody(req.body);
-    if (Object.keys(body).some(key => !['expectedAssetsVersion', 'expectedCodeVersion', 'confirmation'].includes(key))
-      || typeof body.expectedAssetsVersion !== 'string' || typeof body.expectedCodeVersion !== 'string' || typeof body.confirmation !== 'string') {
-      throw new CoreError('INVALID_ALGORITHM_BODY', '受控采用只接受当前两个摘要与逐字确认短语。', 400);
-    }
-    res.status(201).json(service().adopt(body));
-  });
   router.get('/calls', (_req, res) => res.json({ items: services.algorithms ? services.algorithms.list() : [] }));
   router.get('/calls/:taskId', (req, res) => {
     if (typeof req.params.taskId !== 'string' || !req.params.taskId) throw new CoreError('INVALID_ALGORITHM_TASK', '缺少任务编号。', 400);

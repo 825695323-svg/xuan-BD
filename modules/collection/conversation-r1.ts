@@ -12,10 +12,9 @@ import { TaskError, type TaskExecutionContext } from '../../platform/jobs/tasks.
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { PersonalCore } from '../agent/runtime/core.js';
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
-import { verifyDerivedMaterialLink } from '../financial/algorithm-derived-link.js';
 
 export const CONVERSATION_R1_VERSION = 'bd.conversation-r1/1';
-const ACTIONS = ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check', 'data.r1.submit', 'data.r1.prepare_derived'] as const;
+const ACTIONS = ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check', 'data.r1.submit'] as const;
 const SOURCE_FIELDS = ['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope'] as const;
 const MAX_ANCESTORS = 1024;
 interface Scope { origin: ModelTaskOrigin; input: BackendInput; messages: Set<string> }
@@ -52,9 +51,6 @@ export class ConversationR1Bridge {
       ]),
       registration(ACTIONS[4], '按原身份核对R1提交与读回', '只恢复本会话已映射原请求/任务；未知结果不换编号重发；未提交请求返回R1_NOT_SUBMITTED，保持本地准备回执。个人停止仅停止等待/分享，不声称撤销服务事实。', [text('requestId', '本会话原请求编号')]),
       registration(ACTIONS[5], '明确只读核对R1 live profile', '操作者需要时才调用，只读核对当前已登记profile。不会由能力发现、准备或查询自动调用，不授权初始化/提交。', []),
-      registration(ACTIONS[7], '为本会话算法结果准备WFD派生入库',
-        '只接受本会话成功算法形成且经五步加工的派生材料与真实计划，不接收模型提供的原数据行、来源时间或外部算法结果。来源、方法、WFD输入快照由真实算法任务生成，发布仍需后续R1提交及审批。',
-        [text('taskId', '原算法任务编号'), text('planId', '派生加工计划编号'), text('outputId', '已通过发布资格的输出编号')]),
       registration(ACTIONS[6], '受控提交已准备的R1派生或原报结果',
         '只接受本会话原已冻结R1请求和完全一致的文档摘要。沿现有 R1 正式发布与固定读回执行；必须有独立审批，禁止模型自授权或在未知结果时换号重提。',
         [text('requestId', '本会话已准备的R1请求编号'), text('confirmationDigest', '冻结R1文档摘要', true, 128)]),
@@ -83,55 +79,6 @@ export class ConversationR1Bridge {
     if (action === ACTIONS[5]) {
       await interruptible(port.checkProfile(), context.signal); assert();
       return this.result('已明确只读核对当前R1 profile；没有提交。', { ...this.capabilities(scope), checked: true });
-    }
-    if (action === ACTIONS[7]) {
-      const taskId = String(args.taskId), planId = String(args.planId), outputId = String(args.outputId);
-      const output = this.planOutput(scope, planId, outputId);
-      const materialId = output.materialIds[0]!;
-      if (!verifyDerivedMaterialLink(this.options.database, this.options.companion, origin, materialId, scope.messages))
-        fail('R1_DERIVED_ORIGIN', '只有本会话算法实际生成的派生材料才允许走派生入库。');
-      const linked = this.db.prepare('SELECT service_task_id FROM conversation_algorithm_derived WHERE material_id=?')
-        .get(materialId) as { service_task_id: string } | undefined;
-      if (linked?.service_task_id !== taskId) fail('R1_DERIVED_ORIGIN', '派生计划与指定算法原任务不一致。');
-      const computed = this.options.companion.algorithms?.view(taskId).result;
-      if (!computed || computed.status !== 'computed') fail('R1_DERIVED_RESULT', '原算法没有已核对的计算结果。');
-      const declaration = output.target?.declaration;
-      if (!isWfdRecord(declaration) || declaration.protocol !== 'wfd.structured-ingest/1.0'
-        || !isWfdRecord(declaration.mapping) || !isWfdRecord(declaration.target))
-        fail('R1_TARGET_CHANGED', '派生计划缺少已冻结的WFD目标、版本和映射。');
-      const target = declaration.target, def = isWfdRecord(target.definition) ? target.definition : null;
-      const algorithm = def && isWfdRecord(def.algorithm_definition) ? def.algorithm_definition : null;
-      if (!def || def.measurement_nature !== 'derived'
-        || !isWfdRecord(def.semantic_context) || def.semantic_context.content_nature !== 'deterministic_derived'
-        || !algorithm || algorithm.method_id !== computed.methodId
-        || algorithm.method_version !== computed.methodVersion
-        || algorithm.implementation_version !== computed.implementationVersion
-        || algorithm.input_digest !== computed.inputDigest)
-        fail('R1_DERIVED_CONTRACT', '派生定义必须对应原算法编号、方法版本、实现版本和输入摘要；不能冒充原报。');
-      const derivedAt = computed.computedAt;
-      if (!Number.isFinite(Date.parse(derivedAt))) fail('R1_DERIVED_TIME', '原算法没有可信的实际完成时间。');
-      const source: R1SourceDeclaration = {
-        source_id: 'bd.algorithm.' + computed.methodId, provider: 'BD 本机受控确定性计算',
-        requested_url: 'urn:bd:algorithm:' + taskId,
-        requested_at_utc: derivedAt, acquired_at_utc: derivedAt,
-        usage_scope: 'WFD固定快照派生计算；输入身份由原算法任务谱系固定',
-        authorization: { status: 'authorized',
-          basis: '原算法任务及输入摘要已由BD核对；正式发布另由独立R1审批和WFD准入确认。' },
-      };
-      const requestId = 'r1c_' + wfdSha256(canonicalWfdJson({
-        conversation: origin.conversationId, branch: origin.branchId, plan: planId, output: outputId })).slice(0, 48);
-      assert();
-      const found = await interruptible(port.prepareWithRestriction({ requestId, planId, outputId, source,
-        mapping: declaration.mapping, target: declaration.target } as unknown as R1PrepareInput), context.signal);
-      this.assertView(found, { request_id: requestId, plan_id: planId, output_id: outputId });
-      const prior = this.db.prepare('SELECT * FROM conversation_r1_links WHERE request_id=?').get(requestId) as Link | undefined;
-      if (prior) this.assertLink(prior, scope);
-      else this.db.prepare('INSERT INTO conversation_r1_links VALUES(?,?,?,?,?,?,?,?,?)')
-        .run(requestId, origin.conversationId, origin.branchId, origin.messageId, planId, outputId,
-          context.task.id, JSON.stringify(origin), Date.now());
-      assert();
-      return this.result('已按原算法证明准备WFD派生交接；未发布。调用data.r1.submit后确认正式回执及固定读回。', {
-        ...this.requestView(found), algorithmTaskId: taskId, inputDigest: computed.inputDigest });
     }
     if (action === ACTIONS[1]) {
       const planId = String(args.planId), outputId = String(args.outputId), output = this.planOutput(scope, planId, outputId);
@@ -251,8 +198,6 @@ export class ConversationR1Bridge {
     if (!output || output.publishEligible !== true || output.routingState !== 'ready_candidate') fail('R1_PROCESS_NOT_READY', '固定输出没有实际结构化及发布资格。');
     if (output.materialIds.length !== 1) fail('R1_MULTI_SOURCE_UNSUPPORTED', '本片只接单一明确附件的固定输出。');
     const materialId = output.materialIds[0]!;
-    if (verifyDerivedMaterialLink(this.options.database, this.options.companion, scope.origin, materialId, scope.messages))
-      return output;
     if (!this.hasTable('conversation_material_links')) fail('R1_MATERIAL_ORIGIN', '没有本会话附件保管关系。');
     const materialLink = this.db.prepare('SELECT * FROM conversation_material_links WHERE material_id=?').get(materialId);
     if (!materialLink || !this.savedInScope(String(materialLink.origin_json), scope)) fail('R1_MATERIAL_ORIGIN', '原件不属于本输入祖先的会话分支。');
@@ -322,7 +267,6 @@ export class ConversationR1Bridge {
   }
   private validateArgs(action: string, args: Record<string, JsonValue>): void {
     const keys = action === ACTIONS[1] ? ['planId', 'outputId', 'sourceJson', 'sourceEvidenceJson']
-      : action === ACTIONS[7] ? ['taskId', 'planId', 'outputId']
       : action === ACTIONS[6] ? ['requestId', 'confirmationDigest']
       : action === ACTIONS[2] || action === ACTIONS[4] ? ['requestId'] : action === ACTIONS[3] ? ['offset', 'limit'] : [];
     if (!isWfdRecord(args) || Object.keys(args).some(key => !keys.includes(key))) fail('R1_CONVERSATION_INPUT', '不接受未声明字段、行、权限、摘要或连接覆盖。');

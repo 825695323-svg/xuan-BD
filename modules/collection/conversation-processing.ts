@@ -2,7 +2,6 @@ import type { PersonalCore } from '../agent/runtime/core.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
 import type { WorkspaceServices } from '../../contracts/workspace-services.js';
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
-import { verifyDerivedMaterialLink } from '../financial/algorithm-derived-link.js';
 import type { SkillRegistration } from '../../platform/plugins/registry.js';
 import type { SkillField } from '../../contracts/skill-contracts.js';
 import { TaskError, type TaskExecutionContext, type TaskRecord } from '../../platform/jobs/tasks.js';
@@ -271,12 +270,7 @@ export class ConversationProcessingBridge {
     const rows = this.options.database.connection.prepare(`SELECT material_id FROM conversation_material_links
       WHERE origin_json LIKE ? ORDER BY created_at DESC,rowid DESC LIMIT 20`)
       .all(`%"conversationId":"${origin.conversationId}"%"branchId":"${origin.branchId}"%`) as { material_id: string }[];
-    const derived = this.options.database.connection.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_algorithm_derived'").get()
-      ? this.options.database.connection.prepare(
-        "SELECT material_id FROM conversation_algorithm_derived WHERE json_extract(origin_json,'$.conversationId')=? AND json_extract(origin_json,'$.branchId')=? ORDER BY created_at DESC LIMIT 20"
-      ).all(origin.conversationId, origin.branchId) as { material_id: string }[] : [];
-    const materials = [...rows, ...derived].flatMap(row => {
+    const materials = rows.flatMap(row => {
       try { const material = this.options.companion.materials!.get(row.material_id);
         const taskId = this.latestDecisionTask(row.material_id, origin);
         const routing = taskId ? (this.options.companion.processing!.getByTask(taskId)?.decision as { routingState?: string } | null)?.routingState : null;
@@ -392,9 +386,9 @@ export class ConversationProcessingBridge {
     const exists = this.options.database.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_material_links'").get();
     const row = exists && materialId ? this.options.database.connection.prepare('SELECT origin_json FROM conversation_material_links WHERE material_id=?').get(materialId) : undefined;
     const saved: unknown = row ? JSON.parse(String(row.origin_json)) : null;
-    if (isWfdRecord(saved) && saved.conversationId === origin.conversationId && saved.branchId === origin.branchId) return;
-    if (verifyDerivedMaterialLink(this.options.database, this.options.companion, origin, materialId)) return;
-    throw new TaskError('PROCESSING_MATERIAL_ORIGIN', '处理计划只接受本会话保管的原件或已核实的算法派生材料。');
+    if (!isWfdRecord(saved) || saved.conversationId !== origin.conversationId || saved.branchId !== origin.branchId) {
+      throw new TaskError('PROCESSING_MATERIAL_ORIGIN', '处理计划只接受本会话分支通过material.read保管的原件。');
+    }
   }
   private assertPlan(planId: string, origin: ModelTaskOrigin): void {
     const row = this.options.database.connection.prepare("SELECT origin_json FROM conversation_processing_links WHERE ref_id=? AND kind='plan'").get(planId);

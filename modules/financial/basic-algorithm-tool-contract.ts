@@ -21,10 +21,10 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
       historical: '明确 historyMode/cutoff 并经 WFD 历史资格核对' },
     output: { state: 'computed', persistence: 'not_requested', publication: 'not_requested' },
   }));
-  // 原批次来源观测均线仍依赖原件和 R1 关联，不能冒充已经支持统一 WFD 算法入口。
+  // 观测均线归于基础算法目录，WFD 固定快照独立实现尚未完成，继续明确不可执行。
   const observationMA = {
     methodId: 'source_observation_ma', title: '观测均线 / Observation Moving Average',
-    status: 'blocked', reason: '旧实现仍绑定原报和批次计算证明；尚未移植为仅从 WFD 固定快照读取的独立方法。',
+    status: 'blocked', reason: '尚无 WFD 固定快照输入的独立观测均线实现；不复用原批次自动计算。',
     interface: 'algorithms.calculate', methodVersion: 'not_adopted', implementationVersion: 'not_adopted',
     parameters: { type: 'object', required: ['period'], properties: { period: { type: 'integer', minimum: 2, maximum: 1000 } } },
     requiredFields: ['observation_time', 'value'], outputFields: ['moving_average'],
@@ -35,13 +35,13 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
       historical: '明确 historyMode/cutoff 并经 WFD 历史资格核对' },
     output: { state: 'computed', persistence: 'not_requested', publication: 'not_requested' },
   };
-  // 已登记但未受控放行的算法仍有各自稳定 methodId，只提供不可执行接口说明，
+  // 已登记但未启用的算法保留各自稳定 methodId，仅提供不可执行接口说明，
   // 不使用算法资料包存在性冒充可计算、可发布资格。
   const implemented = new Set<string>(methods.map(method => method.methodId));
   implemented.add(observationMA.methodId);
   const reserved = ALGORITHM_REGISTRY.filter(tool => !implemented.has(tool.id)).map(tool => ({
     methodId: tool.id, title: tool.title, status: 'blocked' as const,
-    reason: tool.reason ?? '方法仅在算法登记目录中存在，尚无可用的 WFD 固定快照受控执行入口。',
+    reason: tool.reason ?? '算法只有登记信息，尚无 WFD 固定快照的可执行实现。',
     interface: 'algorithms.calculate', methodVersion: 'not_adopted', implementationVersion: 'not_adopted',
     parameters: tool.parameters, requiredFields: tool.requiredInputs, outputFields: tool.outputFields,
     limitations: tool.limitations, missing: tool.missing,
@@ -58,7 +58,7 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
     calculateAction: 'algorithms.calculate', statusAction: 'algorithms.status',
     sourcePolicy: 'WFD fixed snapshot only; no managed file, no latest, no hidden data acquisition',
     agentTriggered: true, uiExecution: false, agentMayRead: true, agentMaySelfAuthorize: false,
-    publication: 'derived material -> five-step processing -> R1 prepare -> controlled submit -> WFD fixed readback',
+    publication: 'one independent fixed-algorithm verification -> existing R1 WFD submit -> fixed readback',
     methods: selected, unknownMethod: selectedMethod !== undefined && selected.length === 0 };
 }
 
@@ -78,10 +78,10 @@ export function bdSessionToolContract(catalog: AlgorithmCatalogView) {
           'data.processing.route', 'data.processing.plan', 'data.processing.run'],
         next: '受控保管、识别、五步加工；原报通过 R1 单独交接' },
       { id: 'wfd', title: 'WFD 正式数据 / WFD Published Data',
-        tools: ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.prepare_derived', 'data.r1.submit', 'data.r1.get', 'data.r1.recover'],
+        tools: ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.submit', 'data.r1.get', 'data.r1.recover'],
         next: '正式发布、固定读回和历史资格仍归 WFD；本契约不授予数据库写权' },
       { id: 'basic_algorithms', title: '基础算法 / Basic Algorithms',
-        tools: ['algorithms.contract', 'algorithms.capabilities', 'algorithms.calculate', 'algorithms.stage', 'algorithms.status'],
-        next: 'AGENTS 调用 → WFD 固定快照 → 算法计算 → 派生保管 → 五步加工 → R1 → WFD 回读' },
+        tools: ['algorithms.contract', 'algorithms.capabilities', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status'],
+        next: 'AGENTS 调用 → WFD 固定快照 → 固定算法结构化结果 → 独立核对 → WFD 正式发布与固定读回' },
     ], algorithms: basicAlgorithmToolContract(catalog) };
 }

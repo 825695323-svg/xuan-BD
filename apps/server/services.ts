@@ -72,6 +72,7 @@ import { directDependencyVersions, directResourceVersions, directoryVersion } fr
 import { requireFinancialComputedResult } from '../../modules/financial/contracts.js';
 import { ToolLibraryService } from '../../modules/financial/tool-library.js';
 import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
+import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
 import type { LocalDataLifecycle, LocalDataLifecycleRecord } from '../../platform/runtime/local-data-lifecycle.js';
 
 export type CollectionConfiguration = Omit<ConstructorParameters<typeof CollectionService>[0], 'database' | 'tasks' | 'files'>;
@@ -178,6 +179,7 @@ export interface ApplicationServices {
   collection?: CollectionService;
   financial?: FinancialService;
   algorithms?: LocalAlgorithmService;
+  derivedPublisher?: DerivedWfdPublisher;
   toolLibrary?: ToolLibraryService;
   materials?: MaterialService;
   cloudCustody?: CloudCustodyService;
@@ -416,6 +418,11 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     objects: { put: (bytes, mediaType) => candidates.saveObject(bytes, mediaType), get: ref => candidates.objectBytes(ref),
       verify: ref => candidates.verifyObject(ref) } }) : undefined;
   let r1Runtime: R1Runtime | undefined;
+  let derivedPublisher: DerivedWfdPublisher | undefined;
+  const verifyFixedDerived = (refs: import('../../modules/collection/r1-structured-handoff.js').R1LocalReferences, digest: string) => {
+    if (!derivedPublisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', '固定算法独立核验尚未装配。');
+    derivedPublisher.verify(refs, digest);
+  };
   const verifyCalculationCandidate = (input: R1CalculationCandidateVerification) => {
     if (!polarsFixed) throw new TaskError('R1_CALCULATION_VERIFIER_UNBOUND', '计算候选缺受信验证器。');
     polarsFixed.verifyCandidate(input.taskId, input);
@@ -450,7 +457,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   if (materials && options.resources) {
     try {
       r1Runtime = createR1HandoffRuntime({ resources: options.resources, database, materials, processing, candidates,
-        connectionId: options.r1ConnectionId, verifyCalculationCandidate, verifyAlgorithmCandidate });
+        connectionId: options.r1ConnectionId, verifyCalculationCandidate, verifyAlgorithmCandidate, verifyFixedDerived });
       r1Configuration = { state: 'ready', reason: null };
     } catch (error) {
       r1Configuration = { state: 'not_configured',
@@ -458,9 +465,14 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     }
   }
   const r1: R1HandoffService | undefined = r1Runtime?.service ?? (materials ? new R1HandoffService({
-    database, materials, processing, candidates, verifyCalculationCandidate, verifyAlgorithmCandidate }) : undefined);
+    database, materials, processing, candidates, verifyCalculationCandidate, verifyAlgorithmCandidate, verifyFixedDerived }) : undefined);
   const r1Workspace: R1WorkspaceService | undefined = r1 && processing && materials ? new R1WorkspaceService({ database, tasks: currentTasks,
     handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration }) : undefined;
+  // 独立确定性算法唯一发布路径：复用 R1 正式写入与固定读回，不走原报五步。
+  derivedPublisher = r1Runtime && r1Workspace && algorithms && r1
+    ? new DerivedWfdPublisher({ viewAlgorithm: taskId => algorithms.view(taskId),
+      runtime: () => r1Runtime, workspace: () => r1Workspace, handoff: r1 })
+    : undefined;
   // 来源字段档案放在本机配置资源下；未绑定时退回工程外运行根，不读源码树。
   const sourceFieldProfiles = options.resources
     ? new SourceFieldProfileStore(join(options.resources.path('config'), 'source-fields')) : undefined;
@@ -645,5 +657,5 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   queueMicrotask(() => core.dispatchTaskCompletions());
   return { core, database, permissions, files, tasks: runningTasks, memory, agentSkills, questions, toolSettings, sourceSettings, personalResources, uiPreferences, contextLedger, inputRules, inputRouter, directConversations, direct, modelTools,
     ...(options.localData ? { localData: options.localData.lifecycle, localDataId: options.localData.dataId } : {}),
-    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
+    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
 }
