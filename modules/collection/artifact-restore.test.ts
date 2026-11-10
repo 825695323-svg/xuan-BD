@@ -101,6 +101,12 @@ test('explicit restore rehydrates a missing local artifact without rewriting its
   try {
     await f.produceAndArchive();
     rmSync(f.path);
+    // 原本地文件已不存在时，沿冻结归档身份重查仍只能读远端元数据。
+    const rechecked = await f.execute('archive', 'artifact.archive',
+      { ...f.args, topic: '资讯', purpose: '加工证据' });
+    assert.equal(rechecked.status, 'succeeded', JSON.stringify(rechecked.error));
+    assert.equal((rechecked.result?.data as Record<string, unknown>).state, 'confirmed');
+    assert.equal(f.state.uploads, 1); assert.equal(f.state.remoteReads, 0);
     const result = await f.execute('restore', 'artifact.restore', f.args);
     assert.equal(result.status, 'succeeded', JSON.stringify(result.error));
     assert.equal((result.result?.data as Record<string, unknown>).state, 'restored_verified');
