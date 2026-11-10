@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/bd-custody.yml'
       - 'modules/collection/**'
+      - 'platform/capabilities/browser/**'
+      - 'plugins/capture-sources/index.ts'
       - 'plugins/storage/**'
       - 'plugins/capture-sources/baidu-drive/**'
       - 'apps/server/cloud-*.test.ts'
@@ -38,6 +40,7 @@ jobs:
         run: |
           mkdir -p "$XUAN_FULL_CHAIN_ROOT"
           node --import tsx --test \
+            platform/capabilities/browser/raw-page-dedup.test.ts \
             modules/collection/artifact-archive.test.ts \
             modules/collection/cloud-custody.test.ts \
             modules/collection/baidu-drive-copy.test.ts \
