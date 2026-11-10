@@ -1,4 +1,5 @@
 import type { AlgorithmCatalogView } from './algorithm-types.js';
+import { ALGORITHM_REGISTRY } from './algorithm-registry.js';
 
 /**
  * BD AGENTS 只读统一入口契约（Unified Agent Tool Contract）。
@@ -34,7 +35,23 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
       historical: '明确 historyMode/cutoff 并经 WFD 历史资格核对' },
     output: { state: 'computed', persistence: 'not_requested', publication: 'not_requested' },
   };
-  const all = [...methods, observationMA];
+  // 已登记但未受控放行的算法仍有各自稳定 methodId，只提供不可执行接口说明，
+  // 不使用算法资料包存在性冒充可计算、可发布资格。
+  const implemented = new Set<string>(methods.map(method => method.methodId));
+  implemented.add(observationMA.methodId);
+  const reserved = ALGORITHM_REGISTRY.filter(tool => !implemented.has(tool.id)).map(tool => ({
+    methodId: tool.id, title: tool.title, status: 'blocked' as const,
+    reason: tool.reason ?? '方法仅在算法登记目录中存在，尚无可用的 WFD 固定快照受控执行入口。',
+    interface: 'algorithms.calculate', methodVersion: 'not_adopted', implementationVersion: 'not_adopted',
+    parameters: tool.parameters, requiredFields: tool.requiredInputs, outputFields: tool.outputFields,
+    limitations: tool.limitations, missing: tool.missing,
+    input: { kind: 'fixed_snapshot', referenceKind: 'wfd_fixed_snapshot',
+      requiredIdentity: ['instanceId', 'productId', 'snapshotId', 'definitionRevision'],
+      requiredEvidence: ['fields', 'fieldMapping', 'semantics', 'calendar'],
+      historical: '明确 historyMode/cutoff 并经 WFD 历史资格核对' },
+    output: { state: 'computed', persistence: 'not_requested', publication: 'not_requested' },
+  }));
+  const all = [...methods, observationMA, ...reserved];
   const selected = selectedMethod ? all.filter(method => method.methodId === selectedMethod) : all;
   return { version: BD_SESSION_TOOL_CONTRACT_VERSION, owner: 'bd_agents',
     catalogue: '基础算法 / Basic Algorithms', discoveryAction: 'algorithms.contract',

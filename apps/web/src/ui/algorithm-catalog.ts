@@ -101,20 +101,18 @@ export interface BatchAlgorithmEntry {
 }
 
 /**
- * 批量自动计算只列现有的两条均线执行链；内容分类（日K/分钟K/情绪/混合/其他/未知）
- * 仍是原批次面板的原件内容分类，不在这里冒充用途分类。
+ * 历史批次均线只保留旧界面和旧回执的只读兼容。
+ * 新观测均线属于基础算法目录，必须由 BD AGENTS 人工请求并从 WFD 固定快照取数。
  */
 export const BATCH_ALGORITHMS: readonly BatchAlgorithmEntry[] = Object.freeze([
-  { id: 'daily_bar', zh: '日K批量均线', en: 'Daily bar batch mean',
-    zhDescription: '对原批次中满足日K原报内容分类、已明确授权且保存了日K周期的来源系列，按该批冻结规则自动计算并单独发布均线。',
-    enDescription: 'For a batch’s daily-bar source series with this batch’s authorization and saved daily period, calculate and publish the mean separately under the batch’s frozen rules.',
-    zhKind: '日K原报观察', enKind: 'Daily-bar source observations',
-    zhPeriod: '数据库批量面板保存的日K周期', enPeriod: 'Daily period saved in the Database batch panel' },
-  { id: 'minute_bar', zh: '分钟K批量均线', en: 'Minute bar batch mean',
-    zhDescription: '对原批次中满足分钟K原报内容分类、已明确授权且保存了分钟K周期的来源系列，按该批冻结规则自动计算并单独发布均线。',
-    enDescription: 'For a batch’s minute-bar source series with this batch’s authorization and saved minute period, calculate and publish the mean separately under the batch’s frozen rules.',
-    zhKind: '分钟K原报观察', enKind: 'Minute-bar source observations',
-    zhPeriod: '数据库批量面板保存的分钟K周期', enPeriod: 'Minute period saved in the Database batch panel' },
+  { id: 'daily_bar', zh: '旧日K批次均线（停用）', en: 'Legacy daily-batch mean (disabled)',
+    zhDescription: '历史批次算法配置只读保留。新计算统一从 WFD 正式快照进入基础算法目录，由人工明确发起，不自动发布。',
+    enDescription: 'Legacy batch setting is read-only. New calculations use WFD fixed snapshots and an explicit manual request, without automatic publication.',
+    zhKind: '历史日K原报', enKind: 'Legacy daily source', zhPeriod: '旧周期仅供历史核对', enPeriod: 'Legacy period for audit only' },
+  { id: 'minute_bar', zh: '旧分钟批次均线（停用）', en: 'Legacy minute-batch mean (disabled)',
+    zhDescription: '历史批次算法配置只读保留。新计算统一从 WFD 正式快照进入基础算法目录，由人工明确发起，不自动发布。',
+    enDescription: 'Legacy batch setting is read-only. New calculations use WFD fixed snapshots and an explicit manual request, without automatic publication.',
+    zhKind: '历史分钟K原报', enKind: 'Legacy minute source', zhPeriod: '旧周期仅供历史核对', enPeriod: 'Legacy period for audit only' },
 ]);
 
 export function batchAlgorithm(id: string): BatchAlgorithmEntry | null {

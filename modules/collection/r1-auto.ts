@@ -95,9 +95,9 @@ export class R1AutoService {
     if (this.unsubscribe || this.closed) return;
     this.unsubscribe = this.tasks.subscribe(({ task, event }) => {
       if (!['TASK_SUCCEEDED', 'TASK_FAILED', 'TASK_NEEDS_REVIEW', 'TASK_INTERRUPTED', 'TASK_RECONCILED', 'TASK_PAUSED', 'TASK_CANCELLED'].includes(event.type)) return;
-      for (const item of this.records(true)) if (activeStates.has(item.state) && this.taskIds(item).includes(task.id)) this.schedule(item.input.requestId);
+      for (const item of this.records(true)) if (!item.calculation && activeStates.has(item.state) && this.taskIds(item).includes(task.id)) this.schedule(item.input.requestId);
     });
-    for (const item of this.records(true)) this.schedule(item.input.requestId);
+    for (const item of this.records(true)) if (!item.calculation) this.schedule(item.input.requestId);
   }
 
   start(value: unknown, operator: OperatorContext): R1AutoView {
@@ -110,17 +110,9 @@ export class R1AutoService {
   }
 
   /** The public start route cannot provide a calculation, a proof, or an arbitrary definition. */
-  startCalculated(value: R1AutoStartInput, proof: CalculatedMAProof, operator: OperatorContext): R1AutoView {
-    const input = readStart(value);
-    if (input.priorRequestId || input.xlsxSelection || input.sourceValueColumns || input.sourceAdapter || input.sourceContext || input.sourceReceiptTaskId
-        || proof.method !== 'source_observation_ma' || proof.methodVersion !== sourceObservationMAMethodVersion(proof)) {
-      fail('R1_MA_CALCULATED_INPUT', '派生交接须绑定本批均线、完整计算材料及固定方法版本。');
-    }
-    const binding = { materialSha256: proof.materialSha256, semanticCode: proof.derivativeSemanticCode, unit: proof.unitCode,
-      subject: proof.subject, timezone: proof.timeZone, proofSha256: wfdSha256(canonicalWfdJson(proof)), codeDigest: proof.codeDigest,
-      definition: sourceObservationMAAlgorithmDefinition(proof) };
-    if (!this.find(input.requestId) && binding.codeDigest !== sourceObservationMACodeDigest()) fail('R1_MA_IMPLEMENTATION_CHANGED', '计算实现已变化，请核对原运行证明。');
-    return this.startBound(input, operator, binding, proof.inputScope === 'frozen_series_snapshot');
+  startCalculated(_value: R1AutoStartInput, _proof: CalculatedMAProof, _operator: OperatorContext): R1AutoView {
+    fail('R1_AUTO_CALCULATION_MANUAL_ONLY',
+      '来源观测均线已移出原报管线；请先完成 WFD 固定读回，再由 BD AGENTS 的基础算法工具人工发起。');
   }
 
   private startBound(input: R1AutoStartInput, operator: OperatorContext, calculation?: AutoRecord['calculation'], selectedKeyReplacement = false): R1AutoView {
@@ -324,6 +316,7 @@ export class R1AutoService {
   /** Explicit continuation also performs original-identity recovery, never a second submit. */
   async advance(requestId: string): Promise<R1AutoView> {
     this.assertDispatch(); const item = this.require(requestId); this.assertBinding(item);
+    if (item.calculation) fail('R1_AUTO_CALCULATION_MANUAL_ONLY', '旧派生任务不再通过原报自动续办；原结果仍可查阅。');
     if (item.state === 'associated' || item.state === 'conflicts_pending' || item.state === 'awaiting_answers') return this.view(item);
     if (item.state === 'blocked') return this.view(item);
     item.controlGeneration = this.tasks.getControl().generation;
@@ -354,7 +347,9 @@ export class R1AutoService {
   }
 
   private async progress(requestId: string, explicit: boolean): Promise<void> {
-    const item = this.require(requestId); this.assertActive(item);
+    const item = this.require(requestId);
+    if (item.calculation) return; // 旧派生任务仅保留历史状态，不再自动续算或交接。
+    this.assertActive(item);
     if (['associated', 'conflicts_pending', 'awaiting_answers', 'blocked', 'stopped'].includes(item.state)) return;
     if (this.queueHead()?.input.requestId !== requestId) return;
     if (!item.snapshot) {
@@ -702,6 +697,7 @@ export class R1AutoService {
   private queueHead(): AutoRecord | null {
     const row = this.db.prepare(`SELECT record_json FROM r1_auto_requests
       WHERE json_extract(record_json,'$.state') IN ('inspecting','processing','submitting','recovering')
+        AND json_extract(record_json,'$.calculation') IS NULL
       ORDER BY COALESCE(json_extract(record_json,'$.queueOrder'),json_extract(record_json,'$.createdAt')),rowid LIMIT 1`).get();
     return row ? JSON.parse(String(row.record_json)) as AutoRecord : null;
   }

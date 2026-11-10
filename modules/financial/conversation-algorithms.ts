@@ -123,47 +123,6 @@ export class ConversationAlgorithmBridge {
     throw new TaskError('ALGORITHM_ACTION', '未登记的算法会话动作。');
   }
 
-  /**
-   * 模型可见的受管表只来自当前会话分支通过 material.read 建立的保管关系。
-   * 全局材料目录不作为分支授权：这里只把已有 FileRef/任务证据与
-   * conversation_material_links / conversation_material_calls 对齐，不新建授权体系。
-   */
-  private visibleTableMaterials(origin: ModelTaskOrigin): Map<string, { sha256: string }> {
-    const db = this.options.database.connection;
-    const present = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('conversation_material_links','conversation_material_calls')").all()
-      .map(row => String(row.name)));
-    const materials = this.options.companion.materials;
-    if (!materials || !present.has('conversation_material_links') || !present.has('conversation_material_calls')) return new Map();
-    let rows: Array<{ material_id: string; service_task_id: string; sha256: string;
-      file_ref_id: string; file_ref_version: number }>;
-    try {
-      rows = db.prepare(`SELECT l.material_id,l.service_task_id,l.sha256,l.file_ref_id,l.file_ref_version
-        FROM conversation_material_links l WHERE json_extract(l.origin_json,'$.conversationId')=?
-          AND json_extract(l.origin_json,'$.branchId')=?
-          AND EXISTS (SELECT 1 FROM conversation_material_calls c WHERE c.material_id=l.material_id
-            AND c.service_task_id=l.service_task_id AND c.operation='material.read')`)
-        .all(origin.conversationId, origin.branchId) as typeof rows;
-    } catch { return new Map(); }
-    const visible = new Map<string, { sha256: string }>();
-    for (const row of rows) {
-      try {
-        const material = materials.get(row.material_id);
-        // conversation_material_links.file_ref_id 是 personal 原引用；material.envelope.fileRefId 是
-        // workspace 为保管副本另行登记的引用，两者不是同一编号。这里只核对 personal 原引用的
-        // 版本/大小/状态，以及保管信封的 sha256/byteLength/taskId，绝不把不同存储的 fileRefId 直接相等比较。
-        const personal = this.options.files?.getRef(row.file_ref_id);
-        if (!personal || personal.kind !== 'file' || personal.status !== 'available'
-          || personal.version !== row.file_ref_version || personal.size !== material.envelope.byteLength) continue;
-        if (material.envelope.sha256 !== row.sha256 || material.envelope.byteLength !== personal.size
-          || material.envelope.taskId !== row.service_task_id || material.envelope.localOnly !== true) continue;
-        // 只有真正成功保管的原件才能作为可选表；接收中断或尚未完成的材料不进入模型目录。
-        if (this.options.companion.tasks.get(row.service_task_id).status !== 'succeeded') continue;
-        visible.set(row.material_id, { sha256: row.sha256 });
-      } catch { /* 不可核的链接或任务不进入模型可见范围。 */ }
-    }
-    return visible;
-  }
-
   /** 代理只读取真实 WFD 固定快照目录；受管原件不再提供计算资格。 */
   private modelCatalog(service: NonNullable<WorkspaceServices['algorithms']>, _origin: ModelTaskOrigin): AlgorithmCatalogView {
     return service.catalog();
