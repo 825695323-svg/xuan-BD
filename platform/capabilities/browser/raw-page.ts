@@ -90,10 +90,14 @@ export async function publishRawPage(context: TaskExecutionContext, files: FileR
   try {
     await workspace.create();
     const raw = await publish(capture.contentType.includes('html') ? 'source.html' : 'source.txt', capture.bytes);
-    const body = await publish('body.txt', capture.extraction.text);
+    // 原响应与正文确实逐字节一致时共用一个文件引用，保留两个语义角色，不重复写本地文件。
+    const body = Buffer.from(capture.extraction.text, 'utf8').equals(Buffer.from(capture.bytes))
+      ? raw : await publish('body.txt', capture.extraction.text);
     const rawSha256 = createHash('sha256').update(capture.bytes).digest('hex');
     const textSha256 = createHash('sha256').update(capture.extraction.text).digest('hex');
-    const dom = capture.domHTML === undefined ? undefined : await publish('dom.html', capture.domHTML);
+    const dom = capture.domHTML === undefined ? undefined
+      : Buffer.from(capture.domHTML, 'utf8').equals(Buffer.from(capture.bytes)) ? raw
+      : await publish('dom.html', capture.domHTML);
     const provenance = { schemaVersion: 1, sourceURL: capture.sourceURL, finalURL: capture.finalURL, contentType: capture.contentType, charset: capture.charset,
       httpStatus: capture.httpStatus, sourceKind: capture.sourceKind, rawRef: raw.id, rawBytes: capture.bytes.byteLength,
       rawSha256, rawRefVersion: raw.version, rawComplete: true, textRef: body.id,
@@ -124,7 +128,7 @@ export async function publishRawPage(context: TaskExecutionContext, files: FileR
       : status === 'login' ? '已保留登录提示页原件；未取得完整正文。'
       : status === 'captcha' ? '已保留验证码提示页原件；未绕过验证或取得完整正文。'
       : '已保留原始网页和可提取的静态正文；部分内容未读取，不能称为全文。',
-      artifactIds: [raw.id, body.id, ...(dom ? [dom.id] : []), locator.id], data: { ...data, modelPreview: data } };
+      artifactIds: [...new Set([raw.id, body.id, ...(dom ? [dom.id] : []), locator.id])], data: { ...data, modelPreview: data } };
   } catch (error) {
     if (!(error instanceof DirectError && error.unknown)) {
       try { await workspace.cleanup(); } catch { await workspace.recordRetained(); throw new DirectError('WEB_STAGE_CLEANUP_FAILED', '网页产物暂存清理尚未确认，请核对任务记录。', true); }
