@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/bd-custody.yml'
       - 'modules/collection/**'
+      - 'platform/capabilities/browser/**'
+      - 'plugins/capture-sources/index.ts'
       - 'plugins/storage/**'
       - 'plugins/capture-sources/baidu-drive/**'
       - 'apps/server/cloud-*.test.ts'
@@ -13,6 +15,7 @@ on:
   push:
     branches:
       - codex/baidu-skill-metadata-archive
+      - codex/unified-artifact-skill-archive
 
 permissions:
   contents: read
@@ -36,4 +39,11 @@ jobs:
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/xuan-bd-full-chain
         run: |
           mkdir -p "$XUAN_FULL_CHAIN_ROOT"
-          node --import tsx --test             modules/collection/cloud-custody.test.ts             modules/collection/baidu-drive-copy.test.ts             modules/collection/cloud-algorithm-evidence.test.ts             apps/server/cloud-custody.test.ts             apps/server/cloud-evidence.test.ts
+          node --import tsx --test \
+            platform/capabilities/browser/raw-page-dedup.test.ts \
+            modules/collection/artifact-archive.test.ts \
+            modules/collection/cloud-custody.test.ts \
+            modules/collection/baidu-drive-copy.test.ts \
+            modules/collection/cloud-algorithm-evidence.test.ts \
+            apps/server/cloud-custody.test.ts \
+            apps/server/cloud-evidence.test.ts

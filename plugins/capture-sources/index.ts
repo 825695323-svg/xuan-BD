@@ -190,7 +190,10 @@ async function publishCapture(context:TaskExecutionContext,options:CaptureSource
       observation:capture.observation,classification,untrustedReference:true};
     const raw=await publish(privateWorkspace,'source.json',JSON.stringify(privateEvidence,null,2)+'\n',16*1024*1024),dom=capture.domHTML?await publish(privateWorkspace,'dom.html',capture.domHTML):undefined;
     const text=object(publicResult)&&typeof publicResult.bodyText==='string'?publicResult.bodyText:JSON.stringify(publicResult,null,2)+'\n';
-    const resultFile=await publish(publicWorkspace,'result.json',JSON.stringify(publicResult,null,2)+'\n'),body=await publish(publicWorkspace,'body.txt',text);
+    const resultText=JSON.stringify(publicResult,null,2)+'\n';
+    const resultFile=await publish(publicWorkspace,'result.json',resultText);
+    // 无独立正文时，body.txt 与结果 JSON 内容相同，直接复用原文件引用。
+    const body=text===resultText?resultFile:await publish(publicWorkspace,'body.txt',text);
     const mediaReference=captureMediaReference(rule,args);
     const provenance={schemaVersion:1,sourceId:rule.sourceId,operation:rule.operation,sourceURL:redactText(capture.sourceURL),finalURL:redactText(capture.finalURL),scriptSha256:rule.sha256,method:rule.method,status:classification.status,complete:classification.status==='complete',completenessScope:classification.scope,reasons:classification.reasons,
       resultRef:resultFile.id,textRef:body.id,sourceEvidence:'protected-task-evidence',...(mediaReference?{mediaReference}:{}),transformation:rule.sourceId==='wechat'?'structural-extraction-only':'legacy-site-projection',modelCalls:0,readOnly:true,contentIsUntrustedReference:true};
@@ -199,7 +202,7 @@ async function publishCapture(context:TaskExecutionContext,options:CaptureSource
     let preview:JsonValue=publicResult,previewTruncated=false;
     if(Buffer.byteLength(JSON.stringify(preview),'utf8')>24_000){previewTruncated=true;preview=object(publicResult)&&typeof publicResult.bodyText==='string'?{title:typeof publicResult.title==='string'?publicResult.title:'',bodyText:publicResult.bodyText.slice(0,6000)}:{text:JSON.stringify(publicResult).slice(0,6000)};}
     const modelPreview={...provenance,result:preview,previewTruncated};
-    return{summary:classification.status==='complete'?'已按声明范围保存本站正文及来源定位。':classification.status==='login'?'本站返回登录提示，尚未取得目标内容。':classification.status==='captcha'?'本站要求验证码，尚未取得目标内容。':classification.status==='failed'?'已保存本站采集失败证据，未取得可用目标内容。':'已保存本站选定内容与来源定位，完整性限制已列明。',artifactIds:[resultFile.id,body.id,locator.id],data:{...provenance,privateEvidenceRefs:[raw.id,...(dom?[dom.id]:[])],modelPreview}};
+    return{summary:classification.status==='complete'?'已按声明范围保存本站正文及来源定位。':classification.status==='login'?'本站返回登录提示，尚未取得目标内容。':classification.status==='captcha'?'本站要求验证码，尚未取得目标内容。':classification.status==='failed'?'已保存本站采集失败证据，未取得可用目标内容。':'已保存本站选定内容与来源定位，完整性限制已列明。',artifactIds:[...new Set([resultFile.id,body.id,locator.id])],data:{...provenance,privateEvidenceRefs:[raw.id,...(dom?[dom.id]:[])],modelPreview}};
   }catch(error){
     if(!(error instanceof DirectError&&error.unknown)){try{await privateWorkspace.cleanup();await publicWorkspace.cleanup();}catch{await privateWorkspace.recordRetained();await publicWorkspace.recordRetained();throw new DirectError('CAPTURE_STAGE_CLEANUP_UNKNOWN','本站证据暂存清理尚未确认。',true);}}
     await privateWorkspace.recordRetained();await publicWorkspace.recordRetained();throw error;

@@ -45,6 +45,9 @@ export interface DirectRuntimeOptions {
   publicWeb?: PublicWebOptions;
   /** 仅受信启动器选定的原生网盘程序与账号配置位置。 */
   baiduDrive?: BaiduDriveConfiguration;
+  /** 受信宿主注入跨格式文件引用归档；不改变解析器及原任务本地引用。 */
+  artifactArchive?: { registration: SkillRegistration; versionBinding(): Record<string, string | null>;
+    execute(context: TaskExecutionContext, args: Record<string, JsonValue>): Promise<TaskResult> };
   browser?: BrowserConfiguration;
   browserUnavailableReason?: string;
   /** 仅个人宿主装配的站点独立会话；不暴露给模型参数。 */
