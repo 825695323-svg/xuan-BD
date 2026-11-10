@@ -170,7 +170,7 @@ test('registered offline CLI copies an unchanged source into the evidence direct
     assert.deepEqual(f.calls().filter(args => args[0] === 'cp'), [['cp', 'selected/renamed-original.csv', '证据盘/行情/来源原件']]);
     assert.equal(f.calls().some(args => args[0] === 'upload'), false);
     assert.doesNotMatch(JSON.stringify(events), /synthetic-private-token|synthetic account text|download_url|return_markdown/u);
-    assert.equal(f.backend.versionBinding.cloudBackend, 'baidu-drive-custody/2');
+    assert.equal(f.backend.versionBinding.cloudBackend, 'baidu-drive-custody/3');
   } finally { await f.close(); }
 });
 
@@ -204,10 +204,10 @@ test('a new upload keeps its complete target identity but passes only an app-rel
   } finally { await f.close(); }
 });
 
-test('copy and mkdir require byte and write authorization while old sessions remain readable', async () => {
+test('copy and mkdir require write authorization while old sessions remain readable', async () => {
   const f = fixture();
   try {
-    for (const extra of [{ allowUpload: false }, { verifyBytes: false }, { targetDirectory: sourceDirectory }]) {
+    for (const extra of [{ allowUpload: false }, { targetDirectory: sourceDirectory }]) {
       await f.run(async session => {
         await assert.rejects(() => session.copy(f.source, targetDirectory), { code: 'CLOUD_COPY_AUTHORIZATION_REQUIRED' });
         if (extra.targetDirectory === undefined) await assert.rejects(() => session.prepareDirectory(targetDirectory, true), { code: 'CLOUD_DIRECTORY_AUTHORIZATION_REQUIRED' });

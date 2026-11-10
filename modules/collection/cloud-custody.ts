@@ -33,13 +33,15 @@ export interface CloudCustodyInput {
 export interface CloudEvidenceClassification { topic: CloudEvidenceTopic; basis: string; directory: string; purpose: '来源原件' | '加工证据' }
 export interface CloudArchiveReference { taskId: string; remoteObject: CloudObject }
 type NormalizedInput = CloudCustodyInput & { verifyBytes: boolean; allowUpload: boolean };
-type State = 'pending' | 'checking' | 'candidates_found' | 'missing' | 'source_verified' | 'reused_verified' | 'uploading' | 'uploaded_verified' | 'copying' | 'copied_verified' | 'restored_verified' | 'needs_review';
+type State = 'pending' | 'checking' | 'candidates_found' | 'missing' | 'source_verified' | 'reused_verified' | 'source_metadata_checked' | 'reused_metadata_checked' | 'uploading' | 'uploaded_verified' | 'uploaded_metadata_checked' | 'copying' | 'copied_verified' | 'copied_metadata_checked' | 'restored_verified' | 'needs_review';
 export interface CloudCustodyRecord {
   taskId: string; requestId: string; mode: 'check' | 'restore'; originalTaskId: string | null;
   material: { materialId: string; version: number; filename: string; sha256: string; byteLength: number };
   input: NormalizedInput;
   state: State; remoteObject: CloudObject | null; verifiedSha256: string | null;
   uploadAttempted: boolean; restoredBytesAvailable: boolean;
+  /** 归档以 Skill 的文件名、大小及 fs_id 查询为准，不声称全字节远端校验。 */
+  metadataConfirmed?: boolean;
   evidence?: CloudEvidenceBinding;
   copyAttempted?: boolean;
   writeIntent?: { operation: 'upload' | 'copy'; targetPath: string; source: CloudObject | null };
@@ -57,7 +59,7 @@ export interface CloudCustodyView { task: TaskRecord; record: CloudCustodyRecord
 export interface CloudCustodyCapabilities {
   version: string; available: boolean; reason: string | null; registeredRoot: string; evidenceRoot: string;
   evidenceTopics: readonly CloudEvidenceTopic[];
-  recursive: false; defaultVerifyBytes: false; limits: typeof CLOUD_CUSTODY_LIMITS;
+  recursive: false; defaultVerifyBytes: false; archiveConfirmation: 'skill_name_size_id'; limits: typeof CLOUD_CUSTODY_LIMITS;
   versions: Record<string, string | null>;
 }
 interface Binding { evidence?: CloudEvidenceBinding; requestedInput: NormalizedInput; input: NormalizedInput; material: CloudCustodyRecord['material']; targetPath: string | null; evidenceRoot?: string;
@@ -91,7 +93,7 @@ export class CloudCustodyService {
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService; materials: MaterialService;
     files?: FileReferenceService; backend?: CloudCustodyBackend; processing?(): ProcessingPlanService | undefined; algorithms?(): LocalAlgorithmService | undefined }) {
     this.evidence = options.files ? new CloudEvidenceReader({ ...options, files: options.files }) : undefined;
-    this.versionBinding = Object.freeze({ cloudCustody: 'bd-cloud-custody/5', ...options.backend?.versionBinding });
+    this.versionBinding = Object.freeze({ cloudCustody: 'bd-cloud-custody/6', ...options.backend?.versionBinding });
     options.database.migrate('cloud_custody', 1, SCHEMA);
     options.database.migrate('cloud_custody_targets', 1, `CREATE TABLE cloud_custody_target_claims (
       binding TEXT NOT NULL, target_path TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES cloud_custody_requests(task_id),
@@ -107,8 +109,8 @@ export class CloudCustodyService {
   private get tasks() { return this.options.tasks(); }
   capabilities(): CloudCustodyCapabilities {
     const status = this.options.backend?.availability() ?? { available: false, reason: '网盘字节插件尚未装配。' };
-    return { version: 'bd-cloud-custody/5', ...status, reason: status.reason ?? null, registeredRoot: CLOUD_ROOT, evidenceRoot: CLOUD_EVIDENCE_ROOT, evidenceTopics: [...CLOUD_EVIDENCE_TOPICS],
-      recursive: false, defaultVerifyBytes: false, limits: { ...CLOUD_CUSTODY_LIMITS }, versions: { ...this.versionBinding } };
+    return { version: 'bd-cloud-custody/6', ...status, reason: status.reason ?? null, registeredRoot: CLOUD_ROOT, evidenceRoot: CLOUD_EVIDENCE_ROOT, evidenceTopics: [...CLOUD_EVIDENCE_TOPICS],
+      recursive: false, defaultVerifyBytes: false, archiveConfirmation: 'skill_name_size_id', limits: { ...CLOUD_CUSTODY_LIMITS }, versions: { ...this.versionBinding } };
   }
   submit(input: unknown, requestId: string): TaskRecord {
     validId(requestId);
@@ -165,13 +167,14 @@ export class CloudCustodyService {
     }
     if (!Number.isSafeInteger(expectedVersion) || originalTask.version !== expectedVersion) throw new TaskError('TASK_VERSION_CONFLICT', '原网盘任务已变化，请按当前版本核对。');
     if (['ready', 'running', 'waiting_approval', 'pausing', 'cancelling'].includes(originalTask.status)) throw new TaskError('CLOUD_TASK_BUSY', '请先等待原操作收束，再核对原远端对象。');
-    if (!binding.input.verifyBytes) throw new TaskError('CLOUD_READ_AUTHORIZATION_REQUIRED', '原请求仅授权目录与文件名核对；请明确选择完整原件核证后建立新请求。');
-    const remotePath = record.archiveReference?.remoteObject.path ?? record.writeIntent?.targetPath
-      ?? (record.uploadAttempted || record.copyAttempted ? binding.targetPath : record.remoteObject?.path ?? binding.targetPath);
-    if (!remotePath) throw new TaskError('CLOUD_RECOVERY_REFERENCE_REQUIRED', '原请求没有可核对的远端文件身份或独立归档目标；不能猜测恢复来源。');
+    // 连接身份先于远端目标解析核验，避免旧账号失效时返回误导性的缺少目标。
     for (const key of new Set([...Object.keys(originalTask.versions), ...Object.keys(this.versionBinding)])) {
       if (key !== 'cloudCustody' && originalTask.versions[key] !== this.versionBinding[key]) throw new TaskError('CLOUD_VERSION_CONFLICT', '原网盘连接或账号绑定已变化，不能用新绑定恢复旧对象。');
     }
+    // 恢复是独立的明确取回请求；不要求原归档必须开启完整字节校验。
+    const remotePath = record.archiveReference?.remoteObject.path ?? record.writeIntent?.targetPath
+      ?? (record.uploadAttempted || record.copyAttempted ? binding.targetPath : record.remoteObject?.path ?? binding.targetPath);
+    if (!remotePath) throw new TaskError('CLOUD_RECOVERY_REFERENCE_REQUIRED', '原请求没有可核对的远端文件身份或独立归档目标；不能猜测恢复来源。');
     this.assertDispatch();
     return this.create(requestId, { ...binding, ...(record.archiveReference ? { archiveReference: record.archiveReference } : {}),
       targetPath: remotePath, input: { ...binding.input, sourceRemotePath: remotePath, allowUpload: false, verifyBytes: true },
@@ -194,7 +197,9 @@ export class CloudCustodyService {
     const row = this.row(context.task.id), binding = this.binding(row), record = this.record(row);
     for (const [key, version] of Object.entries(this.versionBinding)) if (context.task.versions[key] !== version) throw new TaskError('CLOUD_VERSION_CONFLICT', '原网盘保管实现或连接绑定已变化，不能静默改用新配置。');
     if (digestOperationArgs(context.task.args) !== digestOperationArgs(binding)) throw new TaskError('CLOUD_BINDING_CHANGED', '原任务参数与持久保管意图不一致。');
-    if (['source_verified', 'reused_verified', 'uploaded_verified', 'copied_verified', 'restored_verified', 'missing', 'candidates_found'].includes(record.state)) return taskResult(record);
+    if (['source_verified', 'reused_verified', 'uploaded_verified', 'copied_verified',
+      'source_metadata_checked', 'reused_metadata_checked', 'uploaded_metadata_checked', 'copied_metadata_checked',
+      'restored_verified', 'missing', 'candidates_found'].includes(record.state)) return taskResult(record);
     this.assertActive(context);
     let session: CloudSession | undefined;
     let writeIntentPersisted = row.upload_started === 1;
@@ -215,12 +220,23 @@ export class CloudCustodyService {
       this.append(record.taskId, 'candidate_readback', { remote, byteLength: bytes.length, sha256, matches: sha256 === binding.material.sha256 });
       return sha256 === binding.material.sha256 ? bytes : null;
     };
-    const remember = async (remote: CloudObject): Promise<Buffer | null> => {
-      if (remote.kind === 'file' && (remote.size === binding.material.byteLength || posix.basename(remote.path) === binding.material.filename)
-        && record.candidates.length < 50 && !record.candidates.some(item => item.path === remote.path)) record.candidates.push(remote);
-      return binding.input.verifyBytes ? inspectBytes(remote) : null;
+    const nameMatches = (remote: CloudObject): boolean => {
+      const name = posix.basename(remote.path);
+      const archived = name.startsWith(binding.material.sha256 + '-') && /\.bd-(?:original|evidence)$/u.test(name);
+      return remote.kind === 'file' && !!remote.id && remote.size === binding.material.byteLength
+        && (name === binding.material.filename || archived);
     };
-    const scan = async (directory: string, sourcePath?: string): Promise<{ remote: CloudObject; bytes: Buffer | null } | null> => {
+    const metadataMatches = (remote: CloudObject, expectedPath: string): boolean =>
+      remote.kind === 'file' && !!remote.id && remote.size === binding.material.byteLength
+      && remote.path === expectedPath && posix.basename(remote.path) === posix.basename(expectedPath);
+    const remember = (remote: CloudObject): boolean => {
+      if (remote.kind === 'file' && (remote.size === binding.material.byteLength
+        || posix.basename(remote.path) === binding.material.filename)
+        && record.candidates.length < 50 && !record.candidates.some(item => item.path === remote.path))
+        record.candidates.push(remote);
+      return nameMatches(remote);
+    };
+    const scan = async (directory: string, sourcePath?: string): Promise<CloudObject | null> => {
       let offset = 0;
       const coverage = { path: directory, complete: false };
       record.coverage.directories.push(coverage);
@@ -236,7 +252,7 @@ export class CloudCustodyService {
           throw new TaskError('CLOUD_OBJECT_UNVERIFIED', '精确对象的路径、编号或长度无法核对。');
         if (remote.kind !== 'file') throw new TaskError('CLOUD_SOURCE_IS_DIRECTORY', '原网盘文件线索实际指向目录，未下载或上传。');
         observed.set(remote.path, remote); record.coverage.entries++;
-        return { remote, bytes: await remember(remote) };
+        return (sourcePath && metadataMatches(remote, sourcePath)) || remember(remote) ? remote : null;
       }
       const paths = new Set<string>();
       while (true) {
@@ -253,43 +269,60 @@ export class CloudCustodyService {
           if (sourcePath) {
             if (remote.path !== sourcePath) continue;
             if (remote.kind !== 'file') throw new TaskError('CLOUD_SOURCE_IS_DIRECTORY', '原网盘文件线索实际指向目录，未下载或上传。');
-            return { remote, bytes: await remember(remote) };
+            return (sourcePath && metadataMatches(remote, sourcePath)) || remember(remote) ? remote : null;
           }
           if (remote.kind === 'directory') { record.coverage.skippedDirectories++; continue; }
-          const bytes = await remember(remote);
-          if (bytes) return { remote, bytes };
+          if (remember(remote)) return remote;
         }
         if (!page.hasMore) { coverage.complete = true; return null; }
         if (!Number.isSafeInteger(page.nextOffset) || page.nextOffset! <= offset || !page.items.length) throw new TaskError('CLOUD_LIST_UNVERIFIED', '分页游标无进度，不能证明所选目录已读完。');
         offset = page.nextOffset!;
       }
     };
-    const accept = (remote: CloudObject, bytes: Buffer) => {
+    const accept = (remote: CloudObject, bytes?: Buffer) => {
       this.assertActive(context);
-      record.remoteObject = remote; record.verifiedSha256 = hash(bytes);
+      if (!(nameMatches(remote) || (binding.input.sourceRemotePath === remote.path
+        || record.archiveReference?.remoteObject.path === remote.path || record.writeIntent?.targetPath === remote.path)
+        && metadataMatches(remote, remote.path))) throw new TaskError('CLOUD_METADATA_MISMATCH',
+        '网盘 Skill 查询的文件名、大小或 fs_id 与本次归档不一致。');
+      record.remoteObject = remote; record.metadataConfirmed = true;
+      record.verifiedSha256 = bytes ? hash(bytes) : null;
       record.state = binding.mode === 'restore' ? 'restored_verified'
-        : !record.archiveReference && binding.evidenceRoot && posix.dirname(remote.path) !== (binding.evidenceClassification?.directory ?? binding.evidenceRoot) ? 'source_verified' : 'reused_verified';
-      record.gaps = record.state === 'source_verified' ? [{ code: 'CLOUD_SOURCE_NOT_ARCHIVED', message: '来源原件已完整核证，但尚未存入专用证据盘；归档需要另外明确授权复制。' }] : [];
-      record.restoredBytesAvailable = binding.mode === 'restore';
+        : !record.archiveReference && binding.evidenceRoot
+          && posix.dirname(remote.path) !== (binding.evidenceClassification?.directory ?? binding.evidenceRoot)
+            ? 'source_metadata_checked' : 'reused_metadata_checked';
+      record.gaps = []; record.restoredBytesAvailable = binding.mode === 'restore';
       this.options.database.transaction(() => {
         this.assertActive(context);
-        if (binding.mode === 'restore') this.db.prepare('UPDATE cloud_custody_requests SET restored_bytes=? WHERE task_id=?').run(bytes, record.taskId);
-        this.save(record); this.append(record.taskId, record.state, { remote, sha256: record.verifiedSha256, byteLength: bytes.length });
+        if (binding.mode === 'restore') {
+          if (!bytes || bytes.length !== binding.material.byteLength || hash(bytes) !== binding.material.sha256)
+            throw new TaskError('CLOUD_RESTORE_STORAGE_CHANGED', '取回字节与原件不符。');
+          this.db.prepare('UPDATE cloud_custody_requests SET restored_bytes=? WHERE task_id=?').run(bytes, record.taskId);
+        }
+        this.save(record); this.append(record.taskId, record.state, {
+          remote, confirmation: bytes ? 'full_sha256_restore' : 'skill_name_size_id', byteLength: remote.size });
       });
       if (binding.mode === 'restore') this.readRestored(record.taskId);
     };
     const reuseArchive = async (reference: CloudArchiveReference): Promise<TaskResult> => {
-      this.assertActive(context);
-      record.archiveReference = reference; record.remoteObject = reference.remoteObject;
+      this.assertActive(context); record.archiveReference = reference;
       save('archive_reference_frozen', { reference });
       if (session) { await session.close(); session = undefined; }
-      // 仅为明确归档或原引用恢复打开这一件已登记对象，不把其他主题加入目录扫描。
       session = await this.options.backend!.open(context, { ...binding.input,
-        sourceRemotePath: reference.remoteObject.path, verifyBytes: true, allowUpload: false });
-      const bytes = await inspectBytes(reference.remoteObject);
-      if (!bytes) throw new TaskError('CLOUD_ARCHIVE_REFERENCE_UNVERIFIED', '已登记证据盘对象的完整字节与原摘要不符；保留原引用，不复制或上传替代品。');
-      accept(reference.remoteObject, bytes);
-      this.append(record.taskId, 'archive_reference_verified', { reference, sha256: record.verifiedSha256 });
+        sourceRemotePath: reference.remoteObject.path, verifyBytes: binding.mode === 'restore', allowUpload: false });
+      const remote = await session.lookup?.(reference.remoteObject.path)
+        ?? await scan(posix.dirname(reference.remoteObject.path), reference.remoteObject.path);
+      if (!remote || remote.id !== reference.remoteObject.id || !metadataMatches(remote, reference.remoteObject.path)
+        || remote.path !== reference.remoteObject.path)
+        throw new TaskError('CLOUD_ARCHIVE_METADATA_CHANGED', '已归档对象的文件名、大小或远端编号变化。');
+      if (binding.mode === 'restore') {
+        const bytes = await inspectBytes(remote);
+        if (!bytes) throw new TaskError('CLOUD_ARCHIVE_REFERENCE_UNVERIFIED', '明确恢复的远端原件字节与本地冻结摘要不一致。');
+        accept(remote, bytes);
+      } else {
+        accept(remote);
+        this.append(record.taskId, 'archive_reference_metadata_checked', { reference, confirmation: 'skill_name_size_id' });
+      }
       return taskResult(record);
     };
     try {
@@ -300,7 +333,7 @@ export class CloudCustodyService {
       const alreadyStarted = row.upload_started === 1;
       const archiveDirectory = binding.evidenceClassification?.directory;
       if (record.archiveReference) return await reuseArchive(record.archiveReference);
-      if (binding.mode === 'check' && binding.input.allowUpload && binding.input.verifyBytes) {
+      if (binding.mode === 'check' && binding.input.allowUpload) {
         const reference = this.verifiedArchive(binding.material);
         if (reference) return await reuseArchive(reference);
         this.assertContentUnclaimed(binding.material.sha256);
@@ -316,32 +349,38 @@ export class CloudCustodyService {
       if (binding.mode === 'restore' || alreadyStarted) {
         const source = binding.mode === 'restore' ? binding.targetPath : record.writeIntent?.targetPath ?? binding.targetPath;
         const found = source ? await scan(posix.dirname(source), source) : null;
-        if (found?.bytes) {
-          if (record.remoteObject && record.remoteObject.id !== found.remote.id) throw new TaskError('CLOUD_OBJECT_CHANGED', '原远端文件编号已变化，不能改指同名另一对象完成恢复。');
-          accept(found.remote, found.bytes); return taskResult(record);
+        if (found) {
+          if (record.remoteObject && record.remoteObject.id !== found.id)
+            throw new TaskError('CLOUD_OBJECT_CHANGED', '同路径对象编号变化，不能按原请求完成。');
+          if (binding.mode === 'restore') {
+            // 只有用户明确取回原件才读取完整字节；归档查询绝不下载。
+            const bytes = await inspectBytes(found);
+            if (!bytes) throw new TaskError('CLOUD_RECOVERY_UNVERIFIED', '无法恢复原材料的真实字节。');
+            accept(found, bytes);
+          } else {
+            accept(found);
+            record.state = record.writeIntent?.operation === 'copy' ? 'copied_metadata_checked' : 'uploaded_metadata_checked';
+            save(record.state, { remote: found, confirmation: 'skill_name_size_id' });
+          }
+          return taskResult(record);
         }
-        throw new TaskError('CLOUD_RECOVERY_UNVERIFIED', '原目标或原版本尚未取得完整一致的字节；保留未决事实，不重新复制或上传。');
+        throw new TaskError('CLOUD_RECOVERY_UNVERIFIED', '原目标文件名、大小或远端编号未核对；不重复上传。');
       }
-      // 新请求先核专用证据盘；来源相同字节只作为复制依据，不冒充已经单独归档。
+      // 新请求先核专用证据盘的名称、长度与编号；来源文件仅作为显式复制对象。
       const archiveExists = archiveDirectory ? await session.prepareDirectory(archiveDirectory, false) : false;
       if (archiveDirectory) this.append(record.taskId, 'archive_directory_checked', { directory: archiveDirectory, exists: archiveExists });
       if (archiveDirectory && archiveExists) {
         const found = await scan(archiveDirectory);
-        if (found?.bytes) { accept(found.remote, found.bytes); return taskResult(record); }
+        if (found) { accept(found); return taskResult(record); }
       }
-      let sourceMatch: { remote: CloudObject; bytes: Buffer | null } | null = null;
+      let sourceMatch: CloudObject | null = null;
       if (binding.input.sourceRemotePath) sourceMatch = await scan(posix.dirname(binding.input.sourceRemotePath), binding.input.sourceRemotePath);
-      if (!sourceMatch?.bytes && binding.input.scopePath !== binding.evidenceRoot && binding.input.scopePath !== archiveDirectory) sourceMatch = await scan(binding.input.scopePath);
-      if (sourceMatch?.bytes && (!binding.evidenceRoot || !binding.input.allowUpload)) {
-        accept(sourceMatch.remote, sourceMatch.bytes); return taskResult(record);
+      if (!sourceMatch && binding.input.scopePath !== binding.evidenceRoot && binding.input.scopePath !== archiveDirectory) sourceMatch = await scan(binding.input.scopePath);
+      if (sourceMatch && (!binding.evidenceRoot || !binding.input.allowUpload)) {
+        accept(sourceMatch); return taskResult(record);
       }
       record.coverage.scopeComplete = record.coverage.directories.some(item => item.path === binding.input.scopePath && item.complete);
-      if (!binding.input.verifyBytes) {
-        record.state = record.candidates.length ? 'candidates_found' : 'needs_review';
-        record.gaps = [{ code: 'CLOUD_CONTENT_NOT_CHECKED', message: '本次只核对所选目录直接子项的名称和元数据；没有下载原件核证，其他目录和同字节原件是否存在仍未知。' }];
-        save('names_checked'); return taskResult(record);
-      }
-      const copySource = sourceMatch?.bytes ? sourceMatch.remote : null;
+      const copySource = sourceMatch;
       if (!copySource) {
         if (record.coverage.skippedDirectories) throw new TaskError('CLOUD_SUBDIRECTORIES_NOT_CHECKED', '所选目录含未扫描的子目录；未递归、未判定全盘缺失，也不上传。请选择包含原件的具体目录或文件。');
         record.state = 'missing'; save('missing_in_selected_directories');
@@ -351,10 +390,8 @@ export class CloudCustodyService {
       const targetPath = copySource ? posix.join(archiveDirectory!, posix.basename(copySource.path)) : binding.targetPath!;
       if (binding.evidenceRoot !== CLOUD_EVIDENCE_ROOT || !archiveDirectory || binding.input.targetDirectory !== archiveDirectory
         || posix.dirname(targetPath) !== archiveDirectory) throw new TaskError('CLOUD_EVIDENCE_ROOT_REQUIRED', '新归档只能写入本次冻结主题及证据用途的目录，不能回写来源目录。');
-      if (observed.has(targetPath)) throw new TaskError('CLOUD_TARGET_CONFLICT', '证据盘已有同名对象且未核证为相同内容；保留来源与冲突对象，不覆盖、改名或从本地重传。');
-      if (record.coverage.readCandidates >= CLOUD_CUSTODY_LIMITS.maxReadCandidates
-        || record.coverage.readBytes + binding.material.byteLength > CLOUD_CUSTODY_LIMITS.maxReadBytes) throw new TaskError('CLOUD_READ_BUDGET', '剩余预算不能完成归档后的完整读回核证，本次不写入。');
-      this.assertActive(context);
+      if (observed.has(targetPath)) throw new TaskError('CLOUD_TARGET_CONFLICT', '证据盘目标文件名已占用；保留原对象，不覆盖或改名。');
+       this.assertActive(context);
       this.assertContentUnclaimed(binding.material.sha256);
       this.options.database.transaction(() => {
         this.db.prepare('UPDATE cloud_custody_requests SET upload_started=1 WHERE task_id=?').run(record.taskId);
@@ -391,13 +428,16 @@ export class CloudCustodyService {
       this.assertActive(context);
       if (written.path !== targetPath || written.kind !== 'file' || written.size !== binding.material.byteLength) throw new TaskError('CLOUD_WRITE_UNKNOWN_RESULT', '远端归档回执没有绑定本次独立文件，不能确认完成。');
       record.remoteObject = written; save(operation + '_receipt_observed', { remote: record.remoteObject });
-      // 复制和上传都须实际从远端重新下载原字节，不能由退出码、同名或 MD5 代替 SHA-256 核证。
-      const bytes = await inspectBytes(record.remoteObject);
-      if (!bytes) throw new TaskError('CLOUD_WRITE_UNKNOWN_RESULT', '归档后的实际远端原件与冻结 SHA-256 不符。');
-      this.assertActive(context);
-      record.state = operation === 'copy' ? 'copied_verified' : 'uploaded_verified'; record.verifiedSha256 = hash(bytes);
-      save(record.state, { remote: record.remoteObject, sha256: record.verifiedSha256 });
-      await context.emit({ type: 'side_effect_result', effectId, outcome: 'succeeded', evidence: '明确独立目标的远端编号及完整原件 SHA-256 读回已核对。' });
+      // 只查询 Skill 的 ls 元数据，不下载整文件。
+      const listed = await session.lookup?.(targetPath) ?? await scan(posix.dirname(targetPath), targetPath);
+      if (!listed || !metadataMatches(listed, targetPath) || listed.id !== written.id)
+        throw new TaskError('CLOUD_WRITE_UNKNOWN_RESULT', '上传后查询的文件名、大小、fs_id 与原回执不一致。');
+      this.assertActive(context); record.remoteObject = listed; record.metadataConfirmed = true;
+      record.state = operation === 'copy' ? 'copied_metadata_checked' : 'uploaded_metadata_checked';
+      record.verifiedSha256 = null;
+      save(record.state, { remote: listed, confirmation: 'skill_name_size_id' });
+      await context.emit({ type: 'side_effect_result', effectId, outcome: 'succeeded',
+        evidence: '网盘 Skill 上传/复制回执与文件名、大小、fs_id 查询一致；未下载读回。' });
       return taskResult(record);
     } catch (error) {
       const known = error instanceof TaskError;
@@ -436,7 +476,7 @@ export class CloudCustodyService {
       .iterate(materialId) as unknown as Iterable<ArchiveRow>;
     for (const row of rows) {
       const record = this.record(row);
-      if (record.remoteObject && record.verifiedSha256 === material.sha256) return record.remoteObject.path;
+      if (record.remoteObject && (record.verifiedSha256 === material.sha256 || record.metadataConfirmed === true)) return record.remoteObject.path;
     }
     try {
       const file = this.options.files?.getRef(material.fileRefId);
@@ -449,7 +489,7 @@ export class CloudCustodyService {
     } catch { /* 没有可核对来源关系时保持未知，不从本机文件名猜远端位置。 */ }
     return null;
   }
-  /** 内容只索引既有账本；跨主题候选还须核同账号绑定、证据盘位置与完整核证回执。 */
+  /** 复用既有归档账本；当前归档核账号绑定及文件名、大小、编号，不下载读回。 */
   private verifiedArchive(material: CloudCustodyRecord['material']): CloudArchiveReference | null {
     const rows = this.db.prepare(`SELECT ${ARCHIVE_COLUMNS} FROM cloud_custody_requests
       WHERE json_extract(binding_json,'$.material.sha256')=? AND json_extract(binding_json,'$.material.byteLength')=?
@@ -458,8 +498,9 @@ export class CloudCustodyService {
       const task = this.tasks.get(row.task_id);
       if (task.status !== 'succeeded' || !this.sameCloudBinding(task.versions)) continue;
       const binding = this.binding(row), record = this.record(row), remote = record.remoteObject;
-      if (binding.evidenceRoot !== CLOUD_EVIDENCE_ROOT || record.verifiedSha256 !== material.sha256
-        || !['reused_verified', 'uploaded_verified', 'copied_verified', 'restored_verified'].includes(record.state)
+      if (binding.evidenceRoot !== CLOUD_EVIDENCE_ROOT
+        || !((record.metadataConfirmed === true && ['reused_metadata_checked', 'uploaded_metadata_checked', 'copied_metadata_checked'].includes(record.state))
+          || (record.verifiedSha256 === material.sha256 && ['reused_verified', 'uploaded_verified', 'copied_verified', 'restored_verified'].includes(record.state)))
         || !remote || remote.kind !== 'file' || remote.size !== material.byteLength || !remote.id
         || !remote.path.startsWith(CLOUD_EVIDENCE_ROOT + '/')) continue;
       if (record.state === 'restored_verified' && !this.managedRestore(binding, remote, material.sha256)) continue;
@@ -478,8 +519,9 @@ export class CloudCustodyService {
       const originalBinding = this.binding(row), original = this.record(row);
       if (originalBinding.mode === 'restore') { originalTaskId = originalBinding.originalTaskId; continue; }
       if (originalBinding.evidenceRoot !== CLOUD_EVIDENCE_ROOT) return false;
-      if (['reused_verified', 'uploaded_verified', 'copied_verified'].includes(original.state)
-        && original.verifiedSha256 === sha256 && original.remoteObject?.id === remote.id && original.remoteObject.path === remote.path) return true;
+      if (['reused_verified', 'uploaded_verified', 'copied_verified',
+          'reused_metadata_checked', 'uploaded_metadata_checked', 'copied_metadata_checked'].includes(original.state)
+        && (original.verifiedSha256 === sha256 || original.metadataConfirmed === true) && original.remoteObject?.id === remote.id && original.remoteObject.path === remote.path) return true;
       return row.upload_started === 1 && originalBinding.input.allowUpload && (original.uploadAttempted || original.copyAttempted === true)
         && (original.writeIntent?.targetPath ?? originalBinding.targetPath) === remote.path;
     }
@@ -538,7 +580,7 @@ function normalize(input: unknown, options: { evidencePolicy?: boolean; targetDi
     if (targetDirectory && targetDirectory !== options.targetDirectory) throw new TaskError('CLOUD_EVIDENCE_ROOT_REQUIRED', '新归档只能使用本次冻结主题及证据用途的目录，不能指定其他位置。');
     targetDirectory = options.targetDirectory;
   }
-  if (allowUpload && (!verifyBytes || !options.evidencePolicy && !targetDirectory)) throw new TaskError('CLOUD_UPLOAD_AUTHORIZATION_REQUIRED', '归档需要另外明确选择完整字节核证和专用证据盘写入授权。');
+  if (allowUpload && !options.evidencePolicy && !targetDirectory) throw new TaskError('CLOUD_UPLOAD_AUTHORIZATION_REQUIRED', '归档需明确专用证据盘与写入授权，成功后查询文件名、大小和远端编号。');
   return { materialId: String(value.materialId), scopePath, purpose: String(value.purpose).trim(), authorization: { status: 'authorized', basis: String((auth as Record<string, unknown>).basis).trim() },
     verifyBytes, allowUpload, ...(evidenceSource ? { evidenceSource } : {}), ...(sourceRemotePath ? { sourceRemotePath } : {}), ...(targetDirectory ? { targetDirectory } : {}),
     ...(value.evidenceTopic !== undefined ? { evidenceTopic: value.evidenceTopic as CloudEvidenceTopic } : {}) };
@@ -553,12 +595,23 @@ function text(value: unknown, limit: number) { return typeof value === 'string' 
 function hash(value: string | Uint8Array) { return createHash('sha256').update(value).digest('hex'); }
 function json(value: unknown): JsonValue { return JSON.parse(JSON.stringify(value)) as JsonValue; }
 function taskResult(record: CloudCustodyRecord): TaskResult {
-  const summaries: Record<State, string> = { pending: '网盘核对已受理。', checking: '网盘核对进行中。', candidates_found: '已找到名称或长度候选；尚未下载核证原件。',
-    missing: '本次分类归档目录及明确所选来源中未发现同字节原件；未扫描其他主题或推断其他目录。', source_verified: '来源原件通过完整 SHA-256 核证，尚未归档到证据盘。', reused_verified: '已有网盘原件通过完整 SHA-256 读回，已复用；未上传。',
-    uploading: '已持久登记上传意图，远端结果待核对。', uploaded_verified: '新保管副本已上传并从远端完整读回核证。',
-    copying: '已持久登记原网盘来源与证据盘目标，复制结果待核对。', copied_verified: '原网盘来源已复制到专用证据盘，并从目标完整读回核证。',
-    restored_verified: '已按原远端引用恢复完整原件，并独立持久保存、读回核证。', needs_review: '网盘存在性或原件保管结果仍待核对；未核范围保持未知。' };
+  const summaries: Record<State, string> = {
+    pending: '网盘操作已受理。', checking: '正在调用百度网盘 Skill 查询文件名和大小。',
+    candidates_found: '仅发现同名或同大小候选，尚未确认对应归档对象。',
+    missing: '本次所选目录没有匹配文件；其他目录未推断。',
+    source_verified: '旧版来源通过完整内容核验，未进入本次证据盘归档。',
+    reused_verified: '旧版网盘归档已核验；保留历史回执。',
+    source_metadata_checked: '已通过网盘 Skill 查询来源文件名、大小与编号，尚未归档证据盘。',
+    reused_metadata_checked: '已复用相同远端归档对象；文件名、大小与编号确认成功，无下载读回。',
+    uploading: '上传中或回执待核对。', uploaded_verified: '旧版完整字节归档回执（历史）。',
+    uploaded_metadata_checked: '已上传，网盘 Skill 查询文件名、大小与编号一致；未下载读回。',
+    copying: '盘内复制中或回执待核对。', copied_verified: '旧版完整字节复制回执（历史）。',
+    copied_metadata_checked: '已盘内复制，网盘 Skill 查询文件名、大小与编号一致；未下载读回。',
+    restored_verified: '已明确下载并核对恢复字节。',
+    needs_review: '网盘元数据或写入结果未确认，保留原请求继续查询，不重复上传。',
+  };
   return { summary: summaries[record.state], data: { state: record.state, materialId: record.material.materialId,
-    sha256: record.material.sha256, remoteObject: json(record.remoteObject), uploadAttempted: record.uploadAttempted, copyAttempted: record.copyAttempted === true,
+    sha256: record.material.sha256, confirmation: record.metadataConfirmed ? 'skill_name_size_id' : record.verifiedSha256 ? 'full_sha256_legacy_or_restore' : 'not_confirmed',
+    remoteObject: json(record.remoteObject), uploadAttempted: record.uploadAttempted, copyAttempted: record.copyAttempted === true,
     restoredBytesAvailable: record.restoredBytesAvailable, ...(record.archiveReference ? { archiveReference: json(record.archiveReference) } : {}), globalExistence: 'unknown' } };
 }

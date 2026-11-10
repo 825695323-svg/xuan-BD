@@ -44,7 +44,7 @@ test('HTTP processing evidence freezes full lineage, reuses content and restores
     const started = await host.call('/cloud-custody/runs', { requestId: 'evidence-archive', input }, 202);
     await host.settled(started.task.id);
     const view = await host.call('/cloud-custody/tasks/' + started.task.id);
-    assert.equal(view.record.state, 'uploaded_verified', JSON.stringify(view));
+    assert.equal(view.record.state, 'uploaded_metadata_checked', JSON.stringify(view));
     assert.equal(view.record.evidence.lineage.planDigest, host.services.processing!.get(planId).planDigest);
     assert.equal(view.record.evidenceClassification.purpose, '加工证据');
     const restored = await host.call(`/cloud-custody/tasks/${started.task.id}/recover`, { requestId: 'evidence-restore', expectedVersion: view.task.version }, 202);
@@ -57,7 +57,7 @@ test('HTTP processing evidence freezes full lineage, reuses content and restores
     assert.deepEqual(host.services.cloudCustody!.readRestored(restored.task.id).bytes, content.bytes);
     const repeated = await host.call('/cloud-custody/runs', { requestId: 'evidence-second-topic', input: { ...input, evidenceTopic: '财报' } }, 202);
     await host.settled(repeated.task.id);
-    assert.equal((await host.call('/cloud-custody/tasks/' + repeated.task.id)).record.state, 'reused_verified');
+    assert.equal((await host.call('/cloud-custody/tasks/' + repeated.task.id)).record.state, 'reused_metadata_checked');
     assert.equal(drive.writes.length, 1);
     assert.deepEqual(host.services.materials!.readOriginal(materialId).bytes, bytes);
   } finally { await host.close(); }

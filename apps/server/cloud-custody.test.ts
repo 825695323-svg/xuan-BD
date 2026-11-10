@@ -60,8 +60,8 @@ test('HTTP custody branches from held originals, persists source association acr
     const started = await host.call('/cloud-custody/runs', { requestId: 'http-custody', input }, 202) as CloudCustodyView;
     await host.services.tasks.wait(started.task.id);
     const checked = await host.call('/cloud-custody/tasks/' + started.task.id) as CloudCustodyView;
-    assert.equal(checked.record.state, 'source_verified'); assert.equal(writes, 0); assert.equal(reads, 1);
-    const audit = await host.call('/cloud-custody/tasks/' + started.task.id + '/audit'); assert.ok(audit.items.some((item: { event: string }) => item.event === 'source_verified'));
+    assert.equal(checked.record.state, 'source_metadata_checked'); assert.equal(writes, 0); assert.equal(reads, 0);
+    const audit = await host.call('/cloud-custody/tasks/' + started.task.id + '/audit'); assert.ok(audit.items.some((item: { event: string }) => item.event === 'source_metadata_checked'));
     const r1Requests = Number(host.database.connection.prepare('SELECT count(*) n FROM r1_workspace_requests').get()!.n); assert.equal(r1Requests, 0);
     await host.close(); host = await open();
     const listed = await host.call('/cloud-custody/materials/' + materialId);
@@ -74,9 +74,9 @@ test('HTTP custody branches from held originals, persists source association acr
     const restored = await host.call('/cloud-custody/tasks/' + recovering.task.id) as CloudCustodyView; assert.equal(restored.record.state, 'restored_verified');
     const response = await fetch(host.base + '/cloud-custody/tasks/' + recovering.task.id + '/original'); assert.equal(response.status, 200);
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes); assert.match(response.headers.get('content-disposition')!, /original\.txt/u);
-    assert.equal(reads, 2); assert.equal(writes, 0);
+    assert.equal(reads, 1); assert.equal(writes, 0);
     await host.services.tasks.stopControl('isolated HTTP stop acceptance');
     const stopped = await host.call('/cloud-custody/runs', { requestId: 'http-stopped', input }, 409); assert.equal(stopped.code, 'BD_STOPPED');
-    assert.equal(reads, 2); assert.equal(writes, 0);
+    assert.equal(reads, 1); assert.equal(writes, 0);
   } finally { await host.close(); }
 });

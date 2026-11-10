@@ -14,7 +14,7 @@ import type { PersonalCore } from '../agent/runtime/core.js';
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
 
 export const CONVERSATION_R1_VERSION = 'bd.conversation-r1/1';
-const ACTIONS = ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check', 'data.r1.submit'] as const;
+const ACTIONS = ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check'] as const;
 const SOURCE_FIELDS = ['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope'] as const;
 const MAX_ANCESTORS = 1024;
 interface Scope { origin: ModelTaskOrigin; input: BackendInput; messages: Set<string> }
@@ -51,9 +51,6 @@ export class ConversationR1Bridge {
       ]),
       registration(ACTIONS[4], '按原身份核对R1提交与读回', '只恢复本会话已映射原请求/任务；未知结果不换编号重发；未提交请求返回R1_NOT_SUBMITTED，保持本地准备回执。个人停止仅停止等待/分享，不声称撤销服务事实。', [text('requestId', '本会话原请求编号')]),
       registration(ACTIONS[5], '明确只读核对R1 live profile', '操作者需要时才调用，只读核对当前已登记profile。不会由能力发现、准备或查询自动调用，不授权初始化/提交。', []),
-      registration(ACTIONS[6], '受控提交已准备的R1派生或原报结果',
-        '只接受本会话原已冻结R1请求和完全一致的文档摘要。沿现有 R1 正式发布与固定读回执行；必须有独立审批，禁止模型自授权或在未知结果时换号重提。',
-        [text('requestId', '本会话已准备的R1请求编号'), text('confirmationDigest', '冻结R1文档摘要', true, 128)]),
     ];
   }
   handles(action: string): boolean { return (ACTIONS as readonly string[]).includes(action); }
@@ -72,7 +69,7 @@ export class ConversationR1Bridge {
     if (!port || !this.options.companion.processing || !this.options.companion.materials) fail('R1_CONVERSATION_DISABLED', 'R1伴随服务尚未装配。');
     this.assertDispatch(context);
     const scope = this.scope(origin), authority = await acquireAuthority(context, action, args, [],
-      action === ACTIONS[6] ? { approvalMode: 'review' } : {});
+      {});
     const assert = () => { authority.assert(); this.assertDispatch(context); this.scope(origin); };
     assert();
     if (action === ACTIONS[0]) return this.result('已读取本会话R1能力；没有探测或提交。', this.capabilities(scope));
@@ -107,21 +104,6 @@ export class ConversationR1Bridge {
     const link = this.ownedLink(String(args.requestId), scope);
     // A local get intentionally reads the frozen receipt, not today's connection. Recovery below rechecks
     // the original binding in R1Workspace; neither path silently substitutes a new default profile.
-    if (action === ACTIONS[6]) {
-      const prepared = port.get(link.request_id); this.assertView(prepared, link);
-      if (prepared.documentSha256 !== args.confirmationDigest)
-        fail('R1_CONFIRMATION_CHANGED', '正式发布摘要与冻结文档不一致，禁止换内容提交。');
-      assert();
-      const submitted = port.submit(link.request_id, prepared.documentSha256);
-      const settled = await interruptible(this.options.companion.tasks.wait(submitted.id), context.signal);
-      assert();
-      const final = port.get(link.request_id); this.assertView(final, link);
-      if (settled.status !== 'succeeded' || final.state !== 'associated' || final.requiresRecovery)
-        return this.result('原R1提交未完成全部正式固定读回；保留原号及回执，不宣称已入库。', {
-          ...this.requestView(final), taskId: submitted.id, taskStatus: settled.status, published: false });
-      return this.result('R1正式发布已由WFD完成固定读回及逐行关联。', {
-        ...this.requestView(final), taskId: submitted.id, taskStatus: settled.status, published: true });
-    }
     if (action === ACTIONS[2]) {
       const found = port.get(link.request_id); this.assertView(found, link); assert();
       return this.result('已读取本会话原本地R1回执；没有重提或实时探测。', this.requestView(found));
@@ -267,7 +249,6 @@ export class ConversationR1Bridge {
   }
   private validateArgs(action: string, args: Record<string, JsonValue>): void {
     const keys = action === ACTIONS[1] ? ['planId', 'outputId', 'sourceJson', 'sourceEvidenceJson']
-      : action === ACTIONS[6] ? ['requestId', 'confirmationDigest']
       : action === ACTIONS[2] || action === ACTIONS[4] ? ['requestId'] : action === ACTIONS[3] ? ['offset', 'limit'] : [];
     if (!isWfdRecord(args) || Object.keys(args).some(key => !keys.includes(key))) fail('R1_CONVERSATION_INPUT', '不接受未声明字段、行、权限、摘要或连接覆盖。');
     if (action === ACTIONS[3]) for (const [key, min, max] of [['offset', 0, 10000], ['limit', 1, 20]] as const) {

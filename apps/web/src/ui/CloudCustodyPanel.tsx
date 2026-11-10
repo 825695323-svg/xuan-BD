@@ -8,7 +8,7 @@ import { ErrorNote, errorDetail, useWords } from './Controls';
 import { taskStateText } from './TaskResults';
 
 const base = '/api/bd/cloud-custody';
-type Operation = 'names' | 'verify' | 'archive';
+type Operation = 'names' | 'archive';
 type Run = CloudCustodyView;
 type EvidenceChoice = Partial<CloudEvidenceBinding> & { source: CloudEvidenceBinding['source']; available: boolean; reason: string | null };
 type Classification = { materialId: string; topic: string; basis: string; directory: string; purpose: string };
@@ -43,10 +43,16 @@ export function CloudCustodyPanel({ materials, initialId }: { materials: Materia
     ? [evidenceRoot, topic, evidencePurpose].join('/') : evidence ? [evidenceRoot, preview.topic, evidencePurpose].join('/') : preview.directory : '';
   const searchDirectory = scope.trim() || directory;
   const stateLabels: Record<Run['record']['state'], string> = {
-    pending: '等待核对', checking: '正在核对所选范围', uploading: '正在上传到证据盘，等待读回', copying: '正在网盘内复制到证据盘，等待读回',
-    candidates_found: '已找到候选，仅核对了名称或目录信息', missing: '指定范围内未找到匹配原件',
-    source_verified: '已核实来源字节，尚未归档到证据盘', copied_verified: '已盘内复制到证据盘，并完成读回核验', reused_verified: '已核证据对象已复用，内容核验一致', uploaded_verified: '新归档已读回核验',
-    restored_verified: '原远端对象已读回并核验', needs_review: '仍需核对，不能确认已归档',
+    pending: '等待核对', checking: '正在通过网盘技能查询远端文件',
+    uploading: '正在上传并查询远端文件', copying: '正在盘内复制并查询远端文件',
+    candidates_found: '发现候选文件，尚未确认归档对象', missing: '指定范围内未找到匹配文件',
+    source_verified: '旧版来源完整字节校验通过', copied_verified: '旧版盘内复制字节核验通过',
+    reused_verified: '旧版归档字节核验对象已复用', uploaded_verified: '旧版归档完整字节核验通过',
+    source_metadata_checked: '来源文件名、大小与编号已确认，尚未归档',
+    reused_metadata_checked: '网盘归档对象已复用，名称、大小及编号一致',
+    uploaded_metadata_checked: '网盘上传成功，名称、大小及编号一致',
+    copied_metadata_checked: '盘内复制成功，名称、大小及编号一致',
+    restored_verified: '按需取回原件并核对完成', needs_review: '结果尚未核对，不能认定已归档',
   };
 
   useEffect(() => {
@@ -111,7 +117,7 @@ export function CloudCustodyPanel({ materials, initialId }: { materials: Materia
     if (!available || !file || mode !== 'names' && !consent || mode === 'archive' && !directory) return;
     const input = { materialId, ...(evidence ? { evidenceSource: evidence.source } : {}), scopePath: searchDirectory, ...(sourcePath.trim() ? { sourceRemotePath: sourcePath.trim() } : {}),
       purpose: evidence ? '核对并保管所选 BD 加工证据及原件谱系' : '核对并保管所选 BD 原件', authorization: { status: 'authorized', basis: mode === 'names' ? '操作者在网盘保管页明确选择本件、远端范围并点击仅核对文件名。' : basis.trim() },
-      verifyBytes: mode !== 'names', allowUpload: mode === 'archive', ...(mode === 'archive' && topic ? { evidenceTopic: topic } : {}) };
+      verifyBytes: false, allowUpload: mode === 'archive', ...(mode === 'archive' && topic ? { evidenceTopic: topic } : {}) };
     const signature = JSON.stringify(input);
     if (pending.current?.body !== signature) pending.current = { body: signature, id: 'web-custody-' + crypto.randomUUID() };
     const value = readRun(await request(base + '/runs', 'POST', { requestId: pending.current.id, input }));
@@ -123,7 +129,7 @@ export function CloudCustodyPanel({ materials, initialId }: { materials: Materia
   }}>
     <summary><strong>{words('原件与加工证据网盘保管', 'Cloud custody of originals and evidence')}</strong></summary>
     {open && <section aria-label={words('网盘保管支路', 'Cloud custody branch')}>
-      <p className="r1-help">{words('只检查所选目录和资料位置。明确归档时，可只读复核本账号已登记的同内容证据对象并关联本次任务。只查名称时不下载文件。', 'Check selected folders and source locations. An archive request can recheck a registered same-content evidence object in this account and link it to this task. Name checks do not download files.')}</p>
+      <p className="r1-help">{words('归档复用百度网盘技能。上传或盘内复制后查询文件名、大小和远端文件编号，不进行下载读回；只有选择恢复原件时才下载。', 'Archive via the Baidu Drive skill. Verify remote filename, size and object ID after upload or copy without downloading. Only an explicit restore downloads the file.')}</p>
       {!available && <p role="status" className="r1-help">{capReason || words('此实例尚无可用网盘连接。', 'No cloud drive is available in this instance.')}</p>}
       {error && <ErrorNote>{error}</ErrorNote>}
       <fieldset disabled={busy}><label>{words('查找待归档原件', 'Find a stored original')}<input value={query} onChange={event => setQuery(event.target.value)} /></label>
@@ -142,7 +148,6 @@ export function CloudCustodyPanel({ materials, initialId }: { materials: Materia
         <label>{words('已知的原网盘文件位置（可选）', 'Known source file on the drive (optional)')}<input value={sourcePath} onChange={e => { setSourcePath(e.target.value); setConsent(false); }} /></label>
         <label>{words('本次网盘操作', 'Cloud operation')}<select value={mode} onChange={e => { setMode(e.target.value as Operation); setConsent(false); }}>
           <option value="names">{words('只查目录与候选文件名', 'Check candidate names only')}</option>
-          <option value="verify">{words('只读回并核验候选原件', 'Read back and verify candidate files')}</option>
           <option value="archive">{words('归档到专用证据盘', 'Archive to the dedicated evidence directory')}</option>
         </select></label>
         {preview && <>
@@ -153,27 +158,26 @@ export function CloudCustodyPanel({ materials, initialId }: { materials: Materia
           <p className="r1-help">{words('内容分类依据', 'Classification evidence')} · {preview.basis}</p>
           <p className="r1-help">{words('本件逻辑主题目录', 'Logical topic folder for this item')} <code>{directory}</code></p>
         </>}
-        {mode === 'archive' && <p className="r1-help">{words('同账号已核证据盘对象按内容共用，保留本次逻辑主题与首份回执，不为其他主题复制文件或创建目录。没有已核证据对象时，资料目录原件仍首次盘内复制并核验；需要新归档时才准备所选目录。', 'Share verified same-content evidence objects in this account, retaining this logical topic and the first receipt without a copy or another topic folder. Without a verified evidence object, first copy and verify the source inside the drive; prepare the selected folder only for a new archive.')}</p>}
+        {mode === 'archive' && <p className="r1-help">{words('同账号的已有归档按远端文件名、大小和编号复用；首次归档则通过网盘技能上传或盘内复制并查询结果，不下载读回。', 'Reuse an existing archive by filename, size and object ID. New archives upload or copy through the skill and confirm metadata without a full download.')}</p>}
         {mode !== 'names' && <><label>{words('本次网盘操作的授权依据', 'Authorization for this operation')}<input value={basis} maxLength={1000} onChange={e => { setBasis(e.target.value); setConsent(false); }} /></label>
         <label className="r1-confirm"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} />
-          {mode === 'verify'
-            ? words('授权读取所选范围内候选文件的字节进行核验', 'Authorize reading candidate bytes in this scope')
-            : words('授权复核并共用已登记证据对象；首次归档可盘内复制所选原件，核对无匹配且无未决文件意图时才上传', 'Authorize verification and sharing of registered evidence objects; allow an initial in-drive copy of the selected original, or upload only after no match or pending file intent is found')}</label></>}
+          {words('授权使用网盘技能查询并归档所选文件；上传后仅确认文件名、大小和远端编号。', 'Authorize metadata lookup and archive using the drive skill; confirm filename, size and object ID after upload.')}</label></>}
         <button type="button" className="primary-button" disabled={!available || !file || evidence?.available === false || !searchDirectory || mode !== 'names' && (!basis.trim() || !consent) || mode === 'archive' && !directory} onClick={() => void act(submit)}>{mode === 'names' ? words('仅核对候选文件名', 'Check candidate names only') : words('办理本次网盘操作', 'Start this cloud operation')}</button>
       </fieldset>
       {current && <div className="r1-proof"><p role="status"><strong>{stateLabels[current.record.state]}</strong> · {words('任务', 'Task')} {taskStateText(current.task.status, words)} · <code>{current.task.id}</code></p>
         <button type="button" className="text-button" disabled={busy} onClick={() => void act(async () => setCurrent(readRun(await request(base + '/tasks/' + encodeURIComponent(current.task.id)))))}>{words('读取原保管回执', 'Read custody receipt')}</button>
-        <p className="r1-help">{words('已列条目', 'Entries listed')} {current.record.coverage.entries} · {words('已读回候选', 'Candidates read back')} {current.record.coverage.readCandidates} · {words('盘内复制尝试', 'In-drive copy attempted')} {current.record.copyAttempted ? words('是', 'Yes') : words('否', 'No')} · {words('本次尝试上传', 'Upload attempted')} {current.record.uploadAttempted ? words('是', 'Yes') : words('否', 'No')}</p>
+        <p className="r1-help">{words('已列条目', 'Entries listed')} {current.record.coverage.entries} · {words('恢复时读回次数', 'Restore reads')} {current.record.coverage.readCandidates} · {words('盘内复制尝试', 'In-drive copy attempted')} {current.record.copyAttempted ? words('是', 'Yes') : words('否', 'No')} · {words('本次尝试上传', 'Upload attempted')} {current.record.uploadAttempted ? words('是', 'Yes') : words('否', 'No')}</p>
         {current.record.state === 'candidates_found' && <ul>{current.record.candidates.map(item => <li key={item.path}>{item.path}</li>)}</ul>}
         {current.record.evidence && <p>{words('关联原件摘要', 'Original content digest')} <code>{current.record.evidence.original.sha256}</code> · {words('归档内容', 'Archived content')} {current.record.evidence.filename}</p>}
         {current.record.evidenceClassification && <p>{words('本次任务的逻辑主题目录', 'Logical topic folder bound to this task')} <code>{current.record.evidenceClassification.directory}</code> · {current.record.evidenceClassification.basis}</p>}
-        {current.record.archiveReference && <p>{words('共用证据对象的首份核证回执', 'First verified receipt for the shared evidence object')} <code>{current.record.archiveReference.taskId}</code></p>}
+        {current.record.archiveReference && <p>{words('共用归档对象的原任务回执', 'Original receipt for reused archive')} <code>{current.record.archiveReference.taskId}</code></p>}
         {current.record.directoryPreparation === 'pending' && <p className="r1-help">{words('本次分类目录仍待核实。', 'The folder for this task is awaiting verification.')}</p>}
-        {current.record.remoteObject && <p>{words('远端原件', 'Remote object')} <code>{current.record.remoteObject.path}</code></p>}
-        {current.record.verifiedSha256 && <p>SHA-256（已核内容摘要） <code>{current.record.verifiedSha256}</code></p>}
+        {current.record.remoteObject && <p>{words('远端文件', 'Remote file')} <code>{current.record.remoteObject.path}</code> · {current.record.remoteObject.size} {words('字节', 'bytes')} · fs_id <code>{current.record.remoteObject.id}</code></p>}
+        {current.record.metadataConfirmed && <p>{words('网盘元数据已确认（未下载文件）', 'Cloud metadata confirmed; no download')}</p>}
+        {current.record.verifiedSha256 && <p>SHA-256（仅恢复或旧记录已核摘要） <code>{current.record.verifiedSha256}</code></p>}
         {current.task.error && <p className="r1-help danger-text">{current.task.error.code} · {current.task.error.message}</p>}
         {current.record.gaps.map((gap, index) => <p key={index} className="r1-help danger-text">{gap.message}</p>)}
-        {current.record.mode === 'check' && current.record.input.verifyBytes && (current.record.remoteObject || current.record.writeIntent || current.record.uploadAttempted || current.record.copyAttempted) && <button type="button" className="text-button" disabled={busy || ['ready','running','waiting_approval'].includes(current.task.status)} onClick={() => void act(async () => {
+        {current.record.mode === 'check' && (current.record.remoteObject || current.record.writeIntent || current.record.uploadAttempted || current.record.copyAttempted) && <button type="button" className="text-button" disabled={busy || ['ready','running','waiting_approval'].includes(current.task.status)} onClick={() => void act(async () => {
           const result = readRun(await request(base + '/tasks/' + encodeURIComponent(current.task.id) + '/recover', 'POST',
             { requestId: 'web-restore-' + crypto.randomUUID(), expectedVersion: current.task.version }));
           if (selected.current === materialId) { setCurrent(result); setRuns(previous => [result, ...previous]); }

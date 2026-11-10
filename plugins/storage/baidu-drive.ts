@@ -7,7 +7,7 @@ import { acquireAuthority, directoryCapability, DirectError, DirectWorkspace, fi
 import { DirectProcessError, runDirectProcess } from '../../platform/runtime/process.js';
 import type { ProcessRuntime } from '../../platform/runtime/programs.js';
 import { inspectPath, samePathIdentity } from '../../platform/security/permissions.js';
-import { parseBaiduOutput, type BaiduDriveConfiguration } from '../capture-sources/baidu-drive/index.js';
+import { runBaiduSkillCommand, type BaiduDriveConfiguration } from '../capture-sources/baidu-drive/index.js';
 
 export const CLOUD_ROOT = '/apps/bdpan';
 export const CLOUD_EVIDENCE_ROOT = posix.join(CLOUD_ROOT, '证据盘');
@@ -146,7 +146,7 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
       return { available: true };
     } catch { return { available: false, reason: '网盘程序或原生账号引用的对象身份不可用；需要恢复原登记，不自动登录。' }; }
   };
-  const versionBinding = { cloudBackend: 'baidu-drive-custody/2', cloudConnection: configuration
+  const versionBinding = { cloudBackend: 'baidu-drive-custody/3', cloudConnection: configuration
     ? createHash('sha256').update(JSON.stringify(configuration)).digest('hex') : null, cloudBinding: configuration
     ? createHash('sha256').update(JSON.stringify({ configuration, identities: registeredIdentities })).digest('hex') : null };
   return { versionBinding, availability,
@@ -172,26 +172,17 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
         authority.assert(); workspace.assertCurrent();
         if (identities.some(item => !item.identity || !samePathIdentity(item.identity, inspectPath(item.path), true))) throw new DirectError('CLOUD_VERSION_CONFLICT', '网盘程序或原生账号引用已经变化，不能替换原绑定继续。');
       };
+      // 归档不再直接调用 CLI 解析器，而是统一使用 baidu.drive Skill 的固定命令能力。
       const invoke = async (args: string[], exactMissing = false) => {
         try {
-          assertCurrent();
-          const result = await (options.runTool ?? runDirectProcess)({ binary: 'bdpan', binaryPath: configuration.binaryPath,
-            bdpanHome: configuration.homePath, runtime: options.processRuntime!,
-            args: ['--no-check-update', '--json', '--config-path', configuration.configPath, ...args], cwd: workspace.path,
-            signal: context.signal, assertAuthorized: assertCurrent, timeoutMs: 10 * 60_000, maxOutputBytes: 2_000_000,
-            onProcessState: event => context.emit({ type: 'process_state', ...event }), onHeartbeat: event => context.emit({ type: 'heartbeat', ...event }) });
-          if (exactMissing) {
-            // Native 3.8.7 reports exact-path absence in a JSON failure despite exit 0.
-            // Only this observed code/message pair is absence; network/auth/list failures remain errors.
-            let reply: unknown; try { reply = JSON.parse(result.stdout); } catch { /* normal parser rejects malformed output */ }
-            if (reply && typeof reply === 'object' && !Array.isArray(reply)) {
-              const missing = reply as Record<string, unknown>;
-              if (Object.keys(missing).sort().join(',') === 'code,data,error' && missing.code === 1 && missing.data === null
-                && missing.error === '找不到指定的文件或目录（错误码 -9），请检查路径是否正确。') return null;
-            }
-          }
-          return parseBaiduOutput(result.stdout);
-        } catch (error) { if (error instanceof DirectProcessError && error.disposition === 'unknown') retained = true; throw error; }
+          return await runBaiduSkillCommand({
+            configuration, processRuntime: options.processRuntime!, context, workspacePath: workspace.path,
+            assertCurrent, args, runTool: options.runTool, exactMissing,
+          });
+        } catch (error) {
+          if (error instanceof DirectProcessError && error.disposition === 'unknown') retained = true;
+          throw error;
+        }
       };
       const listOutput = async (path: string, offset: number, limit: number) => {
         cloudPath(path);
@@ -229,7 +220,7 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
       const prepareDirectory = async (path: string, create: boolean): Promise<boolean> => {
         cloudPath(path);
         if (path !== input.targetDirectory || !evidenceDirectory(path) || typeof create !== 'boolean') throw new DirectError('CLOUD_EVIDENCE_DIRECTORY_REQUIRED', '需要本次绑定的证据盘主题及用途二级目录，不能写入根、一级或任意目录。');
-        if (create && (!input.allowUpload || !input.verifyBytes)) throw new DirectError('CLOUD_DIRECTORY_AUTHORIZATION_REQUIRED', '创建归档目录需要本次归档写入及原件字节核证授权。');
+        if (create && !input.allowUpload) throw new DirectError('CLOUD_DIRECTORY_AUTHORIZATION_REQUIRED', '创建归档目录需要本次归档写入授权。');
         const hierarchy = [CLOUD_EVIDENCE_ROOT, posix.dirname(path), path];
         for (const directory of hierarchy) directories.add(posix.dirname(directory));
         for (const directory of hierarchy) {
@@ -289,7 +280,7 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
         async put(bytes, path) {
           cloudPath(path);
           const directory = posix.dirname(path);
-          if (!input.allowUpload || !input.verifyBytes || !evidenceDirectory(directory) || directory !== input.targetDirectory || !bytes.length || bytes.length > CLOUD_MAX_BYTES) throw new DirectError('CLOUD_UPLOAD_AUTHORIZATION_REQUIRED', '尚未授权本次证据盘二级目录目标或超出原件字节预算。');
+          if (!input.allowUpload || !evidenceDirectory(directory) || directory !== input.targetDirectory || !bytes.length || bytes.length > CLOUD_MAX_BYTES) throw new DirectError('CLOUD_UPLOAD_AUTHORIZATION_REQUIRED', '尚未授权本次证据盘二级目录目标或超出单文件预算。');
           claimWrite(path);
           if (!await prepareDirectory(directory, false)) throw new DirectError('CLOUD_DIRECTORY_MISSING', '本次证据分类目录尚不存在，未发起上传。');
           if (await exact(path)) throw new DirectError('CLOUD_TARGET_EXISTS', '本次独立归档对象名已被占用，不能覆盖或自动改名。');
@@ -310,9 +301,9 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
         async copy(source, targetDirectory) {
           const expected = { ...source, path: cloudPath(source.path) };
           cloudPath(targetDirectory);
-          if (!input.allowUpload || !input.verifyBytes || !evidenceDirectory(targetDirectory) || input.targetDirectory !== targetDirectory
+          if (!input.allowUpload || !evidenceDirectory(targetDirectory) || input.targetDirectory !== targetDirectory
             || expected.kind !== 'file' || !Number.isSafeInteger(expected.size) || expected.size < 1 || expected.size > CLOUD_MAX_BYTES) {
-            throw new DirectError('CLOUD_COPY_AUTHORIZATION_REQUIRED', '盘内复制需要明确授权本次原件字节核证及证据盘写入，且只接收预算内的单文件。');
+            throw new DirectError('CLOUD_COPY_AUTHORIZATION_REQUIRED', '盘内复制需要明确归档写入授权，且只接受预算内的单文件。');
           }
           // 原生 cp（复制）只接收目标目录；保留原文件名，禁止改名绕过占用。
           const path = cloudPath(posix.join(targetDirectory, posix.basename(expected.path)));
@@ -330,10 +321,11 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
             if (pending(value)) throw new DirectError('CLOUD_COPY_PENDING', '网盘仅确认复制已受理，必须沿原目标读回核对，不能重发或改成本地上传。', true);
             const after = await exact(before.path), actual = await exact(path), reported = receipt(value);
             if (!after || !sameObject(before, after) || !actual || actual.kind !== 'file' || actual.size !== before.size || actual.id === before.id
-              || before.md5 && actual.md5 !== before.md5 || reported && !receiptMatches(reported, actual)) {
+              || (before.md5 !== null && actual.md5 !== null && before.md5 !== actual.md5)
+              || reported && !receiptMatches(reported, actual)) {
               throw new DirectError('CLOUD_COPY_UNKNOWN_RESULT', '盘内复制后的原位置版本或精确目标元数据不一致，请沿原目标核对，不能重发或上传。', true);
             }
-            await context.emit({ type: 'side_effect_result', effectId, outcome: 'succeeded', evidence: '网盘复制回执、原位置前后身份及精确目标元数据已核对；内容仍需完整字节读回。', data: { target: actual as unknown as JsonValue } });
+            await context.emit({ type: 'side_effect_result', effectId, outcome: 'succeeded', evidence: '网盘复制回执、文件名、大小、编号及原位置/目标元数据已核对；未下载读回。', data: { target: actual as unknown as JsonValue } });
             retained = false;
             return actual;
           } catch (error) {
