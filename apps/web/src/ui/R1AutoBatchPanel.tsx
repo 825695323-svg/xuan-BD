@@ -5,7 +5,7 @@ import type { R1BatchFile } from '../../../../modules/collection/r1-auto-batch';
 import { r1SourceGaps, r1SourceReadyForHandoff, type R1SourceAuthorization } from '../../../../modules/collection/r1-source';
 import { RequestError } from '../api';
 import type { AlgorithmEntryFocus } from './algorithm-catalog';
-import { r1AutoApi, type R1AutoView, type R1BatchStartInput, type R1BatchView, type R1AlgorithmClassification, type R1AlgorithmSettings } from '../r1-auto-api';
+import { r1AutoApi, type R1AutoView, type R1BatchStartInput, type R1BatchView, type R1AlgorithmClassification } from '../r1-auto-api';
 import { ErrorNote, errorDetail, useWords } from './Controls';
 import { R1ChunkedCsvPanel } from './R1ChunkedCsvPanel';
 
@@ -24,19 +24,10 @@ const labels: Record<R1BatchView['items'][number]['state'], string> = {
 };
 const batchLabels: Record<R1BatchView['state'], string> = { awaiting_upload: '等待下一件原文件', running: '按原清单依次推进',
   awaiting_answers: '其余已逐件办理，尚有事实待补', recovering: '等待核清原提交结果', completed: '本批已逐件办理', conflicts_pending: '其余已逐件办理，冲突保留待确认', stopped: '本批已停止', blocked: '本批受阻' };
-const meanLabels: Record<NonNullable<R1BatchView['calculation']>['state'], string> = { waiting_inputs: '等待完整原报读回', calculating: '正在计算', custody: '正在保管计算产物', stopped: '已停止', processing: '加工与发布中', associated: '已发布并固定读回', blocked: '派生受阻', recovering: '原交接结果待核对' };
 const fields = [['source_id', '来源身份'], ['provider', '提供者'], ['requested_url', '来源系列地址'],
   ['requested_at_utc', '请求时间（UTC，协调世界时）'], ['acquired_at_utc', '取得时间（UTC，协调世界时）'], ['usage_scope', '本批获准用途']] as const;
 type SelectedFile = { file: File; manifest: R1BatchFile; classification: R1AlgorithmClassification | null };
 const kindLabels = { daily_bar: '日K原报观察', minute_bar: '分钟K原报观察', sentiment: '情绪或专项报告', mixed: '混合报告或口径', other: '其他数据', unknown: '证据不足或不支持' };
-function plannedAlgorithm(inspected: R1AlgorithmClassification | null, settings: R1AlgorithmSettings | null, columns: string): string {
-  if (!inspected) return '沿用原批冻结规则';
-  if (!['daily_bar', 'minute_bar'].includes(inspected.kind) || !inspected.complete || !inspected.valueColumn) return '当前无匹配算法';
-  const period = inspected.kind === 'daily_bar' ? settings?.dailyPeriod : settings?.minutePeriod;
-  if (!period) return '该类周期未设置，本批只办理原数据';
-  if (columns.trim() && !columns.split(/\r?\n/u).includes(inspected.valueColumn)) return '本批选列不含收盘原列，只办理原数据';
-  return `自动计算「${inspected.valueColumn}」的 ${period} 观测均线，并单独发布`;
-}
 
 export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOpenAuto, focus = null }: Props) {
   const words = useWords();
@@ -45,10 +36,6 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
   const [selected, setSelected] = useState<SelectedFile[]>([]), [datasetId, setDatasetId] = useState('');
   const [directoryName, setDirectoryName] = useState('');
   const [selectedColumns, setSelectedColumns] = useState('');
-  const [meanProof, setMeanProof] = useState<{ calculationId: string; proof: Record<string, unknown> } | null>(null);
-  const [algorithmSettings, setAlgorithmSettings] = useState<R1AlgorithmSettings | null>(null);
-  const [dailyPeriod, setDailyPeriod] = useState(''), [minutePeriod, setMinutePeriod] = useState('');
-  const [showAlgorithmSettings, setShowAlgorithmSettings] = useState(false);
   const [consent, setConsent] = useState(false), [datePolicy, setDatePolicy] = useState(false), [duplicateBatch, setDuplicateBatch] = useState(false);
   const [busy, setBusy] = useState(false), [hashing, setHashing] = useState(false), [error, setError] = useState<string | null>(null);
   const activeRef = useRef(activeId), busyRef = useRef(false), selectionEpoch = useRef(0), mounted = useRef(true), sectionRef = useRef<HTMLElement>(null);
@@ -56,14 +43,13 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; selectionEpoch.current++; }; }, []);
   useEffect(() => {
     if (!focus) return;
-    // 只展开并定位对应周期的原设置；不读取批次、不保存周期、不开始交接。
-    setShowAlgorithmSettings(true);
+    // 原批次不再配置自动计算；定位入口仅用于说明已迁移到 WFD 独立人工算法。
     const timer = window.setTimeout(() => sectionRef.current?.scrollIntoView({ block: 'start' }), 80);
     return () => window.clearTimeout(timer);
   }, [focus?.nonce]);
-  useEffect(() => { setConsent(false); }, [source, datasetId, datePolicy, selectedColumns, algorithmSettings]);
+  useEffect(() => { setConsent(false); }, [source, datasetId, datePolicy, selectedColumns]);
   const selectBatch = useCallback((id: string) => {
-    activeRef.current = id; setMeanProof(null); remember(id); setActiveId(id); setCurrent(null); setError(null); setConsent(false); setDuplicateBatch(false); attempted.current.clear();
+    activeRef.current = id; remember(id); setActiveId(id); setCurrent(null); setError(null); setConsent(false); setDuplicateBatch(false); attempted.current.clear();
   }, []);
   const accept = useCallback((view: R1BatchView) => {
     if (!mounted.current) return;
@@ -77,9 +63,6 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
   };
   useEffect(() => { let live = true;
     void r1AutoApi.listBatches().then(items => { if (live) setRecent(items); }).catch(failure => { if (live) setError(errorDetail(failure)); });
-    void r1AutoApi.algorithmSettings().then(settings => { if (live) {
-      setAlgorithmSettings(settings); setDailyPeriod(settings.dailyPeriod?.toString() ?? ''); setMinutePeriod(settings.minutePeriod?.toString() ?? '');
-    } }).catch(failure => { if (live) setError(errorDetail(failure)); });
     return () => { live = false; };
   }, []);
   useEffect(() => {
@@ -145,21 +128,15 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
         if (previous && previous !== item.manifest.sha256) throw new Error('所选不同文件使用了同一个来源位置。请选择来源目录以保留子目录，或按各自来源系列分批选择。');
         positions.set(item.manifest.relativePath, item.manifest.sha256);
       }
-      if (mounted.current && epoch === selectionEpoch.current) { setSelected(result); setDirectoryName(root ?? '');
-        if (result.some(item => item.classification?.kind === 'daily_bar' && !algorithmSettings?.dailyPeriod
-          || item.classification?.kind === 'minute_bar' && !algorithmSettings?.minutePeriod)) setShowAlgorithmSettings(true);
-      }
+      if (mounted.current && epoch === selectionEpoch.current) { setSelected(result); setDirectoryName(root ?? ''); }
     } catch (failure) { if (mounted.current && epoch === selectionEpoch.current) setError(errorDetail(failure)); }
     finally { if (mounted.current && epoch === selectionEpoch.current) setHashing(false); }
   };
   const start = async () => {
     if (!ready || !selected.length || hashing || !datasetId.trim() || !consent) throw new Error('请选定本批文件、数据集，并明确允许本批自动交接。');
     if (!r1SourceReadyForHandoff(source)) throw new Error(r1SourceGaps(source).join('；'));
-    if (!algorithmSettings || selected.some(item => !item.classification)) throw new Error('请先完成原件内容预检并读取已保存的算法周期。');
-    const input: R1BatchStartInput = { batchId: `web-r1-batch-${crypto.randomUUID()}`, source, datasetId: datasetId.trim(), files: selected.map(item => item.manifest),
+     const input: R1BatchStartInput = { batchId: `web-r1-batch-${crypto.randomUUID()}`, source, datasetId: datasetId.trim(), files: selected.map(item => item.manifest),
       ...(datePolicy ? { datePolicy: 'a_share_calendar_day_asia_shanghai' } : {}),
-      algorithmRouting: { version: 'bd.r1-algorithm-routing/1', settings: algorithmSettings,
-        files: [...new Map(selected.map(item => [item.manifest.sha256, item.classification!])).values()] },
       ...(selectedColumns.trim() ? { sourceValueColumns: selectedColumns.split(/\r?\n/u).filter(name => name.trim()) } : {}) };
     selectBatch(input.batchId);
     try {
@@ -174,16 +151,6 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
       throw failure;
     }
   };
-  const saveAlgorithmSettings = async () => {
-    if (!algorithmSettings) throw new Error('请先读取当前算法周期设置。');
-    const period = (value: string) => {
-      if (!value.trim()) return null;
-      if (!/^\d+$/u.test(value) || Number(value) < 2 || Number(value) > 1000) throw new Error('观测周期需要 2 至 1000 的整数；留空表示未设置。');
-      return Number(value);
-    };
-    const saved = await r1AutoApi.saveAlgorithmSettings({ revision: algorithmSettings.revision, dailyPeriod: period(dailyPeriod), minutePeriod: period(minutePeriod) });
-    setAlgorithmSettings(saved); setDailyPeriod(saved.dailyPeriod?.toString() ?? ''); setMinutePeriod(saved.minutePeriod?.toString() ?? ''); setConsent(false);
-  };
   const locked = busy || disabled || hashing;
   const counts = current ? { associated: current.items.filter(item => item.state === 'associated').length,
     duplicate: current.items.filter(item => item.duplicateOf).length, pending: current.items.filter(item => item.state === 'awaiting_answers').length,
@@ -195,7 +162,7 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
   return <><R1ChunkedCsvPanel source={source} ready={ready} disabled={disabled} onOpenAuto={onOpenAuto}/><section ref={sectionRef} id="batch-auto-calculation" className="r1-stage"
     aria-label={words('多文件批量交接', 'Multiple-file batch handoff')} aria-busy={busy || hashing} data-focus-method={focus?.methodId}>
     <h3>{words('多文件批量交接', 'Multiple-file batch handoff')}</h3>
-    {focus && <p className="r1-help" role="status">已从算法目录定位到批量自动计算（{focus.methodId === 'daily_bar' ? '日K均线' : '分钟K均线'}）；仍需在本面板手动选择原文件、声明本批授权并确认，页面未读取批次或保存周期。</p>}
+    {focus && <p className="r1-help" role="status">原报批次不再自动计算。请先完成 WFD 发布，再从统一基础算法接口人工选择观测均线或其他算法。</p>}
     <p className="r1-help">{words('一次选择同一来源系列的多份原文件，统一声明本批用途、数据集与授权。每件保管后沿自动交接办理，核实固定读回再推进下一件；事实待补或明确退回的文件保留原编号，其余文件继续。',
       'Select multiple originals from the same source series and declare this batch’s purpose, dataset and authorization. Each original is stored and handed off in sequence. Missing facts or explicit returns retain their original identities while unrelated files continue.')}</p>
     <p className="r1-help">{words('重复保护仅复用相同来源位置、文件字节、全部来源声明（含请求与取得时间、授权和用途）、数据集、日期口径、选列及目标连接。声明改变时保留为另一次取得，不能仅按相同字节合并。',
@@ -211,36 +178,7 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
         'Ordinary file selection exposes filenames only. Select originals from the same actual directory, or use directory selection to preserve subdirectories. The whole manifest remains limited to 100 files and 128 MiB; directories are never truncated.')}</p>
     {hashing && <p role="status">{words('逐件核对完整原件摘要与内容分类中…', 'Checking full original digests and content classifications…')}</p>}
     {selected.length > 0 && <details><summary>{words('本次选定文件', 'Selected files')} · {selected.length}</summary><ul>{selected.map((item, index) => <li key={index}>{item.manifest.relativePath} · {item.manifest.byteLength} {words('字节', 'bytes')}</li>)}</ul></details>}
-    {!activeId && <>
-      <details open={showAlgorithmSettings} onToggle={event => setShowAlgorithmSettings(event.currentTarget.open)}>
-        <summary>{words('行情算法周期设置（保存后按类沿用）', 'Bar algorithm periods, saved once per kind')}</summary>
-        <fieldset disabled={locked || !algorithmSettings} className="r1-form"><legend>{words('日K和分钟K独立设置', 'Separate daily and minute periods')}</legend>
-          <div className="r1-grid">
-            <label id="batch-daily-period">{words('日K均线观测周期', 'Daily moving average observations')}<input type="number" min="2" max="1000" step="1" value={dailyPeriod} placeholder={words('未设置', 'Not configured')} onChange={event => setDailyPeriod(event.target.value)} /></label>
-            <label id="batch-minute-period">{words('分钟K均线观测周期', 'Minute moving average observations')}<input type="number" min="2" max="1000" step="1" value={minutePeriod} placeholder={words('未设置', 'Not configured')} onChange={event => setMinutePeriod(event.target.value)} /></label>
-          </div>
-          <p className="r1-help">{words(`当前已保存：日K ${algorithmSettings?.dailyPeriod ?? '未设置'}；分钟K ${algorithmSettings?.minutePeriod ?? '未设置'}。本批只使用已保存周期。`,
-            `Saved periods: daily ${algorithmSettings?.dailyPeriod ?? 'not configured'}; minute ${algorithmSettings?.minutePeriod ?? 'not configured'}. This batch uses saved periods only.`)}</p>
-          <p className="r1-help">{words('留空表示未设置；保存后后续批次自动沿用，不需逐批勾选。缺周期只影响该类派生计算，原数据与其他类别继续办理。修改不改变已接受批次的冻结规则。',
-            'Empty means not configured. Saved periods apply automatically to future matching batches. An unset period skips that kind’s calculation while originals and other kinds continue. Accepted batches retain their frozen rules.')}</p>
-          <button type="button" className="text-button" onClick={() => void action(saveAlgorithmSettings)}>{words('保存算法周期', 'Save algorithm periods')}</button>
-        </fieldset>
-        <button type="button" className="text-button" disabled={locked} onClick={() => void action(async () => {
-          const settings = await r1AutoApi.algorithmSettings(); setAlgorithmSettings(settings);
-          setDailyPeriod(settings.dailyPeriod?.toString() ?? ''); setMinutePeriod(settings.minutePeriod?.toString() ?? ''); setConsent(false);
-        })}>{words('读取当前算法设置', 'Read current algorithm settings')}</button>
-      </details>
-      {selected.length > 0 && <div className="r1-proof" aria-label={words('本批内容分类与算法路由', 'Batch content classification and algorithm routing')}>
-        <h4>{words('本批内容分类与自动算法', 'Content kinds and automatic algorithms')}</h4>
-        <p className="r1-help">{words('按不同原件字节逐件预检，未完成完整检查或超预算时明示原因。算法按内容中的业务维度、日期或分钟标签及对象身份匹配；上传时服务端再次核对。情绪、榜单、混合与未知数据保留原数据，不推定算法。',
-          'Each distinct original is preflighted, with incomplete or over-budget checks shown explicitly. Algorithms match business dimensions, date or minute labels and subject identity. Uploads are checked again. Sentiment, rankings, mixed and unknown data retain the original handoff without a guessed algorithm.')}</p>
-        <div className="r1-table-scroll"><table><thead><tr><th>{words('原件', 'Original')}</th><th>{words('内容分类', 'Content kind')}</th><th>{words('本批算法', 'Batch algorithm')}</th></tr></thead><tbody>{selected.map((item, index) => <tr key={index}>
-          <td>{item.manifest.relativePath}</td><td>{item.classification ? kindLabels[item.classification.kind] : words('沿用原批规则', 'Frozen batch rules')}
-            {item.classification && <p className="r1-help">{item.classification.reason}</p>}</td>
-          <td>{plannedAlgorithm(item.classification, algorithmSettings, selectedColumns)}</td>
-        </tr>)}</tbody></table></div>
-      </div>}
-    </>}
+    {!activeId && <p className="r1-help">{words('本批仅保管、加工、发布和固定读回原始数据。均线、MACD 与其他基础算法由 BD AGENTS 通过 WFD 固定快照人工计算，不再随批次自动运行。', 'This batch only stores, processes, publishes and reads back original data. Basic algorithms run separately on manually selected WFD fixed snapshots through BD AGENTS.')}</p>}
     {!activeId && <form className="r1-form" onSubmit={event => { event.preventDefault(); void action(start); }}><fieldset disabled={locked}>
       <legend>{words('本批范围与来源授权', 'Batch scope and source authorization')}</legend>
       <label>{words('本批目标数据集编号', 'Batch target dataset ID')}<input required maxLength={128} value={datasetId} onChange={event => { setDatasetId(event.target.value); setConsent(false); }} /></label>
@@ -260,11 +198,10 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
       }} /></label>
       <label className="r1-confirm"><input type="checkbox" checked={datePolicy} onChange={event => { setDatePolicy(event.target.checked); setConsent(false); }} />{words('本批全部文件属于境内 A 股来源，原报交易日期按北京时间日历日解释；历史可得时间仍未知。仅在识别到原报交易日期问题时采用本声明。',
         'All selected files are mainland A-share sources. Reported trade dates mean Beijing calendar days; historical availability remains unknown. Apply this declaration only to a recognized source trade-date question.')}</label>
-      <p className="r1-help">{words('本批按上述分类明细和已保存周期自动执行。来源原报先发布并完整固定读回，再按对象与原报时间标签计算本批观测窗口；不同产品分开，窗口不足或缺值保留原因。均线按原单位作为独立产品保存。',
-        'The routing table and saved periods determine this batch’s calculations. Originals are published and fixed-read first. Windows use this batch’s observations by subject and source time label, keeping different products separate and preserving warmup or missing reasons. Means are published separately in the original unit.')}</p>
-      <label className="r1-confirm"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} />{words(`我允许仅对本批所列 ${selected.length} 份原件，按上述来源、用途和数据集自动登记、加工、发布并固定读回，并自动执行明细列出的算法及周期（设置修订 ${algorithmSettings?.revision ?? '未读取'}），将派生结果单独发布。未知结果沿原编号核对。`,
-        `I authorize registration, processing, publication and fixed readback only for these ${selected.length} originals, including the algorithms and periods listed above under settings revision ${algorithmSettings?.revision ?? 'unread'}. Derived results are published separately. Unknown outcomes keep their original identities.`)}</label>
-      <button type="submit" className="primary-button" disabled={!ready || !selected.length || !algorithmSettings || selected.some(item => !item.classification) || !datasetId.trim() || !consent || !r1SourceReadyForHandoff(source)}>{words('开始本批自动交接', 'Start this batch handoff')}</button>
+      <p className="r1-help">{words('本批只处理原报，不包含自动基础算法。计算必须在 WFD 原报正式发布后由人工另行发起，计算结果也不会自动发布。', 'Only original data is handled in this batch. Calculation requires a separate manual request after WFD publication, and derived results are not published automatically.')}</p>
+      <label className="r1-confirm"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} />{words(`我允许对本批所列 ${selected.length} 份原件按上述来源、用途和数据集登记、加工、发布并固定读回。不自动运行或发布任何基础算法。`,
+        `I authorize custody, processing, publication and fixed readback for these ${selected.length} originals only. No basic algorithm or derived publication is started automatically.`)}</label>
+      <button type="submit" className="primary-button" disabled={!ready || !selected.length || !datasetId.trim() || !consent || !r1SourceReadyForHandoff(source)}>{words('开始本批自动交接', 'Start this batch handoff')}</button>
     </fieldset></form>}
     {activeId && <div>
       <p><strong>{words('本批编号', 'Batch ID')}</strong> <code>{activeId}</code></p>
@@ -289,21 +226,7 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
           </td><td><code>{item.materialId ?? item.custodyTaskId ?? '—'}</code><p className="r1-help"><code>{item.auto ? item.autoRequestId : '—'}</code></p>
             <button type="button" className="text-button" disabled={locked || !item.auto} onClick={() => void action(async () => onOpenAuto(await r1AutoApi.get(item.autoRequestId)))}>{words('查看并补答', 'Inspect and answer')}</button></td></tr>)}
         </tbody></table></div>
-        {(current.calculations ?? (current.calculation ? [current.calculation] : [])).map(calculation => <div className="r1-proof" key={calculation.calculationId}>
-          <h4>{words('本批均线', 'Batch moving average')}{calculation.kind && ` · ${kindLabels[calculation.kind]}`}</h4>
-          <p>{calculation.selection.valueColumn} · {calculation.selection.period} {words('期', 'observations')} · {meanLabels[calculation.state]}</p>
-          {calculation.productId && <p>{words('派生产品', 'Derived product')} <code>{calculation.productId}</code></p>}
-          {calculation.snapshotId && <p>{words('派生固定快照', 'Fixed derived snapshot')} <code>{calculation.snapshotId}</code></p>}
-          {calculation.error && <p className="danger-text">{calculation.error.code} · {calculation.error.message}</p>}
-          {calculation.proof && <p>{words('实际输出', 'Actual output')} {calculation.proof.counts.rows} {words('行，有效均值', 'rows, valid means')} {calculation.proof.counts.valid} · {words('窗口不足', 'Warmup')} {calculation.proof.counts.warmup} · {words('窗口含缺值', 'Missing in window')} {calculation.proof.counts.windowMissing}</p>}
-          {calculation.proof && <button type="button" className="text-button" disabled={locked} onClick={() => void action(async () => {
-            const proof = await r1AutoApi.calculationEvidence(current.batchId, calculation.calculationId);
-            setMeanProof({ calculationId: calculation.calculationId, proof });
-          })}>{words('读取原始记录与窗口明细', 'Read source record and window details')}</button>}
-          {meanProof?.calculationId === calculation.calculationId && <details open><summary>{words('固定输入、行版本与窗口', 'Fixed inputs, record versions and windows')}</summary><pre className="database-text-preview">{JSON.stringify(meanProof.proof, null, 2)}</pre></details>}
-          {calculation.auto && <button type="button" className="text-button" disabled={locked} onClick={() => void action(async () => onOpenAuto(await r1AutoApi.get(calculation.auto!.requestId)))}>{words('查看均线交接回执', 'Inspect moving average handoff')}</button>}
-        </div>)}
-        <details><summary>{words('本批冻结来源、用途、授权与算法规则', 'Frozen batch source, purpose, authorization and algorithms')}</summary><pre className="database-text-preview">{JSON.stringify({ source: current.source, datasetId: current.datasetId, datePolicy: current.datePolicy, sourceValueColumns: current.sourceValueColumns, algorithmRouting: current.algorithmRouting }, null, 2)}</pre></details>
+        <details><summary>{words('本批冻结来源与用途', 'Frozen source and purpose')}</summary><pre className="database-text-preview">{JSON.stringify({ source: current.source, datasetId: current.datasetId, datePolicy: current.datePolicy, sourceValueColumns: current.sourceValueColumns }, null, 2)}</pre></details>
       </>}
       <div className="r1-actions"><button type="button" className="text-button" disabled={locked} onClick={() => void action(async () => {
         accept(await r1AutoApi.advanceBatch(activeId)); attempted.current.clear();

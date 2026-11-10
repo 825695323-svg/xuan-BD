@@ -47,6 +47,7 @@ import { createBaiduCustodyBackend, type CloudCustodyBackend } from '../../plugi
 import { MaterialSemanticService } from '../../modules/collection/materials/semantic.js';
 import { SegmentService } from '../../modules/collection/segments/service.js';
 import { R1HandoffService, type R1CalculationCandidateVerification } from '../../modules/collection/r1-structured-handoff.js';
+import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { createR1HandoffRuntime, type R1Runtime } from '../../modules/collection/r1-runtime.js';
 import { ProcessingPlanService } from '../../modules/collection/processing-plan.js';
 import { R1WorkspaceService } from '../../modules/collection/r1-workspace.js';
@@ -71,6 +72,7 @@ import { directDependencyVersions, directResourceVersions, directoryVersion } fr
 import { requireFinancialComputedResult } from '../../modules/financial/contracts.js';
 import { ToolLibraryService } from '../../modules/financial/tool-library.js';
 import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
+import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
 import type { LocalDataLifecycle, LocalDataLifecycleRecord } from '../../platform/runtime/local-data-lifecycle.js';
 
 export type CollectionConfiguration = Omit<ConstructorParameters<typeof CollectionService>[0], 'database' | 'tasks' | 'files'>;
@@ -177,6 +179,7 @@ export interface ApplicationServices {
   collection?: CollectionService;
   financial?: FinancialService;
   algorithms?: LocalAlgorithmService;
+  derivedPublisher?: DerivedWfdPublisher;
   toolLibrary?: ToolLibraryService;
   materials?: MaterialService;
   cloudCustody?: CloudCustodyService;
@@ -415,25 +418,62 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     objects: { put: (bytes, mediaType) => candidates.saveObject(bytes, mediaType), get: ref => candidates.objectBytes(ref),
       verify: ref => candidates.verifyObject(ref) } }) : undefined;
   let r1Runtime: R1Runtime | undefined;
+  let derivedPublisher: DerivedWfdPublisher | undefined;
+  const verifyFixedDerived = (refs: import('../../modules/collection/r1-structured-handoff.js').R1LocalReferences, digest: string) => {
+    if (!derivedPublisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', '固定算法独立核验尚未装配。');
+    derivedPublisher.verify(refs, digest);
+  };
   const verifyCalculationCandidate = (input: R1CalculationCandidateVerification) => {
     if (!polarsFixed) throw new TaskError('R1_CALCULATION_VERIFIER_UNBOUND', '计算候选缺受信验证器。');
     polarsFixed.verifyCandidate(input.taskId, input);
+  };
+  const verifyAlgorithmCandidate = (input: R1CalculationCandidateVerification) => {
+    if (!algorithms || !materials || !processing)
+      throw new TaskError('R1_ALGORITHM_VERIFIER_UNBOUND', '基础算法、材料与加工证据验证器尚未完整装配。');
+    const finished = algorithms.view(input.taskId), result = finished.result;
+    if (finished.status !== 'succeeded' || finished.requiresReview || !result || result.status !== 'computed'
+      || result.taskId !== input.taskId || !result.source || typeof result.source !== 'object'
+      || !('kind' in result.source) || result.source.kind !== 'wfd_fixed_snapshot')
+      throw new TaskError('R1_ALGORITHM_PROOF_MISSING', '派生材料不是已完成的 WFD 固定快照算法结果。');
+    const sha = wfdSha256(canonicalWfdJson(result.rows));
+    const original = materials.readOriginal(input.materialId);
+    if (original.sha256 !== sha || canonicalWfdJson(JSON.parse(original.bytes.toString('utf8'))) !== canonicalWfdJson(result.rows))
+      throw new TaskError('R1_ALGORITHM_ROWS_CHANGED', '计算结果与受管派生材料实际行不一致。');
+    const plan = processing.get(input.planId);
+    const output = plan.outputs.find(item => item.outputId === input.outputId);
+    if (!output || !output.materialIds.includes(input.materialId) || output.publishEligible !== true)
+      throw new TaskError('R1_ALGORITHM_PLAN_INVALID', '派生计划未绑定原计算材料或尚未获得发布资格。');
+    const def = input.definition, algorithm = isWfdRecord(def.algorithm_definition) ? def.algorithm_definition : null;
+    if (def.measurement_nature !== 'derived' || !isWfdRecord(def.semantic_context)
+      || def.semantic_context.content_nature !== 'deterministic_derived'
+      || !algorithm || algorithm.method_id !== result.methodId
+      || algorithm.method_version !== result.methodVersion
+      || algorithm.implementation_version !== result.implementationVersion
+      || algorithm.input_digest !== result.inputDigest)
+      throw new TaskError('R1_ALGORITHM_DEFINITION_CHANGED', 'WFD派生定义与原算法编号、方法版本、实现版本及输入摘要不一致。');
   };
   let r1Configuration: { state: 'ready' | 'not_configured' | 'unavailable'; reason: string | null } =
     { state: 'unavailable', reason: 'materials service not assembled' };
   if (materials && options.resources) {
     try {
       r1Runtime = createR1HandoffRuntime({ resources: options.resources, database, materials, processing, candidates,
-        connectionId: options.r1ConnectionId, verifyCalculationCandidate });
+        connectionId: options.r1ConnectionId, verifyCalculationCandidate, verifyAlgorithmCandidate, verifyFixedDerived });
       r1Configuration = { state: 'ready', reason: null };
     } catch (error) {
       r1Configuration = { state: 'not_configured',
         reason: error instanceof Error ? error.message : String(error) };
     }
   }
-  const r1: R1HandoffService | undefined = r1Runtime?.service ?? (materials ? new R1HandoffService({ database, materials, processing, candidates, verifyCalculationCandidate }) : undefined);
+  const r1: R1HandoffService | undefined = r1Runtime?.service ?? (materials ? new R1HandoffService({
+    database, materials, processing, candidates, verifyCalculationCandidate, verifyAlgorithmCandidate, verifyFixedDerived }) : undefined);
   const r1Workspace: R1WorkspaceService | undefined = r1 && processing && materials ? new R1WorkspaceService({ database, tasks: currentTasks,
     handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration }) : undefined;
+  // 独立确定性算法唯一发布路径：复用 R1 正式写入与固定读回，不走原报五步。
+  derivedPublisher = r1Runtime && r1Workspace && algorithms && r1
+    ? new DerivedWfdPublisher({ viewAlgorithm: taskId => algorithms.view(taskId),
+      readAlgorithmInput: taskId => algorithms.verifiedInput(taskId),
+      runtime: () => r1Runtime, workspace: () => r1Workspace, handoff: r1 })
+    : undefined;
   // 来源字段档案放在本机配置资源下；未绑定时退回工程外运行根，不读源码树。
   const sourceFieldProfiles = options.resources
     ? new SourceFieldProfileStore(join(options.resources.path('config'), 'source-fields')) : undefined;
@@ -618,5 +658,5 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   queueMicrotask(() => core.dispatchTaskCompletions());
   return { core, database, permissions, files, tasks: runningTasks, memory, agentSkills, questions, toolSettings, sourceSettings, personalResources, uiPreferences, contextLedger, inputRules, inputRouter, directConversations, direct, modelTools,
     ...(options.localData ? { localData: options.localData.lifecycle, localDataId: options.localData.dataId } : {}),
-    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
+    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
 }

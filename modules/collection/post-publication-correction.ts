@@ -498,6 +498,9 @@ export class PostPublicationCorrectionService {
         fail('CORRECTION_IDENTITY_CHANGED', '字段结构改变；产品/单位/频率身份须保持不变。');
     }
     const derivedItems = impact.items.filter(item => item.kind === 'derived');
+    if (derivedItems.length)
+      fail('CORRECTION_MANUAL_DERIVED_REQUIRED',
+        '本次错误影响已发布派生数据。自动均线复算已退出管线；保留 WFD 用途暂停，待独立人工计算和原因化替代接口完成后再结案。');
     const correctedValueField = previousRows[0] && Object.hasOwn(previousRows[0], 'value_decimal') ? 'value_decimal'
       : previousRows[0] && Object.hasOwn(previousRows[0], 'value') ? 'value' : null;
     if (!tabular && !correctedValueField) fail('CORRECTION_VALUE_FIELD', '原发布行没有可核数值字段。');
@@ -1159,6 +1162,9 @@ export class PostPublicationCorrectionService {
   private async commitRepair(caseId: string, row: CaseRow, frozen: FrozenRepair,
     document: WfdRecord, signal?: AbortSignal, preloaded?: WfdRecord): Promise<WfdRecord> {
     signal?.throwIfAborted();
+    if ((frozen.recompute?.length ?? 0) > 0 || (Array.isArray(document.outputs) && document.outputs.length > 1))
+      fail('CORRECTION_MANUAL_DERIVED_REQUIRED',
+        '旧更正文档包含自动派生复算；在发布前阻断，保留原请求和用途暂停，须改由人工计算闭环完成。');
     let result: WfdRecord;
     if (preloaded) {
       result = preloaded;

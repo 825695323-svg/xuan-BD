@@ -6,7 +6,7 @@ import type { AlgorithmDesignCatalog } from '../../../../contracts/algorithm-des
 import type { FixedCalculationCapabilities } from '../../../../contracts/fixed-calculation-contracts';
 import type { AlgorithmCallRequest, AlgorithmCatalogView, AlgorithmFieldMapping, AlgorithmMethodId, AlgorithmTaskView, ManagedTableSummary } from '../../../../modules/financial/algorithm-types';
 import { RequestError, request } from '../api';
-import { loadAlgorithmCatalog, readAlgorithmCall, submitAlgorithmCall } from '../algorithm-api';
+import { loadAlgorithmCatalog, listAlgorithmCalls, readAlgorithmCall } from '../algorithm-api';
 import { fixedCalculationApi } from '../fixed-calculation-api';
 import { ALGORITHM_GROUPS, BATCH_ALGORITHMS, OTHER_GROUP, algorithmGroup, batchAlgorithm,
   appendixGroup, DESIGN_RELATED, designGroup, fixedGroup, libraryGroup, type AlgorithmFocusRequest, type AlgorithmGroup, type AlgorithmGroupId,
@@ -110,7 +110,7 @@ function toolStatusLabel(status: ToolLibraryTool['status'], words: Words): strin
   return words('不可用', 'Unavailable');
 }
 function toolStateLabel(state: ToolLibraryTool['state'], words: Words): string | null {
-  if (state === 'executable') return words('受控入口已放行', 'Released on controlled entry');
+  if (state === 'executable') return words('固定实现已登记', 'Fixed implementation registered');
   if (state === 'assets_only') return words('实现已在本工程，入口未放行', 'Implemented locally, entry not released');
   if (state === 'not_implemented') return words('本工程无实现', 'Not implemented here');
   if (state === 'needs_data') return words('缺输入数据', 'Missing input data');
@@ -154,42 +154,22 @@ function statusCells(tool: ToolLibraryTool, method: AlgorithmCatalogView['method
     tone: verification?.state === 'passed' ? 'ok' : 'idle',
   };
 
-  let releaseCell: StatusCell;
-  if (tool.state !== 'executable') {
-    releaseCell = { key: 'release', label: words('发布状态', 'Release'), state: 'not_admitted',
-      labelText: words('未进入采用', 'Not in adoption'),
-      basis: words('只有受控入口已放行的项才进入采用流程；登记与设计建议都不等于采用。',
-        'Only entries released on the controlled entry enter adoption; registration and design notes are not adoption.'),
-      tone: 'idle' };
-  } else if (!algorithms) {
-    releaseCell = { key: 'release', label: words('发布状态', 'Release'), state: 'unrecorded',
-      labelText: words('未读取', 'Not read'), basis: words('计算入口目录未读取，无法核对采用记录。', 'Compute catalog not read.'), tone: 'idle' };
-  } else {
-    const state = algorithms.adoption.state;
-    releaseCell = state === 'adopted'
-      ? { key: 'release', label: words('发布状态', 'Release'), state, labelText: words('已采用', 'Adopted'),
-        basis: words('采用记录与当前源码、资产和运行身份一致。', 'Adoption matches current source, assets and runtime identity.'), tone: 'ok' }
-      : state === 'stale'
-        ? { key: 'release', label: words('发布状态', 'Release'), state, labelText: words('采用记录失效', 'Adoption stale'),
-          basis: algorithms.adoption.reason ?? words('采用记录与当前源码或运行身份不一致，须重新核对后采用。', 'Adoption no longer matches current source or runtime identity.'),
-          tone: 'bad' }
-        : { key: 'release', label: words('发布状态', 'Release'), state, labelText: words('未采用', 'Not adopted'),
-          basis: algorithms.adoption.reason ?? words('尚无采用记录。', 'No adoption record yet.'), tone: 'warn' };
-  }
+  const releaseCell: StatusCell = tool.state !== 'executable'
+    ? { key: 'release', label: words('方法登记', 'Method registration'), state: 'not_implemented',
+      labelText: words('尚未接入', 'Not implemented'), basis: words('该方法尚无可执行固定实现。', 'Method has no registered fixed executor.'), tone: 'idle' }
+    : { key: 'release', label: words('方法登记', 'Method registration'), state: 'fixed_registered',
+      labelText: words('固定实现已登记', 'Fixed implementation registered'),
+      basis: words('不需要人工采用或逐次业务审批；执行时仍核代码摘要和 WFD 输入资格。',
+        'No manual adoption or per-run business approval; code identity and WFD eligibility are still verified.'), tone: 'ok' };
 
-  const dataCell: StatusCell = tool.state === 'needs_data'
-    ? { key: 'data', label: words('数据状态', 'Data'), state: 'missing', labelText: words('缺输入数据', 'Input missing'),
-      basis: words('登记明确缺本批输入；具体缺项见开发诊断。', 'This batch is missing the required inputs; see engineering diagnostics.'), tone: 'warn' }
-    : algorithms
-      ? algorithms.inputs.managedTables.status === 'available'
-        ? { key: 'data', label: words('数据状态', 'Data'), state: 'request_dependent', labelText: words('按请求核对', 'Per request'),
-          basis: words(`当前有 ${algorithms.inputs.managedTables.items.length} 张已受管表可选；每次请求仍按所选表、字段映射与可得时刻核对。`,
-            `${algorithms.inputs.managedTables.items.length} managed tables available; each request is still checked against the chosen table, field mapping and availability.`),
-          tone: 'ok' }
-        : { key: 'data', label: words('数据状态', 'Data'), state: 'unavailable', labelText: words('无可用输入', 'No input'),
-          basis: algorithms.inputs.managedTables.reason ?? words('当前没有可用的已受管表或固定快照。', 'No managed table or fixed snapshot available.'), tone: 'bad' }
-      : { key: 'data', label: words('数据状态', 'Data'), state: 'unrecorded', labelText: words('未读取', 'Not read'),
-        basis: words('输入目录未读取。', 'Input catalog not read.'), tone: 'idle' };
+  const dataCell: StatusCell = algorithms?.inputs.fixedSnapshots.status === 'available'
+    ? { key: 'data', label: words('数据状态', 'Data'), state: 'fixed_wfd', labelText: words('WFD 快照可读', 'WFD snapshot ready'),
+      basis: words('固定算法仅从 WFD 正式快照取数，不接受本地受管原件直算。',
+        'Fixed algorithms read only WFD published snapshots, not local managed files.'), tone: 'ok' }
+    : { key: 'data', label: words('数据状态', 'Data'), state: 'unavailable',
+      labelText: words('无可用固定快照', 'No fixed snapshot'),
+      basis: algorithms?.inputs.fixedSnapshots.reason ?? words('尚未读取真实 WFD 快照端口。', 'WFD snapshot port has not been verified.'),
+      tone: algorithms ? 'warn' : 'idle' };
 
   let runtimeCell: StatusCell;
   if (tool.state !== 'executable') {
@@ -205,7 +185,7 @@ function statusCells(tool: ToolLibraryTool, method: AlgorithmCatalogView['method
       basis: words('计算入口没有声明此方法。', 'The compute catalog does not declare this method.'), tone: 'bad' };
   } else if (method.status === 'ready') {
     runtimeCell = { key: 'runtime', label: words('运行状态', 'Runtime'), state: 'available', labelText: words('可执行', 'Available'),
-      basis: words('受控入口可用；执行前仍须核对输入、复权与可得时刻。', 'Controlled entry available; inputs, adjustment and availability still need checking.'), tone: 'ok' };
+      basis: words('固定算法可用；计算后仍核结果并经 WFD 正式提交。', 'Fixed algorithm available; results require independent verification and formal WFD publication.'), tone: 'ok' };
   } else if (method.status === 'blocked') {
     runtimeCell = { key: 'runtime', label: words('运行状态', 'Runtime'), state: 'blocked', labelText: words('受阻', 'Blocked'),
       basis: method.reason ?? words('输入或服务尚未就绪。', 'Input or service not ready.'), tone: 'warn' };
@@ -577,23 +557,6 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
         calendar: form.calendar === 'dense' ? { mode: 'dense' } : { mode: 'not_verified', note: '用户未提供交易日历；只按所供行计算。' } } };
   };
 
-  const run = async () => {
-    const call = buildCall();
-    if (typeof call === 'string') { setCallError(call); return; }
-    setBusy(true); setCallError(null); setCallView(null);
-    try {
-      let next = await submitAlgorithmCall(crypto.randomUUID(), call);
-      if (!alive.current) return;
-      setCallView(next);
-      for (let attempt = 0; attempt < 120 && !isTerminal(next.status) && alive.current; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        next = await readAlgorithmCall(next.taskId);
-        if (alive.current) setCallView(next);
-      }
-    } catch (failure) { if (alive.current) setCallError(errorDetail(failure)); }
-    finally { if (alive.current) setBusy(false); }
-  };
-
   const libraryStatus = loading ? 'loading' : loadError ? 'error' : view?.status === 'ready' ? 'ready' : 'unavailable';
   const fixedStatusView = fixedLoading ? 'loading' : fixedError ? 'error' : fixedCaps?.configured ? 'ready' : 'blocked';
   // 只发布"当前在看哪个算法"，不写会话、不触发计算。
@@ -876,76 +839,21 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
           </section>
 
           <section className="tools-section tools-compute" aria-labelledby="tools-compute">
-            <div className="tools-section-head"><h4 id="tools-compute">{words('本次受控计算', 'Controlled computation')}</h4>
-              <span className="algo-layer-note">{words('只有运行状态可执行时才出现表单', 'The form appears only when the runtime is available')}</span>
+            <div className="tools-section-head"><h4 id="tools-compute">{words('固定基础算法接口', 'Fixed algorithm interface')}</h4>
+              <span className="algo-layer-note">{words('只读展示；执行由 BD AGENTS 发起', 'Read-only; execution through BD AGENTS')}</span>
             </div>
-            {algorithmError
-              ? <p className="tools-muted">{algorithmError}</p>
-              : !algorithms ? <p className="tools-muted">{words('正在读取计算能力…', 'Loading compute capability…')}</p>
-              : !selectedMethod ? <p className="tools-muted">{words('当前算法没有受控计算方法；它的数据产品与批量执行配置在上方单独列出。', 'This algorithm has no controlled method; its data products and batch routes are listed above.')}</p>
-              : selectedMethod.status !== 'ready' ? <p className="tools-muted">{words('受控入口当前不可执行，因此不显示表单。具体维度与原因见底部折叠的“运行状态与工程诊断”，这里不重复告警。',
-                'The controlled entry is not runnable, so no form is shown. See the collapsed runtime diagnostics at the bottom instead of repeating the warning here.')}</p>
-              : <div className="tools-form">
-                <div className="tools-form-section">
-                  <h5>{words('输入表', 'Input table')}</h5>
-                  <label className="tools-field tools-field-wide"><span>{words('已受管表', 'Managed table')}</span>
-                    <select value={form.tableId} onChange={(event) => selectTable(event.currentTarget.value)}>
-                      <option value="">{words('选择已接收的数据表', 'Choose a received data table')}</option>
-                      {managedTables.map((table) => <option key={table.materialId} value={table.materialId}>{table.displayName} · {table.rowCount} {words('行', 'rows')}</option>)}
-                    </select></label>
-                  {selectedTable ? <p className="tools-field-hint">{selectedTable.format.toUpperCase()} · {selectedTable.rowCount} {words('行', 'rows')} · {selectedTable.columns.length} {words('列', 'columns')} · SHA-256 {shortDigest(selectedTable.sha256)}</p>
-                    : <p className="tools-field-hint">{words('表内容按材料身份固定；不读取任意路径，也不把显示名称当作证券身份。', 'Table content is pinned by material identity; no arbitrary paths and no display-name-as-security-identity.')}</p>}
-                </div>
-                {selectedTable && <>
-                  <div className="tools-form-section"><h5>{words('字段映射', 'Field mapping')}</h5>
-                    <div className="tools-form-grid">
-                      <FieldSelect label={words('时间列', 'Time column')} value={form.timestamp} options={selectedTable.columns} empty={words('选择时间列', 'Choose time column')} onChange={(value) => setField('timestamp', value)} />
-                      <FieldSelect label={words('收盘价列', 'Close column')} value={form.close} options={selectedTable.columns} empty={words('选择收盘价列', 'Choose close column')} onChange={(value) => setField('close', value)} />
-                      <FieldSelect label={words('开盘价列', 'Open column')} value={form.open} options={selectedTable.columns} empty={words('未映射', 'Not mapped')} onChange={(value) => setField('open', value)} />
-                      <FieldSelect label={words('最高价列', 'High column')} value={form.high} options={selectedTable.columns} empty={words('未映射', 'Not mapped')} onChange={(value) => setField('high', value)} />
-                      <FieldSelect label={words('最低价列', 'Low column')} value={form.low} options={selectedTable.columns} empty={words('未映射', 'Not mapped')} onChange={(value) => setField('low', value)} />
-                      <FieldSelect label={words('可得时间列', 'Available-at column')} value={form.availableAt} options={selectedTable.columns} empty={words('未映射', 'Not mapped')} onChange={(value) => setForm((current) => ({ ...current, availableAt: value, availability: value ? 'column' : current.availability }))} />
-                    </div>
-                  </div>
-                  <div className="tools-form-section"><h5>{words('本次参数', 'Parameters')}</h5>
-                    {selectedMethod.id === 'ma' ? <label className="tools-field"><span>{words('观测周期', 'Observation period')}</span>
-                      <input type="number" min={1} max={10000} step={1} value={form.period} onChange={(event) => setField('period', event.currentTarget.value)} /></label>
-                      : selectedMethod.id === 'macd' ? <p className="tools-field-hint">{words('固定 12/26/9；以所供窗口首条收盘价初始化，不接受续算状态。', 'Fixed 12/26/9; seeded by the first supplied close, no continuation state.')}</p>
-                      : <p className="tools-field-hint">{words('无参数；严格使用前一条和当前一条日线的开盘价、收盘价。', 'No parameters; uses the previous and current daily open/close only.')}</p>}
-                  </div>
-                  <div className="tools-form-section"><h5>{words('语义声明', 'Semantics')}</h5>
-                    <div className="tools-form-grid">
-                      <label className="tools-field"><span>{words('标的 / 序列', 'Subject / series')}</span><input value={form.subject} onChange={(event) => setField('subject', event.currentTarget.value)} placeholder={words('例如 600000.SH 或合成序列', 'e.g. 600000.SH or a synthetic series')} /></label>
-                      <label className="tools-field"><span>{words('币种', 'Currency')}</span><input value={form.currency} maxLength={3} onChange={(event) => setField('currency', event.currentTarget.value.toUpperCase())} placeholder="CNY" /></label>
-                      <label className="tools-field"><span>{words('时区', 'Timezone')}</span><input value={form.timezone} onChange={(event) => setField('timezone', event.currentTarget.value)} placeholder="Asia/Shanghai" /></label>
-                      <label className="tools-field"><span>{words('复权状态', 'Adjustment')}</span><select value={form.adjustment} onChange={(event) => setField('adjustment', event.currentTarget.value as FormState['adjustment'])}>
-                        <option value="unadjusted">unadjusted · 未复权</option><option value="as_stored">as_stored · 按表内存储值</option>
-                      </select></label>
-                      <label className="tools-field tools-field-wide"><span>{words('复权依据', 'Adjustment basis')}</span><input value={form.basis} onChange={(event) => setField('basis', event.currentTarget.value)} placeholder={words('例如：原始未复权价；不执行复权', 'e.g. stored unadjusted values; no adjustment applied')} /></label>
-                      <label className="tools-field"><span>{words('可得时刻', 'Availability')}</span><select value={form.availability} onChange={(event) => setField('availability', event.currentTarget.value as FormState['availability'])}>
-                        <option value="column">{words('逐行可得时间列', 'Per-row available-at column')}</option><option value="bar_close">{words('收盘后固定时刻', 'Fixed time after close')}</option>
-                      </select></label>
-                      {form.availability === 'bar_close'
-                        ? <label className="tools-field"><span>{words('收盘后时刻', 'Time after close')}</span><input value={form.closeTime} onChange={(event) => setField('closeTime', event.currentTarget.value)} placeholder="15:00:00" /></label>
-                        : <p className="tools-field-hint">{words('使用已映射的 available_at 列；缺失即失败，不补造时刻。', 'Uses the mapped available_at column; missing values fail instead of being fabricated.')}</p>}
-                      <label className="tools-field"><span>{words('日历完整性', 'Calendar completeness')}</span><select value={form.calendar} onChange={(event) => setField('calendar', event.currentTarget.value as FormState['calendar'])}>
-                        <option value="not_verified">{words('未核对（只按所供行）', 'Not verified (supplied rows only)')}</option><option value="dense">{words('逐日连续（缺日失败）', 'Dense calendar (gap fails)')}</option>
-                      </select></label>
-                      <label className="tools-check"><input type="checkbox" checked={form.synthetic} onChange={(event) => setField('synthetic', event.currentTarget.checked)} />
-                        <span>{words('这是隔离生成的合成测试数据', 'This is isolated synthetic test data')}</span></label>
-                    </div>
-                    <p className="tools-field-hint">{form.calendar === 'dense' ? words('逐日连续模式要求相邻行日期相差一天；周末或节假日缺口会明确失败。', 'Dense mode requires adjacent calendar days; weekend or holiday gaps fail explicitly.') : words('未核对模式仍会记录 CALENDAR_NOT_VERIFIED 缺口，不声称没有缺行。', 'Unverified mode records a CALENDAR_NOT_VERIFIED gap and never claims the calendar is complete.')}</p>
-                  </div>
-                </>}
-                <div className="tools-form-actions">
-                  <button type="button" className="primary-button tools-run" onClick={() => void run()} disabled={busy}>
-                    {busy ? <Loader2 className="tools-spin" size={16} aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
-                    {busy ? words('计算中…', 'Computing…') : words('开始计算', 'Run computation')}
-                  </button>
-                  <span className="tools-field-hint">{words('提交后由任务服务持有；重复请求按原任务查询，未知结果不重算。', 'Held by the task service; repeats query the original task and unknown results are not recomputed.')}</span>
-                </div>
-                {callError && <div className="tools-state-block"><ErrorNote detail={callError}>{words('本次计算没有提交成功或没有完成。', 'This computation was not submitted successfully or did not complete.')}</ErrorNote></div>}
-              </div>}
+            <p className="tools-description">{words(
+              '固定算法从 WFD 正式快照读取，直接计算结构化新数据，独立核对后经 WFD 正式交接与固定读回。这里不提供人工计算、采用或发布按钮。',
+              'Fixed algorithms read WFD snapshots, produce structured data, and publish through independent result verification and formal WFD readback. No manual execution, adoption or publishing controls here.'
+            )}</p>
+            {algorithmError && <p className="tools-muted">{algorithmError}</p>}
+            {selectedMethod && <p className="tools-muted">{words('方法编号', 'Method ID')}: <code>{selectedMethod.id}</code> · {selectedMethod.status}
+              {selectedMethod.reason && <span> · {selectedMethod.reason}</span>}</p>}
+            <button type="button" className="text-button" onClick={() => {
+              void listAlgorithmCalls().then(calls => { setCallView(calls[0] ?? null); })
+                .catch(reason => setCallError(errorDetail(reason)));
+            }}>{words('读取最近一次算法结果', 'Read latest algorithm result')}</button>
+            {callError && <ErrorNote detail={callError}>{words('算法结果读取失败。', 'Unable to read calculation result.')}</ErrorNote>}
           </section>
 
           {callView && <section className="tools-section tools-result" aria-labelledby="tools-result">

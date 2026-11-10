@@ -4,7 +4,7 @@ import { dirname, extname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CoreDatabase } from '../../platform/state/database.js';
 import type { PermissionService } from '../../platform/security/permissions.js';
-import { PermissionError, digestOperationArgs, type PermissionCapability } from '../../platform/security/permissions.js';
+import { digestOperationArgs, type PermissionCapability } from '../../platform/security/permissions.js';
 import { TaskError, type TaskExecutionContext, type TaskRecord, type TaskResult, type TaskRuntime, type TaskService } from '../../platform/jobs/tasks.js';
 import type { ProcessRuntime } from '../../platform/runtime/programs.js';
 import type { JsonValue, TaskEffectRecord, TaskRecoveryResult } from '../../contracts/task-contracts.js';
@@ -183,7 +183,7 @@ export class LocalAlgorithmService {
       expectedCodeVersion: this.codeBinding.version, confirmation: 'adopt-local-review' as const };
     const row = this.db.prepare("SELECT record_json,record_digest FROM algorithm_adoptions WHERE id='local-review'").get() as
       { record_json: string; record_digest: string } | undefined;
-    if (!row) return { state: 'not_adopted', reason: '尚未记录受控采用；读取目录、调用目录接口或装配服务都不会自动采用。', current, record: null, required };
+    if (!row) return { state: 'not_adopted', reason: '固定算法已注册；人工采用记录仅供旧诊断参考，不再决定是否允许计算。', current, record: null, required };
     try {
       const adoption = JSON.parse(row.record_json) as AlgorithmAdoptionRecord;
       if (financialDigest(adoption) !== row.record_digest || adoption.version !== 1
@@ -220,17 +220,22 @@ export class LocalAlgorithmService {
       .run(canonical(adoption), financialDigest(adoption), this.now());
     return this.adoptionStatus();
   }
-  private isEnabled(): boolean { return this.staticEnabled || this.adoptionStatus().state === 'adopted'; }
+  /** 注册的固定算法直接可执行；版本摘要、WFD 输入及进程权限仍逐次核真。 */
+  private isEnabled(): boolean { return this.environment === 'local-review' || this.staticEnabled; }
 
   catalog(): AlgorithmCatalogView {
-    const tableState = this.tableCatalog(), snapshotState = this.snapshotCatalog(), permission = this.executionPermission();
+    const tableState: AlgorithmCatalogView['inputs']['managedTables'] = {
+      status: 'unavailable', reason: '新的基础算法计算只从 WFD 固定快照取数，受管原件已退出计算入口。', items: [],
+    };
+    const snapshotState = this.snapshotCatalog(), permission = this.executionPermission();
     const enabled = this.isEnabled(), adoption = this.adoptionStatus();
-    const hasInput = (tableState.status === 'available' && tableState.items.length > 0) || snapshotState.status === 'available';
-    const reason = !enabled ? adoption.reason ?? '算法计算入口尚未启用；需在受控采用并由本机审核后开启。'
-      : permission.permission === 'unavailable' ? '无法读取当前权限账本，不能确认执行资格。'
-      : !hasInput ? '没有可用的已受管表或固定快照输入；请先在数据页完成材料接收或明确固定快照引用。' : null;
+    const hasInput = snapshotState.status === 'available';
+    const reason = !enabled ? '固定算法未由宿主启用。'
+      : permission.permission !== 'granted' ? '固定 Python 执行器未得到宿主执行许可；不请求逐次人工计算审批。'
+      : !hasInput ? '没有可用的 WFD 固定快照读取端口；请先确认产品、快照与定义版本。' : null;
     const methods = ALGORITHM_METHOD_IDS.map((id): AlgorithmCatalogView['methods'][number] => {
-      const method = ALGORITHM_METHODS[id], status = !enabled || permission.permission === 'unavailable' ? 'unavailable' as const : !hasInput ? 'blocked' as const : 'ready' as const;
+      const method = ALGORITHM_METHODS[id], status = !enabled || permission.permission === 'unavailable' ? 'unavailable' as const
+        : !hasInput || permission.permission !== 'granted' ? 'blocked' as const : 'ready' as const;
       return { id, title: method.title, description: method.description, status,
         reason: status === 'ready' ? null : reason,
         methodVersion: method.version, implementationVersion: this.bundle.version, parameters: PARAMETERS[id],
@@ -239,14 +244,14 @@ export class LocalAlgorithmService {
           fileHashes: this.bundle.hashes, tableAdapter: ALGORITHM_TABLE_ADAPTER_VERSION }) };
     });
     return { contractVersion: ALGORITHM_CONTRACT_VERSION, runtime: ALGORITHM_RUNTIME, environment: this.environment,
-      status: enabled && hasInput && permission.permission !== 'unavailable' ? 'available' : 'unavailable', enabled, reason, adoption,
+      status: enabled && hasInput && permission.permission === 'granted' ? 'available' : 'unavailable', enabled, reason, adoption,
       implementation: { version: this.bundle.version, files: this.bundle.hashes, codeVersion: this.codeBinding.version,
         codeFiles: this.codeBinding.files, binding: 'source-code', bindingRequired: false },
       execution: { pythonDigest: this.runtimeDigest, permission: permission.permission, reason: permission.reason },
       methods, inputs: { managedTables: tableState, fixedSnapshots: snapshotState },
-      limitations: ['本算法入口不提供复权工具或分钟/日线加工；缺少复权基准、时区或日历完整性时返回明确缺项。限定日线/分钟任务另由数据库固定计算入口提供。',
+      limitations: ['固定算法直接从 WFD 快照计算，不需逐次业务审批；执行器仍须由宿主登记且实际程序授权，复权、时区、日历缺口不能推断。',
         '固定快照只按真实 wfd.data-service/v1 data.read 固定实例/产品/快照/定义/分页读取；不读 latest、不写 WFD。',
-        '计算结果保留在原任务，本模块没有数据库写者。旧通用候选已停止新建和首次提交；新计算与发布须使用数据库固定计算及 R1 结构化交接入口，并符合其支持范围。'] };
+        '计算输出为已经结构化的数据；独立核验来源与算法版本后，交给固定派生发布者沿 R1 正式提交和 WFD 固定读回。'] };
   }
 
   submit(requestId: string, value: unknown, submission?: AlgorithmSubmissionContext): AlgorithmTaskView {
@@ -262,6 +267,8 @@ export class LocalAlgorithmService {
       }
       return this.reopenOrView(existing);
     }
+    if (normalized.source.kind !== 'fixed_snapshot')
+      throw new TaskError('ALGORITHM_WFD_ONLY', '基础算法仅接受 WFD 固定快照。原报须先完成 R1 正式发布与读回。');
     const request = attachPurposeEvidence(normalized, submission, this.now());
     const digest = financialDigest(request);
     this.assertEnabled(); this.assertDispatch();
@@ -283,6 +290,25 @@ export class LocalAlgorithmService {
     return this.view(accepted.task.id);
   }
 
+  /** 只供受信宿主独立核验，AGENTS 与 HTTP 无权直接获取完整冻结输入行。 */
+  verifiedInput(taskId: string): AlgorithmData {
+    const task = this.getTask(taskId), row = this.callRow(task.id);
+    this.assertTaskIdentity(task, row);
+    if (task.status !== 'succeeded' || !row.sealed_json || !row.sealed_digest)
+      throw new TaskError('ALGORITHM_INPUT_NOT_VERIFIED', '算法冻结输入尚未完整落盘，不能供独立核对。');
+    const sealed = JSON.parse(row.sealed_json) as SealedInput;
+    if (financialDigest(sealed) !== row.sealed_digest)
+      throw new TaskError('ALGORITHM_INPUT_CHANGED', '算法冻结输入摘要与持久记录不一致。');
+    validateData(sealed.data);
+    return structuredClone(sealed.data);
+  }
+
+  /** 给前端的只读任务索引；不得因页面读取启动计算或 WFD 提交。 */
+  list(): AlgorithmTaskView[] {
+    return this.db.prepare('SELECT task_id FROM algorithm_calls ORDER BY created_at DESC,task_id LIMIT 20')
+      .all().map(row => this.view(String(row.task_id)));
+  }
+
   view(taskId: string): AlgorithmTaskView {
     const task = this.getTask(taskId), row = this.callRow(task.id);
     // 只读历史结果只核原任务身份和持久摘要；当前源码/Python 变化不能使旧结果失去查询。
@@ -300,6 +326,8 @@ export class LocalAlgorithmService {
     this.assertEnabled(); this.assertDispatch(); this.assertExecutionBinding(task, this.callRow(task.id));
     if (task.requiresReview || task.status === 'needs_review') throw new TaskError('UNKNOWN_RESULT', '原结果未知；先按原任务核对，不能借恢复重算。');
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0 || task.version !== expectedVersion) throw new TaskError('TASK_VERSION_CONFLICT', '任务已变化，请按当前版本重新读取。');
+    if (this.requestOf(this.callRow(taskId)).source.kind !== 'fixed_snapshot')
+      throw new TaskError('ALGORITHM_WFD_ONLY', '旧受管文件算法任务不可恢复执行；可按原任务编号只读核验。');
     if (task.status === 'ready') this.tasks.start(taskId, expectedVersion);
     else if (task.status === 'paused') this.tasks.resume(taskId, expectedVersion);
     else if (task.status === 'interrupted') throw new TaskError('UNKNOWN_RESULT', '原尝试已中断，结果未知；先按原任务核对，不能自动重算。');
@@ -316,17 +344,20 @@ export class LocalAlgorithmService {
     try {
       this.assertActive(context); this.assertExecutionBinding(context.task, this.callRow(context.task.id));
       let row = this.callRow(context.task.id);
-      const request = this.requestOf(row), sealed = await this.ensureSealed(context, request, row);
+      const request = this.requestOf(row);
+      if (request.source.kind !== 'fixed_snapshot') throw new TaskError('ALGORITHM_WFD_ONLY',
+        '旧受管文件算法任务不再执行；已完成结果和原任务历史仍允许只读。');
+      const sealed = await this.ensureSealed(context, request, row);
       row = this.callRow(context.task.id);
       if (!row.sealed_digest) throw new TaskError('ALGORITHM_INPUT_CHANGED', '封闭输入摘要缺失。');
       const method = ALGORITHM_METHODS[request.methodId];
-      const operation = { operationId: 'algorithms.calculate', operationVersion: 1, approvalMode: 'review' as const,
+      const operation = { operationId: 'algorithms.calculate', operationVersion: 1, approvalMode: 'automatic' as const,
         argsDigest: digestOperationArgs({ methodId: request.methodId, methodVersion: method.version,
           implementationVersion: row.implementation_version, sealedDigest: row.sealed_digest, parameters: request.parameters }),
         targets: [{ kind: 'file' as const, path: this.pythonExecutable }] };
       const capabilities: PermissionCapability[] = [{ action: 'execute', target: { kind: 'file', path: this.pythonExecutable } }];
-      const approvalId = await this.authorize(context, operation, capabilities);
-      const assertAuthorized = () => { this.assertActive(context); this.assertExecutionBinding(context.task, this.callRow(context.task.id)); context.assertAuthorized(operation, capabilities, { approvalId }); };
+      // 固定方法没有逐次业务审核；仅核宿主预先授权的注册执行器，不自动提升程序执行权限。
+      const assertAuthorized = () => { this.assertActive(context); this.assertExecutionBinding(context.task, this.callRow(context.task.id)); context.assertAuthorized(operation, capabilities); };
       assertAuthorized();
       raw = await executeFinancialAssets({ bundle: this.loadBundle(row.implementation_version),
         request: json({ version: 1, kind: method.kind, operation: method.operation, params: request.parameters, data: sealed.data }),
@@ -714,6 +745,8 @@ export class LocalAlgorithmService {
   private reopenOrView(row: CallRow): AlgorithmTaskView {
     const task = this.tasks.get(row.task_id);
     if (task.status === 'ready') {
+      if (this.requestOf(row).source.kind !== 'fixed_snapshot')
+        throw new TaskError('ALGORITHM_WFD_ONLY', '旧受管原件任务仅供查询，不再启动计算。');
       this.assertDispatch(); this.assertExecutionBinding(task, row); this.tasks.start(task.id);
     }
     return this.view(task.id);
@@ -752,17 +785,8 @@ export class LocalAlgorithmService {
         && grant.capabilities.some(capability => capability.action === 'execute' && capability.target.kind === 'file'
           && (capability.target.path === this.pythonExecutable || capability.target.path === realpathSync(this.pythonExecutable))));
       return granted ? { permission: 'granted', reason: null }
-        : { permission: 'approval_required', reason: '尚未授予固定 Python 执行文件的持续执行权限；提交后会先请求本机审批。' };
+        : { permission: 'approval_required', reason: '固定执行器未获得宿主持续执行许可，不触发逐次人工审批。' };
     } catch { return { permission: 'unavailable', reason: '无法读取当前权限账本。' }; }
-  }
-  private async authorize(context: TaskExecutionContext, operation: Parameters<TaskExecutionContext['assertAuthorized']>[0],
-    capabilities: readonly PermissionCapability[]): Promise<string | undefined> {
-    try { context.assertAuthorized(operation, capabilities); return undefined; }
-    catch (error) {
-      if (!(error instanceof PermissionError) || error.code !== 'APPROVAL_REQUIRED') throw error;
-      const receipt = await context.requestApproval(operation, capabilities);
-      return receipt.approvalId ?? undefined;
-    }
   }
   private assertEnabled(): void { if (!this.isEnabled()) throw new TaskError('ALGORITHM_NOT_ENABLED', '算法计算入口尚未经受控采用启用。'); }
   private assertDispatch(): void { if (this.tasks.getControl().stopped) throw new TaskError('BD_STOPPED', '服务已停止新的算法计算派发。'); }

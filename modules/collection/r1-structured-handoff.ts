@@ -55,6 +55,9 @@ export interface R1LocalReferences {
   evidenceRefs: R1EvidenceRef[];
   /** New workspace preparations pin four role refs; old scalar task JSON stays unchanged. */
   contractBindingRequired?: true;
+  /** 固定算法独立核验引用：没有五步加工计划；由服务端按原任务计算结果反向核验。 */
+  fixedAlgorithm?: { taskId: string; requestId: string; resultSha256: string;
+    namespace: string; mode: 'production' | 'user_test'; expectedParentSnapshotId: string | null };
 }
 export interface R1StructuredRequest {
   datasetId: string;
@@ -175,7 +178,9 @@ export class R1HandoffService {
   }; processing?: { get(planId: string): unknown; outputArtifact(planId: string, outputId: string): { bytes: Buffer } };
     candidates?: { verifyObject(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): boolean;
       objectBytes(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): Buffer };
-    verifyCalculationCandidate?(input: R1CalculationCandidateVerification): void }) {
+    verifyCalculationCandidate?(input: R1CalculationCandidateVerification): void;
+    verifyAlgorithmCandidate?(input: R1CalculationCandidateVerification): void;
+    verifyFixedDerived?(refs: R1LocalReferences, documentSha256: string): void }) {
     const version = this.db.prepare('SELECT version FROM schema_versions WHERE module=?').get('r1-structured-handoff');
     if (version && !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='r1_record_associations'").get())
       fail('R1_ASSOCIATIONS_MISSING', '已有 R1 格式缺少原关联表，未迁移原件或重建空关联表。');
@@ -771,6 +776,7 @@ export class R1HandoffService {
 
   private assertCalculationCandidates(structured: Pick<R1StructuredRequest, 'definition' | 'payload'>, refs: R1LocalReferences,
     boundary: 'prepare' | 'first_send', restrictionOverride?: RestrictionEvidence | null): void {
+    if (refs.fixedAlgorithm) return; // 全部数据由独立固定算法核验器在 assertLocalRefs 中核对。
     const hasUploads = !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='harness_material_uploads'").get();
     for (const process of refs.processRefs) {
       const plan = asRecord(this.options.processing!.get(process.plan_id!));
@@ -820,11 +826,15 @@ export class R1HandoffService {
         // The durable intake task and original completed calculation are checked again by the verifier.
         // Filename, content hash alone, and caller-supplied lineage are never provenance authority.
         const staged = this.db.prepare(`SELECT u.request_id FROM material_objects m JOIN harness_material_uploads u
-          ON u.task_id=json_extract(m.envelope_json,'$.taskId') WHERE m.material_id=? AND u.request_id LIKE 'polars-stage:%'`).get(String(materialId));
+          ON u.task_id=json_extract(m.envelope_json,'$.taskId') WHERE m.material_id=?
+            AND (u.request_id LIKE 'polars-stage:%' OR u.request_id LIKE 'alg-stage:%')`).get(String(materialId)) as { request_id: string } | undefined;
         if (!staged) continue;
-        if (!this.options.verifyCalculationCandidate) fail('R1_CALCULATION_VERIFIER_UNBOUND', '该材料来自受管计算候选；缺少原计算核验器，不能按普通原件准备。');
-        this.options.verifyCalculationCandidate({ taskId: String(staged.request_id).slice('polars-stage:'.length), materialId: String(materialId),
-          planId: process.plan_id!, outputId: process.output_id!, definition: structured.definition, payload: structured.payload });
+        const derived = staged.request_id.startsWith('alg-stage:');
+        const verify = derived ? this.options.verifyAlgorithmCandidate : this.options.verifyCalculationCandidate;
+        if (!verify) fail('R1_CALCULATION_VERIFIER_UNBOUND', '派生材料缺少受信原计算验证器，不能按普通原件提交。');
+        verify({ taskId: staged.request_id.slice(derived ? 'alg-stage:'.length : 'polars-stage:'.length),
+          materialId: String(materialId), planId: process.plan_id!, outputId: process.output_id!,
+          definition: structured.definition, payload: structured.payload });
       }
     }
   }
@@ -834,7 +844,8 @@ export class R1HandoffService {
       .every(key => Array.isArray(refs[key as keyof R1LocalReferences]))) {
       fail('R1_LOCAL_REFERENCE', 'R1 需要完整的原件、材料、来源、加工及证据引用数组。');
     }
-    if (!this.options.processing) fail('R1_PROCESSING_UNBOUND', '未装配实际加工服务；只允许本地解释，禁止准备或提交新交接。');
+    if (!refs.fixedAlgorithm && !this.options.processing)
+      fail('R1_PROCESSING_UNBOUND', '未装配实际加工服务；只允许本地解释，禁止准备或提交新交接。');
     if (refs.sourceRefs.length !== 1 || refs.originalIds.length + refs.materialIds.length !== 1
       || refs.originalIds.length > 1 || refs.materialIds.length > 1) {
       fail('R1_MULTI_SOURCE_UNSUPPORTED', '本批只支持单材料/单来源小切片；不把多来源压成 first。');
@@ -862,6 +873,15 @@ export class R1HandoffService {
       verifyCanonicalDigest(String(original.source_json), String(original.source_digest), 'R1_SOURCE_CHANGED');
       const storedSource = JSON.parse(String(original.source_json)) as R1SourceRef;
       if (canonicalWfdJson(storedSource) !== canonicalWfdJson(source)) fail('R1_SOURCE_CHANGED', '来源引用与 BD 保存来源不同。');
+    }
+    if (refs.fixedAlgorithm) {
+      if (!this.options.verifyFixedDerived || refs.processRefs.length !== 0
+        || refs.originalIds.length !== 1 || refs.materialIds.length !== 0
+        || refs.evidenceRefs.length !== 1 || refs.evidenceRefs[0]?.content_sha256 !== source.sha256
+        || refs.evidenceRefs[0]?.kind !== 'fixed-algorithm-output')
+        fail('R1_DERIVED_PROOF_INVALID', '固定算法派生交接必须只有原任务的独立核验证明，不接受外加加工引用。');
+      this.options.verifyFixedDerived(refs, documentSha256);
+      return;
     }
     const allowedEvidence = new Set([source.sha256, documentSha256]);
     if (!refs.processRefs.length) fail('R1_PROCESS_REQUIRED', '至少需要一个真实加工引用。');

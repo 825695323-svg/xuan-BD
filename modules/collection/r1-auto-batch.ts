@@ -7,10 +7,9 @@ import type { MaterialService } from './materials/service.js';
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import type { R1AutoService, R1AutoState, R1AutoView } from './r1-auto.js';
 import { R1ChunkedCsvService } from './r1-chunked-csv.js';
-import { classifyR1AlgorithmInput, r1AlgorithmPeriod, readR1AlgorithmSettings, readR1BatchAlgorithmRouting,
+import { classifyR1AlgorithmInput, readR1AlgorithmSettings, readR1BatchAlgorithmRouting,
   type R1AlgorithmClassification, type R1AlgorithmSettings, type R1BarKind, type R1BatchAlgorithmRouting } from './r1-algorithm-routing.js';
-import { assertSourceObservationMAImplementationCurrent, buildSourceObservationMA, readSourceObservationMASelection, sourceObservationMACodeDigest,
-  SOURCE_OBSERVATION_MA_LIMITS, SOURCE_OBSERVATION_MA_VERSION, summarizeCalculatedMAProof,
+import { readSourceObservationMASelection, summarizeCalculatedMAProof,
   type CalculatedMAProof, type CalculatedMAProofSummary, type SourceObservationMAInput,
   type SourceObservationMAContext, type SourceObservationMASelection } from './source-observation-ma.js';
 import { readAdapterBindingRef, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
@@ -113,16 +112,8 @@ export class R1AutoBatchService {
     const row = this.db.prepare('SELECT value_json FROM app_settings WHERE key=?').get('r1.batch-algorithms');
     return row ? readR1AlgorithmSettings(JSON.parse(String(row.value_json))) : { revision: 0, dailyPeriod: null, minutePeriod: null };
   }
-  updateAlgorithmSettings(value: unknown): R1AlgorithmSettings {
-    const update = readR1AlgorithmSettings(value);
-    return this.options.database.transaction(() => {
-      const previous = this.algorithmSettings();
-      if (update.revision !== previous.revision) fail('R1_ALGORITHM_SETTINGS_CONFLICT', '算法周期已在其他页面改变，请读取当前设置后保存。');
-      const next = { ...update, revision: previous.revision + 1 };
-      this.db.prepare('INSERT INTO app_settings(key,value_json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json')
-        .run('r1.batch-algorithms', canonicalWfdJson(next));
-      return next;
-    });
+  updateAlgorithmSettings(_value: unknown): R1AlgorithmSettings {
+    fail('R1_BATCH_ALGORITHM_MANUAL_ONLY', '原报批次不再配置自动算法周期；请通过 BD AGENTS 基础算法统一接口人工选择周期。');
   }
   classify(bytes: Buffer, binding?: AdapterBindingRef): R1AlgorithmClassification {
     const adapter = binding ? (this.options.adapters ?? fail('R1_ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记，不能按声明式适配预检。')).resolve(binding) : undefined;
@@ -134,8 +125,8 @@ export class R1AutoBatchService {
   private needsProgress(record: BatchRecord): boolean {
     if (record.stopped || record.error) return false;
     // 已办结的批次依赖原交接事实；重开或迟到的任务事件不能按今天的连接重写其状态。
-    return record.items.some(item => (!item.materialId && !item.duplicateOf) || !this.options.auto.isAssociated(item.autoRequestId))
-      || this.calculationEntries(record).some(calc => !calc.materialId || !this.options.auto.isAssociated(calc.requestId));
+    // 原报批次不再自动恢复基础算法；旧派生记录仍可查询。
+    return record.items.some(item => (!item.materialId && !item.duplicateOf) || !this.options.auto.isAssociated(item.autoRequestId));
   }
   attach(): void {
     if (this.closed || this.unsubscribe.length) return;
@@ -172,10 +163,6 @@ export class R1AutoBatchService {
     const adapter = input.sourceAdapter
       ? (this.options.adapters ?? fail('R1_ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记，不能按声明式适配交接。')).resolve(input.sourceAdapter)
       : undefined;
-    if (input.calculation && !this.options.readCalculationInput) fail('R1_MA_READER_REQUIRED', '来源观测均线需要已装配的受控固定读取器。');
-    if (input.calculation) assertSourceObservationMAImplementationCurrent();
-    if (input.calculation && input.sourceValueColumns && !input.sourceValueColumns.includes(input.calculation.valueColumn))
-      fail('R1_MA_FIELD', '均线数值列须随本批原始数据一同交接；请在原列选择中包含它。');
     const items: BatchItem[] = [];
     for (const [index, file] of input.files.entries()) {
       const requestedUrl = fileUrl(input.source.requested_url, file.relativePath);
@@ -196,31 +183,6 @@ export class R1AutoBatchService {
     }
     const record: BatchRecord = { ...(adapter ? { adapter } : {}), input, inputSha256: digest, connection, operator,
       controlGeneration: this.options.tasks().getControl().generation, stopped: false, error: null, items, createdAt: now, updatedAt: now };
-    if (input.calculation) record.calculation = { state: 'waiting_inputs', requestId: `batch-ma:${digest}`,
-      uploadRequestId: `batch-ma-upload:${digest}`, custodyTaskId: null, materialId: null, source: null, proof: null, error: null,
-      implementation: { version: SOURCE_OBSERVATION_MA_VERSION, codeDigest: sourceObservationMACodeDigest() } };
-    if (input.algorithmRouting) {
-      const groups = new Map<string, { kind: R1BarKind; selection: SourceObservationMASelection; itemIds: string[] }>();
-      for (const item of items) {
-        const inspected = input.algorithmRouting.files.find(file => file.sha256 === item.sha256)!;
-        const period = r1AlgorithmPeriod(input.algorithmRouting.settings, inspected.kind);
-        if (!period || !inspected.complete || !inspected.valueColumn || !['daily_bar', 'minute_bar'].includes(inspected.kind)) continue;
-        if (input.sourceValueColumns && !input.sourceValueColumns.includes(inspected.valueColumn)) continue;
-        const key = canonicalWfdJson([inspected.kind, inspected.valueColumn, inspected.dateColumn, inspected.minuteColumn]);
-        const group = groups.get(key) ?? { kind: inspected.kind as R1BarKind,
-          selection: { method: 'source_observation_ma' as const, period, valueColumn: inspected.valueColumn }, itemIds: [] };
-        group.itemIds.push(item.itemId); groups.set(key, group);
-      }
-      record.calculations = [...groups.entries()].map(([key, group]) => {
-        const calculationId = `ma-${wfdSha256(key).slice(0, 16)}`, supported = !!this.options.readCalculationInput;
-        return { ...group, calculationId, seriesContinuation: true, state: supported ? 'waiting_inputs' : 'blocked',
-          requestId: `batch-ma:${digest}:${calculationId}`, uploadRequestId: `batch-ma-upload:${digest}:${calculationId}`,
-          custodyTaskId: null, materialId: null, source: null, proof: null,
-          error: supported ? null : { code: 'R1_MA_READER_REQUIRED', message: '来源观测均线没有受控固定读取器；本批原数据继续办理。' },
-          implementation: { version: SOURCE_OBSERVATION_MA_VERSION, codeDigest: sourceObservationMACodeDigest() } };
-      });
-      if (record.calculations.length) assertSourceObservationMAImplementationCurrent();
-    }
     this.db.prepare('INSERT INTO r1_auto_batches VALUES(?,?,?,?)').run(batchId, digest, canonicalWfdJson(record), now);
     void this.schedule(batchId);
     return this.view(record);
@@ -276,14 +238,7 @@ export class R1AutoBatchService {
         }
       }
     }
-    for (const calculation of this.calculationEntries(record)) {
-      if (calculation.materialId && ['recovering', 'stopped'].includes(this.calculationView(record, calculation)!.state)) await this.options.auto.advance(calculation.requestId);
-      else if (calculation.custodyTaskId && !calculation.materialId) {
-        const task = this.options.tasks().get(calculation.custodyTaskId);
-        if (task.status === 'ready') this.options.tasks().start(task.id, task.version);
-        else if (['paused', 'interrupted'].includes(task.status)) this.options.tasks().resume(task.id, task.version);
-      }
-    }
+    // 手动续办只推进原报；历史派生任务不再自动恢复。
     await this.schedule(batchId); return this.get(batchId);
   }
   async dispose(): Promise<void> {
@@ -378,142 +333,7 @@ export class R1AutoBatchService {
       }
       if (item.stage === 'awaiting_upload') return;
     }
-    this.partitionCalculations(record);
-    for (const calculation of this.calculationEntries(record)) await this.progressCalculation(record, calculation);
-  }
-  private partitionCalculations(record: BatchRecord): void {
-    if (!record.calculations) return;
-    for (const calculation of [...record.calculations]) {
-      if (calculation.partitioned || calculation.state !== 'waiting_inputs') continue;
-      const items = record.items.filter(item => calculation.itemIds!.includes(item.itemId)).map(item => this.itemView(item, record));
-      if (items.some(item => item.state !== 'associated')) continue;
-      const products = new Map<string, string[]>();
-      for (const item of items) {
-        const association = item.auto?.currentRequest?.local.associations;
-        const first = Array.isArray(association) && isWfdRecord(association[0]) ? association[0] : null;
-        if (typeof first?.product_id !== 'string') continue;
-        const ids = products.get(first.product_id) ?? []; ids.push(item.itemId); products.set(first.product_id, ids);
-      }
-      if (products.size > 1) {
-        const offset = record.calculations.indexOf(calculation);
-        record.calculations.splice(offset, 1, ...[...products].map(([productId, itemIds]) => {
-          const suffix = wfdSha256(productId).slice(0, 12);
-          return { ...calculation, partitioned: true, itemIds, calculationId: `${calculation.calculationId}-${suffix}`,
-            requestId: `${calculation.requestId}:${suffix}`, uploadRequestId: `${calculation.uploadRequestId}:${suffix}` };
-        }));
-      } else calculation.partitioned = true;
-      this.save(record);
-    }
-  }
-  private async progressCalculation(record: BatchRecord, calculation: BatchCalculationRecord): Promise<void> {
-    const selection = calculation.selection ?? record.input.calculation;
-    if (!calculation || !selection || ['associated', 'blocked'].includes(calculation.state)) return;
-    // A batch made entirely from previous acquisitions still uses their original identities once each.
-    const selectedItems = calculation.itemIds ? record.items.filter(item => calculation.itemIds!.includes(item.itemId)) : record.items;
-    const inputs = [...new Map(selectedItems.map(item => {
-      const view = this.itemView(item, record); return [view.autoRequestId, view];
-    })).values()];
-    for (const item of inputs) {
-      const inspected = item.algorithmInspection;
-      if (!inspected) continue;
-      const expected = record.input.algorithmRouting?.files.find(file => file.sha256 === item.sha256);
-      if (!['daily_bar', 'minute_bar'].includes(inspected.kind) || !inspected.complete || inspected.valueColumn !== selection.valueColumn
-        || calculation.kind && inspected.kind !== calculation.kind || expected && canonicalWfdJson(expected) !== canonicalWfdJson(inspected)) {
-        calculation.state = 'blocked'; calculation.error = { code: 'R1_ALGORITHM_CONTENT_MISMATCH',
-          message: `原件 ${item.name} 的完整内容不符合本批冻结的行情算法路由：${inspected.reason} 原数据仍按原编号办理。` }; this.save(record); return;
-      }
-    }
-    const blocked = inputs.find(item => item.state === 'blocked' || item.state === 'conflicts_pending');
-    if (blocked) { calculation.state = 'blocked'; calculation.error = { code: 'R1_MA_INPUT_BLOCKED', message: `原件 ${blocked.name} 未完成原数据交接，未计算或发布派生结果。` }; this.save(record); return; }
-    if (inputs.some(item => item.state !== 'associated')) return;
-    if (inputs.some(item => !item.algorithmInspection)) {
-      calculation.state = 'blocked'; calculation.error = { code: 'R1_ALGORITHM_INSPECTION_MISSING', message: '完整原件尚无服务端行情分类证据，未计算。' }; this.save(record); return;
-    }
-    this.assertCurrent(record);
-    if (calculation.implementation.version !== SOURCE_OBSERVATION_MA_VERSION || calculation.implementation.codeDigest !== sourceObservationMACodeDigest()) {
-      calculation.state = 'blocked'; calculation.error = { code: 'R1_MA_IMPLEMENTATION_CHANGED', message: '均线代码与本批接受时冻结的身份不同，保留原批，不静默换实现。' }; this.save(record); return;
-    }
-    try {
-      assertSourceObservationMAImplementationCurrent();
-      if (inputs.reduce((sum, input) => sum + input.auto!.currentRequest!.rowCount, 0) > SOURCE_OBSERVATION_MA_LIMITS.maxRows)
-        fail('R1_MA_ROW_BUDGET', '本批已关联观测合计超过 5000 行，未开始读取固定产品或生成派生结果。');
-      let bytes: Buffer | null = null;
-      if (!calculation.proof) {
-        calculation.state = 'calculating'; this.save(record);
-        if (calculation.seriesContinuation && !calculation.frozenSeries) {
-          const current = inputs.at(-1)!;
-          const context = await this.options.auto.readCalculationContext(current.autoRequestId); this.assertCurrent(record);
-          const refs = new Map<string, { materialId: string; autoRequestId: string }>();
-          for (const previous of this.records().filter(previous => previous.createdAt <= record.createdAt).sort((a, b) => a.createdAt - b.createdAt)) {
-            if (canonicalWfdJson(previous.connection) !== canonicalWfdJson(record.connection) || previous.input.datasetId !== record.input.datasetId
-              || previous.input.source.source_id !== record.input.source.source_id || previous.input.source.provider !== record.input.source.provider
-              || previous.input.source.requested_url !== record.input.source.requested_url
-              || previous.input.source.usage_scope !== record.input.source.usage_scope) continue;
-            for (const item of previous.items) {
-              const view = this.itemView(item, previous), associations = view.auto?.currentRequest?.local.associations;
-              const first = Array.isArray(associations) && isWfdRecord(associations[0]) ? associations[0] : null;
-              if (view.state !== 'associated' || first?.product_id !== context.productId || !view.materialId
-                || view.algorithmInspection?.kind !== current.algorithmInspection?.kind) continue;
-              refs.set(view.autoRequestId, { materialId: view.materialId, autoRequestId: view.autoRequestId });
-            }
-          }
-          for (const item of inputs) refs.set(item.autoRequestId, { materialId: item.materialId!, autoRequestId: item.autoRequestId });
-          calculation.frozenSeries = { inputs: [...refs.values()], context }; this.save(record);
-        }
-        const read: SourceObservationMAInput[] = [];
-        for (const item of calculation.frozenSeries?.inputs ?? inputs) {
-          read.push(await this.options.readCalculationInput!({ materialId: item.materialId!, autoRequestId: item.autoRequestId }, selection));
-          this.assertCurrent(record);
-        }
-        const generated = buildSourceObservationMA(selection, read, calculation.frozenSeries?.context); bytes = generated.bytes;
-        const now = new Date().toISOString().replace(/\.\d{3}Z$/u, 'Z');
-        calculation.proof = generated.proof;
-        calculation.source = { source_id: 'bd.source_observation_ma', provider: 'BD 本机确定性计算',
-          requested_url: `urn:bd:source-observation-ma:${generated.proof.materialSha256}`,
-          requested_at_utc: now, acquired_at_utc: now, usage_scope: record.input.source.usage_scope,
-          authorization: record.input.source.authorization ? { ...record.input.source.authorization,
-            basis: `本批明确授权的原数据与来源观测均线一并交接；原授权依据：${record.input.source.authorization.basis}` } : undefined };
-        calculation.state = 'custody'; this.save(record);
-      }
-      if (!calculation.custodyTaskId) {
-        const previous = this.options.materials.requestTask(calculation.uploadRequestId);
-        if (previous) { calculation.custodyTaskId = previous.id; this.save(record); }
-        else {
-          if (!bytes) {
-            const read: SourceObservationMAInput[] = [];
-            for (const item of calculation.frozenSeries?.inputs ?? inputs) {
-              read.push(await this.options.readCalculationInput!({ materialId: item.materialId!, autoRequestId: item.autoRequestId }, selection)); this.assertCurrent(record);
-            }
-            const replayed = buildSourceObservationMA(selection, read, calculation.frozenSeries?.context);
-            if (replayed.proof.materialSha256 !== calculation.proof.materialSha256 || canonicalWfdJson(replayed.proof) !== canonicalWfdJson(calculation.proof))
-              fail('R1_MA_RESULT_CHANGED', '按冻结输入重建的派生候选与原证明不同，未替换原结果。');
-            bytes = replayed.bytes;
-          }
-          calculation.custodyTaskId = await this.options.accept({ bytes, name: 'source-observation-ma.json', category: 'data', requestId: calculation.uploadRequestId });
-          this.assertCurrent(record); this.save(record);
-        }
-      }
-      if (!calculation.materialId) {
-        const task = this.options.tasks().get(calculation.custodyTaskId!);
-        if (task.status === 'ready') { this.options.tasks().start(task.id, task.version); return; }
-        if (task.status === 'succeeded') {
-          const material = this.options.materials.getByTask(task.id) ?? fail('R1_MA_MATERIAL_MISSING', '派生保管任务成功但没有实际材料。');
-          if (material.envelope.sha256 !== calculation.proof.materialSha256) fail('R1_MA_RESULT_CHANGED', '派生保管材料摘要与固定计算证明不符。');
-          calculation.materialId = material.envelope.materialId; calculation.state = 'processing'; this.save(record);
-        } else if (['failed', 'cancelled', 'blocked', 'needs_review', 'interrupted', 'paused'].includes(task.status)) {
-          fail(task.error?.code ?? 'R1_MA_CUSTODY_BLOCKED', task.error?.message ?? '派生材料尚未完成保管，保留原任务。');
-        } else return;
-      }
-      const auto = this.options.auto.startCalculated({ requestId: calculation.requestId, materialId: calculation.materialId!,
-        source: calculation.source!, datasetId: record.input.datasetId }, calculation.proof, record.operator);
-      calculation.state = auto.state === 'associated' ? 'associated' : auto.state === 'recovering' ? 'recovering'
-        : auto.state === 'blocked' || auto.state === 'conflicts_pending' || auto.state === 'awaiting_answers' ? 'blocked' : auto.state === 'stopped' ? 'stopped' : 'processing';
-      calculation.error = auto.state === 'awaiting_answers' ? { code: 'R1_MA_GENERATED_EVIDENCE', message: '受控生成材料存在未预期语义缺项，未以来源原报方式发布。' } : auto.error;
-      this.save(record);
-    } catch (error) {
-      if (error instanceof TaskError && error.code === 'R1_AUTO_BUSY') return;
-      calculation.error = errorView(error); calculation.state = /STOPPED|SERVICE_CLOSED/u.test(calculation.error.code) ? 'stopped' : 'blocked'; this.save(record);
-    }
+    // 不再自动计算或发布均线。历史结果留在原批次持久记录。
   }
   private calculationView(record: BatchRecord, calculation: BatchCalculationRecord): R1BatchCalculationView | null {
     const selection = calculation.selection ?? record.input.calculation;
@@ -567,9 +387,7 @@ export class R1AutoBatchService {
       : items.some(item => item.state === 'awaiting_answers') ? 'awaiting_answers'
       : items.some(item => item.state === 'conflicts_pending') ? 'conflicts_pending'
       : items.some(item => item.state === 'blocked') ? 'blocked'
-      : calculations.some(calculation => calculation.state === 'recovering') ? 'recovering' : calculations.some(calculation => calculation.state === 'stopped') ? 'stopped'
-      : calculations.some(calculation => !['associated', 'blocked'].includes(calculation.state)) ? 'running'
-      : calculations.some(calculation => calculation.state === 'blocked') ? 'blocked' : 'completed';
+      : 'completed'; // 批次完成只核原报，不再等待派生算法。
     return { batchId: record.input.batchId, source: record.input.source, datasetId: record.input.datasetId,
       datePolicy: record.input.datePolicy ?? null, state, items, nextUploadItemId, error, duplicateBatch: false,
       sourceValueColumns: record.input.sourceValueColumns ?? null,
@@ -645,6 +463,8 @@ function readContextTemplate(value: unknown): NonNullable<R1BatchStartInput['sou
 }
 function readStart(value: unknown): R1BatchStartInput {
   const body = object(value, ['batchId', 'source', 'datasetId', 'files', 'datePolicy', 'sourceValueColumns', 'calculation', 'algorithmRouting', 'sourceAdapter', 'sourceContextTemplate']); id(body.batchId); id(body.datasetId);
+  if (body.calculation !== undefined || body.algorithmRouting !== undefined)
+    fail('R1_BATCH_ALGORITHM_MANUAL_ONLY', '原报批次不再接受算法参数。请先发布到 WFD，再通过会话基础算法接口明确发起计算。');
   const source = object(body.source, ['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope', 'authorization', 'license']);
   assertKnownR1Source(source as unknown as R1SourceDeclaration);
   const requested = parseR1Utc(String(source.requested_at_utc)), acquired = parseR1Utc(String(source.acquired_at_utc));

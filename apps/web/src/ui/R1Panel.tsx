@@ -2,14 +2,12 @@ import { R1DuplicateResult } from './R1DuplicateResult';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, RefreshCw, ShieldAlert } from 'lucide-react';
 import type { R1CapabilitiesView, R1Mapping, R1PrepareInput, R1RequestSummary, R1RequestView, R1ScalarMapping, R1SourceDeclaration, R1TabularMapping, R1TimeMapping } from '../../../../contracts/r1-contracts';
-import type { FixedCalculationCandidateSelection } from '../../../../contracts/fixed-calculation-contracts';
 import type { MaterialCategory, MaterialEnvelope, MaterialRecord } from '../../../../modules/collection/materials/contracts';
 import type { XlsxColumnType, XlsxTableSelection } from '../../../../modules/collection/data-processing/xlsx-table';
 import { r1SourceGaps, r1SourceReadyForHandoff, validR1Authorization, type R1SourceAuthorization } from '../../../../modules/collection/r1-source';
 import type { BdJob } from '../bd-api';
 import { dataBrowserApi } from '../data-browser-api';
 import { r1Api, type R1XlsxPreview } from '../r1-api';
-import { fixedCalculationApi } from '../fixed-calculation-api';
 import { ErrorNote, errorDetail, useWords } from './Controls';
 import { R1AutoPanel } from './R1AutoPanel';
 import { DocumentProcessingPanel } from './DocumentProcessingPanel';
@@ -228,7 +226,6 @@ export function R1Panel({ algorithmFocus = null }: { algorithmFocus?: AlgorithmE
   const words = useWords();
   const [caps, setCaps] = useState<R1CapabilitiesView | null>(null), [recent, setRecent] = useState<R1RequestSummary[]>([]);
   const [materials, setMaterials] = useState<MaterialEnvelope[]>([]), [materialId, setMaterialId] = useState('');
-  const [calculationSelection, setCalculationSelection] = useState<FixedCalculationCandidateSelection | null>(null);
   const [materialCategory, setMaterialCategory] = useState<MaterialCategory>('unclassified');
   const [selectedMaterial, setSelectedMaterial] = useState<MaterialRecord | null>(null);
   const [materialLoading, setMaterialLoading] = useState(false), [materialError, setMaterialError] = useState<string | null>(null);
@@ -316,7 +313,6 @@ export function R1Panel({ algorithmFocus = null }: { algorithmFocus?: AlgorithmE
   const patchScalar = (patch: Partial<R1ScalarMapping>) => setScalarMapping(previous => ({ ...previous, ...patch }));
   const patchXlsx = (patch: Partial<ReturnType<typeof emptyXlsxDraft>>) => setXlsxDraft(previous => ({ ...previous, ...patch }));
   const chooseMaterial = (id: string) => { setMaterialId(id); setXlsxPreview(null); setXlsxDraft(emptyXlsxDraft());
-    setCalculationSelection(previous => previous?.materialId === id ? previous : null);
     setSource(previous => { const next = { ...previous }; delete next.license; return { ...next, authorization: unknownAuthorization() }; }); };
   const patchBar = (key: Exclude<keyof BarMapping, 'frequency'>, value: string) =>
     setTabularMapping(previous => {
@@ -496,19 +492,7 @@ export function R1Panel({ algorithmFocus = null }: { algorithmFocus?: AlgorithmE
     setJob(task); const created = await r1Api.planByRequest(id); if (created?.planId) await readPlan(String(created.planId));
     setNotice(words('计划请求已受理，尚未运行加工或提交数据库。请刷新核对后运行五步。', 'Plan accepted, not executed or submitted. Refresh, then explicitly run the processing steps.'));
   };
-  const startNew = () => { setPlan(null); setPlanRequestId(null); setPlanId(''); setJob(null); setView(null); setConfirmed(false); setRequestId(newId('request')); setSource(emptySource()); setCalculationSelection(null); setNotice(''); };
-  const useCalculationCandidate = async (selection: FixedCalculationCandidateSelection) => {
-    if (busy || fixed) throw new Error(words('请先完成当前请求，或选择“另建新请求”，再使用计算候选。', 'Finish the current request or start another request before using a calculated candidate.'));
-    await refreshLists();
-    startNew(); chooseMaterial(selection.materialId); setCalculationSelection(selection);
-    setFormat('json'); setRowMode('scalar'); setScalarMapping(emptyScalarMapping()); setFacts({});
-    const target = JSON.parse(targetTemplate);
-    target.definition.measurement_nature = 'derived';
-    target.definition.semantic_context.content_nature = 'deterministic_derived';
-    target.definition.algorithm_definition = selection.algorithmDefinition;
-    setTargetText(JSON.stringify(target, null, 2));
-    setNotice(words('已选中计算候选，并带入固定算法定义。请继续核对来源、业务目标和字段映射，运行五步加工后再预览交接。', 'Calculated candidate selected with its fixed algorithm definition. Verify its source, target and mapping, then run processing before previewing the handoff.'));
-  };
+  const startNew = () => { setPlan(null); setPlanRequestId(null); setPlanId(''); setJob(null); setView(null); setConfirmed(false); setRequestId(newId('request')); setSource(emptySource()); setNotice(''); };
   const uploadOriginal = async (file: File, category: MaterialCategory) => {
     const uploaded = await r1Api.upload(file, newId('upload'), category);
     setJob(uploaded); chooseMaterial('');
@@ -531,7 +515,7 @@ export function R1Panel({ algorithmFocus = null }: { algorithmFocus?: AlgorithmE
       <span>{caps?.configuration.reason ?? words('当前连接来自本机登记；可只读核对数据库能力，每次交接仍需明确确认。', 'The connection comes from local registration. Check its capabilities read-only; each handoff still requires explicit confirmation.')}</span>
       <button type="button" className="text-button" disabled={busy || !ready} onClick={() => void action(async () => { const result = await r1Api.check(); setNotice(result.supported ? words('当前机器入口真实声明支持 data_only。', 'The live machine advertises data_only.') : String(result.reason)); })}>{words('只读核对数据库能力', 'Check database capabilities (read-only)')}</button></div>
     {!ready && !loading && <div className="database-gap"><ShieldAlert size={20} aria-hidden="true" /><p>{words('未绑定可用的 data_only 连接：不能提交、不能在网页填写 store/runtime 或权限绕过配置。仍可查看已保存的本地回链。', 'No usable data_only binding: submission is disabled. The page cannot override store/runtime or permissions. Saved local links remain readable.')}</p></div>}
-    <ComputationPanel ready={ready} onUseCandidate={useCalculationCandidate} focus={algorithmFocus?.kind === 'fixed' ? algorithmFocus : null} />
+    <ComputationPanel focus={algorithmFocus?.kind === 'fixed' ? algorithmFocus : null} />
     <R1AutoPanel materials={materials} materialId={materialId} material={activeMaterial} materialLoading={materialLoading} materialError={materialError}
       source={source} ready={ready} disabled={busy || fixed || loading} onChooseMaterial={chooseMaterial} onSourceChange={setSource} focus={algorithmFocus?.kind === 'batch' ? algorithmFocus : null}
       onUpload={async (file, category) => { setBusy(true); try { await uploadOriginal(file, category); } finally { setBusy(false); } }} />
@@ -762,9 +746,7 @@ export function R1Panel({ algorithmFocus = null }: { algorithmFocus?: AlgorithmE
         const declaration = record(record(output?.target).declaration), frozen = readMapping(declaration.mapping);
         if (!frozen) throw new Error(words('冻结计划中的字段映射无法核对；请保留原计划编号并检查合同。', 'The frozen plan mapping cannot be verified. Preserve the original plan ID and inspect the contract.'));
         const input = { requestId, planId, outputId, source, mapping: frozen, target: JSON.parse(targetText) as R1PrepareInput['target'] };
-        const prepared = calculationSelection?.materialId === materialId
-          ? await fixedCalculationApi.prepare(calculationSelection.taskId, input)
-          : await r1Api.prepare(input);
+        const prepared = await r1Api.prepare(input);
         showView(prepared); setConfirmed(false); await refreshLists(); setNotice(words('已冻结文档和连接身份。追加请求将跳过相同内容，先追加无冲突新记录，冲突项保留待确认；尚未提交。', 'Document and connection identity frozen locally. Nothing has been submitted to WFD.'));
       })}>{words('仅准备并预览，不提交', 'Prepare and preview only')}</button>
     </section>

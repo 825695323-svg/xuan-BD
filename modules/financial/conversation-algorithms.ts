@@ -10,19 +10,20 @@ import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import type { FileReferenceService } from '../../platform/resources/files.js';
 import type { AlgorithmCatalogView } from './algorithm-types.js';
+import { basicAlgorithmToolContract, bdSessionToolContract } from './basic-algorithm-tool-contract.js';
 
-const ACTIONS = new Set(['algorithms.capabilities', 'algorithms.calculate', 'algorithms.status']);
+const ACTIONS = new Set(['bd.session.capabilities', 'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status']);
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
 const text = (key: string, label: string, maxLength = 160, required = true): SkillField =>
   ({ key, label, type: 'text', required, maxLength });
 const view = (value: unknown): Record<string, JsonValue> => ({ kind: 'conversation-algorithm', modelPreview: json(value) });
 
 /**
- * 基础算法与当前会话分支之间的只读/受控桥。
+ * 基础算法与当前会话分支的工具桥：固定方法执行并经过一次独立核对写回 WFD。
  *
  * - capabilities 只读目录、采用状态和真实数据库能力，不能采用、启用或授予 Python 执行权限。
- * - calculate 只提交已有 LocalAlgorithmService；审批仍由原服务任务和现有本机审批完成。
- * - status 只读本分支原任务；结果按有限窗口给模型，完整行留在原结果与后续候选对象中。
+ * - calculate 调用注册固定算法；没有逐次业务审批，任务身份与错误仍由 TaskService 持有。
+ * - publish 仅恢复原 WFD 写入身份；status 只读本分支原任务。
  */
 export class ConversationAlgorithmBridge {
   readonly registrations: readonly SkillRegistration[];
@@ -34,19 +35,27 @@ export class ConversationAlgorithmBridge {
       CREATE INDEX conversation_algorithm_local ON conversation_algorithm_links(local_task_id);`);
     const registration = (action: string, title: string, description: string, fields: SkillField[]): SkillRegistration => ({
       action, title, description, fields, runtimeId: 'direct', kind: 'direct', modelCalls: 0,
-      permissionSummary: ['只读取本机算法目录、采用状态与真实数据库能力；不能采用、启用或授予持续执行权限',
-        '计算沿原算法服务任务与本机逐次审批；结果只是本地持久结果，不自动发布',
-        '计算结果保留原身份；正式交接由 R1 单独核验并确认'],
+      permissionSummary: ['只读取固定算法目录及真实 WFD 快照能力；工具本身不能授予程序执行器权限',
+        '固定算法无逐次业务审批；宿主执行器许可与方法版本仍需核实',
+        '结构化计算结果由独立核对器检查，直接复用 R1 与 WFD 固定读回，不回到原报五步'],
       available: () => ({ available: !!options.companion.algorithms,
         ...(!options.companion.algorithms ? { reason: '基础算法服务尚未装配。' } : {}) }),
     });
     this.registrations = [
+      registration('bd.session.capabilities', '查看 BD AGENTS 统一会话工具契约',
+        '只读展示采集源、接口源、文件与基础算法的现有会话接口、边界和 WFD 输入要求；不启动采集、计算或发布。', []),
+      registration('algorithms.contract', '读取基础算法统一接口契约',
+        '返回各算法独立 methodId（算法编号）、参数、输入字段、版本及可调用状态。观测均线是基础算法目录的一个预留独立方法，尚未完成 WFD-only 移植时标记 blocked（不可执行）；不会假称已运行。',
+        [text('methodId', '指定算法编号，留空返回全部', 160, false)]),
       registration('algorithms.capabilities', '发现本机基础算法与真实数据能力',
-        '读取当前算法目录、受控采用状态、真实输入（本会话分支通过 material.read 保管的受管表/固定快照）与可用数据库能力。受管表不会列出其他会话或分支的材料；固定快照仍按实际数据库授权读取。只读：不会采用、启用、修改绑定或授予Python（编程语言）执行权限。人类只需说明要用哪份材料或产品、哪个算法；模型从返回的方法、字段和产品元数据判断，不需要人类填写JSON、实例或内部编号。', []),
+        '只读列出固定基础算法、WFD 固定快照输入和当前执行能力。新计算只走 AGENTS 工具，结果由独立核对器直接提交 WFD，无须沿原报五步加工。', []),
       registration('algorithms.calculate', '受控执行已登记基础算法',
-        'calculationJson 由模型按 capabilities 返回的真实方法参数、字段映射、语义、日历和固定快照身份组装，不是让人类填写的表单。受管表只接受本会话分支通过 material.read 保管的原件；固定快照仍按实际数据库授权。计算只调用本机已登记算法，沿原任务与本机逐次审批；不会自动入库、发布或改用旧 compute_assets（旧计算资产）入口。提交后按返回的任务编号核对本次审批与实际结果。', [
+        'calculationJson 由 BD AGENTS 按算法契约和真实 WFD 固定快照组装。固定算法直接计算，独立核对器检查数据身份、方法版本、行值和摘要，复用 R1 正式提交与 WFD 固定读回。无需人工算法执行或派生入库审批，也不走原报五步加工。', [
           text('calculationJson', '算法计算请求（模型从实际元数据组装）', 100_000),
         ]),
+      registration('algorithms.publish', '按原算法任务恢复 WFD 派生结果发布',
+        '不重新计算、不接受自填数据行。按本会话已成功的原算法任务，核独立派生校验并沿原 R1 请求恢复提交与固定读回。',
+        [text('taskId', '已完成算法任务编号')]),
       registration('algorithms.status', '查看本会话原算法结果',
         '按本会话分支原算法任务编号读取真实状态、持久结果摘要、有限结果窗口和来源谱系。不重算、不发布、不读取其他会话任务；完整数值仍在原持久结果中。', [
           text('taskId', '原算法任务编号（来自本会话计算或状态结果）'),
@@ -64,18 +73,29 @@ export class ConversationAlgorithmBridge {
     // 直接模型动作必须先取得当前模型分享回执；否则 saveResultProof 会拒绝返回。
     const authority = await acquireAuthority(context, action, args, []);
     authority.assert(); this.options.companion.bd?.assertDispatch();
+    if (action === 'bd.session.capabilities') {
+      const contract = bdSessionToolContract(this.modelCatalog(service, origin));
+      authority.assert();
+      return { summary: '已读取 BD AGENTS 会话工具合同；只读，不创建采集、计算或发布任务。', data: view(contract) };
+    }
+    if (action === 'algorithms.contract') {
+      const methodId = typeof args.methodId === 'string' && args.methodId.trim() ? args.methodId.trim() : undefined;
+      const contract = basicAlgorithmToolContract(this.modelCatalog(service, origin), methodId);
+      authority.assert();
+      return { summary: '已读取基础算法独立接口及真实可用状态；未采用或执行任何方法。', data: view(contract) };
+    }
     if (action === 'algorithms.capabilities') {
       const catalog = this.modelCatalog(service, origin);
       authority.assert();
       return { summary: catalog.enabled
-        ? '已读取本机算法目录、受控采用状态和真实数据库能力；只列当前会话分支通过 material.read 保管的受管表。本动作只读，不能采用或授予权限。'
-        : `算法入口当前未启用（${catalog.adoption.state}）；只能读取目录，不能计算。采用只由本机受控采用入口完成。`,
+        ? '已读取基础算法目录、固定代码版本与 WFD 快照能力；本动作只读，不创建计算。'
+        : `算法运行条件尚未就绪（${catalog.reason ?? '执行器或 WFD 快照端口不可用'}）；本次仅返回目录。`,
         data: view({ algorithms: catalog, database: json(catalog.inputs.fixedSnapshots), guidance: {
-          humanInput: '人类只需说明材料/产品与算法；实例、快照、字段映射和内部编号由模型从实际元数据判断。',
+          humanInput: '用户说明 WFD 数据和目标算法，由模型读取真实快照与方法契约形成调用，无需人工逐次计算确认。',
           adoption: '工具不能自 adopt；未启用时不要改用旧 financial/compute_assets 入口。',
-          managedTables: '受管表只列当前会话分支通过 material.read 保管的原件；其他会话或分支的材料不会出现在这里。固定快照仍按实际数据库授权读取，不要求本地附件。',
-          calculation: '计算沿原任务审批；publication=not_requested（未请求发布）只说明计算时状态，不能代替正式交接回执。',
-          handoff: '计算结果本身不授予交接资格；正式交接须符合 R1（结构化交接）当前输入合同并由用户单独确认。',
+          managedTables: '已停止受管原件直接计算；必须先经原报管线发布 WFD 固定快照。',
+          calculation: '已登记固定实现由 AGENTS 调用计算；没有逐次业务审核，但必须保留原任务、方法版本及 WFD 快照证据。',
+          handoff: '独立核对后由专用 WFD 发布者复用 R1 正式写入和固定读回；无派生五步加工。',
         } }) };
     }
     if (action === 'algorithms.calculate') {
@@ -90,14 +110,34 @@ export class ConversationAlgorithmBridge {
       await this.wait(context, taskId);
       const current = this.options.companion.tasks.get(taskId);
       authority.assert();
-      return { summary: current.status === 'waiting_approval'
-        ? '原算法任务正在等待本机操作者审批；尚未执行Python（编程语言）或产生结果。批准后按同一任务编号查询。'
-        : current.status === 'succeeded' ? '算法计算已按原任务完成并持久结果；没有自动发布或提交。'
-          : `算法任务当前状态为 ${current.status}；请按原编号核对，不能换号重算。`,
-        data: view(this.statusPayload(taskId)) };
+      if (current.status !== 'succeeded' || current.requiresReview) {
+        return { summary: `原固定算法任务状态为 ${current.status}；尚未发布 WFD，必须按原号核对。`,
+          data: view(this.statusPayload(taskId)) };
+      }
+      const publisher = this.options.companion.derivedPublisher;
+      if (!publisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE',
+        '算法已完成，但 WFD 独立核验/正式入库未装配；保留原任务，不能冒充已入库。');
+      const publication = await publisher.publish(taskId, context.signal);
+      authority.assert();
+      return { summary: publication.published
+        ? '固定算法计算与独立结果核对完成，WFD 正式发布及固定读回已确认。'
+        : `算法计算成功；WFD 派生提交状态为 ${publication.state}，尚未证明正式入库，按原请求恢复。`,
+        data: view({ ...this.statusPayload(taskId), wfdPublication: publication }) };
     }
     const taskId = String(args.taskId ?? '');
     this.assertLink(taskId, origin);
+    if (action === 'algorithms.publish') {
+      const publisher = this.options.companion.derivedPublisher;
+      if (!publisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', 'WFD 固定算法独立入库未装配。');
+      const result = service.view(taskId);
+      if (result.status !== 'succeeded' || result.requiresReview)
+        throw new TaskError('DERIVED_RESULT_NOT_READY', '原计算任务未完成，不重新计算或更换任务身份。');
+      const publication = await publisher.publish(taskId, context.signal);
+      authority.assert();
+      return { summary: publication.published ? '原派生请求已完成 WFD 正式读回。'
+        : `派生原请求状态为 ${publication.state}，保留身份继续核对。`,
+        data: view({ taskId, wfdPublication: publication }) };
+    }
     if (action === 'algorithms.status') {
       authority.assert();
       return { summary: '已沿本会话原算法任务读取实际状态与持久结果；没有重算。publication 字段只是计算时状态，正式交接结果由原 R1（结构化交接）请求另行核对。', data: view(this.statusPayload(taskId)) };
@@ -105,74 +145,16 @@ export class ConversationAlgorithmBridge {
     throw new TaskError('ALGORITHM_ACTION', '未登记的算法会话动作。');
   }
 
-  /**
-   * 模型可见的受管表只来自当前会话分支通过 material.read 建立的保管关系。
-   * 全局材料目录不作为分支授权：这里只把已有 FileRef/任务证据与
-   * conversation_material_links / conversation_material_calls 对齐，不新建授权体系。
-   */
-  private visibleTableMaterials(origin: ModelTaskOrigin): Map<string, { sha256: string }> {
-    const db = this.options.database.connection;
-    const present = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('conversation_material_links','conversation_material_calls')").all()
-      .map(row => String(row.name)));
-    const materials = this.options.companion.materials;
-    if (!materials || !present.has('conversation_material_links') || !present.has('conversation_material_calls')) return new Map();
-    let rows: Array<{ material_id: string; service_task_id: string; sha256: string;
-      file_ref_id: string; file_ref_version: number }>;
-    try {
-      rows = db.prepare(`SELECT l.material_id,l.service_task_id,l.sha256,l.file_ref_id,l.file_ref_version
-        FROM conversation_material_links l WHERE json_extract(l.origin_json,'$.conversationId')=?
-          AND json_extract(l.origin_json,'$.branchId')=?
-          AND EXISTS (SELECT 1 FROM conversation_material_calls c WHERE c.material_id=l.material_id
-            AND c.service_task_id=l.service_task_id AND c.operation='material.read')`)
-        .all(origin.conversationId, origin.branchId) as typeof rows;
-    } catch { return new Map(); }
-    const visible = new Map<string, { sha256: string }>();
-    for (const row of rows) {
-      try {
-        const material = materials.get(row.material_id);
-        // conversation_material_links.file_ref_id 是 personal 原引用；material.envelope.fileRefId 是
-        // workspace 为保管副本另行登记的引用，两者不是同一编号。这里只核对 personal 原引用的
-        // 版本/大小/状态，以及保管信封的 sha256/byteLength/taskId，绝不把不同存储的 fileRefId 直接相等比较。
-        const personal = this.options.files?.getRef(row.file_ref_id);
-        if (!personal || personal.kind !== 'file' || personal.status !== 'available'
-          || personal.version !== row.file_ref_version || personal.size !== material.envelope.byteLength) continue;
-        if (material.envelope.sha256 !== row.sha256 || material.envelope.byteLength !== personal.size
-          || material.envelope.taskId !== row.service_task_id || material.envelope.localOnly !== true) continue;
-        // 只有真正成功保管的原件才能作为可选表；接收中断或尚未完成的材料不进入模型目录。
-        if (this.options.companion.tasks.get(row.service_task_id).status !== 'succeeded') continue;
-        visible.set(row.material_id, { sha256: row.sha256 });
-      } catch { /* 不可核的链接或任务不进入模型可见范围。 */ }
-    }
-    return visible;
+  /** 代理只读取真实 WFD 固定快照目录；受管原件不再提供计算资格。 */
+  private modelCatalog(service: NonNullable<WorkspaceServices['algorithms']>, _origin: ModelTaskOrigin): AlgorithmCatalogView {
+    return service.catalog();
   }
 
-  /** 只收窄模型桥目录；固定快照仍由实际数据库授权决定，不要求本地附件。 */
-  private modelCatalog(service: NonNullable<WorkspaceServices['algorithms']>, origin: ModelTaskOrigin): AlgorithmCatalogView {
-    const catalog = service.catalog(), visible = this.visibleTableMaterials(origin);
-    const items = catalog.inputs.managedTables.items.filter(item => visible.has(item.materialId));
-    const managedTables = items.length === 0 && catalog.inputs.managedTables.status === 'available'
-      ? { status: 'unavailable' as const, reason: '当前会话分支没有通过 material.read 保管的受管表；其他会话或分支的材料不会在此列出。', items }
-      : { ...catalog.inputs.managedTables, items };
-    const noVisibleInput = managedTables.status !== 'available' && catalog.inputs.fixedSnapshots.status !== 'available';
-    return { ...catalog,
-      ...(noVisibleInput && catalog.status === 'available' ? { status: 'unavailable' as const,
-        reason: '当前会话分支没有可用的受管表或固定快照输入；其他会话或分支的材料不会在此列出。' } : {}),
-      methods: noVisibleInput ? catalog.methods.map(method => method.status === 'ready'
-        ? { ...method, status: 'blocked' as const, reason: '当前会话分支没有可用的受管表或固定快照输入。' } : method) : catalog.methods,
-      inputs: { ...catalog.inputs, managedTables } };
-  }
-
-  /** 计算提交前先核材料属于当前分支；固定快照仍走数据库实际授权，不要求本地附件。 */
-  private assertCalculationMaterials(value: Record<string, unknown>, origin: ModelTaskOrigin): void {
+  /** 计算请求只能引用 WFD 固定快照；权限由原服务读取端口继续核实。 */
+  private assertCalculationMaterials(value: Record<string, unknown>, _origin: ModelTaskOrigin): void {
     const source = isWfdRecord(value.source) ? value.source : null;
-    if (!source || source.kind !== 'managed_table') return;
-    const materialId = typeof source.materialId === 'string' ? source.materialId : '';
-    const material = this.visibleTableMaterials(origin).get(materialId);
-    if (!material) throw new TaskError('ALGORITHM_MATERIAL_ORIGIN',
-      '算法输入只接受本会话分支通过 material.read 保管的受管表；不能借用其他会话或分支的材料。');
-    if (source.materialSha256 !== undefined && source.materialSha256 !== material.sha256) {
-      throw new TaskError('ALGORITHM_MATERIAL_ORIGIN', '受管表摘要与当前会话分支保管的原件不符；不能改用其他材料。');
-    }
+    if (!source || source.kind !== 'fixed_snapshot') throw new TaskError('ALGORITHM_WFD_ONLY',
+      '基础算法只接受 kind=fixed_snapshot 的 WFD 正式数据；不能让会话原件或模型自行取代已发布版本。');
   }
 
   private statusPayload(taskId: string) {

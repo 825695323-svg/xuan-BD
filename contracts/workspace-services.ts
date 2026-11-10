@@ -30,6 +30,7 @@ export interface R1ConversationPort {
   readonly versionBinding: Record<string, string | null>;
   capabilities(): R1CapabilitiesView;
   prepare(input: unknown): R1RequestView;
+  prepareWithRestriction(input: unknown): Promise<R1RequestView>;
   get(requestId: string): R1RequestView;
   recover(requestId: string, lookupId: string): Promise<TaskRecord>;
   checkProfile(): Promise<unknown>;
@@ -45,6 +46,10 @@ export interface WorkspaceServices {
   bd?: BdService;
   financial?: FinancialService;
   algorithms?: AlgorithmConversationPort;
+  /** 服务侧唯一发布者，AGENTS 只能按原成功任务身份要求发布，不能传任意结构化行。 */
+  derivedPublisher?: { publish(taskId: string, signal?: AbortSignal): Promise<{
+    requestId: string; state: string; published: boolean; requiresRecovery: boolean;
+    fixedReadback: boolean; error: unknown } > };
   materials?: MaterialService;
   candidates?: CandidateService;
   semantics?: MaterialSemanticService;
