@@ -45,12 +45,18 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
   const custom = options.customSources ? createCustomSourceActions(options.customSources) : undefined;
   const captureRootIdentity = options.capturePrivateArtifactRoot ? inspectPath(options.capturePrivateArtifactRoot) : undefined;
   for (const registration of [...(sources?.registrations ?? []), ...(capture?.registrations ?? []), ...(baidu?.registrations ?? []), ...(custom?.registrations ?? []), ...browser.registrations, ...conversion.registrations,
-    ...(options.conversationMaterials?.registrations ?? []), ...(options.artifactArchive ? [options.artifactArchive.registration] : [])]) local.registry.register(registration);
+    ...(options.conversationMaterials?.registrations ?? []), ...(options.artifactArchive ? [options.artifactArchive.registration] : []),
+    ...(options.artifactRestore ? [options.artifactRestore.registration] : [])]) local.registry.register(registration);
   for (const registration of [...(sources?.registrations ?? []), ...(capture?.registrations ?? []), ...(baidu?.registrations ?? []), ...(custom?.registrations ?? []), ...browser.registrations, ...conversion.registrations,
-    ...(options.conversationMaterials?.registrations ?? []), ...(options.artifactArchive ? [options.artifactArchive.registration] : [])]) local.registry.bindVersions(registration.action, args => {
+    ...(options.conversationMaterials?.registrations ?? []), ...(options.artifactArchive ? [options.artifactArchive.registration] : []),
+    ...(options.artifactRestore ? [options.artifactRestore.registration] : [])]) local.registry.bindVersions(registration.action, args => {
     const action = registration.action, implementation: DirectImplementation[] = ['assembly'];
     let configuration: unknown = {}, dependencies: unknown = directResourceVersions(options);
-    if (options.artifactArchive && action === options.artifactArchive.registration.action) {
+    if (options.artifactRestore && action === options.artifactRestore.registration.action) {
+      implementation.push('baidu', 'process'); configuration = options.artifactRestore.versionBinding();
+      dependencies = directResourceVersions(options, options.baiduDrive ? ['bdpan'] : [], options.baiduDrive
+        ? [options.baiduDrive.configPath, ...(options.baiduDrive.tokenKeyPath ? [options.baiduDrive.tokenKeyPath] : [])] : []);
+    } else if (options.artifactArchive && action === options.artifactArchive.registration.action) {
       implementation.push('baidu', 'process'); configuration = options.artifactArchive.versionBinding();
       dependencies = directResourceVersions(options, options.baiduDrive ? ['bdpan'] : [], options.baiduDrive
         ? [options.baiduDrive.configPath, ...(options.baiduDrive.tokenKeyPath ? [options.baiduDrive.tokenKeyPath] : [])] : []);
@@ -138,6 +144,7 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
       requestApproval: async (operation, capabilities, input) => { assertCapabilities(operation, capabilities); return await original.requestApproval(operation, capabilities, input); } };
     const args = routed.args as Record<string, JsonValue>;
     const execute = async (): Promise<TaskResult> => {
+      if (options.artifactRestore && routed.action === options.artifactRestore.registration.action) return await options.artifactRestore.execute(context, args);
       if (options.artifactArchive && routed.action === options.artifactArchive.registration.action) return await options.artifactArchive.execute(context, args);
       if (sources?.handles(routed.action)) return await sources.execute(context, routed.action, args);
       if (options.conversationMaterials?.handles(routed.action)) return await options.conversationMaterials.execute(context, routed.action, args);
