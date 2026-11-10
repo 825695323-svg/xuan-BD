@@ -101,18 +101,24 @@ export async function transcribeVideo(context: TaskExecutionContext, rawUrl: str
       segments = parseWhisperTranscription(await workspace.readText(evidencePath), text, Math.ceil(actualDuration * 1000));
     }
     if (!text.trim()) throw new DirectError('VIDEO_EMPTY_TRANSCRIPT', '视频没有生成可用文字。');
-    const transcript = await workspace.createText('video-text.txt', text);
+    // Whisper 已有 transcript.txt；不再为同一内容额外写临时副本。
+    const transcript = subtitle ? await workspace.createText('video-text.txt', text) : join(workspace.path, 'transcript.txt');
     const sourceFingerprint = await workspace.fingerprint(sourcePath, options.maxBytes);
     const evidenceFingerprint = await workspace.fingerprint(evidencePath, 4 * 1024 * 1024);
     const textFingerprint = await workspace.fingerprint(transcript, 4 * 1024 * 1024);
-    const sourceReference = await workspace.publishFile(sourcePath, prepareDestination(join(options.artifactRoot, `video-source-${randomUUID()}${sourceExtension}`)),
-      context.task.action, context.task.args, options.maxBytes);
-    const evidenceReference = evidencePath === sourcePath ? sourceReference
+    // 视频链接仅保留来源地址和音轨摘要；下载音轨只是转写暂存，不发布成长久文件。
+    // 平台原生字幕仍属于不可替代的文字证据，按原方式保留引用。
+    const sourceReference = subtitle ? await workspace.publishFile(sourcePath,
+      prepareDestination(join(options.artifactRoot, `video-source-${randomUUID()}${sourceExtension}`)),
+      context.task.action, context.task.args, options.maxBytes) : null;
+    const evidenceReference = evidencePath === sourcePath && sourceReference ? sourceReference
       : await workspace.publishFile(evidencePath, prepareDestination(join(options.artifactRoot, `video-evidence-${randomUUID()}.json`)), context.task.action, context.task.args, 4 * 1024 * 1024);
     const published = await workspace.publishFile(transcript, prepareDestination(join(options.artifactRoot, `video-${randomUUID()}.txt`)), 'video.transcribe_url', { url: url.href }, 4 * 1024 * 1024);
     await workspace.cleanup();
-    return { summary: `已提取“${title}”的文字。`, artifactIds: [...new Set([sourceReference.id, evidenceReference.id, published.id])], data: { title, url: url.href, duration, method,
-      source: { fileRefId: sourceReference.id, fileRefVersion: sourceReference.version, sha256: sourceFingerprint.sha256 },
+    return { summary: `已提取“${title}”的文字。`, artifactIds: [...new Set([...(sourceReference ? [sourceReference.id] : []), evidenceReference.id, published.id])], data: { title, url: url.href, duration, method,
+      source: sourceReference ? { fileRefId: sourceReference.id, fileRefVersion: sourceReference.version, sha256: sourceFingerprint.sha256 }
+        : { kind: 'remote-audio-temporary', url: url.href, sha256: sourceFingerprint.sha256,
+          byteLength: sourceFingerprint.bytes, localRetained: false },
       textReference: { fileRefId: published.id, fileRefVersion: published.version, sha256: textFingerprint.sha256 },
       evidenceReference: { fileRefId: evidenceReference.id, fileRefVersion: evidenceReference.version, sha256: evidenceFingerprint.sha256 },
       ...JSON.parse(JSON.stringify(transcriptionSegmentPreview(segments))), sha256: textFingerprint.sha256,

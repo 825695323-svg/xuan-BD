@@ -104,24 +104,28 @@ export function createArtifactArchiveActions(options: {
       const source = options.tasks().get(input.sourceTaskId);
       if (source.status !== 'succeeded' || source.requiresReview || !source.result?.artifactIds?.includes(input.fileRefId))
         throw new TaskError('ARTIFACT_ARCHIVE_SOURCE', '原任务未成功、仍待复核，或此文件不属于其已发布产物。');
-      const reference = options.files.verify(input.fileRefId);
+      // 冻结归档的只读复核不依赖已不存在的本地字节；首次上传仍须核对完整原件。
+      let row = find(input.sourceTaskId, input.fileRefId);
+      const reference = row ? options.files.getRef(input.fileRefId) : options.files.verify(input.fileRefId);
       if (reference.source !== 'generated' || reference.kind !== 'file'
         || !reference.relations.some(item => item.kind === 'task' && item.id === input.sourceTaskId)
         || reference.size < 1 || reference.size > CLOUD_MAX_BYTES) {
         throw new TaskError('ARTIFACT_ARCHIVE_SOURCE', '只接受原任务登记的非空生成文件，且不能超出 256 MiB 单件上限。');
       }
-      const read = await acquireAuthority(context, 'artifact.archive.read', { sourceTaskId: input.sourceTaskId, fileRefId: input.fileRefId },
-        [fileCapability('read', reference.invocationPath)]);
-      const bytes = await options.files.readBytes(reference.id, { operation: context.operationScope(read.operation),
-        approvalId: read.approvalId ?? undefined, maxBytes: CLOUD_MAX_BYTES });
-      read.assert();
-      const sha = digest(bytes);
-      const directory = cloudEvidenceDirectory(input.topic, input.purpose);
-      let row = find(input.sourceTaskId, input.fileRefId);
-      if (row && (row.file_version !== reference.version || row.sha256 !== sha || row.byte_length !== bytes.length
+      if (row && (row.file_version !== reference.version || row.byte_length !== reference.size
         || row.topic !== input.topic || row.purpose !== input.purpose)) {
-        throw new TaskError('ARTIFACT_ARCHIVE_FROZEN', '原产物内容、版本或归档分类与冻结记录不同；禁止替换旧远端目标。');
+        throw new TaskError('ARTIFACT_ARCHIVE_FROZEN', '原文件版本或归档分类与冻结记录不同；禁止换号重传。');
       }
+      let bytes: Buffer | undefined;
+      if (!row) {
+        const read = await acquireAuthority(context, 'artifact.archive.read', { sourceTaskId: input.sourceTaskId, fileRefId: input.fileRefId },
+          [fileCapability('read', reference.invocationPath)]);
+        bytes = await options.files.readBytes(reference.id, { operation: context.operationScope(read.operation),
+          approvalId: read.approvalId ?? undefined, maxBytes: CLOUD_MAX_BYTES });
+        read.assert();
+      }
+      const sha = bytes ? digest(bytes) : row!.sha256;
+      const directory = cloudEvidenceDirectory(input.topic, input.purpose);
       if (row && !sameBinding(row, versionBinding()))
         throw new TaskError('ARTIFACT_ARCHIVE_BINDING_CHANGED', '原网盘程序或账号绑定已经变化，不能通过另一账号确认旧归档。');
       let session: Awaited<ReturnType<CloudCustodyBackend['open']>> | undefined;
@@ -136,6 +140,7 @@ export function createArtifactArchiveActions(options: {
             .run(found.id, input.sourceTaskId, input.fileRefId);
           return result({ ...row, state: 'confirmed', remote_id: found.id }, 'confirmed');
         }
+        if (!bytes) throw new TaskError('ARTIFACT_ARCHIVE_SOURCE', '没有新归档的本地原字节。');
         await session.prepareDirectory(directory, true);
         const extension = /\.[a-zA-Z0-9]{1,12}$/u.exec(reference.displayName)?.[0]?.toLowerCase() ?? '';
         const target = posix.join(directory, sha + '-' + randomUUID() + extension);
