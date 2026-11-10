@@ -288,6 +288,12 @@ export class LocalAlgorithmService {
     return this.view(accepted.task.id);
   }
 
+  /** 给前端的只读任务索引；不得因页面读取启动计算或 WFD 提交。 */
+  list(): AlgorithmTaskView[] {
+    return this.db.prepare('SELECT task_id FROM algorithm_calls ORDER BY created_at DESC,task_id LIMIT 20')
+      .all().map(row => this.view(String(row.task_id)));
+  }
+
   view(taskId: string): AlgorithmTaskView {
     const task = this.getTask(taskId), row = this.callRow(task.id);
     // 只读历史结果只核原任务身份和持久摘要；当前源码/Python 变化不能使旧结果失去查询。

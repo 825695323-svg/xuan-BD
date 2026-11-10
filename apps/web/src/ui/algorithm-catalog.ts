@@ -104,16 +104,7 @@ export interface BatchAlgorithmEntry {
  * 历史批次均线只保留旧界面和旧回执的只读兼容。
  * 新观测均线属于基础算法目录，必须由 BD AGENTS 人工请求并从 WFD 固定快照取数。
  */
-export const BATCH_ALGORITHMS: readonly BatchAlgorithmEntry[] = Object.freeze([
-  { id: 'daily_bar', zh: '旧日K批次均线（停用）', en: 'Legacy daily-batch mean (disabled)',
-    zhDescription: '历史批次算法配置只读保留。新计算统一从 WFD 正式快照进入基础算法目录，由人工明确发起，不自动发布。',
-    enDescription: 'Legacy batch setting is read-only. New calculations use WFD fixed snapshots and an explicit manual request, without automatic publication.',
-    zhKind: '历史日K原报', enKind: 'Legacy daily source', zhPeriod: '旧周期仅供历史核对', enPeriod: 'Legacy period for audit only' },
-  { id: 'minute_bar', zh: '旧分钟批次均线（停用）', en: 'Legacy minute-batch mean (disabled)',
-    zhDescription: '历史批次算法配置只读保留。新计算统一从 WFD 正式快照进入基础算法目录，由人工明确发起，不自动发布。',
-    enDescription: 'Legacy batch setting is read-only. New calculations use WFD fixed snapshots and an explicit manual request, without automatic publication.',
-    zhKind: '历史分钟K原报', enKind: 'Legacy minute source', zhPeriod: '旧周期仅供历史核对', enPeriod: 'Legacy period for audit only' },
-]);
+export const BATCH_ALGORITHMS: readonly BatchAlgorithmEntry[] = Object.freeze([]);
 
 export function batchAlgorithm(id: string): BatchAlgorithmEntry | null {
   return BATCH_ALGORITHMS.find((item) => item.id === id) ?? null;

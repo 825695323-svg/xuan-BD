@@ -14,7 +14,8 @@ const catalog = { methods: [
 
 test('统一契约列出独立方法，但不能把未实现观测均线宣称为可执行', () => {
   const contract = basicAlgorithmToolContract(catalog);
-  assert.equal(contract.manualOnly, true);
+  assert.equal(contract.agentTriggered, true);
+  assert.equal(contract.uiExecution, false);
   assert.equal(contract.agentMaySelfAuthorize, false);
   assert.deepEqual(contract.methods.slice(0, 3).map(item => item.methodId), ['ma', 'macd', 'source_observation_ma']);
   assert.equal(contract.methods.find(item => item.methodId === 'ema')!.status, 'blocked');
@@ -37,6 +38,7 @@ test('BD AGENTS 会话入口只声明既有工具，算法不反向触发原报�
   const contract = bdSessionToolContract(catalog);
   assert.equal(contract.entry, 'bd_agents.conversation');
   assert.equal(contract.backgroundCalculation, false);
+  assert.equal(contract.uiCalculation, false);
   assert.equal(contract.toolGroups.length, 5);
   assert.ok(contract.toolGroups.find(item => item.id === 'files')!.tools.includes('material.read'));
   assert.ok(contract.toolGroups.find(item => item.id === 'api_sources')!.tools.includes('source.api.read'));

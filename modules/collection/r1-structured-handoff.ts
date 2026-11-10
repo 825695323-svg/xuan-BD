@@ -175,7 +175,8 @@ export class R1HandoffService {
   }; processing?: { get(planId: string): unknown; outputArtifact(planId: string, outputId: string): { bytes: Buffer } };
     candidates?: { verifyObject(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): boolean;
       objectBytes(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): Buffer };
-    verifyCalculationCandidate?(input: R1CalculationCandidateVerification): void }) {
+    verifyCalculationCandidate?(input: R1CalculationCandidateVerification): void;
+    verifyAlgorithmCandidate?(input: R1CalculationCandidateVerification): void }) {
     const version = this.db.prepare('SELECT version FROM schema_versions WHERE module=?').get('r1-structured-handoff');
     if (version && !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='r1_record_associations'").get())
       fail('R1_ASSOCIATIONS_MISSING', '已有 R1 格式缺少原关联表，未迁移原件或重建空关联表。');
@@ -820,11 +821,15 @@ export class R1HandoffService {
         // The durable intake task and original completed calculation are checked again by the verifier.
         // Filename, content hash alone, and caller-supplied lineage are never provenance authority.
         const staged = this.db.prepare(`SELECT u.request_id FROM material_objects m JOIN harness_material_uploads u
-          ON u.task_id=json_extract(m.envelope_json,'$.taskId') WHERE m.material_id=? AND u.request_id LIKE 'polars-stage:%'`).get(String(materialId));
+          ON u.task_id=json_extract(m.envelope_json,'$.taskId') WHERE m.material_id=?
+            AND (u.request_id LIKE 'polars-stage:%' OR u.request_id LIKE 'alg-stage:%')`).get(String(materialId)) as { request_id: string } | undefined;
         if (!staged) continue;
-        if (!this.options.verifyCalculationCandidate) fail('R1_CALCULATION_VERIFIER_UNBOUND', '该材料来自受管计算候选；缺少原计算核验器，不能按普通原件准备。');
-        this.options.verifyCalculationCandidate({ taskId: String(staged.request_id).slice('polars-stage:'.length), materialId: String(materialId),
-          planId: process.plan_id!, outputId: process.output_id!, definition: structured.definition, payload: structured.payload });
+        const derived = staged.request_id.startsWith('alg-stage:');
+        const verify = derived ? this.options.verifyAlgorithmCandidate : this.options.verifyCalculationCandidate;
+        if (!verify) fail('R1_CALCULATION_VERIFIER_UNBOUND', '派生材料缺少受信原计算验证器，不能按普通原件提交。');
+        verify({ taskId: staged.request_id.slice(derived ? 'alg-stage:'.length : 'polars-stage:'.length),
+          materialId: String(materialId), planId: process.plan_id!, outputId: process.output_id!,
+          definition: structured.definition, payload: structured.payload });
       }
     }
   }

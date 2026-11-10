@@ -58,11 +58,11 @@ const MODEL_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIO
   'material.read', 'material.process', 'material.ocr', 'material.transcribe',
   'baidu.drive', 'browser.control',
   'financial.list', 'financial.describe', 'financial.call', 'financial.result', 'financial.status',
-  'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.status', 'bd.session.capabilities',
+  'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.stage', 'algorithms.status', 'bd.session.capabilities',
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
   'data.adapters.capabilities', 'data.adapters.propose', 'data.adapters.replay', 'data.adapters.adopt',
-  'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
-  'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.status', 'bd.session.capabilities']);
+  'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check', 'data.r1.submit', 'data.r1.prepare_derived',
+  'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.stage', 'algorithms.status', 'bd.session.capabilities']);
 // 固定实现只读原件或生成新产物；其中的程序、暂存清理及观测回执仍属于同一受控动作。
 // 这里只分类已存在的工具，不改变其登记、启用、参数校验或版本资格。
 const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIONS, ...SOURCE_ACTIONS, 'source.register',
@@ -73,8 +73,8 @@ const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_A
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
   // 适配候选提交、重放与采用都是写入或权限动作：保留审核，不进入自动动作集合。
   'data.adapters.capabilities',
-  'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
-  'algorithms.capabilities', 'algorithms.contract', 'algorithms.status', 'bd.session.capabilities']);
+  'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check', 'data.r1.submit', 'data.r1.prepare_derived',
+  'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.status', 'bd.session.capabilities']);
 const SHARE_NOTICE = '本次选定资料及动作结果将按当前权限发送给当前模型，大结果按证据分页读取；删除和修改既有内容仍需审核。';
 const SAFE_TASK_FAILURES: Readonly<Record<string, string>> = Object.freeze({
   PROCESSING_EVIDENCE: '处理证据须带source：原件使用material及当前materialId与真实quote；用户消息使用user-message及本分支messageId与真实quote。',

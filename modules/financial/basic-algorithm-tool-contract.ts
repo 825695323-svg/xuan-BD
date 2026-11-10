@@ -57,15 +57,15 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
     catalogue: '基础算法 / Basic Algorithms', discoveryAction: 'algorithms.contract',
     calculateAction: 'algorithms.calculate', statusAction: 'algorithms.status',
     sourcePolicy: 'WFD fixed snapshot only; no managed file, no latest, no hidden data acquisition',
-    manualOnly: true, agentMayRead: true, agentMaySelfAuthorize: false,
-    publication: 'separate explicit R1 request; never automatic',
+    agentTriggered: true, uiExecution: false, agentMayRead: true, agentMaySelfAuthorize: false,
+    publication: 'derived material -> five-step processing -> R1 prepare -> controlled submit -> WFD fixed readback',
     methods: selected, unknownMethod: selectedMethod !== undefined && selected.length === 0 };
 }
 
 /** 会话是唯一任务入口；采集/文件工具与算法不建立自动调用链。 */
 export function bdSessionToolContract(catalog: AlgorithmCatalogView) {
   return { version: BD_SESSION_TOOL_CONTRACT_VERSION, entry: 'bd_agents.conversation',
-    owner: 'bd_agents', manualCalculationOnly: true, backgroundCalculation: false,
+    owner: 'bd_agents', agentTriggeredCalculation: true, uiCalculation: false, backgroundCalculation: false,
     toolGroups: [
       { id: 'collection_sources', title: '采集源 / Collection Sources',
         tools: ['capture.*.read', 'web.read_public', 'web.search'],
@@ -78,10 +78,10 @@ export function bdSessionToolContract(catalog: AlgorithmCatalogView) {
           'data.processing.route', 'data.processing.plan', 'data.processing.run'],
         next: '受控保管、识别、五步加工；原报通过 R1 单独交接' },
       { id: 'wfd', title: 'WFD 正式数据 / WFD Published Data',
-        tools: ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.recover'],
+        tools: ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.prepare_derived', 'data.r1.submit', 'data.r1.get', 'data.r1.recover'],
         next: '正式发布、固定读回和历史资格仍归 WFD；本契约不授予数据库写权' },
       { id: 'basic_algorithms', title: '基础算法 / Basic Algorithms',
-        tools: ['algorithms.contract', 'algorithms.capabilities', 'algorithms.calculate', 'algorithms.status'],
-        next: '人工明确计算请求 → WFD 固定快照读取 → 独立算法 → 本地计算结果；发布另走 R1' },
+        tools: ['algorithms.contract', 'algorithms.capabilities', 'algorithms.calculate', 'algorithms.stage', 'algorithms.status'],
+        next: 'AGENTS 调用 → WFD 固定快照 → 算法计算 → 派生保管 → 五步加工 → R1 → WFD 回读' },
     ], algorithms: basicAlgorithmToolContract(catalog) };
 }

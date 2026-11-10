@@ -1,47 +1,32 @@
-# BD AGENTS 会话入口与基础算法统一接口
+# BD AGENTS 会话入口、基础算法与 WFD 派生写回
 
-> 实施状态：本轮代码边界调整，基于 `4527c5a`。保留旧计算证据及原版已发布数据，不做数据迁移。本文件不是计算成功或 WFD 发布验收报告。
+> 本文描述目标架构与本次代码实现边界。未通过完整集成验收的部分不能宣称已发布到 WFD。
 
-## 入口与职责
+## 唯一操作入口
 
-- **唯一会话入口（BD AGENTS conversation）**：以人工消息为任务起点，沿现有受控工具获取数据、原件和回执，不新增主动调度主体。
-- **采集源（Collection Sources）**：使用已注册的 `capture.*.read`、`web.read_public` 或 `web.search`，只返回受控采集结果，不自动清洗或发布。
-- **接口源（API Sources）**：沿已有 `source.fetch`、`source.api.read`、`source.kline.read` 等工具得到受控原件及来源回执；不自动运行算法。
-- **文件（Files）**：通过 `file.read`、`material.read` 和 `data.processing.*` 识别、按六维路由、固定步骤执行解析→清洗→结构化→标注→核对。
-- **原报交接（R1 Structured Handoff）**：必须沿现有发布目的、来源授权、不可变材料身份、WFD 审批和固定读回事实；会话工具目录只读不授予发布权。
-- **基础算法（Basic Algorithms）**：新请求仅允许 `kind=fixed_snapshot` 的 WFD 正式数据，人工明确选择算法与版本、输入字段、日期范围、周期及用途；结果只保存在算法原任务，不自动提交 WFD。
+BD AGENTS 会话工具负责采集、数据源、文件识别加工、算法调用与派生数据的受控发布。前端只读展示算法目录、运行状态和有限结果。AGENTS 不自我唤醒、不获得 WFD 准入权；现有 TaskService（任务持久服务）与审批回执仍是唯一执行权威。
 
-## 统一只读发现（Agent discovery）
+## WFD → 算法 → WFD
 
-| 工具动作（Action） | 中文用途 | 影响 |
-|---|---|---|
-| `bd.session.capabilities` | BD AGENTS 会话入口总目录 | 只读展示既有工具组与边界；不唤醒或调用工具 |
-| `algorithms.contract` | 基础算法统一接口契约 | 按 `methodId`（算法编号）读取独立参数、字段、方法版本及真实可用状态 |
-| `algorithms.capabilities` | 真实算法运行资格 | 判断 WFD 固定快照读端口和受控运行条件是否可用；不会自动采用 |
-| `algorithms.calculate` | 人工触发单次基础算法计算 | 新任务强制 WFD 固定快照、请求身份和现有独立审批；不自动入库 |
-| `algorithms.status` | 查询本会话算法结果 | 只核本分支原任务的状态、结果摘要和谱系，不重算 |
+1. `bd.session.capabilities`（会话工具目录）与 `algorithms.contract`（基础算法统一契约）供 AGENTS 只读发现。
+2. `algorithms.calculate`（执行某个独立算法），参数从 `algorithms.capabilities` 读取。新计算只能使用 WFD `fixed_snapshot`（固定快照）及明确产品、定义、字段、时间与用途。算法层不提供任何文件直读或 WFD 写入特权。
+3. `algorithms.stage`（派生新数据保管）只能从本会话已完成算法的**真实结果行**创建受管材料，按原计算任务、输入快照、算法版本、结果摘要绑定；不能由模型上传任意行替换。该步仅保管，**不构成 WFD 发布**。
+4. `data.processing.capabilities`、`data.processing.plan`、`data.processing.run`（五步处理工具）用于生成真实结构化候选、标注 `deterministic_derived`（确定性派生）、明确用途与来源依据。任何不齐全的业务语义或未通过的计算资格仍为缺口。
+5. `data.r1.prepare_derived`（派生交接准备）校验本会话原算法及加工输出，核对定义中的 `algorithm_definition`（算法定义）与原 `method_id`（方法编号）、`method_version`（方法版本）、`implementation_version`（实现版本）、`input_digest`（输入摘要）逐项相同。只能沿现有 `R1WorkspaceService.prepareWithRestriction`（受控用途限制预检）准备。
+6. `data.r1.submit`（正式交接）要求独立审批，核已冻结请求编号及文档摘要，仍由 WFD 受理、发布和固定读回；结果未知按原请求恢复，不能换号重试。只有 `state=associated`（正式关联完成）且固定读回一致才能报告入库完成。
 
-所有入口复用已有权限服务、会话分支身份和持久任务，不新建 AGENT 自我授权体系。
+## 每个算法独立接口
 
-## 每个基础算法独立接口
+每个受控方法有自身 `methodId`、输入字段、参数、方法版本与实现版本，公用只读契约，互不混合实现。当前注册并可被本地受控执行器支持的首批方法为 `ma`（算术移动均线）、`macd`（指数平滑异同指标）、`bullish_engulfing`（看涨吞没）。`source_observation_ma`（观测均线）是基础算法目录一节，但**其 WFD-only 实现尚未完成**，在能力目录中为 `blocked`（不可执行）；不得退回旧批次自动均线途径。其他已登记但未放行的方法同样只读展示。
 
-`algorithms.contract` 列出方法编号、所需字段、参数、版本、限制和可用状态。已经受控实现的 `ma`（算术移动均线）、`macd`（指数平滑异同均线）、`bullish_engulfing`（看涨吞没形态）仍使用各自原实现。所有其余登记方法保留独立 `methodId`，未完成接入的一律 `blocked`（不可执行）。
+## 去除旧路径与数据安全
 
-`source_observation_ma`（来源观测均线）已作为基础算法目录中独立的预留方法；**本轮尚未完成旧批次实现改为 WFD 固定快照输入的新计算实现，因此明确显示 `blocked`，不冒充已可计算**。
+- 新原报批次禁止提交 `calculation` 与 `algorithmRouting`（旧自动均线设置），无自动派生计算或入库。
+- 前端算法面板和 HTTP 计算路由不提供新的人工计算、候选保管或准备提交操作；只读显示真实算法目录和已有任务。
+- 原批次历史自动算法兼容展示项从算法目录移除。不得通过本轮修改擦除 WFD 历史已发布快照，也不得破坏未决提交的身份。
+- 旧输入的实际计算、旧派生自动恢复与旧批次自动计算路径保持禁用；保留的阻断提示不构成兼容执行。
+- 已发布派生的更正若需要重新计算，仍受 `CORRECTION_MANUAL_DERIVED_REQUIRED`（派生结果需另行处理）保护；**该更正闭环尚未接通 AGENTS 派生写回，不能以本轮改动宣称已解决。**
 
-## 与旧流程的兼容
+## 当前验收状态
 
-- 新 `r1_auto_batches` 批次不再接收 `calculation`（旧单次均线参数）或 `algorithmRouting`（旧自动算法路由），返回 `R1_BATCH_ALGORITHM_MANUAL_ONLY`（已改为人工计算）。
-- 旧批次记录和均线计算证明允许只读核查，不因重启调度旧派生任务；旧周期设置不得继续更新。
-- 新 `LocalAlgorithmService`（基础算法服务）计算拒绝受管原件 `managed_table`，只允许 WFD `fixed_snapshot`（固定快照）；旧已完成任务仍可按原号读取，不会清除历史记录。
-- **发布后更正影响已发布派生结果时，暂不自动重算或自动结案**，返回 `CORRECTION_MANUAL_DERIVED_REQUIRED`（需独立人工派生更正）并保持 WFD 用途暂停。完整人工更正协议、观测均线 WFD-only 方法仍需单独实施、验证。
-- 历史自动派生测试属于旧功能用例；不改旧冻结数据、不篡改原断言。应迁移为原报自动与人工算法两条独立验收路径。
-
-## 最小执行顺序
-
-1. 人工会话明确采集、接口源或文件任务，获取受管原件与来源证据。
-2. BD AGENTS 读取处理能力，路由并执行已有五步加工，保留缺口及原件。
-3. 经原 R1 授权完成正式发布与 WFD 固定读回。
-4. 人工再次发起计算；BD AGENTS 读取 `algorithms.contract`、`algorithms.capabilities`，按独立方法契约指定 WFD 固定快照与参数。
-5. 计算后的新数据保留在原计算任务，独立查看；**正式发布只能再以明确的 R1 请求处理**。
-
+本轮提交了接口和拒绝边界，但尚不能证明完整的 WFD→计算→派生保管→五步加工→R1→WFD 整链已在真实端到端服务中通过。所有新路径必须验证成功、拒绝、权限取消、崩溃恢复、版本冲突及固定读回。

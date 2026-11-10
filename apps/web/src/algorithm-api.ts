@@ -1,4 +1,4 @@
-import type { AlgorithmCallRequest, AlgorithmCatalogView, AlgorithmTaskView } from '../../../modules/financial/algorithm-types';
+import type { AlgorithmCatalogView, AlgorithmTaskView } from '../../../modules/financial/algorithm-types';
 import { RequestError, request } from './api';
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -13,16 +13,14 @@ export async function loadAlgorithmCatalog(): Promise<AlgorithmCatalogView> {
   return value as unknown as AlgorithmCatalogView;
 }
 
-export async function submitAlgorithmCall(requestId: string, call: AlgorithmCallRequest): Promise<AlgorithmTaskView> {
-  return asTask(await request('/api/ui/algorithms/calls', 'POST', { requestId, call }));
+export async function listAlgorithmCalls(): Promise<AlgorithmTaskView[]> {
+  const value = await request('/api/ui/algorithms/calls');
+  if (!isRecord(value) || !Array.isArray(value.items)) throw new RequestError('算法任务列表没有可信摘要。');
+  return value.items.map(asTask);
 }
 
 export async function readAlgorithmCall(taskId: string): Promise<AlgorithmTaskView> {
   return asTask(await request(`/api/ui/algorithms/calls/${encodeURIComponent(taskId)}`));
-}
-
-export async function resumeAlgorithmCall(taskId: string, expectedVersion: number): Promise<AlgorithmTaskView> {
-  return asTask(await request(`/api/ui/algorithms/calls/${encodeURIComponent(taskId)}/resume`, 'POST', { expectedVersion }));
 }
 
 function asTask(value: unknown): AlgorithmTaskView {

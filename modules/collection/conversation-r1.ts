@@ -12,9 +12,10 @@ import { TaskError, type TaskExecutionContext } from '../../platform/jobs/tasks.
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { PersonalCore } from '../agent/runtime/core.js';
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
+import { verifyDerivedMaterialLink } from '../financial/algorithm-derived-link.js';
 
 export const CONVERSATION_R1_VERSION = 'bd.conversation-r1/1';
-const ACTIONS = ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check'] as const;
+const ACTIONS = ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check', 'data.r1.submit', 'data.r1.prepare_derived'] as const;
 const SOURCE_FIELDS = ['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope'] as const;
 const MAX_ANCESTORS = 1024;
 interface Scope { origin: ModelTaskOrigin; input: BackendInput; messages: Set<string> }
@@ -35,7 +36,7 @@ export class ConversationR1Bridge {
       CREATE INDEX conversation_r1_scope ON conversation_r1_links(conversation_id,branch_id,created_at);`);
     const registration = (action: string, title: string, description: string, fields: SkillField[]): SkillRegistration => ({
       action, title, description, fields, runtimeId: 'direct', kind: 'direct', modelCalls: 0,
-      permissionSummary: ['仅当前会话分支及输入祖先的明确选件和真实加工', '原R1请求/连接/任务恢复；不重提', '没有模型提交入口；来源与加工证据留在BD，本次交接授权单独核对'],
+      permissionSummary: ['仅当前会话分支及输入祖先的明确选件和真实加工', '原R1请求/连接/任务恢复；不重提', '正式提交必须核冻结文档摘要且要求独立审批；来源与加工证据留在BD，模型不能自授权'],
       available: () => ({ available: !!options.companion.r1Workspace && !!options.companion.processing && !!options.companion.materials }),
     });
     this.registrations = [
@@ -51,6 +52,12 @@ export class ConversationR1Bridge {
       ]),
       registration(ACTIONS[4], '按原身份核对R1提交与读回', '只恢复本会话已映射原请求/任务；未知结果不换编号重发；未提交请求返回R1_NOT_SUBMITTED，保持本地准备回执。个人停止仅停止等待/分享，不声称撤销服务事实。', [text('requestId', '本会话原请求编号')]),
       registration(ACTIONS[5], '明确只读核对R1 live profile', '操作者需要时才调用，只读核对当前已登记profile。不会由能力发现、准备或查询自动调用，不授权初始化/提交。', []),
+      registration(ACTIONS[7], '为本会话算法结果准备WFD派生入库',
+        '只接受本会话成功算法形成且经五步加工的派生材料与真实计划，不接收模型提供的原数据行、来源时间或外部算法结果。来源、方法、WFD输入快照由真实算法任务生成，发布仍需后续R1提交及审批。',
+        [text('taskId', '原算法任务编号'), text('planId', '派生加工计划编号'), text('outputId', '已通过发布资格的输出编号')]),
+      registration(ACTIONS[6], '受控提交已准备的R1派生或原报结果',
+        '只接受本会话原已冻结R1请求和完全一致的文档摘要。沿现有 R1 正式发布与固定读回执行；必须有独立审批，禁止模型自授权或在未知结果时换号重提。',
+        [text('requestId', '本会话已准备的R1请求编号'), text('confirmationDigest', '冻结R1文档摘要', true, 128)]),
     ];
   }
   handles(action: string): boolean { return (ACTIONS as readonly string[]).includes(action); }
@@ -68,13 +75,63 @@ export class ConversationR1Bridge {
     const port = this.options.companion.r1Workspace;
     if (!port || !this.options.companion.processing || !this.options.companion.materials) fail('R1_CONVERSATION_DISABLED', 'R1伴随服务尚未装配。');
     this.assertDispatch(context);
-    const scope = this.scope(origin), authority = await acquireAuthority(context, action, args, []);
+    const scope = this.scope(origin), authority = await acquireAuthority(context, action, args, [],
+      action === ACTIONS[6] ? { approvalMode: 'review' } : {});
     const assert = () => { authority.assert(); this.assertDispatch(context); this.scope(origin); };
     assert();
     if (action === ACTIONS[0]) return this.result('已读取本会话R1能力；没有探测或提交。', this.capabilities(scope));
     if (action === ACTIONS[5]) {
       await interruptible(port.checkProfile(), context.signal); assert();
       return this.result('已明确只读核对当前R1 profile；没有提交。', { ...this.capabilities(scope), checked: true });
+    }
+    if (action === ACTIONS[7]) {
+      const taskId = String(args.taskId), planId = String(args.planId), outputId = String(args.outputId);
+      const output = this.planOutput(scope, planId, outputId);
+      const materialId = output.materialIds[0]!;
+      if (!verifyDerivedMaterialLink(this.options.database, this.options.companion, origin, materialId, scope.messages))
+        fail('R1_DERIVED_ORIGIN', '只有本会话算法实际生成的派生材料才允许走派生入库。');
+      const linked = this.db.prepare('SELECT service_task_id FROM conversation_algorithm_derived WHERE material_id=?')
+        .get(materialId) as { service_task_id: string } | undefined;
+      if (linked?.service_task_id !== taskId) fail('R1_DERIVED_ORIGIN', '派生计划与指定算法原任务不一致。');
+      const computed = this.options.companion.algorithms?.view(taskId).result;
+      if (!computed || computed.status !== 'computed') fail('R1_DERIVED_RESULT', '原算法没有已核对的计算结果。');
+      const declaration = output.target?.declaration;
+      if (!isWfdRecord(declaration) || declaration.protocol !== 'wfd.structured-ingest/1.0'
+        || !isWfdRecord(declaration.mapping) || !isWfdRecord(declaration.target))
+        fail('R1_TARGET_CHANGED', '派生计划缺少已冻结的WFD目标、版本和映射。');
+      const target = declaration.target, def = isWfdRecord(target.definition) ? target.definition : null;
+      const algorithm = def && isWfdRecord(def.algorithm_definition) ? def.algorithm_definition : null;
+      if (!def || def.measurement_nature !== 'derived'
+        || !isWfdRecord(def.semantic_context) || def.semantic_context.content_nature !== 'deterministic_derived'
+        || !algorithm || algorithm.method_id !== computed.methodId
+        || algorithm.method_version !== computed.methodVersion
+        || algorithm.implementation_version !== computed.implementationVersion
+        || algorithm.input_digest !== computed.inputDigest)
+        fail('R1_DERIVED_CONTRACT', '派生定义必须对应原算法编号、方法版本、实现版本和输入摘要；不能冒充原报。');
+      const derivedAt = computed.computedAt;
+      if (!Number.isFinite(Date.parse(derivedAt))) fail('R1_DERIVED_TIME', '原算法没有可信的实际完成时间。');
+      const source: R1SourceDeclaration = {
+        source_id: 'bd.algorithm.' + computed.methodId, provider: 'BD 本机受控确定性计算',
+        requested_url: 'urn:bd:algorithm:' + taskId,
+        requested_at_utc: derivedAt, acquired_at_utc: derivedAt,
+        usage_scope: 'WFD固定快照派生计算；输入身份由原算法任务谱系固定',
+        authorization: { status: 'authorized',
+          basis: '原算法任务及输入摘要已由BD核对；正式发布另由独立R1审批和WFD准入确认。' },
+      };
+      const requestId = 'r1c_' + wfdSha256(canonicalWfdJson({
+        conversation: origin.conversationId, branch: origin.branchId, plan: planId, output: outputId })).slice(0, 48);
+      assert();
+      const found = await interruptible(port.prepareWithRestriction({ requestId, planId, outputId, source,
+        mapping: declaration.mapping, target: declaration.target } as unknown as R1PrepareInput), context.signal);
+      this.assertView(found, { request_id: requestId, plan_id: planId, output_id: outputId });
+      const prior = this.db.prepare('SELECT * FROM conversation_r1_links WHERE request_id=?').get(requestId) as Link | undefined;
+      if (prior) this.assertLink(prior, scope);
+      else this.db.prepare('INSERT INTO conversation_r1_links VALUES(?,?,?,?,?,?,?,?,?)')
+        .run(requestId, origin.conversationId, origin.branchId, origin.messageId, planId, outputId,
+          context.task.id, JSON.stringify(origin), Date.now());
+      assert();
+      return this.result('已按原算法证明准备WFD派生交接；未发布。调用data.r1.submit后确认正式回执及固定读回。', {
+        ...this.requestView(found), algorithmTaskId: taskId, inputDigest: computed.inputDigest });
     }
     if (action === ACTIONS[1]) {
       const planId = String(args.planId), outputId = String(args.outputId), output = this.planOutput(scope, planId, outputId);
@@ -103,6 +160,21 @@ export class ConversationR1Bridge {
     const link = this.ownedLink(String(args.requestId), scope);
     // A local get intentionally reads the frozen receipt, not today's connection. Recovery below rechecks
     // the original binding in R1Workspace; neither path silently substitutes a new default profile.
+    if (action === ACTIONS[6]) {
+      const prepared = port.get(link.request_id); this.assertView(prepared, link);
+      if (prepared.documentSha256 !== args.confirmationDigest)
+        fail('R1_CONFIRMATION_CHANGED', '正式发布摘要与冻结文档不一致，禁止换内容提交。');
+      assert();
+      const submitted = port.submit(link.request_id, prepared.documentSha256);
+      const settled = await interruptible(this.options.companion.tasks.wait(submitted.id), context.signal);
+      assert();
+      const final = port.get(link.request_id); this.assertView(final, link);
+      if (settled.status !== 'succeeded' || final.state !== 'associated' || final.requiresRecovery)
+        return this.result('原R1提交未完成全部正式固定读回；保留原号及回执，不宣称已入库。', {
+          ...this.requestView(final), taskId: submitted.id, taskStatus: settled.status, published: false });
+      return this.result('R1正式发布已由WFD完成固定读回及逐行关联。', {
+        ...this.requestView(final), taskId: submitted.id, taskStatus: settled.status, published: true });
+    }
     if (action === ACTIONS[2]) {
       const found = port.get(link.request_id); this.assertView(found, link); assert();
       return this.result('已读取本会话原本地R1回执；没有重提或实时探测。', this.requestView(found));
@@ -116,7 +188,7 @@ export class ConversationR1Bridge {
 
   private result(summary: string, value: Record<string, unknown>): TaskResult {
     return { summary, data: { kind: 'conversation-r1', modelPreview: json({ contract: 'conversation-r1/1',
-      protocol: 'wfd.structured-ingest/1.0', profile: 'data_only', modelSubmit: false,
+      protocol: 'wfd.structured-ingest/1.0', profile: 'data_only', submitByAgent: 'review_required_with_frozen_digest',
       sourceEvidenceScope: 'verified_user_statement_only', ...value }) } };
   }
   private requestView(found: R1RequestView): Record<string, unknown> {
@@ -148,7 +220,7 @@ export class ConversationR1Bridge {
       }
     }
     return { configuration: { state: caps.configuration.state }, limits: { ...caps.limits, explicitAttachmentOnly: true,
-      maxAncestorMessages: MAX_ANCESTORS, maxListPage: 20 }, automaticSubmit: false, legacyReplay: false, actions: [...ACTIONS], plans };
+      maxAncestorMessages: MAX_ANCESTORS, maxListPage: 20 }, automaticSubmit: false, agentSubmit: 'review_required', legacyReplay: false, actions: [...ACTIONS], plans };
   }
   private scope(origin: ModelTaskOrigin): Scope {
     const core = this.options.core;
@@ -179,6 +251,8 @@ export class ConversationR1Bridge {
     if (!output || output.publishEligible !== true || output.routingState !== 'ready_candidate') fail('R1_PROCESS_NOT_READY', '固定输出没有实际结构化及发布资格。');
     if (output.materialIds.length !== 1) fail('R1_MULTI_SOURCE_UNSUPPORTED', '本片只接单一明确附件的固定输出。');
     const materialId = output.materialIds[0]!;
+    if (verifyDerivedMaterialLink(this.options.database, this.options.companion, scope.origin, materialId, scope.messages))
+      return output;
     if (!this.hasTable('conversation_material_links')) fail('R1_MATERIAL_ORIGIN', '没有本会话附件保管关系。');
     const materialLink = this.db.prepare('SELECT * FROM conversation_material_links WHERE material_id=?').get(materialId);
     if (!materialLink || !this.savedInScope(String(materialLink.origin_json), scope)) fail('R1_MATERIAL_ORIGIN', '原件不属于本输入祖先的会话分支。');
@@ -248,6 +322,8 @@ export class ConversationR1Bridge {
   }
   private validateArgs(action: string, args: Record<string, JsonValue>): void {
     const keys = action === ACTIONS[1] ? ['planId', 'outputId', 'sourceJson', 'sourceEvidenceJson']
+      : action === ACTIONS[7] ? ['taskId', 'planId', 'outputId']
+      : action === ACTIONS[6] ? ['requestId', 'confirmationDigest']
       : action === ACTIONS[2] || action === ACTIONS[4] ? ['requestId'] : action === ACTIONS[3] ? ['offset', 'limit'] : [];
     if (!isWfdRecord(args) || Object.keys(args).some(key => !keys.includes(key))) fail('R1_CONVERSATION_INPUT', '不接受未声明字段、行、权限、摘要或连接覆盖。');
     if (action === ACTIONS[3]) for (const [key, min, max] of [['offset', 0, 10000], ['limit', 1, 20]] as const) {

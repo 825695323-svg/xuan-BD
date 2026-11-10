@@ -33,25 +33,10 @@ export function createAlgorithmRouter(services: AlgorithmRouteServices) {
     }
     res.status(201).json(service().adopt(body));
   });
-  router.post('/calls', (req, res) => {
-    const body = objectBody(req.body);
-    if (Object.keys(body).some(key => !['requestId', 'call'].includes(key)) || typeof body.requestId !== 'string' || !isRecord(body.call)) {
-      throw new CoreError('INVALID_ALGORITHM_BODY', '计算请求只接受 requestId 与结构化 call 对象。', 400);
-    }
-    res.status(202).json(service().submit(body.requestId, body.call, {
-      authority: 'operator-http', requestId: body.requestId, observedAtUtc: new Date().toISOString(),
-    }));
-  });
+  router.get('/calls', (_req, res) => res.json({ items: services.algorithms ? services.algorithms.list() : [] }));
   router.get('/calls/:taskId', (req, res) => {
     if (typeof req.params.taskId !== 'string' || !req.params.taskId) throw new CoreError('INVALID_ALGORITHM_TASK', '缺少任务编号。', 400);
     res.json(service().view(req.params.taskId));
-  });
-  router.post('/calls/:taskId/resume', (req, res) => {
-    const body = objectBody(req.body);
-    if (Object.keys(body).length !== 1 || !Number.isSafeInteger(body.expectedVersion) || Number(body.expectedVersion) < 0) {
-      throw new CoreError('INVALID_ALGORITHM_RESUME', '恢复请求只接受当前 taskVersion。', 400);
-    }
-    res.json(service().resume(req.params.taskId, Number(body.expectedVersion)));
   });
   const errors: ErrorRequestHandler = (error, _req, res, _next) => {
     const code = error instanceof TaskError || error instanceof PermissionError || error instanceof CoreError ? error.code : 'ALGORITHM_ROUTE_FAILED';

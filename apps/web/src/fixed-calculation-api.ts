@@ -1,7 +1,6 @@
-import { FIXED_CALCULATION_VERSION, type FixedCalculationCapabilities, type FixedCalculationInput,
+import { FIXED_CALCULATION_VERSION, type FixedCalculationCapabilities, 
   type FixedCalculationInputs, type FixedCalculationRecordPage, type FixedCalculationRecordsInput,
   type FixedCalculationTaskView } from '../../../contracts/fixed-calculation-contracts';
-import type { R1PrepareInput, R1RequestView } from '../../../contracts/r1-contracts';
 import { request, RequestError } from './api';
 
 const base = '/api/bd/computation';
@@ -55,14 +54,5 @@ export const fixedCalculationApi = {
     if (!object(value) || !Array.isArray(value.items)) throw new RequestError('原计算任务列表无法读取。');
     return value.items.map(task);
   },
-  create: async (input: FixedCalculationInput) => task(await request(base + '/tasks', 'POST', input)),
   get: async (id: string) => task(await request(`${base}/tasks/${encodeURIComponent(id)}`)),
-  stage: async (id: string) => task(await request(`${base}/tasks/${encodeURIComponent(id)}/stage`, 'POST', {})),
-  prepare: async (id: string, input: R1PrepareInput): Promise<R1RequestView> => {
-    const value = await request(`${base}/tasks/${encodeURIComponent(id)}/prepare`, 'POST', input);
-    if (!object(value) || value.requestId !== input.requestId || value.planId !== input.planId || typeof value.documentSha256 !== 'string') {
-      throw new RequestError('原计算候选的准备回执无法核对。');
-    }
-    return value as unknown as R1RequestView;
-  },
 };

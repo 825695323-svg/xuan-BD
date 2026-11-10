@@ -25,6 +25,7 @@ export interface R1RuntimeOptions {
     objectBytes(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): Buffer };
   connectionId?: string;
   verifyCalculationCandidate?(input: R1CalculationCandidateVerification): void;
+  verifyAlgorithmCandidate?(input: R1CalculationCandidateVerification): void;
 }
 export interface R1Runtime {
   connection: ResolvedProductMachineConnection;
@@ -42,7 +43,8 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
   const connectionOptions = { allowProduction: options.connectionId !== undefined || manualSelection !== undefined };
   const connection = resolveProductMachineConnection(options.resources, selectedConnectionId, connectionOptions);
   const service = new R1HandoffService({ database: options.database, materials: options.materials,
-    processing: options.processing, candidates: options.candidates, verifyCalculationCandidate: options.verifyCalculationCandidate });
+    processing: options.processing, candidates: options.candidates, verifyCalculationCandidate: options.verifyCalculationCandidate,
+    verifyAlgorithmCandidate: options.verifyAlgorithmCandidate });
   const client = new WfdStructuredIngestClient(connection.client, connection.schemaPath);
   const initialConfig = JSON.parse(readFileSync(connection.configPath, 'utf8')) as Record<string, unknown>;
   const currentIdentity = (): R1ConnectionIdentity => {

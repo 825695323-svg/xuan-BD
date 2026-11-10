@@ -30,6 +30,7 @@ export interface R1ConversationPort {
   readonly versionBinding: Record<string, string | null>;
   capabilities(): R1CapabilitiesView;
   prepare(input: unknown): R1RequestView;
+  prepareWithRestriction(input: unknown): Promise<R1RequestView>;
   get(requestId: string): R1RequestView;
   recover(requestId: string, lookupId: string): Promise<TaskRecord>;
   checkProfile(): Promise<unknown>;

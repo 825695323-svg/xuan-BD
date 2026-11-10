@@ -47,6 +47,7 @@ import { createBaiduCustodyBackend, type CloudCustodyBackend } from '../../plugi
 import { MaterialSemanticService } from '../../modules/collection/materials/semantic.js';
 import { SegmentService } from '../../modules/collection/segments/service.js';
 import { R1HandoffService, type R1CalculationCandidateVerification } from '../../modules/collection/r1-structured-handoff.js';
+import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { createR1HandoffRuntime, type R1Runtime } from '../../modules/collection/r1-runtime.js';
 import { ProcessingPlanService } from '../../modules/collection/processing-plan.js';
 import { R1WorkspaceService } from '../../modules/collection/r1-workspace.js';
@@ -419,19 +420,45 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     if (!polarsFixed) throw new TaskError('R1_CALCULATION_VERIFIER_UNBOUND', '计算候选缺受信验证器。');
     polarsFixed.verifyCandidate(input.taskId, input);
   };
+  const verifyAlgorithmCandidate = (input: R1CalculationCandidateVerification) => {
+    if (!algorithms || !materials || !processing)
+      throw new TaskError('R1_ALGORITHM_VERIFIER_UNBOUND', '基础算法、材料与加工证据验证器尚未完整装配。');
+    const finished = algorithms.view(input.taskId), result = finished.result;
+    if (finished.status !== 'succeeded' || finished.requiresReview || !result || result.status !== 'computed'
+      || result.taskId !== input.taskId || !result.source || typeof result.source !== 'object'
+      || !('kind' in result.source) || result.source.kind !== 'wfd_fixed_snapshot')
+      throw new TaskError('R1_ALGORITHM_PROOF_MISSING', '派生材料不是已完成的 WFD 固定快照算法结果。');
+    const sha = wfdSha256(canonicalWfdJson(result.rows));
+    const original = materials.readOriginal(input.materialId);
+    if (original.sha256 !== sha || canonicalWfdJson(JSON.parse(original.bytes.toString('utf8'))) !== canonicalWfdJson(result.rows))
+      throw new TaskError('R1_ALGORITHM_ROWS_CHANGED', '计算结果与受管派生材料实际行不一致。');
+    const plan = processing.get(input.planId);
+    const output = plan.outputs.find(item => item.outputId === input.outputId);
+    if (!output || !output.materialIds.includes(input.materialId) || output.publishEligible !== true)
+      throw new TaskError('R1_ALGORITHM_PLAN_INVALID', '派生计划未绑定原计算材料或尚未获得发布资格。');
+    const def = input.definition, algorithm = isWfdRecord(def.algorithm_definition) ? def.algorithm_definition : null;
+    if (def.measurement_nature !== 'derived' || !isWfdRecord(def.semantic_context)
+      || def.semantic_context.content_nature !== 'deterministic_derived'
+      || !algorithm || algorithm.method_id !== result.methodId
+      || algorithm.method_version !== result.methodVersion
+      || algorithm.implementation_version !== result.implementationVersion
+      || algorithm.input_digest !== result.inputDigest)
+      throw new TaskError('R1_ALGORITHM_DEFINITION_CHANGED', 'WFD派生定义与原算法编号、方法版本、实现版本及输入摘要不一致。');
+  };
   let r1Configuration: { state: 'ready' | 'not_configured' | 'unavailable'; reason: string | null } =
     { state: 'unavailable', reason: 'materials service not assembled' };
   if (materials && options.resources) {
     try {
       r1Runtime = createR1HandoffRuntime({ resources: options.resources, database, materials, processing, candidates,
-        connectionId: options.r1ConnectionId, verifyCalculationCandidate });
+        connectionId: options.r1ConnectionId, verifyCalculationCandidate, verifyAlgorithmCandidate });
       r1Configuration = { state: 'ready', reason: null };
     } catch (error) {
       r1Configuration = { state: 'not_configured',
         reason: error instanceof Error ? error.message : String(error) };
     }
   }
-  const r1: R1HandoffService | undefined = r1Runtime?.service ?? (materials ? new R1HandoffService({ database, materials, processing, candidates, verifyCalculationCandidate }) : undefined);
+  const r1: R1HandoffService | undefined = r1Runtime?.service ?? (materials ? new R1HandoffService({
+    database, materials, processing, candidates, verifyCalculationCandidate, verifyAlgorithmCandidate }) : undefined);
   const r1Workspace: R1WorkspaceService | undefined = r1 && processing && materials ? new R1WorkspaceService({ database, tasks: currentTasks,
     handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration }) : undefined;
   // 来源字段档案放在本机配置资源下；未绑定时退回工程外运行根，不读源码树。
