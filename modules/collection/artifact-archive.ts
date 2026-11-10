@@ -105,7 +105,7 @@ export function createArtifactArchiveActions(options: {
       if (source.status !== 'succeeded' || source.requiresReview || !source.result?.artifactIds?.includes(input.fileRefId))
         throw new TaskError('ARTIFACT_ARCHIVE_SOURCE', '原任务未成功、仍待复核，或此文件不属于其已发布产物。');
       // 冻结归档的只读复核不依赖已不存在的本地字节；首次上传仍须核对完整原件。
-      const row = find(input.sourceTaskId, input.fileRefId);
+      let row = find(input.sourceTaskId, input.fileRefId);
       const reference = row ? options.files.getRef(input.fileRefId) : options.files.verify(input.fileRefId);
       if (reference.source !== 'generated' || reference.kind !== 'file'
         || !reference.relations.some(item => item.kind === 'task' && item.id === input.sourceTaskId)
