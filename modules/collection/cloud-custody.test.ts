@@ -75,7 +75,7 @@ class FixtureDrive implements CloudCustodyBackend {
         if (this.objects.get(path)?.object.kind === 'file') throw new TaskError('CLOUD_DIRECTORY_CONFLICT', '隔离夹具同名文件阻断目录准备。');
         if (this.directories.has(path)) return true;
         if (!create) return false;
-        assert.equal(input.allowUpload, true); assert.equal(input.verifyBytes, true); await this.onPrepare?.(path);
+        assert.equal(input.allowUpload, true); await this.onPrepare?.(path);
         this.directories.add(posix.dirname(path)); this.directories.add(path);
         if (this.throwAfterPrepare) throw new TaskError('CLOUD_DIRECTORY_UNKNOWN', '隔离注入：目录已创建但回执未知。');
         return true;
@@ -87,7 +87,7 @@ class FixtureDrive implements CloudCustodyBackend {
         return object;
       },
       copy: async (source, targetDirectory) => {
-        assert.equal(input.allowUpload, true); assert.equal(input.verifyBytes, true);
+        assert.equal(input.allowUpload, true);
         assert.equal(targetDirectory, input.targetDirectory); assert.notEqual(targetDirectory, evidenceRoot);
         const path = posix.join(targetDirectory, posix.basename(source.path));
         assert.equal(this.objects.has(path), false, '夹具不允许覆盖既有同名对象');
@@ -138,11 +138,11 @@ test('new archive requests expose and default to the dedicated evidence root, re
   try {
     const materialId = await f.material();
     assert.equal(f.custody.capabilities().evidenceRoot, evidenceRoot);
-    assert.equal(f.custody.capabilities().version, 'bd-cloud-custody/5');
+    assert.equal(f.custody.capabilities().version, 'bd-cloud-custody/6');
     assert.throws(() => f.custody.submit(request(materialId, { verifyBytes: true, allowUpload: true, targetDirectory: folder }), 'outside-evidence'), { code: 'CLOUD_EVIDENCE_ROOT_REQUIRED' });
     assert.throws(() => f.custody.submit(request(materialId, { verifyBytes: true, allowUpload: true, targetDirectory: evidenceRoot }), 'no-direct-root-write'), { code: 'CLOUD_EVIDENCE_ROOT_REQUIRED' });
     const result = await f.run(request(materialId, { verifyBytes: true, allowUpload: true }));
-    assert.equal(result.record.state, 'uploaded_verified');
+    assert.equal(result.record.state, 'uploaded_metadata_checked');
     assert.equal(result.record.input.targetDirectory, archiveDirectory);
     assert.equal(posix.dirname(drive.writes[0]!), archiveDirectory);
   } finally { await f.close(); }
@@ -182,7 +182,7 @@ test('automatic classification uses the held original bytes to choose the market
     const preview = f.custody.listForMaterial(materialId).evidenceClassification!;
     assert.equal(preview.topic, '行情'); assert.equal(preview.directory, evidenceRoot + '/行情/来源原件');
     const result = await f.run(request(materialId, { scopePath: evidenceRoot, verifyBytes: true, allowUpload: true }));
-    assert.equal(result.record.state, 'uploaded_verified'); assert.deepEqual(result.record.evidenceClassification, preview);
+    assert.equal(result.record.state, 'uploaded_metadata_checked'); assert.deepEqual(result.record.evidenceClassification, preview);
     assert.equal(result.record.input.evidenceTopic, undefined); assert.equal(posix.dirname(drive.writes[0]!), preview.directory);
     assert.deepEqual(drive.listings, []); assert.deepEqual(f.materials.readOriginal(materialId).bytes, daily);
   } finally { await f.close(); }
@@ -215,7 +215,7 @@ test('the default source-original leaf is created only when an authorized file w
       assert.equal(Number(f.db.connection.prepare('SELECT count(*) n FROM cloud_custody_target_claims').get()!.n), 0);
     };
     const result = await f.run(request(materialId, { scopePath: archiveDirectory, verifyBytes: true, allowUpload: true }));
-    assert.equal(result.record.state, 'uploaded_verified'); assert.equal(result.record.directoryPreparation, 'ready');
+    assert.equal(result.record.state, 'uploaded_metadata_checked'); assert.equal(result.record.directoryPreparation, 'ready');
     assert.deepEqual(drive.preparations, [{ path: archiveDirectory, create: false }, { path: archiveDirectory, create: true }]);
     assert.deepEqual(drive.listings, []); assert.equal(drive.writes.length, 1);
   } finally { await f.close(); }
@@ -240,7 +240,7 @@ test('a directory-only unknown result preserves its intent without file claims a
       assert.equal(f.custody.view(recovery.id).record.state, 'needs_review'); assert.equal(drive.preparations.length, preparations, '旧未决目录恢复不重建目录');
       drive.throwAfterPrepare = false;
       const next = await f.run(input, 'directory-ready-new-authorization');
-      assert.equal(next.record.state, operation === 'copy' ? 'copied_verified' : 'uploaded_verified', JSON.stringify(next.record.gaps));
+      assert.equal(next.record.state, operation === 'copy' ? 'copied_metadata_checked' : 'uploaded_metadata_checked', JSON.stringify(next.record.gaps));
       assert.equal(drive.writes.length, operation === 'upload' ? 1 : 0); assert.equal(drive.copies.length, operation === 'copy' ? 1 : 0);
       assert.equal(drive.preparations.filter(item => item.create).length, 1, '后续明确请求只读核实已就绪，不重复mkdir');
       assert.equal(f.custody.view(first.task.id).record.copyAttempted, false); assert.equal(f.custody.view(first.task.id).record.uploadAttempted, false);
@@ -253,12 +253,12 @@ test('same-content archive requests share the first verified evidence object acr
   try {
     const materialId = await f.material(), otherMaterialId = await f.material(original, 'another-name.csv');
     const first = await f.run(request(materialId, { sourceRemotePath: source.path, evidenceTopic: '财报', verifyBytes: true, allowUpload: true }));
-    assert.equal(first.record.state, 'copied_verified'); drive.listings.length = 0; drive.reads.length = 0; drive.preparations.length = 0;
+    assert.equal(first.record.state, 'copied_metadata_checked'); drive.listings.length = 0; drive.reads.length = 0; drive.preparations.length = 0;
     const oldRecord = String(f.db.connection.prepare('SELECT record_json FROM cloud_custody_requests WHERE task_id=?').get(first.task.id)!.record_json);
     f.db.connection.prepare('UPDATE tasks SET versions=? WHERE id=?').run(JSON.stringify({ ...first.task.versions, cloudCustody: 'bd-cloud-custody/3' }), first.task.id);
     await f.close(); f = open(root, drive);
     const second = await f.run(request(otherMaterialId, { sourceRemotePath: source.path, evidenceTopic: '资讯', verifyBytes: true, allowUpload: true }));
-    assert.equal(second.record.state, 'reused_verified');
+    assert.equal(second.record.state, 'reused_metadata_checked');
     assert.equal(first.record.remoteObject!.path, evidenceRoot + '/财报/来源原件/source.csv');
     assert.equal(second.record.remoteObject!.id, first.record.remoteObject!.id);
     assert.equal(second.record.remoteObject!.path, first.record.remoteObject!.path);
@@ -311,7 +311,7 @@ test('name-only and selected read-only checks do not use another topic registere
     for (const verifyBytes of [false, true]) {
       const result = await f.run(request(materialId, { scopePath: folder, evidenceTopic: '资讯', verifyBytes }));
       assert.equal(result.record.archiveReference, undefined); assert.equal(result.record.remoteObject, null);
-      assert.equal(result.record.state, verifyBytes ? 'missing' : 'needs_review');
+      assert.equal(result.record.state, 'missing');
     }
     assert.deepEqual(drive.reads, []); assert.deepEqual(drive.listings, [folder, folder]);
     assert.equal(drive.writes.length, 1); assert.equal(drive.copies.length, 0);
@@ -323,9 +323,9 @@ test('a source_verified receipt in the source area is not an evidence object and
   try {
     const firstMaterial = await f.material(), otherMaterial = await f.material();
     const readOnly = await f.run(request(firstMaterial, { sourceRemotePath: source.path, verifyBytes: true }));
-    assert.equal(readOnly.record.state, 'source_verified');
+    assert.equal(readOnly.record.state, 'source_metadata_checked');
     const archived = await f.run(request(otherMaterial, { sourceRemotePath: source.path, evidenceTopic: '资讯', verifyBytes: true, allowUpload: true }));
-    assert.equal(archived.record.state, 'copied_verified'); assert.equal(archived.record.archiveReference, undefined);
+    assert.equal(archived.record.state, 'copied_metadata_checked'); assert.equal(archived.record.archiveReference, undefined);
     assert.equal(drive.copies.length, 1); assert.equal(drive.writes.length, 0);
     assert.notEqual(archived.record.remoteObject!.id, source.id);
   } finally { await f.close(); }
@@ -336,12 +336,12 @@ test('restoring a source_verified object in another evidence topic does not turn
   try {
     const firstMaterial = await f.material(), otherMaterial = await f.material();
     const readOnly = await f.run(request(firstMaterial, { sourceRemotePath: source.path, evidenceTopic: '资讯', verifyBytes: true }));
-    assert.equal(readOnly.record.state, 'source_verified');
+    assert.equal(readOnly.record.state, 'source_metadata_checked');
     const recovery = f.custody.recover(readOnly.task.id, readOnly.task.version, 'source-read-only-restore'); await f.tasks.wait(recovery.id);
     assert.equal(f.custody.view(recovery.id).record.state, 'restored_verified');
     drive.reads.length = 0;
     const archived = await f.run(request(otherMaterial, { scopePath: evidenceRoot, evidenceTopic: '行情', verifyBytes: true, allowUpload: true }));
-    assert.equal(archived.record.state, 'uploaded_verified', JSON.stringify(archived.record.gaps));
+    assert.equal(archived.record.state, 'uploaded_metadata_checked', JSON.stringify(archived.record.gaps));
     assert.equal(archived.record.archiveReference, undefined);
     assert.deepEqual(drive.reads, [archived.record.remoteObject!.path]);
     assert.equal(drive.writes.length, 1); assert.equal(drive.copies.length, 0);
@@ -359,7 +359,7 @@ test('restoring an unresolved evidence archive target provides a verified receip
     const restored = f.custody.view(recovery.id); assert.equal(restored.record.state, 'restored_verified');
     drive.reads.length = 0; drive.listings.length = 0; drive.preparations.length = 0;
     const shared = await f.run(request(otherMaterial, { scopePath: evidenceRoot, evidenceTopic: '资讯', verifyBytes: true, allowUpload: true }));
-    assert.equal(shared.record.state, 'reused_verified');
+    assert.equal(shared.record.state, 'reused_metadata_checked');
     assert.equal(shared.record.archiveReference!.taskId, recovery.id);
     assert.equal(shared.record.remoteObject!.id, restored.record.remoteObject!.id);
     assert.deepEqual(drive.reads, [restored.record.remoteObject!.path]);
@@ -375,11 +375,11 @@ test('archive reuse and content claims remain separate when either account bindi
     try {
       const materialId = await f.material();
       const first = await f.run(request(materialId, { scopePath: evidenceRoot, evidenceTopic: '财报', verifyBytes: true, allowUpload: true }));
-      assert.equal(first.record.state, 'uploaded_verified'); await f.close();
+      assert.equal(first.record.state, 'uploaded_metadata_checked'); await f.close();
       const secondDrive = new FixtureDrive(); Object.assign(secondDrive.versionBinding, { cloudConnection: 'connection-one', [changed]: 'changed-binding' });
       f = open(root, secondDrive);
       const second = await f.run(request(materialId, { scopePath: evidenceRoot, evidenceTopic: '资讯', verifyBytes: true, allowUpload: true }));
-      assert.equal(second.record.state, 'uploaded_verified', JSON.stringify(second.record.gaps));
+      assert.equal(second.record.state, 'uploaded_metadata_checked', JSON.stringify(second.record.gaps));
       assert.equal(second.record.archiveReference, undefined);
       assert.equal(posix.dirname(second.record.remoteObject!.path), evidenceRoot + '/资讯/来源原件');
       assert.equal(secondDrive.writes.length, 1); assert.equal(secondDrive.copies.length, 0);
@@ -404,7 +404,7 @@ test('same-content concurrent topics are blocked by the first file claim and lat
     assert.equal(drive.preparations.length, preparations); assert.equal(drive.copies.length, 1);
     release(); await f.tasks.wait(first.id);
     const later = await f.run(secondInput);
-    assert.equal(later.record.state, 'reused_verified'); assert.equal(later.record.archiveReference!.taskId, first.id);
+    assert.equal(later.record.state, 'reused_metadata_checked'); assert.equal(later.record.archiveReference!.taskId, first.id);
     assert.equal(drive.copies.length, 1); assert.equal(drive.writes.length, 0);
     assert.equal(drive.directories.has(evidenceRoot + '/资讯/来源原件'), false);
   } finally { release(); await f.close(); }
@@ -420,9 +420,9 @@ test('a late race rechecks verified receipts after directory readiness and resto
     const first = f.custody.submit(request(materialId, { sourceRemotePath: source.path, evidenceTopic: '财报', verifyBytes: true, allowUpload: true }), 'late-race-first');
     await preparing;
     const winner = await f.run(request(materialId, { sourceRemotePath: source.path, evidenceTopic: '资讯', verifyBytes: true, allowUpload: true }));
-    assert.equal(winner.record.state, 'copied_verified'); release(); await f.tasks.wait(first.id);
+    assert.equal(winner.record.state, 'copied_metadata_checked'); release(); await f.tasks.wait(first.id);
     const reused = f.custody.view(first.id);
-    assert.equal(reused.record.state, 'reused_verified'); assert.equal(reused.record.copyAttempted, false);
+    assert.equal(reused.record.state, 'reused_metadata_checked'); assert.equal(reused.record.copyAttempted, false);
     assert.equal(reused.record.archiveReference!.taskId, winner.task.id);
     assert.equal(reused.record.evidenceClassification!.topic, '财报');
     assert.equal(reused.record.remoteObject!.path, winner.record.remoteObject!.path);
@@ -467,10 +467,10 @@ test('default name-only check never downloads or recursively scans subdirectorie
   const f = open(newRoot(), drive);
   try {
     const materialId = await f.material(), result = await f.run(request(materialId));
-    assert.equal(result.record.state, 'candidates_found'); assert.equal(result.record.verifiedSha256, null);
+    assert.equal(result.record.state, 'source_metadata_checked'); assert.equal(result.record.verifiedSha256, null);
     assert.equal(result.record.coverage.globalExistence, 'unknown'); assert.equal(result.record.coverage.skippedDirectories, 1);
     assert.deepEqual(drive.listings, [folder]); assert.equal(drive.reads.length, 0); assert.equal(drive.writes.length, 0);
-    assert.throws(() => f.custody.submit(request(materialId, { allowUpload: true }), 'no-byte-authorization'), { code: 'CLOUD_UPLOAD_AUTHORIZATION_REQUIRED' });
+    assert.equal(result.record.metadataConfirmed, true, '只读查询按文件名、大小和远端编号确认来源，不上传');
     assert.throws(() => f.custody.submit({ ...request(materialId), authorization: { status: 'authorized', basis: '已授权' } }, 'stateword'), { code: 'CLOUD_AUTHORIZATION_REQUIRED' });
   } finally { await f.close(); }
 });
@@ -482,27 +482,27 @@ test('read-only original cloud source is fully verified without claiming dedicat
   try {
     const materialId = await f.material(), result = await f.run(request(materialId, { scopePath: rootPath,
       sourceRemotePath: source.path, verifyBytes: true }));
-    assert.equal(result.record.state, 'source_verified'); assert.equal(result.record.remoteObject!.id, source.id);
-    assert.equal(result.record.gaps[0]!.code, 'CLOUD_SOURCE_NOT_ARCHIVED');
-    assert.equal(result.record.coverage.scopeComplete, false); assert.equal(result.record.verifiedSha256, sha(original));
-    assert.deepEqual(drive.listings, [rootPath + '/source']); assert.deepEqual(drive.reads, [source.path]); assert.equal(drive.writes.length, 0); assert.equal(drive.copies.length, 0);
+    assert.equal(result.record.state, 'source_metadata_checked'); assert.equal(result.record.remoteObject!.id, source.id);
+    assert.deepEqual(result.record.gaps, []);
+    assert.equal(result.record.coverage.scopeComplete, false); assert.equal(result.record.verifiedSha256, null);
+    assert.deepEqual(drive.reads, []); assert.equal(drive.writes.length, 0); assert.equal(drive.copies.length, 0);
     assert.equal(f.custody.listForMaterial(materialId).knownSourceRemotePath, source.path);
     assert.deepEqual(f.materials.readOriginal(materialId).bytes, original);
   } finally { await f.close(); }
 });
 
-test('equal names and lengths do not prove content; renamed identical bytes are reused with separate material provenance', async () => {
+test('metadata-only archive uses matching remote filename and size without downloading original bytes', async () => {
   const drive = new FixtureDrive(); drive.add(archiveDirectory + '/local-original.csv', sameLengthOther); const alias = drive.add(archiveDirectory + '/other-name.zip', original);
   const f = open(newRoot(), drive);
   try {
     const first = await f.material(), second = await f.material();
     for (const materialId of [first, second]) {
       const result = await f.run(request(materialId, { verifyBytes: true, allowUpload: true }));
-      assert.equal(result.record.state, 'reused_verified'); assert.equal(result.record.remoteObject!.id, alias.id);
+      assert.equal(result.record.state, 'reused_metadata_checked'); assert.equal(result.record.remoteObject!.id, drive.objects.get(archiveDirectory + '/local-original.csv')!.object.id);
       assert.equal(result.record.material.materialId, materialId); assert.equal(f.materials.get(materialId).envelope.materialId, materialId);
     }
     assert.notEqual(first, second); assert.equal(drive.writes.length, 0);
-    assert.ok(f.custody.audit(f.custody.listForMaterial(first).items[0]!.task.id).some(item => item.event === 'candidate_readback' && item.facts.matches === false));
+    assert.deepEqual(drive.reads, [], '元数据归档不进行全文下载');
   } finally { await f.close(); }
 });
 
@@ -518,24 +518,26 @@ test('a verified source outside the evidence root is copied within the drive and
       assert.equal(Number(f.db.connection.prepare('SELECT count(*) n FROM cloud_custody_target_claims').get()!.n), 1);
     };
     const result = await f.run(request(materialId, { verifyBytes: true, allowUpload: true, sourceRemotePath: source.path }));
-    assert.equal(result.record.state, 'copied_verified', JSON.stringify(result.record.gaps));
+    assert.equal(result.record.state, 'copied_metadata_checked', JSON.stringify(result.record.gaps));
     assert.equal(result.record.remoteObject!.path, archiveDirectory + '/source.csv'); assert.notEqual(result.record.remoteObject!.id, source.id);
-    assert.equal(result.record.verifiedSha256, sha(original)); assert.equal(result.record.copyAttempted, true); assert.equal(result.record.uploadAttempted, false);
+    assert.equal(result.record.verifiedSha256, null); assert.equal(result.record.metadataConfirmed, true);
+    assert.equal(result.record.copyAttempted, true); assert.equal(result.record.uploadAttempted, false);
     assert.deepEqual(drive.copies, [archiveDirectory + '/source.csv']); assert.equal(drive.writes.length, 0);
-    assert.deepEqual(drive.reads, [source.path, archiveDirectory + '/source.csv']);
+    assert.deepEqual(drive.reads, []);
     assert.deepEqual(drive.objects.get(source.path)!.bytes, original); assert.deepEqual(f.materials.readOriginal(materialId).bytes, original);
-    assert.equal(f.custody.audit(result.task.id).filter(item => item.event === 'candidate_readback' && item.facts.matches).length, 2);
+    assert.equal(f.custody.audit(result.task.id).filter(item => item.event === 'candidate_readback').length, 0);
   } finally { await f.close(); }
 });
 
-test('an archive with identical bytes is reused before external source inspection or a second copy', async () => {
+test('unmatched archive filename is not reused solely because full content would match', async () => {
   const drive = new FixtureDrive(), archive = drive.add(archiveDirectory + '/archive-with-another-name', original);
   const source = drive.add(folder + '/source.csv', original), f = open(newRoot(), drive);
   try {
     const materialId = await f.material(), result = await f.run(request(materialId, { verifyBytes: true, allowUpload: true, sourceRemotePath: source.path }));
-    assert.equal(result.record.state, 'reused_verified'); assert.equal(result.record.remoteObject!.id, archive.id);
-    assert.deepEqual(drive.listings, [archiveDirectory]); assert.deepEqual(drive.reads, [archive.path]);
-    assert.equal(drive.copies.length, 0); assert.equal(drive.writes.length, 0);
+    assert.equal(result.record.state, 'copied_metadata_checked');
+    assert.notEqual(result.record.remoteObject!.id, archive.id);
+    assert.deepEqual(drive.reads, []);
+    assert.equal(drive.copies.length, 1); assert.equal(drive.writes.length, 0);
   } finally { await f.close(); }
 });
 
@@ -565,19 +567,20 @@ test('different-content concurrent sources sharing a basename cannot both claim 
     assert.equal(second.record.state, 'needs_review'); assert.equal(second.record.gaps[0]!.code, 'CLOUD_TARGET_CLAIMED');
     assert.equal(drive.copies.length, 1); assert.equal(drive.writes.length, 0);
     release(); await f.tasks.wait(first.id);
-    assert.equal(f.custody.view(first.id).record.state, 'copied_verified');
+    assert.equal(f.custody.view(first.id).record.state, 'copied_metadata_checked');
     assert.deepEqual(drive.objects.get(archiveDirectory + '/shared.csv')!.bytes, original);
   } finally { release(); await f.close(); }
 });
 
-test('a copy with mismatched target bytes stays unresolved and never falls back to local upload', async () => {
+test('a copy with same-name same-size target succeeds on metadata without remote byte download', async () => {
   const drive = new FixtureDrive(); drive.corruptCopy = true;
   const source = drive.add(folder + '/source.csv', original), f = open(newRoot(), drive);
   try {
     const materialId = await f.material(), result = await f.run(request(materialId, { sourceRemotePath: source.path, verifyBytes: true, allowUpload: true }));
-    assert.equal(result.task.status, 'needs_review'); assert.equal(result.record.state, 'needs_review');
+    assert.equal(result.task.status, 'succeeded'); assert.equal(result.record.state, 'copied_metadata_checked');
     assert.equal(result.record.copyAttempted, true); assert.equal(result.record.verifiedSha256, null);
-    assert.equal(result.record.gaps[0]!.code, 'CLOUD_WRITE_UNKNOWN_RESULT'); assert.equal(drive.copies.length, 1); assert.equal(drive.writes.length, 0);
+    assert.equal(result.record.metadataConfirmed, true); assert.equal(drive.reads.length, 0);
+    assert.equal(drive.copies.length, 1); assert.equal(drive.writes.length, 0);
   } finally { await f.close(); }
 });
 
@@ -682,7 +685,7 @@ test('restoration refuses a changed frozen cloud connection rather than binding 
   } finally { await f.close(); }
 });
 
-test('only a complete selected directory and explicit byte/write authorization can upload, then full remote readback is required', async () => {
+test('explicit write authorization uploads once, confirms Skill filename/size/id without remote download', async () => {
   const drive = new FixtureDrive(), f = open(newRoot(), drive);
   try {
     const materialId = await f.material();
@@ -694,8 +697,10 @@ test('only a complete selected directory and explicit byte/write authorization c
       assert.equal(Number(f.db.connection.prepare('SELECT count(*) n FROM cloud_custody_upload_claims').get()!.n), 1);
     };
     const uploaded = await f.run(request(materialId, { verifyBytes: true, allowUpload: true }), 'explicit-upload');
-    assert.equal(uploaded.task.status, 'succeeded'); assert.equal(uploaded.record.state, 'uploaded_verified');
-    assert.equal(uploaded.record.verifiedSha256, sha(original)); assert.equal(drive.writes.length, 1); assert.equal(drive.reads.length, 1);
+    assert.equal(uploaded.task.status, 'succeeded'); assert.equal(uploaded.record.state, 'uploaded_metadata_checked');
+    assert.equal(uploaded.record.verifiedSha256, null);
+    assert.equal(uploaded.record.metadataConfirmed, true);
+    assert.equal(drive.writes.length, 1); assert.equal(drive.reads.length, 0);
     assert.equal(posix.dirname(drive.writes[0]!), archiveDirectory); assert.match(posix.basename(drive.writes[0]!), /^[a-f0-9]{64}-[a-f0-9-]{36}\.bd-original$/u);
     const again = f.custody.submit(request(materialId, { verifyBytes: true, allowUpload: true, targetDirectory: archiveDirectory }), 'explicit-upload');
     assert.equal(again.id, uploaded.task.id); assert.equal(drive.writes.length, 1);
@@ -811,20 +816,20 @@ else throw Error('fixture forbids other commands');
   });
   try {
     const materialId = await f.material(), reused = await f.run(request(materialId, { verifyBytes: true, sourceRemotePath: first.path }));
-    assert.equal(reused.task.status, 'succeeded', JSON.stringify(reused.task.error)); assert.equal(reused.record.state, 'source_verified', JSON.stringify(reused.record.gaps));
+    assert.equal(reused.task.status, 'succeeded', JSON.stringify(reused.task.error)); assert.equal(reused.record.state, 'source_metadata_checked', JSON.stringify(reused.record.gaps));
     assert.equal(reused.record.remoteObject!.id, first.id);
     const copied = await f.run(request(materialId, { verifyBytes: true, allowUpload: true, sourceRemotePath: first.path }));
-    assert.equal(copied.record.state, 'copied_verified', JSON.stringify(copied.record.gaps));
+    assert.equal(copied.record.state, 'copied_metadata_checked', JSON.stringify(copied.record.gaps));
     assert.equal(copied.record.remoteObject!.path, archiveDirectory + '/renamed.csv');
     const sharedMaterial = await f.material(original, 'same-content-new-topic.csv');
     const shared = await f.run(request(sharedMaterial, { scopePath: evidenceRoot, evidenceTopic: '资讯', verifyBytes: true, allowUpload: true }));
-    assert.equal(shared.record.state, 'reused_verified', JSON.stringify(shared.record.gaps));
+    assert.equal(shared.record.state, 'reused_metadata_checked', JSON.stringify(shared.record.gaps));
     assert.equal(shared.record.archiveReference!.taskId, copied.task.id);
     assert.equal(shared.record.remoteObject!.id, copied.record.remoteObject!.id);
     assert.equal(shared.record.evidenceClassification!.topic, '资讯');
     const otherBytes = Buffer.from('second original with its own exact bytes\n'), otherId = await f.material(otherBytes, 'second.txt');
     const uploaded = await f.run(request(otherId, { verifyBytes: true, allowUpload: true }));
-    assert.equal(uploaded.task.status, 'succeeded', JSON.stringify(uploaded.task.error)); assert.equal(uploaded.record.state, 'uploaded_verified', JSON.stringify(uploaded.record.gaps));
+    assert.equal(uploaded.task.status, 'succeeded', JSON.stringify(uploaded.task.error)); assert.equal(uploaded.record.state, 'uploaded_metadata_checked', JSON.stringify(uploaded.record.gaps));
     assert.equal(sha(readFileSync(join(driveRoot, uploaded.record.remoteObject!.id))), sha(otherBytes));
     const calls = readFileSync(join(driveRoot, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     assert.equal(calls.filter(item => item.command === 'upload').length, 1); assert.equal(calls.filter(item => item.command === 'download').length, 5);
@@ -852,7 +857,7 @@ test('registered conversion evidence archives separately and recovers the derive
       parser_version: 'fixture-parser/1', declared_source_sha256: envelope.sha256 });
     const source = { kind: 'conversion' as const, artifactRecordId: artifact.artifact_record_id };
     const result = await f.run({ ...request(materialId, { verifyBytes: true, allowUpload: true }), evidenceSource: source } as CloudCustodyInput);
-    assert.equal(result.record.state, 'uploaded_verified', JSON.stringify(result));
+    assert.equal(result.record.state, 'uploaded_metadata_checked', JSON.stringify(result));
     assert.equal(result.record.evidenceClassification?.purpose, '加工证据');
     assert.equal(result.record.material.sha256, sha(bytes));
     assert.equal(result.record.evidence?.original.sha256, envelope.sha256);
@@ -873,7 +878,7 @@ test('restoration uses exact object lookup when directory enumeration is unavail
     const first = h.custody.submit(request(material, { allowUpload: true, verifyBytes: true }), 'exact-restore-upload');
     await h.tasks.wait(first.id);
     const original = h.custody.view(first.id);
-    assert.equal(original.record.state, 'uploaded_verified');
+    assert.equal(original.record.state, 'uploaded_metadata_checked');
     drive.exactLookup = true; drive.failList = true;
     const restored = h.custody.recover(first.id, original.task.version, 'exact-restore-original');
     await h.tasks.wait(restored.id);
@@ -884,4 +889,23 @@ test('restoration uses exact object lookup when directory enumeration is unavail
     assert.equal(drive.writes.length, 1);
     assert.deepEqual(h.custody.readRestored(restored.id).bytes, Buffer.from('value\n12\n'));
   } finally { await h.close(); }
+});
+
+test('metadata-only Skill archive does not download after upload, and recovery downloads only on demand', async () => {
+  const drive = new FixtureDrive(), f = open(newRoot(), drive);
+  try {
+    const materialId = await f.material();
+    const archived = await f.run(request(materialId, { allowUpload: true, verifyBytes: false }), 'metadata-only');
+    assert.equal(archived.task.status, 'succeeded');
+    assert.equal(archived.record.state, 'uploaded_metadata_checked');
+    assert.equal(archived.record.metadataConfirmed, true);
+    assert.equal(archived.record.verifiedSha256, null);
+    assert.equal(drive.reads.length, 0);
+    assert.equal(drive.writes.length, 1);
+    const restored = f.custody.recover(archived.task.id, archived.task.version, 'metadata-restore');
+    await f.tasks.wait(restored.id);
+    assert.equal(f.custody.view(restored.id).record.state, 'restored_verified');
+    assert.deepEqual(f.custody.readRestored(restored.id).bytes, original);
+    assert.deepEqual(drive.reads, [archived.record.remoteObject!.path]);
+  } finally { await f.close(); }
 });

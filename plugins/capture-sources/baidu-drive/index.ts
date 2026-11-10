@@ -62,11 +62,48 @@ function invalid(reason?: string): never {
   throw new DirectError('BAIDU_ARGS_INVALID', reason ? `百度网盘参数无效：${reason}` : '百度网盘参数无效或超出该动作范围。');
 }
 
+/**
+ * 百度网盘 Skill 与 BD 归档共用的单一命令能力：查询/上传/复制只解析官方 bdpan JSON。
+ * 普通归档核对使用 ls 的文件名、大小与 fs_id，绝不因此触发 download。
+ * 只有明确恢复原件时，调用者才可以请求 download。
+ */
+export async function runBaiduSkillCommand(options: {
+  configuration: BaiduDriveConfiguration;
+  processRuntime: ProcessRuntime;
+  context: TaskExecutionContext;
+  workspacePath: string;
+  assertCurrent(): void;
+  args: string[];
+  runTool?: typeof runDirectProcess;
+  exactMissing?: boolean;
+}): Promise<JsonValue | null> {
+  options.assertCurrent();
+  const result = await (options.runTool ?? runDirectProcess)({
+    runtime: options.processRuntime, binary: 'bdpan', binaryPath: options.configuration.binaryPath,
+    bdpanHome: options.configuration.homePath,
+    args: ['--no-check-update', '--json', '--config-path', options.configuration.configPath, ...options.args],
+    cwd: options.workspacePath, signal: options.context.signal, assertAuthorized: options.assertCurrent,
+    timeoutMs: 10 * 60_000, maxOutputBytes: 2_000_000,
+    onProcessState: event => options.context.emit({ type: 'process_state', ...event }),
+    onHeartbeat: event => options.context.emit({ type: 'heartbeat', ...event }),
+  });
+  if (options.exactMissing) {
+    let reply: unknown;
+    try { reply = JSON.parse(result.stdout); } catch { /* invalid JSON is handled by the parser */ }
+    if (reply && typeof reply === 'object' && !Array.isArray(reply)) {
+      const missing = reply as Record<string, unknown>;
+      if (Object.keys(missing).sort().join(',') === 'code,data,error' && missing.code === 1 && missing.data === null
+        && missing.error === '找不到指定的文件或目录（错误码 -9），请检查路径是否正确。') return null;
+    }
+  }
+  return parseBaiduOutput(result.stdout);
+}
+
 export function createBaiduDriveActions(options: { files: FileReferenceService; artifactRoot: string; configuration?: BaiduDriveConfiguration;
   processRuntime?: ProcessRuntime; assertPath(path: string): void; runTool?: typeof runDirectProcess }) {
   const configuration = options.configuration;
   const available = () => {
-    if (!configuration) return { available: false, reason: '百度网盘程序尚未绑定；先向用户询问，不自动安装或登录。' };
+    if (!configuration) return { available: false, reason: '百度网盘 bdpan 未绑定；官方下载 Skill: https://github.com/baidu-netdisk/bdpan-storage 。不自动安装或登录。' };
     try {
       if (options.processRuntime?.path('bdpan') !== configuration.binaryPath) throw new Error('unbound program');
       const binary = inspectPath(configuration.binaryPath), config = inspectPath(configuration.configPath);
@@ -77,7 +114,7 @@ export function createBaiduDriveActions(options: { files: FileReferenceService; 
         if (key.object?.kind !== 'file' || key.links.length) throw new Error();
       }
       return { available: true };
-    } catch { return { available: false, reason: '缺少本机 bdpan（百度网盘程序）或其原生账号配置；先向用户询问，不自动安装、下载或登录。' }; }
+    } catch { return { available: false, reason: 'bdpan 程序或账号配置不可用；官方 Skill: https://github.com/baidu-netdisk/bdpan-storage 。需先完成宿主安装与账号绑定。' }; }
   };
   const registration: SkillRegistration = {
     action: 'baidu.drive', runtimeId: 'direct', kind: 'direct', modelCalls: 0, title: '百度网盘',
@@ -122,15 +159,10 @@ export function createBaiduDriveActions(options: { files: FileReferenceService; 
         if (reference) options.files.verify(reference.id);
       };
       let retain = false;
-      const invoke = async (argv: string[]) => {
-        assertCurrent();
-        const result = await (options.runTool ?? runDirectProcess)({ runtime: options.processRuntime!, binary: 'bdpan', binaryPath: configuration.binaryPath,
-          bdpanHome: configuration.homePath,
-          args: ['--no-check-update', '--json', '--config-path', configuration.configPath, ...argv], cwd: workspace.path,
-          signal: context.signal, timeoutMs: 10 * 60_000, maxOutputBytes: 2_000_000, assertAuthorized: assertCurrent,
-          onProcessState: event => context.emit({ type: 'process_state', ...event }), onHeartbeat: event => context.emit({ type: 'heartbeat', ...event }) });
-        return parseBaiduOutput(result.stdout);
-      };
+      const invoke = async (argv: string[]) => (await runBaiduSkillCommand({
+        configuration, processRuntime: options.processRuntime!, context, workspacePath: workspace.path,
+        assertCurrent, args: argv, runTool: options.runTool,
+      }))!;
       await workspace.create();
       try {
         let data: JsonValue, artifactIds: string[] = [];
@@ -192,11 +224,7 @@ export function createBaiduDriveActions(options: { files: FileReferenceService; 
             const created = exactRemoteFile(await invoke(['ls', remoteParent(String(args.path)), '--start', '0', '--limit', '1000']), String(args.path));
             if (!receipt || receipt.path !== args.path || !remoteId(receipt) || !created || remoteId(created) !== remoteId(receipt)
               || Number(created.size) !== reference!.size || Number(receipt.size) !== reference!.size) {
-              throw new DirectError('BAIDU_UPLOAD_UNVERIFIED', '上传回执的实际路径、文件身份或大小未与请求及网盘目标一致；可能发生改名，请核对，不自动重放。', true);
-            }
-            if (typeof created.md5 === 'string' && /^[a-f0-9]{32}$/iu.test(created.md5)
-              && createHash('md5').update(await workspace.readPrefix(staged!, reference!.size)).digest('hex') !== created.md5.toLowerCase()) {
-              throw new DirectError('BAIDU_UPLOAD_UNVERIFIED', '上传后远端摘要与本次暂存原件不符；请核对，不自动重放。', true);
+              throw new DirectError('BAIDU_UPLOAD_UNVERIFIED', '上传后 Skill 查询的文件名、大小或远端编号不一致；保留原请求核对，不下载读回或自动重传。', true);
             }
           }
           if (operation === 'transfer-select') {
