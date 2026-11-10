@@ -48,17 +48,17 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     || !sourceRows || !Array.isArray(result.rows) || sourceRows.length !== result.rows.length
     || !result.rows.length || result.rows.length > 5000 || !fields || !Array.isArray(fields.definitions))
     fail('DERIVED_SOURCE_INVALID', '缺少真实 WFD 固定快照、字段定义或等长来源行版本；不按模型声明补齐。');
-  if (resolution?.snapshotId !== src.snapshotId || resolution?.productId !== src.productId
-    || resolution?.instanceId !== src.instanceId
+  if (resolution?.snapshotId !== src.snapshotId || resolution?.productId !== verifiedSrc.productId
+    || resolution?.instanceId !== verifiedSrc.instanceId
     || resolution?.rowCount !== result.rows.length || result.coverage.suppliedRows !== result.rows.length)
     fail('DERIVED_SOURCE_MISMATCH', '算法结果与实际 WFD 快照读取的产品、快照或记录数量不一致。');
 
   verifyAlgorithmNumbers(result, input);
   const original = Buffer.from(canonicalWfdJson(result.rows), 'utf8');
   const originalSha256 = wfdSha256(original), resultSha256 = wfdSha256(canonicalWfdJson(result));
-  const mapped = isWfdRecord(src.fieldMapping) ? src.fieldMapping : {};
+  const mapped = isWfdRecord(verifiedSrc.fieldMapping) ? verifiedSrc.fieldMapping : {};
   const column = String(mapped.close ?? '');
-  const sourceField = fields.definitions.find(item => isWfdRecord(item) && item.field_code === column);
+  const sourceField = (verifiedFields.definitions as unknown[]).find(item => isWfdRecord(item) && item.field_code === column);
   const priceUnit = isWfdRecord(sourceField) && typeof sourceField.unit_code === 'string' ? sourceField.unit_code : '';
   if (result.methodId !== 'bullish_engulfing' && !priceUnit)
     fail('DERIVED_UNIT_UNKNOWN', 'WFD 原字段没有正式单位定义，不能推定派生数值单位。');
@@ -67,18 +67,19 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
   const outputFields = [...method.outputFields];
   if (!outputFields.length || new Set(outputFields).size !== outputFields.length)
     fail('DERIVED_FIELDS_INVALID', '算法没有稳定且不重复的输出字段。');
-  const productSubject = isWfdRecord(sourceRows[0]) && isWfdRecord(sourceRows[0].subject)
-    ? sourceRows[0].subject : null;
+  const productSubject = isWfdRecord(verifiedSourceRows[0]) && isWfdRecord(verifiedSourceRows[0].subject)
+    ? verifiedSourceRows[0].subject : null;
   if (!productSubject || !['kind','namespace','id'].every(key => typeof productSubject[key] === 'string'))
     fail('DERIVED_SUBJECT_MISSING', '来源快照缺少已核对的业务主体身份。');
   const rows: WfdRecord[] = [];
   for (let i = 0; i < result.rows.length; i++) {
-    const data = result.rows[i]!, observed = sourceRows[i];
+    const data = result.rows[i]!, observed = verifiedSourceRows[i];
     if (!isWfdRecord(observed) || !isWfdRecord(observed.observation_time)
       || typeof observed.business_key !== 'string' || !observed.business_key
       || !isWfdRecord(observed.subject) || canonicalWfdJson(observed.subject) !== canonicalWfdJson(productSubject))
       fail('DERIVED_SOURCE_ROW_INVALID', `第 ${i+1} 条 WFD 来源缺业务键、时态或一致主体。`);
-    const time = observed.observation_time, start = time.earliest_utc, end = time.latest_exclusive_utc;
+    const validObserved = observed as WfdRecord;
+     const time = validObserved.observation_time as WfdRecord, start = time.earliest_utc, end = time.latest_exclusive_utc;
     if (time.status !== 'known' || typeof start !== 'string' || typeof end !== 'string'
       || !Number.isFinite(Date.parse(start)) || !Number.isFinite(Date.parse(end)) || Date.parse(start) >= Date.parse(end))
       fail('DERIVED_SOURCE_TIME_INVALID', `第 ${i+1} 条 WFD 来源业务时间不是可核对的已知区间。`);
@@ -107,7 +108,7 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
       }
     }
     rows.push({ business_key: 'derived:' + wfdSha256(canonicalWfdJson({
-      key: observed.business_key, method: result.methodId, parameters: result.parameters })).slice(0, 48),
+      key: validObserved.business_key, method: result.methodId, parameters: result.parameters })).slice(0, 48),
       subject: productSubject, observation_time: time, values });
   }
   if (rows.some((row, i) => i > 0 && row.business_key === rows[i-1]!.business_key)
@@ -117,7 +118,7 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     version: result.methodVersion, implementation: result.implementationVersion }));
   const definitionVersion = 'v' + methodIdentity.slice(0, 20);
   const scopeIdentity = wfdSha256(canonicalWfdJson({
-    sourceProduct: src.productId, methodId: result.methodId, methodVersion: result.methodVersion,
+    sourceProduct: verifiedSrc.productId, methodId: result.methodId, methodVersion: result.methodVersion,
     parameters: result.parameters,
   }));
   const derivedCode = 'bd.derived.' + result.methodId + '.' + scopeIdentity.slice(0, 16);
@@ -161,15 +162,15 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     sha256: originalSha256, bytes: original.length,
   };
   const version = wfdSha256(canonicalWfdJson({ inputDigest: result.inputDigest,
-    sourceProduct: src.productId, sourceSnapshot: src.snapshotId, method: result.methodId }));
+    sourceProduct: verifiedSrc.productId, sourceSnapshot: verifiedSrc.snapshotId, method: result.methodId }));
   const structured: R1StructuredRequest = {
-    datasetId: 'bd.derived.' + wfdSha256(src.productId).slice(0,24),
+    datasetId: 'bd.derived.' + wfdSha256(String(verifiedSrc.productId)).slice(0,24),
     namespace: binding.namespace, producerNamespace: binding.namespace,
     requestId, submissionDigest: 'sha256:' + '0'.repeat(64),
     expectedParentSnapshotId: binding.expectedParentSnapshotId,
     outputKey: derivedCode,
-    subject: productSubject, definition, inputMode: 'partial_observation',
-    coverage: { scope: { input_product: src.productId, input_snapshot: src.snapshotId,
+    subject: productSubject as WfdRecord, definition, inputMode: 'partial_observation',
+    coverage: { scope: { input_product: verifiedSrc.productId, input_snapshot: verifiedSrc.snapshotId,
       range_start: result.metadata.window_start, range_end: result.metadata.window_end },
       basis: 'fixed_wfd_derived_check:' + DERIVED_WFD_CHECK_VERSION + ':' + version.slice(0,16),
       completeness: 'partial', absence_means: 'unknown' },
