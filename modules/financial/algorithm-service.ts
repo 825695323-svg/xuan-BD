@@ -290,6 +290,19 @@ export class LocalAlgorithmService {
     return this.view(accepted.task.id);
   }
 
+  /** 只供受信宿主独立核验，AGENTS 与 HTTP 无权直接获取完整冻结输入行。 */
+  verifiedInput(taskId: string): AlgorithmData {
+    const task = this.getTask(taskId), row = this.callRow(task.id);
+    this.assertTaskIdentity(task, row);
+    if (task.status !== 'succeeded' || !row.sealed_json || !row.sealed_digest)
+      throw new TaskError('ALGORITHM_INPUT_NOT_VERIFIED', '算法冻结输入尚未完整落盘，不能供独立核对。');
+    const sealed = JSON.parse(row.sealed_json) as SealedInput;
+    if (financialDigest(sealed) !== row.sealed_digest)
+      throw new TaskError('ALGORITHM_INPUT_CHANGED', '算法冻结输入摘要与持久记录不一致。');
+    validateData(sealed.data);
+    return structuredClone(sealed.data);
+  }
+
   /** 给前端的只读任务索引；不得因页面读取启动计算或 WFD 提交。 */
   list(): AlgorithmTaskView[] {
     return this.db.prepare('SELECT task_id FROM algorithm_calls ORDER BY created_at DESC,task_id LIMIT 20')

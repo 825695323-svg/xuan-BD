@@ -3,7 +3,7 @@ import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transpo
 import { buildStructuredIngestDocument, type R1HandoffService, type R1LocalReferences } from '../collection/r1-structured-handoff.js';
 import type { R1Runtime } from '../collection/r1-runtime.js';
 import type { R1WorkspaceService } from '../collection/r1-workspace.js';
-import type { AlgorithmTaskView } from './algorithm-types.js';
+import type { AlgorithmTaskView, AlgorithmData } from './algorithm-types.js';
 import { checkDerivedForWfd } from './derived-wfd-check.js';
 import { publishRestrictionTarget, restrictionEvidenceFromUsageStatus } from '../collection/wfd-publish-restriction.js';
 
@@ -15,6 +15,7 @@ import { publishRestrictionTarget, restrictionEvidenceFromUsageStatus } from '..
 export class DerivedWfdPublisher {
   constructor(private readonly options: {
     viewAlgorithm(taskId: string): AlgorithmTaskView;
+    readAlgorithmInput(taskId: string): AlgorithmData;
     runtime(): R1Runtime | undefined;
     workspace(): R1WorkspaceService | undefined;
     handoff: R1HandoffService;
@@ -41,7 +42,7 @@ export class DerivedWfdPublisher {
     const checked = checkDerivedForWfd(result, {
       namespace: proof.namespace, mode: proof.mode,
       expectedParentSnapshotId: proof.expectedParentSnapshotId,
-    }, proof.requestId);
+    }, proof.requestId, this.options.readAlgorithmInput(proof.taskId));
     if (wfdSha256(canonicalWfdJson(result)) !== proof.resultSha256
       || checked.sourceSha256 !== refs.sourceRefs[0]?.sha256
       || checked.sourceSha256 !== refs.evidenceRefs[0]?.content_sha256
@@ -81,7 +82,7 @@ export class DerivedWfdPublisher {
       const checked = checkDerivedForWfd(result, {
         namespace: identity.namespace, mode: identity.mode,
         expectedParentSnapshotId: current.snapshotId,
-      }, requestId);
+      }, requestId, this.options.readAlgorithmInput(taskId));
       // WFD 治理约束仍由当前权威查询；这不是第二条原报清洗/人工审批链。
       const target = publishRestrictionTarget({
         purpose: 'current_publish', expectedSnapshotId: current.snapshotId,

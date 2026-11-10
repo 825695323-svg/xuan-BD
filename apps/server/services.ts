@@ -471,6 +471,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   // 独立确定性算法唯一发布路径：复用 R1 正式写入与固定读回，不走原报五步。
   derivedPublisher = r1Runtime && r1Workspace && algorithms && r1
     ? new DerivedWfdPublisher({ viewAlgorithm: taskId => algorithms.view(taskId),
+      readAlgorithmInput: taskId => algorithms.verifiedInput(taskId),
       runtime: () => r1Runtime, workspace: () => r1Workspace, handoff: r1 })
     : undefined;
   // 来源字段档案放在本机配置资源下；未绑定时退回工程外运行根，不读源码树。
