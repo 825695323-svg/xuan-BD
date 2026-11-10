@@ -115,7 +115,7 @@ test('explicit restore rehydrates a missing local artifact without rewriting its
     assert.equal(sha(await (await import('node:fs/promises')).readFile(f.files.verify(generated).invocationPath)), sha(bytes));
     assert.equal(f.state.uploads, 1);
     assert.equal(f.state.remoteReads, 1);
-    assert.deepEqual(f.state.writes, [true, false]);
+    assert.deepEqual(f.state.writes, [true, false, false], '上传一次、元数据复核一次、按需恢复一次');
     assert.equal(f.files.getRef(f.args.fileRefId).id, f.args.fileRefId);
   } finally { await f.close(); }
 });
