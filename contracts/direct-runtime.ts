@@ -48,6 +48,8 @@ export interface DirectRuntimeOptions {
   /** 受信宿主注入跨格式文件引用归档；不改变解析器及原任务本地引用。 */
   artifactArchive?: { registration: SkillRegistration; versionBinding(): Record<string, string | null>;
     execute(context: TaskExecutionContext, args: Record<string, JsonValue>): Promise<TaskResult> };
+  artifactRestore?: { registration: SkillRegistration; versionBinding(): Record<string, string | null>;
+    execute(context: TaskExecutionContext, args: Record<string, JsonValue>): Promise<TaskResult> };
   browser?: BrowserConfiguration;
   browserUnavailableReason?: string;
   /** 仅个人宿主装配的站点独立会话；不暴露给模型参数。 */
