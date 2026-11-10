@@ -167,13 +167,14 @@ export class CloudCustodyService {
     }
     if (!Number.isSafeInteger(expectedVersion) || originalTask.version !== expectedVersion) throw new TaskError('TASK_VERSION_CONFLICT', '原网盘任务已变化，请按当前版本核对。');
     if (['ready', 'running', 'waiting_approval', 'pausing', 'cancelling'].includes(originalTask.status)) throw new TaskError('CLOUD_TASK_BUSY', '请先等待原操作收束，再核对原远端对象。');
+    // 连接身份先于远端目标解析核验，避免旧账号失效时返回误导性的缺少目标。
+    for (const key of new Set([...Object.keys(originalTask.versions), ...Object.keys(this.versionBinding)])) {
+      if (key !== 'cloudCustody' && originalTask.versions[key] !== this.versionBinding[key]) throw new TaskError('CLOUD_VERSION_CONFLICT', '原网盘连接或账号绑定已变化，不能用新绑定恢复旧对象。');
+    }
     // 恢复是独立的明确取回请求；不要求原归档必须开启完整字节校验。
     const remotePath = record.archiveReference?.remoteObject.path ?? record.writeIntent?.targetPath
       ?? (record.uploadAttempted || record.copyAttempted ? binding.targetPath : record.remoteObject?.path ?? binding.targetPath);
     if (!remotePath) throw new TaskError('CLOUD_RECOVERY_REFERENCE_REQUIRED', '原请求没有可核对的远端文件身份或独立归档目标；不能猜测恢复来源。');
-    for (const key of new Set([...Object.keys(originalTask.versions), ...Object.keys(this.versionBinding)])) {
-      if (key !== 'cloudCustody' && originalTask.versions[key] !== this.versionBinding[key]) throw new TaskError('CLOUD_VERSION_CONFLICT', '原网盘连接或账号绑定已变化，不能用新绑定恢复旧对象。');
-    }
     this.assertDispatch();
     return this.create(requestId, { ...binding, ...(record.archiveReference ? { archiveReference: record.archiveReference } : {}),
       targetPath: remotePath, input: { ...binding.input, sourceRemotePath: remotePath, allowUpload: false, verifyBytes: true },
