@@ -8,6 +8,7 @@ import { TaskError, type TaskExecutionContext, type TaskService } from '../../pl
 import { acquireAuthority, directoryCapability, DirectError, DirectWorkspace, prepareDestination } from '../../platform/runtime/file-workspace.js';
 import { CLOUD_EVIDENCE_ROOT, CLOUD_MAX_BYTES, cloudPath, type CloudCustodyBackend, type CloudObject } from '../../plugins/storage/baidu-drive.js';
 import { createHash } from 'node:crypto';
+import { ARTIFACT_ARCHIVE_VERSION } from './artifact-archive.js';
 
 export const ARTIFACT_RESTORE_VERSION = 'bd.artifact-restore/1';
 interface Receipt {
@@ -25,7 +26,7 @@ export function createArtifactRestoreActions(options: {
 }) {
   const backend = options.backend;
   const available = () => backend?.availability() ?? { available: false, reason: '网盘归档技能尚未装配。' };
-  const versionBinding = () => ({ artifactArchive: 'bd.artifact-archive/1', ...(backend?.versionBinding ?? {}) });
+  const versionBinding = () => ({ artifactArchive: ARTIFACT_ARCHIVE_VERSION, ...(backend?.versionBinding ?? {}) });
   const registration: SkillRegistration = {
     action: 'artifact.restore', runtimeId: 'direct', kind: 'direct', modelCalls: 0,
     title: '明确从原归档引用恢复文件',
