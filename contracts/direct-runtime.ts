@@ -6,7 +6,6 @@ import type { DirectRouter } from '../platform/plugins/router.js';
 import type { ProcessRuntime } from '../platform/runtime/programs.js';
 import type { JsonValue, TaskResult } from './task-contracts.js';
 import type { SkillAvailability } from './skill-contracts.js';
-import type { SkillRegistration } from '../platform/plugins/registry.js';
 import type { PublicWebOptions } from '../platform/capabilities/browser/public-web.js';
 import type { BaiduDriveConfiguration } from '../plugins/capture-sources/baidu-drive/index.js';
 import type { CustomSourceRegistry } from '../plugins/capture-sources/custom-register.js';
