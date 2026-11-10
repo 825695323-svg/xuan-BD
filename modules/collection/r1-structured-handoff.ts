@@ -890,10 +890,12 @@ export class R1HandoffService {
         fail('R1_PROCESS_REFERENCE_REQUIRED', '实际加工必须引用既有 process_id/version/plan_id/output_id。');
       }
       if (stripSha(process.input_sha256) !== source.sha256) fail('R1_PROCESS_INPUT_MISMATCH', '加工输入摘要不是该原件。');
+      const processing = this.options.processing;
+      if (!processing) fail('R1_PROCESS_NOT_FOUND', '实际加工服务没有装配，无法核验原计划与输出。');
       let actual: { bytes: Buffer }, plan: WfdRecord;
       try {
-        plan = asRecord(this.options.processing.get(process.plan_id));
-        actual = this.options.processing.outputArtifact(process.plan_id, process.output_id);
+        plan = asRecord(processing.get(process.plan_id));
+        actual = processing.outputArtifact(process.plan_id, process.output_id);
       } catch (error) { fail('R1_PROCESS_NOT_FOUND', '实际加工服务中没有该固定计划/输出：' + (error instanceof Error ? error.message : String(error))); }
       if (typeof plan.version !== 'string' || process.version !== plan.version) fail('R1_PROCESS_VERSION_MISMATCH', '加工引用版本与实际冻结计划不同；不接受任意非空版本标签。');
       const output = (Array.isArray(plan.outputs) ? plan.outputs : []).map(asRecord).find(item => item.outputId === process.output_id);
