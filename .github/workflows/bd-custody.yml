@@ -13,6 +13,7 @@ on:
   push:
     branches:
       - codex/baidu-skill-metadata-archive
+      - codex/unified-artifact-skill-archive
 
 permissions:
   contents: read
@@ -36,4 +37,10 @@ jobs:
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/xuan-bd-full-chain
         run: |
           mkdir -p "$XUAN_FULL_CHAIN_ROOT"
-          node --import tsx --test             modules/collection/cloud-custody.test.ts             modules/collection/baidu-drive-copy.test.ts             modules/collection/cloud-algorithm-evidence.test.ts             apps/server/cloud-custody.test.ts             apps/server/cloud-evidence.test.ts
+          node --import tsx --test \
+            modules/collection/artifact-archive.test.ts \
+            modules/collection/cloud-custody.test.ts \
+            modules/collection/baidu-drive-copy.test.ts \
+            modules/collection/cloud-algorithm-evidence.test.ts \
+            apps/server/cloud-custody.test.ts \
+            apps/server/cloud-evidence.test.ts
