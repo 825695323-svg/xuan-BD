@@ -6,6 +6,7 @@ import type { DirectRouter } from '../platform/plugins/router.js';
 import type { ProcessRuntime } from '../platform/runtime/programs.js';
 import type { JsonValue, TaskResult } from './task-contracts.js';
 import type { SkillAvailability } from './skill-contracts.js';
+import type { SkillRegistration } from '../platform/plugins/registry.js';
 import type { PublicWebOptions } from '../platform/capabilities/browser/public-web.js';
 import type { BaiduDriveConfiguration } from '../plugins/capture-sources/baidu-drive/index.js';
 import type { CustomSourceRegistry } from '../plugins/capture-sources/custom-register.js';
@@ -45,6 +46,9 @@ export interface DirectRuntimeOptions {
   publicWeb?: PublicWebOptions;
   /** 仅受信启动器选定的原生网盘程序与账号配置位置。 */
   baiduDrive?: BaiduDriveConfiguration;
+  /** 受信宿主注入跨格式文件引用归档；不改变解析器及原任务本地引用。 */
+  artifactArchive?: { registration: SkillRegistration; versionBinding(): Record<string, string | null>;
+    execute(context: TaskExecutionContext, args: Record<string, JsonValue>): Promise<TaskResult> };
   browser?: BrowserConfiguration;
   browserUnavailableReason?: string;
   /** 仅个人宿主装配的站点独立会话；不暴露给模型参数。 */
