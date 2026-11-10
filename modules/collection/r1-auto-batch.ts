@@ -134,8 +134,8 @@ export class R1AutoBatchService {
   private needsProgress(record: BatchRecord): boolean {
     if (record.stopped || record.error) return false;
     // 已办结的批次依赖原交接事实；重开或迟到的任务事件不能按今天的连接重写其状态。
-    return record.items.some(item => (!item.materialId && !item.duplicateOf) || !this.options.auto.isAssociated(item.autoRequestId))
-      || this.calculationEntries(record).some(calc => !calc.materialId || !this.options.auto.isAssociated(calc.requestId));
+    // 原报批次不再自动恢复基础算法；旧派生记录仍可查询。
+    return record.items.some(item => (!item.materialId && !item.duplicateOf) || !this.options.auto.isAssociated(item.autoRequestId));
   }
   attach(): void {
     if (this.closed || this.unsubscribe.length) return;
@@ -276,14 +276,7 @@ export class R1AutoBatchService {
         }
       }
     }
-    for (const calculation of this.calculationEntries(record)) {
-      if (calculation.materialId && ['recovering', 'stopped'].includes(this.calculationView(record, calculation)!.state)) await this.options.auto.advance(calculation.requestId);
-      else if (calculation.custodyTaskId && !calculation.materialId) {
-        const task = this.options.tasks().get(calculation.custodyTaskId);
-        if (task.status === 'ready') this.options.tasks().start(task.id, task.version);
-        else if (['paused', 'interrupted'].includes(task.status)) this.options.tasks().resume(task.id, task.version);
-      }
-    }
+    // 手动续办只推进原报；历史派生任务不再自动恢复。
     await this.schedule(batchId); return this.get(batchId);
   }
   async dispose(): Promise<void> {
@@ -378,8 +371,7 @@ export class R1AutoBatchService {
       }
       if (item.stage === 'awaiting_upload') return;
     }
-    this.partitionCalculations(record);
-    for (const calculation of this.calculationEntries(record)) await this.progressCalculation(record, calculation);
+    // 不再自动计算或发布均线。历史结果留在原批次持久记录。
   }
   private partitionCalculations(record: BatchRecord): void {
     if (!record.calculations) return;
@@ -567,9 +559,7 @@ export class R1AutoBatchService {
       : items.some(item => item.state === 'awaiting_answers') ? 'awaiting_answers'
       : items.some(item => item.state === 'conflicts_pending') ? 'conflicts_pending'
       : items.some(item => item.state === 'blocked') ? 'blocked'
-      : calculations.some(calculation => calculation.state === 'recovering') ? 'recovering' : calculations.some(calculation => calculation.state === 'stopped') ? 'stopped'
-      : calculations.some(calculation => !['associated', 'blocked'].includes(calculation.state)) ? 'running'
-      : calculations.some(calculation => calculation.state === 'blocked') ? 'blocked' : 'completed';
+      : 'completed'; // 批次完成只核原报，不再等待派生算法。
     return { batchId: record.input.batchId, source: record.input.source, datasetId: record.input.datasetId,
       datePolicy: record.input.datePolicy ?? null, state, items, nextUploadItemId, error, duplicateBatch: false,
       sourceValueColumns: record.input.sourceValueColumns ?? null,
@@ -645,6 +635,8 @@ function readContextTemplate(value: unknown): NonNullable<R1BatchStartInput['sou
 }
 function readStart(value: unknown): R1BatchStartInput {
   const body = object(value, ['batchId', 'source', 'datasetId', 'files', 'datePolicy', 'sourceValueColumns', 'calculation', 'algorithmRouting', 'sourceAdapter', 'sourceContextTemplate']); id(body.batchId); id(body.datasetId);
+  if (body.calculation !== undefined || body.algorithmRouting !== undefined)
+    fail('R1_BATCH_ALGORITHM_MANUAL_ONLY', '原报批次不再接受算法参数。请先发布到 WFD，再通过会话基础算法接口明确发起计算。');
   const source = object(body.source, ['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope', 'authorization', 'license']);
   assertKnownR1Source(source as unknown as R1SourceDeclaration);
   const requested = parseR1Utc(String(source.requested_at_utc)), acquired = parseR1Utc(String(source.acquired_at_utc));

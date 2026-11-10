@@ -10,8 +10,9 @@ import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import type { FileReferenceService } from '../../platform/resources/files.js';
 import type { AlgorithmCatalogView } from './algorithm-types.js';
+import { basicAlgorithmToolContract, bdSessionToolContract } from './basic-algorithm-tool-contract.js';
 
-const ACTIONS = new Set(['algorithms.capabilities', 'algorithms.calculate', 'algorithms.status']);
+const ACTIONS = new Set(['bd.session.capabilities', 'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.status']);
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
 const text = (key: string, label: string, maxLength = 160, required = true): SkillField =>
   ({ key, label, type: 'text', required, maxLength });
@@ -41,10 +42,15 @@ export class ConversationAlgorithmBridge {
         ...(!options.companion.algorithms ? { reason: '基础算法服务尚未装配。' } : {}) }),
     });
     this.registrations = [
+      registration('bd.session.capabilities', '查看 BD AGENTS 统一会话工具契约',
+        '只读展示采集源、接口源、文件与基础算法的现有会话接口、边界和 WFD 输入要求；不启动采集、计算或发布。', []),
+      registration('algorithms.contract', '读取基础算法统一接口契约',
+        '返回各算法独立 methodId（算法编号）、参数、输入字段、版本及可调用状态。观测均线是基础算法目录的一个预留独立方法，尚未完成 WFD-only 移植时标记 blocked（不可执行）；不会假称已运行。',
+        [text('methodId', '指定算法编号，留空返回全部', 160, false)]),
       registration('algorithms.capabilities', '发现本机基础算法与真实数据能力',
-        '读取当前算法目录、受控采用状态、真实输入（本会话分支通过 material.read 保管的受管表/固定快照）与可用数据库能力。受管表不会列出其他会话或分支的材料；固定快照仍按实际数据库授权读取。只读：不会采用、启用、修改绑定或授予Python（编程语言）执行权限。人类只需说明要用哪份材料或产品、哪个算法；模型从返回的方法、字段和产品元数据判断，不需要人类填写JSON、实例或内部编号。', []),
+        '只读列出已登记基础算法、WFD 固定快照端口、采用状态及权限。不再提供文件/受管表直接计算；人类明确选择产品、算法和期间，模型据 WFD 实际元数据补齐调用参数。', []),
       registration('algorithms.calculate', '受控执行已登记基础算法',
-        'calculationJson 由模型按 capabilities 返回的真实方法参数、字段映射、语义、日历和固定快照身份组装，不是让人类填写的表单。受管表只接受本会话分支通过 material.read 保管的原件；固定快照仍按实际数据库授权。计算只调用本机已登记算法，沿原任务与本机逐次审批；不会自动入库、发布或改用旧 compute_assets（旧计算资产）入口。提交后按返回的任务编号核对本次审批与实际结果。', [
+        'calculationJson 由模型按 algorithms.contract 与 capabilities 的真实契约组装。只允许 kind=fixed_snapshot（WFD 固定快照）且必须人工明确请求；不接受受管原件。不自动入库、发布、唤醒或改用旧计算入口；沿原任务和本机权限核对后执行。', [
           text('calculationJson', '算法计算请求（模型从实际元数据组装）', 100_000),
         ]),
       registration('algorithms.status', '查看本会话原算法结果',
@@ -62,18 +68,30 @@ export class ConversationAlgorithmBridge {
     const service = this.options.companion.algorithms;
     if (!service) throw new TaskError('ALGORITHM_UNAVAILABLE', '基础算法服务尚未装配。');
     // 直接模型动作必须先取得当前模型分享回执；否则 saveResultProof 会拒绝返回。
-    const authority = await acquireAuthority(context, action, args, []);
+    const authority = await acquireAuthority(context, action, args, [],
+      action === 'algorithms.calculate' ? { approvalMode: 'review' } : {});
     authority.assert(); this.options.companion.bd?.assertDispatch();
+    if (action === 'bd.session.capabilities') {
+      const contract = bdSessionToolContract(this.modelCatalog(service, origin));
+      authority.assert();
+      return { summary: '已读取 BD AGENTS 会话工具合同；只读，不创建采集、计算或发布任务。', data: view(contract) };
+    }
+    if (action === 'algorithms.contract') {
+      const methodId = typeof args.methodId === 'string' && args.methodId.trim() ? args.methodId.trim() : undefined;
+      const contract = basicAlgorithmToolContract(this.modelCatalog(service, origin), methodId);
+      authority.assert();
+      return { summary: '已读取基础算法独立接口及真实可用状态；未采用或执行任何方法。', data: view(contract) };
+    }
     if (action === 'algorithms.capabilities') {
       const catalog = this.modelCatalog(service, origin);
       authority.assert();
       return { summary: catalog.enabled
-        ? '已读取本机算法目录、受控采用状态和真实数据库能力；只列当前会话分支通过 material.read 保管的受管表。本动作只读，不能采用或授予权限。'
+        ? '已读取基础算法目录、受控采用状态和 WFD 固定快照能力；本动作只读，不能采用或授予权限。'
         : `算法入口当前未启用（${catalog.adoption.state}）；只能读取目录，不能计算。采用只由本机受控采用入口完成。`,
         data: view({ algorithms: catalog, database: json(catalog.inputs.fixedSnapshots), guidance: {
           humanInput: '人类只需说明材料/产品与算法；实例、快照、字段映射和内部编号由模型从实际元数据判断。',
           adoption: '工具不能自 adopt；未启用时不要改用旧 financial/compute_assets 入口。',
-          managedTables: '受管表只列当前会话分支通过 material.read 保管的原件；其他会话或分支的材料不会出现在这里。固定快照仍按实际数据库授权读取，不要求本地附件。',
+          managedTables: '已停止受管原件直接计算；必须先经原报管线发布 WFD 固定快照。',
           calculation: '计算沿原任务审批；publication=not_requested（未请求发布）只说明计算时状态，不能代替正式交接回执。',
           handoff: '计算结果本身不授予交接资格；正式交接须符合 R1（结构化交接）当前输入合同并由用户单独确认。',
         } }) };
@@ -146,33 +164,16 @@ export class ConversationAlgorithmBridge {
     return visible;
   }
 
-  /** 只收窄模型桥目录；固定快照仍由实际数据库授权决定，不要求本地附件。 */
-  private modelCatalog(service: NonNullable<WorkspaceServices['algorithms']>, origin: ModelTaskOrigin): AlgorithmCatalogView {
-    const catalog = service.catalog(), visible = this.visibleTableMaterials(origin);
-    const items = catalog.inputs.managedTables.items.filter(item => visible.has(item.materialId));
-    const managedTables = items.length === 0 && catalog.inputs.managedTables.status === 'available'
-      ? { status: 'unavailable' as const, reason: '当前会话分支没有通过 material.read 保管的受管表；其他会话或分支的材料不会在此列出。', items }
-      : { ...catalog.inputs.managedTables, items };
-    const noVisibleInput = managedTables.status !== 'available' && catalog.inputs.fixedSnapshots.status !== 'available';
-    return { ...catalog,
-      ...(noVisibleInput && catalog.status === 'available' ? { status: 'unavailable' as const,
-        reason: '当前会话分支没有可用的受管表或固定快照输入；其他会话或分支的材料不会在此列出。' } : {}),
-      methods: noVisibleInput ? catalog.methods.map(method => method.status === 'ready'
-        ? { ...method, status: 'blocked' as const, reason: '当前会话分支没有可用的受管表或固定快照输入。' } : method) : catalog.methods,
-      inputs: { ...catalog.inputs, managedTables } };
+  /** 代理只读取真实 WFD 固定快照目录；受管原件不再提供计算资格。 */
+  private modelCatalog(service: NonNullable<WorkspaceServices['algorithms']>, _origin: ModelTaskOrigin): AlgorithmCatalogView {
+    return service.catalog();
   }
 
-  /** 计算提交前先核材料属于当前分支；固定快照仍走数据库实际授权，不要求本地附件。 */
-  private assertCalculationMaterials(value: Record<string, unknown>, origin: ModelTaskOrigin): void {
+  /** 计算请求只能引用 WFD 固定快照；权限由原服务读取端口继续核实。 */
+  private assertCalculationMaterials(value: Record<string, unknown>, _origin: ModelTaskOrigin): void {
     const source = isWfdRecord(value.source) ? value.source : null;
-    if (!source || source.kind !== 'managed_table') return;
-    const materialId = typeof source.materialId === 'string' ? source.materialId : '';
-    const material = this.visibleTableMaterials(origin).get(materialId);
-    if (!material) throw new TaskError('ALGORITHM_MATERIAL_ORIGIN',
-      '算法输入只接受本会话分支通过 material.read 保管的受管表；不能借用其他会话或分支的材料。');
-    if (source.materialSha256 !== undefined && source.materialSha256 !== material.sha256) {
-      throw new TaskError('ALGORITHM_MATERIAL_ORIGIN', '受管表摘要与当前会话分支保管的原件不符；不能改用其他材料。');
-    }
+    if (!source || source.kind !== 'fixed_snapshot') throw new TaskError('ALGORITHM_WFD_ONLY',
+      '基础算法只接受 kind=fixed_snapshot 的 WFD 正式数据；不能让会话原件或模型自行取代已发布版本。');
   }
 
   private statusPayload(taskId: string) {

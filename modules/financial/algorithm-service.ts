@@ -223,12 +223,15 @@ export class LocalAlgorithmService {
   private isEnabled(): boolean { return this.staticEnabled || this.adoptionStatus().state === 'adopted'; }
 
   catalog(): AlgorithmCatalogView {
-    const tableState = this.tableCatalog(), snapshotState = this.snapshotCatalog(), permission = this.executionPermission();
+    const tableState: AlgorithmCatalogView['inputs']['managedTables'] = {
+      status: 'unavailable', reason: '新的基础算法计算只从 WFD 固定快照取数，受管原件已退出计算入口。', items: [],
+    };
+    const snapshotState = this.snapshotCatalog(), permission = this.executionPermission();
     const enabled = this.isEnabled(), adoption = this.adoptionStatus();
-    const hasInput = (tableState.status === 'available' && tableState.items.length > 0) || snapshotState.status === 'available';
+    const hasInput = snapshotState.status === 'available';
     const reason = !enabled ? adoption.reason ?? '算法计算入口尚未启用；需在受控采用并由本机审核后开启。'
       : permission.permission === 'unavailable' ? '无法读取当前权限账本，不能确认执行资格。'
-      : !hasInput ? '没有可用的已受管表或固定快照输入；请先在数据页完成材料接收或明确固定快照引用。' : null;
+      : !hasInput ? '没有可用的 WFD 固定快照读取端口；请先确认产品、快照与定义版本。' : null;
     const methods = ALGORITHM_METHOD_IDS.map((id): AlgorithmCatalogView['methods'][number] => {
       const method = ALGORITHM_METHODS[id], status = !enabled || permission.permission === 'unavailable' ? 'unavailable' as const : !hasInput ? 'blocked' as const : 'ready' as const;
       return { id, title: method.title, description: method.description, status,
@@ -244,7 +247,7 @@ export class LocalAlgorithmService {
         codeFiles: this.codeBinding.files, binding: 'source-code', bindingRequired: false },
       execution: { pythonDigest: this.runtimeDigest, permission: permission.permission, reason: permission.reason },
       methods, inputs: { managedTables: tableState, fixedSnapshots: snapshotState },
-      limitations: ['本算法入口不提供复权工具或分钟/日线加工；缺少复权基准、时区或日历完整性时返回明确缺项。限定日线/分钟任务另由数据库固定计算入口提供。',
+      limitations: ['新计算只接收 WFD 已发布固定快照；人工指定方法、字段、周期与用途。缺少复权、时区或日历证据时保持缺口。',
         '固定快照只按真实 wfd.data-service/v1 data.read 固定实例/产品/快照/定义/分页读取；不读 latest、不写 WFD。',
         '计算结果保留在原任务，本模块没有数据库写者。旧通用候选已停止新建和首次提交；新计算与发布须使用数据库固定计算及 R1 结构化交接入口，并符合其支持范围。'] };
   }
@@ -262,6 +265,8 @@ export class LocalAlgorithmService {
       }
       return this.reopenOrView(existing);
     }
+    if (normalized.source.kind !== 'fixed_snapshot')
+      throw new TaskError('ALGORITHM_WFD_ONLY', '基础算法仅接受 WFD 固定快照。原报须先完成 R1 正式发布与读回。');
     const request = attachPurposeEvidence(normalized, submission, this.now());
     const digest = financialDigest(request);
     this.assertEnabled(); this.assertDispatch();
@@ -300,6 +305,8 @@ export class LocalAlgorithmService {
     this.assertEnabled(); this.assertDispatch(); this.assertExecutionBinding(task, this.callRow(task.id));
     if (task.requiresReview || task.status === 'needs_review') throw new TaskError('UNKNOWN_RESULT', '原结果未知；先按原任务核对，不能借恢复重算。');
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0 || task.version !== expectedVersion) throw new TaskError('TASK_VERSION_CONFLICT', '任务已变化，请按当前版本重新读取。');
+    if (this.requestOf(this.callRow(taskId)).source.kind !== 'fixed_snapshot')
+      throw new TaskError('ALGORITHM_WFD_ONLY', '旧受管文件算法任务不可恢复执行；可按原任务编号只读核验。');
     if (task.status === 'ready') this.tasks.start(taskId, expectedVersion);
     else if (task.status === 'paused') this.tasks.resume(taskId, expectedVersion);
     else if (task.status === 'interrupted') throw new TaskError('UNKNOWN_RESULT', '原尝试已中断，结果未知；先按原任务核对，不能自动重算。');
@@ -316,7 +323,10 @@ export class LocalAlgorithmService {
     try {
       this.assertActive(context); this.assertExecutionBinding(context.task, this.callRow(context.task.id));
       let row = this.callRow(context.task.id);
-      const request = this.requestOf(row), sealed = await this.ensureSealed(context, request, row);
+      const request = this.requestOf(row);
+      if (request.source.kind !== 'fixed_snapshot') throw new TaskError('ALGORITHM_WFD_ONLY',
+        '旧受管文件算法任务不再执行；已完成结果和原任务历史仍允许只读。');
+      const sealed = await this.ensureSealed(context, request, row);
       row = this.callRow(context.task.id);
       if (!row.sealed_digest) throw new TaskError('ALGORITHM_INPUT_CHANGED', '封闭输入摘要缺失。');
       const method = ALGORITHM_METHODS[request.methodId];
@@ -714,6 +724,8 @@ export class LocalAlgorithmService {
   private reopenOrView(row: CallRow): AlgorithmTaskView {
     const task = this.tasks.get(row.task_id);
     if (task.status === 'ready') {
+      if (this.requestOf(row).source.kind !== 'fixed_snapshot')
+        throw new TaskError('ALGORITHM_WFD_ONLY', '旧受管原件任务仅供查询，不再启动计算。');
       this.assertDispatch(); this.assertExecutionBinding(task, row); this.tasks.start(task.id);
     }
     return this.view(task.id);
