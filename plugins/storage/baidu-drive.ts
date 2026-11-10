@@ -321,6 +321,7 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
             if (pending(value)) throw new DirectError('CLOUD_COPY_PENDING', '网盘仅确认复制已受理，必须沿原目标读回核对，不能重发或改成本地上传。', true);
             const after = await exact(before.path), actual = await exact(path), reported = receipt(value);
             if (!after || !sameObject(before, after) || !actual || actual.kind !== 'file' || actual.size !== before.size || actual.id === before.id
+              || (before.md5 !== null && actual.md5 !== null && before.md5 !== actual.md5)
               || reported && !receiptMatches(reported, actual)) {
               throw new DirectError('CLOUD_COPY_UNKNOWN_RESULT', '盘内复制后的原位置版本或精确目标元数据不一致，请沿原目标核对，不能重发或上传。', true);
             }
