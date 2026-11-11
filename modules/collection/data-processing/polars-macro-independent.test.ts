@@ -102,6 +102,15 @@ test('negative sub-precision result preserves the signed zero emitted by Polars 
   assert.doesNotThrow(() => assertMacroYoYCandidate(calc, plusZero.evidence, [plusZero.row]));
 });
 
+test('true exact eight-place half-even midpoint rounds to the even last digit', () => {
+  const zero = fixture('1.00000000005', '1', '0.00000000');
+  assert.doesNotThrow(() => assertMacroYoYCandidate(calc, zero.evidence, [zero.row]));
+  const roundsUpToEven = fixture('1.00000000015', '1', '0.00000002');
+  assert.doesNotThrow(() => assertMacroYoYCandidate(calc, roundsUpToEven.evidence, [roundsUpToEven.row]));
+  fails(() => assertMacroYoYCandidate(calc, roundsUpToEven.evidence,
+    [{ ...roundsUpToEven.row, value: '0.00000001' }]));
+});
+
 test('half-even tie calculation does not substitute JS floating point', () => {
   // 100*(1/2^9)=0.1953125, then 8 decimals is 0.19531250 exactly.
   const f = fixture('513', '512', '0.19531250');
