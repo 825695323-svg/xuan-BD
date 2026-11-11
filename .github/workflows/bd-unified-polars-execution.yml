@@ -65,6 +65,15 @@ jobs:
         run: |
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
           node --import tsx --test modules/financial/*.test.ts
+      - name: Check legacy R1 and Polars admission compatibility
+        env:
+          XUAN_TEST_ROOT: ${{ runner.temp }}/bd-regression-legacy-tests
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-regression-legacy-chain
+        run: |
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
+          node --import tsx --test \
+            apps/server/r1-routes.test.ts \
+            modules/collection/polars-financial-admission.test.ts
       - name: Full native Node and TypeScript regression (failures remain visible)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
