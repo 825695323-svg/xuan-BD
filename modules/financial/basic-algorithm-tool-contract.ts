@@ -1,6 +1,7 @@
 import type { AlgorithmCatalogView } from './algorithm-types.js';
 import { ALGORITHM_REGISTRY } from './algorithm-registry.js';
 import { FIXED_CALCULATION_METHODS } from '../../contracts/fixed-calculation-contracts.js';
+import { FINANCIAL_FIXED_VERSION, FINANCIAL_LINEAR_ADMISSION_VERSION } from '../collection/data-processing/financial-fixed.js';
 
 /**
  * BD AGENTS 只读统一入口契约（Unified Agent Tool Contract）。
@@ -51,7 +52,8 @@ export function basicAlgorithmToolContract(
       // must not claim that a Polars calculation can create a verified WFD derivative.
       const ready = unified?.status === 'ready' && unified.methods.includes(methodId);
       const methodVersion = id === 'macro_yoy' ? 'bd.macro-yoy/1' : id === 'financial_linear'
-        ? 'bd-financial-fixed/1' : 'not_adopted';
+        ? FINANCIAL_LINEAR_ADMISSION_VERSION : 'not_adopted';
+      const calculationVersion = id === 'financial_linear' ? FINANCIAL_FIXED_VERSION : methodVersion;
       return {
         methodId, legacyMethodId: id, title: definition.title, status: ready ? 'ready' as const : 'blocked' as const,
         reason: ready ? null : unified?.reason ?? '方法尚无可用的统一 WFD 固定输入、独立核验及正式发布适配。',
@@ -61,7 +63,7 @@ export function basicAlgorithmToolContract(
           requestFields: ['methodId', 'source', 'calculation', 'usage'],
           source: { kind: 'fixed_snapshot' }, usage: { purpose: 'current_compute' },
           calculation: id === 'financial_linear' ? {
-            version: methodVersion, operations: ['quarter_difference', 'ttm'],
+            version: calculationVersion, operations: ['quarter_difference', 'ttm'],
             inputs: '明确固定 snapshotId/productId/businessKeys 的财务记录',
           } : {
             version: methodVersion, historyMode: 'snapshot_contents',
