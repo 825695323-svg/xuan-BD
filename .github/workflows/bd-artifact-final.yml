@@ -4,12 +4,6 @@ on:
   # 仅手动触发全仓诊断；缺少随包资源的普通托管机无法证明完整回归通过。
   # 失败仍按实记录，不影响已有专项验收工作流。
   workflow_dispatch:
-  # 仅本分支临时比对 R1 远端核验对全仓的影响；验收后恢复手动运行。
-  push:
-    branches: [refactor/unified-algorithm-publication-proof]
-  # 本次跨模块首次发送检查只做一次全仓诊断，记录后恢复手动执行。
-  push:
-    branches: [refactor/unified-algorithm-publication-proof]
 
 permissions:
   contents: read
