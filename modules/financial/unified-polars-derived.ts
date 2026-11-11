@@ -74,7 +74,8 @@ export function checkUnifiedStructuredForWfd(
   const field = { field_code: 'value', data_type: 'decimal', unit_code: unitCode,
     measurement_nature: 'derived', time_role: 'observation' };
   const definition: WfdRecord = {
-    semantic_code: outputKey, measurement_nature: 'derived', unit_code: 'per_field',
+    // scalar_rows has one value unit; per_field is valid only for tabular_rows.
+    semantic_code: outputKey, measurement_nature: 'derived', unit_code: unitCode,
     definition_authority: binding.namespace, time_role: 'observation',
     field_definitions: [field],
     semantic_context: { version: 'wfd.semantic-context/1.0', content_nature: 'deterministic_derived',
