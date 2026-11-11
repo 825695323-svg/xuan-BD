@@ -47,6 +47,7 @@ import { createArtifactArchiveActions } from '../../modules/collection/artifact-
 import { createArtifactRestoreActions } from '../../modules/collection/artifact-restore.js';
 import { createArtifactLifecycleActions } from '../../modules/collection/artifact-lifecycle.js';
 import { createCandidateReclaimActions } from '../../modules/collection/candidate-reclaim.js';
+import { createArtifactManifestActions } from '../../modules/collection/artifact-manifest.js';
 import { createBaiduCustodyBackend, type CloudCustodyBackend } from '../../plugins/storage/baidu-drive.js';
 import { MaterialSemanticService } from '../../modules/collection/materials/semantic.js';
 import { SegmentService } from '../../modules/collection/segments/service.js';
@@ -290,6 +291,9 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     return tasks;
   }, backend: archiveBackend, artifactRoot });
   const candidateReclaim = createCandidateReclaimActions({ database });
+  const artifactManifest = createArtifactManifestActions({ database, files, tasks: () => {
+    if (!tasks) throw new TaskError('SERVICE_NOT_READY', '任务服务尚未准备好。'); return tasks;
+  } });
   const mediaAdapters = [createMaterialTranscriptionAdapter(() => direct?.localTranscription)];
   const conversationMaterials = options.workspaceServices ? new ConversationMaterialBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
@@ -325,7 +329,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     agentImageOcrAvailability: () => !options.health.configured ? { available: false, reason: '当前模型通道或凭据尚不可用，无法识字。' }
       : options.modelInput && !options.modelInput.includes('image') ? { available: false, reason: '当前绑定模型配置未声明图像输入；不能识字、改模型或调用原生兜底。' }
       : { available: true },
-    artifactArchive, artifactRestore, artifactLifecycle, candidateReclaim,
+    artifactArchive, artifactRestore, artifactLifecycle, candidateReclaim, artifactManifest,
     conversationMaterials: conversationMaterials || conversationProcessing || conversationR1 ? { registrations: conversationMaterials?.registrations ?? [],
       handles: action => !!conversationR1?.handles(action) || !!conversationProcessing?.handles(action) || !!conversationMaterials?.handles(action),
       execute: (context, action, args) => conversationR1?.handles(action) ? conversationR1.execute(context, action, args)
