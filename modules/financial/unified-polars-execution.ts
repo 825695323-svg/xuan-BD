@@ -1,5 +1,6 @@
 import { realpathSync, statSync } from 'node:fs';
 import type { JsonValue } from '../../contracts/task-contracts.js';
+import type { CoreDatabase } from '../../platform/state/database.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { TaskError, type TaskExecutionContext, type TaskRuntime, type TaskService, type TaskRecord } from '../../platform/jobs/tasks.js';
 import { digestOperationArgs } from '../../platform/security/permissions.js';
@@ -40,7 +41,7 @@ export const isUnifiedPolarsMethod = (value: unknown): value is PolarsMethod =>
  */
 export class UnifiedPolarsExecution {
   constructor(private readonly options: {
-    tasks(): TaskService; workspace: R1WorkspaceService; processRuntime: ProcessRuntime;
+    database: CoreDatabase; tasks(): TaskService; workspace: R1WorkspaceService; processRuntime: ProcessRuntime;
     verifyFinancialReview?(review: NonNullable<FinancialCalculation['compatibilityReview']>): void;
   }) {}
   private get tasks() { return this.options.tasks(); }
@@ -73,8 +74,10 @@ export class UnifiedPolarsExecution {
   submit(requestId: string, raw: unknown) {
     if (!id(requestId)) return fail('UNIFIED_POLARS_REQUEST', '需要来自原会话的稳定计算请求编号。');
     const input = this.normalize(raw), originalId = 'unified-polars:' + requestId;
-    const previous = this.tasks.list().find(task => task.requestId === originalId);
-    if (previous) {
+    const saved = this.options.database.connection.prepare('SELECT id FROM tasks WHERE request_id=?')
+      .get(originalId) as { id: string } | undefined;
+    if (saved) {
+      const previous = this.task(saved.id);
       const frozen = previous.args as unknown as FrozenInput;
       if (digest(frozen.input) !== digest(input)) return fail('REQUEST_CONFLICT', '原统一算法任务不能更换方法、来源或参数。');
       return this.view(previous.id);
