@@ -1,18 +1,12 @@
-name: BD artifact project final regression
+name: BD artifact project full regression (diagnostic)
 
 on:
   push:
     branches:
       - codex/artifact-final-regression
-  pull_request:
-    paths:
-      - '.github/workflows/bd-artifact-final.yml'
-      - 'modules/collection/**'
-      - 'platform/resources/**'
-      - 'platform/capabilities/**'
-      - 'apps/server/**'
-      - 'plugins/**'
-      - 'contracts/**'
+  # 全仓诊断仅在明确运行时执行，避免没有随包资源的 GitHub 托管机
+  # 把既有的资源依赖测试失败误当成每个普通 PR 的新回归。
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,7 +25,7 @@ jobs:
         run: npm ci
       - name: Typecheck and production frontend build
         run: npm run build
-      - name: Run complete Node and TypeScript regression suite
+      - name: Run complete Node and TypeScript regression suite (reports real failures)
         env:
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-artifact-final-chain
           XUAN_TEST_ROOT: ${{ runner.temp }}/bd-artifact-final-tests
