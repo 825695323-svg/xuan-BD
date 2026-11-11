@@ -93,7 +93,7 @@ export function checkUnifiedStructuredForWfd(
     coverage: { scope: { algorithmTaskId: result.taskId,
       inputDigest: result.inputDigest, sourceEvidenceSha256: digest(result.evidence),
       intervalStart: start, intervalEnd: end },
-      basis: 'fixed_wfd_derived_check:' + UNIFIED_STRUCTURED_DERIVED_VERSION,
+      basis: 'observed_partial',
       completeness: 'partial', absence_means: 'unknown' },
     payload: { kind: 'scalar_rows', rows: [{
       business_key: key, observation_time: timestamp, value_decimal: value, value_state: 'valid_value',
