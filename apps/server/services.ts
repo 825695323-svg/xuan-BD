@@ -450,6 +450,10 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     if (!polarsFixed) throw new TaskError('R1_CALCULATION_VERIFIER_UNBOUND', '计算候选缺受信验证器。');
     polarsFixed.verifyCandidate(input.taskId, input);
   };
+  const verifyCalculationCandidateRemote = async (taskId: string, signal: AbortSignal) => {
+    if (!polarsFixed) throw new TaskError('R1_CALCULATION_VERIFIER_UNBOUND', 'Polars 原 WFD 来源固定复核器未装配。');
+    await polarsFixed.verifySourceForPublication(taskId, signal);
+  };
   const verifyAlgorithmCandidate = (input: R1CalculationCandidateVerification) => {
     if (!algorithms || !materials || !processing)
       throw new TaskError('R1_ALGORITHM_VERIFIER_UNBOUND', '基础算法、材料与加工证据验证器尚未完整装配。');
@@ -480,7 +484,8 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   if (materials && options.resources) {
     try {
       r1Runtime = createR1HandoffRuntime({ resources: options.resources, database, materials, processing, candidates,
-        connectionId: options.r1ConnectionId, verifyCalculationCandidate, verifyAlgorithmCandidate, verifyFixedDerived });
+        connectionId: options.r1ConnectionId, verifyCalculationCandidate, verifyCalculationCandidateRemote,
+        verifyAlgorithmCandidate, verifyFixedDerived });
       r1Configuration = { state: 'ready', reason: null };
     } catch (error) {
       r1Configuration = { state: 'not_configured',
@@ -488,7 +493,8 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     }
   }
   const r1: R1HandoffService | undefined = r1Runtime?.service ?? (materials ? new R1HandoffService({
-    database, materials, processing, candidates, verifyCalculationCandidate, verifyAlgorithmCandidate, verifyFixedDerived }) : undefined);
+    database, materials, processing, candidates, verifyCalculationCandidate, verifyCalculationCandidateRemote,
+    verifyAlgorithmCandidate, verifyFixedDerived }) : undefined);
   const r1Workspace: R1WorkspaceService | undefined = r1 && processing && materials ? new R1WorkspaceService({ database, tasks: currentTasks,
     handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration }) : undefined;
   // 独立确定性算法唯一发布路径：复用 R1 正式写入与固定读回，不走原报五步。
