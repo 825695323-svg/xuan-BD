@@ -29,7 +29,8 @@ export function createArtifactManifestActions(options: {
     execute(_context: TaskExecutionContext, args: Record<string, JsonValue>): Promise<TaskResult> {
       if (Object.keys(args).some(key => key !== 'sourceTaskId') || !id(args.sourceTaskId))
         throw new TaskError('ARTIFACT_MANIFEST_INPUT', '需要已有成功来源任务编号，不接受目录路径或额外参数。');
-      const task = options.tasks().get(args.sourceTaskId);
+      const sourceTaskId = args.sourceTaskId as string;
+      const task = options.tasks().get(sourceTaskId);
       if (task.status !== 'succeeded' || task.requiresReview || !task.result)
         throw new TaskError('ARTIFACT_MANIFEST_SOURCE', '原任务尚未成功收束或仍需独立复核。');
       const sourceIds = task.result.artifactIds ?? [];
@@ -64,11 +65,11 @@ export function createArtifactManifestActions(options: {
       const items = [...new Set(sourceIds)].map(fileRefId => {
         const ref = options.files.getRef(fileRefId);
         const producerMatched = ref.source === 'generated' && ref.kind === 'file'
-          && ref.relations.some(link => link.kind === 'task' && link.id === args.sourceTaskId);
+          && ref.relations.some(link => link.kind === 'task' && link.id === sourceTaskId);
         const archive = db.prepare('SELECT state,sha256,remote_id,target_path FROM artifact_archive_receipts WHERE source_task_id=? AND file_ref_id=?')
-          .get(args.sourceTaskId, fileRefId) as { state: string; sha256: string; remote_id: string | null; target_path: string } | undefined;
+          .get(sourceTaskId, fileRefId) as { state: string; sha256: string; remote_id: string | null; target_path: string } | undefined;
         const release = db.prepare('SELECT state FROM artifact_local_releases WHERE source_task_id=? AND file_ref_id=?')
-          .get(args.sourceTaskId, fileRefId) as { state: string } | undefined;
+          .get(sourceTaskId, fileRefId) as { state: string } | undefined;
         const annotated = [...(roles.get(fileRefId) ?? new Set(['unclassified']))];
         const original = annotated.some(role => ['source-raw-response', 'web-raw-response', 'source-subtitle-or-media'].includes(role));
         const evidence = annotated.some(role => ['transcription-evidence', 'article-html', 'article-text', 'visible-text', 'web-dom', 'site-result'].includes(role));
