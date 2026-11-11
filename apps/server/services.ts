@@ -505,9 +505,16 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const r1Workspace: R1WorkspaceService | undefined = r1 && processing && materials ? new R1WorkspaceService({ database, tasks: currentTasks,
     handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration }) : undefined;
   // 独立确定性算法唯一发布路径：复用 R1 正式写入与固定读回，不走原报五步。
-  derivedPublisher = r1Runtime && r1Workspace && algorithms && r1
-    ? new DerivedWfdPublisher({ viewAlgorithm: taskId => algorithms.view(taskId),
-      readAlgorithmInput: taskId => algorithms.verifiedInput(taskId),
+  derivedPublisher = r1Runtime && r1Workspace && r1 && (algorithms || (options.role === 'service' && options.processRuntime))
+    ? new DerivedWfdPublisher({
+      viewAlgorithm: taskId => {
+        if (!algorithms) throw new TaskError('ALGORITHM_UNAVAILABLE', '当前未装配原 Python 固定算法。');
+        return algorithms.view(taskId);
+      },
+      readAlgorithmInput: taskId => {
+        if (!algorithms) throw new TaskError('ALGORITHM_UNAVAILABLE', '当前未装配原 Python 固定算法。');
+        return algorithms.verifiedInput(taskId);
+      },
       runtime: () => r1Runtime, workspace: () => r1Workspace, handoff: r1,
       structuredPolars: () => unifiedPolars })
     : undefined;
