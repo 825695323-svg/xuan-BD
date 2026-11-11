@@ -76,10 +76,12 @@ jobs:
           env -u WFD_PYTHON -u POLARS_PYTHON node --import tsx --test apps/server/r1-routes.test.ts
           node --import tsx --test modules/collection/polars-financial-admission.test.ts
       - name: Full native Node and TypeScript regression (failures remain visible)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: always()
         env:
           XUAN_TEST_ROOT: ${{ runner.temp }}/bd-unified-full-tests
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-unified-full-chain
         run: |
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
-          npm test
+          # Runtime-only suites already run with explicit WFD_PYTHON/POLARS_PYTHON above.
+          # Default full suite keeps the fixture-less environment of scripts/test-local.mjs.
+          env -u WFD_PYTHON -u POLARS_PYTHON npm test
