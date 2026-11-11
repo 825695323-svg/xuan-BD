@@ -50,6 +50,7 @@ function userStatement(extra = ''): string {
     + Object.entries(source).map(([key, value]) => sourceLine(key, value)).join('\n')
     + '\nalternate_provider=synthetic-fixture-alternate\n固定目标与映射=' + JSON.stringify({ target, mapping }) + '\n' + extra;
 }
+const inspectOnlyUserQuote = '本轮仅检查已附材料；intendedAction=inspect；purpose=current_compute；不请求发布、不提交 WFD。';
 const r1Actions = ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check'];
 const model = Object.freeze({ provider: 'fixture-receiver', model: 'fixture-no-provider', baseUrl: 'https://model.invalid.test/v1' });
 // Core toolFactory closures capture all required host context themselves. This empty adapter-only
@@ -236,7 +237,7 @@ async function startInput(h: Host, text: string, requestId: string,
   assert.equal(h.core.store.message(input.messageId).text, text);
   return input;
 }
-async function selectedInput(h: Host, caseId: string, csv = rawCsv, extension = 'csv') {
+async function selectedInput(h: Host, caseId: string, csv = rawCsv, extension = 'csv', userText = userStatement()) {
   const path = join(h.root, caseId + '.' + extension); writeFileSync(path, csv, { flag: 'wx', mode: 0o600 });
   const conversationId = h.core.defaultConversationId;
   const reference = h.services.files.register({ path, source: 'user-attached', conversationId });
@@ -244,7 +245,7 @@ async function selectedInput(h: Host, caseId: string, csv = rawCsv, extension = 
   h.services.permissions.grant({ label: 'Fixture user-selected CSV only', scope: { kind: 'persistent' },
     capabilities: [{ action: 'read', target: { kind: 'file', path } }] });
   const attachment: ConversationAttachmentRef = { fileRefId: reference.id, version: reference.version, category: 'data' };
-  const input = await startInput(h, userStatement(), caseId + '-user-input', { conversationId, attachmentRefs: [attachment] });
+  const input = await startInput(h, userText, caseId + '-user-input', { conversationId, attachmentRefs: [attachment] });
   return { input, reference, attachment };
 }
 function evidenceFor(input: BackendInput, declaration = source) {
@@ -463,13 +464,14 @@ test('processing dedicated formats cross the genuine personal tool bridge with e
     const f = fixture(), h = await host(f);
     try {
       const bytes = format === 'text' ? text : xml;
-      const selected = await selectedInput(h, 'dedicated-' + format, bytes, format === 'text' ? 'txt' : 'xml');
+      const selected = await selectedInput(h, 'dedicated-' + format, bytes, format === 'text' ? 'txt' : 'xml', inspectOnlyUserQuote);
       const read = await invoke(h, selected.input, 'material.read', { fileRefId: selected.reference.id }, 'dedicated-read-' + format);
       const materialId = String(read.preview.data.materialId), start = text.toString().indexOf(paragraph);
       const table = format === 'text' ? { materialId, format, necessaryTextSelection: { version: 'bd-necessary-business-paragraph/1', sourceSha256: wfdSha256(text),
         documentVersion: 'regression-v1', purpose: 'correction_scope', reviewBasis: '操作者核对完整原文段及全部限制条件用于本次工具桥回归', paragraphs: [{ start, end: start + paragraph.length, quote: paragraph }] } }
         : { materialId, format, xbrlSelection: { version: 'bd-xbrl-numeric/1', reportId: 'regression', reportVersion: 'v1', concepts: [] }, types: { value: 'decimal_string' } };
-      const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'selected', materialIds: [materialId], intendedAction: 'inspect', tables: [table] }] };
+      const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'selected', materialIds: [materialId], intendedAction: 'inspect',
+        usage: { purpose: 'current_compute', messageId: selected.input.messageId, quote: inspectOnlyUserQuote }, tables: [table] }] };
       const accepted = await invoke(h, selected.input, 'data.processing.plan', { planJson: JSON.stringify(planJson) }, 'dedicated-plan-' + format);
       const planId = String(accepted.preview.data.planId);
       await invoke(h, selected.input, 'data.processing.run', { planId }, 'dedicated-run-' + format);
@@ -700,11 +702,12 @@ test('processing structure summary keeps counts when a real changed cell is too 
   const f = fixture(), h = await host(f);
   try {
     const originalValue = ' '.repeat(100_000) + '31.0';
-    const selected = await selectedInput(h, 'large-normalization', Buffer.from(`value\n${originalValue}\n`));
+    const selected = await selectedInput(h, 'large-normalization', Buffer.from(`value\n${originalValue}\n`), 'csv', inspectOnlyUserQuote);
     const read = await invoke(h, selected.input, 'material.read', { fileRefId: selected.reference.id }, 'large-normalization-read');
     const materialId = String(read.preview.data.materialId);
     const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'large', materialIds: [materialId],
-      intendedAction: 'inspect', tables: [{ materialId, format: 'csv', trim: ['value'], types: { value: 'decimal_string' } }] }] };
+      intendedAction: 'inspect', usage: { purpose: 'current_compute', messageId: selected.input.messageId, quote: inspectOnlyUserQuote },
+      tables: [{ materialId, format: 'csv', trim: ['value'], types: { value: 'decimal_string' } }] }] };
     const prepared = await invoke(h, selected.input, 'data.processing.plan', { planJson: JSON.stringify(planJson) }, 'large-normalization-plan');
     const planId = String(prepared.preview.data.planId);
     await invoke(h, selected.input, 'data.processing.run', { planId }, 'large-normalization-run');

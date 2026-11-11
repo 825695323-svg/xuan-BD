@@ -1,0 +1,37 @@
+name: BD processing purpose evidence bridge
+
+on:
+  push:
+    branches: [fix/processing-model-result-20261111]
+  pull_request:
+    paths:
+      - 'modules/collection/r1-conversation-bridge.test.ts'
+      - 'modules/collection/processing-plan.ts'
+      - '.github/workflows/bd-processing-bridge.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  processing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - name: Install pinned dependencies
+        run: npm ci
+      - name: Typecheck and production build
+        run: npm run build
+      - name: Real session inspection and authorization regression
+        env:
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-processing-purpose-chain
+          XUAN_TEST_ROOT: ${{ runner.temp }}/bd-processing-purpose-files
+        run: |
+          mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
+          node --import tsx --test \
+            --test-name-pattern='processing dedicated formats|processing structure summary|F05 processing conversation operator evidence cannot self-authorize purpose' \
+            modules/collection/r1-conversation-bridge.test.ts
