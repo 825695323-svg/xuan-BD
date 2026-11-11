@@ -26,17 +26,26 @@ jobs:
           cache: npm
       - name: Install pinned dependencies
         run: npm ci
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exactly pinned Polars worker
+        run: |
+          python -m pip install -r config/polars-requirements.txt
+          echo "POLARS_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
       - name: Typecheck and frontend production build
         run: npm run build
       - name: Test unified task route and existing Polars verifiers
         env:
           XUAN_TEST_ROOT: ${{ runner.temp }}/bd-unified-polars-tests
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-unified-polars-live
         run: |
-          mkdir -p "$XUAN_TEST_ROOT"
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
           node --import tsx --test \
             modules/financial/unified-polars-execution.test.ts \
             modules/financial/unified-polars-derived.test.ts \
             modules/financial/unified-polars-r1-gate.test.ts \
+            modules/financial/unified-polars-live.test.ts \
             modules/financial/unified-algorithm-discovery.test.ts \
             modules/collection/data-processing/polars-macro-independent.test.ts \
             modules/collection/data-processing/financial-fixed.test.ts
