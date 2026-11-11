@@ -3,6 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { CoreDatabase } from '../../platform/state/database.js';
 import { R1HandoffService } from './r1-structured-handoff.js';
 
@@ -24,14 +25,15 @@ function fixture(hasUploads = true) {
   }
   const refs = { originalIds: [], materialIds: ['derived-material-1'], sourceRefs: [],
     processRefs: [{ process_id: 'processing-1' }], evidenceRefs: [] };
-  const now = Date.now();
+  const now = Date.now(), documentJson = canonicalWfdJson({});
+  const refsJson = canonicalWfdJson(refs);
   db.connection.prepare([
     'INSERT INTO r1_handoff_attempts(',
     'request_id,dataset_id,actor_namespace,document_json,document_sha256,',
     'local_refs_json,local_refs_sha256,state,created_at,updated_at)',
     'VALUES(?,?,?,?,?,?,?,?,?,?)',
   ].join(' ')).run('request-1', 'dataset-1', 'actor',
-    '{}', 'a'.repeat(64), JSON.stringify(refs), 'b'.repeat(64), 'prepared', now, now);
+    documentJson, wfdSha256(documentJson), refsJson, wfdSha256(refsJson), 'prepared', now, now);
   return { root, db, service, seen, close() { db.close(); rmSync(root, { recursive: true, force: true }); } };
 }
 
