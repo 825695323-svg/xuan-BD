@@ -1,0 +1,37 @@
+name: BD unified Polars WFD pre-publication proof
+
+on:
+  push:
+    branches: [refactor/unified-algorithm-publication-proof]
+  pull_request:
+    paths:
+      - 'modules/financial/unified-polars-publication-proof*'
+      - 'modules/financial/wfd-fixed-selection.ts'
+      - '.github/workflows/bd-polars-publication-proof.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - run: npm ci
+      - name: Typecheck and production frontend build
+        run: npm run build
+      - name: Verify real WFD source reread and finance macro formula proof
+        env:
+          XUAN_TEST_ROOT: ${{ runner.temp }}/unified-publish-proof
+        run: |
+          mkdir -p "$XUAN_TEST_ROOT"
+          node --import tsx --test \
+            modules/financial/unified-polars-publication-proof.test.ts \
+            modules/financial/wfd-fixed-selection.test.ts \
+            modules/collection/data-processing/financial-fixed.test.ts \
+            modules/collection/data-processing/polars-macro-independent.test.ts
