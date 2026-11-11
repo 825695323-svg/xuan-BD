@@ -1,0 +1,31 @@
+name: BD artifact project full regression (diagnostic)
+
+on:
+  # 仅手动触发全仓诊断；缺少随包资源的普通托管机无法证明完整回归通过。
+  # 失败仍按实记录，不影响已有专项验收工作流。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - name: Install pinned dependencies
+        run: npm ci
+      - name: Typecheck and production frontend build
+        run: npm run build
+      - name: Run complete Node and TypeScript regression suite (reports real failures)
+        env:
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-artifact-final-chain
+          XUAN_TEST_ROOT: ${{ runner.temp }}/bd-artifact-final-tests
+        run: |
+          mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
+          npm test
