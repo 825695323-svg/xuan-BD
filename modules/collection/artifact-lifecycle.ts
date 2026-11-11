@@ -62,16 +62,22 @@ export function artifactReleaseBlockers(db: CoreDatabase, files: FileReferenceSe
   const guards: { table: string; condition: string }[] = [
     { table: 'material_objects', condition: "json_extract(envelope_json,'$.fileRefId')=?" },
     { table: 'conversion_artifacts', condition: 'artifact_ref=?' },
-    { table: 'segment_requests', condition: 'instr(binding_json,?)>0' },
+    // 按当前真实表结构核对。旧 binding_json/document_json 并不存在，
+    // 会让原本无引用的文件恒定报“unverifiable”，永远不能释放。
+    { table: 'segment_requests', condition: 'instr(input_json,?)>0' },
     { table: 'r1_handoff_attempts', condition: 'instr(local_refs_json,?)>0' },
-    { table: 'processing_plans', condition: 'instr(document_json,?)>0' },
+    { table: 'processing_plans', condition: '(instr(plan_json,?)>0 OR instr(material_manifest_json,?)>0)' },
+    { table: 'processing_plan_steps', condition: '(instr(input_json,?)>0 OR instr(output_json,?)>0 OR instr(parameters_json,?)>0)' },
+    { table: 'processing_plan_outputs', condition: '(instr(structured_json,?)>0 OR instr(dimensions_json,?)>0)' },
   ];
   for (const item of guards) {
     const exists = connection.prepare("SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=?")
       .get(item.table);
     if (!exists) continue;
     try {
-      if (connection.prepare('SELECT 1 FROM ' + item.table + ' WHERE ' + item.condition + ' LIMIT 1').get(fileRefId))
+      const bindings = item.condition.split('?').length - 1;
+      if (connection.prepare('SELECT 1 FROM ' + item.table + ' WHERE ' + item.condition + ' LIMIT 1')
+        .get(...Array.from({ length: bindings }, () => fileRefId)))
         blockers.push(item.table + '-reference');
     } catch {
       blockers.push(item.table + '-unverifiable');

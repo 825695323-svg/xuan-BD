@@ -36,7 +36,14 @@ const groups = {
   conversion: ['platform/capabilities/conversion/index.ts', 'platform/capabilities/conversion/formats.ts', 'platform/capabilities/conversion/worker.ts', 'platform/capabilities/conversion/storage.ts'],
   office: ['platform/capabilities/conversion/office.ts'], pdf: ['platform/capabilities/conversion/pdf.ts'], media: ['platform/capabilities/conversion/media.ts'],
   html: ['platform/capabilities/browser/html-extraction.ts'],
-  baidu: ['plugins/capture-sources/baidu-drive/index.ts', 'platform/config/connections.ts'],
+  baidu: ['plugins/capture-sources/baidu-drive/index.ts', 'plugins/storage/baidu-drive.ts', 'platform/config/connections.ts'],
+  // 这些实现不在旧 baidu/process/assembly 组内，必须与当前宿主已加载字节一起冻结。
+  artifactManifest: ['modules/collection/artifact-manifest.ts'],
+  artifactArchive: ['modules/collection/artifact-archive.ts', 'plugins/storage/baidu-drive.ts'],
+  artifactRestore: ['modules/collection/artifact-restore.ts', 'modules/collection/artifact-archive.ts', 'plugins/storage/baidu-drive.ts'],
+  artifactLifecycle: ['modules/collection/artifact-lifecycle.ts', 'modules/collection/artifact-archive.ts', 'plugins/storage/baidu-drive.ts'],
+  candidateReclaim: ['modules/collection/candidate-reclaim.ts', 'modules/collection/candidate-object-storage.ts',
+    'modules/collection/r1-structured-handoff.ts'],
   model: ['modules/agent/model-tools.ts'], ocr: ['modules/agent/ocr.ts', 'adapters/llm/pi.ts'],
   algorithms: ['modules/financial/conversation-algorithms.ts', 'modules/financial/algorithm-service.ts', 'modules/financial/algorithm-types.ts',
     'modules/financial/managed-table.ts', 'plugins/financial/local-compute/assets.ts'],
@@ -89,6 +96,18 @@ export function directFileVersion(path: string): FileVersion {
 }
 const packageFiles = new Map<string, { name: string; files: [string, string][]; dependencies: string[] }>();
 const packageRoots = new Map<string, string>();
+const hostLinuxLibc: 'gnu' | 'musl' | null = process.platform === 'linux'
+  ? (process.report.getReport() as { header?: { glibcVersionRuntime?: string } }).header?.glibcVersionRuntime ? 'gnu' : 'musl'
+  : null;
+/** 可选原生包按已运行宿主的 ABI（系统二进制接口）选择，不从进程 PATH 猜二进制程序。 */
+export function nativeOptionalDependencyMatches(name: string,
+  platform: string = process.platform, arch: string = process.arch,
+  libc: 'gnu' | 'musl' | null = hostLinuxLibc): boolean {
+  if (!name.includes(`${platform}-${arch}`)) return false;
+  if (platform !== 'linux') return true;
+  const match = name.match(/linux-[a-z0-9]+-(gnu|musl)(?:$|-)/u);
+  return !match || match[1] === libc;
+}
 function snapshotPackage(name: string, from = require): string {
   let root: string, metadata: { name: string; dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
   try {
@@ -112,8 +131,10 @@ function snapshotPackage(name: string, from = require): string {
   };
   visit(root);
   const dependencies = Object.keys(metadata.dependencies ?? {});
-  // 原生执行模块只取本宿主实际平台；不绑定其它平台的可选制品。
-  for (const dependency of Object.keys(metadata.optionalDependencies ?? {})) if (dependency.includes(`${process.platform}-${process.arch}`)) dependencies.push(dependency);
+  // 仅绑定当前 OS/CPU/系统 C 库对应的原生依赖。Linux GNU 与 musl
+  // 不能同时加入：缺少另一系统 C 库的可选包不代表当前宿主不可用。
+  for (const dependency of Object.keys(metadata.optionalDependencies ?? {}))
+    if (nativeOptionalDependencyMatches(dependency)) dependencies.push(dependency);
   const snapshot = { name, files, dependencies: [] as string[] };
   packageFiles.set(root, snapshot);
   const localRequire = createRequire(join(root, 'package.json'));
