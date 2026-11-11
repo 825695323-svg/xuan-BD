@@ -56,7 +56,7 @@ export interface R1LocalReferences {
   /** New workspace preparations pin four role refs; old scalar task JSON stays unchanged. */
   contractBindingRequired?: true;
   /** 固定算法独立核验引用：没有五步加工计划；由服务端按原任务计算结果反向核验。 */
-  fixedAlgorithm?: { taskId: string; requestId: string; resultSha256: string;
+  fixedAlgorithm?: { kind?: 'structured_polars'; taskId: string; requestId: string; resultSha256: string;
     namespace: string; mode: 'production' | 'user_test'; expectedParentSnapshotId: string | null };
 }
 export interface R1StructuredRequest {
@@ -181,6 +181,7 @@ export class R1HandoffService {
     verifyCalculationCandidate?(input: R1CalculationCandidateVerification): void;
     /** 外部副作用前重新读取 WFD 固定记录；仅宿主已装配的 Polars 来源核验器可执行。 */
     verifyCalculationCandidateRemote?(taskId: string, signal: AbortSignal): Promise<void>;
+    verifyFixedDerivedRemote?(taskId: string, signal: AbortSignal): Promise<void>;
     verifyAlgorithmCandidate?(input: R1CalculationCandidateVerification): void;
     verifyFixedDerived?(refs: R1LocalReferences, documentSha256: string): void }) {
     const version = this.db.prepare('SELECT version FROM schema_versions WHERE module=?').get('r1-structured-handoff');
@@ -403,9 +404,15 @@ export class R1HandoffService {
     const attempt = this.attempt(requestId);
     if (R1_SETTLED_STATES.has(String(attempt.state))
       || ['rejected', 'sending', 'pending_unknown', 'pending_receipt'].includes(String(attempt.state))) return;
+    const refs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
+    if (refs.fixedAlgorithm?.kind === 'structured_polars') {
+      if (!this.options.verifyFixedDerivedRemote)
+        throw new TaskError('DERIVED_REMOTE_UNBOUND', '结构化固定算法发布前 WFD 原始来源复核器未装配。');
+      await this.options.verifyFixedDerivedRemote(refs.fixedAlgorithm.taskId, signal);
+      return;
+    }
     const callback = this.options.verifyCalculationCandidateRemote;
     if (!callback) return; // 独立原报测试保留原同步验证；正式宿主装配远端核验。
-    const refs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
     if (refs.fixedAlgorithm || !Array.isArray(refs.materialIds) || !refs.processRefs?.length) return;
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='harness_material_uploads'").get()) {
       // 还没有任何经受管上传形成的计算候选；同步原件核对仍独立执行。
