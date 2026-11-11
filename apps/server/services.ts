@@ -501,7 +501,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   }
   const r1: R1HandoffService | undefined = r1Runtime?.service ?? (materials ? new R1HandoffService({
     database, materials, processing, candidates, verifyCalculationCandidate, verifyCalculationCandidateRemote,
-    verifyAlgorithmCandidate, verifyFixedDerived }) : undefined);
+    verifyFixedDerivedRemote, verifyAlgorithmCandidate, verifyFixedDerived }) : undefined);
   const r1Workspace: R1WorkspaceService | undefined = r1 && processing && materials ? new R1WorkspaceService({ database, tasks: currentTasks,
     handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration }) : undefined;
   // 独立确定性算法唯一发布路径：复用 R1 正式写入与固定读回，不走原报五步。
