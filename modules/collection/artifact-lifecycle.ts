@@ -47,7 +47,7 @@ export function artifactReleaseBlockers(db: CoreDatabase, files: FileReferenceSe
   // 只有归档、元数据查询和恢复动作不构成独立消费端；其他任务均保守判定为依赖。
   const used = connection.prepare([
     'SELECT id FROM tasks WHERE id<>? AND action NOT IN',
-    " ('artifact.archive','artifact.restore','artifact.inspect','artifact.release')",
+    " ('artifact.archive','artifact.restore','artifact.inspect','artifact.release','artifact.manifest')",
     ' AND (EXISTS (SELECT 1 FROM json_tree(tasks.args) WHERE atom=? AND type=\'text\')',
     ' OR EXISTS (SELECT 1 FROM json_tree(tasks.result) WHERE atom=? AND type=\'text\')',
     ' OR EXISTS (SELECT 1 FROM json_tree(tasks.checkpoint) WHERE atom=? AND type=\'text\')) LIMIT 1',
@@ -56,7 +56,7 @@ export function artifactReleaseBlockers(db: CoreDatabase, files: FileReferenceSe
   const relation = connection.prepare([
     'SELECT 1 FROM task_dependencies d JOIN tasks t ON t.id=d.task_id',
     ' WHERE d.dependency_id=? AND t.action NOT IN',
-    " ('artifact.archive','artifact.restore','artifact.inspect','artifact.release') LIMIT 1",
+    " ('artifact.archive','artifact.restore','artifact.inspect','artifact.release','artifact.manifest') LIMIT 1",
   ].join('')).get(sourceTaskId);
   if (relation) blockers.push('dependent-task');
   const guards: { table: string; condition: string }[] = [
