@@ -96,11 +96,13 @@ export function directFileVersion(path: string): FileVersion {
 }
 const packageFiles = new Map<string, { name: string; files: [string, string][]; dependencies: string[] }>();
 const packageRoots = new Map<string, string>();
+const hostLinuxLibc: 'gnu' | 'musl' | null = process.platform === 'linux'
+  ? (process.report.getReport() as { header?: { glibcVersionRuntime?: string } }).header?.glibcVersionRuntime ? 'gnu' : 'musl'
+  : null;
 /** 可选原生包按已运行宿主的 ABI（系统二进制接口）选择，不从进程 PATH 猜二进制程序。 */
 export function nativeOptionalDependencyMatches(name: string,
   platform: string = process.platform, arch: string = process.arch,
-  libc: 'gnu' | 'musl' | null = platform === 'linux'
-    ? process.report.getReport().header.glibcVersionRuntime ? 'gnu' : 'musl' : null): boolean {
+  libc: 'gnu' | 'musl' | null = hostLinuxLibc): boolean {
   if (!name.includes(`${platform}-${arch}`)) return false;
   if (platform !== 'linux') return true;
   const match = name.match(/linux-[a-z0-9]+-(gnu|musl)(?:$|-)/u);
