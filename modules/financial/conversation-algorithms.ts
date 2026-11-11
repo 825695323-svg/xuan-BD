@@ -90,7 +90,8 @@ export class ConversationAlgorithmBridge {
       return { summary: catalog.enabled
         ? '已读取基础算法目录、固定代码版本与 WFD 快照能力；本动作只读，不创建计算。'
         : `算法运行条件尚未就绪（${catalog.reason ?? '执行器或 WFD 快照端口不可用'}）；本次仅返回目录。`,
-        data: view({ algorithms: catalog, database: json(catalog.inputs.fixedSnapshots), guidance: {
+        data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog).methods,
+          database: json(catalog.inputs.fixedSnapshots), guidance: {
           humanInput: '用户说明 WFD 数据和目标算法，由模型读取真实快照与方法契约形成调用，无需人工逐次计算确认。',
           adoption: '工具不能自 adopt；未启用时不要改用旧 financial/compute_assets 入口。',
           managedTables: '已停止受管原件直接计算；必须先经原报管线发布 WFD 固定快照。',

@@ -1,5 +1,6 @@
 import type { AlgorithmCatalogView } from './algorithm-types.js';
 import { ALGORITHM_REGISTRY } from './algorithm-registry.js';
+import { FIXED_CALCULATION_METHODS } from '../../contracts/fixed-calculation-contracts.js';
 
 /**
  * BD AGENTS 只读统一入口契约（Unified Agent Tool Contract）。
@@ -8,10 +9,20 @@ import { ALGORITHM_REGISTRY } from './algorithm-registry.js';
  */
 export const BD_SESSION_TOOL_CONTRACT_VERSION = 'bd.session-tools/1';
 
+/** 旧 Polars 方法 ID 只作为历史身份。迁移到 WFD 后使用统一算法方法 ID。 */
+export const LEGACY_FIXED_METHOD_ALIASES = Object.freeze({
+  observation_ma20: 'source_observation_ma', financial_linear: 'financial_linear', macro_yoy: 'macro_yoy',
+} as const);
+export function isUnmigratedLegacyAlgorithmMethod(value: unknown): boolean {
+  return typeof value === 'string' &&
+    (Object.hasOwn(LEGACY_FIXED_METHOD_ALIASES, value) ||
+      Object.values(LEGACY_FIXED_METHOD_ALIASES).some(id => id === value));
+}
+
 export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, selectedMethod?: string) {
   const methods = catalog.methods.map(method => ({
     methodId: method.id, title: method.title, status: method.status, reason: method.reason,
-    interface: 'algorithms.calculate', methodVersion: method.methodVersion,
+    executor: 'python', interface: 'algorithms.calculate', methodVersion: method.methodVersion,
     implementationVersion: method.implementationVersion,
     parameters: method.parameters, requiredFields: method.requiredFields,
     outputFields: method.outputFields, limitations: method.limitations,
@@ -21,28 +32,41 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
       historical: '明确 historyMode/cutoff 并经 WFD 历史资格核对' },
     output: { state: 'computed', persistence: 'not_requested', publication: 'not_requested' },
   }));
-  // 观测均线归于基础算法目录，WFD 固定快照独立实现尚未完成，继续明确不可执行。
-  const observationMA = {
-    methodId: 'source_observation_ma', title: '观测均线 / Observation Moving Average',
-    status: 'blocked', reason: '尚无 WFD 固定快照输入的独立观测均线实现；不复用原批次自动计算。',
-    interface: 'algorithms.calculate', methodVersion: 'not_adopted', implementationVersion: 'not_adopted',
-    parameters: { type: 'object', required: ['period'], properties: { period: { type: 'integer', minimum: 2, maximum: 1000 } } },
-    requiredFields: ['observation_time', 'value'], outputFields: ['moving_average'],
-    limitations: ['不得调用旧自动均线批次路径', '正式实现与数值口径验收前不执行'],
-    input: { kind: 'fixed_snapshot', referenceKind: 'wfd_fixed_snapshot',
-      requiredIdentity: ['instanceId', 'productId', 'snapshotId', 'definitionRevision'],
-      requiredEvidence: ['fields', 'fieldMapping', 'semantics', 'calendar'],
-      historical: '明确 historyMode/cutoff 并经 WFD 历史资格核对' },
-    output: { state: 'computed', persistence: 'not_requested', publication: 'not_requested' },
-  };
+  // 旧 Polars 是计算实现，不是并行业务入口。迁移前统一目录可见，但不在
+  // algorithms.calculate 中绕过 WFD 固定数据身份、独立核验和 WFD 正式读回。
+  const legacyIds = LEGACY_FIXED_METHOD_ALIASES;
+  const executableIds = new Set<string>(methods.map(method => method.methodId));
+  const oldMethods = (Object.keys(FIXED_CALCULATION_METHODS) as Array<keyof typeof FIXED_CALCULATION_METHODS>)
+    .filter(id => !executableIds.has(legacyIds[id]))
+    .map(id => {
+      const definition = FIXED_CALCULATION_METHODS[id];
+      return {
+        methodId: legacyIds[id], legacyMethodId: id, title: definition.title, status: 'blocked' as const,
+        reason: '原 Polars 计算尚未迁入统一 WFD 冻结输入、独立核验和派生正式发布；旧任务只读。',
+        executor: 'polars', interface: 'algorithms.calculate',
+        methodVersion: 'not_adopted', implementationVersion: 'not_adopted',
+        parameters: { legacyInput: definition.input, migrationRequired: true },
+        requiredFields: id === 'financial_linear'
+          ? ['accounting_standard', 'currency', 'scope', 'concept', 'period_type', 'value']
+          : id === 'macro_yoy' ? ['series_code', 'region', 'base_period', 'published_at', 'value']
+          : ['observation_time', 'value'],
+        outputFields: id === 'financial_linear' ? ['value'] : id === 'macro_yoy' ? ['yoy'] : ['moving_average'],
+        limitations: [definition.scope, '不得重开旧原报批次自动算法', '必须完成独立数值验收和统一 WFD 发布适配才能启用'],
+        input: { kind: 'fixed_snapshot', referenceKind: 'wfd_fixed_snapshot',
+          requiredIdentity: ['instanceId', 'productId', 'snapshotId', 'definitionRevision'],
+          requiredEvidence: ['fields', 'fieldMapping', 'semantics', 'calendar'],
+          historical: '明确 historyMode/cutoff 并经 WFD 历史资格核对' },
+        output: { state: 'computed', persistence: 'not_requested', publication: 'not_requested' },
+      };
+    });
   // 已登记但未启用的算法保留各自稳定 methodId，仅提供不可执行接口说明，
   // 不使用算法资料包存在性冒充可计算、可发布资格。
   const implemented = new Set<string>(methods.map(method => method.methodId));
-  implemented.add(observationMA.methodId);
+  oldMethods.forEach(method => implemented.add(method.methodId));
   const reserved = ALGORITHM_REGISTRY.filter(tool => !implemented.has(tool.id)).map(tool => ({
     methodId: tool.id, title: tool.title, status: 'blocked' as const,
     reason: tool.reason ?? '算法只有登记信息，尚无 WFD 固定快照的可执行实现。',
-    interface: 'algorithms.calculate', methodVersion: 'not_adopted', implementationVersion: 'not_adopted',
+    executor: 'not_adopted', interface: 'algorithms.calculate', methodVersion: 'not_adopted', implementationVersion: 'not_adopted',
     parameters: tool.parameters, requiredFields: tool.requiredInputs, outputFields: tool.outputFields,
     limitations: tool.limitations, missing: tool.missing,
     input: { kind: 'fixed_snapshot', referenceKind: 'wfd_fixed_snapshot',
@@ -51,7 +75,7 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
       historical: '明确 historyMode/cutoff 并经 WFD 历史资格核对' },
     output: { state: 'computed', persistence: 'not_requested', publication: 'not_requested' },
   }));
-  const all = [...methods, observationMA, ...reserved];
+  const all = [...methods, ...oldMethods, ...reserved];
   const selected = selectedMethod ? all.filter(method => method.methodId === selectedMethod) : all;
   return { version: BD_SESSION_TOOL_CONTRACT_VERSION, owner: 'bd_agents',
     catalogue: '基础算法 / Basic Algorithms', discoveryAction: 'algorithms.contract',
@@ -78,7 +102,7 @@ export function bdSessionToolContract(catalog: AlgorithmCatalogView) {
           'data.processing.route', 'data.processing.plan', 'data.processing.run'],
         next: '受控保管、识别、五步加工；原报通过 R1 单独交接' },
       { id: 'wfd', title: 'WFD 正式数据 / WFD Published Data',
-        tools: ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.submit', 'data.r1.get', 'data.r1.recover'],
+        tools: ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.recover'],
         next: '正式发布、固定读回和历史资格仍归 WFD；本契约不授予数据库写权' },
       { id: 'basic_algorithms', title: '基础算法 / Basic Algorithms',
         tools: ['algorithms.contract', 'algorithms.capabilities', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status'],

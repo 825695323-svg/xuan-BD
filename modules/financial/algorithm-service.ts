@@ -10,6 +10,7 @@ import type { ProcessRuntime } from '../../platform/runtime/programs.js';
 import type { JsonValue, TaskEffectRecord, TaskRecoveryResult } from '../../contracts/task-contracts.js';
 import { canonical, captureAssets, executeFinancialAssets, financialDigest, verifyAssets, type FinancialAssetBundle } from '../../plugins/financial/local-compute/assets.js';
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
+import { isUnmigratedLegacyAlgorithmMethod } from './basic-algorithm-tool-contract.js';
 import {
   ALGORITHM_CALL_ACTION, ALGORITHM_CONTRACT_VERSION, ALGORITHM_METHODS, ALGORITHM_METHOD_IDS, ALGORITHM_RUNTIME,
   ALGORITHM_TABLE_ADAPTER_VERSION, type AlgorithmBar, type AlgorithmCalendar, type AlgorithmCallRequest, type AlgorithmCatalogView,
@@ -919,7 +920,12 @@ function normalizeRequest(value: unknown): AlgorithmCallRequest {
   const request = record(value, '计算请求');
   exact(request, ['methodId', 'parameters', 'source'], '计算请求', ['usage']);
   const methodId = request.methodId;
-  if (!(ALGORITHM_METHOD_IDS as readonly unknown[]).includes(methodId)) throw new TaskError('INVALID_ALGORITHM_METHOD', '未知方法；当前只支持 MA、固定 12/26/9 MACD 和严格看涨吞没。');
+  if (!(ALGORITHM_METHOD_IDS as readonly unknown[]).includes(methodId)) {
+    if (isUnmigratedLegacyAlgorithmMethod(methodId))
+      throw new TaskError('ALGORITHM_METHOD_NOT_MIGRATED',
+        '旧 Polars 方法尚未完成 WFD 固定快照输入、独立核验和统一正式发布适配；不可从旧路线绕过。');
+    throw new TaskError('INVALID_ALGORITHM_METHOD', '算法方法未登记。请从 algorithms.contract 读取唯一方法目录。');
+  }
   assertEnabledParameters(methodId as AlgorithmMethodId, request.parameters);
   const source = normalizeSource(request.source, methodId as AlgorithmMethodId);
   const usage = request.usage === undefined ? undefined : normalizeUsage(request.usage);
