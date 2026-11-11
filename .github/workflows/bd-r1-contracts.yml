@@ -37,7 +37,7 @@ jobs:
         run: |
           mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
           node --import tsx --test \
-            --test-name-pattern='F05 R1 UI invalidates|未建索引时如实报 index_missing|legacy automatic MA batch request' \
+            --test-name-pattern='F05 R1 UI invalidates|F05 actual personal|未建索引时如实报 index_missing|legacy automatic MA batch request' \
             modules/collection/r1-conversation-bridge.test.ts \
             apps/server/retrieval-routes.test.ts \
             modules/collection/source-observation-ma.test.ts
