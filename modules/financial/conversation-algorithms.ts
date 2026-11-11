@@ -123,13 +123,15 @@ export class ConversationAlgorithmBridge {
           data: view(this.statusPayload(taskId)) };
       }
       if (structured) {
-        // Polars 新任务已直接输出结构化候选；统一派生发布适配器未完成时不能假称入库。
-        const result = backend!.view(taskId);
+        const publisher = this.options.companion.derivedPublisher;
+        if (!publisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE',
+          '统一 Polars 计算已完成，但独立 WFD 发布端口未装配。保留原任务身份。');
+        const publication = await publisher.publish(taskId, context.signal);
         authority.assert();
-        return { summary: result.result
-          ? '统一 Polars 算法计算成功、独立数值核验完成；WFD 正式发布尚未进行。'
-          : '统一 Polars 原任务没有完整已核验结果；没有发布。',
-          data: view({ ...this.statusPayload(taskId), wfdPublication: { state: 'not_requested', published: false } }) };
+        return { summary: publication.published
+          ? '统一 Polars 固定计算、独立来源再核及 WFD 正式发布/固定读回已完成。'
+          : '统一 Polars 计算已完成，R1 原提交尚未取得全部正式读回；保留原任务继续核对。',
+          data: view({ ...this.statusPayload(taskId), wfdPublication: publication }) };
       }
       const publisher = this.options.companion.derivedPublisher;
       if (!publisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE',
@@ -144,13 +146,11 @@ export class ConversationAlgorithmBridge {
     const taskId = String(args.taskId ?? '');
     this.assertLink(taskId, origin);
     if (action === 'algorithms.publish') {
-      if (this.options.companion.tasks.get(taskId).runtimeId === UNIFIED_POLARS_RUNTIME)
-        throw new TaskError('UNIFIED_POLARS_PUBLICATION_NOT_MIGRATED',
-          '统一 Polars 计算已完成，但财务/宏观的正式派生发布适配器尚未通过 WFD 读回验收。');
       const publisher = this.options.companion.derivedPublisher;
       if (!publisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', 'WFD 固定算法独立入库未装配。');
-      const result = service.view(taskId);
-      if (result.status !== 'succeeded' || result.requiresReview)
+      const result = this.options.companion.tasks.get(taskId).runtimeId === UNIFIED_POLARS_RUNTIME
+        ? this.options.companion.unifiedPolars?.view(taskId) : service.view(taskId);
+      if (!result || result.status !== 'succeeded' || result.requiresReview)
         throw new TaskError('DERIVED_RESULT_NOT_READY', '原计算任务未完成，不重新计算或更换任务身份。');
       const publication = await publisher.publish(taskId, context.signal);
       authority.assert();
