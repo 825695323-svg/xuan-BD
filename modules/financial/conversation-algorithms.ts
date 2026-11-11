@@ -11,6 +11,7 @@ import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import type { FileReferenceService } from '../../platform/resources/files.js';
 import type { AlgorithmCatalogView } from './algorithm-types.js';
 import { basicAlgorithmToolContract, bdSessionToolContract } from './basic-algorithm-tool-contract.js';
+import { isUnifiedPolarsMethod, UNIFIED_POLARS_RUNTIME } from './unified-polars-execution.js';
 
 const ACTIONS = new Set(['bd.session.capabilities', 'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status']);
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
@@ -105,7 +106,13 @@ export class ConversationAlgorithmBridge {
       catch { throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求不是有效JSON。'); }
       if (!isWfdRecord(calculation)) throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求必须是对象。');
       this.assertCalculationMaterials(calculation, origin);
-      const submitted = service.submit('conversation:algorithms:' + context.task.id, calculation);
+      const structured = isUnifiedPolarsMethod(calculation.methodId);
+      const backend = this.options.companion.unifiedPolars;
+      if (structured && !backend) throw new TaskError('UNIFIED_POLARS_UNAVAILABLE',
+        '财务/宏观固定算法执行器尚未装配；不会重新走旧材料候选五步。');
+      const submitted = structured
+        ? backend!.submit('conversation:algorithms:' + context.task.id, calculation)
+        : service.submit('conversation:algorithms:' + context.task.id, calculation);
       const taskId = submitted.taskId;
       this.link(taskId, context.task.id, 'calculate', origin);
       await this.wait(context, taskId);
@@ -114,6 +121,15 @@ export class ConversationAlgorithmBridge {
       if (current.status !== 'succeeded' || current.requiresReview) {
         return { summary: `原固定算法任务状态为 ${current.status}；尚未发布 WFD，必须按原号核对。`,
           data: view(this.statusPayload(taskId)) };
+      }
+      if (structured) {
+        // Polars 新任务已直接输出结构化候选；统一派生发布适配器未完成时不能假称入库。
+        const result = backend!.view(taskId);
+        authority.assert();
+        return { summary: result.result
+          ? '统一 Polars 算法计算成功、独立数值核验完成；WFD 正式发布尚未进行。'
+          : '统一 Polars 原任务没有完整已核验结果；没有发布。',
+          data: view({ ...this.statusPayload(taskId), wfdPublication: { state: 'not_requested', published: false } }) };
       }
       const publisher = this.options.companion.derivedPublisher;
       if (!publisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE',
@@ -128,6 +144,9 @@ export class ConversationAlgorithmBridge {
     const taskId = String(args.taskId ?? '');
     this.assertLink(taskId, origin);
     if (action === 'algorithms.publish') {
+      if (this.options.companion.tasks.get(taskId).runtimeId === UNIFIED_POLARS_RUNTIME)
+        throw new TaskError('UNIFIED_POLARS_PUBLICATION_NOT_MIGRATED',
+          '统一 Polars 计算已完成，但财务/宏观的正式派生发布适配器尚未通过 WFD 读回验收。');
       const publisher = this.options.companion.derivedPublisher;
       if (!publisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', 'WFD 固定算法独立入库未装配。');
       const result = service.view(taskId);
@@ -159,6 +178,22 @@ export class ConversationAlgorithmBridge {
   }
 
   private statusPayload(taskId: string) {
+    const task = this.options.companion.tasks.get(taskId);
+    if (task.runtimeId === UNIFIED_POLARS_RUNTIME) {
+      const structured = this.options.companion.unifiedPolars;
+      if (!structured) throw new TaskError('UNIFIED_POLARS_UNAVAILABLE', '原计算执行器已下线；不能伪造结果。');
+      const value = structured.view(taskId), result = value.result;
+      return { taskId: value.taskId, requestId: value.requestId, methodId: value.methodId,
+        status: value.status, taskVersion: value.taskVersion, requiresReview: value.requiresReview,
+        createdAt: value.createdAt, updatedAt: value.updatedAt, error: value.error,
+        publication: value.publication, guidance: value.guidance,
+        result: result ? { taskId: result.taskId, methodId: result.methodId,
+          methodVersion: result.methodVersion, implementationVersion: result.implementationVersion,
+          version: result.version, source: result.source, candidateSha256: result.candidateSha256,
+          inputDigest: result.inputDigest, computedAt: result.computedAt, publication: result.publication,
+          rowCount: result.rows.length, rows: result.rows.slice(0, 8),
+          rowsOmitted: Math.max(0, result.rows.length - 8) } : null };
+    }
     const value = this.options.companion.algorithms!.view(taskId);
     const result = value.result;
     return { taskId: value.taskId, requestId: value.requestId, methodId: value.methodId, status: value.status,
