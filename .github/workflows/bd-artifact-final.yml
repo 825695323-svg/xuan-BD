@@ -1,11 +1,8 @@
 name: BD artifact project full regression (diagnostic)
 
 on:
-  push:
-    branches:
-      - codex/artifact-final-regression
-  # 全仓诊断仅在明确运行时执行，避免没有随包资源的 GitHub 托管机
-  # 把既有的资源依赖测试失败误当成每个普通 PR 的新回归。
+  # 仅手动触发全仓诊断；缺少随包资源的普通托管机无法证明完整回归通过。
+  # 失败仍按实记录，不影响已有专项验收工作流。
   workflow_dispatch:
 
 permissions:
