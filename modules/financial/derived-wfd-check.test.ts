@@ -52,9 +52,10 @@ test('固定算法只做一次独立核对即可生成完整的结构化 WFD 提
 test('业务日期与真实固定快照不一致时拒绝入库', () => {
   const invalid = sample();
   invalid.rows[0]!.timestamp = '2026-11-02';
-  assert.throws(() => checkDerivedForWfd(invalid, binding, 'derived-1', frozenInput()), {
-    code: 'DERIVED_TIME_MISMATCH',
-  });
+  assert.throws(() => checkDerivedForWfd(invalid, binding, 'derived-1', frozenInput()), (error: unknown) =>
+    (error as { code?: string }).code === 'DERIVED_NUMERIC_MISMATCH'
+      && /时间/.test(String((error as { message?: string }).message)),
+    '独立核验应在原 WFD 时间映射前阻断被篡改的日期');
 });
 
 test('合成算法结果不能作为生产数据入 WFD', () => {
