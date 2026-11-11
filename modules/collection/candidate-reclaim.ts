@@ -74,9 +74,9 @@ export function createCandidateReclaimActions(options: { database: CoreDatabase 
     }
     // A task can hold a frozen reference without an active processing plan.
     if (db.prepare([
-      'SELECT 1 FROM tasks t WHERE EXISTS(SELECT 1 FROM json_tree(t.args) WHERE atom=? AND type=\'text\')',
+      'SELECT 1 FROM tasks t WHERE t.action NOT IN (\'artifact.candidates.inspect\',\'artifact.candidates.prune\') AND (EXISTS(SELECT 1 FROM json_tree(t.args) WHERE atom=? AND type=\'text\')',
       ' OR EXISTS(SELECT 1 FROM json_tree(t.result) WHERE atom=? AND type=\'text\')',
-      ' OR EXISTS(SELECT 1 FROM json_tree(t.checkpoint) WHERE atom=? AND type=\'text\') LIMIT 1',
+      ' OR EXISTS(SELECT 1 FROM json_tree(t.checkpoint) WHERE atom=? AND type=\'text\')) LIMIT 1',
     ].join('')).get(digest, digest, digest)) return true;
     return false;
   };
