@@ -4,6 +4,7 @@ import type { AlgorithmCatalogView } from './algorithm-types.js';
 import { basicAlgorithmToolContract, bdSessionToolContract,
   isUnmigratedLegacyAlgorithmMethod, LEGACY_FIXED_METHOD_ALIASES } from './basic-algorithm-tool-contract.js';
 import { FixedCalculationService } from '../collection/fixed-calculation-service.js';
+import { LocalAlgorithmService } from './algorithm-service.js';
 
 const catalog = { methods: [
   { id: 'ma', title: 'MA', status: 'ready', reason: null, methodVersion: 'ma/full-window-v1',
@@ -70,4 +71,17 @@ test('legacy Polars service allows historical read but never accepts a new calcu
   assert.equal(service.list().length, 1);
   assert.equal(service.get('old-task').methodId, 'financial_linear');
   assert.equal(service.get('old-task').task.id, 'old-task');
+});
+
+test('new AGENTS request rejects an unmigrated Polars method before allocating any task or reading WFD', () => {
+  // submit() validates the unified method contract before accessing storage or processing ports.
+  const service = Object.create(LocalAlgorithmService.prototype) as LocalAlgorithmService;
+  for (const methodId of ['financial_linear', 'macro_yoy', 'source_observation_ma', 'observation_ma20']) {
+    assert.throws(() => service.submit('test-unified-entry', {
+      methodId, parameters: {}, source: { kind: 'fixed_snapshot' },
+    }), (error: unknown) => (error as { code?: string }).code === 'ALGORITHM_METHOD_NOT_MIGRATED', methodId);
+  }
+  assert.throws(() => service.submit('test-unified-entry', {
+    methodId: 'unknown_method', parameters: {}, source: { kind: 'fixed_snapshot' },
+  }), (error: unknown) => (error as { code?: string }).code === 'INVALID_ALGORITHM_METHOD');
 });
