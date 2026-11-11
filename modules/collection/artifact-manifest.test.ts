@@ -22,13 +22,15 @@ function fixture() {
   const runtimes = new TaskRuntimeRegistry();
   tasks = new TaskService({ database, runtimes, permissions });
   createArtifactArchiveActions({ database, files, tasks: () => tasks });
-  createArtifactLifecycleActions({ database, files, tasks: () => tasks, artifactRoot: artifacts });
+  const lifecycle = createArtifactLifecycleActions({ database, files, tasks: () => tasks, artifactRoot: artifacts });
   const manifest = createArtifactManifestActions({ database, files, tasks: () => tasks });
   let ids: string[] = [];
   runtimes.register({ id: 'producer', execute: async () => ({ summary: 'public page captured', artifactIds: [...ids, ids[0]!],
     data: { sourceReceipts: [{ fileRefId: ids[0], contentType: 'text/html' }],
       rawRef: ids[0], textRef: ids[1], locatorRef: ids[2], privateEvidenceRefs: ['private-do-not-share'] } }) });
-  runtimes.register({ id: 'direct', execute: context => manifest.execute(context, context.task.args as never) });
+  runtimes.register({ id: 'direct', execute: context => context.task.action === 'artifact.manifest'
+    ? manifest.execute(context, context.task.args as never)
+    : lifecycle.execute(context, context.task.action, context.task.args as never) });
   const task = tasks.create({ title: 'capture source', runtimeId: 'producer', action: 'source.fetch',
     args: {}, ownerRole: 'service', requestId: 'captured-page' });
   for (const [i, name] of ['raw.html', 'body.txt', 'source.json'].entries()) {
@@ -67,6 +69,13 @@ test('source manifest deduplicates signed artifacts and reports roles without ex
     assert.equal(result.items[2].suggestedDisposition, 'retain-lightweight-source-locator');
     assert.equal(result.items[0].nextAction, 'artifact.archive');
     assert.doesNotMatch(JSON.stringify(result), /private-do-not-share/u);
+    const inspectJob = f.tasks.create({ title: 'inspect after manifest', runtimeId: 'direct', action: 'artifact.inspect',
+      args: { sourceTaskId: f.task.id, fileRefId: f.ids[0]! }, ownerRole: 'service', requestId: randomUUID() });
+    f.tasks.start(inspectJob.id, inspectJob.version);
+    const inspection = await f.tasks.wait(inspectJob.id);
+    assert.equal(inspection.status, 'succeeded', JSON.stringify(inspection.error));
+    assert.ok(!(inspection.result?.data as any).blockers.includes('downstream-task-reference'),
+      '只读清单任务不能因展示文件编号而创建虚假的内容消费关系');
     const ref = f.files.getRef(f.ids[0]!);
     const sha = createHash('sha256').update(Buffer.from('data-0')).digest('hex');
     f.database.connection.prepare('INSERT INTO artifact_archive_receipts VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
