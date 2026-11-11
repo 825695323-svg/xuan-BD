@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "12b5b8b0-d3f9-4222-bf19-2bb68e38d620",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/02-ingestion/candidate.json",
+  "output": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/02-ingestion/02-ingestion.html",
+  "specification": {
+    "sha256": "377e9a871abe4b062363fd4fcc36d3c527b64c637ddd57743bf60bb2fbd53f68",
+    "bytes": 5838
+  },
+  "artifact": {
+    "sha256": "56ae5e492d8188b070818793d014de342ed4f4c61ef34893a075e9c92755fb62",
+    "bytes": 844826
+  }
+}

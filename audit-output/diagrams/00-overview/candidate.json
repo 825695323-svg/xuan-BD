@@ -1,0 +1,370 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Xuan BD 全项目架构 · 当前源码，不是理想方案",
+    "locale": "zh-CN",
+    "output": "00-overview.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/825695323-svg/xuan-BD",
+      "revision": "cc7a4de2f3d8587d16c3d9527b2945ad5712ce4d",
+      "provider": "github"
+    }
+  },
+  "components": [
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "浏览器与命令入口",
+      "sublabel": "Web 前端 / 本机命令",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "scripts/web.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "host",
+      "type": "backend",
+      "label": "宿主与服务装配",
+      "sublabel": "个人会话 / BD 工作区",
+      "pos": [
+        400,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "apps/server/services.ts",
+          "line": 217,
+          "end_line": 226
+        }
+      ]
+    },
+    {
+      "id": "llm",
+      "type": "backend",
+      "label": "会话与模型适配",
+      "sublabel": "PersonalCore / Pi 适配",
+      "pos": [
+        760,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/agent/runtime/core.ts",
+          "line": 59,
+          "end_line": 68
+        }
+      ]
+    },
+    {
+      "id": "tools",
+      "type": "backend",
+      "label": "模型工具桥",
+      "sublabel": "MODEL_ACTIONS 允许表",
+      "pos": [
+        760,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/agent/model-tools.ts",
+          "line": 56,
+          "end_line": 65
+        }
+      ],
+      "tag": "七个新动作未放行"
+    },
+    {
+      "id": "tasks",
+      "type": "security",
+      "label": "任务与授权执行",
+      "sublabel": "TaskService / PermissionService",
+      "pos": [
+        400,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/jobs/tasks.ts",
+          "line": 216,
+          "end_line": 225
+        }
+      ]
+    },
+    {
+      "id": "capture",
+      "type": "backend",
+      "label": "来源接入与格式转换",
+      "sublabel": "接口 / 采集 / 文件 / 媒体",
+      "pos": [
+        40,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "apps/server/capabilities.ts",
+          "line": 20,
+          "end_line": 29
+        }
+      ]
+    },
+    {
+      "id": "production",
+      "type": "backend",
+      "label": "材料语义与五步加工",
+      "sublabel": "MaterialService / ProcessingPlan",
+      "pos": [
+        40,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/processing-plan.ts",
+          "line": 171,
+          "end_line": 180
+        }
+      ]
+    },
+    {
+      "id": "r1",
+      "type": "backend",
+      "label": "结构化交接与固定核对",
+      "sublabel": "R1Workspace / R1Handoff",
+      "pos": [
+        400,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/r1-workspace.ts",
+          "line": 24,
+          "end_line": 33
+        }
+      ]
+    },
+    {
+      "id": "wfd",
+      "type": "database",
+      "label": "WFD 正式数据仓库",
+      "sublabel": "Python 产品接口 / 固定快照",
+      "pos": [
+        760,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "adapters/database/wfd-product-machine.ts",
+          "line": 173,
+          "end_line": 182
+        }
+      ]
+    },
+    {
+      "id": "artifacts",
+      "type": "backend",
+      "label": "产物归档与回收工具",
+      "sublabel": "archive / restore / release",
+      "pos": [
+        40,
+        538
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/artifact-lifecycle.ts",
+          "line": 82,
+          "end_line": 91
+        }
+      ],
+      "tag": "注册存在，入口有断点"
+    },
+    {
+      "id": "cloud",
+      "type": "cloud",
+      "label": "百度网盘技能",
+      "sublabel": "bdpan / 远端元数据回执",
+      "pos": [
+        400,
+        538
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "plugins/storage/baidu-drive.ts",
+          "line": 129,
+          "end_line": 138
+        }
+      ]
+    },
+    {
+      "id": "output",
+      "type": "backend",
+      "label": "读取、检索与固定计算",
+      "sublabel": "结果查询 / 派生再走 R1",
+      "pos": [
+        760,
+        538
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/structured-retrieval.ts",
+          "line": 11,
+          "end_line": 20
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "ui-to-host",
+      "from": "ui",
+      "to": "host",
+      "label": "本机请求"
+    },
+    {
+      "id": "host-to-llm",
+      "from": "host",
+      "to": "llm",
+      "label": "装配"
+    },
+    {
+      "id": "llm-to-tools",
+      "from": "llm",
+      "to": "tools",
+      "label": "模型调用"
+    },
+    {
+      "id": "tools-to-tasks",
+      "from": "tools",
+      "to": "tasks",
+      "label": "允许后执行",
+      "variant": "security"
+    },
+    {
+      "id": "tasks-to-capture",
+      "from": "tasks",
+      "to": "capture",
+      "label": "工具路由"
+    },
+    {
+      "id": "capture-to-production",
+      "from": "capture",
+      "to": "production",
+      "label": "保管与转换"
+    },
+    {
+      "id": "production-to-r1",
+      "from": "production",
+      "to": "r1",
+      "label": "核验后交接"
+    },
+    {
+      "id": "r1-to-wfd",
+      "from": "r1",
+      "to": "wfd",
+      "label": "正式请求"
+    },
+    {
+      "id": "wfd-to-output",
+      "from": "wfd",
+      "to": "output",
+      "label": "固定读取"
+    },
+    {
+      "id": "production-to-artifacts",
+      "from": "production",
+      "to": "artifacts",
+      "label": "已签发文件"
+    },
+    {
+      "id": "artifacts-to-cloud",
+      "from": "artifacts",
+      "to": "cloud",
+      "label": "授权后存证"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "当前审核结论",
+      "items": [
+        "图中连线表示源码调用或数据交接，不等于真实账号已验收。",
+        "新增七个 artifact 动作在运行时注册，但不在模型允许表。",
+        "主分支未修改；错误和重复项另见审核报告。"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "四条业务主线",
+      "items": [
+        "会话循环：输入、模型、工具、授权、结果与记忆。",
+        "数据生产：来源、保管、转换、五步加工、R1 与 WFD。",
+        "数据输出：固定读取、证据检索、前端结果及计算回写。",
+        "产物生命周期：清单、归档、恢复、引用核对与孤立回收。"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "范围边界",
+      "items": [
+        "这里只画 xuan-BD 仓库，不把 Xuan 自主主体或 Harness 全系统规划冒充本仓实现。",
+        "SQLite 保存本地状态和索引；WFD 正式数据、定义及快照另有权威。",
+        "实际代码仍有 Pi 模型适配层；图按源码保留此名称。"
+      ]
+    }
+  ]
+}

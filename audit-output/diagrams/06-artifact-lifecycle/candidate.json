@@ -1,0 +1,271 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "线路六 · 产物归档、恢复与回收：含已发现阻断",
+    "locale": "zh-CN",
+    "output": "06-artifact-lifecycle.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/825695323-svg/xuan-BD",
+      "revision": "cc7a4de2f3d8587d16c3d9527b2945ad5712ce4d",
+      "provider": "github"
+    }
+  },
+  "components": [
+    {
+      "id": "source",
+      "type": "backend",
+      "label": "成功来源任务",
+      "sublabel": "artifactIds 已签发文件",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/artifact-manifest.ts",
+          "line": 13,
+          "end_line": 22
+        }
+      ]
+    },
+    {
+      "id": "manifest",
+      "type": "backend",
+      "label": "来源产物清单",
+      "sublabel": "artifact.manifest",
+      "pos": [
+        400,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/artifact-manifest.ts",
+          "line": 13,
+          "end_line": 22
+        }
+      ]
+    },
+    {
+      "id": "archive",
+      "type": "backend",
+      "label": "冻结目标并归档",
+      "sublabel": "artifact.archive",
+      "pos": [
+        760,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/artifact-archive.ts",
+          "line": 53,
+          "end_line": 62
+        }
+      ]
+    },
+    {
+      "id": "cloud",
+      "type": "cloud",
+      "label": "百度网盘技能",
+      "sublabel": "名称 / 大小 / fs_id 核对",
+      "pos": [
+        760,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "plugins/storage/baidu-drive.ts",
+          "line": 129,
+          "end_line": 138
+        }
+      ]
+    },
+    {
+      "id": "receipt",
+      "type": "database",
+      "label": "归档与释放账本",
+      "sublabel": "SQLite 冻结身份",
+      "pos": [
+        400,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/artifact-archive.ts",
+          "line": 22,
+          "end_line": 31
+        }
+      ]
+    },
+    {
+      "id": "restore",
+      "type": "backend",
+      "label": "明确恢复新文件",
+      "sublabel": "artifact.restore / SHA-256",
+      "pos": [
+        40,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/artifact-restore.ts",
+          "line": 23,
+          "end_line": 32
+        }
+      ]
+    },
+    {
+      "id": "inspect",
+      "type": "security",
+      "label": "本地引用与释放检查",
+      "sublabel": "artifact.inspect / release",
+      "pos": [
+        400,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/artifact-lifecycle.ts",
+          "line": 32,
+          "end_line": 41
+        }
+      ],
+      "tag": "SQL 字段不匹配"
+    },
+    {
+      "id": "prune",
+      "type": "database",
+      "label": "孤立候选对象清理",
+      "sublabel": "candidates.inspect / prune",
+      "pos": [
+        760,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/candidate-reclaim.ts",
+          "line": 23,
+          "end_line": 32
+        }
+      ]
+    },
+    {
+      "id": "blocked",
+      "type": "security",
+      "label": "会话派发断点",
+      "sublabel": "七个新动作未入允许表",
+      "pos": [
+        40,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/agent/model-tools.ts",
+          "line": 56,
+          "end_line": 65
+        }
+      ],
+      "tag": "模型不能直接调用"
+    }
+  ],
+  "connections": [
+    {
+      "id": "source-to-manifest",
+      "from": "source",
+      "to": "manifest"
+    },
+    {
+      "id": "manifest-to-archive",
+      "from": "manifest",
+      "to": "archive",
+      "label": "明确选件"
+    },
+    {
+      "id": "archive-to-cloud",
+      "from": "archive",
+      "to": "cloud",
+      "label": "授权后上传"
+    },
+    {
+      "id": "cloud-to-receipt",
+      "from": "cloud",
+      "to": "receipt",
+      "label": "元数据确认"
+    },
+    {
+      "id": "receipt-to-restore",
+      "from": "receipt",
+      "to": "restore",
+      "label": "明确请求"
+    },
+    {
+      "id": "receipt-to-inspect",
+      "from": "receipt",
+      "to": "inspect",
+      "label": "回收检查"
+    },
+    {
+      "id": "source-to-prune",
+      "from": "source",
+      "to": "prune",
+      "label": "数据库对象另查"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "审核发现，不是验收通过",
+      "items": [
+        "MODEL_ACTIONS 缺少全部七个新增动作，提示词中有名字不能代替工具接线。",
+        "release 守卫使用 segment_requests.binding_json 和 processing_plans.document_json；实际列名不同，真实宿主稳定阻断。",
+        "会话文件的 conversation 关系也被视为阻断；目前不能承诺会话产物自动释放。"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "恢复与清理边界",
+      "items": [
+        "归档不下载读回；只有明确恢复才验证完整 SHA-256。",
+        "恢复创建新的 fileRefId；旧引用不会自动迁移。",
+        "候选回收有独立维护授权，不能因为对象已经入 WFD 就删除仍被历史计划引用的证据。"
+      ]
+    }
+  ]
+}

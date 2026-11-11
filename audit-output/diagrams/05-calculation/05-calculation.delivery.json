@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "e3615960-c71f-4a48-97db-e336237ccb5e",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/05-calculation/candidate.json",
+  "output": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/05-calculation/05-calculation.html",
+  "specification": {
+    "sha256": "15c2ecabe25b7add40d149f154195c4e43aeffe0e366b017d622d2f808d913cb",
+    "bytes": 5886
+  },
+  "artifact": {
+    "sha256": "446228d77930e29221439bd102d0dc60de51cc3edcc7c818c3e58d8938141546",
+    "bytes": 846261
+  }
+}

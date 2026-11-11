@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "27783f25-f362-414b-8a3b-bae401f06585",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/04-read-retrieval/candidate.json",
+  "output": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/04-read-retrieval/04-read-retrieval.html",
+  "specification": {
+    "sha256": "6119a1710fcdde49ec0939834f847dc90ff2aa74805ba47213d8c42018bc5240",
+    "bytes": 5628
+  },
+  "artifact": {
+    "sha256": "0fdb86fa6b1b33bdaa94da0ca16829a30d718b35284b1dc52d09e40dc31515e9",
+    "bytes": 844360
+  }
+}

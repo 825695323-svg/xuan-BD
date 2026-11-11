@@ -1,0 +1,843 @@
+{
+  "00-overview": [
+    {
+      "id": "ui",
+      "label": "浏览器与命令入口",
+      "sources": [
+        {
+          "path": "scripts/web.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "host",
+      "label": "宿主与服务装配",
+      "sources": [
+        {
+          "path": "apps/server/services.ts",
+          "line": 217,
+          "end_line": 226
+        }
+      ]
+    },
+    {
+      "id": "llm",
+      "label": "会话与模型适配",
+      "sources": [
+        {
+          "path": "modules/agent/runtime/core.ts",
+          "line": 59,
+          "end_line": 68
+        }
+      ]
+    },
+    {
+      "id": "tools",
+      "label": "模型工具桥",
+      "sources": [
+        {
+          "path": "modules/agent/model-tools.ts",
+          "line": 56,
+          "end_line": 65
+        }
+      ]
+    },
+    {
+      "id": "tasks",
+      "label": "任务与授权执行",
+      "sources": [
+        {
+          "path": "platform/jobs/tasks.ts",
+          "line": 216,
+          "end_line": 225
+        }
+      ]
+    },
+    {
+      "id": "capture",
+      "label": "来源接入与格式转换",
+      "sources": [
+        {
+          "path": "apps/server/capabilities.ts",
+          "line": 20,
+          "end_line": 29
+        }
+      ]
+    },
+    {
+      "id": "production",
+      "label": "材料语义与五步加工",
+      "sources": [
+        {
+          "path": "modules/collection/processing-plan.ts",
+          "line": 171,
+          "end_line": 180
+        }
+      ]
+    },
+    {
+      "id": "r1",
+      "label": "结构化交接与固定核对",
+      "sources": [
+        {
+          "path": "modules/collection/r1-workspace.ts",
+          "line": 24,
+          "end_line": 33
+        }
+      ]
+    },
+    {
+      "id": "wfd",
+      "label": "WFD 正式数据仓库",
+      "sources": [
+        {
+          "path": "adapters/database/wfd-product-machine.ts",
+          "line": 173,
+          "end_line": 182
+        }
+      ]
+    },
+    {
+      "id": "artifacts",
+      "label": "产物归档与回收工具",
+      "sources": [
+        {
+          "path": "modules/collection/artifact-lifecycle.ts",
+          "line": 82,
+          "end_line": 91
+        }
+      ]
+    },
+    {
+      "id": "cloud",
+      "label": "百度网盘技能",
+      "sources": [
+        {
+          "path": "plugins/storage/baidu-drive.ts",
+          "line": 129,
+          "end_line": 138
+        }
+      ]
+    },
+    {
+      "id": "output",
+      "label": "读取、检索与固定计算",
+      "sources": [
+        {
+          "path": "modules/collection/structured-retrieval.ts",
+          "line": 11,
+          "end_line": 20
+        }
+      ]
+    }
+  ],
+  "01-agents": [
+    {
+      "id": "input",
+      "label": "用户输入与附件",
+      "sources": [
+        {
+          "path": "modules/agent/input-router.ts",
+          "line": 14,
+          "end_line": 23
+        }
+      ]
+    },
+    {
+      "id": "core",
+      "label": "会话状态机",
+      "sources": [
+        {
+          "path": "modules/agent/runtime/core.ts",
+          "line": 59,
+          "end_line": 68
+        }
+      ]
+    },
+    {
+      "id": "backend",
+      "label": "模型与上下文",
+      "sources": [
+        {
+          "path": "adapters/llm/pi.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "bridge",
+      "label": "模型工具目录",
+      "sources": [
+        {
+          "path": "modules/agent/model-tools.ts",
+          "line": 56,
+          "end_line": 65
+        }
+      ]
+    },
+    {
+      "id": "allow",
+      "label": "动作允许与资料范围",
+      "sources": [
+        {
+          "path": "modules/agent/model-tools.ts",
+          "line": 56,
+          "end_line": 65
+        }
+      ]
+    },
+    {
+      "id": "task",
+      "label": "冻结任务与权限",
+      "sources": [
+        {
+          "path": "platform/jobs/tasks.ts",
+          "line": 216,
+          "end_line": 225
+        }
+      ]
+    },
+    {
+      "id": "execute",
+      "label": "确定性工具运行",
+      "sources": [
+        {
+          "path": "apps/server/capabilities.ts",
+          "line": 162,
+          "end_line": 171
+        }
+      ]
+    },
+    {
+      "id": "receipt",
+      "label": "结果与失败证据",
+      "sources": [
+        {
+          "path": "modules/agent/model-tools.ts",
+          "line": 255,
+          "end_line": 264
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "label": "长期记忆与上下文账本",
+      "sources": [
+        {
+          "path": "modules/agent/memory.ts",
+          "line": 5,
+          "end_line": 14
+        }
+      ]
+    }
+  ],
+  "02-ingestion": [
+    {
+      "id": "input",
+      "label": "链接、文件与来源选择",
+      "sources": [
+        {
+          "path": "modules/collection/conversation-materials.ts",
+          "line": 65,
+          "end_line": 74
+        }
+      ]
+    },
+    {
+      "id": "route",
+      "label": "来源设置与统一路由",
+      "sources": [
+        {
+          "path": "plugins/api-sources/runtime.ts",
+          "line": 31,
+          "end_line": 40
+        }
+      ]
+    },
+    {
+      "id": "source",
+      "label": "接口与站点采集",
+      "sources": [
+        {
+          "path": "plugins/capture-sources/index.ts",
+          "line": 30,
+          "end_line": 39
+        }
+      ]
+    },
+    {
+      "id": "fileref",
+      "label": "来源定位与文件身份",
+      "sources": [
+        {
+          "path": "platform/resources/files.ts",
+          "line": 39,
+          "end_line": 48
+        }
+      ]
+    },
+    {
+      "id": "material",
+      "label": "原件保管与预览",
+      "sources": [
+        {
+          "path": "modules/collection/materials/service.ts",
+          "line": 32,
+          "end_line": 41
+        }
+      ]
+    },
+    {
+      "id": "convert",
+      "label": "通用文档转换",
+      "sources": [
+        {
+          "path": "platform/capabilities/conversion/index.ts",
+          "line": 88,
+          "end_line": 97
+        }
+      ]
+    },
+    {
+      "id": "media",
+      "label": "媒体转写与字幕",
+      "sources": [
+        {
+          "path": "platform/capabilities/transcription/video.ts",
+          "line": 33,
+          "end_line": 42
+        }
+      ]
+    },
+    {
+      "id": "evidence",
+      "label": "已签发转换产物",
+      "sources": [
+        {
+          "path": "modules/collection/segments/artifacts.ts",
+          "line": 14,
+          "end_line": 23
+        }
+      ]
+    },
+    {
+      "id": "downstream",
+      "label": "加工、检索或归档",
+      "sources": [
+        {
+          "path": "modules/collection/conversation-processing.ts",
+          "line": 25,
+          "end_line": 34
+        }
+      ]
+    }
+  ],
+  "03-production-r1": [
+    {
+      "id": "material",
+      "label": "已保管材料",
+      "sources": [
+        {
+          "path": "modules/collection/materials/service.ts",
+          "line": 133,
+          "end_line": 142
+        }
+      ]
+    },
+    {
+      "id": "semantics",
+      "label": "六维语义与用途裁定",
+      "sources": [
+        {
+          "path": "modules/collection/materials/semantic.ts",
+          "line": 33,
+          "end_line": 42
+        }
+      ]
+    },
+    {
+      "id": "plan",
+      "label": "冻结加工计划",
+      "sources": [
+        {
+          "path": "modules/collection/processing-plan.ts",
+          "line": 171,
+          "end_line": 180
+        }
+      ]
+    },
+    {
+      "id": "stages",
+      "label": "按适用性执行五步",
+      "sources": [
+        {
+          "path": "modules/collection/candidate-pipeline.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "candidate",
+      "label": "候选对象与共享行块",
+      "sources": [
+        {
+          "path": "modules/collection/candidate-service.ts",
+          "line": 10,
+          "end_line": 19
+        }
+      ]
+    },
+    {
+      "id": "r1",
+      "label": "准备与正式交接",
+      "sources": [
+        {
+          "path": "modules/collection/r1-structured-handoff.ts",
+          "line": 173,
+          "end_line": 182
+        }
+      ]
+    },
+    {
+      "id": "client",
+      "label": "受控 Python 进程边界",
+      "sources": [
+        {
+          "path": "adapters/database/wfd-product-machine.ts",
+          "line": 148,
+          "end_line": 157
+        }
+      ]
+    },
+    {
+      "id": "wfd",
+      "label": "WFD 准入、版本与发布",
+      "sources": [
+        {
+          "path": "wfd/product/wfd_sdk/product_machine.py",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "fixed",
+      "label": "固定读回与逐行关联",
+      "sources": [
+        {
+          "path": "modules/collection/r1-paged-readback.ts",
+          "line": 28,
+          "end_line": 37
+        }
+      ]
+    }
+  ],
+  "04-read-retrieval": [
+    {
+      "id": "caller",
+      "label": "会话查询或工作区前端",
+      "sources": [
+        {
+          "path": "apps/server/workspace-routes.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "label": "读取与检索接口",
+      "sources": [
+        {
+          "path": "apps/server/workspace-routes.ts",
+          "line": 21,
+          "end_line": 30
+        }
+      ]
+    },
+    {
+      "id": "retrieval",
+      "label": "结构化条件检索",
+      "sources": [
+        {
+          "path": "modules/collection/structured-retrieval.ts",
+          "line": 11,
+          "end_line": 20
+        }
+      ]
+    },
+    {
+      "id": "reader",
+      "label": "固定快照读取器",
+      "sources": [
+        {
+          "path": "modules/collection/r1-product-reader.ts",
+          "line": 19,
+          "end_line": 28
+        }
+      ]
+    },
+    {
+      "id": "wfd",
+      "label": "WFD 产品与历史资格",
+      "sources": [
+        {
+          "path": "adapters/database/wfd-product-machine.ts",
+          "line": 148,
+          "end_line": 157
+        }
+      ]
+    },
+    {
+      "id": "segments",
+      "label": "正文分段与证据登记",
+      "sources": [
+        {
+          "path": "modules/collection/segments/service.ts",
+          "line": 113,
+          "end_line": 122
+        }
+      ]
+    },
+    {
+      "id": "index",
+      "label": "检索索引与来源位置",
+      "sources": [
+        {
+          "path": "modules/collection/segments/artifacts.ts",
+          "line": 14,
+          "end_line": 23
+        }
+      ]
+    },
+    {
+      "id": "response",
+      "label": "有界结果与来源追溯",
+      "sources": [
+        {
+          "path": "modules/collection/structured-retrieval.ts",
+          "line": 11,
+          "end_line": 20
+        }
+      ]
+    },
+    {
+      "id": "view",
+      "label": "前端结果与后续工具",
+      "sources": [
+        {
+          "path": "apps/server/workspace-routes.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    }
+  ],
+  "05-calculation": [
+    {
+      "id": "request",
+      "label": "会话发起计算请求",
+      "sources": [
+        {
+          "path": "modules/financial/conversation-algorithms.ts",
+          "line": 28,
+          "end_line": 37
+        }
+      ]
+    },
+    {
+      "id": "local",
+      "label": "本地固定算法线路",
+      "sources": [
+        {
+          "path": "modules/financial/algorithm-service.ts",
+          "line": 134,
+          "end_line": 143
+        }
+      ]
+    },
+    {
+      "id": "polars",
+      "label": "独立固定计算线路",
+      "sources": [
+        {
+          "path": "modules/collection/polars-fixed-service.ts",
+          "line": 142,
+          "end_line": 151
+        }
+      ]
+    },
+    {
+      "id": "snapshot",
+      "label": "冻结 WFD 输入",
+      "sources": [
+        {
+          "path": "modules/collection/fixed-calculation-service.ts",
+          "line": 20,
+          "end_line": 29
+        }
+      ]
+    },
+    {
+      "id": "check",
+      "label": "独立结构与数值核对",
+      "sources": [
+        {
+          "path": "modules/financial/derived-wfd-check.ts",
+          "line": 25,
+          "end_line": 34
+        }
+      ]
+    },
+    {
+      "id": "polarsresult",
+      "label": "候选结果与用途证据",
+      "sources": [
+        {
+          "path": "modules/collection/polars-fixed-service.ts",
+          "line": 142,
+          "end_line": 151
+        }
+      ]
+    },
+    {
+      "id": "publish",
+      "label": "派生发布适配",
+      "sources": [
+        {
+          "path": "modules/financial/derived-wfd-publisher.ts",
+          "line": 15,
+          "end_line": 24
+        }
+      ]
+    },
+    {
+      "id": "r1",
+      "label": "既有 R1 正式交接",
+      "sources": [
+        {
+          "path": "modules/collection/r1-structured-handoff.ts",
+          "line": 173,
+          "end_line": 182
+        }
+      ]
+    },
+    {
+      "id": "wfd",
+      "label": "正式派生数据与读回",
+      "sources": [
+        {
+          "path": "adapters/database/wfd-product-machine.ts",
+          "line": 148,
+          "end_line": 157
+        }
+      ]
+    }
+  ],
+  "06-artifact-lifecycle": [
+    {
+      "id": "source",
+      "label": "成功来源任务",
+      "sources": [
+        {
+          "path": "modules/collection/artifact-manifest.ts",
+          "line": 13,
+          "end_line": 22
+        }
+      ]
+    },
+    {
+      "id": "manifest",
+      "label": "来源产物清单",
+      "sources": [
+        {
+          "path": "modules/collection/artifact-manifest.ts",
+          "line": 13,
+          "end_line": 22
+        }
+      ]
+    },
+    {
+      "id": "archive",
+      "label": "冻结目标并归档",
+      "sources": [
+        {
+          "path": "modules/collection/artifact-archive.ts",
+          "line": 53,
+          "end_line": 62
+        }
+      ]
+    },
+    {
+      "id": "cloud",
+      "label": "百度网盘技能",
+      "sources": [
+        {
+          "path": "plugins/storage/baidu-drive.ts",
+          "line": 129,
+          "end_line": 138
+        }
+      ]
+    },
+    {
+      "id": "receipt",
+      "label": "归档与释放账本",
+      "sources": [
+        {
+          "path": "modules/collection/artifact-archive.ts",
+          "line": 22,
+          "end_line": 31
+        }
+      ]
+    },
+    {
+      "id": "restore",
+      "label": "明确恢复新文件",
+      "sources": [
+        {
+          "path": "modules/collection/artifact-restore.ts",
+          "line": 23,
+          "end_line": 32
+        }
+      ]
+    },
+    {
+      "id": "inspect",
+      "label": "本地引用与释放检查",
+      "sources": [
+        {
+          "path": "modules/collection/artifact-lifecycle.ts",
+          "line": 32,
+          "end_line": 41
+        }
+      ]
+    },
+    {
+      "id": "prune",
+      "label": "孤立候选对象清理",
+      "sources": [
+        {
+          "path": "modules/collection/candidate-reclaim.ts",
+          "line": 23,
+          "end_line": 32
+        }
+      ]
+    },
+    {
+      "id": "blocked",
+      "label": "会话派发断点",
+      "sources": [
+        {
+          "path": "modules/agent/model-tools.ts",
+          "line": 56,
+          "end_line": 65
+        }
+      ]
+    }
+  ],
+  "07-governance": [
+    {
+      "id": "entry",
+      "label": "本机启动入口",
+      "sources": [
+        {
+          "path": "scripts/web.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "bindings",
+      "label": "资源与连接绑定",
+      "sources": [
+        {
+          "path": "platform/resources/bindings.ts",
+          "line": 26,
+          "end_line": 35
+        }
+      ]
+    },
+    {
+      "id": "services",
+      "label": "服务装配与能力注册",
+      "sources": [
+        {
+          "path": "apps/server/services.ts",
+          "line": 217,
+          "end_line": 226
+        }
+      ]
+    },
+    {
+      "id": "versions",
+      "label": "依赖版本冻结",
+      "sources": [
+        {
+          "path": "platform/plugins/direct-versions.ts",
+          "line": 147,
+          "end_line": 156
+        }
+      ]
+    },
+    {
+      "id": "permissions",
+      "label": "操作授权与路径保护",
+      "sources": [
+        {
+          "path": "platform/security/permissions.ts",
+          "line": 56,
+          "end_line": 65
+        }
+      ]
+    },
+    {
+      "id": "task",
+      "label": "任务代次、预算与停止",
+      "sources": [
+        {
+          "path": "platform/jobs/tasks.ts",
+          "line": 216,
+          "end_line": 225
+        }
+      ]
+    },
+    {
+      "id": "process",
+      "label": "受控进程与临时空间",
+      "sources": [
+        {
+          "path": "platform/runtime/file-workspace.ts",
+          "line": 12,
+          "end_line": 21
+        }
+      ]
+    },
+    {
+      "id": "state",
+      "label": "本地状态数据库",
+      "sources": [
+        {
+          "path": "platform/state/database.ts",
+          "line": 6,
+          "end_line": 15
+        }
+      ]
+    },
+    {
+      "id": "retention",
+      "label": "已释放暂存的定期回收",
+      "sources": [
+        {
+          "path": "platform/resources/temporary-retention.ts",
+          "line": 9,
+          "end_line": 18
+        }
+      ]
+    }
+  ]
+}

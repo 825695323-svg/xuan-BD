@@ -1,0 +1,271 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "线路四 · WFD 固定读取、证据检索与输出",
+    "locale": "zh-CN",
+    "output": "04-read-retrieval.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/825695323-svg/xuan-BD",
+      "revision": "cc7a4de2f3d8587d16c3d9527b2945ad5712ce4d",
+      "provider": "github"
+    }
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "frontend",
+      "label": "会话查询或工作区前端",
+      "sublabel": "明确查询条件",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "apps/server/workspace-routes.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "读取与检索接口",
+      "sublabel": "HTTP 路由 / R1 读取桥",
+      "pos": [
+        400,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "apps/server/workspace-routes.ts",
+          "line": 21,
+          "end_line": 30
+        }
+      ]
+    },
+    {
+      "id": "retrieval",
+      "type": "backend",
+      "label": "结构化条件检索",
+      "sublabel": "StructuredRetrievalService",
+      "pos": [
+        760,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/structured-retrieval.ts",
+          "line": 11,
+          "end_line": 20
+        }
+      ]
+    },
+    {
+      "id": "reader",
+      "type": "backend",
+      "label": "固定快照读取器",
+      "sublabel": "R1ProductReader",
+      "pos": [
+        760,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/r1-product-reader.ts",
+          "line": 19,
+          "end_line": 28
+        }
+      ]
+    },
+    {
+      "id": "wfd",
+      "type": "database",
+      "label": "WFD 产品与历史资格",
+      "sublabel": "快照内容 / 市场已知 / 系统已持有",
+      "pos": [
+        760,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "adapters/database/wfd-product-machine.ts",
+          "line": 148,
+          "end_line": 157
+        }
+      ]
+    },
+    {
+      "id": "segments",
+      "type": "backend",
+      "label": "正文分段与证据登记",
+      "sublabel": "SegmentService",
+      "pos": [
+        40,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/segments/service.ts",
+          "line": 113,
+          "end_line": 122
+        }
+      ]
+    },
+    {
+      "id": "index",
+      "type": "database",
+      "label": "检索索引与来源位置",
+      "sublabel": "按证据编号追溯原产物",
+      "pos": [
+        400,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/segments/artifacts.ts",
+          "line": 14,
+          "end_line": 23
+        }
+      ]
+    },
+    {
+      "id": "response",
+      "type": "backend",
+      "label": "有界结果与来源追溯",
+      "sublabel": "任务回执 / 页游标 / 证据",
+      "pos": [
+        400,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/structured-retrieval.ts",
+          "line": 11,
+          "end_line": 20
+        }
+      ]
+    },
+    {
+      "id": "view",
+      "type": "frontend",
+      "label": "前端结果与后续工具",
+      "sublabel": "不重复归档正式 WFD 数据",
+      "pos": [
+        40,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "apps/server/workspace-routes.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "caller-to-api",
+      "from": "caller",
+      "to": "api"
+    },
+    {
+      "id": "api-to-retrieval",
+      "from": "api",
+      "to": "retrieval"
+    },
+    {
+      "id": "retrieval-to-reader",
+      "from": "retrieval",
+      "to": "reader"
+    },
+    {
+      "id": "reader-to-wfd",
+      "from": "reader",
+      "to": "wfd",
+      "label": "指定快照"
+    },
+    {
+      "id": "segments-to-index",
+      "from": "segments",
+      "to": "index",
+      "label": "分段登记"
+    },
+    {
+      "id": "index-to-retrieval",
+      "from": "index",
+      "to": "retrieval",
+      "label": "证据候选"
+    },
+    {
+      "id": "retrieval-to-response",
+      "from": "retrieval",
+      "to": "response",
+      "label": "合并核验"
+    },
+    {
+      "id": "response-to-view",
+      "from": "response",
+      "to": "view"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "slate",
+      "title": "与上一张示意图的区别",
+      "items": [
+        "不画成所有读取必须先经过因子算法。查询与计算是两条不同请求线路。",
+        "正文索引和 WFD 记录不是同一存储；通过真实材料和记录关联接合。",
+        "对外完整产品导出不能由预留 API 名称推断为已经实现。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "尚缺现场证据",
+      "items": [
+        "读取能力受 Python 连接、快照与索引可用性约束。",
+        "全仓测试中检索能力断言仍有失败，详见原始测试日志。"
+      ]
+    }
+  ]
+}

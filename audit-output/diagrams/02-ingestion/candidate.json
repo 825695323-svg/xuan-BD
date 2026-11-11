@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "线路二 · 来源接入、材料保管与按格式转换",
+    "locale": "zh-CN",
+    "output": "02-ingestion.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/825695323-svg/xuan-BD",
+      "revision": "cc7a4de2f3d8587d16c3d9527b2945ad5712ce4d",
+      "provider": "github"
+    }
+  },
+  "components": [
+    {
+      "id": "input",
+      "type": "frontend",
+      "label": "链接、文件与来源选择",
+      "sublabel": "BD 会话或受控工作区入口",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/conversation-materials.ts",
+          "line": 65,
+          "end_line": 74
+        }
+      ]
+    },
+    {
+      "id": "route",
+      "type": "backend",
+      "label": "来源设置与统一路由",
+      "sublabel": "供应商 / 端点 / 来源会话",
+      "pos": [
+        400,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "plugins/api-sources/runtime.ts",
+          "line": 31,
+          "end_line": 40
+        }
+      ]
+    },
+    {
+      "id": "source",
+      "type": "backend",
+      "label": "接口与站点采集",
+      "sublabel": "API 插件 / 独立浏览器会话",
+      "pos": [
+        760,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "plugins/capture-sources/index.ts",
+          "line": 30,
+          "end_line": 39
+        }
+      ]
+    },
+    {
+      "id": "fileref",
+      "type": "database",
+      "label": "来源定位与文件身份",
+      "sublabel": "FileReferenceService",
+      "pos": [
+        760,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/resources/files.ts",
+          "line": 39,
+          "end_line": 48
+        }
+      ]
+    },
+    {
+      "id": "material",
+      "type": "database",
+      "label": "原件保管与预览",
+      "sublabel": "MaterialService / 原字节",
+      "pos": [
+        400,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/materials/service.ts",
+          "line": 32,
+          "end_line": 41
+        }
+      ]
+    },
+    {
+      "id": "convert",
+      "type": "backend",
+      "label": "通用文档转换",
+      "sublabel": "PDF / Office / 结构化文件",
+      "pos": [
+        40,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/capabilities/conversion/index.ts",
+          "line": 88,
+          "end_line": 97
+        }
+      ]
+    },
+    {
+      "id": "media",
+      "type": "backend",
+      "label": "媒体转写与字幕",
+      "sublabel": "视频音轨为临时输入",
+      "pos": [
+        40,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/capabilities/transcription/video.ts",
+          "line": 33,
+          "end_line": 42
+        }
+      ]
+    },
+    {
+      "id": "evidence",
+      "type": "database",
+      "label": "已签发转换产物",
+      "sublabel": "正文 / 坐标 / 时间戳 / 来源",
+      "pos": [
+        400,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/segments/artifacts.ts",
+          "line": 14,
+          "end_line": 23
+        }
+      ]
+    },
+    {
+      "id": "downstream",
+      "type": "backend",
+      "label": "加工、检索或归档",
+      "sublabel": "消费者按已有引用读取",
+      "pos": [
+        760,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/conversation-processing.ts",
+          "line": 25,
+          "end_line": 34
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "input-to-route",
+      "from": "input",
+      "to": "route"
+    },
+    {
+      "id": "route-to-source",
+      "from": "route",
+      "to": "source"
+    },
+    {
+      "id": "source-to-fileref",
+      "from": "source",
+      "to": "fileref"
+    },
+    {
+      "id": "fileref-to-material",
+      "from": "fileref",
+      "to": "material"
+    },
+    {
+      "id": "material-to-convert",
+      "from": "material",
+      "to": "convert"
+    },
+    {
+      "id": "material-to-media",
+      "from": "material",
+      "to": "media",
+      "label": "音视频"
+    },
+    {
+      "id": "convert-to-evidence",
+      "from": "convert",
+      "to": "evidence",
+      "label": "文档证据"
+    },
+    {
+      "id": "media-to-evidence",
+      "from": "media",
+      "to": "evidence",
+      "label": "转写证据"
+    },
+    {
+      "id": "evidence-to-downstream",
+      "from": "evidence",
+      "to": "downstream"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "条件能力，不是全部已上线",
+      "items": [
+        "material.ocr 是未接入的材料适配入口；image.ocr 是另外的模型图像识别工具。",
+        "视频需要 yt-dlp、音频工具和转写模型；未装配时明确不可用。",
+        "站点脚本按来源配置动态加载，静态无 import 不代表无用代码。"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "存储行为",
+      "items": [
+        "上传的文件本身是原件，不能仅保留文件名。",
+        "链接视频优先字幕；无字幕时下载音轨，但不发布长期音轨文件。",
+        "正式数据与原始证据身份分开，不能把来源链接当永久原件。"
+      ]
+    }
+  ]
+}

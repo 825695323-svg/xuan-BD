@@ -1,0 +1,277 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "线路三 · 语义、五步加工、R1 与正式发布",
+    "locale": "zh-CN",
+    "output": "03-production-r1.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/825695323-svg/xuan-BD",
+      "revision": "cc7a4de2f3d8587d16c3d9527b2945ad5712ce4d",
+      "provider": "github"
+    }
+  },
+  "components": [
+    {
+      "id": "material",
+      "type": "database",
+      "label": "已保管材料",
+      "sublabel": "原值 / 来源 / 版本身份",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/materials/service.ts",
+          "line": 133,
+          "end_line": 142
+        }
+      ]
+    },
+    {
+      "id": "semantics",
+      "type": "backend",
+      "label": "六维语义与用途裁定",
+      "sublabel": "证据约束 / 未知项保留",
+      "pos": [
+        400,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/materials/semantic.ts",
+          "line": 33,
+          "end_line": 42
+        }
+      ]
+    },
+    {
+      "id": "plan",
+      "type": "backend",
+      "label": "冻结加工计划",
+      "sublabel": "逐输出路由与适用性",
+      "pos": [
+        760,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/processing-plan.ts",
+          "line": 171,
+          "end_line": 180
+        }
+      ]
+    },
+    {
+      "id": "stages",
+      "type": "backend",
+      "label": "按适用性执行五步",
+      "sublabel": "解析 / 清洗 / 标注 / 标准化 / 组织",
+      "pos": [
+        760,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/candidate-pipeline.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "candidate",
+      "type": "database",
+      "label": "候选对象与共享行块",
+      "sublabel": "CandidateService",
+      "pos": [
+        400,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/candidate-service.ts",
+          "line": 10,
+          "end_line": 19
+        }
+      ]
+    },
+    {
+      "id": "r1",
+      "type": "backend",
+      "label": "准备与正式交接",
+      "sublabel": "R1Workspace / R1Handoff",
+      "pos": [
+        40,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/r1-structured-handoff.ts",
+          "line": 173,
+          "end_line": 182
+        }
+      ]
+    },
+    {
+      "id": "client",
+      "type": "backend",
+      "label": "受控 Python 进程边界",
+      "sublabel": "WfdProductMachineClient",
+      "pos": [
+        40,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "adapters/database/wfd-product-machine.ts",
+          "line": 148,
+          "end_line": 157
+        }
+      ]
+    },
+    {
+      "id": "wfd",
+      "type": "database",
+      "label": "WFD 准入、版本与发布",
+      "sublabel": "product_machine / product_service",
+      "pos": [
+        400,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "wfd/product/wfd_sdk/product_machine.py",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "fixed",
+      "type": "backend",
+      "label": "固定读回与逐行关联",
+      "sublabel": "Snapshot / record version",
+      "pos": [
+        760,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/r1-paged-readback.ts",
+          "line": 28,
+          "end_line": 37
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "material-to-semantics",
+      "from": "material",
+      "to": "semantics"
+    },
+    {
+      "id": "semantics-to-plan",
+      "from": "semantics",
+      "to": "plan"
+    },
+    {
+      "id": "plan-to-stages",
+      "from": "plan",
+      "to": "stages"
+    },
+    {
+      "id": "stages-to-candidate",
+      "from": "stages",
+      "to": "candidate"
+    },
+    {
+      "id": "candidate-to-r1",
+      "from": "candidate",
+      "to": "r1",
+      "label": "结构与用途通过",
+      "variant": "security"
+    },
+    {
+      "id": "r1-to-client",
+      "from": "r1",
+      "to": "client"
+    },
+    {
+      "id": "client-to-wfd",
+      "from": "client",
+      "to": "wfd",
+      "label": "结构化请求"
+    },
+    {
+      "id": "wfd-to-fixed",
+      "from": "wfd",
+      "to": "fixed",
+      "label": "固定记录"
+    },
+    {
+      "id": "fixed-to-r1",
+      "from": "fixed",
+      "to": "r1",
+      "label": "核对原请求"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "slate",
+      "title": "权威边界",
+      "items": [
+        "候选计算成功不等于正式数据准入。",
+        "WFD 决定合同、来源权限、版本与正式可见性；BD 保留来源和回执关联。",
+        "未知或已发送结果沿原身份查询，不能换号盲目重发。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "不能从规划补上线",
+      "items": [
+        "现有源码支持顺序材料批次与 R1 自动编排，但不据此声称完整历史模拟或训练系统已落地。",
+        "清洗与语义不适用时按明确规则处理，不擅自改写原值。"
+      ]
+    }
+  ]
+}

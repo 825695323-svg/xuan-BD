@@ -1,0 +1,2827 @@
+[
+  {
+    "path": "apps/server/full-chain-test-support.ts",
+    "classification": "测试辅助，不能误删",
+    "textReferences": [
+      {
+        "path": "apps/server/automatic-document.test.ts",
+        "line": 5,
+        "needle": "full-chain-test-support"
+      },
+      {
+        "path": "apps/server/cloud-evidence.test.ts",
+        "line": 6,
+        "needle": "full-chain-test-support"
+      },
+      {
+        "path": "apps/server/continuous-correction.test.ts",
+        "line": 6,
+        "needle": "full-chain-test-support"
+      },
+      {
+        "path": "apps/server/conversion-storage.test.ts",
+        "line": 7,
+        "needle": "full-chain-test-support"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-approval.test.ts",
+        "line": 11,
+        "needle": "full-chain-test-support"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-chain.test.ts",
+        "line": 3,
+        "needle": "full-chain-test-support"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-model-tool.test.ts",
+        "line": 12,
+        "needle": "full-chain-test-support"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-r1.test.ts",
+        "line": 9,
+        "needle": "full-chain-test-support"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-receipt.test.ts",
+        "line": 6,
+        "needle": "full-chain-test-support"
+      },
+      {
+        "path": "apps/server/financial-note.test.ts",
+        "line": 9,
+        "needle": "full-chain-test-support"
+      },
+      {
+        "path": "apps/server/financial-report.test.ts",
+        "line": 9,
+        "needle": "full-chain-test-support"
+      },
+      {
+        "path": "apps/server/fixed-calculation.test.ts",
+        "line": 9,
+        "needle": "full-chain-test-support"
+      }
+    ]
+  },
+  {
+    "path": "apps/server/live-model-test-support.ts",
+    "classification": "测试辅助，不能误删",
+    "textReferences": []
+  },
+  {
+    "path": "apps/server/r1-browser-test-support.ts",
+    "classification": "测试辅助，不能误删",
+    "textReferences": [
+      {
+        "path": "apps/server/r1-auto-browser.test.ts",
+        "line": 11,
+        "needle": "r1-browser-test-support"
+      },
+      {
+        "path": "apps/server/r1-original-package.test.ts",
+        "line": 9,
+        "needle": "r1-browser-test-support"
+      },
+      {
+        "path": "apps/server/r1-routes.test.ts",
+        "line": 28,
+        "needle": "r1-browser-test-support"
+      }
+    ]
+  },
+  {
+    "path": "apps/web/src/ui/FilterSelect.tsx",
+    "classification": "人工复核的孤立候选",
+    "textReferences": []
+  },
+  {
+    "path": "modules/agent/backends/demo.ts",
+    "classification": "测试辅助，不能误删",
+    "textReferences": []
+  },
+  {
+    "path": "modules/collection/numeric-precision.ts",
+    "classification": "人工复核的孤立候选",
+    "textReferences": [
+      {
+        "path": "modules/collection/numeric-precision.test.ts",
+        "line": 3,
+        "needle": "numeric-precision"
+      }
+    ]
+  },
+  {
+    "path": "modules/collection/segments/fixture.ts",
+    "classification": "测试辅助，不能误删",
+    "textReferences": [
+      {
+        "path": "apps/server/automatic-document.test.ts",
+        "line": 20,
+        "needle": "fixture"
+      },
+      {
+        "path": "apps/server/bd-naming.test.ts",
+        "line": 27,
+        "needle": "fixture"
+      },
+      {
+        "path": "apps/server/cloud-custody.test.ts",
+        "line": 18,
+        "needle": "fixture"
+      },
+      {
+        "path": "apps/server/cloud-evidence.test.ts",
+        "line": 10,
+        "needle": "fixture"
+      },
+      {
+        "path": "apps/server/continuous-correction.test.ts",
+        "line": 9,
+        "needle": "fixture"
+      },
+      {
+        "path": "apps/server/conversion-storage.test.ts",
+        "line": 13,
+        "needle": "fixture"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-approval.test.ts",
+        "line": 41,
+        "needle": "fixture"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-chain.test.ts",
+        "line": 107,
+        "needle": "fixture"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-model-tool.test.ts",
+        "line": 25,
+        "needle": "fixture"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-r1.test.ts",
+        "line": 18,
+        "needle": "fixture"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-receipt.test.ts",
+        "line": 12,
+        "needle": "fixture"
+      },
+      {
+        "path": "apps/server/financial-note.test.ts",
+        "line": 14,
+        "needle": "fixture"
+      }
+    ]
+  },
+  {
+    "path": "platform/resources/native-check.d.mts",
+    "classification": "类型声明，非运行入口",
+    "textReferences": [
+      {
+        "path": "apps/server/full-chain-test-support.ts",
+        "line": 15,
+        "needle": "native-check"
+      },
+      {
+        "path": "apps/server/r1-routes.test.ts",
+        "line": 17,
+        "needle": "native-check"
+      },
+      {
+        "path": "apps/server/structured-query.test.ts",
+        "line": 2,
+        "needle": "native-check"
+      },
+      {
+        "path": "modules/collection/r1-conversation-bridge.test.ts",
+        "line": 21,
+        "needle": "native-check"
+      },
+      {
+        "path": "platform/resources/local-web.test.ts",
+        "line": 10,
+        "needle": "native-check"
+      },
+      {
+        "path": "platform/resources/local-web.ts",
+        "line": 5,
+        "needle": "native-check"
+      },
+      {
+        "path": "scripts/bootstrap-local-web.ts",
+        "line": 8,
+        "needle": "native-check"
+      },
+      {
+        "path": "scripts/local-web.mjs",
+        "line": 3,
+        "needle": "native-check"
+      },
+      {
+        "path": "scripts/test-local.mjs",
+        "line": 6,
+        "needle": "native-check"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/baidu-drive/skill-snapshot.ts",
+    "classification": "人工复核的孤立候选",
+    "textReferences": []
+  },
+  {
+    "path": "plugins/capture-sources/baidu/hot.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "modules/financial/product-machine-connection.ts",
+        "line": 7,
+        "needle": "hot.js"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 19,
+        "needle": "hot.js"
+      },
+      {
+        "path": "scripts/verify-wfd-product-machine.ts",
+        "line": 8,
+        "needle": "hot.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/bilibili/comments.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/captureCatalog.ts",
+        "line": 6,
+        "needle": "comments"
+      },
+      {
+        "path": "platform/capabilities/conversion/office.ts",
+        "line": 93,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/README.md",
+        "line": 7,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/index.ts",
+        "line": 121,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 16,
+        "needle": "comments.js"
+      },
+      {
+        "path": "plugins/capture-sources/weibo/comments.js",
+        "line": 3,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/weibo/mobile-comments.js",
+        "line": 3,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/xiaohongshu/comments.js",
+        "line": 3,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/xiaohongshu/note.js",
+        "line": 198,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/xueqiu/post.js",
+        "line": 43,
+        "needle": "comments.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/bilibili/popular.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/captureCatalog.ts",
+        "line": 6,
+        "needle": "popular"
+      },
+      {
+        "path": "plugins/capture-sources/README.md",
+        "line": 7,
+        "needle": "popular"
+      },
+      {
+        "path": "plugins/capture-sources/index.ts",
+        "line": 125,
+        "needle": "popular"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 17,
+        "needle": "popular.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/bilibili/search.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/server/automatic-document.test.ts",
+        "line": 51,
+        "needle": "search"
+      },
+      {
+        "path": "apps/server/platform-routes.ts",
+        "line": 225,
+        "needle": "search"
+      },
+      {
+        "path": "apps/server/retrieval-routes.test.ts",
+        "line": 139,
+        "needle": "search"
+      },
+      {
+        "path": "apps/server/ui-routes.ts",
+        "line": 199,
+        "needle": "search"
+      },
+      {
+        "path": "apps/server/workspace-routes.ts",
+        "line": 328,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/App.tsx",
+        "line": 49,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/ApiSourcesPage.tsx",
+        "line": 192,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/CaptureSourcesPage.tsx",
+        "line": 133,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/CloudCustodyPanel.tsx",
+        "line": 44,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/ConversationList.tsx",
+        "line": 111,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/ConversationView.tsx",
+        "line": 57,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/DatabasePage.tsx",
+        "line": 74,
+        "needle": "search"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/bilibili/trending.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/captureCatalog.ts",
+        "line": 6,
+        "needle": "trending"
+      },
+      {
+        "path": "plugins/capture-sources/README.md",
+        "line": 7,
+        "needle": "trending"
+      },
+      {
+        "path": "plugins/capture-sources/index.ts",
+        "line": 124,
+        "needle": "trending"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 18,
+        "needle": "trending.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/bilibili/video-info.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/captureCatalog.ts",
+        "line": 6,
+        "needle": "video-info"
+      },
+      {
+        "path": "plugins/capture-sources/README.md",
+        "line": 7,
+        "needle": "video-info"
+      },
+      {
+        "path": "plugins/capture-sources/index.ts",
+        "line": 122,
+        "needle": "video-info"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 14,
+        "needle": "video-info.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/douyin/hot.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "modules/financial/product-machine-connection.ts",
+        "line": 7,
+        "needle": "hot.js"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 19,
+        "needle": "hot.js"
+      },
+      {
+        "path": "scripts/verify-wfd-product-machine.ts",
+        "line": 8,
+        "needle": "hot.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/eastmoney/guba-list.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/captureCatalog.ts",
+        "line": 8,
+        "needle": "guba-list"
+      },
+      {
+        "path": "plugins/capture-sources/README.md",
+        "line": 13,
+        "needle": "guba-list"
+      },
+      {
+        "path": "plugins/capture-sources/index.ts",
+        "line": 135,
+        "needle": "guba-list"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 31,
+        "needle": "guba-list.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/eastmoney/guba-post.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/captureCatalog.ts",
+        "line": 8,
+        "needle": "guba-post"
+      },
+      {
+        "path": "plugins/capture-sources/README.md",
+        "line": 13,
+        "needle": "guba-post"
+      },
+      {
+        "path": "plugins/capture-sources/index.ts",
+        "line": 135,
+        "needle": "guba-post"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 33,
+        "needle": "guba-post.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/eastmoney/news.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 32,
+        "needle": "news.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/google/search.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/server/automatic-document.test.ts",
+        "line": 51,
+        "needle": "search"
+      },
+      {
+        "path": "apps/server/platform-routes.ts",
+        "line": 225,
+        "needle": "search"
+      },
+      {
+        "path": "apps/server/retrieval-routes.test.ts",
+        "line": 139,
+        "needle": "search"
+      },
+      {
+        "path": "apps/server/ui-routes.ts",
+        "line": 199,
+        "needle": "search"
+      },
+      {
+        "path": "apps/server/workspace-routes.ts",
+        "line": 328,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/App.tsx",
+        "line": 49,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/ApiSourcesPage.tsx",
+        "line": 192,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/CaptureSourcesPage.tsx",
+        "line": 133,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/CloudCustodyPanel.tsx",
+        "line": 44,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/ConversationList.tsx",
+        "line": 111,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/ConversationView.tsx",
+        "line": 57,
+        "needle": "search"
+      },
+      {
+        "path": "apps/web/src/ui/DatabasePage.tsx",
+        "line": 74,
+        "needle": "search"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/sogou/wechat-search.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "plugins/capture-sources/index.ts",
+        "line": 133,
+        "needle": "wechat-search"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 20,
+        "needle": "wechat-search.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/wechat/article.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/ApiSourcesPage.tsx",
+        "line": 473,
+        "needle": "article"
+      },
+      {
+        "path": "apps/web/src/ui/DatabasePage.tsx",
+        "line": 117,
+        "needle": "article"
+      },
+      {
+        "path": "apps/web/src/ui/ProcessingPanel.tsx",
+        "line": 134,
+        "needle": "article"
+      },
+      {
+        "path": "apps/web/src/ui/TaskResults.tsx",
+        "line": 89,
+        "needle": "article"
+      },
+      {
+        "path": "apps/web/src/ui/ToolsPage.tsx",
+        "line": 644,
+        "needle": "article"
+      },
+      {
+        "path": "apps/web/src/ui/WorkspaceLayout.tsx",
+        "line": 106,
+        "needle": "article"
+      },
+      {
+        "path": "apps/web/src/ui/captureCatalog.ts",
+        "line": 7,
+        "needle": "article"
+      },
+      {
+        "path": "modules/agent/model-tools.ts",
+        "line": 475,
+        "needle": "article"
+      },
+      {
+        "path": "modules/collection/artifact-archive.test.ts",
+        "line": 14,
+        "needle": "article"
+      },
+      {
+        "path": "modules/collection/artifact-manifest.ts",
+        "line": 54,
+        "needle": "article"
+      },
+      {
+        "path": "modules/collection/cloud-evidence-classification.test.ts",
+        "line": 91,
+        "needle": "article"
+      },
+      {
+        "path": "modules/collection/cloud-evidence-classification.ts",
+        "line": 30,
+        "needle": "article"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/weibo/comments.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/captureCatalog.ts",
+        "line": 6,
+        "needle": "comments"
+      },
+      {
+        "path": "platform/capabilities/conversion/office.ts",
+        "line": 93,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/README.md",
+        "line": 7,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/bilibili/comments.js",
+        "line": 3,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/index.ts",
+        "line": 121,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 16,
+        "needle": "comments.js"
+      },
+      {
+        "path": "plugins/capture-sources/weibo/mobile-comments.js",
+        "line": 3,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/xiaohongshu/comments.js",
+        "line": 3,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/xiaohongshu/note.js",
+        "line": 198,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/xueqiu/post.js",
+        "line": 43,
+        "needle": "comments.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/weibo/hot.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "modules/financial/product-machine-connection.ts",
+        "line": 7,
+        "needle": "hot.js"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 19,
+        "needle": "hot.js"
+      },
+      {
+        "path": "scripts/verify-wfd-product-machine.ts",
+        "line": 8,
+        "needle": "hot.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/weibo/mobile-comments.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/captureCatalog.ts",
+        "line": 7,
+        "needle": "mobile-comments"
+      },
+      {
+        "path": "plugins/capture-sources/README.md",
+        "line": 10,
+        "needle": "mobile-comments"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 26,
+        "needle": "mobile-comments.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/xiaohongshu/comments.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/captureCatalog.ts",
+        "line": 6,
+        "needle": "comments"
+      },
+      {
+        "path": "platform/capabilities/conversion/office.ts",
+        "line": 93,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/README.md",
+        "line": 7,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/bilibili/comments.js",
+        "line": 3,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/index.ts",
+        "line": 121,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 16,
+        "needle": "comments.js"
+      },
+      {
+        "path": "plugins/capture-sources/weibo/comments.js",
+        "line": 3,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/weibo/mobile-comments.js",
+        "line": 3,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/xiaohongshu/note.js",
+        "line": 198,
+        "needle": "comments"
+      },
+      {
+        "path": "plugins/capture-sources/xueqiu/post.js",
+        "line": 43,
+        "needle": "comments.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/xiaohongshu/note.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 23,
+        "needle": "note.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/xueqiu/hot.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "modules/financial/product-machine-connection.ts",
+        "line": 7,
+        "needle": "hot.js"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 19,
+        "needle": "hot.js"
+      },
+      {
+        "path": "scripts/verify-wfd-product-machine.ts",
+        "line": 8,
+        "needle": "hot.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/xueqiu/post.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 33,
+        "needle": "post.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/zhihu/hot.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "modules/financial/product-machine-connection.ts",
+        "line": 7,
+        "needle": "hot.js"
+      },
+      {
+        "path": "plugins/capture-sources/sites.ts",
+        "line": 19,
+        "needle": "hot.js"
+      },
+      {
+        "path": "scripts/verify-wfd-product-machine.ts",
+        "line": 8,
+        "needle": "hot.js"
+      }
+    ]
+  },
+  {
+    "path": "plugins/capture-sources/zhihu/question.js",
+    "classification": "来源脚本，按注册表动态执行",
+    "textReferences": [
+      {
+        "path": "apps/server/app.ts",
+        "line": 170,
+        "needle": "question"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-r1.test.ts",
+        "line": 59,
+        "needle": "question"
+      },
+      {
+        "path": "apps/server/fixed-calculation.test.ts",
+        "line": 28,
+        "needle": "question"
+      },
+      {
+        "path": "apps/server/polars-fixed.test.ts",
+        "line": 39,
+        "needle": "question"
+      },
+      {
+        "path": "apps/server/r1-auto-batch.test.ts",
+        "line": 62,
+        "needle": "question"
+      },
+      {
+        "path": "apps/server/r1-auto-browser.test.ts",
+        "line": 104,
+        "needle": "question"
+      },
+      {
+        "path": "apps/server/r1-auto.test.ts",
+        "line": 50,
+        "needle": "question"
+      },
+      {
+        "path": "apps/server/r1-original-minute-ma.test.ts",
+        "line": 27,
+        "needle": "question"
+      },
+      {
+        "path": "apps/server/r1-original-package.test.ts",
+        "line": 66,
+        "needle": "question"
+      },
+      {
+        "path": "apps/server/services.ts",
+        "line": 14,
+        "needle": "question"
+      },
+      {
+        "path": "apps/web/src/api.ts",
+        "line": 5,
+        "needle": "question"
+      },
+      {
+        "path": "apps/web/src/r1-auto-api.ts",
+        "line": 20,
+        "needle": "question"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/_common.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "plugins/financial/local-compute/assets.ts",
+        "line": 10,
+        "needle": "_common.py"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/builtin_functions.py",
+        "line": 8,
+        "needle": "_common"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/calculate.py",
+        "line": 11,
+        "needle": "_common"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/context_functions.py",
+        "line": 6,
+        "needle": "_common"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/drawing_values.py",
+        "line": 3,
+        "needle": "_common"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/formula_runtime.py",
+        "line": 7,
+        "needle": "_common"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/formulas.py",
+        "line": 6,
+        "needle": "_common"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/indicators.py",
+        "line": 4,
+        "needle": "_common"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/local_data.py",
+        "line": 9,
+        "needle": "_common"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/operators.py",
+        "line": 6,
+        "needle": "_common"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/patterns.py",
+        "line": 5,
+        "needle": "_common"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/series_math.py",
+        "line": 7,
+        "needle": "_common"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/builtin_functions.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "plugins/financial/local-compute/assets/calculate.py",
+        "line": 14,
+        "needle": "builtin_functions"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/formula_runtime.py",
+        "line": 131,
+        "needle": "builtin_functions"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/calculate.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "apps/server/financial-report.test.ts",
+        "line": 220,
+        "needle": "calculate"
+      },
+      {
+        "path": "apps/server/fixed-calculation.test.ts",
+        "line": 56,
+        "needle": "calculate"
+      },
+      {
+        "path": "apps/server/polars-fixed.test.ts",
+        "line": 270,
+        "needle": "calculate"
+      },
+      {
+        "path": "apps/server/r1-algorithm-routing.test.ts",
+        "line": 39,
+        "needle": "calculate"
+      },
+      {
+        "path": "apps/server/r1-original-ma.test.ts",
+        "line": 206,
+        "needle": "calculate"
+      },
+      {
+        "path": "modules/agent/model-tools.ts",
+        "line": 61,
+        "needle": "calculate"
+      },
+      {
+        "path": "modules/agent/service.ts",
+        "line": 17,
+        "needle": "calculate"
+      },
+      {
+        "path": "modules/collection/cloud-algorithm-evidence.test.ts",
+        "line": 138,
+        "needle": "calculate"
+      },
+      {
+        "path": "modules/collection/polars-eligibility-gate.test.ts",
+        "line": 72,
+        "needle": "calculate"
+      },
+      {
+        "path": "modules/collection/polars-financial-admission.test.ts",
+        "line": 43,
+        "needle": "calculate"
+      },
+      {
+        "path": "modules/collection/polars-fixed-service.ts",
+        "line": 198,
+        "needle": "calculate"
+      },
+      {
+        "path": "modules/collection/r1-auto.ts",
+        "line": 482,
+        "needle": "calculate"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/context_functions.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "plugins/financial/local-compute/assets/builtin_functions.py",
+        "line": 10,
+        "needle": "context_functions"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/formula_runtime.py",
+        "line": 9,
+        "needle": "context_functions"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/drawing_values.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "plugins/financial/local-compute/assets/builtin_functions.py",
+        "line": 11,
+        "needle": "drawing_values"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/formula_runtime.py",
+        "line": 10,
+        "needle": "drawing_values"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/formula_runtime.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "plugins/financial/local-compute/assets/builtin_functions.py",
+        "line": 9,
+        "needle": "formula_runtime"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/context_functions.py",
+        "line": 43,
+        "needle": "formula_runtime"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/formulas.py",
+        "line": 7,
+        "needle": "formula_runtime"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/formulas.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "modules/financial/algorithm-definitions.ts",
+        "line": 428,
+        "needle": "formulas"
+      },
+      {
+        "path": "modules/financial/algorithm-registry.ts",
+        "line": 111,
+        "needle": "formulas"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/calculate.py",
+        "line": 14,
+        "needle": "formulas"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/indicators.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "apps/server/ui-routes.ts",
+        "line": 34,
+        "needle": "indicators"
+      },
+      {
+        "path": "apps/web/src/ui-runtime-api.ts",
+        "line": 15,
+        "needle": "indicators"
+      },
+      {
+        "path": "apps/web/src/ui/algorithm-catalog.ts",
+        "line": 30,
+        "needle": "indicators"
+      },
+      {
+        "path": "contracts/ui-contracts.ts",
+        "line": 54,
+        "needle": "indicators"
+      },
+      {
+        "path": "modules/financial/algorithm-definitions.ts",
+        "line": 13,
+        "needle": "indicators.py"
+      },
+      {
+        "path": "modules/financial/algorithm-registry.ts",
+        "line": 33,
+        "needle": "indicators.py"
+      },
+      {
+        "path": "modules/financial/algorithm-types.ts",
+        "line": 21,
+        "needle": "plugins/financial/local-compute/assets/indicators.py"
+      },
+      {
+        "path": "modules/financial/service.ts",
+        "line": 16,
+        "needle": "indicators.py"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets.ts",
+        "line": 10,
+        "needle": "indicators.py"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/calculate.py",
+        "line": 13,
+        "needle": "indicators"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/docs/operators.md",
+        "line": 5,
+        "needle": "indicators"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/local_data.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "apps/server/live-model-test-support.ts",
+        "line": 71,
+        "needle": "local_data"
+      },
+      {
+        "path": "apps/server/local-path-attachment.test.ts",
+        "line": 221,
+        "needle": "local_data"
+      },
+      {
+        "path": "apps/server/startup-identity.test.ts",
+        "line": 54,
+        "needle": "local_data"
+      },
+      {
+        "path": "platform/runtime/local-data-lifecycle.ts",
+        "line": 16,
+        "needle": "local_data"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/calculate.py",
+        "line": 14,
+        "needle": "local_data"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/operators.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/algorithm-catalog.ts",
+        "line": 29,
+        "needle": "operators"
+      },
+      {
+        "path": "contracts/algorithm-definition.ts",
+        "line": 118,
+        "needle": "operators"
+      },
+      {
+        "path": "modules/financial/algorithm-definitions.ts",
+        "line": 79,
+        "needle": "operators.py"
+      },
+      {
+        "path": "modules/financial/algorithm-registry.ts",
+        "line": 129,
+        "needle": "operators.py"
+      },
+      {
+        "path": "modules/financial/algorithm-types.ts",
+        "line": 28,
+        "needle": "operators.py"
+      },
+      {
+        "path": "modules/financial/service.ts",
+        "line": 23,
+        "needle": "operators.py"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets.ts",
+        "line": 10,
+        "needle": "operators.py"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/calculate.py",
+        "line": 13,
+        "needle": "operators"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/indicators.py",
+        "line": 5,
+        "needle": "operators"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/series_math.py",
+        "line": 8,
+        "needle": "operators"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/patterns.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "apps/server/r1-browser-test-support.ts",
+        "line": 52,
+        "needle": "patterns"
+      },
+      {
+        "path": "apps/web/src/ui/algorithm-catalog.ts",
+        "line": 12,
+        "needle": "patterns"
+      },
+      {
+        "path": "modules/financial/algorithm-definitions.ts",
+        "line": 13,
+        "needle": "patterns.py"
+      },
+      {
+        "path": "modules/financial/algorithm-design-dispositions.ts",
+        "line": 94,
+        "needle": "patterns"
+      },
+      {
+        "path": "modules/financial/algorithm-registry.ts",
+        "line": 58,
+        "needle": "patterns.py"
+      },
+      {
+        "path": "modules/financial/algorithm-types.ts",
+        "line": 35,
+        "needle": "plugins/financial/local-compute/assets/patterns.py"
+      },
+      {
+        "path": "modules/financial/service.ts",
+        "line": 19,
+        "needle": "patterns.py"
+      },
+      {
+        "path": "platform/capabilities/browser/owned-page.ts",
+        "line": 159,
+        "needle": "patterns"
+      },
+      {
+        "path": "plugins/capture-sources/owned-capture.ts",
+        "line": 155,
+        "needle": "patterns"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets.ts",
+        "line": 10,
+        "needle": "patterns.py"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/calculate.py",
+        "line": 13,
+        "needle": "patterns"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_bundle.py",
+        "line": 3370,
+        "needle": "patterns"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/series_math.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "plugins/financial/local-compute/assets/builtin_functions.py",
+        "line": 12,
+        "needle": "series_math"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/context_functions.py",
+        "line": 7,
+        "needle": "series_math"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/drawing_values.py",
+        "line": 4,
+        "needle": "series_math"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/formula_runtime.py",
+        "line": 8,
+        "needle": "series_math"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/turning_points.py",
+        "line": 3,
+        "needle": "series_math"
+      }
+    ]
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/turning_points.py",
+    "classification": "金融 Python 子进程资源，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "plugins/financial/local-compute/assets/builtin_functions.py",
+        "line": 13,
+        "needle": "turning_points"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/formula_runtime.py",
+        "line": 11,
+        "needle": "turning_points"
+      }
+    ]
+  },
+  {
+    "path": "staging/wfd_sdk/product_machine.py",
+    "classification": "暂存双入口，配置兼容使其不能直接删除",
+    "textReferences": [
+      {
+        "path": "adapters/database/wfd-product-machine.ts",
+        "line": 13,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "apps/server/full-chain-test-support.ts",
+        "line": 110,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "apps/server/polars-fixed.test.ts",
+        "line": 188,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "apps/server/purpose-entry.test.ts",
+        "line": 185,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "apps/server/r1-routes.test.ts",
+        "line": 68,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "modules/collection/r1-conversation-bridge.test.ts",
+        "line": 129,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "wfd/product/README.md",
+        "line": 3,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "wfd/product/tests/test_filter_production.py",
+        "line": 98,
+        "needle": "product_machine"
+      },
+      {
+        "path": "wfd/product/tests/test_incremental_identity.py",
+        "line": 22,
+        "needle": "product_machine"
+      },
+      {
+        "path": "wfd/product/tests/test_p3b_data_only_batches.py",
+        "line": 22,
+        "needle": "product_machine"
+      },
+      {
+        "path": "wfd/product/tests/test_p4a1_data_only_public_read.py",
+        "line": 31,
+        "needle": "product_machine"
+      },
+      {
+        "path": "wfd/product/tests/test_product_machine_p6.py",
+        "line": 18,
+        "needle": "product_machine"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/run_duckdb_demo.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/scripts/verify_engine.py",
+        "line": 47,
+        "needle": "run_duckdb_demo.py"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/scripts/acquire_financial_products.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": []
+  },
+  {
+    "path": "wfd/product/scripts/run_financial_products.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": []
+  },
+  {
+    "path": "wfd/product/scripts/run_financial_slice.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/run_duckdb_demo.py",
+        "line": 14,
+        "needle": "run_financial_slice"
+      },
+      {
+        "path": "wfd/product/scripts/acquire_financial_products.py",
+        "line": 20,
+        "needle": "run_financial_slice"
+      },
+      {
+        "path": "wfd/product/scripts/run_financial_products.py",
+        "line": 17,
+        "needle": "run_financial_slice"
+      },
+      {
+        "path": "wfd/product/scripts/run_p1_governance.py",
+        "line": 11,
+        "needle": "run_financial_slice"
+      },
+      {
+        "path": "wfd/product/scripts/run_p3_batches.py",
+        "line": 13,
+        "needle": "run_financial_slice"
+      },
+      {
+        "path": "wfd/product/scripts/verify_engine.py",
+        "line": 12,
+        "needle": "run_financial_slice"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/scripts/run_p1_governance.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": []
+  },
+  {
+    "path": "wfd/product/scripts/run_p3_batches.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": []
+  },
+  {
+    "path": "wfd/product/scripts/verify_engine.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": []
+  },
+  {
+    "path": "wfd/product/wfd_sdk/__init__.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "plugins/api-sources/providers/tdx/runtime.ts",
+        "line": 35,
+        "needle": "__init__.py"
+      },
+      {
+        "path": "plugins/financial/local-compute/assets/formula_runtime.py",
+        "line": 92,
+        "needle": "__init__"
+      },
+      {
+        "path": "staging/wfd_sdk/product_machine.py",
+        "line": 385,
+        "needle": "__init__"
+      },
+      {
+        "path": "wfd/product/tests/test_full_product_pages.py",
+        "line": 619,
+        "needle": "__init__"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/basis_prices.py",
+        "line": 301,
+        "needle": "__init__"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/duckdb_sdk.py",
+        "line": 56,
+        "needle": "__init__"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/filter_objects.py",
+        "line": 36,
+        "needle": "__init__"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/gc.py",
+        "line": 72,
+        "needle": "__init__"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/lineage.py",
+        "line": 43,
+        "needle": "__init__"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/parquet_sdk.py",
+        "line": 54,
+        "needle": "__init__"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_batches.py",
+        "line": 47,
+        "needle": "__init__"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_bundle.py",
+        "line": 224,
+        "needle": "__init__"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/adjustment_anchors.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/wfd_sdk/product_data_service.py",
+        "line": 29,
+        "needle": "adjustment_anchors"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_machine.py",
+        "line": 188,
+        "needle": "adjustment_anchors"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_volume_service.py",
+        "line": 1379,
+        "needle": "adjustment_anchors"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/write_targets.py",
+        "line": 23,
+        "needle": "adjustment_anchors"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/basis_prices.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/wfd_sdk/adjustment_anchors.py",
+        "line": 63,
+        "needle": "basis_prices"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_data_service.py",
+        "line": 30,
+        "needle": "basis_prices"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_volume_service.py",
+        "line": 1402,
+        "needle": "basis_prices"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/duckdb_sdk.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "apps/server/full-chain-test-support.ts",
+        "line": 93,
+        "needle": "duckdb_sdk"
+      },
+      {
+        "path": "apps/server/r1-routes.test.ts",
+        "line": 51,
+        "needle": "duckdb_sdk"
+      },
+      {
+        "path": "modules/collection/r1-conversation-bridge.test.ts",
+        "line": 133,
+        "needle": "duckdb_sdk"
+      },
+      {
+        "path": "staging/wfd_sdk/product_machine.py",
+        "line": 226,
+        "needle": "duckdb_sdk"
+      },
+      {
+        "path": "wfd/product/run_duckdb_demo.py",
+        "line": 17,
+        "needle": "duckdb_sdk"
+      },
+      {
+        "path": "wfd/product/scripts/run_financial_products.py",
+        "line": 19,
+        "needle": "duckdb_sdk"
+      },
+      {
+        "path": "wfd/product/scripts/run_financial_slice.py",
+        "line": 289,
+        "needle": "duckdb_sdk"
+      },
+      {
+        "path": "wfd/product/scripts/run_p1_governance.py",
+        "line": 17,
+        "needle": "duckdb_sdk"
+      },
+      {
+        "path": "wfd/product/scripts/run_p3_batches.py",
+        "line": 20,
+        "needle": "duckdb_sdk"
+      },
+      {
+        "path": "wfd/product/tests/run_f_state_consistency.py",
+        "line": 7,
+        "needle": "duckdb_sdk"
+      },
+      {
+        "path": "wfd/product/tests/synthetic_daily.py",
+        "line": 17,
+        "needle": "duckdb_sdk"
+      },
+      {
+        "path": "wfd/product/tests/test_coverage_lineage.py",
+        "line": 13,
+        "needle": "duckdb_sdk"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/duckdb_storage.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/run_duckdb_demo.py",
+        "line": 18,
+        "needle": "duckdb_storage"
+      },
+      {
+        "path": "wfd/product/tests/test_duckdb_adapter_static.py",
+        "line": 8,
+        "needle": "duckdb_storage"
+      },
+      {
+        "path": "wfd/product/tests/test_duckdb_engine.py",
+        "line": 6,
+        "needle": "duckdb_storage"
+      },
+      {
+        "path": "wfd/product/tests/test_fixed_read_pages.py",
+        "line": 80,
+        "needle": "duckdb_storage"
+      },
+      {
+        "path": "wfd/product/tests/test_full_product_pages.py",
+        "line": 50,
+        "needle": "duckdb_storage"
+      },
+      {
+        "path": "wfd/product/tests/test_incremental_identity.py",
+        "line": 260,
+        "needle": "duckdb_storage"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_r2b_delta.py",
+        "line": 15,
+        "needle": "duckdb_storage"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_r2b_structured.py",
+        "line": 16,
+        "needle": "duckdb_storage"
+      },
+      {
+        "path": "wfd/product/tests/test_r4a_cumulative_contract_closure.py",
+        "line": 38,
+        "needle": "duckdb_storage"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/duckdb_sdk.py",
+        "line": 20,
+        "needle": "duckdb_storage"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_bundle.py",
+        "line": 24,
+        "needle": "duckdb_storage"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_data_service.py",
+        "line": 22,
+        "needle": "duckdb_storage"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/filter_objects.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "adapters/database/wfd-product-machine.ts",
+        "line": 90,
+        "needle": "filter_objects"
+      },
+      {
+        "path": "modules/collection/r1-product-reader.ts",
+        "line": 28,
+        "needle": "filter_objects"
+      },
+      {
+        "path": "wfd/product/protocol/schemas/wfd-filter-objects.schema.json",
+        "line": 4,
+        "needle": "filter_objects"
+      },
+      {
+        "path": "wfd/product/protocol/schemas/wfd-filter-plan.schema.json",
+        "line": 128,
+        "needle": "filter_objects"
+      },
+      {
+        "path": "wfd/product/protocol/schemas/wfd-filter-result.schema.json",
+        "line": 40,
+        "needle": "filter_objects"
+      },
+      {
+        "path": "wfd/product/tests/test_filter_production.py",
+        "line": 20,
+        "needle": "filter_objects"
+      },
+      {
+        "path": "wfd/product/tests/test_r07_legacy_acceptance.py",
+        "line": 325,
+        "needle": "filter_objects"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/filter_plan.py",
+        "line": 24,
+        "needle": "filter_objects"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_machine.py",
+        "line": 42,
+        "needle": "filter_objects"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/filter_plan.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/tests/test_filter_production.py",
+        "line": 21,
+        "needle": "filter_plan"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/filter_objects.py",
+        "line": 128,
+        "needle": "filter_plan"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_machine.py",
+        "line": 1371,
+        "needle": "filter_plan"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/gc.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": []
+  },
+  {
+    "path": "wfd/product/wfd_sdk/lineage.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "apps/server/cloud-evidence.test.ts",
+        "line": 24,
+        "needle": "lineage"
+      },
+      {
+        "path": "apps/server/endpoint-adapter-r1.test.ts",
+        "line": 169,
+        "needle": "lineage"
+      },
+      {
+        "path": "apps/server/post-publication-correction.test.ts",
+        "line": 475,
+        "needle": "lineage"
+      },
+      {
+        "path": "apps/server/r1-algorithm-routing.test.ts",
+        "line": 108,
+        "needle": "lineage"
+      },
+      {
+        "path": "apps/server/r1-original-ma.test.ts",
+        "line": 173,
+        "needle": "lineage"
+      },
+      {
+        "path": "apps/server/r1-original-minute-ma.test.ts",
+        "line": 115,
+        "needle": "lineage"
+      },
+      {
+        "path": "apps/server/r1-production-batches.test.ts",
+        "line": 57,
+        "needle": "lineage"
+      },
+      {
+        "path": "apps/web/src/r1-auto-api.ts",
+        "line": 82,
+        "needle": "lineage"
+      },
+      {
+        "path": "modules/agent/state/store.ts",
+        "line": 373,
+        "needle": "lineage"
+      },
+      {
+        "path": "modules/collection/cloud-custody.test.ts",
+        "line": 856,
+        "needle": "lineage"
+      },
+      {
+        "path": "modules/collection/cloud-evidence-source.ts",
+        "line": 19,
+        "needle": "lineage"
+      },
+      {
+        "path": "modules/collection/data-processing/financial-fixed.ts",
+        "line": 186,
+        "needle": "lineage"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/parquet_lite.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/tests/test_parquet_format.py",
+        "line": 4,
+        "needle": "parquet_lite"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/duckdb_storage.py",
+        "line": 3,
+        "needle": "parquet_lite"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/parquet_sdk.py",
+        "line": 20,
+        "needle": "parquet_lite"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/parquet_sdk.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/tests/test_parquet_closure.py",
+        "line": 12,
+        "needle": "parquet_sdk"
+      },
+      {
+        "path": "wfd/product/tests/test_parquet_format.py",
+        "line": 6,
+        "needle": "parquet_sdk"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/__init__.py",
+        "line": 1,
+        "needle": "parquet_sdk"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_batches.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/scripts/run_p3_batches.py",
+        "line": 22,
+        "needle": "product_batches"
+      },
+      {
+        "path": "wfd/product/tests/test_duplicate_append.py",
+        "line": 251,
+        "needle": "product_batches"
+      },
+      {
+        "path": "wfd/product/tests/test_p3b_data_only_batches.py",
+        "line": 24,
+        "needle": "product_batches"
+      },
+      {
+        "path": "wfd/product/tests/test_product_batches.py",
+        "line": 10,
+        "needle": "product_batches"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_machine.py",
+        "line": 560,
+        "needle": "product_batches"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/scripts/run_financial_products.py",
+        "line": 283,
+        "needle": "product_bundle"
+      },
+      {
+        "path": "wfd/product/tests/test_coverage_lineage.py",
+        "line": 14,
+        "needle": "product_bundle"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle.py",
+        "line": 8,
+        "needle": "product_bundle"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_p5a.py",
+        "line": 14,
+        "needle": "product_bundle"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_p5b.py",
+        "line": 17,
+        "needle": "product_bundle"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_r2b_delta.py",
+        "line": 16,
+        "needle": "product_bundle"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_r2b_read_deps.py",
+        "line": 10,
+        "needle": "product_bundle"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_r2b_reference.py",
+        "line": 13,
+        "needle": "product_bundle"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_r2b_reference_time.py",
+        "line": 10,
+        "needle": "product_bundle"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_r2b_structured.py",
+        "line": 17,
+        "needle": "product_bundle"
+      },
+      {
+        "path": "wfd/product/tests/test_product_governance.py",
+        "line": 15,
+        "needle": "product_bundle"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_calendar.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/tests/test_p4b_registration_repair.py",
+        "line": 26,
+        "needle": "product_calendar"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_data_service.py",
+        "line": 27,
+        "needle": "product_calendar"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_query.py",
+        "line": 35,
+        "needle": "product_calendar"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_service.py",
+        "line": 16,
+        "needle": "product_calendar"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_volume_service.py",
+        "line": 17,
+        "needle": "product_calendar"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_data_service.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/tests/test_duplicate_append.py",
+        "line": 155,
+        "needle": "product_data_service"
+      },
+      {
+        "path": "wfd/product/tests/test_filter_production.py",
+        "line": 17,
+        "needle": "product_data_service"
+      },
+      {
+        "path": "wfd/product/tests/test_fixed_read_pages.py",
+        "line": 18,
+        "needle": "product_data_service"
+      },
+      {
+        "path": "wfd/product/tests/test_full_product_pages.py",
+        "line": 16,
+        "needle": "product_data_service"
+      },
+      {
+        "path": "wfd/product/tests/test_p4a1_data_only_public_read.py",
+        "line": 26,
+        "needle": "product_data_service"
+      },
+      {
+        "path": "wfd/product/tests/test_p4b_precise_hydration.py",
+        "line": 95,
+        "needle": "product_data_service"
+      },
+      {
+        "path": "wfd/product/tests/test_p4b_registration_repair.py",
+        "line": 28,
+        "needle": "product_data_service"
+      },
+      {
+        "path": "wfd/product/tests/test_post_publication_correction.py",
+        "line": 21,
+        "needle": "product_data_service"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_r2b_delta.py",
+        "line": 20,
+        "needle": "product_data_service"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_r2b_reference.py",
+        "line": 16,
+        "needle": "product_data_service"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_r2b_structured.py",
+        "line": 20,
+        "needle": "product_data_service"
+      },
+      {
+        "path": "wfd/product/tests/test_query_batch_execute.py",
+        "line": 85,
+        "needle": "product_data_service"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_foundations.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/scripts/run_p3_batches.py",
+        "line": 23,
+        "needle": "product_foundations"
+      },
+      {
+        "path": "wfd/product/tests/test_product_foundations.py",
+        "line": 12,
+        "needle": "product_foundations"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_governance.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "scripts/run-wfd-product-p6.ts",
+        "line": 156,
+        "needle": "product_governance.py"
+      },
+      {
+        "path": "scripts/verify-wfd-product-machine.ts",
+        "line": 99,
+        "needle": "product_governance.py"
+      },
+      {
+        "path": "wfd/product/tests/test_p3c_source_conflict_derived.py",
+        "line": 20,
+        "needle": "product_governance"
+      },
+      {
+        "path": "wfd/product/tests/test_product_governance.py",
+        "line": 16,
+        "needle": "product_governance"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_bundle.py",
+        "line": 26,
+        "needle": "product_governance"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_data_service.py",
+        "line": 26,
+        "needle": "product_governance"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_query.py",
+        "line": 34,
+        "needle": "product_governance"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_service.py",
+        "line": 22,
+        "needle": "product_governance"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_holdings.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/tests/test_p4a1_data_only_public_read.py",
+        "line": 27,
+        "needle": "product_holdings"
+      },
+      {
+        "path": "wfd/product/tests/test_p4b_precise_hydration.py",
+        "line": 26,
+        "needle": "product_holdings"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_bundle.py",
+        "line": 27,
+        "needle": "product_holdings"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_data_service.py",
+        "line": 3121,
+        "needle": "product_holdings"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_volume_service.py",
+        "line": 23,
+        "needle": "product_holdings"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_machine.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "adapters/database/wfd-product-machine.ts",
+        "line": 13,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "apps/server/full-chain-test-support.ts",
+        "line": 110,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "apps/server/polars-fixed.test.ts",
+        "line": 188,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "apps/server/purpose-entry.test.ts",
+        "line": 185,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "apps/server/r1-routes.test.ts",
+        "line": 68,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "modules/collection/r1-conversation-bridge.test.ts",
+        "line": 129,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "staging/wfd_sdk/product_machine.py",
+        "line": 413,
+        "needle": "product_machine"
+      },
+      {
+        "path": "wfd/product/README.md",
+        "line": 3,
+        "needle": "product_machine.py"
+      },
+      {
+        "path": "wfd/product/tests/test_filter_production.py",
+        "line": 98,
+        "needle": "product_machine"
+      },
+      {
+        "path": "wfd/product/tests/test_incremental_identity.py",
+        "line": 22,
+        "needle": "product_machine"
+      },
+      {
+        "path": "wfd/product/tests/test_p3b_data_only_batches.py",
+        "line": 22,
+        "needle": "product_machine"
+      },
+      {
+        "path": "wfd/product/tests/test_p4a1_data_only_public_read.py",
+        "line": 31,
+        "needle": "product_machine"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_query.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/tests/test_filter_production.py",
+        "line": 19,
+        "needle": "product_query"
+      },
+      {
+        "path": "wfd/product/tests/test_market_current_only.py",
+        "line": 9,
+        "needle": "product_query"
+      },
+      {
+        "path": "wfd/product/tests/test_p4a1_data_only_public_read.py",
+        "line": 28,
+        "needle": "product_query"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_p5a.py",
+        "line": 17,
+        "needle": "product_query"
+      },
+      {
+        "path": "wfd/product/tests/test_product_context.py",
+        "line": 12,
+        "needle": "product_query"
+      },
+      {
+        "path": "wfd/product/tests/test_product_query.py",
+        "line": 20,
+        "needle": "product_query"
+      },
+      {
+        "path": "wfd/product/tests/test_query_batch_execute.py",
+        "line": 4,
+        "needle": "product_query"
+      },
+      {
+        "path": "wfd/product/tests/test_query_batch_machine.py",
+        "line": 3,
+        "needle": "product_query"
+      },
+      {
+        "path": "wfd/product/tests/test_query_batch_volume.py",
+        "line": 4,
+        "needle": "product_query"
+      },
+      {
+        "path": "wfd/product/tests/test_query_batch_window.py",
+        "line": 3,
+        "needle": "product_query"
+      },
+      {
+        "path": "wfd/product/tests/test_query_cursor_window.py",
+        "line": 2,
+        "needle": "product_query"
+      },
+      {
+        "path": "wfd/product/tests/test_query_projection_contract_cache.py",
+        "line": 2,
+        "needle": "product_query"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_service.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "modules/collection/post-publication-correction.ts",
+        "line": 1011,
+        "needle": "product_service"
+      },
+      {
+        "path": "modules/financial/product-machine-snapshot.ts",
+        "line": 261,
+        "needle": "product_service"
+      },
+      {
+        "path": "scripts/run-wfd-product-p6.ts",
+        "line": 155,
+        "needle": "product_service.py"
+      },
+      {
+        "path": "scripts/verify-wfd-product-machine.ts",
+        "line": 98,
+        "needle": "product_service.py"
+      },
+      {
+        "path": "staging/wfd_sdk/product_machine.py",
+        "line": 172,
+        "needle": "product_service.py"
+      },
+      {
+        "path": "wfd/product/scripts/run_financial_products.py",
+        "line": 20,
+        "needle": "product_service"
+      },
+      {
+        "path": "wfd/product/scripts/run_financial_slice.py",
+        "line": 281,
+        "needle": "product_service"
+      },
+      {
+        "path": "wfd/product/scripts/run_p1_governance.py",
+        "line": 18,
+        "needle": "product_service"
+      },
+      {
+        "path": "wfd/product/scripts/run_p3_batches.py",
+        "line": 21,
+        "needle": "product_service"
+      },
+      {
+        "path": "wfd/product/tests/synthetic_daily.py",
+        "line": 18,
+        "needle": "product_service"
+      },
+      {
+        "path": "wfd/product/tests/test_coverage_lineage.py",
+        "line": 12,
+        "needle": "product_service"
+      },
+      {
+        "path": "wfd/product/tests/test_duplicate_append.py",
+        "line": 238,
+        "needle": "product_service"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_volume_service.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/tests/test_fixed_read_pages.py",
+        "line": 360,
+        "needle": "product_volume_service"
+      },
+      {
+        "path": "wfd/product/tests/test_full_product_pages.py",
+        "line": 561,
+        "needle": "product_volume_service"
+      },
+      {
+        "path": "wfd/product/tests/test_p3b_data_only_batches.py",
+        "line": 28,
+        "needle": "product_volume_service"
+      },
+      {
+        "path": "wfd/product/tests/test_p4b_precise_hydration.py",
+        "line": 27,
+        "needle": "product_volume_service"
+      },
+      {
+        "path": "wfd/product/tests/test_p4b_registration_repair.py",
+        "line": 29,
+        "needle": "product_volume_service"
+      },
+      {
+        "path": "wfd/product/tests/test_store_opening.py",
+        "line": 17,
+        "needle": "product_volume_service"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_machine.py",
+        "line": 418,
+        "needle": "product_volume_service"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/row_version_objects.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/tests/test_post_publication_correction.py",
+        "line": 414,
+        "needle": "row_version_objects"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/duckdb_sdk.py",
+        "line": 21,
+        "needle": "row_version_objects"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/gc.py",
+        "line": 36,
+        "needle": "row_version_objects"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_bundle.py",
+        "line": 37,
+        "needle": "row_version_objects"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_query.py",
+        "line": 37,
+        "needle": "row_version_objects"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/transfer.py",
+        "line": 32,
+        "needle": "row_version_objects"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/usage_suspension.py",
+        "line": 28,
+        "needle": "row_version_objects"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/state.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": []
+  },
+  {
+    "path": "wfd/product/wfd_sdk/transfer.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "apps/web/src/ui/captureCatalog.ts",
+        "line": 34,
+        "needle": "transfer"
+      },
+      {
+        "path": "modules/agent/model-tools.ts",
+        "line": 1889,
+        "needle": "transfer"
+      },
+      {
+        "path": "plugins/capture-sources/baidu-drive/index.ts",
+        "line": 15,
+        "needle": "transfer"
+      },
+      {
+        "path": "plugins/capture-sources/baidu-drive/references/operations.md",
+        "line": 14,
+        "needle": "transfer"
+      },
+      {
+        "path": "plugins/capture-sources/baidu-drive/skill-snapshot.ts",
+        "line": 13,
+        "needle": "transfer"
+      },
+      {
+        "path": "plugins/capture-sources/owned-capture.ts",
+        "line": 118,
+        "needle": "transfer"
+      },
+      {
+        "path": "wfd/product/tests/run_f_state_consistency.py",
+        "line": 6,
+        "needle": "transfer"
+      },
+      {
+        "path": "wfd/product/tests/test_product_bundle_p5a.py",
+        "line": 19,
+        "needle": "transfer"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_bundle.py",
+        "line": 35,
+        "needle": "transfer"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/state.py",
+        "line": 163,
+        "needle": "transfer"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/writerlock.py",
+        "line": 10,
+        "needle": "transfer"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/usage_suspension.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "apps/server/post-publication-correction.test.ts",
+        "line": 224,
+        "needle": "usage_suspension"
+      },
+      {
+        "path": "modules/collection/post-publication-correction.ts",
+        "line": 20,
+        "needle": "usage_suspension.py"
+      },
+      {
+        "path": "wfd/product/tests/test_post_publication_correction.py",
+        "line": 22,
+        "needle": "usage_suspension"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_data_service.py",
+        "line": 469,
+        "needle": "usage_suspension"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_machine.py",
+        "line": 1496,
+        "needle": "usage_suspension"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_service.py",
+        "line": 3082,
+        "needle": "usage_suspension"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/volume_publication.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/tests/test_fixed_read_pages.py",
+        "line": 359,
+        "needle": "volume_publication"
+      },
+      {
+        "path": "wfd/product/tests/test_full_product_pages.py",
+        "line": 560,
+        "needle": "volume_publication"
+      },
+      {
+        "path": "wfd/product/tests/test_p3b_data_only_batches.py",
+        "line": 21,
+        "needle": "volume_publication"
+      },
+      {
+        "path": "wfd/product/tests/test_p4b_precise_hydration.py",
+        "line": 24,
+        "needle": "volume_publication"
+      },
+      {
+        "path": "wfd/product/tests/test_p4b_registration_repair.py",
+        "line": 25,
+        "needle": "volume_publication"
+      },
+      {
+        "path": "wfd/product/tests/test_r2a_volume_publication.py",
+        "line": 20,
+        "needle": "volume_publication"
+      },
+      {
+        "path": "wfd/product/tests/test_r4a_cumulative_contract_closure.py",
+        "line": 32,
+        "needle": "volume_publication"
+      },
+      {
+        "path": "wfd/product/tests/test_store_opening.py",
+        "line": 15,
+        "needle": "volume_publication"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_machine.py",
+        "line": 368,
+        "needle": "volume_publication"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_volume_service.py",
+        "line": 6,
+        "needle": "volume_publication"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/write_targets.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/wfd_sdk/product_data_service.py",
+        "line": 28,
+        "needle": "write_targets"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_volume_service.py",
+        "line": 1377,
+        "needle": "write_targets"
+      }
+    ]
+  },
+  {
+    "path": "wfd/product/wfd_sdk/writerlock.py",
+    "classification": "WFD Python 进程与独立入口，非 TS import 图",
+    "textReferences": [
+      {
+        "path": "wfd/product/wfd_sdk/duckdb_sdk.py",
+        "line": 6,
+        "needle": "writerlock"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/gc.py",
+        "line": 28,
+        "needle": "writerlock"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_batches.py",
+        "line": 24,
+        "needle": "writerlock"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_bundle.py",
+        "line": 36,
+        "needle": "writerlock"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_data_service.py",
+        "line": 31,
+        "needle": "writerlock"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_service.py",
+        "line": 30,
+        "needle": "writerlock"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/product_volume_service.py",
+        "line": 59,
+        "needle": "writerlock"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/row_version_objects.py",
+        "line": 286,
+        "needle": "writerlock"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/state.py",
+        "line": 10,
+        "needle": "writerlock"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/transfer.py",
+        "line": 23,
+        "needle": "writerlock"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/usage_suspension.py",
+        "line": 30,
+        "needle": "writerlock"
+      },
+      {
+        "path": "wfd/product/wfd_sdk/volume_publication.py",
+        "line": 28,
+        "needle": "writerlock"
+      }
+    ]
+  }
+]

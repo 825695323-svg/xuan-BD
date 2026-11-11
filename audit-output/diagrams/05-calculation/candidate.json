@@ -1,0 +1,284 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "线路五 · 固定算法、Polars 与派生回写",
+    "locale": "zh-CN",
+    "output": "05-calculation.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/825695323-svg/xuan-BD",
+      "revision": "cc7a4de2f3d8587d16c3d9527b2945ad5712ce4d",
+      "provider": "github"
+    }
+  },
+  "components": [
+    {
+      "id": "request",
+      "type": "frontend",
+      "label": "会话发起计算请求",
+      "sublabel": "算法目录与明确参数",
+      "pos": [
+        400,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/financial/conversation-algorithms.ts",
+          "line": 28,
+          "end_line": 37
+        }
+      ]
+    },
+    {
+      "id": "local",
+      "type": "backend",
+      "label": "本地固定算法线路",
+      "sublabel": "LocalAlgorithmService",
+      "pos": [
+        40,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/financial/algorithm-service.ts",
+          "line": 134,
+          "end_line": 143
+        }
+      ]
+    },
+    {
+      "id": "polars",
+      "type": "backend",
+      "label": "独立固定计算线路",
+      "sublabel": "PolarsFixedService",
+      "pos": [
+        760,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/polars-fixed-service.ts",
+          "line": 142,
+          "end_line": 151
+        }
+      ]
+    },
+    {
+      "id": "snapshot",
+      "type": "database",
+      "label": "冻结 WFD 输入",
+      "sublabel": "快照 / 产品 / 来源记录",
+      "pos": [
+        400,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/fixed-calculation-service.ts",
+          "line": 20,
+          "end_line": 29
+        }
+      ]
+    },
+    {
+      "id": "check",
+      "type": "backend",
+      "label": "独立结构与数值核对",
+      "sublabel": "checkDerivedForWfd",
+      "pos": [
+        40,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/financial/derived-wfd-check.ts",
+          "line": 25,
+          "end_line": 34
+        }
+      ]
+    },
+    {
+      "id": "polarsresult",
+      "type": "database",
+      "label": "候选结果与用途证据",
+      "sublabel": "Polars 原请求与固定输入",
+      "pos": [
+        760,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/polars-fixed-service.ts",
+          "line": 142,
+          "end_line": 151
+        }
+      ]
+    },
+    {
+      "id": "publish",
+      "type": "backend",
+      "label": "派生发布适配",
+      "sublabel": "DerivedWfdPublisher",
+      "pos": [
+        40,
+        538
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/financial/derived-wfd-publisher.ts",
+          "line": 15,
+          "end_line": 24
+        }
+      ]
+    },
+    {
+      "id": "r1",
+      "type": "backend",
+      "label": "既有 R1 正式交接",
+      "sublabel": "不是独立直接写库",
+      "pos": [
+        400,
+        538
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/collection/r1-structured-handoff.ts",
+          "line": 173,
+          "end_line": 182
+        }
+      ]
+    },
+    {
+      "id": "wfd",
+      "type": "database",
+      "label": "正式派生数据与读回",
+      "sublabel": "仍由 WFD 准入与版本控制",
+      "pos": [
+        760,
+        538
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "adapters/database/wfd-product-machine.ts",
+          "line": 148,
+          "end_line": 157
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "request-to-local",
+      "from": "request",
+      "to": "local",
+      "label": "选择算法"
+    },
+    {
+      "id": "request-to-polars",
+      "from": "request",
+      "to": "polars",
+      "label": "选择固定计算"
+    },
+    {
+      "id": "snapshot-to-local",
+      "from": "snapshot",
+      "to": "local",
+      "label": "固定输入"
+    },
+    {
+      "id": "snapshot-to-polars",
+      "from": "snapshot",
+      "to": "polars",
+      "label": "固定输入"
+    },
+    {
+      "id": "local-to-check",
+      "from": "local",
+      "to": "check"
+    },
+    {
+      "id": "check-to-publish",
+      "from": "check",
+      "to": "publish",
+      "label": "核验通过",
+      "variant": "security"
+    },
+    {
+      "id": "publish-to-r1",
+      "from": "publish",
+      "to": "r1"
+    },
+    {
+      "id": "polars-to-polarsresult",
+      "from": "polars",
+      "to": "polarsresult"
+    },
+    {
+      "id": "polarsresult-to-r1",
+      "from": "polarsresult",
+      "to": "r1",
+      "label": "用途合格",
+      "variant": "security"
+    },
+    {
+      "id": "r1-to-wfd",
+      "from": "r1",
+      "to": "wfd"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "slate",
+      "title": "需要分别核对的两条线",
+      "items": [
+        "本地金融插件与 Polars 固定计算不是同一入口，也不是两个都必须依次运行。",
+        "算法新结果仍经独立核对与 R1 交接，不能在图中画成绕过 WFD 准入。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "当前缺口",
+      "items": [
+        "旧批次均线与人工入口有契约限制；全仓测试仍有断言不一致。",
+        "Polars 和 Python 依赖在审查环境未装配，不把跳过测试计为运行通过。"
+      ]
+    }
+  ]
+}

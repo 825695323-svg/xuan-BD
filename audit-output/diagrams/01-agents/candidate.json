@@ -1,0 +1,277 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "线路一 · AGENTS 会话、工具与状态回路",
+    "locale": "zh-CN",
+    "output": "01-agents.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/825695323-svg/xuan-BD",
+      "revision": "cc7a4de2f3d8587d16c3d9527b2945ad5712ce4d",
+      "provider": "github"
+    }
+  },
+  "components": [
+    {
+      "id": "input",
+      "type": "frontend",
+      "label": "用户输入与附件",
+      "sublabel": "会话 / 分支 / 输入规则",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/agent/input-router.ts",
+          "line": 14,
+          "end_line": 23
+        }
+      ]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "会话状态机",
+      "sublabel": "PersonalCore 运行代次",
+      "pos": [
+        400,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/agent/runtime/core.ts",
+          "line": 59,
+          "end_line": 68
+        }
+      ]
+    },
+    {
+      "id": "backend",
+      "type": "backend",
+      "label": "模型与上下文",
+      "sublabel": "PiBackend / 当前 API",
+      "pos": [
+        760,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "adapters/llm/pi.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "bridge",
+      "type": "backend",
+      "label": "模型工具目录",
+      "sublabel": "CoreModelTools",
+      "pos": [
+        760,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/agent/model-tools.ts",
+          "line": 56,
+          "end_line": 65
+        }
+      ]
+    },
+    {
+      "id": "allow",
+      "type": "security",
+      "label": "动作允许与资料范围",
+      "sublabel": "允许表 / 分享票据",
+      "pos": [
+        400,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/agent/model-tools.ts",
+          "line": 56,
+          "end_line": 65
+        }
+      ],
+      "tag": "新增归档动作缺失"
+    },
+    {
+      "id": "task",
+      "type": "security",
+      "label": "冻结任务与权限",
+      "sublabel": "TaskService / 预算 / 审批",
+      "pos": [
+        40,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/jobs/tasks.ts",
+          "line": 216,
+          "end_line": 225
+        }
+      ]
+    },
+    {
+      "id": "execute",
+      "type": "backend",
+      "label": "确定性工具运行",
+      "sublabel": "DirectRuntime / 对应桥接",
+      "pos": [
+        40,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "apps/server/capabilities.ts",
+          "line": 162,
+          "end_line": 171
+        }
+      ]
+    },
+    {
+      "id": "receipt",
+      "type": "backend",
+      "label": "结果与失败证据",
+      "sublabel": "回执 / 分页 / 完成事件",
+      "pos": [
+        400,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/agent/model-tools.ts",
+          "line": 255,
+          "end_line": 264
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "type": "backend",
+      "label": "长期记忆与上下文账本",
+      "sublabel": "MemoryService / ContextLedger",
+      "pos": [
+        760,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "modules/agent/memory.ts",
+          "line": 5,
+          "end_line": 14
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "input-to-core",
+      "from": "input",
+      "to": "core"
+    },
+    {
+      "id": "core-to-backend",
+      "from": "core",
+      "to": "backend"
+    },
+    {
+      "id": "backend-to-bridge",
+      "from": "backend",
+      "to": "bridge",
+      "label": "工具请求"
+    },
+    {
+      "id": "bridge-to-allow",
+      "from": "bridge",
+      "to": "allow"
+    },
+    {
+      "id": "allow-to-task",
+      "from": "allow",
+      "to": "task",
+      "label": "获准动作",
+      "variant": "security"
+    },
+    {
+      "id": "task-to-execute",
+      "from": "task",
+      "to": "execute"
+    },
+    {
+      "id": "execute-to-receipt",
+      "from": "execute",
+      "to": "receipt"
+    },
+    {
+      "id": "receipt-to-memory",
+      "from": "receipt",
+      "to": "memory"
+    },
+    {
+      "id": "memory-to-core",
+      "from": "memory",
+      "to": "core",
+      "label": "后续会话"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "入口断点",
+      "items": [
+        "artifact.manifest、archive、restore、inspect、release 和两个 candidates 动作均未进入 MODEL_ACTIONS。",
+        "不能把下层工具注册成功等同于模型可以发现和执行。"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "状态与权限",
+      "items": [
+        "停止、取消、恢复沿原任务身份与代次处理。",
+        "模型结果分享需要原会话和资料授权，不是任意文件读取权。",
+        "记忆回流表示已有上下文服务，不表示 Xuan 主体自主唤醒。"
+      ]
+    }
+  ]
+}

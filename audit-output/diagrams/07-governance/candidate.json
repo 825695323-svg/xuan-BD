@@ -1,0 +1,279 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "线路七 · 启动装配、版本、权限与持久化",
+    "locale": "zh-CN",
+    "output": "07-governance.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/825695323-svg/xuan-BD",
+      "revision": "cc7a4de2f3d8587d16c3d9527b2945ad5712ce4d",
+      "provider": "github"
+    }
+  },
+  "components": [
+    {
+      "id": "entry",
+      "type": "frontend",
+      "label": "本机启动入口",
+      "sublabel": "scripts/web.ts / local-web",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "scripts/web.ts",
+          "line": 1,
+          "end_line": 10
+        }
+      ]
+    },
+    {
+      "id": "bindings",
+      "type": "backend",
+      "label": "资源与连接绑定",
+      "sublabel": "ResourceBindings / 配置",
+      "pos": [
+        400,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/resources/bindings.ts",
+          "line": 26,
+          "end_line": 35
+        }
+      ]
+    },
+    {
+      "id": "services",
+      "type": "backend",
+      "label": "服务装配与能力注册",
+      "sublabel": "createApplicationServices",
+      "pos": [
+        760,
+        40
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "apps/server/services.ts",
+          "line": 217,
+          "end_line": 226
+        }
+      ]
+    },
+    {
+      "id": "versions",
+      "type": "security",
+      "label": "依赖版本冻结",
+      "sublabel": "directDependencyVersions",
+      "pos": [
+        760,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/plugins/direct-versions.ts",
+          "line": 147,
+          "end_line": 156
+        }
+      ],
+      "tag": "GNU / musl 选择错误"
+    },
+    {
+      "id": "permissions",
+      "type": "security",
+      "label": "操作授权与路径保护",
+      "sublabel": "PermissionService",
+      "pos": [
+        400,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/security/permissions.ts",
+          "line": 56,
+          "end_line": 65
+        }
+      ]
+    },
+    {
+      "id": "task",
+      "type": "backend",
+      "label": "任务代次、预算与停止",
+      "sublabel": "TaskService",
+      "pos": [
+        40,
+        206
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/jobs/tasks.ts",
+          "line": 216,
+          "end_line": 225
+        }
+      ]
+    },
+    {
+      "id": "process",
+      "type": "backend",
+      "label": "受控进程与临时空间",
+      "sublabel": "ProcessRuntime / DirectWorkspace",
+      "pos": [
+        40,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/runtime/file-workspace.ts",
+          "line": 12,
+          "end_line": 21
+        }
+      ]
+    },
+    {
+      "id": "state",
+      "type": "database",
+      "label": "本地状态数据库",
+      "sublabel": "CoreDatabase / 事务",
+      "pos": [
+        400,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/state/database.ts",
+          "line": 6,
+          "end_line": 15
+        }
+      ]
+    },
+    {
+      "id": "retention",
+      "type": "backend",
+      "label": "已释放暂存的定期回收",
+      "sublabel": "TemporaryRetention",
+      "pos": [
+        760,
+        372
+      ],
+      "size": [
+        230,
+        72
+      ],
+      "sources": [
+        {
+          "path": "platform/resources/temporary-retention.ts",
+          "line": 9,
+          "end_line": 18
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "entry-to-bindings",
+      "from": "entry",
+      "to": "bindings"
+    },
+    {
+      "id": "bindings-to-services",
+      "from": "bindings",
+      "to": "services"
+    },
+    {
+      "id": "services-to-versions",
+      "from": "services",
+      "to": "versions"
+    },
+    {
+      "id": "versions-to-permissions",
+      "from": "versions",
+      "to": "permissions",
+      "label": "版本有效",
+      "variant": "security"
+    },
+    {
+      "id": "permissions-to-task",
+      "from": "permissions",
+      "to": "task",
+      "label": "获授权",
+      "variant": "security"
+    },
+    {
+      "id": "task-to-process",
+      "from": "task",
+      "to": "process"
+    },
+    {
+      "id": "task-to-state",
+      "from": "task",
+      "to": "state",
+      "label": "状态回执"
+    },
+    {
+      "id": "process-to-retention",
+      "from": "process",
+      "to": "retention",
+      "label": "明确释放暂存"
+    },
+    {
+      "id": "retention-to-state",
+      "from": "retention",
+      "to": "state",
+      "label": "保留记录"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "slate",
+      "title": "基础设施不等于业务主动性",
+      "items": [
+        "定期暂存清理只处理已释放的临时空间，不替代业务归档或 Xuan 自主认知。",
+        "停止/授权/版本约束始终由宿主执行，模型不能自授权限。"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "版本冻结缺口",
+      "items": [
+        "原生可选依赖只按 platform-arch 字串选择，Linux 下会同时要求 GNU 与 musl 制品。",
+        "新归档实现文件未列入 DirectImplementation 对应源码组，代码指纹覆盖不足。"
+      ]
+    }
+  ]
+}
