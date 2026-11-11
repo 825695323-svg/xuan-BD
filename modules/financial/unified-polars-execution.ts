@@ -66,7 +66,7 @@ export class UnifiedPolarsExecution {
     }
     const calculation = raw.methodId === 'financial_linear'
       ? readFinancialCalculation(raw.calculation) : readMacroYoYCalculation(raw.calculation);
-    if (raw.methodId === 'financial_linear' && calculation.operation === 'standardize')
+    if (raw.methodId === 'financial_linear' && (calculation as FinancialCalculation).operation === 'standardize')
       return fail('UNIFIED_POLARS_METHOD', '统一 Polars 只允许已核验的财务期间算术；来源标准化属于原报生产管线。');
     return { methodId: raw.methodId, source: { kind: 'fixed_snapshot' },
       calculation, usage: { purpose: 'current_compute' } } as Input;
