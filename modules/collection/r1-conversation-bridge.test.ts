@@ -513,7 +513,10 @@ test('F05 R1 UI invalidates confirmation on detail loads and gates recovery on o
   const show = /const showView = \(current: R1RequestView\) => \{([\s\S]*?)\n  \};/u.exec(source);
   assert.ok(show);
   assert.ok(show[1]!.includes('setConfirmed(false)'), 'Every detail load must invalidate prior human confirmation.');
-  assert.ok(source.includes('disabled={busy || !ready || !view.submitTaskId}'), 'Unsubmitted requests must not offer external recovery.');
+  const recoveryButton = /disabled=\\{busy \\|\\| !ready \\|\\| !view\\.submitTaskId \\|\\| \\[([^\\]]+)\\]\\.includes\\(view\\.state\\)\\}/u.exec(source);
+  assert.ok(recoveryButton, 'Unsubmitted requests must not offer external recovery.');
+  for (const terminal of ['associated', 'partially_associated', 'conflicts_pending', 'rejected'])
+    assert.ok(recoveryButton[1]!.includes("'" + terminal + "'"), 'Terminal state ' + terminal + ' must not offer redundant recovery.');
 });
 
 test('F05 R1 version manifest covers authority-bearing connection dependencies', () => {
