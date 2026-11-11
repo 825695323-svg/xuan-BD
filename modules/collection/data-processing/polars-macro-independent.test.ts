@@ -93,6 +93,15 @@ test('macro YoY verifier rejects changed arithmetic, version, lineage, period, u
   tamper((evidence) => { evidence.workerSha256 = 'b'.repeat(64); });
 });
 
+test('negative sub-precision result preserves the signed zero emitted by Polars Decimal', () => {
+  const minusZero = fixture('99.999999999999999999', '100', '-0.00000000');
+  assert.doesNotThrow(() => assertMacroYoYCandidate(calc, minusZero.evidence, [minusZero.row]));
+  fails(() => assertMacroYoYCandidate(calc, minusZero.evidence,
+    [{ ...minusZero.row, value: '0.00000000' }]));
+  const plusZero = fixture('100', '100', '0.00000000');
+  assert.doesNotThrow(() => assertMacroYoYCandidate(calc, plusZero.evidence, [plusZero.row]));
+});
+
 test('half-even tie calculation does not substitute JS floating point', () => {
   // 100*(1/2^9)=0.1953125, then 8 decimals is 0.19531250 exactly.
   const f = fixture('513', '512', '0.19531250');
