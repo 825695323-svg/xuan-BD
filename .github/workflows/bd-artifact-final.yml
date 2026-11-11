@@ -4,9 +4,6 @@ on:
   # 仅手动触发全仓诊断；缺少随包资源的普通托管机无法证明完整回归通过。
   # 失败仍按实记录，不影响已有专项验收工作流。
   workflow_dispatch:
-  # 修复分支仅临时跑一次全仓回归，验收后恢复手动诊断。
-  push:
-    branches: [fix/r1-retrieval-contracts-20261111]
 
 permissions:
   contents: read
