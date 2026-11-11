@@ -529,7 +529,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       auto: r1Auto, processing, materials, enabled: fixedCalculationEnabled(options.resources) }) : undefined;
   // 新算法 Polars 在统一 algorithms.calculate 下使用独立方法执行器，不走旧原报候选五步。
   const unifiedPolars = options.role === 'service' && r1Workspace && options.processRuntime
-    ? new UnifiedPolarsExecution({ tasks: currentTasks, workspace: r1Workspace,
+    ? new UnifiedPolarsExecution({ database, tasks: currentTasks, workspace: r1Workspace,
       processRuntime: options.processRuntime }) : undefined;
   const questions = new AgentQuestionService(database, core);
   modelTools = createCoreModelTools({ database, core, permissions, files, registry: direct.registry, service: bd, conversationFinancial, conversationAlgorithms, businessGoals, questions,
