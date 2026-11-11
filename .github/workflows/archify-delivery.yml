@@ -1,0 +1,67 @@
+name: Archify audited diagram delivery
+on:
+  push:
+    branches: [audit/archify-code-review-20261111]
+    paths: ['.github/workflows/archify-delivery.yml', '.audit/archify/final-delivery.py']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: xuan-archify-audit
+  cancel-in-progress: false
+jobs:
+  deliver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ARCHIFY_UPDATE_CHECK_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+      - name: Prepare pinned source and real Archify
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/xuan-source" cc7a4de2f3d8587d16c3d9527b2945ad5712ce4d
+          git clone --filter=blob:none https://github.com/tt-a1i/archify.git "$RUNNER_TEMP/archify-source"
+          git -C "$RUNNER_TEMP/archify-source" checkout --detach 7e45f36c66de1254d5ad6ba1d878f6499ea269fd
+          sudo apt-get update -qq
+          sudo apt-get install -y fonts-noto-cjk python3-pil
+      - name: Refine routes and capture actual Archify output
+        run: |
+          python3 .audit/archify/final-delivery.py "$RUNNER_TEMP/xuan-source" "$RUNNER_TEMP/archify-source" "$GITHUB_WORKSPACE/audit-output"
+      - name: Package interactive diagrams and evidence
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import pathlib,zipfile
+          with zipfile.ZipFile('xuan-bd-archify-audit.zip','w',zipfile.ZIP_DEFLATED) as z:
+            for f in pathlib.Path('audit-output').rglob('*'):
+              if f.is_file(): z.write(f,str(f))
+          PY
+          tar -czf "$RUNNER_TEMP/final-audit-output.tar.gz" audit-output xuan-bd-archify-audit.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xuan-bd-archify-final-delivery
+          path: |
+            audit-output/
+            xuan-bd-archify-audit.zip
+      - name: Commit only generated outputs on the audit branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'Xuan Architecture Audit'
+          git config user.email 'audit@users.noreply.github.com'
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=$auth" fetch origin audit/archify-code-review-20261111
+          git reset --hard origin/audit/archify-code-review-20261111
+          tar -xzf "$RUNNER_TEMP/final-audit-output.tar.gz" -C "$GITHUB_WORKSPACE"
+          git add audit-output xuan-bd-archify-audit.zip
+          git diff --cached --quiet && exit 0
+          git commit -m 'audit: publish verified Archify diagrams and review report [skip ci]'
+          git -c "http.https://github.com/.extraheader=$auth" push origin HEAD:audit/archify-code-review-20261111
