@@ -210,10 +210,6 @@ async function invoke(h: Host, input: BackendInput, action: string, args: Record
     json(tracePath, { toolCallId, action, args, modelError: { code: (error as { code?: string }).code ?? null,
       message: (error as Error).message }, actualTaskId: task?.id ?? null, actualTaskStatus: task?.status ?? null,
       actualTaskError: task?.error ?? null });
-    if (process.env.BD_DIAG_PROCESSING === '1' && action.startsWith('data.processing.'))
-      console.error('BD_PROCESSING_DIAG', JSON.stringify({ action, toolCallId,
-        modelCode: (error as { code?: string }).code ?? null, modelMessage: (error as Error).message,
-        taskId: task?.id ?? null, taskStatus: task?.status ?? null, taskError: task?.error ?? null }));
     throw error;
   }
 }
