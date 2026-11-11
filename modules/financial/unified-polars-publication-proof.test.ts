@@ -116,7 +116,7 @@ test('changed WFD values, revision, account and supplied outputs cannot pass pub
     connection: { instance: 'actual-WFD', namespace: 'test' },
     result: { snapshot_id: input.snapshotId, product_id: input.productId,
       rows: [{ ...sample.source.find(row => (row.record_ref as WfdRecord).snapshot_id === input.snapshotId)!,
-        values: { ...sample.source[0]!.values, value: { value: '999', value_state: 'valid_value' } } }],
+        values: { ...(sample.source[0]!.values as WfdRecord), value: { value: '999', value_state: 'valid_value' } } }],
       page: { has_more: false, next_cursor: null } },
   }));
   await fail(async input => ({
