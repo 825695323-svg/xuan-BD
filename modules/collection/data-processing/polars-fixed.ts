@@ -214,11 +214,14 @@ export async function projectMacroYoYPolars(execution: PolarsExecution, calculat
     value: actual.value, value_state: actual.value === null ? 'unknown' : actual.state,
     calculation_status: actual.state, unit: 'percent', method: 'exact_yoy_percentage',
     start_utc: current.period_start + 'T00:00:00Z', end_utc: new Date(Date.parse(String(current.period_end) + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10) + 'T00:00:00Z' }];
-  return { jsonBytes: Buffer.from(canonicalWfdJson(rows)), evidence: { version: POLARS_FIXED_VERSION,
+  const outputEvidence: WfdRecord = { version: POLARS_FIXED_VERSION,
     method: 'macro_yoy', inputs: evidence, connection, knowledgeCutoff: calculation.knowledgeCutoff, historicalQualification: 'not_asserted',
     releaseSelection: 'explicit business-key and record-version; never latest',
     arithmetic: '(current-previous)/previous*100; exact decimal, final8 half-even; nonpositive denominator indeterminate',
-    algorithmDefinition: macroYoYAlgorithmDefinition(), workerSha256: workerDigest, execution: receipt, publication: 'candidate_only' } };
+    algorithmDefinition: macroYoYAlgorithmDefinition(), workerSha256: workerDigest, execution: receipt, publication: 'candidate_only' };
+  // 产生候选时即独立重核一次；随后原 R1 准备/首次发送还会按原冻结证据再核。
+  assertMacroYoYCandidate(calculation, outputEvidence, rows);
+  return { jsonBytes: Buffer.from(canonicalWfdJson(rows)), evidence: outputEvidence };
 }
 
 
