@@ -65,7 +65,8 @@ test('shared row-block candidate cleanup only removes truly unreferenced objects
     assert.equal((pruned.result?.data as any).removed, 1);
     assert.equal(f.database.connection.prepare('SELECT 1 FROM candidate_objects WHERE sha256=?').get(f.b), undefined);
     const retained = f.database.connection.prepare('SELECT bytes FROM candidate_objects WHERE sha256=?').get(f.a)?.bytes;
-    assert.deepEqual(Buffer.from(retained), first);
+    assert.ok(retained instanceof Uint8Array);
+    assert.deepEqual(Buffer.from(retained as Uint8Array), first);
     assert.equal(Number(f.database.connection.prepare('SELECT count(*) n FROM candidate_row_blocks').get()?.n), initialBlocks);
     const retry = await f.call('artifact.candidates.prune', { expectedPlanDigest: plan.planDigest });
     assert.equal(retry.status, 'failed');
