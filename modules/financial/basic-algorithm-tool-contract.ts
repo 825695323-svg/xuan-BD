@@ -19,7 +19,14 @@ export function isUnmigratedLegacyAlgorithmMethod(value: unknown): boolean {
       Object.values(LEGACY_FIXED_METHOD_ALIASES).some(id => id === value));
 }
 
-export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, selectedMethod?: string) {
+/** Read-only capability supplied by the existing trusted Polars executor, not a second method registry. */
+export interface UnifiedBackendCapability {
+  status: 'ready' | 'blocked'; reason: string | null;
+  methods: readonly string[]; version: string;
+}
+export function basicAlgorithmToolContract(
+  catalog: AlgorithmCatalogView, selectedMethod?: string, unified?: UnifiedBackendCapability,
+) {
   const methods = catalog.methods.map(method => ({
     methodId: method.id, title: method.title, status: method.status, reason: method.reason,
     executor: 'python', interface: 'algorithms.calculate', methodVersion: method.methodVersion,
@@ -39,13 +46,29 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
   const oldMethods = (Object.keys(FIXED_CALCULATION_METHODS) as Array<keyof typeof FIXED_CALCULATION_METHODS>)
     .filter(id => !executableIds.has(legacyIds[id]))
     .map(id => {
-      const definition = FIXED_CALCULATION_METHODS[id];
+      const definition = FIXED_CALCULATION_METHODS[id], methodId = legacyIds[id];
+      // The running backend is the sole authority for readiness. A catalog entry alone
+      // must not claim that a Polars calculation can create a verified WFD derivative.
+      const ready = unified?.status === 'ready' && unified.methods.includes(methodId);
+      const methodVersion = id === 'macro_yoy' ? 'bd.macro-yoy/1' : id === 'financial_linear'
+        ? 'bd-financial-fixed/1' : 'not_adopted';
       return {
-        methodId: legacyIds[id], legacyMethodId: id, title: definition.title, status: 'blocked' as const,
-        reason: '原 Polars 计算尚未迁入统一 WFD 冻结输入、独立核验和派生正式发布；旧任务只读。',
+        methodId, legacyMethodId: id, title: definition.title, status: ready ? 'ready' as const : 'blocked' as const,
+        reason: ready ? null : unified?.reason ?? '方法尚无可用的统一 WFD 固定输入、独立核验及正式发布适配。',
         executor: 'polars', interface: 'algorithms.calculate',
-        methodVersion: 'not_adopted', implementationVersion: 'not_adopted',
-        parameters: { legacyInput: definition.input, migrationRequired: true },
+        methodVersion: ready ? methodVersion : 'not_adopted', implementationVersion: ready ? unified.version : 'not_adopted',
+        parameters: ready ? {
+          requestFields: ['methodId', 'source', 'calculation', 'usage'],
+          source: { kind: 'fixed_snapshot' }, usage: { purpose: 'current_compute' },
+          calculation: id === 'financial_linear' ? {
+            version: methodVersion, operations: ['quarter_difference', 'ttm'],
+            inputs: '明确固定 snapshotId/productId/businessKeys 的财务记录',
+          } : {
+            version: methodVersion, historyMode: 'snapshot_contents',
+            knowledgeCutoff: '明确 UTC 校验截止',
+            inputs: '两条具体 snapshotId/productId/businessKey/recordVersion',
+          },
+        } : { legacyInput: definition.input, migrationRequired: true },
         requiredFields: id === 'financial_linear'
           ? ['accounting_standard', 'currency', 'scope', 'concept', 'period_type', 'value']
           : id === 'macro_yoy' ? ['series_code', 'region', 'base_period', 'published_at', 'value']
@@ -53,9 +76,9 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
         outputFields: id === 'financial_linear' ? ['value'] : id === 'macro_yoy' ? ['yoy'] : ['moving_average'],
         limitations: [definition.scope, '不得重开旧原报批次自动算法', '必须完成独立数值验收和统一 WFD 发布适配才能启用'],
         input: { kind: 'fixed_snapshot', referenceKind: 'wfd_fixed_snapshot',
-          requiredIdentity: ['instanceId', 'productId', 'snapshotId', 'definitionRevision'],
-          requiredEvidence: ['fields', 'fieldMapping', 'semantics', 'calendar'],
-          historical: '明确 historyMode/cutoff 并经 WFD 历史资格核对' },
+          requiredIdentity: ['snapshotId', 'productId', 'businessKey', 'recordVersion'],
+          requiredEvidence: ['原始 WFD 固定行', '记录版本', '同一受信连接', '财务或宏观独立数值复核'],
+          historical: '仅固定快照内容；未证明历史时点可知' },
         output: { state: 'computed', persistence: 'not_requested', publication: 'not_requested' },
       };
     });
@@ -87,7 +110,7 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
 }
 
 /** 会话是唯一任务入口；采集/文件工具与算法不建立自动调用链。 */
-export function bdSessionToolContract(catalog: AlgorithmCatalogView) {
+export function bdSessionToolContract(catalog: AlgorithmCatalogView, unified?: UnifiedBackendCapability) {
   return { version: BD_SESSION_TOOL_CONTRACT_VERSION, entry: 'bd_agents.conversation',
     owner: 'bd_agents', agentTriggeredCalculation: true, uiCalculation: false, backgroundCalculation: false,
     toolGroups: [
@@ -107,5 +130,5 @@ export function bdSessionToolContract(catalog: AlgorithmCatalogView) {
       { id: 'basic_algorithms', title: '基础算法 / Basic Algorithms',
         tools: ['algorithms.contract', 'algorithms.capabilities', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status'],
         next: 'AGENTS 调用 → WFD 固定快照 → 固定算法结构化结果 → 独立核对 → WFD 正式发布与固定读回' },
-    ], algorithms: basicAlgorithmToolContract(catalog) };
+    ], algorithms: basicAlgorithmToolContract(catalog, undefined, unified) };
 }
