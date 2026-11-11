@@ -22,9 +22,9 @@ test('real host exposes all artifact tools and accepts frozen versions for read-
     assert.equal(modelActionApprovalMode('artifact.release', {}), 'review');
     assert.equal(modelActionApprovalMode('artifact.candidates.prune', {}), 'review');
     const manifest = registry.captureVersions('artifact.manifest', { sourceTaskId: 'audit-source' });
-    assert.match(manifest.directImplementation, /^[a-f0-9]{64}$/u);
+    assert.match(manifest.directImplementation ?? '', /^[a-f0-9]{64}$/u);
     const candidate = registry.captureVersions('artifact.candidates.inspect', {});
-    assert.match(candidate.directImplementation, /^[a-f0-9]{64}$/u);
+    assert.match(candidate.directImplementation ?? '', /^[a-f0-9]{64}$/u);
     assert.notEqual(manifest.directImplementation, candidate.directImplementation);
   } finally { await host.close(); }
 });
