@@ -66,7 +66,7 @@ test('Polars financial and macro use identical R1 scalar output and signed fixed
     assert.equal(checked.resultSha256, digest(result));
     const document = buildStructuredIngestDocument(checked.structured);
     assert.match(checked.structured.submissionDigest, /^sha256:[a-f0-9]{64}$/u);
-    assert.equal(document.outputs.length, 1);
+    assert.equal((document.outputs as unknown[]).length, 1);
   }
 });
 
