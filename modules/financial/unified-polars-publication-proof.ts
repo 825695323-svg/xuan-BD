@@ -53,7 +53,7 @@ export async function verifyUnifiedPolarsForPublication(
     const proof = input.evidence.linearAdmission;
     if (!isWfdRecord(proof) || !Array.isArray(proof.rows) || proof.rows.length !== calc.inputs.length
       || original.length !== calc.inputs.length) fail('冻结财务核验没有完整、逐项的原始来源版本。');
-    const frozenRows = proof.rows as WfdRecord[];
+    const frozenRows = (proof as WfdRecord).rows as WfdRecord[];
     refs = calc.inputs.map((selection, index) => {
       const item = frozenRows[index];
       if (!isWfdRecord(item) || !isWfdRecord(item.record_ref) || selection.businessKeys.length !== 1
