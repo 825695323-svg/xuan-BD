@@ -106,6 +106,12 @@ export class UnifiedPolarsExecution {
       publication: { state: 'not_requested' as const }, guidance: result
         ? '结构化计算已完成，尚需 WFD 再次固定来源核验及正式读回。' : null };
   }
+  owns(taskId: string): boolean {
+    try {
+      const task = this.tasks.get(taskId);
+      return task.runtimeId === UNIFIED_POLARS_RUNTIME && task.action === 'algorithms.calculate';
+    } catch { return false; }
+  }
   private task(taskId: string): TaskRecord {
     const task = this.tasks.get(taskId);
     if (task.runtimeId !== UNIFIED_POLARS_RUNTIME || task.action !== 'algorithms.calculate')
