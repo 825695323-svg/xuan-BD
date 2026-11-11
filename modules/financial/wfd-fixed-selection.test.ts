@@ -93,3 +93,19 @@ test('aborted task never reads WFD or accepts a partial record selection', async
     (error: unknown) => (error as { name?: string }).name === 'AbortError');
   assert.equal(reads, 0);
 });
+
+test('current is a valid literal business key even though latest/current snapshot pointers are forbidden', async () => {
+  const selected = { snapshotId: 'snapshot-2026', productId: 'product-2026', businessKeys: ['current'],
+    recordVersions: { current: 'revision-1' } };
+  const reader: WfdFixedRecordReader = async input => ({
+    connection: { instance: 'account-A' },
+    result: { snapshot_id: input.snapshotId, product_id: input.productId,
+      history_mode: 'snapshot_contents',
+      rows: [{ record_ref: { logical_key: 'current', revision_id: 'revision-1' },
+        values: { value: { value: '10', value_state: 'valid_value' } } }],
+      page: { has_more: false, next_cursor: null } },
+  });
+  const result = await selectWfdFixedRecords([selected], reader, new AbortController().signal);
+  assert.equal((result.selections[0]!.rows[0]!.record_ref as { logical_key: string }).logical_key, 'current');
+  await assert.rejects(selectWfdFixedRecords([{ ...selected, snapshotId: 'current' }], reader, new AbortController().signal));
+});
