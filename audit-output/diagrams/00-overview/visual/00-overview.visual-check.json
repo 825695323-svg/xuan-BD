@@ -6,7 +6,7 @@
   "status": "pass",
   "visualReview": "pending",
   "provenance": "current",
-  "deliveryReceiptId": "02a37e86-6f52-4d29-a9b6-b3b0d70d574c",
+  "deliveryReceiptId": "262bcdb8-7664-4052-993f-78cd8e97d9f8",
   "artifact": {
     "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/00-overview/00-overview.html",
     "sha256": "a330dc360f9cb3b1ea6b53c8ca318797d5c845692bca373a43361c05b8f688b6",
@@ -938,23 +938,23 @@
         "file": "00-overview.visual-check.html"
       },
       {
-        "sha256": "3fa5eed670ef4107f8261c4fb6e88b41d12000f3ec450844c633572f13da6b66",
-        "bytes": 71345,
+        "sha256": "eb743712b278deaa21debbe33c6c939d15ee665cbaa86b1ace2c17bb6f3530af",
+        "bytes": 126778,
         "file": "00-overview.visual-check.1440x900.light.png"
       },
       {
-        "sha256": "7fa0d69ff17c6262782f61374836d7aa8000d694b70ad6b5454ce1748fd15fa8",
-        "bytes": 82967,
+        "sha256": "d6ba0f5bb2c3acd9b16d9c35daf8d40565fae12e748c92c40c7abb6367d3db19",
+        "bytes": 138421,
         "file": "00-overview.visual-check.1440x900.dark.png"
       },
       {
-        "sha256": "34ed99eb53d4b86f1c890fa4c44fa33ce6c72d215316807edeb54e57ca8a52b0",
-        "bytes": 95039,
+        "sha256": "868c4b4d79dae4adb7ea5f36f035afc5c0d29ad1ffa0a8a045647de00608d3fd",
+        "bytes": 174552,
         "file": "00-overview.visual-check.2048x1320.light.png"
       },
       {
-        "sha256": "87f1bdb16124d0f01b12dc71a33b49a72a0439b617deb4a5e01820f6ef009d54",
-        "bytes": 108551,
+        "sha256": "f3a5a703bed2534bbc33f9a51ccdebe500cc6ec277226f43103a6017778656b1",
+        "bytes": 188048,
         "file": "00-overview.visual-check.2048x1320.dark.png"
       }
     ]

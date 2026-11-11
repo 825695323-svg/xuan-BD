@@ -5,7 +5,7 @@
   "status": "pass",
   "type": "architecture",
   "quality": "showcase",
-  "startedAt": "2026-11-11T02:44:55.355Z",
+  "startedAt": "2026-11-11T02:55:17.990Z",
   "specification": {
     "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/01-agents/candidate.json",
     "sha256": "6700739b8f7810dc5b2c21db2a11544ef7613385873a0d4d075a9c6a7fb40dd7",
@@ -56,7 +56,7 @@
     "deliver": {
       "status": "pass",
       "exitCode": 0,
-      "durationMs": 333,
+      "durationMs": 434,
       "command": [
         "/opt/hostedtoolcache/node/24.22.1/x64/bin/node",
         "/home/runner/work/_temp/archify-source/archify/bin/archify.mjs",
@@ -72,7 +72,7 @@
       ],
       "receipt": {
         "schemaVersion": 1,
-        "receiptId": "04c065d7-9751-4ce2-ba5a-4d9ef04056d5",
+        "receiptId": "038d901b-9562-422f-94a2-9c334936ffdd",
         "ok": true,
         "command": "deliver",
         "type": "architecture",
@@ -116,7 +116,7 @@
     "check": {
       "status": "pass",
       "exitCode": 0,
-      "durationMs": 125,
+      "durationMs": 159,
       "command": [
         "/opt/hostedtoolcache/node/24.22.1/x64/bin/node",
         "/home/runner/work/_temp/archify-source/archify/bin/archify.mjs",
@@ -280,13 +280,13 @@
           "issues": []
         },
         "provenance": "current",
-        "deliveryReceiptId": "04c065d7-9751-4ce2-ba5a-4d9ef04056d5"
+        "deliveryReceiptId": "038d901b-9562-422f-94a2-9c334936ffdd"
       }
     },
     "browser-check": {
       "status": "pass",
       "exitCode": 0,
-      "durationMs": 1587,
+      "durationMs": 2174,
       "command": [
         "/opt/hostedtoolcache/node/24.22.1/x64/bin/node",
         "/home/runner/work/_temp/archify-source/archify/bin/archify.mjs",
@@ -304,7 +304,7 @@
         "status": "pass",
         "visualReview": "not-requested",
         "provenance": "current",
-        "deliveryReceiptId": "04c065d7-9751-4ce2-ba5a-4d9ef04056d5",
+        "deliveryReceiptId": "038d901b-9562-422f-94a2-9c334936ffdd",
         "artifact": {
           "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/01-agents/01-agents.html",
           "sha256": "7efdf21e5037e7e0ac58d12bcbbd975c54252a83e092a0ca466ebf40da6c94c1",
@@ -1030,8 +1030,8 @@
     "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/01-agents/01-agents.browser-check.json"
   },
   "visualReview": "not-requested",
-  "finishedAt": "2026-11-11T02:44:57.496Z",
-  "durationMs": 2140,
+  "finishedAt": "2026-11-11T02:55:20.866Z",
+  "durationMs": 2876,
   "update": {
     "status": "unavailable",
     "installedVersion": null,

@@ -33,7 +33,7 @@
     "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/06-artifact-lifecycle/06-artifact-lifecycle.browser-check.json"
   },
   "visualReview": "not-requested",
-  "durationMs": 1904,
+  "durationMs": 2841,
   "browserCheck": {
     "requested": true,
     "ran": true
