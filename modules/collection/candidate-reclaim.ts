@@ -49,7 +49,7 @@ export function createCandidateReclaimActions(options: { database: CoreDatabase 
     }
     const active = db.prepare([
       "SELECT 1 FROM tasks WHERE status NOT IN ('succeeded','failed','cancelled')",
-      " AND (action LIKE 'processing.%' OR action LIKE 'data.r1.%'",
+      " AND (action LIKE 'processing.%' OR action LIKE 'data.processing.%' OR action LIKE 'data.r1.%'",
       " OR action LIKE 'algorithms.%' OR action LIKE 'material.%') LIMIT 1",
     ].join('')).get();
     if (active) result.push('active-processing-or-r1-tasks');
@@ -59,10 +59,10 @@ export function createCandidateReclaimActions(options: { database: CoreDatabase 
     const sources = [
       ['processing_plan_steps', ['input_json', 'output_json', 'parameters_json', 'spec_digest']],
       ['processing_plan_outputs', ['structured_json']],
-      ['processing_plans', ['document_json', 'material_manifest_json']],
-      ['r1_handoff_attempts', ['local_refs_json', 'document_json']],
+      ['processing_plans', ['plan_json', 'material_manifest_json', 'policy_json', 'operator_json']],
+      ['r1_handoff_attempts', ['local_refs_json', 'document_json', 'receipt_json']],
       ['r1_originals', ['source_json']],
-      ['routing_decisions', ['facts_json']],
+      ['routing_decisions', ['dimensions_json', 'suggestions_json', 'gaps_json']],
     ] as const;
     for (const [table, columns] of sources) {
       if (!exists(table, 'table')) continue;
