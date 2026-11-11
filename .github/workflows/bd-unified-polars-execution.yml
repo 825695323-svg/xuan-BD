@@ -1,0 +1,40 @@
+name: BD unified algorithm Polars execution
+
+on:
+  push:
+    branches: [refactor/unified-polars-execution]
+  pull_request:
+    paths:
+      - 'modules/financial/unified-polars-execution.ts'
+      - 'modules/financial/conversation-algorithms.ts'
+      - 'apps/server/services.ts'
+      - 'contracts/workspace-services.ts'
+      - '.github/workflows/bd-unified-polars-execution.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  execution:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - name: Install pinned dependencies
+        run: npm ci
+      - name: Typecheck and frontend production build
+        run: npm run build
+      - name: Test unified task route and existing Polars verifiers
+        env:
+          XUAN_TEST_ROOT: ${{ runner.temp }}/bd-unified-polars-tests
+        run: |
+          mkdir -p "$XUAN_TEST_ROOT"
+          node --import tsx --test \
+            modules/financial/unified-polars-execution.test.ts \
+            modules/financial/unified-algorithm-discovery.test.ts \
+            modules/collection/data-processing/polars-macro-independent.test.ts \
+            modules/collection/data-processing/financial-fixed.test.ts
