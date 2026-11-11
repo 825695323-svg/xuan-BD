@@ -300,7 +300,7 @@ export function assertMacroYoYCandidate(raw: MacroYoYCalculation, evidence: WfdR
     const increment = rem * 2n > previousInt || rem * 2n === previousInt && q % 2n !== 0n ? 1n : 0n;
     const rounded = q + increment;
     const digits = rounded.toString().padStart(9, '0');
-    expectedValue = (numerator < 0n && rounded !== 0n ? '-' : '')
+    expectedValue = (numerator < 0n ? '-' : '')
       + digits.slice(0, -8) + '.' + digits.slice(-8);
     state = 'valid_value';
   }
