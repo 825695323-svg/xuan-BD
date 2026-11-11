@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
@@ -14,6 +14,10 @@ import { createDirectRuntime } from '../../apps/server/capabilities.js';
 import type { JsonValue } from '../../contracts/task-contracts.js';
 
 const codeRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
+const bundledPlatform = ['darwin-arm64', 'win32-x64'].includes(`${process.platform}-${process.arch}`);
+const bundledResourceSkip = bundledPlatform && existsSync(join(codeRoot, 'resources/bundled/manifest.json'))
+  ? false
+  : '本项只验证 macOS arm64 / Windows x64 的真实随包资源；当前平台或资源清单不符合，必须在目标发行包单独验收。';
 const testRoot = realpathSync(mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'bd-trusted-direct-')));
 after(() => rmSync(testRoot, { recursive: true, force: true }));
 
@@ -29,7 +33,7 @@ function fixture(name: string, selected: Record<string, unknown>) {
   return { root, resources, processRuntime: new ProcessRuntime(resources), artifactRoot: join(root, 'artifacts') };
 }
 
-test('fixed bundled video and transcription dependencies keep normal authorization and path boundaries', async () => {
+test('fixed bundled video and transcription dependencies keep normal authorization and path boundaries', { skip: bundledResourceSkip }, async () => {
   const bundle = new BundledResources(codeRoot), host = fixture('bundled', bundle.selectedBindings());
   const model = bundle.model('whisper_base'), yt = bundle.executable('yt_dlp'), ffmpeg = bundle.executable('ffmpeg');
   const trusted = trustedBundledDependencyRoot(host, () => model);
@@ -114,7 +118,7 @@ test('fixed bundled video and transcription dependencies keep normal authorizati
   await assert.rejects(fileDirect.runtime.execute(fileContext as never), { code: 'PROTECTED_RESOURCE' });
 });
 
-test('media conversion trusts only its bundled ffmpeg and ffprobe executables', async () => {
+test('media conversion trusts only its bundled ffmpeg and ffprobe executables', { skip: bundledResourceSkip }, async () => {
   const bundle = new BundledResources(codeRoot), host = fixture('media', bundle.selectedBindings());
   const ffmpeg = bundle.executable('ffmpeg'), ffprobe = bundle.executable('ffprobe');
   const yt = bundle.executable('yt_dlp'), model = bundle.model('whisper_base');
@@ -179,7 +183,7 @@ test('media conversion trusts only its bundled ffmpeg and ffprobe executables', 
   }
 });
 
-test('binding and manifest drift remove trust; native policy does not enable transcription', () => {
+test('binding and manifest drift remove trust; native policy does not enable transcription', { skip: bundledResourceSkip }, () => {
   const bundle = new BundledResources(codeRoot), host = fixture('drift', bundle.selectedBindings());
   const yt = bundle.executable('yt_dlp'), model = bundle.model('whisper_base');
   const trusted = trustedBundledDependencyRoot(host, () => model), execute = fileCapability('execute', yt), read = fileCapability('read', model);
