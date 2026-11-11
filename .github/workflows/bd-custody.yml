@@ -19,6 +19,7 @@ on:
       - codex/baidu-skill-metadata-archive
       - codex/unified-artifact-skill-archive
       - codex/artifact-restore-video-temp
+      - codex/artifact-lifecycle-closeout
 
 permissions:
   contents: read
@@ -46,6 +47,7 @@ jobs:
             platform/capabilities/browser/raw-page-dedup.test.ts \
             modules/collection/artifact-archive.test.ts \
             modules/collection/artifact-restore.test.ts \
+            modules/collection/artifact-lifecycle.test.ts \
             modules/collection/cloud-custody.test.ts \
             modules/collection/baidu-drive-copy.test.ts \
             modules/collection/cloud-algorithm-evidence.test.ts \
