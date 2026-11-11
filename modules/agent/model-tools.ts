@@ -61,10 +61,10 @@ const MODEL_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIO
   'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status', 'bd.session.capabilities',
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
   'data.adapters.capabilities', 'data.adapters.propose', 'data.adapters.replay', 'data.adapters.adopt',
-  'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check', 'data.r1.submit',
+  'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
   'artifact.manifest', 'artifact.archive', 'artifact.restore', 'artifact.inspect', 'artifact.release',
   'artifact.candidates.inspect', 'artifact.candidates.prune',
-  'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status', 'bd.session.capabilities']);
+]);
 // 固定实现只读原件或生成新产物；其中的程序、暂存清理及观测回执仍属于同一受控动作。
 // 这里只分类已存在的工具，不改变其登记、启用、参数校验或版本资格。
 const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIONS, ...SOURCE_ACTIONS, 'source.register',
@@ -75,7 +75,7 @@ const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_A
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
   // 适配候选提交、重放与采用都是写入或权限动作：保留审核，不进入自动动作集合。
   'data.adapters.capabilities',
-  'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check', 'data.r1.submit',
+  'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
   // 只读清单与资格检查不产生外部写入，仍需本机版本和任务引用核验。
   'artifact.manifest', 'artifact.inspect', 'artifact.candidates.inspect',
   'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.status', 'bd.session.capabilities']);
