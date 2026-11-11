@@ -92,7 +92,7 @@ export async function selectWfdFixedRecords(
       }
       if (cursor) seenCursors.add(cursor);
     } while (cursor);
-    if (found.size !== wanted.size) onError('WFD 固定行缺少明确选择的业务键，不能改读 latest 或补值。');
+    if (found.size !== wanted.size) onError('固定输入中缺所选业务键；不能改读 latest 或补值。');
     // 为兼容原财务计算的来源顺序，保持 WFD 读取顺序；宏观每个选集只有一行。
     const rows = [...found.values()];
     selections.push({ selection: ref, rows, selectedRowsSha256: wfdSha256(canonicalWfdJson(rows)),
