@@ -8,6 +8,7 @@ import type { ProcessRuntime } from '../../../platform/runtime/programs.js';
 import { buildSourceObservationMA, type CalculatedMAProof, type SourceObservationMAContext, type SourceObservationMAInput } from '../source-observation-ma.js';
 import { FINANCIAL_LINEAR_ADMISSION_VERSION, projectFinancialFixed, type FinancialCalculation, type FinancialReader } from './financial-fixed.js';
 import { FIXED_CALCULATION_METHODS } from '../../../contracts/fixed-calculation-contracts.js';
+import { selectWfdFixedRecords } from '../../financial/wfd-fixed-selection.js';
 
 export const POLARS_FIXED_VERSION = 'bd.polars-fixed/1';
 export const POLARS_DEPENDENCY_VERSION = '2.0.0';
@@ -155,34 +156,17 @@ export async function projectMacroYoYPolars(execution: PolarsExecution, calculat
     || !utc(calculation.knowledgeCutoff)) {
     fail('POLARS_MACRO_CONTRACT', '宏观同比须固定本期/去年同期两条实际版本与校验截止；本切片不签发历史可知资格。');
   }
-  const selected: WfdRecord[] = [], evidence: WfdRecord[] = []; let connection: unknown; let governance: WfdRecord | null = null;
-  for (const input of calculation.inputs) {
-    if (/^(latest|current)$/iu.test(input.snapshotId)) fail('POLARS_INPUT_BINDING', '宏观输入必须固定快照。');
-    let cursor: string | undefined, count = 0, found: WfdRecord | null = null;
-    const cursors = new Set<string>();
-    do {
-      const response = await reader({ snapshotId: input.snapshotId, productId: input.productId, ...(cursor ? { cursor } : {}) }, execution.context.signal);
-      if (connection !== undefined && canonicalWfdJson(connection) !== canonicalWfdJson(response.connection ?? null)) {
-        fail('POLARS_INPUT_BINDING', '宏观固定输入读取期间受信连接身份变化。');
-      }
-      connection = response.connection ?? null;
-      const page = response.result;
-      if (isWfdRecord(page.usage_governance)) governance = page.usage_governance;
-      if (page.snapshot_id !== input.snapshotId || page.product_id !== input.productId || !Array.isArray(page.rows) || !isWfdRecord(page.page)) {
-        fail('POLARS_INPUT_BINDING', '宏观固定读取身份或分页不符。');
-      }
-      for (const row of page.rows) {
-        if (++count > 5000) fail('POLARS_INPUT_BUDGET', '宏观固定输入超过5000行扫描预算。');
-        if (isWfdRecord(row) && isWfdRecord(row.record_ref) && row.record_ref.logical_key === input.businessKey) {
-          if (found || row.record_ref.revision_id !== input.recordVersion) fail('POLARS_INPUT_BINDING', '宏观输入缺唯一匹配记录版本。');
-          found = row;
-        }
-      }
-      cursor = page.page.has_more ? String(page.page.next_cursor) : undefined;
-      if (cursor && (cursors.has(cursor) || cursor === 'undefined')) fail('POLARS_INPUT_BINDING', '宏观固定读取游标循环或缺失。');
-      if (cursor) cursors.add(cursor);
-    } while (cursor);
-    if (!found || !isWfdRecord(found.values)) fail('POLARS_INPUT_BINDING', '宏观固定产品缺所选实际行。');
+  // 固定产品、分页、记录版本及同一次 WFD 连接的核验与财务方法共用。
+  // 两条来源必须各自明确版本；不以同一个最新快照替换历史披露身份。
+  const fixed = await selectWfdFixedRecords(calculation.inputs.map(input => ({
+    snapshotId: input.snapshotId, productId: input.productId, businessKeys: [input.businessKey],
+    recordVersions: { [input.businessKey]: input.recordVersion },
+  })), reader, execution.context.signal, reason => fail('POLARS_INPUT_BINDING', reason));
+  const connection = fixed.connection;
+  const selected: WfdRecord[] = [], evidence: WfdRecord[] = [];
+  for (const [index, selection] of fixed.selections.entries()) {
+    const input = calculation.inputs[index]!, found = selection.rows[0]!;
+    if (!isWfdRecord(found.values)) fail('POLARS_INPUT_BINDING', '宏观固定产品缺所选实际行。');
     const values: WfdRecord = {};
     for (const field of macroFields) {
       const cell = found.values[field];
@@ -192,7 +176,8 @@ export async function projectMacroYoYPolars(execution: PolarsExecution, calculat
       values[field] = cell.value;
     }
     selected.push(values);
-    evidence.push({ ...input, record: found.record_ref, selectedSha256: wfdSha256(canonicalWfdJson(found)), values });
+    evidence.push({ ...input, record: found.record_ref,
+      selectedSha256: wfdSha256(canonicalWfdJson(found)), values });
   }
   const [current, previous] = selected as [WfdRecord, WfdRecord];
   if (selected.some(row => !date(row.period_start) || !date(row.period_end) || row.period_start > row.period_end)) {
