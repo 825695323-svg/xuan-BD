@@ -64,12 +64,14 @@ test('a structured algorithm uses existing R1 original refs and never sends with
     assert.equal(first.requestId, f.checked.structured.requestId);
     assert.ok(f.getCalls().attempts > 0);
     const before = f.handoff.attempt(first.requestId);
-    assert.equal(before.state, 'prepared');
-    await assert.rejects(f.handoff.submitAndAssociate(first.requestId, {
-      async submit() { throw Error('must never submit a failed frozen source'); },
-    } as never), (error: unknown) => (error as { code?: string }).code === 'TEST_WFD_CHANGED');
+    assert.equal(before.state, 'prepared_profile_pending', '未装配真实 WFD profile 时仍保留原待核身份');
+    // 单独检查同一个首次发送前远端来源闸门；此隔离宿主没有正式 WFD profile，
+    // 不伪造通过 profile 再发送的条件。
+    await assert.rejects(f.handoff.assertRemoteCalculationReadyToSend(
+      first.requestId, new AbortController().signal),
+      (error: unknown) => (error as { code?: string }).code === 'TEST_WFD_CHANGED');
     const after = f.handoff.attempt(first.requestId);
-    assert.equal(after.state, 'prepared', 'Failed remote check cannot move an external request into sending.');
+    assert.equal(after.state, 'prepared_profile_pending', 'Failed remote check cannot move an external request into sending.');
     assert.equal(after.document_sha256, before.document_sha256);
   } finally { await f.close(); }
 });
