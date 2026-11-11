@@ -1,0 +1,108 @@
+name: Xuan BD source audit and real Archify diagrams
+on:
+  push:
+    branches: [audit/archify-code-review-20261111]
+    paths: ['.audit/archify/**', '.github/workflows/archify-code-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: xuan-archify-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE_SHA: cc7a4de2f3d8587d16c3d9527b2945ad5712ce4d
+      ARCHIFY_SHA: 7e45f36c66de1254d5ad6ba1d878f6499ea269fd
+      ARCHIFY_UPDATE_CHECK_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+      - name: Freeze read-only project source and download Archify
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/xuan-source" "$BASE_SHA"
+          git clone --filter=blob:none https://github.com/tt-a1i/archify.git "$RUNNER_TEMP/archify-source"
+          git -C "$RUNNER_TEMP/archify-source" checkout --detach "$ARCHIFY_SHA"
+          mkdir -p audit-output/evidence audit-output/diagrams
+          printf '{"project":"%s","archify":"%s","auditRun":"%s"}\n' "$BASE_SHA" "$ARCHIFY_SHA" "$GITHUB_RUN_ID" > audit-output/evidence/versions.json
+      - name: Inventory every tracked file and trace static imports
+        run: python3 .audit/archify/scan.py "$RUNNER_TEMP/xuan-source" "$GITHUB_WORKSPACE/audit-output/evidence"
+      - name: Install locked project dependencies
+        id: install
+        working-directory: ${{ runner.temp }}/xuan-source
+        run: |
+          set +e
+          npm ci > "$GITHUB_WORKSPACE/audit-output/evidence/npm-ci.log" 2>&1
+          code=$?
+          printf '%s\n' "$code" > "$GITHUB_WORKSPACE/audit-output/evidence/npm-ci.exit"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Record build and full regression results without changing assertions
+        if: steps.install.outputs.code == '0'
+        working-directory: ${{ runner.temp }}/xuan-source
+        env:
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/xuan-audit-chain
+          XUAN_TEST_ROOT: ${{ runner.temp }}/xuan-audit-tests
+        run: |
+          mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
+          set +e
+          npm run build > "$GITHUB_WORKSPACE/audit-output/evidence/build.log" 2>&1
+          printf '%s\n' "$?" > "$GITHUB_WORKSPACE/audit-output/evidence/build.exit"
+          npm test > "$GITHUB_WORKSPACE/audit-output/evidence/full-tests.log" 2>&1
+          printf '%s\n' "$?" > "$GITHUB_WORKSPACE/audit-output/evidence/full-tests.exit"
+          node -e 'const fs=require("fs");const t=fs.readFileSync(process.env.GITHUB_WORKSPACE+"/audit-output/evidence/full-tests.log","utf8");fs.writeFileSync(process.env.GITHUB_WORKSPACE+"/audit-output/evidence/test-summary.txt",t.split("\n").filter(x=>/ℹ (tests|pass|fail|skipped)|✖|# SKIP|LOCAL_TEST_FAILED/.test(x)).join("\n"));'
+          exit 0
+      - name: Focused runtime wiring probes
+        if: steps.install.outputs.code == '0'
+        run: |
+          if test -f .audit/archify/probe.mts; then
+            cp .audit/archify/probe.mts "$RUNNER_TEMP/xuan-source/audit-probe.mts"
+            cd "$RUNNER_TEMP/xuan-source"
+            set +e
+            AUDIT_OUT="$GITHUB_WORKSPACE/audit-output/evidence" node --import tsx audit-probe.mts > "$GITHUB_WORKSPACE/audit-output/evidence/probe.log" 2>&1
+            printf '%s\n' "$?" > "$GITHUB_WORKSPACE/audit-output/evidence/probe.exit"
+          fi
+      - name: Generate actual Archify diagrams when authored candidates are available
+        run: |
+          if test -f .audit/archify/render.py; then
+            python3 .audit/archify/render.py "$RUNNER_TEMP/xuan-source" "$RUNNER_TEMP/archify-source" "$GITHUB_WORKSPACE/audit-output"
+          else
+            printf 'Archify downloaded; diagram candidates not yet authored.\n' > audit-output/diagrams/STATUS.txt
+          fi
+      - name: Bundle review artifacts
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import pathlib,zipfile
+          p=pathlib.Path('audit-output')
+          with zipfile.ZipFile('xuan-bd-archify-audit.zip','w',zipfile.ZIP_DEFLATED) as z:
+            for f in p.rglob('*'):
+              if f.is_file(): z.write(f,str(f))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xuan-bd-source-audit-archify
+          path: |
+            audit-output/
+            xuan-bd-archify-audit.zip
+      - name: Publish only generated review artifacts on audit branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'Xuan Architecture Audit'
+          git config user.email 'audit@users.noreply.github.com'
+          git add audit-output xuan-bd-archify-audit.zip
+          git diff --cached --quiet && exit 0
+          git commit -m 'audit: publish source evidence and Archify outputs [skip ci]'
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch origin audit/archify-code-review-20261111
+          git rebase origin/audit/archify-code-review-20261111
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push origin HEAD:audit/archify-code-review-20261111
