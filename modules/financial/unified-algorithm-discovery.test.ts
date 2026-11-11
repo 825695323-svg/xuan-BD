@@ -60,3 +60,27 @@ test('new AGENTS request rejects an unmigrated Polars method before allocating a
     methodId: 'unknown_method', parameters: {}, source: { kind: 'fixed_snapshot' },
   }), (error: unknown) => (error as { code?: string }).code === 'INVALID_ALGORITHM_METHOD');
 });
+
+
+test('unified financial and macro readiness follows the bound executor, not the historical blocked catalogue', () => {
+  const ready = { status: 'ready' as const, reason: null, version: 'bd.algorithms.polars/1',
+    methods: ['financial_linear', 'macro_yoy'] };
+  const methods = basicAlgorithmToolContract(catalog, undefined, ready).methods;
+  const financial = methods.find(method => method.methodId === 'financial_linear')!;
+  const macro = methods.find(method => method.methodId === 'macro_yoy')!;
+  const sourceMA = methods.find(method => method.methodId === 'source_observation_ma')!;
+  assert.equal(financial.status, 'ready');
+  assert.equal(macro.status, 'ready');
+  assert.equal(financial.methodVersion, 'bd-financial-linear-admission/1');
+  assert.equal((financial.parameters as any).calculation.version, 'bd-financial-fixed/1');
+  assert.equal(macro.methodVersion, 'bd.macro-yoy/1');
+  assert.equal((macro.parameters as any).calculation.historyMode, 'snapshot_contents');
+  assert.equal(financial.implementationVersion, ready.version);
+  assert.equal(sourceMA.status, 'blocked', 'An unimplemented source MA must not inherit unrelated Polars readiness');
+  const disabled = basicAlgorithmToolContract(catalog, undefined, {
+    ...ready, status: 'blocked' as const, reason: 'Polars worker not registered',
+  }).methods;
+  assert.equal(disabled.find(method => method.methodId === 'macro_yoy')?.status, 'blocked');
+  assert.match(disabled.find(method => method.methodId === 'financial_linear')?.reason ?? '', /not registered/u);
+  assert.equal(basicAlgorithmToolContract(catalog, 'macro_yoy', ready).methods[0]?.status, 'ready');
+});
