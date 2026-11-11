@@ -214,9 +214,117 @@ export async function projectMacroYoYPolars(execution: PolarsExecution, calculat
     value: actual.value, value_state: actual.value === null ? 'unknown' : actual.state,
     calculation_status: actual.state, unit: 'percent', method: 'exact_yoy_percentage',
     start_utc: current.period_start + 'T00:00:00Z', end_utc: new Date(Date.parse(String(current.period_end) + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10) + 'T00:00:00Z' }];
-  return { jsonBytes: Buffer.from(canonicalWfdJson(rows)), evidence: { version: POLARS_FIXED_VERSION,
+  const outputEvidence: WfdRecord = { version: POLARS_FIXED_VERSION,
     method: 'macro_yoy', inputs: evidence, connection, knowledgeCutoff: calculation.knowledgeCutoff, historicalQualification: 'not_asserted',
     releaseSelection: 'explicit business-key and record-version; never latest',
     arithmetic: '(current-previous)/previous*100; exact decimal, final8 half-even; nonpositive denominator indeterminate',
-    algorithmDefinition: macroYoYAlgorithmDefinition(), workerSha256: workerDigest, execution: receipt, publication: 'candidate_only' } };
+    algorithmDefinition: macroYoYAlgorithmDefinition(), workerSha256: workerDigest, execution: receipt, publication: 'candidate_only' };
+  // 产生候选时即独立重核一次；随后原 R1 准备/首次发送还会按原冻结证据再核。
+  assertMacroYoYCandidate(calculation, outputEvidence, rows);
+  return { jsonBytes: Buffer.from(canonicalWfdJson(rows)), evidence: outputEvidence };
+}
+
+
+/**
+ * 独立宏观同比核验。复用原 WFD 固定读取证据和 Polars 结果回执，不重跑计算执行器、
+ * 不取 latest，也不把来源发布日期当成 WFD 历史可知资格。
+ *
+ * 这一检查可由统一派生发布器重放；不能用通过检查代替 R1 正式提交和固定读回。
+ */
+export function assertMacroYoYCandidate(raw: MacroYoYCalculation, evidence: WfdRecord, rows: WfdRecord[]): void {
+  const calc = readMacroYoYCalculation(raw);
+  const reject = (reason: string): never => { throw new TaskError('POLARS_MACRO_CANDIDATE_CHANGED', reason); };
+  if (!isWfdRecord(evidence) || evidence.version !== POLARS_FIXED_VERSION || evidence.method !== 'macro_yoy'
+    || evidence.workerSha256 !== workerDigest || evidence.historicalQualification !== 'not_asserted'
+    || evidence.knowledgeCutoff !== calc.knowledgeCutoff || evidence.releaseSelection !== 'explicit business-key and record-version; never latest'
+    || canonicalWfdJson(evidence.algorithmDefinition ?? null) !== canonicalWfdJson(macroYoYAlgorithmDefinition())
+    || !Array.isArray(evidence.inputs) || evidence.inputs.length !== 2
+    || !isWfdRecord(evidence.execution)) reject('原宏观计算方法、版本、固定行或算法定义缺失。');
+
+  const frozenInputs = evidence.inputs as WfdRecord[];
+  const fixedInputs: WfdRecord[] = [];
+  for (const [index, requested] of calc.inputs.entries()) {
+    const source = frozenInputs[index];
+    if (!isWfdRecord(source) || !isWfdRecord(source.record) || !isWfdRecord(source.values)
+      || source.snapshotId !== requested.snapshotId || source.productId !== requested.productId
+      || source.businessKey !== requested.businessKey || source.recordVersion !== requested.recordVersion
+      || source.record.logical_key !== requested.businessKey || source.record.revision_id !== requested.recordVersion
+      || typeof source.selectedSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(source.selectedSha256)
+      || source.record.product_id !== undefined && source.record.product_id !== requested.productId
+      || source.record.snapshot_id !== undefined && source.record.snapshot_id !== requested.snapshotId) {
+      reject('冻结来源产品、快照、记录版本或原行摘要与请求不符。');
+    }
+    const selectedValues = source.values as WfdRecord;
+    for (const field of macroFields) {
+      const value = selectedValues[field];
+      if (typeof value !== 'string' || !value || value.length > 256) reject('宏观原行缺失必要且有界的固定字段。');
+    }
+    if (!date(selectedValues.period_start) || !date(selectedValues.period_end)
+      || String(selectedValues.period_start) > String(selectedValues.period_end)
+      || !utc(selectedValues.published_at) || String(selectedValues.published_at) > calc.knowledgeCutoff) {
+      reject('来源期间或实际公布时刻无法在本次校验截止内核实。');
+    }
+    fixedInputs.push(selectedValues);
+  }
+  const [current, previous] = fixedInputs as [WfdRecord, WfdRecord];
+  if (['series_code', 'region', 'unit', 'seasonal_adjustment', 'base_period'].some(key => current[key] !== previous[key])) {
+    reject('固定来源系列、地区、单位、基期或季调口径发生变化。');
+  }
+  const yearBefore = (value: string) => String(Number(value.slice(0, 4)) - 1).padStart(4, '0') + value.slice(4);
+  if (yearBefore(String(current.period_start)) !== previous.period_start
+    || yearBefore(String(current.period_end)) !== previous.period_end) {
+    reject('宏观同比期间并非去年同一自然起止区间。');
+  }
+
+  // 与 Polars Decimal(38,18) 实现独立的 BigInt 有理数核对；最后一步八位 half-even。
+  const decimalParts = (value: unknown): { coefficient: bigint; scale: number } => {
+    if (typeof value !== 'string' || value.length > 128 || !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(value)) {
+      return reject('宏观同比输入不是精确十进制词面。');
+    }
+    const [whole, fractional = ''] = value.split('.');
+    if (fractional.length > 18 || whole!.replace('-', '').length > 20
+      || whole!.replace('-', '').length + fractional.length > 38) reject('宏观十进制超出 Polars 计算预算。');
+    return { coefficient: BigInt(whole! + fractional), scale: fractional.length };
+  };
+  const a = decimalParts(current.value), b = decimalParts(previous.value), scale = Math.max(a.scale, b.scale);
+  const currentInt = a.coefficient * 10n ** BigInt(scale - a.scale), previousInt = b.coefficient * 10n ** BigInt(scale - b.scale);
+  const abs = (value: bigint) => value < 0n ? -value : value;
+  if (abs(currentInt) + abs(previousInt) >= 10n ** BigInt(20 + scale)) reject('宏观求和超出既有精度预算。');
+  let expectedValue: string | null, state: string;
+  if (previousInt <= 0n) {
+    expectedValue = null;
+    state = previousInt === 0n ? 'undefined_zero_denominator' : 'unsupported_negative_base';
+  } else {
+    const numerator = (currentInt - previousInt) * 100n * 100_000_000n;
+    const magnitude = abs(numerator), q = magnitude / previousInt, rem = magnitude % previousInt;
+    const increment = rem * 2n > previousInt || rem * 2n === previousInt && q % 2n !== 0n ? 1n : 0n;
+    const rounded = q + increment;
+    const digits = rounded.toString().padStart(9, '0');
+    expectedValue = (numerator < 0n ? '-' : '')
+      + digits.slice(0, -8) + '.' + digits.slice(-8);
+    state = 'valid_value';
+  }
+  const expectedRow: WfdRecord = {
+    ...current,
+    business_key: 'macro_yoy_' + wfdSha256(canonicalWfdJson(frozenInputs)),
+    value: expectedValue, value_state: expectedValue === null ? 'unknown' : state,
+    calculation_status: state, unit: 'percent', method: 'exact_yoy_percentage',
+    start_utc: String(current.period_start) + 'T00:00:00Z',
+    end_utc: new Date(Date.parse(String(current.period_end) + 'T00:00:00Z') + 86_400_000).toISOString().slice(0, 10) + 'T00:00:00Z',
+  };
+  if (rows.length !== 1 || canonicalWfdJson(rows[0]) !== canonicalWfdJson(expectedRow)) {
+    reject('候选业务键、期间、单位或精确同比结果与冻结来源独立计算不一致。');
+  }
+  const execution = evidence.execution as WfdRecord;
+  const request = { version: POLARS_FIXED_VERSION, method: 'macro_yoy',
+    rows: [{ current: current.value, previous: previous.value }],
+    parameters: { scale: 8, rounding: 'half_even', output_unit: 'percent' } };
+  const values = Array.isArray(execution.rows) ? execution.rows : [];
+  if (execution.version !== POLARS_FIXED_VERSION || execution.executor !== 'polars'
+    || execution.polars_version !== POLARS_DEPENDENCY_VERSION || execution.method !== 'macro_yoy'
+    || execution.publication !== 'candidate_only' || execution.input_sha256 !== wfdSha256(canonicalWfdJson(request))
+    || values.length !== 1 || !isWfdRecord(values[0])
+    || values[0].value !== expectedValue || values[0].state !== state) {
+    reject('冻结 Polars 进程回执、输入摘要或返回值与独立计算不一致。');
+  }
 }

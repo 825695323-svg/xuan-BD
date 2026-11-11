@@ -8,12 +8,52 @@ import { CoreDatabase } from '../../platform/state/database.js';
 import { TaskRuntimeRegistry, TaskService, type TaskRecord } from '../../platform/jobs/tasks.js';
 import { PermissionService } from '../../platform/security/permissions.js';
 import { POLARS_FIXED_RUNTIME, PolarsFixedService } from './polars-fixed-service.js';
+import { macroYoYAlgorithmDefinition, polarsFixedVersionBinding, POLARS_FIXED_VERSION, POLARS_DEPENDENCY_VERSION, type MacroYoYCalculation } from './data-processing/polars-fixed.js';
 import { PURPOSE_ELIGIBILITY_RULE_VERSION, evaluatePurposeEligibility, type PurposeEligibilityResult } from './purpose-eligibility.js';
 
-const candidateRows: WfdRecord[] = [{ business_key: 'macro-current', start_utc: '2026-01-01T00:00:00Z',
-  end_utc: '2026-02-01T00:00:00Z', value: '12.34567890', value_state: 'valid' }];
-const algorithmDefinition: WfdRecord = { definition_version: '1.0.0', result_semantics: 'isolated test',
-  mathematical_definition: '(current-previous)/previous*100', window: { count: 2 } };
+const macroCalculation: MacroYoYCalculation = {
+  version: 'bd.macro-yoy/1', historyMode: 'snapshot_contents', knowledgeCutoff: '2026-04-30T00:00:00Z',
+  inputs: [
+    { snapshotId: 's_0123456789abcdef01234567', productId: 'p_0123456789abcdef01234567',
+      businessKey: 'macro-current', recordVersion: 'r_0123456789abcdef01234567' },
+    { snapshotId: 's_fedcba9876543210fedcba98', productId: 'p_0123456789abcdef01234567',
+      businessKey: 'macro-previous', recordVersion: 'r_fedcba9876543210fedcba98' },
+  ],
+};
+const actualValues = [
+  { series_code: 'synthetic-series', region: 'CN', unit: 'count', seasonal_adjustment: 'not_adjusted',
+    base_period: '2020', period_start: '2026-01-01', period_end: '2026-01-31',
+    published_at: '2026-02-15T00:00:00Z', release_id: 'release-2026', value: '112.34567890' },
+  { series_code: 'synthetic-series', region: 'CN', unit: 'count', seasonal_adjustment: 'not_adjusted',
+    base_period: '2020', period_start: '2025-01-01', period_end: '2025-01-31',
+    published_at: '2025-02-15T00:00:00Z', release_id: 'release-2025', value: '100' },
+];
+const frozenSources = macroCalculation.inputs.map((input, index) => ({
+  ...input,
+  record: { product_id: input.productId, snapshot_id: input.snapshotId,
+    logical_key: input.businessKey, revision_id: input.recordVersion },
+  selectedSha256: wfdSha256(canonicalWfdJson({ selectedSource: input, values: actualValues[index] })),
+  values: actualValues[index],
+}));
+const candidateRows: WfdRecord[] = [{ ...actualValues[0]!,
+  business_key: 'macro_yoy_' + wfdSha256(canonicalWfdJson(frozenSources)),
+  start_utc: '2026-01-01T00:00:00Z', end_utc: '2026-02-01T00:00:00Z',
+  value: '12.34567890', value_state: 'valid_value', calculation_status: 'valid_value',
+  unit: 'percent', method: 'exact_yoy_percentage' }];
+const algorithmDefinition: WfdRecord = macroYoYAlgorithmDefinition();
+const macroRequest = { version: POLARS_FIXED_VERSION, method: 'macro_yoy',
+  rows: [{ current: actualValues[0]!.value, previous: actualValues[1]!.value }],
+  parameters: { scale: 8, rounding: 'half_even', output_unit: 'percent' } };
+const macroEvidence: WfdRecord = { version: POLARS_FIXED_VERSION, method: 'macro_yoy',
+  inputs: frozenSources, connection: { instance: 'isolated' },
+  knowledgeCutoff: macroCalculation.knowledgeCutoff, historicalQualification: 'not_asserted',
+  releaseSelection: 'explicit business-key and record-version; never latest',
+  algorithmDefinition, workerSha256: polarsFixedVersionBinding().polarsWorker,
+  execution: { version: POLARS_FIXED_VERSION, executor: 'polars',
+    polars_version: POLARS_DEPENDENCY_VERSION, method: 'macro_yoy',
+    input_sha256: wfdSha256(canonicalWfdJson(macroRequest)),
+    rows: [{ value: '12.34567890', state: 'valid_value' }], resources: {}, publication: 'candidate_only' },
+  publication: 'candidate_only' };
 const candidateSha256 = wfdSha256(canonicalWfdJson(candidateRows));
 const computedAt = '2026-04-29T00:00:00Z';
 const derivedInputs = [{ ref: 'macro-current', latestAvailableAtUtc: '2026-02-15T00:00:00Z',
@@ -56,21 +96,18 @@ async function fixture(input: { purposeEvidence?: boolean; restriction?: WfdReco
   let tasks!: TaskService;
   const permissions = new PermissionService({ database, isRunActive: (id, generation) => tasks?.isRunActive(id, generation) === true });
   const runtimes = new TaskRuntimeRegistry();
-  const data = { version: 'bd.polars-fixed/1', rows: candidateRows, evidence: { method: 'macro_yoy', governance: null },
+  const data = { version: POLARS_FIXED_VERSION, rows: candidateRows, evidence: macroEvidence,
     algorithmDefinition, candidateSha256, computedAt, publication: 'candidate_only', eligibility: eligibility(),
     restriction: input.restriction === undefined ? restriction : input.restriction, derivedInputs };
   runtimes.register({ id: POLARS_FIXED_RUNTIME, execute: async () => ({ summary: 'isolated candidate', data: data as never }) });
   tasks = new TaskService({ database, permissions, runtimes });
   database.connection.exec(`CREATE TABLE harness_material_uploads (
     request_id TEXT PRIMARY KEY, args_digest TEXT, local_name TEXT, file_ref_id TEXT, task_id TEXT, created_at INTEGER);`);
-  const args = { input: { requestId: 'gate-test', method: 'macro_yoy', calculation: {
-    version: 'bd.macro-yoy/1', historyMode: 'snapshot_contents', knowledgeCutoff: '2026-04-30T00:00:00Z',
-    inputs: [{ snapshotId: 's_0123456789abcdef01234567', productId: 'p_0123456789abcdef01234567',
-      businessKey: 'macro-current', recordVersion: 'r_0123456789abcdef01234567' }] } },
+  const args = { input: { requestId: 'gate-test', method: 'macro_yoy', calculation: macroCalculation },
     connection: { instance: 'isolated' }, python: '/isolated/polars-python' };
   const task = tasks.create({ title: 'polars eligibility gate fixture', ownerRole: 'service', runtimeId: POLARS_FIXED_RUNTIME,
     action: 'polars.fixed.calculate', requestId: 'polars:gate-test', args: args as never,
-    versions: { polars: 'bd.polars-fixed/1', polarsDependency: '2.0.0', polarsWorker: '0'.repeat(64),
+    versions: { polars: 'bd.polars-fixed/1', polarsDependency: '2.0.0', polarsWorker: polarsFixedVersionBinding().polarsWorker,
       polarsFinancial: 'bd.financial-linear-admission/1', polarsConnection: '0'.repeat(64), polarsInput: '0'.repeat(64) } });
   tasks.start(task.id, task.version);
   const settled = await tasks.wait(task.id);
