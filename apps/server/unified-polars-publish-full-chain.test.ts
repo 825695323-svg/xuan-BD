@@ -107,7 +107,9 @@ test('real isolated WFD publishes source, unified Polars computes and R1 publish
       assert.equal((computed.result?.data as any).rows[0].value, '20.00000000');
       const before = (await host.services.r1Workspace!.snapshotStatus()).snapshotId;
       const outcome = await host.services.derivedPublisher!.publish(computed.id);
-      assert.equal(outcome.published, true, JSON.stringify(outcome));
+      assert.equal(outcome.published, true, JSON.stringify({
+        outcome, isolatedReceipt: host.services.r1!.attempt(outcome.requestId).receipt_json,
+      }));
       assert.equal(outcome.fixedReadback, true);
       const after = (await host.services.r1Workspace!.snapshotStatus()).snapshotId;
       assert.notEqual(after, before);
