@@ -134,7 +134,11 @@ test('未建索引时如实报 index_missing，能力声明列出双历史资格
     assert.deepEqual(capabilities.timeStates, ['known', 'unknown', 'not_applicable']);
     assert.deepEqual(capabilities.segmentableArtifactTypes, ['conversion.document', 'pdf.extract']);
     assert.deepEqual(capabilities.settings, { autoRegister: 'enabled', autoSegment: 'enabled', autoIndex: 'enabled' });
-    assert.equal(capabilities.structuredSide.wired, false);
+    // 联合检索路由已经装配；独立文档索引仍必须如实报告 index_missing。
+    assert.equal(capabilities.structuredSide.wired, true);
+    assert.equal(capabilities.structuredSide.entry, '/api/bd/retrieval/joint');
+    assert.equal(capabilities.permissionScope.wired, false, '逐文档权限模型仍未装配');
+    assert.equal(capabilities.ocr.wired, false, '图像 OCR 仍未装配');
 
     const result = await h.call('/retrieval/search', { method: 'keyword', query: '半导体' });
     assert.equal(result.status, 'index_missing');
