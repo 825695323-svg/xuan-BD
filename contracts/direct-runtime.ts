@@ -50,6 +50,10 @@ export interface DirectRuntimeOptions {
     execute(context: TaskExecutionContext, args: Record<string, JsonValue>): Promise<TaskResult> };
   artifactRestore?: { registration: SkillRegistration; versionBinding(): Record<string, string | null>;
     execute(context: TaskExecutionContext, args: Record<string, JsonValue>): Promise<TaskResult> };
+  /** AGENTS only: explicit inspection and deletion of a verified unreferenced generated file. */
+  artifactLifecycle?: { registrations: readonly SkillRegistration[]; handles(action: string): boolean;
+    versionBinding(): Record<string, string | null>;
+    execute(context: TaskExecutionContext, action: string, args: Record<string, JsonValue>): Promise<TaskResult> };
   browser?: BrowserConfiguration;
   browserUnavailableReason?: string;
   /** 仅个人宿主装配的站点独立会话；不暴露给模型参数。 */
