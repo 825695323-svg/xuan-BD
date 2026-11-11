@@ -517,7 +517,7 @@ test('F05 R1 UI invalidates confirmation on detail loads and gates recovery on o
     line.includes('r1Api.recover(view.requestId') && line.includes('disabled={busy || !ready || !view.submitTaskId ||'));
   assert.ok(recoveryButton, 'Unsubmitted requests must not offer external recovery.');
   for (const terminal of ['associated', 'partially_associated', 'conflicts_pending', 'rejected'])
-    assert.ok(recoveryButton[1]!.includes("'" + terminal + "'"), 'Terminal state ' + terminal + ' must not offer redundant recovery.');
+    assert.ok(recoveryButton.includes("'" + terminal + "'"), 'Terminal state ' + terminal + ' must not offer redundant recovery.');
 });
 
 test('F05 R1 version manifest covers authority-bearing connection dependencies', () => {
