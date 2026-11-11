@@ -2,6 +2,7 @@ import type { CoreDatabase } from '../../platform/state/database.js';
 import { TaskError, type TaskRecord, type TaskRuntime, type TaskService } from '../../platform/jobs/tasks.js';
 import type { ProcessRuntime } from '../../platform/runtime/programs.js';
 import { digestOperationArgs } from '../../platform/security/permissions.js';
+import { verifyUnifiedPolarsForPublication } from '../financial/unified-polars-publication-proof.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { R1PrepareInput } from '../../contracts/r1-contracts.js';
 import type { R1WorkspaceService } from './r1-workspace.js';
@@ -227,6 +228,36 @@ export class PolarsFixedService {
       definition: isWfdRecord(target.definition) ? target.definition : {} });
     return this.options.workspace.prepareWithRestriction(value as unknown as R1PrepareInput);
   }
+  /**
+   * 首次 WFD 提交前再次读取原固定产品/记录；独立复核冻结来源和数值结果。
+   * 不提交、不修改原任务，旧日线自动批次仍不因此获得新的执行资格。
+   */
+  async verifySourceForPublication(taskId: string, signal: AbortSignal): Promise<void> {
+    this.assertDispatch();
+    const task = this.task(taskId), result = this.result(task);
+    const frozen = task.args as unknown as FrozenTask;
+    this.assertConnection(frozen.connection);
+    if (frozen.input.method === 'observation_ma20') {
+      // 原日线方法仍按既有完整系列核验。它没有迁入新 WFD-only 方法时不虚构历史核验。
+      const proof = isWfdRecord(result.evidence) && isWfdRecord(result.evidence.checkedInput)
+        ? result.evidence.checkedInput : null;
+      if (!proof || !Array.isArray(proof.lineage) || !frozen.daily) {
+        fail('POLARS_INPUT_BINDING', '旧日线任务缺原完整系列和固定来源证明。');
+      }
+      assertCompletePolarsDailySeries(proof as unknown as CalculatedMAProof, frozen.daily.context);
+      return;
+    }
+    await verifyUnifiedPolarsForPublication(
+      frozen.input.method === 'financial_linear'
+        ? { methodId: 'financial_linear', calculation: frozen.input.calculation,
+          evidence: isWfdRecord(result.evidence) ? result.evidence : {}, rows: result.rows,
+          verifyFinancialReview: this.options.verifyFinancialReview ??
+            (() => fail('POLARS_FINANCIAL_REVIEW', '跨修订原文仍未独立核对，拒绝发布。')) }
+        : { methodId: 'macro_yoy', calculation: frozen.input.calculation,
+          evidence: isWfdRecord(result.evidence) ? result.evidence : {}, rows: result.rows },
+      this.options.workspace.readProduct.bind(this.options.workspace), signal);
+  }
+
   /** Shared by the dedicated bridge and the central R1 prepare gate. Caller markers are not evidence. */
   verifyCandidate(taskId: string, input: { materialId: string; planId: string; outputId: string; definition: WfdRecord; payload?: WfdRecord }): void {
     this.assertDispatch(); const task = this.task(taskId), result = this.result(task);

@@ -179,6 +179,8 @@ export class R1HandoffService {
     candidates?: { verifyObject(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): boolean;
       objectBytes(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): Buffer };
     verifyCalculationCandidate?(input: R1CalculationCandidateVerification): void;
+    /** 外部副作用前重新读取 WFD 固定记录；仅宿主已装配的 Polars 来源核验器可执行。 */
+    verifyCalculationCandidateRemote?(taskId: string, signal: AbortSignal): Promise<void>;
     verifyAlgorithmCandidate?(input: R1CalculationCandidateVerification): void;
     verifyFixedDerived?(refs: R1LocalReferences, documentSha256: string): void }) {
     const version = this.db.prepare('SELECT version FROM schema_versions WHERE module=?').get('r1-structured-handoff');
@@ -392,6 +394,37 @@ export class R1HandoffService {
       JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences, 'first_send', restriction);
   }
 
+  /**
+   * 原 R1 首次发送前的异步来源再核：对已识别的 Polars 计算候选从 WFD
+   * 冻结快照复读。没有配置的新方法不能由此绕过现有同步候选/用途审核。
+   * 本函数不设置 sending，不调用外部 submit，不更改任何已保存回执。
+   */
+  async assertRemoteCalculationReadyToSend(requestId: string, signal: AbortSignal): Promise<void> {
+    const attempt = this.attempt(requestId);
+    if (R1_SETTLED_STATES.has(String(attempt.state))
+      || ['rejected', 'sending', 'pending_unknown', 'pending_receipt'].includes(String(attempt.state))) return;
+    const callback = this.options.verifyCalculationCandidateRemote;
+    if (!callback) return; // 独立原报测试保留原同步验证；正式宿主装配远端核验。
+    const refs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
+    if (refs.fixedAlgorithm || !Array.isArray(refs.materialIds) || !refs.processRefs?.length) return;
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='harness_material_uploads'").get()) {
+      // 还没有任何经受管上传形成的计算候选；同步原件核对仍独立执行。
+      return;
+    }
+    const seen = new Set<string>();
+    for (const materialId of refs.materialIds) {
+      signal.throwIfAborted();
+      const staged = this.db.prepare(`SELECT u.request_id FROM material_objects m JOIN harness_material_uploads u
+        ON u.task_id=json_extract(m.envelope_json,'$.taskId')
+        WHERE m.material_id=? AND u.request_id LIKE 'polars-stage:%'`).get(materialId) as { request_id: string } | undefined;
+      if (!staged) continue; // 非 Polars 计算的原报材料由既有 R1 校验。
+      const taskId = staged.request_id.slice('polars-stage:'.length);
+      if (!taskId || seen.has(taskId)) continue;
+      seen.add(taskId);
+      await callback(taskId, signal);
+    }
+  }
+
   /** 实际 submit 结果 → 逐输出 records → 实际 fixed_read → 逐行关联。 */
   async submitAndAssociate(requestId: string, client: WfdStructuredIngestClient, signal?: AbortSignal, restriction?: RestrictionEvidence | null): Promise<WfdRecord> {
     const attempt = this.attempt(requestId);
@@ -403,6 +436,7 @@ export class R1HandoffService {
       fail('R1_RECOVERY_REQUIRED', '该原请求结果尚未核清；必须沿原 identity 查询状态，不能重新提交。');
     }
     this.assertCalculationReadyToSend(requestId, restriction);
+    await this.assertRemoteCalculationReadyToSend(requestId, signal ?? new AbortController().signal);
     this.markSending(requestId);
     let reply: WfdProductMachineReply;
     try {
