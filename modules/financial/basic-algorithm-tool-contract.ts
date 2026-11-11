@@ -35,8 +35,9 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
   // 旧 Polars 是计算实现，不是并行业务入口。迁移前统一目录可见，但不在
   // algorithms.calculate 中绕过 WFD 固定数据身份、独立核验和 WFD 正式读回。
   const legacyIds = LEGACY_FIXED_METHOD_ALIASES;
+  const executableIds = new Set<string>(methods.map(method => method.methodId));
   const oldMethods = (Object.keys(FIXED_CALCULATION_METHODS) as Array<keyof typeof FIXED_CALCULATION_METHODS>)
-    .filter(id => !methods.some(method => method.methodId === legacyIds[id]))
+    .filter(id => !executableIds.has(legacyIds[id]))
     .map(id => {
       const definition = FIXED_CALCULATION_METHODS[id];
       return {
