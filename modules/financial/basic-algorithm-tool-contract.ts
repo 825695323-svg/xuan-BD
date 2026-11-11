@@ -22,7 +22,7 @@ export function isUnmigratedLegacyAlgorithmMethod(value: unknown): boolean {
 export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, selectedMethod?: string) {
   const methods = catalog.methods.map(method => ({
     methodId: method.id, title: method.title, status: method.status, reason: method.reason,
-    interface: 'algorithms.calculate', methodVersion: method.methodVersion,
+    executor: 'python', interface: 'algorithms.calculate', methodVersion: method.methodVersion,
     implementationVersion: method.implementationVersion,
     parameters: method.parameters, requiredFields: method.requiredFields,
     outputFields: method.outputFields, limitations: method.limitations,
@@ -66,7 +66,7 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
   const reserved = ALGORITHM_REGISTRY.filter(tool => !implemented.has(tool.id)).map(tool => ({
     methodId: tool.id, title: tool.title, status: 'blocked' as const,
     reason: tool.reason ?? '算法只有登记信息，尚无 WFD 固定快照的可执行实现。',
-    interface: 'algorithms.calculate', methodVersion: 'not_adopted', implementationVersion: 'not_adopted',
+    executor: 'not_adopted', interface: 'algorithms.calculate', methodVersion: 'not_adopted', implementationVersion: 'not_adopted',
     parameters: tool.parameters, requiredFields: tool.requiredInputs, outputFields: tool.outputFields,
     limitations: tool.limitations, missing: tool.missing,
     input: { kind: 'fixed_snapshot', referenceKind: 'wfd_fixed_snapshot',
