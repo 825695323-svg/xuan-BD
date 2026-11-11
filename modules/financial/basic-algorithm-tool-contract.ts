@@ -9,6 +9,16 @@ import { FIXED_CALCULATION_METHODS } from '../../contracts/fixed-calculation-con
  */
 export const BD_SESSION_TOOL_CONTRACT_VERSION = 'bd.session-tools/1';
 
+/** 旧 Polars 方法 ID 只作为历史身份。迁移到 WFD 后使用统一算法方法 ID。 */
+export const LEGACY_FIXED_METHOD_ALIASES = Object.freeze({
+  observation_ma20: 'source_observation_ma', financial_linear: 'financial_linear', macro_yoy: 'macro_yoy',
+} as const);
+export function isUnmigratedLegacyAlgorithmMethod(value: unknown): boolean {
+  return typeof value === 'string' &&
+    (Object.hasOwn(LEGACY_FIXED_METHOD_ALIASES, value) ||
+      Object.values(LEGACY_FIXED_METHOD_ALIASES).some(id => id === value));
+}
+
 export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, selectedMethod?: string) {
   const methods = catalog.methods.map(method => ({
     methodId: method.id, title: method.title, status: method.status, reason: method.reason,
@@ -24,9 +34,7 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
   }));
   // 旧 Polars 是计算实现，不是并行业务入口。迁移前统一目录可见，但不在
   // algorithms.calculate 中绕过 WFD 固定数据身份、独立核验和 WFD 正式读回。
-  const legacyIds = {
-    observation_ma20: 'source_observation_ma', financial_linear: 'financial_linear', macro_yoy: 'macro_yoy',
-  } as const;
+  const legacyIds = LEGACY_FIXED_METHOD_ALIASES;
   const oldMethods = (Object.keys(FIXED_CALCULATION_METHODS) as Array<keyof typeof FIXED_CALCULATION_METHODS>)
     .filter(id => !methods.some(method => method.methodId === legacyIds[id]))
     .map(id => {
