@@ -1,4 +1,4 @@
-name: BD R1 and retrieval contract verification
+name: BD R1 retrieval and video projection verification
 
 on:
   push:
@@ -6,6 +6,8 @@ on:
   pull_request:
     paths:
       - 'modules/collection/conversation-r1.ts'
+      - 'modules/agent/model-tools.ts'
+      - 'modules/agent/transient-video-source.test.ts'
       - 'modules/collection/r1-conversation-bridge.test.ts'
       - 'modules/collection/source-observation-ma.test.ts'
       - 'apps/server/retrieval-routes.test.ts'
@@ -39,3 +41,4 @@ jobs:
             modules/collection/r1-conversation-bridge.test.ts \
             apps/server/retrieval-routes.test.ts \
             modules/collection/source-observation-ma.test.ts
+          node --import tsx --test modules/agent/transient-video-source.test.ts
