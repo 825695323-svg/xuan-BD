@@ -444,6 +444,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       verify: ref => candidates.verifyObject(ref) } }) : undefined;
   let r1Runtime: R1Runtime | undefined;
   let derivedPublisher: DerivedWfdPublisher | undefined;
+  let unifiedPolars: UnifiedPolarsExecution | undefined;
   const verifyFixedDerived = (refs: import('../../modules/collection/r1-structured-handoff.js').R1LocalReferences, digest: string) => {
     if (!derivedPublisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', '固定算法独立核验尚未装配。');
     derivedPublisher.verify(refs, digest);
@@ -455,6 +456,10 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const verifyCalculationCandidateRemote = async (taskId: string, signal: AbortSignal) => {
     if (!polarsFixed) throw new TaskError('R1_CALCULATION_VERIFIER_UNBOUND', 'Polars 原 WFD 来源固定复核器未装配。');
     await polarsFixed.verifySourceForPublication(taskId, signal);
+  };
+  const verifyFixedDerivedRemote = async (taskId: string, signal: AbortSignal) => {
+    if (!derivedPublisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', '统一结构化算法正式来源复核器尚未装配。');
+    await derivedPublisher.verifyStructuredRemote(taskId, signal);
   };
   const verifyAlgorithmCandidate = (input: R1CalculationCandidateVerification) => {
     if (!algorithms || !materials || !processing)
@@ -486,7 +491,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   if (materials && options.resources) {
     try {
       r1Runtime = createR1HandoffRuntime({ resources: options.resources, database, materials, processing, candidates,
-        connectionId: options.r1ConnectionId, verifyCalculationCandidate, verifyCalculationCandidateRemote,
+        connectionId: options.r1ConnectionId, verifyCalculationCandidate, verifyCalculationCandidateRemote, verifyFixedDerivedRemote,
         verifyAlgorithmCandidate, verifyFixedDerived });
       r1Configuration = { state: 'ready', reason: null };
     } catch (error) {
@@ -503,7 +508,8 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   derivedPublisher = r1Runtime && r1Workspace && algorithms && r1
     ? new DerivedWfdPublisher({ viewAlgorithm: taskId => algorithms.view(taskId),
       readAlgorithmInput: taskId => algorithms.verifiedInput(taskId),
-      runtime: () => r1Runtime, workspace: () => r1Workspace, handoff: r1 })
+      runtime: () => r1Runtime, workspace: () => r1Workspace, handoff: r1,
+      structuredPolars: () => unifiedPolars })
     : undefined;
   // 来源字段档案放在本机配置资源下；未绑定时退回工程外运行根，不读源码树。
   const sourceFieldProfiles = options.resources
@@ -528,7 +534,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     ? new FixedCalculationService({ polars: polarsFixed, tasks: currentTasks, workspace: r1Workspace,
       auto: r1Auto, processing, materials, enabled: fixedCalculationEnabled(options.resources) }) : undefined;
   // 新算法 Polars 在统一 algorithms.calculate 下使用独立方法执行器，不走旧原报候选五步。
-  const unifiedPolars = options.role === 'service' && r1Workspace && options.processRuntime
+  unifiedPolars = options.role === 'service' && r1Workspace && options.processRuntime
     ? new UnifiedPolarsExecution({ database, tasks: currentTasks, workspace: r1Workspace,
       processRuntime: options.processRuntime }) : undefined;
   const questions = new AgentQuestionService(database, core);
