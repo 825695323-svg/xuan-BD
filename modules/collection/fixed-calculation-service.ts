@@ -25,7 +25,8 @@ export class FixedCalculationService {
   private get enabled(): boolean { return this.options.enabled !== false; }
   capabilities(): FixedCalculationCapabilities {
     const execution = this.options.polars.capabilities();
-    const configured = this.enabled && execution.configured;
+    // 旧 Polars 路线保留历史目录与查询；新计算由 AGENTS algorithms.calculate 唯一受理。
+    const configured = false;
     return { version: FIXED_CALCULATION_VERSION, configured,
       methods: (Object.keys(FIXED_CALCULATION_METHODS) as FixedCalculationMethodId[])
         .map(id => ({ id, ...FIXED_CALCULATION_METHODS[id] })),
@@ -33,9 +34,9 @@ export class FixedCalculationService {
       existingWorkflows: { method: 'source_observation_ma', scope: 'existing_daily_minute_batch',
         implementation: 'existing_exact_decimal', period: 'saved_batch_settings' },
       publication: 'candidate_only', limits: execution.limits,
-      reason: configured ? null : this.enabled
-        ? execution.dependency.error ?? '尚未装配受信的固定数据读取连接。'
-        : '固定计算入口已按本机配置停用（config/fixed-calculation.json）。' };
+      reason: '原固定计算只读保留历史任务；新计算统一使用 BD AGENTS algorithms.calculate。'
+        + (!this.enabled ? ' 本机旧入口已停用。' : '')
+        + (execution.dependency.error ? ' 原依赖状态：' + execution.dependency.error : '') };
   }
   async inputs(): Promise<FixedCalculationInputs> {
     const sources: FixedCalculationInputs['sources'] = [], gaps: string[] = [];
@@ -102,15 +103,13 @@ export class FixedCalculationService {
     return { snapshotId: read.snapshotId, productId: read.productId, rows,
       page: { hasMore: page.has_more, nextCursor: page.has_more ? String(page.next_cursor) : null } };
   }
-  async create(value: unknown): Promise<FixedCalculationTaskView> {
-    if (!this.enabled) {
-      return fail('FIXED_CALCULATION_DISABLED',
-        '固定计算入口已按本机配置停用；恢复需修改 config/fixed-calculation.json 并重启服务。');
-    }
-    // The executor's strict reader rejects engine overrides, caller rows, paths and all unregistered methods.
-    const task = await this.options.polars.create(value);
-    return this.get(task.id);
+  async create(_value: unknown): Promise<FixedCalculationTaskView> {
+    // 不使用旧 Polars 独立的受理/候选/五步加工发布路线创建新任务。
+    // 保留 list/get/records 和旧任务的原回执，不虚构自动迁移已冻结任务。
+    return fail('ALGORITHM_UNIFIED_ENTRY_ONLY',
+      '新计算仅可通过 BD AGENTS algorithms.calculate 创建。旧 Polars 任务保留只读及原身份。');
   }
+
   list(): FixedCalculationTaskView[] {
     return this.options.polars.listTaskIds().map(taskId => this.get(taskId));
   }
