@@ -22,8 +22,9 @@ export interface WfdFixedSelectionResult {
   historyQualification: 'not_asserted';
 }
 const identifier = (value: unknown): value is string =>
-  typeof value === 'string' && /^[A-Za-z0-9_.:/-]{1,128}$/u.test(value)
-    && !/^(?:latest|current)$/iu.test(value);
+  typeof value === 'string' && /^[A-Za-z0-9_.:/-]{1,128}$/u.test(value);
+const fixedIdentity = (value: unknown): value is string =>
+  identifier(value) && !/^(?:latest|current)$/iu.test(value);
 
 /**
  * 财务与宏观的共同固定行选集。整套选集内连接不变、分页完整、所选业务键唯一；
@@ -39,12 +40,12 @@ export async function selectWfdFixedRecords(
   let connection: unknown;
   const selections: WfdSelectedRecordSet[] = [];
   for (const ref of refs) {
-    if (!identifier(ref.snapshotId) || !identifier(ref.productId)
+    if (!fixedIdentity(ref.snapshotId) || !fixedIdentity(ref.productId)
       || !Array.isArray(ref.businessKeys) || ref.businessKeys.length < 1 || ref.businessKeys.length > 64
       || ref.businessKeys.some((key: string) => !identifier(key))
       || new Set(ref.businessKeys).size !== ref.businessKeys.length) onError('固定选择须为明确、唯一的产品、快照与业务键，不能使用 latest。');
     if (ref.recordVersions && (Object.keys(ref.recordVersions).sort().join('|') !== [...ref.businessKeys].sort().join('|')
-      || Object.values(ref.recordVersions).some(version => !identifier(version)))) onError('记录版本须逐业务键固定，不能缺失或扩围。');
+      || Object.values(ref.recordVersions).some(version => !fixedIdentity(version)))) onError('记录版本须逐业务键固定，不能缺失或扩围。');
 
     const found = new Map<string, WfdRecord>(), wanted = new Set(ref.businessKeys);
     let cursor: string | undefined, count = 0;
