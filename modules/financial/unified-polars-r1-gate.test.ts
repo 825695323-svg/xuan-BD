@@ -3,7 +3,7 @@ import test from 'node:test';
 import { CoreDatabase } from '../../platform/state/database.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
-import { R1HandoffService } from '../collection/r1-structured-handoff.js';
+import { R1HandoffService, buildStructuredIngestDocument } from '../collection/r1-structured-handoff.js';
 import { macroYoYAlgorithmDefinition, polarsFixedVersionBinding } from '../collection/data-processing/polars-fixed.js';
 import { checkUnifiedStructuredForWfd } from './unified-polars-derived.js';
 import type { UnifiedPolarsResult } from './unified-polars-execution.js';
@@ -39,11 +39,7 @@ function fixture() {
       assert.equal(ref?.taskId, result.taskId);
       assert.equal(ref?.resultSha256, checked.resultSha256);
       assert.equal(documentSha256, wfdSha256(canonicalWfdJson(
-        (database.connection.prepare("SELECT document_json FROM r1_handoff_attempts WHERE request_id=?")
-          .get(checked.structured.requestId) as { document_json: string } | undefined)?.document_json
-          ? JSON.parse(String((database.connection.prepare("SELECT document_json FROM r1_handoff_attempts WHERE request_id=?")
-            .get(checked.structured.requestId) as { document_json: string }).document_json))
-          : documentSha256 )));
+        buildStructuredIngestDocument(checked.structured))));
     },
     async verifyFixedDerivedRemote() {
       throw new TaskError('TEST_WFD_CHANGED', 'WFD source revision changed before first submit.');
