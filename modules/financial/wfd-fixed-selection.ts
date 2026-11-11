@@ -41,7 +41,7 @@ export async function selectWfdFixedRecords(
   for (const ref of refs) {
     if (!identifier(ref.snapshotId) || !identifier(ref.productId)
       || !Array.isArray(ref.businessKeys) || ref.businessKeys.length < 1 || ref.businessKeys.length > 64
-      || ref.businessKeys.some(key => !identifier(key))
+      || ref.businessKeys.some((key: string) => !identifier(key))
       || new Set(ref.businessKeys).size !== ref.businessKeys.length) onError('固定选择须为明确、唯一的产品、快照与业务键，不能使用 latest。');
     if (ref.recordVersions && (Object.keys(ref.recordVersions).sort().join('|') !== [...ref.businessKeys].sort().join('|')
       || Object.values(ref.recordVersions).some(version => !identifier(version)))) onError('记录版本须逐业务键固定，不能缺失或扩围。');
