@@ -53,6 +53,7 @@ jobs:
             apps/server/unified-polars-publish-full-chain.test.ts
 
       - name: Financial module test coverage outside default npm test
+        if: always()
         env:
           XUAN_TEST_ROOT: ${{ runner.temp }}/bd-financial-module-tests
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-financial-full-chain
@@ -60,6 +61,7 @@ jobs:
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
           node --import tsx --test modules/financial/*.test.ts
       - name: Full native Node and TypeScript regression (failures remain visible)
+        if: always()
         env:
           XUAN_TEST_ROOT: ${{ runner.temp }}/bd-unified-full-tests
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-unified-full-chain
