@@ -35,6 +35,7 @@ jobs:
           mkdir -p "$XUAN_TEST_ROOT"
           node --import tsx --test \
             modules/financial/unified-polars-execution.test.ts \
+            modules/financial/unified-polars-derived.test.ts \
             modules/financial/unified-algorithm-discovery.test.ts \
             modules/collection/data-processing/polars-macro-independent.test.ts \
             modules/collection/data-processing/financial-fixed.test.ts
