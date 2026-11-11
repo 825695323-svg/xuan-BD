@@ -241,9 +241,10 @@ export function assertMacroYoYCandidate(raw: MacroYoYCalculation, evidence: WfdR
     || !Array.isArray(evidence.inputs) || evidence.inputs.length !== 2
     || !isWfdRecord(evidence.execution)) reject('原宏观计算方法、版本、固定行或算法定义缺失。');
 
+  const frozenInputs = evidence.inputs as WfdRecord[];
   const fixedInputs: WfdRecord[] = [];
   for (const [index, requested] of calc.inputs.entries()) {
-    const source = evidence.inputs[index];
+    const source = frozenInputs[index];
     if (!isWfdRecord(source) || !isWfdRecord(source.record) || !isWfdRecord(source.values)
       || source.snapshotId !== requested.snapshotId || source.productId !== requested.productId
       || source.businessKey !== requested.businessKey || source.recordVersion !== requested.recordVersion
@@ -304,7 +305,7 @@ export function assertMacroYoYCandidate(raw: MacroYoYCalculation, evidence: WfdR
   }
   const expectedRow: WfdRecord = {
     ...current,
-    business_key: 'macro_yoy_' + wfdSha256(canonicalWfdJson(evidence.inputs)),
+    business_key: 'macro_yoy_' + wfdSha256(canonicalWfdJson(frozenInputs)),
     value: expectedValue, value_state: expectedValue === null ? 'unknown' : state,
     calculation_status: state, unit: 'percent', method: 'exact_yoy_percentage',
     start_utc: String(current.period_start) + 'T00:00:00Z',
@@ -313,7 +314,7 @@ export function assertMacroYoYCandidate(raw: MacroYoYCalculation, evidence: WfdR
   if (rows.length !== 1 || canonicalWfdJson(rows[0]) !== canonicalWfdJson(expectedRow)) {
     reject('候选业务键、期间、单位或精确同比结果与冻结来源独立计算不一致。');
   }
-  const execution = evidence.execution;
+  const execution = evidence.execution as WfdRecord;
   const request = { version: POLARS_FIXED_VERSION, method: 'macro_yoy',
     rows: [{ current: current.value, previous: previous.value }],
     parameters: { scale: 8, rounding: 'half_even', output_unit: 'percent' } };
