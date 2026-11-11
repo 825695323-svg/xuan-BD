@@ -1,5 +1,6 @@
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../../platform/jobs/tasks.js';
+import { selectWfdFixedRecords, type WfdFixedRecordReader } from '../../financial/wfd-fixed-selection.js';
 
 export const FINANCIAL_FIXED_VERSION = 'bd-financial-fixed/1';
 export const FINANCIAL_MAPPING_VERSION = 'cas-primary-statements/1';
@@ -11,7 +12,7 @@ export interface FinancialCalculation {
   /** 跨披露修订的相容性须由实际保管原文核对；客户端不能提供输入值。 */
   compatibilityReview?: { materialId: string; originalSha256: string; quote: string };
 }
-export type FinancialReader = (value: { snapshotId: string; productId: string; cursor?: string }, signal?: AbortSignal) => Promise<{ result: WfdRecord; connection?: unknown }>;
+export type FinancialReader = WfdFixedRecordReader;
 function fail(message: string): never { throw new TaskError('FINANCIAL_FIXED', message); }
 const id = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_.:/-]{1,128}$/u.test(value) && !/^(latest|current)$/iu.test(value);
 const codes: Record<string, { code: string; additive: boolean }> = {
@@ -157,32 +158,20 @@ export function assertFinancialLinearCandidate(raw: FinancialCalculation, eviden
 
 export async function projectFinancialFixed(raw: FinancialCalculation, reader: FinancialReader, signal: AbortSignal,
   verifyReview: (review: NonNullable<FinancialCalculation['compatibilityReview']>) => void) {
-  const calculation = readFinancialCalculation(raw), inputs: { ref: FinancialCalculation['inputs'][number]; rows: WfdRecord[] }[] = [];
-  const inputEvidence: WfdRecord[] = []; let connection: unknown;
-  for (const ref of calculation.inputs) {
-    let cursor: string | undefined, count = 0; const selected: WfdRecord[] = [], wanted = new Set(ref.businessKeys), cursors = new Set<string>();
-    do {
-      signal.throwIfAborted();
-      const page = await reader({ snapshotId: ref.snapshotId, productId: ref.productId, ...(cursor ? { cursor } : {}) }, signal);
-      if (connection !== undefined && canonicalWfdJson(connection) !== canonicalWfdJson(page.connection ?? null)) fail('财务输入读取期间受信连接身份发生变化。');
-      connection = page.connection ?? null;
-      const result = page.result;
-      if (result.snapshot_id !== ref.snapshotId || result.product_id !== ref.productId || !Array.isArray(result.rows) || !isWfdRecord(result.page)) fail('受信固定读取身份或分页不完整。');
-      for (const row of result.rows) {
-        if (!isWfdRecord(row) || !isWfdRecord(row.record_ref)) fail('固定行缺记录版本。');
-        if (++count > 5000) fail('财务固定输入超过单产品5000条扫描预算；未截断。');
-        const key = String(row.record_ref.logical_key ?? row.record_ref.record_id);
-        if (wanted.has(key)) { selected.push(row); wanted.delete(key); }
-      }
-      cursor = result.page.has_more ? String(result.page.next_cursor) : undefined;
-      if (cursor && (cursor === 'undefined' || cursors.has(cursor))) fail('固定读取游标无效或循环。');
-      if (cursor) cursors.add(cursor);
-    } while (cursor);
-    if (wanted.size) fail('固定输入中缺所选业务键；未改读活动头或补值。');
-    inputs.push({ ref, rows: selected });
-    inputEvidence.push({ ...ref, selectedRows: selected.length, selectedRowsSha256: wfdSha256(canonicalWfdJson(selected)),
-      recordVersions: selected.map(row => row.record_ref) });
-  }
+  const calculation = readFinancialCalculation(raw);
+  // 财务与宏观使用同一套受信 WFD 固定行选择与分页身份核验；本方法继续
+  // 负责 CAS/币种/整表期间/数值口径，不把读取资格当成计算或发布资格。
+  const fixed = await selectWfdFixedRecords(calculation.inputs.map(item => ({
+    snapshotId: item.snapshotId, productId: item.productId, businessKeys: item.businessKeys,
+  })), reader, signal, reason => fail(reason));
+  const inputs = fixed.selections.map((selection, index) => ({
+    ref: calculation.inputs[index]!, rows: selection.rows,
+  }));
+  const inputEvidence: WfdRecord[] = fixed.selections.map((selection, index) => ({
+    ...calculation.inputs[index]!, selectedRows: selection.rows.length,
+    selectedRowsSha256: selection.selectedRowsSha256, recordVersions: selection.recordVersions,
+  }));
+  const connection = fixed.connection;
   const lineage: WfdRecord[] = [], unmapped: WfdRecord[] = [];
   let rows: WfdRecord[];
   if (calculation.operation === 'standardize') {
