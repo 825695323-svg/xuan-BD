@@ -254,16 +254,17 @@ export function assertMacroYoYCandidate(raw: MacroYoYCalculation, evidence: WfdR
       || source.record.snapshot_id !== undefined && source.record.snapshot_id !== requested.snapshotId) {
       reject('冻结来源产品、快照、记录版本或原行摘要与请求不符。');
     }
+    const selectedValues = source.values as WfdRecord;
     for (const field of macroFields) {
-      const value = source.values[field];
+      const value = selectedValues[field];
       if (typeof value !== 'string' || !value || value.length > 256) reject('宏观原行缺失必要且有界的固定字段。');
     }
-    if (!date(source.values.period_start) || !date(source.values.period_end)
-      || String(source.values.period_start) > String(source.values.period_end)
-      || !utc(source.values.published_at) || String(source.values.published_at) > calc.knowledgeCutoff) {
+    if (!date(selectedValues.period_start) || !date(selectedValues.period_end)
+      || String(selectedValues.period_start) > String(selectedValues.period_end)
+      || !utc(selectedValues.published_at) || String(selectedValues.published_at) > calc.knowledgeCutoff) {
       reject('来源期间或实际公布时刻无法在本次校验截止内核实。');
     }
-    fixedInputs.push(source.values);
+    fixedInputs.push(selectedValues);
   }
   const [current, previous] = fixedInputs as [WfdRecord, WfdRecord];
   if (['series_code', 'region', 'unit', 'seasonal_adjustment', 'base_period'].some(key => current[key] !== previous[key])) {
