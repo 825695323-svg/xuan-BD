@@ -211,7 +211,7 @@ test('只有 bar_close（收盘时间声明）的原件，不能绕过 WFD 固�
     configure(root);
     const host = open(root);
     try {
-      const closeOnly = Buffer.from('date,close\\n2025-01-01,1.0\\n2025-01-02,2.0\\n2025-01-03,3.0\\n');
+      const closeOnly = Buffer.from('date,close\n2025-01-01,1.0\n2025-01-02,2.0\n2025-01-03,3.0\n');
       const material = await host.material('close-only.csv', closeOnly);
       const call: AlgorithmCallRequest = { methodId: 'ma', parameters: { period: 2 },
         source: { kind: 'managed_table', materialId: material.materialId, materialSha256: sha(closeOnly), format: 'csv',
