@@ -407,6 +407,10 @@ export class R1HandoffService {
     if (!callback) return; // 独立原报测试保留原同步验证；正式宿主装配远端核验。
     const refs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
     if (refs.fixedAlgorithm || !Array.isArray(refs.materialIds) || !refs.processRefs?.length) return;
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='harness_material_uploads'").get()) {
+      // 还没有任何经受管上传形成的计算候选；同步原件核对仍独立执行。
+      return;
+    }
     const seen = new Set<string>();
     for (const materialId of refs.materialIds) {
       signal.throwIfAborted();
