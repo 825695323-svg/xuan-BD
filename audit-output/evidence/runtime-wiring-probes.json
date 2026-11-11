@@ -1,0 +1,481 @@
+{
+  "wanted": [
+    "artifact.manifest",
+    "artifact.archive",
+    "artifact.restore",
+    "artifact.inspect",
+    "artifact.release",
+    "artifact.candidates.inspect",
+    "artifact.candidates.prune"
+  ],
+  "missingFromModelAllowlist": [
+    "artifact.manifest",
+    "artifact.archive",
+    "artifact.restore",
+    "artifact.inspect",
+    "artifact.release",
+    "artifact.candidates.inspect",
+    "artifact.candidates.prune"
+  ],
+  "modelAllowlistEvidence": "modules/agent/model-tools.ts",
+  "probes": [
+    {
+      "name": "captureVersions",
+      "action": "artifact.manifest",
+      "ok": false,
+      "code": "DIRECT_DEPENDENCY_UNAVAILABLE",
+      "message": "动作实际依赖 @openclaw/fs-safe-linux-x64-musl 尚无可核对的已装载版本。"
+    },
+    {
+      "name": "captureVersions",
+      "action": "artifact.candidates.inspect",
+      "ok": false,
+      "code": "DIRECT_DEPENDENCY_UNAVAILABLE",
+      "message": "动作实际依赖 @openclaw/fs-safe-linux-x64-musl 尚无可核对的已装载版本。"
+    },
+    {
+      "name": "captureVersions",
+      "action": "data.processing.capabilities",
+      "ok": false,
+      "code": "DIRECT_VERSION_UNAVAILABLE",
+      "message": "直接动作尚无受信依赖版本，不能接收新任务。"
+    },
+    {
+      "name": "captureVersions",
+      "action": "conversion.document",
+      "ok": false,
+      "code": "FILE_REF_NOT_FOUND",
+      "message": "没有找到此文件引用。"
+    }
+  ],
+  "registry": [
+    {
+      "action": "video.transcribe_url",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "当前没有已登记可执行的 yt-dlp。请核对资源绑定。"
+    },
+    {
+      "action": "web.read_public",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "web.search",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "file.read",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "file.glob",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "file.grep",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "file.write",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "file.edit",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "file.compare",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "file.open",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "此动作需要 macOS。"
+    },
+    {
+      "action": "file.copy",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "file.move",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "file.search",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "spotlight.search",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "此动作需要 macOS。"
+    },
+    {
+      "action": "image.ocr",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "当前模型通道或凭据尚不可用，无法识字。"
+    },
+    {
+      "action": "media.convert",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "当前没有已登记可执行的 ffmpeg。请核对资源绑定。"
+    },
+    {
+      "action": "archive.extract",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "audio.transcribe",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "当前没有已登记可执行的 whisper-cli。请核对资源绑定。"
+    },
+    {
+      "action": "mac.shortcut",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "尚未配置用户明确选择的快捷指令名单。"
+    },
+    {
+      "action": "source.fetch",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "source.api.read",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": "接口源插件已停用。"
+    },
+    {
+      "action": "source.kline.read",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": "没有已启用的公开K线来源。"
+    },
+    {
+      "action": "source.werss.read",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "WeRSS 本地连接和 feed 尚未启用。"
+    },
+    {
+      "action": "source.wechat.extract",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "固定公众号脚本或本机 Python 尚未登记启用。"
+    },
+    {
+      "action": "browser.control",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "内置浏览器程序或独立宿主尚未就绪；未使用其他浏览器或自动下载。"
+    },
+    {
+      "action": "conversion.inspect",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "conversion.document",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "conversion.structured",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "conversion.archive",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "conversion.pdf_render",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "conversion.image",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "conversion.media",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "此动作缺少已登记的随包 FFmpeg/FFprobe。"
+    },
+    {
+      "action": "conversion.subtitle",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "pdf.extract",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "artifact.archive",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "已登记的百度网盘程序或原生账号引用尚未装配。"
+    },
+    {
+      "action": "artifact.restore",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "已登记的百度网盘程序或原生账号引用尚未装配。"
+    },
+    {
+      "action": "artifact.inspect",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "artifact.release",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "已登记的百度网盘程序或原生账号引用尚未装配。"
+    },
+    {
+      "action": "artifact.candidates.inspect",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "artifact.candidates.prune",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "artifact.manifest",
+      "runtimeId": "direct",
+      "available": true,
+      "reason": null
+    },
+    {
+      "action": "material.ocr",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "OCR（文字识别）适配器尚未接入。"
+    },
+    {
+      "action": "material.transcribe",
+      "runtimeId": "direct",
+      "available": false,
+      "reason": "视频/音频转录适配器尚未接入。"
+    },
+    {
+      "action": "pi.prompt",
+      "runtimeId": "pi",
+      "available": false,
+      "reason": "需要已配置的 Pi 模型通道。"
+    },
+    {
+      "action": "pi.skill",
+      "runtimeId": "pi",
+      "available": false,
+      "reason": "需要已配置的 Pi 模型通道及至少一个启用的指令技能。"
+    },
+    {
+      "action": "external.bd",
+      "runtimeId": "external",
+      "available": false,
+      "reason": "按当前施工目标保留接口，尚未启用外部插件。"
+    }
+  ],
+  "artifactRegistration": [
+    {
+      "action": "artifact.manifest",
+      "registered": true,
+      "available": true,
+      "modelAllowed": false
+    },
+    {
+      "action": "artifact.archive",
+      "registered": true,
+      "available": false,
+      "modelAllowed": false
+    },
+    {
+      "action": "artifact.restore",
+      "registered": true,
+      "available": false,
+      "modelAllowed": false
+    },
+    {
+      "action": "artifact.inspect",
+      "registered": true,
+      "available": true,
+      "modelAllowed": false
+    },
+    {
+      "action": "artifact.release",
+      "registered": true,
+      "available": false,
+      "modelAllowed": false
+    },
+    {
+      "action": "artifact.candidates.inspect",
+      "registered": true,
+      "available": true,
+      "modelAllowed": false
+    },
+    {
+      "action": "artifact.candidates.prune",
+      "registered": true,
+      "available": true,
+      "modelAllowed": false
+    }
+  ],
+  "generatedReference": {
+    "id": "170eeeb8-4875-4961-bbe5-2437ebebcf84",
+    "resource": null,
+    "path": "/tmp/xuan-audit-real-host-TPw1Zl/wiring-audit-JZ5wyI/bd/state/private/artifacts/audit-generated.txt",
+    "relations": [
+      {
+        "kind": "task",
+        "id": "audit-source"
+      }
+    ]
+  },
+  "releaseBlockersWithoutConversation": [
+    "segment_requests-unverifiable",
+    "processing_plans-unverifiable"
+  ],
+  "releaseBlockersWithConversation": [
+    "other-file-relations",
+    "segment_requests-unverifiable",
+    "processing_plans-unverifiable"
+  ],
+  "actualSchema": {
+    "processing_plans": [
+      "plan_id",
+      "request_key",
+      "parent_plan_id",
+      "plan_digest",
+      "scope_key",
+      "policy_version",
+      "policy_digest",
+      "policy_json",
+      "operator_json",
+      "material_manifest_json",
+      "plan_json",
+      "status",
+      "created_at",
+      "updated_at"
+    ],
+    "processing_plan_steps": [
+      "plan_id",
+      "step_id",
+      "ordinal",
+      "output_id",
+      "kind",
+      "required",
+      "applicability",
+      "depends_json",
+      "implementation",
+      "parameters_json",
+      "completion_json",
+      "spec_digest",
+      "state",
+      "input_json",
+      "output_json",
+      "output_digest",
+      "check_scope_json",
+      "gaps_json",
+      "error_json",
+      "reused_from_plan_id",
+      "reused_from_step_id",
+      "started_at",
+      "completed_at",
+      "attempt_task_id",
+      "semantic_json",
+      "normalization_json"
+    ],
+    "processing_plan_outputs": [
+      "plan_id",
+      "output_id",
+      "state",
+      "structured_json",
+      "structured_digest",
+      "routing_state",
+      "dimensions_json",
+      "gaps_json",
+      "updated_at"
+    ],
+    "segment_requests": [
+      "request_key",
+      "client_request_id",
+      "task_id",
+      "input_json",
+      "input_digest",
+      "created_at"
+    ],
+    "conversion_artifacts": [
+      "artifact_record_id",
+      "material_id",
+      "material_version",
+      "material_sha256",
+      "conversion_run_id",
+      "artifact_ref",
+      "artifact_type",
+      "artifact_sha256",
+      "artifact_bytes",
+      "parser_version",
+      "declared_source_sha256",
+      "processing_status",
+      "created_at"
+    ],
+    "material_objects": [
+      "material_id",
+      "envelope_json",
+      "envelope_digest",
+      "preview_json",
+      "preview_digest",
+      "original_bytes"
+    ]
+  }
+}
