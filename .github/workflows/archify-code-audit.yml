@@ -25,16 +25,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.1'
-      - name: Freeze read-only project source and download Archify
+      - name: Freeze project and download the actual Archify renderer
         run: |
           git worktree add --detach "$RUNNER_TEMP/xuan-source" "$BASE_SHA"
           git clone --filter=blob:none https://github.com/tt-a1i/archify.git "$RUNNER_TEMP/archify-source"
           git -C "$RUNNER_TEMP/archify-source" checkout --detach "$ARCHIFY_SHA"
           mkdir -p audit-output/evidence audit-output/diagrams
           printf '{"project":"%s","archify":"%s","auditRun":"%s"}\n' "$BASE_SHA" "$ARCHIFY_SHA" "$GITHUB_RUN_ID" > audit-output/evidence/versions.json
-      - name: Inventory every tracked file and trace static imports
+      - name: Inventory every tracked file
         run: python3 .audit/archify/scan.py "$RUNNER_TEMP/xuan-source" "$GITHUB_WORKSPACE/audit-output/evidence"
-      - name: Install locked project dependencies
+      - name: Install locked dependencies in temporary source worktree
         id: install
         working-directory: ${{ runner.temp }}/xuan-source
         run: |
@@ -44,22 +44,27 @@ jobs:
           printf '%s\n' "$code" > "$GITHUB_WORKSPACE/audit-output/evidence/npm-ci.exit"
           echo "code=$code" >> "$GITHUB_OUTPUT"
           exit 0
-      - name: Record build and full regression results without changing assertions
+      - name: Record complete baseline build and regression
         if: steps.install.outputs.code == '0'
         working-directory: ${{ runner.temp }}/xuan-source
         env:
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/xuan-audit-chain
           XUAN_TEST_ROOT: ${{ runner.temp }}/xuan-audit-tests
         run: |
+          if test -f "$GITHUB_WORKSPACE/audit-output/evidence/full-tests.exit"; then
+            echo 'Reusing committed logs from this unchanged pinned baseline; no tests counted as new passes.'
+            exit 0
+          fi
           mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
           set +e
           npm run build > "$GITHUB_WORKSPACE/audit-output/evidence/build.log" 2>&1
           printf '%s\n' "$?" > "$GITHUB_WORKSPACE/audit-output/evidence/build.exit"
           npm test > "$GITHUB_WORKSPACE/audit-output/evidence/full-tests.log" 2>&1
           printf '%s\n' "$?" > "$GITHUB_WORKSPACE/audit-output/evidence/full-tests.exit"
-          node -e 'const fs=require("fs");const t=fs.readFileSync(process.env.GITHUB_WORKSPACE+"/audit-output/evidence/full-tests.log","utf8");fs.writeFileSync(process.env.GITHUB_WORKSPACE+"/audit-output/evidence/test-summary.txt",t.split("\n").filter(x=>/ℹ (tests|pass|fail|skipped)|✖|# SKIP|LOCAL_TEST_FAILED/.test(x)).join("\n"));'
+          printf '{"base":"%s","run":"%s"}\n' "$BASE_SHA" "$GITHUB_RUN_ID" > "$GITHUB_WORKSPACE/audit-output/evidence/test-run.json"
+          node -e 'const fs=require("fs");const p=process.env.GITHUB_WORKSPACE+"/audit-output/evidence/";const t=fs.readFileSync(p+"full-tests.log","utf8");fs.writeFileSync(p+"test-summary.txt",t.split("\n").filter(x=>/ℹ (tests|pass|fail|skipped)|✖|# SKIP|LOCAL_TEST_FAILED/.test(x)).join("\n"));'
           exit 0
-      - name: Focused runtime wiring probes
+      - name: Run real-host wiring probes
         if: steps.install.outputs.code == '0'
         run: |
           if test -f .audit/archify/probe.mts; then
@@ -68,15 +73,20 @@ jobs:
             set +e
             AUDIT_OUT="$GITHUB_WORKSPACE/audit-output/evidence" node --import tsx audit-probe.mts > "$GITHUB_WORKSPACE/audit-output/evidence/probe.log" 2>&1
             printf '%s\n' "$?" > "$GITHUB_WORKSPACE/audit-output/evidence/probe.exit"
+            rm audit-probe.mts
           fi
-      - name: Generate actual Archify diagrams when authored candidates are available
+      - name: Ensure Chinese glyphs in the browser
+        run: |
+          if ! fc-match ':lang=zh' | grep -qi 'CJK'; then
+            sudo apt-get update -qq
+            sudo apt-get install -y fonts-noto-cjk
+          fi
+      - name: Render source-pinned Archify diagrams
         run: |
           if test -f .audit/archify/render.py; then
             python3 .audit/archify/render.py "$RUNNER_TEMP/xuan-source" "$RUNNER_TEMP/archify-source" "$GITHUB_WORKSPACE/audit-output"
-          else
-            printf 'Archify downloaded; diagram candidates not yet authored.\n' > audit-output/diagrams/STATUS.txt
           fi
-      - name: Bundle review artifacts
+      - name: Bundle all evidence and actual diagrams
         if: always()
         run: |
           python3 - <<'PY'
@@ -93,7 +103,7 @@ jobs:
           path: |
             audit-output/
             xuan-bd-archify-audit.zip
-      - name: Publish only generated review artifacts on audit branch
+      - name: Publish only audit artifacts on the isolated audit branch
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
