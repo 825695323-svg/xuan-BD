@@ -1,0 +1,41 @@
+name: BD R1 and retrieval contract verification
+
+on:
+  push:
+    branches: [fix/r1-retrieval-contracts-20261111]
+  pull_request:
+    paths:
+      - 'modules/collection/conversation-r1.ts'
+      - 'modules/collection/r1-conversation-bridge.test.ts'
+      - 'modules/collection/source-observation-ma.test.ts'
+      - 'apps/server/retrieval-routes.test.ts'
+      - '.github/workflows/bd-r1-contracts.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - name: Install pinned dependencies
+        run: npm ci
+      - name: Typecheck and production build
+        run: npm run build
+      - name: Exercise source-verified R1 and retrieval contracts
+        env:
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/r1-contract-full-chain
+          XUAN_TEST_ROOT: ${{ runner.temp }}/r1-contract-fixtures
+        run: |
+          mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
+          node --import tsx --test \
+            --test-name-pattern='F05 R1 UI invalidates|未建索引时如实报 index_missing|legacy automatic MA batch request' \
+            modules/collection/r1-conversation-bridge.test.ts \
+            apps/server/retrieval-routes.test.ts \
+            modules/collection/source-observation-ma.test.ts
