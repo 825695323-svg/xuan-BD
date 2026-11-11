@@ -59,21 +59,21 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
     const action = registration.action, implementation: DirectImplementation[] = ['assembly'];
     let configuration: unknown = {}, dependencies: unknown = directResourceVersions(options);
     if (options.artifactManifest && action === options.artifactManifest.registration.action) {
-      configuration = options.artifactManifest.versionBinding();
+      implementation.push('artifactManifest'); configuration = options.artifactManifest.versionBinding();
       dependencies = directResourceVersions(options);
     } else if (options.candidateReclaim?.handles(action)) {
-      implementation.push('process'); configuration = options.candidateReclaim.versionBinding();
+      implementation.push('process', 'candidateReclaim'); configuration = options.candidateReclaim.versionBinding();
       dependencies = directResourceVersions(options);
     } else if (options.artifactLifecycle?.handles(action)) {
-      implementation.push('baidu', 'process'); configuration = options.artifactLifecycle.versionBinding();
+      implementation.push('baidu', 'process', 'artifactLifecycle'); configuration = options.artifactLifecycle.versionBinding();
       dependencies = directResourceVersions(options, options.baiduDrive ? ['bdpan'] : [], options.baiduDrive
         ? [options.baiduDrive.configPath, ...(options.baiduDrive.tokenKeyPath ? [options.baiduDrive.tokenKeyPath] : [])] : []);
     } else if (options.artifactRestore && action === options.artifactRestore.registration.action) {
-      implementation.push('baidu', 'process'); configuration = options.artifactRestore.versionBinding();
+      implementation.push('baidu', 'process', 'artifactRestore'); configuration = options.artifactRestore.versionBinding();
       dependencies = directResourceVersions(options, options.baiduDrive ? ['bdpan'] : [], options.baiduDrive
         ? [options.baiduDrive.configPath, ...(options.baiduDrive.tokenKeyPath ? [options.baiduDrive.tokenKeyPath] : [])] : []);
     } else if (options.artifactArchive && action === options.artifactArchive.registration.action) {
-      implementation.push('baidu', 'process'); configuration = options.artifactArchive.versionBinding();
+      implementation.push('baidu', 'process', 'artifactArchive'); configuration = options.artifactArchive.versionBinding();
       dependencies = directResourceVersions(options, options.baiduDrive ? ['bdpan'] : [], options.baiduDrive
         ? [options.baiduDrive.configPath, ...(options.baiduDrive.tokenKeyPath ? [options.baiduDrive.tokenKeyPath] : [])] : []);
     } else if (sources?.handles(action)) {
