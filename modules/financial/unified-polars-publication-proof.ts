@@ -53,8 +53,9 @@ export async function verifyUnifiedPolarsForPublication(
     const proof = input.evidence.linearAdmission;
     if (!isWfdRecord(proof) || !Array.isArray(proof.rows) || proof.rows.length !== calc.inputs.length
       || original.length !== calc.inputs.length) fail('冻结财务核验没有完整、逐项的原始来源版本。');
+    const frozenRows = proof.rows as WfdRecord[];
     refs = calc.inputs.map((selection, index) => {
-      const item = proof.rows[index];
+      const item = frozenRows[index];
       if (!isWfdRecord(item) || !isWfdRecord(item.record_ref) || selection.businessKeys.length !== 1
         || typeof item.record_ref.revision_id !== 'string') return fail('每项财务候选缺唯一来源版本。');
       return { ...selection, recordVersions: { [selection.businessKeys[0]!]: item.record_ref.revision_id } };
@@ -88,9 +89,10 @@ export async function verifyUnifiedPolarsForPublication(
         || digest(value.recordVersions[0]) !== digest(expected.record)) {
         fail('宏观同比的真实 WFD 原行摘要或来源记录版本已变化。');
       }
-      const rowValues = (value.rows[0] as WfdRecord).values;
-      if (!isWfdRecord(rowValues) || !isWfdRecord(expected.values)) fail('宏观实际 WFD 来源缺失字段。');
-      for (const [field, value] of Object.entries(expected.values)) {
+      const rawValues = (value.rows[0] as WfdRecord).values;
+      if (!isWfdRecord(rawValues) || !isWfdRecord(expected.values)) fail('宏观实际 WFD 来源缺失字段。');
+      const rowValues = rawValues as WfdRecord, frozenValues = expected.values as WfdRecord;
+      for (const [field, value] of Object.entries(frozenValues)) {
         const cell = rowValues[field];
         if (!isWfdRecord(cell) || cell.value !== value) fail('宏观真实 WFD 原字段与原计算冻结值不一致。');
       }
