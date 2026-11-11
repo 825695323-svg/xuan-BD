@@ -110,3 +110,20 @@ test('unrelated task frozen reference prevents candidate pruning', async () => {
     assert.ok(plan.globalBlockers.includes('active-processing-or-r1-tasks'));
   } finally { await f.close(); }
 });
+
+test('an active data.processing.run task blocks orphan cleanup despite no matching object ref', async () => {
+  const f = fixture();
+  try {
+    f.tasks.create({ title: 'processing not settled', ownerRole: 'service', runtimeId: 'direct',
+      action: 'data.processing.run', args: {}, requestId: 'active-processing-contract' });
+    const inspected = await f.call('artifact.candidates.inspect');
+    assert.equal(inspected.status, 'succeeded', JSON.stringify(inspected.error));
+    const plan = inspected.result!.data as any;
+    assert.ok(plan.globalBlockers.includes('active-processing-or-r1-tasks'));
+    assert.equal(plan.candidates.length, 0);
+    const refused = await f.call('artifact.candidates.prune', { expectedPlanDigest: plan.planDigest });
+    assert.equal(refused.status, 'failed');
+    assert.equal(refused.error?.code, 'CANDIDATE_RECLAIM_BLOCKED');
+    assert.equal(Number(f.database.connection.prepare('SELECT count(*) AS n FROM candidate_objects').get()?.n), 2);
+  } finally { await f.close(); }
+});
