@@ -8,6 +8,7 @@ on:
       - 'modules/agent/model-tools.ts'
       - 'platform/plugins/**'
       - 'apps/server/capabilities.ts'
+      - 'apps/server/artifact-wiring-full-chain.test.ts'
       - 'platform/capabilities/browser/**'
       - 'platform/capabilities/transcription/**'
       - 'platform/capabilities/conversion/**'
@@ -60,5 +61,6 @@ jobs:
             modules/collection/cloud-custody.test.ts \
             modules/collection/baidu-drive-copy.test.ts \
             modules/collection/cloud-algorithm-evidence.test.ts \
+            apps/server/artifact-wiring-full-chain.test.ts \
             apps/server/cloud-custody.test.ts \
             apps/server/cloud-evidence.test.ts
