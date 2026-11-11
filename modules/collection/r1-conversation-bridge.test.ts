@@ -513,7 +513,11 @@ test('F05 R1 UI invalidates confirmation on detail loads and gates recovery on o
   const show = /const showView = \(current: R1RequestView\) => \{([\s\S]*?)\n  \};/u.exec(source);
   assert.ok(show);
   assert.ok(show[1]!.includes('setConfirmed(false)'), 'Every detail load must invalidate prior human confirmation.');
-  assert.ok(source.includes('disabled={busy || !ready || !view.submitTaskId}'), 'Unsubmitted requests must not offer external recovery.');
+  const recoveryButton = source.split(String.fromCharCode(10)).find(line =>
+    line.includes('r1Api.recover(view.requestId') && line.includes('disabled={busy || !ready || !view.submitTaskId ||'));
+  assert.ok(recoveryButton, 'Unsubmitted requests must not offer external recovery.');
+  for (const terminal of ['associated', 'partially_associated', 'conflicts_pending', 'rejected'])
+    assert.ok(recoveryButton.includes("'" + terminal + "'"), 'Terminal state ' + terminal + ' must not offer redundant recovery.');
 });
 
 test('F05 R1 version manifest covers authority-bearing connection dependencies', () => {
@@ -615,9 +619,11 @@ test('F05 actual personal+companion catalogue exposes exactly six R1 actions, ne
       assert.equal(lastPage.actions.length, 1); assert.equal(lastPage.nextOffset, null); assert.equal(lastPage.done, true);
       assert.ok(Buffer.byteLength(JSON.stringify(lastPage), 'utf8') <= 23_000);
       const combinedActions = [...nearLimit.actions, ...lastPage.actions];
-      assert.ok(Buffer.byteLength(JSON.stringify(combinedActions), 'utf8') <= 23_000);
-      assert.ok(Buffer.byteLength(JSON.stringify({ ...nearLimit, actions: combinedActions, nextOffset: null, done: true }), 'utf8') > 23_000,
-        'Both actions fit the old actions-only check but exceed the full receipt budget.');
+      assert.deepEqual(combinedActions.map(action => action.action), ['web.read_public', 'web.search'],
+        '每页须独立符合预算，跨页不得丢失或重复动作；合并页不承担单页字节限制。');
+      assert.equal(new Set(combinedActions.map(action => action.action)).size, combinedActions.length);
+      assert.ok(Buffer.byteLength(JSON.stringify(nearLimit), 'utf8') <= 23_000);
+      assert.ok(Buffer.byteLength(JSON.stringify(lastPage), 'utf8') <= 23_000);
     } finally { registry.list = actualList; }
     const listed = resultValue(await catalogue.execute('r1-catalogue-discovery', { query: 'data.r1.', limit: 20 }, undefined, undefined, unusedPiContext));
     const present = (listed.actions as Array<{ action: string }>).map(action => action.action).sort();
@@ -632,6 +638,8 @@ test('F05 actual personal+companion catalogue exposes exactly six R1 actions, ne
     console.log('F05_CATALOGUE_OBSERVATION', JSON.stringify(observation));
     assert.deepEqual(present, [...r1Actions].sort(), 'Actual personal catalogue must expose the frozen R1 action set.');
     assert.equal(dispatchError, null, 'Actual perform_action(data.r1.capabilities) must dispatch.');
+    assert.equal((dispatched as { data?: { submitByAgent?: string } } | null)?.data?.submitByAgent,
+      'disabled_host_user_only', '正常模型回执不得暗示 AGENTS 能提交 R1');
     assert.ok(!present.includes('data.r1.submit'));
     const prepare = (listed.actions as Array<{ action: string; fields: Array<{ key: string }> }>).find(action => action.action === 'data.r1.prepare');
     assert.deepEqual(prepare?.fields.map(field => field.key).sort(), ['outputId', 'planId', 'sourceEvidenceJson', 'sourceJson']);

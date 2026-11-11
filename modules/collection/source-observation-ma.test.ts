@@ -156,7 +156,7 @@ test('a loaded implementation retains its original digest and rejects subsequent
     { code: 'R1_MA_IMPLEMENTATION_CHANGED' });
 });
 
-test('the batch rejects an oversized already-associated input set before calling the fixed product reader', async () => {
+test('legacy automatic MA batch request is rejected before original custody or fixed product read', async () => {
   const root = mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'ma-pre-read-budget-'));
   const database = new CoreDatabase(join(root, 'core.sqlite'));
   const originals = [Buffer.from('date,symbol,close\n20260101,A,1\n'), Buffer.from('date,symbol,close\n20260102,A,2\n')];
@@ -183,15 +183,20 @@ test('the batch rejects an oversized already-associated input set before calling
     accept: async () => assert.fail('No new derived material may be accepted after the input row budget fails'),
     readCalculationInput: async () => { fixedReads++; assert.fail('The fixed product reader must not be called for an oversized input set'); } });
   try {
-    service.start({ batchId: 'oversized-observations', source, datasetId: 'observations', calculation: {...selection,valueColumn:'close'},
+    // 原报自动均线已正式取消。即使多个关联文件合计超预算，
+    // 带旧 calculation 的请求也必须在读原件、访问 WFD 或启动加工前拒绝。
+    assert.throws(() => service.start({ batchId: 'oversized-observations', source, datasetId: 'observations',
+      calculation: { ...selection, valueColumn: 'close' },
       files: originals.map((bytes, index) => ({ name: `input-${index}.csv`, relativePath: `input-${index}.csv`,
         sha256: wfdSha256(bytes), byteLength: bytes.length })) }, {
-      operatorId: 'isolated-test', requestId: 'batch-budget', method: 'POST', path: '/r1/batches/start', remoteAddress: '127.0.0.1', observedAt: Date.now() });
-    await new Promise<void>(resolve => setImmediate(resolve));
-    const result = service.get('oversized-observations');
-    assert.equal(result.items.length, 2); assert.ok(result.items.every(item => item.state === 'associated'));
-    assert.equal(result.calculation!.state, 'blocked'); assert.equal(result.calculation!.error!.code, 'R1_MA_ROW_BUDGET');
-    assert.equal(result.calculation!.materialId, null); assert.equal(fixedReads, 0);
+      operatorId: 'isolated-test', requestId: 'batch-budget', method: 'POST',
+      path: '/r1/batches/start', remoteAddress: '127.0.0.1', observedAt: Date.now() }),
+      (error: unknown) => (error as { code?: string }).code === 'R1_BATCH_ALGORITHM_MANUAL_ONLY');
+    assert.equal(fixedReads, 0, '拒绝自动算法后不得读取 WFD');
+    assert.equal(tasksByRequest.size, 0, '拒绝自动算法后不得启动保管任务');
+    assert.equal(autoViews.size, 0, '拒绝自动算法后不得建立派生任务');
+    assert.equal((database.connection.prepare('SELECT COUNT(*) n FROM r1_auto_batches').get() as { n: number }).n, 0,
+      '拒绝时不得持久化旧批次请求');
   } finally { await service.dispose(); database.close(); }
 });
 

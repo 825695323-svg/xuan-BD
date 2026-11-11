@@ -35,7 +35,7 @@ export class ConversationR1Bridge {
       CREATE INDEX conversation_r1_scope ON conversation_r1_links(conversation_id,branch_id,created_at);`);
     const registration = (action: string, title: string, description: string, fields: SkillField[]): SkillRegistration => ({
       action, title, description, fields, runtimeId: 'direct', kind: 'direct', modelCalls: 0,
-      permissionSummary: ['仅当前会话分支及输入祖先的明确选件和真实加工', '原R1请求/连接/任务恢复；不重提', '正式提交必须核冻结文档摘要且要求独立审批；来源与加工证据留在BD，模型不能自授权'],
+      permissionSummary: ['仅当前会话分支及输入祖先的明确选件和真实加工', '原R1请求/连接/任务恢复；不重提', '正式提交只能由宿主用户独立核冻结文档摘要后办理；BD AGENTS 不提供提交动作，模型不能自授权'],
       available: () => ({ available: !!options.companion.r1Workspace && !!options.companion.processing && !!options.companion.materials }),
     });
     this.registrations = [
@@ -117,7 +117,7 @@ export class ConversationR1Bridge {
 
   private result(summary: string, value: Record<string, unknown>): TaskResult {
     return { summary, data: { kind: 'conversation-r1', modelPreview: json({ contract: 'conversation-r1/1',
-      protocol: 'wfd.structured-ingest/1.0', profile: 'data_only', submitByAgent: 'review_required_with_frozen_digest',
+      protocol: 'wfd.structured-ingest/1.0', profile: 'data_only', submitByAgent: 'disabled_host_user_only',
       sourceEvidenceScope: 'verified_user_statement_only', ...value }) } };
   }
   private requestView(found: R1RequestView): Record<string, unknown> {
@@ -149,7 +149,7 @@ export class ConversationR1Bridge {
       }
     }
     return { configuration: { state: caps.configuration.state }, limits: { ...caps.limits, explicitAttachmentOnly: true,
-      maxAncestorMessages: MAX_ANCESTORS, maxListPage: 20 }, automaticSubmit: false, agentSubmit: 'review_required', legacyReplay: false, actions: [...ACTIONS], plans };
+      maxAncestorMessages: MAX_ANCESTORS, maxListPage: 20 }, automaticSubmit: false, agentSubmit: 'disabled_host_user_only', legacyReplay: false, actions: [...ACTIONS], plans };
   }
   private scope(origin: ModelTaskOrigin): Scope {
     const core = this.options.core;
