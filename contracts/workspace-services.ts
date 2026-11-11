@@ -12,6 +12,7 @@ import type { JsonValue } from './task-contracts.js';
 import type { TaskRecord } from '../platform/jobs/tasks.js';
 import type { R1CapabilitiesView, R1RequestView } from './r1-contracts.js';
 import type { AlgorithmCatalogView, AlgorithmTaskView } from '../modules/financial/algorithm-types.js';
+import type { UnifiedPolarsExecution } from '../modules/financial/unified-polars-execution.js';
 
 /** Trusted companion services used by material and result handoff, independent of HTTP startup. */
 import type { CandidateService } from '../modules/collection/candidate-service.js';
@@ -46,6 +47,8 @@ export interface WorkspaceServices {
   bd?: BdService;
   financial?: FinancialService;
   algorithms?: AlgorithmConversationPort;
+  /** 相同 algorithms.calculate 公共动作内部的方法执行器，不增加第二套 AGENTS 工具目录。 */
+  unifiedPolars?: UnifiedPolarsExecution;
   /** 服务侧唯一发布者，AGENTS 只能按原成功任务身份要求发布，不能传任意结构化行。 */
   derivedPublisher?: { publish(taskId: string, signal?: AbortSignal): Promise<{
     requestId: string; state: string; published: boolean; requiresRecovery: boolean;

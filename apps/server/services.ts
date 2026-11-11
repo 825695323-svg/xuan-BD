@@ -78,6 +78,7 @@ import { requireFinancialComputedResult } from '../../modules/financial/contract
 import { ToolLibraryService } from '../../modules/financial/tool-library.js';
 import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
 import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
+import { UnifiedPolarsExecution } from '../../modules/financial/unified-polars-execution.js';
 import type { LocalDataLifecycle, LocalDataLifecycleRecord } from '../../platform/runtime/local-data-lifecycle.js';
 
 export type CollectionConfiguration = Omit<ConstructorParameters<typeof CollectionService>[0], 'database' | 'tasks' | 'files'>;
@@ -190,6 +191,7 @@ export interface ApplicationServices {
   cloudCustody?: CloudCustodyService;
   structuredRetrieval?: StructuredRetrievalService;
   polarsFixed?: PolarsFixedService;
+  unifiedPolars?: UnifiedPolarsExecution;
   fixedCalculations?: FixedCalculationService;
   candidates?: CandidateService;
   semantics?: MaterialSemanticService;
@@ -442,6 +444,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       verify: ref => candidates.verifyObject(ref) } }) : undefined;
   let r1Runtime: R1Runtime | undefined;
   let derivedPublisher: DerivedWfdPublisher | undefined;
+  let unifiedPolars: UnifiedPolarsExecution | undefined;
   const verifyFixedDerived = (refs: import('../../modules/collection/r1-structured-handoff.js').R1LocalReferences, digest: string) => {
     if (!derivedPublisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', '固定算法独立核验尚未装配。');
     derivedPublisher.verify(refs, digest);
@@ -453,6 +456,10 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const verifyCalculationCandidateRemote = async (taskId: string, signal: AbortSignal) => {
     if (!polarsFixed) throw new TaskError('R1_CALCULATION_VERIFIER_UNBOUND', 'Polars 原 WFD 来源固定复核器未装配。');
     await polarsFixed.verifySourceForPublication(taskId, signal);
+  };
+  const verifyFixedDerivedRemote = async (taskId: string, signal: AbortSignal) => {
+    if (!derivedPublisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', '统一结构化算法正式来源复核器尚未装配。');
+    await derivedPublisher.verifyStructuredRemote(taskId, signal);
   };
   const verifyAlgorithmCandidate = (input: R1CalculationCandidateVerification) => {
     if (!algorithms || !materials || !processing)
@@ -484,7 +491,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   if (materials && options.resources) {
     try {
       r1Runtime = createR1HandoffRuntime({ resources: options.resources, database, materials, processing, candidates,
-        connectionId: options.r1ConnectionId, verifyCalculationCandidate, verifyCalculationCandidateRemote,
+        connectionId: options.r1ConnectionId, verifyCalculationCandidate, verifyCalculationCandidateRemote, verifyFixedDerivedRemote,
         verifyAlgorithmCandidate, verifyFixedDerived });
       r1Configuration = { state: 'ready', reason: null };
     } catch (error) {
@@ -494,14 +501,22 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   }
   const r1: R1HandoffService | undefined = r1Runtime?.service ?? (materials ? new R1HandoffService({
     database, materials, processing, candidates, verifyCalculationCandidate, verifyCalculationCandidateRemote,
-    verifyAlgorithmCandidate, verifyFixedDerived }) : undefined);
+    verifyFixedDerivedRemote, verifyAlgorithmCandidate, verifyFixedDerived }) : undefined);
   const r1Workspace: R1WorkspaceService | undefined = r1 && processing && materials ? new R1WorkspaceService({ database, tasks: currentTasks,
     handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration }) : undefined;
   // 独立确定性算法唯一发布路径：复用 R1 正式写入与固定读回，不走原报五步。
-  derivedPublisher = r1Runtime && r1Workspace && algorithms && r1
-    ? new DerivedWfdPublisher({ viewAlgorithm: taskId => algorithms.view(taskId),
-      readAlgorithmInput: taskId => algorithms.verifiedInput(taskId),
-      runtime: () => r1Runtime, workspace: () => r1Workspace, handoff: r1 })
+  derivedPublisher = r1Runtime && r1Workspace && r1 && (algorithms || (options.role === 'service' && options.processRuntime))
+    ? new DerivedWfdPublisher({
+      viewAlgorithm: taskId => {
+        if (!algorithms) throw new TaskError('ALGORITHM_UNAVAILABLE', '当前未装配原 Python 固定算法。');
+        return algorithms.view(taskId);
+      },
+      readAlgorithmInput: taskId => {
+        if (!algorithms) throw new TaskError('ALGORITHM_UNAVAILABLE', '当前未装配原 Python 固定算法。');
+        return algorithms.verifiedInput(taskId);
+      },
+      runtime: () => r1Runtime, workspace: () => r1Workspace, handoff: r1,
+      structuredPolars: () => unifiedPolars })
     : undefined;
   // 来源字段档案放在本机配置资源下；未绑定时退回工程外运行根，不读源码树。
   const sourceFieldProfiles = options.resources
@@ -525,6 +540,10 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const fixedCalculations = polarsFixed && r1Workspace && r1Auto && processing && materials
     ? new FixedCalculationService({ polars: polarsFixed, tasks: currentTasks, workspace: r1Workspace,
       auto: r1Auto, processing, materials, enabled: fixedCalculationEnabled(options.resources) }) : undefined;
+  // 新算法 Polars 在统一 algorithms.calculate 下使用独立方法执行器，不走旧原报候选五步。
+  unifiedPolars = options.role === 'service' && r1Workspace && options.processRuntime
+    ? new UnifiedPolarsExecution({ database, tasks: currentTasks, workspace: r1Workspace,
+      processRuntime: options.processRuntime }) : undefined;
   const questions = new AgentQuestionService(database, core);
   modelTools = createCoreModelTools({ database, core, permissions, files, registry: direct.registry, service: bd, conversationFinancial, conversationAlgorithms, businessGoals, questions,
     codeRoot: options.codeRoot ?? options.projectRoot,
@@ -561,6 +580,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   if (segments) runtimes.register(segments.runtime);
   if (r1Workspace) runtimes.register(r1Workspace.runtime);
   if (polarsFixed) runtimes.register(polarsFixed.runtime);
+  if (unifiedPolars) runtimes.register(unifiedPolars.runtime);
   for (const runtime of options.taskRuntimes ?? []) runtimes.register(runtime);
   tasks = new TaskService({ database, runtimes, permissions, controlsAllTasks: options.role !== 'service',
     ...(options.localData ? { dispatchGuard: options.localData.lifecycle } : {}),
@@ -687,5 +707,5 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   queueMicrotask(() => core.dispatchTaskCompletions());
   return { core, database, permissions, files, tasks: runningTasks, memory, agentSkills, questions, toolSettings, sourceSettings, personalResources, uiPreferences, contextLedger, inputRules, inputRouter, directConversations, direct, modelTools,
     ...(options.localData ? { localData: options.localData.lifecycle, localDataId: options.localData.dataId } : {}),
-    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
+    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, unifiedPolars, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
 }
