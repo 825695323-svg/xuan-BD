@@ -39,7 +39,7 @@
         "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/00-overview/00-overview.browser-check.json"
       },
       "visualReview": "not-requested",
-      "durationMs": 4316,
+      "durationMs": 4042,
       "browserCheck": {
         "requested": true,
         "ran": true
@@ -87,7 +87,7 @@
         "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/01-agents/01-agents.browser-check.json"
       },
       "visualReview": "not-requested",
-      "durationMs": 2876,
+      "durationMs": 2894,
       "browserCheck": {
         "requested": true,
         "ran": true
@@ -173,7 +173,7 @@
         "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/02-ingestion/02-ingestion.browser-check.json"
       },
       "visualReview": "not-requested",
-      "durationMs": 2776,
+      "durationMs": 2862,
       "browserCheck": {
         "requested": true,
         "ran": true
@@ -274,7 +274,7 @@
         "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/03-production-r1/03-production-r1.browser-check.json"
       },
       "visualReview": "not-requested",
-      "durationMs": 2842,
+      "durationMs": 2834,
       "browserCheck": {
         "requested": true,
         "ran": true
@@ -321,7 +321,7 @@
         "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/04-read-retrieval/04-read-retrieval.browser-check.json"
       },
       "visualReview": "not-requested",
-      "durationMs": 2732,
+      "durationMs": 2824,
       "browserCheck": {
         "requested": true,
         "ran": true
@@ -368,7 +368,7 @@
         "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/05-calculation/05-calculation.browser-check.json"
       },
       "visualReview": "not-requested",
-      "durationMs": 3158,
+      "durationMs": 3247,
       "browserCheck": {
         "requested": true,
         "ran": true
@@ -415,7 +415,7 @@
         "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/06-artifact-lifecycle/06-artifact-lifecycle.browser-check.json"
       },
       "visualReview": "not-requested",
-      "durationMs": 2841,
+      "durationMs": 2978,
       "browserCheck": {
         "requested": true,
         "ran": true
@@ -516,7 +516,7 @@
         "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/07-governance/07-governance.browser-check.json"
       },
       "visualReview": "not-requested",
-      "durationMs": 2808,
+      "durationMs": 2978,
       "browserCheck": {
         "requested": true,
         "ran": true

@@ -5,7 +5,7 @@
   "status": "pass",
   "type": "architecture",
   "quality": "showcase",
-  "startedAt": "2026-11-11T02:55:29.611Z",
+  "startedAt": "2026-11-11T02:57:13.313Z",
   "specification": {
     "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/05-calculation/candidate.json",
     "sha256": "15c2ecabe25b7add40d149f154195c4e43aeffe0e366b017d622d2f808d913cb",
@@ -56,7 +56,7 @@
     "deliver": {
       "status": "pass",
       "exitCode": 0,
-      "durationMs": 423,
+      "durationMs": 430,
       "command": [
         "/opt/hostedtoolcache/node/24.22.1/x64/bin/node",
         "/home/runner/work/_temp/archify-source/archify/bin/archify.mjs",
@@ -72,7 +72,7 @@
       ],
       "receipt": {
         "schemaVersion": 1,
-        "receiptId": "d82edc7e-079f-46d1-9ff9-94e96bffa346",
+        "receiptId": "708b71a4-20a8-443d-a315-0e0863098683",
         "ok": true,
         "command": "deliver",
         "type": "architecture",
@@ -254,13 +254,13 @@
           "issues": []
         },
         "provenance": "current",
-        "deliveryReceiptId": "d82edc7e-079f-46d1-9ff9-94e96bffa346"
+        "deliveryReceiptId": "708b71a4-20a8-443d-a315-0e0863098683"
       }
     },
     "browser-check": {
       "status": "pass",
       "exitCode": 0,
-      "durationMs": 2471,
+      "durationMs": 2520,
       "command": [
         "/opt/hostedtoolcache/node/24.22.1/x64/bin/node",
         "/home/runner/work/_temp/archify-source/archify/bin/archify.mjs",
@@ -278,7 +278,7 @@
         "status": "pass",
         "visualReview": "not-requested",
         "provenance": "current",
-        "deliveryReceiptId": "d82edc7e-079f-46d1-9ff9-94e96bffa346",
+        "deliveryReceiptId": "708b71a4-20a8-443d-a315-0e0863098683",
         "artifact": {
           "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/05-calculation/05-calculation.html",
           "sha256": "446228d77930e29221439bd102d0dc60de51cc3edcc7c818c3e58d8938141546",
@@ -1004,8 +1004,8 @@
     "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/05-calculation/05-calculation.browser-check.json"
   },
   "visualReview": "not-requested",
-  "finishedAt": "2026-11-11T02:55:32.770Z",
-  "durationMs": 3158,
+  "finishedAt": "2026-11-11T02:57:16.561Z",
+  "durationMs": 3247,
   "update": {
     "status": "unavailable",
     "installedVersion": null,

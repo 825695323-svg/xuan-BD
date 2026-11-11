@@ -5,7 +5,7 @@
   "status": "pass",
   "type": "architecture",
   "quality": "showcase",
-  "startedAt": "2026-11-11T02:55:32.862Z",
+  "startedAt": "2026-11-11T02:57:16.661Z",
   "specification": {
     "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/06-artifact-lifecycle/candidate.json",
     "sha256": "5d013f5d9763cbdaa3e8ed22af45a32f689f485f7ca598f682b05856b366574d",
@@ -56,7 +56,7 @@
     "deliver": {
       "status": "pass",
       "exitCode": 0,
-      "durationMs": 433,
+      "durationMs": 458,
       "command": [
         "/opt/hostedtoolcache/node/24.22.1/x64/bin/node",
         "/home/runner/work/_temp/archify-source/archify/bin/archify.mjs",
@@ -72,7 +72,7 @@
       ],
       "receipt": {
         "schemaVersion": 1,
-        "receiptId": "86e7ed63-f444-41d9-87e3-7b031969c725",
+        "receiptId": "227305f4-71ea-484c-90ef-fc4d7c256828",
         "ok": true,
         "command": "deliver",
         "type": "architecture",
@@ -116,7 +116,7 @@
     "check": {
       "status": "pass",
       "exitCode": 0,
-      "durationMs": 160,
+      "durationMs": 167,
       "command": [
         "/opt/hostedtoolcache/node/24.22.1/x64/bin/node",
         "/home/runner/work/_temp/archify-source/archify/bin/archify.mjs",
@@ -293,13 +293,13 @@
           "issues": []
         },
         "provenance": "current",
-        "deliveryReceiptId": "86e7ed63-f444-41d9-87e3-7b031969c725"
+        "deliveryReceiptId": "227305f4-71ea-484c-90ef-fc4d7c256828"
       }
     },
     "browser-check": {
       "status": "pass",
       "exitCode": 0,
-      "durationMs": 2152,
+      "durationMs": 2213,
       "command": [
         "/opt/hostedtoolcache/node/24.22.1/x64/bin/node",
         "/home/runner/work/_temp/archify-source/archify/bin/archify.mjs",
@@ -317,7 +317,7 @@
         "status": "pass",
         "visualReview": "not-requested",
         "provenance": "current",
-        "deliveryReceiptId": "86e7ed63-f444-41d9-87e3-7b031969c725",
+        "deliveryReceiptId": "227305f4-71ea-484c-90ef-fc4d7c256828",
         "artifact": {
           "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/06-artifact-lifecycle/06-artifact-lifecycle.html",
           "sha256": "6b650d3e89aef7bd7979b42263b28311128d5fe83f5342fe3e07823e4df831ed",
@@ -1043,8 +1043,8 @@
     "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/06-artifact-lifecycle/06-artifact-lifecycle.browser-check.json"
   },
   "visualReview": "not-requested",
-  "finishedAt": "2026-11-11T02:55:35.703Z",
-  "durationMs": 2841,
+  "finishedAt": "2026-11-11T02:57:19.639Z",
+  "durationMs": 2978,
   "update": {
     "status": "unavailable",
     "installedVersion": null,

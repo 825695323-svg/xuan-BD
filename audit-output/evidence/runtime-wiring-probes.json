@@ -371,9 +371,9 @@
     }
   ],
   "generatedReference": {
-    "id": "288b97bc-30ef-4d2c-9919-7e223b9db83c",
+    "id": "43af26fe-28e8-4b02-bb94-12270f8d1275",
     "resource": null,
-    "path": "/tmp/xuan-audit-real-host-IUPrnA/wiring-audit-3txWHv/bd/state/private/artifacts/audit-generated.txt",
+    "path": "/tmp/xuan-audit-real-host-BFN9BM/wiring-audit-KXS0MJ/bd/state/private/artifacts/audit-generated.txt",
     "relations": [
       {
         "kind": "task",
