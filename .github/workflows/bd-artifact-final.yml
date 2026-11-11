@@ -1,0 +1,40 @@
+name: BD artifact project final regression
+
+on:
+  push:
+    branches:
+      - codex/artifact-final-regression
+  pull_request:
+    paths:
+      - '.github/workflows/bd-artifact-final.yml'
+      - 'modules/collection/**'
+      - 'platform/resources/**'
+      - 'platform/capabilities/**'
+      - 'apps/server/**'
+      - 'plugins/**'
+      - 'contracts/**'
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install pinned dependencies
+        run: npm ci
+      - name: Typecheck and production frontend build
+        run: npm run build
+      - name: Run complete Node and TypeScript regression suite
+        env:
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-artifact-final-chain
+          XUAN_TEST_ROOT: ${{ runner.temp }}/bd-artifact-final-tests
+        run: |
+          mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
+          npm test
