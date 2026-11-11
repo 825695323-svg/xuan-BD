@@ -182,7 +182,11 @@ export function createArtifactLifecycleActions(options: {
       if (!isRelease && action !== inspect.action) throw new TaskError('ARTIFACT_RELEASE_ACTION', '未登记的产物生命周期动作。');
       const input = validate(args, isRelease);
       const condition = state(input);
-      if (!isRelease) return report(input, condition, 'not_checked');
+      if (!isRelease) {
+        const checked = condition.receipt && condition.blockers.length === 0 && condition.receipt.state === 'confirmed'
+          ? await checkRemote(context, condition.receipt).catch(() => false) : false;
+        return report(input, condition, checked ? 'metadata_checked' : 'not_confirmed');
+      }
       if (condition.blockers.length || !condition.receipt) throw new TaskError('ARTIFACT_RELEASE_BLOCKED',
         '仍有本地消费者、来源或归档身份缺口：' + condition.blockers.join('、'));
       const { reference, receipt, previous } = condition;
