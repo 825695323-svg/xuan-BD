@@ -75,7 +75,7 @@ export function artifactReleaseBlockers(db: CoreDatabase, files: FileReferenceSe
       .get(item.table);
     if (!exists) continue;
     try {
-      const bindings = (item.condition.match(/\\?/g) ?? []).length;
+      const bindings = item.condition.split('?').length - 1;
       if (connection.prepare('SELECT 1 FROM ' + item.table + ' WHERE ' + item.condition + ' LIMIT 1')
         .get(...Array.from({ length: bindings }, () => fileRefId)))
         blockers.push(item.table + '-reference');
