@@ -159,7 +159,7 @@ export class UnifiedPolarsExecution {
       || task.versions.polars !== POLARS_FIXED_VERSION || task.versions.polarsDependency !== POLARS_DEPENDENCY_VERSION)
       return fail('UNIFIED_POLARS_FROZEN_CHANGED', '方法、输入或执行器冻结版本已经变化。');
     if (digest(this.options.workspace.capabilities().connection) !== digest(frozen.connection)
-      || this.options.processRuntime.path('polars-python') !== frozen.python)
+      || realpathSync(this.options.processRuntime.path('polars-python')) !== frozen.python)
       return fail('UNIFIED_POLARS_BINDING_CHANGED', '受信 WFD 连接或 Polars 程序与原任务不同。');
     const assertAuthorized = () => {
       context.signal.throwIfAborted();
