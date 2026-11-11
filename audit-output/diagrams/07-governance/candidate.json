@@ -104,8 +104,8 @@
       "label": "操作授权与路径保护",
       "sublabel": "PermissionService",
       "pos": [
-        400,
-        206
+        760,
+        372
       ],
       "size": [
         230,
@@ -125,8 +125,8 @@
       "label": "任务代次、预算与停止",
       "sublabel": "TaskService",
       "pos": [
-        40,
-        206
+        400,
+        372
       ],
       "size": [
         230,
@@ -168,7 +168,7 @@
       "sublabel": "CoreDatabase / 事务",
       "pos": [
         400,
-        372
+        538
       ],
       "size": [
         230,
@@ -188,8 +188,8 @@
       "label": "已释放暂存的定期回收",
       "sublabel": "TemporaryRetention",
       "pos": [
-        760,
-        372
+        40,
+        538
       ],
       "size": [
         230,

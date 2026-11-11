@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/07-governance/candidate.json",
+    "sha256": "1e02062b05d37de4fc91ad6477f33ca81980b5a394a1571808f1f32e13a55510",
+    "bytes": 5738
+  },
+  "artifact": {
+    "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/07-governance/07-governance.html",
+    "sha256": "521410bba4c4ea75a805b2aa026cd628abf3124b6f7aa125688d6addf124f5e1",
+    "bytes": 845391
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/07-governance/review-42949414166/07-governance.finalize.json",
+    "summaryReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/07-governance/review-42949414166/07-governance.finalize-summary.json",
+    "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/07-governance/review-42949414166/07-governance.browser-check.json"
+  },
+  "visualReview": "not-requested",
+  "durationMs": 2238,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

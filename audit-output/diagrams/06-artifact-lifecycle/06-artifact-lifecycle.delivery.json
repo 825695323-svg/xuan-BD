@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "receiptId": "227305f4-71ea-484c-90ef-fc4d7c256828",
+  "receiptId": "bf2c3f06-c0a7-4964-8c50-240fb3784004",
   "status": "current",
   "command": "deliver",
   "type": "architecture",
   "input": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/06-artifact-lifecycle/candidate.json",
   "output": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/06-artifact-lifecycle/06-artifact-lifecycle.html",
   "specification": {
-    "sha256": "5d013f5d9763cbdaa3e8ed22af45a32f689f485f7ca598f682b05856b366574d",
-    "bytes": 5843
+    "sha256": "4d61e96b43b069a9e91005aa1dfbe5e05a528c972d1cb5acc3f63f5c84730663",
+    "bytes": 5802
   },
   "artifact": {
-    "sha256": "6b650d3e89aef7bd7979b42263b28311128d5fe83f5342fe3e07823e4df831ed",
-    "bytes": 845108
+    "sha256": "5fa85bdffc9ef180964b041476989aa220d1500ce6e913987c92119ab948a640",
+    "bytes": 843953
   }
 }

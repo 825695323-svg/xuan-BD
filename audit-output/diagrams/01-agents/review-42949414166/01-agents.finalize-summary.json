@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/01-agents/candidate.json",
+    "sha256": "32568118c6466d4ee540f2ee4f320fe0f9d479ce9003693e8f581da2827d9750",
+    "bytes": 5562
+  },
+  "artifact": {
+    "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/01-agents/01-agents.html",
+    "sha256": "fb45115a46d68cce50327344fbf3c03277af28673a6adb06e9ce0fc7e254e70a",
+    "bytes": 844014
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/01-agents/review-42949414166/01-agents.finalize.json",
+    "summaryReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/01-agents/review-42949414166/01-agents.finalize-summary.json",
+    "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/01-agents/review-42949414166/01-agents.browser-check.json"
+  },
+  "visualReview": "not-requested",
+  "durationMs": 2521,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

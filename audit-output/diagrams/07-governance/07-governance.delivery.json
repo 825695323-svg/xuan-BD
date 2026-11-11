@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "receiptId": "638a4084-b5b4-4459-9029-d53901bfb72b",
+  "receiptId": "2f934763-2bd4-43ae-9d9a-9ac7135ddb43",
   "status": "current",
   "command": "deliver",
   "type": "architecture",
   "input": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/07-governance/candidate.json",
   "output": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/07-governance/07-governance.html",
   "specification": {
-    "sha256": "ceb58852daea2100613f4bfe4924781eb3badf804c94dc68f195d138a870da01",
+    "sha256": "1e02062b05d37de4fc91ad6477f33ca81980b5a394a1571808f1f32e13a55510",
     "bytes": 5738
   },
   "artifact": {
-    "sha256": "c656378df599073b85b9765fc5844a7ef60c234042f6b9a64d3300f5ea009569",
-    "bytes": 845698
+    "sha256": "521410bba4c4ea75a805b2aa026cd628abf3124b6f7aa125688d6addf124f5e1",
+    "bytes": 845391
   }
 }

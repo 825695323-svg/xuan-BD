@@ -33,7 +33,7 @@
     "browserCheckReceipt": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/04-read-retrieval/04-read-retrieval.browser-check.json"
   },
   "visualReview": "not-requested",
-  "durationMs": 2824,
+  "durationMs": 2732,
   "browserCheck": {
     "requested": true,
     "ran": true

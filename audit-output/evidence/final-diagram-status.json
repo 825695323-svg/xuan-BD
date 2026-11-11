@@ -1,0 +1,154 @@
+[
+  {
+    "slug": "00-overview",
+    "title": "Xuan BD 全项目架构 · 当前源码，不是理想方案",
+    "exitCode": 0,
+    "gates": {
+      "validate": "pass",
+      "deliver": "pass",
+      "check": "pass",
+      "browser-check": "pass"
+    },
+    "artifact": {
+      "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/00-overview/00-overview.html",
+      "sha256": "a330dc360f9cb3b1ea6b53c8ca318797d5c845692bca373a43361c05b8f688b6",
+      "bytes": 854591
+    },
+    "diagnostics": [],
+    "recommendation": null,
+    "captureExit": 0
+  },
+  {
+    "slug": "01-agents",
+    "title": "线路一 · AGENTS 会话、工具与状态回路",
+    "exitCode": 0,
+    "gates": {
+      "validate": "pass",
+      "deliver": "pass",
+      "check": "pass",
+      "browser-check": "pass"
+    },
+    "artifact": {
+      "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/01-agents/01-agents.html",
+      "sha256": "fb45115a46d68cce50327344fbf3c03277af28673a6adb06e9ce0fc7e254e70a",
+      "bytes": 844014
+    },
+    "diagnostics": [],
+    "recommendation": null,
+    "captureExit": 0
+  },
+  {
+    "slug": "02-ingestion",
+    "title": "线路二 · 来源接入、材料保管与按格式转换",
+    "exitCode": 0,
+    "gates": {
+      "validate": "pass",
+      "deliver": "pass",
+      "check": "pass",
+      "browser-check": "pass"
+    },
+    "artifact": {
+      "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/02-ingestion/02-ingestion.html",
+      "sha256": "63b65b4209a361f039bd5664833d2708a875736bfc864ea9236759f6f007f2a7",
+      "bytes": 844544
+    },
+    "diagnostics": [],
+    "recommendation": null,
+    "captureExit": 0
+  },
+  {
+    "slug": "03-production-r1",
+    "title": "线路三 · 语义、五步加工、R1 与正式发布",
+    "exitCode": 0,
+    "gates": {
+      "validate": "pass",
+      "deliver": "pass",
+      "check": "pass",
+      "browser-check": "pass"
+    },
+    "artifact": {
+      "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/03-production-r1/03-production-r1.html",
+      "sha256": "f428286c53e78b89ef61e3d35404dc0a97186067c22759aa06981ffa3547a5f6",
+      "bytes": 844259
+    },
+    "diagnostics": [],
+    "recommendation": null,
+    "captureExit": 0
+  },
+  {
+    "slug": "04-read-retrieval",
+    "title": "线路四 · WFD 固定读取、证据检索与输出",
+    "exitCode": 0,
+    "gates": {
+      "validate": "pass",
+      "deliver": "pass",
+      "check": "pass",
+      "browser-check": "pass"
+    },
+    "artifact": {
+      "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/04-read-retrieval/04-read-retrieval.html",
+      "sha256": "0fdb86fa6b1b33bdaa94da0ca16829a30d718b35284b1dc52d09e40dc31515e9",
+      "bytes": 844360
+    },
+    "diagnostics": [],
+    "recommendation": null,
+    "captureExit": 0
+  },
+  {
+    "slug": "05-calculation",
+    "title": "线路五 · 固定算法、Polars 与派生回写",
+    "exitCode": 0,
+    "gates": {
+      "validate": "pass",
+      "deliver": "pass",
+      "check": "pass",
+      "browser-check": "pass"
+    },
+    "artifact": {
+      "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/05-calculation/05-calculation.html",
+      "sha256": "446228d77930e29221439bd102d0dc60de51cc3edcc7c818c3e58d8938141546",
+      "bytes": 846261
+    },
+    "diagnostics": [],
+    "recommendation": null,
+    "captureExit": 0
+  },
+  {
+    "slug": "06-artifact-lifecycle",
+    "title": "线路六 · 产物归档、恢复与回收：含已发现阻断",
+    "exitCode": 0,
+    "gates": {
+      "validate": "pass",
+      "deliver": "pass",
+      "check": "pass",
+      "browser-check": "pass"
+    },
+    "artifact": {
+      "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/06-artifact-lifecycle/06-artifact-lifecycle.html",
+      "sha256": "5fa85bdffc9ef180964b041476989aa220d1500ce6e913987c92119ab948a640",
+      "bytes": 843953
+    },
+    "diagnostics": [],
+    "recommendation": null,
+    "captureExit": 0
+  },
+  {
+    "slug": "07-governance",
+    "title": "线路七 · 启动装配、版本、权限与持久化",
+    "exitCode": 0,
+    "gates": {
+      "validate": "pass",
+      "deliver": "pass",
+      "check": "pass",
+      "browser-check": "pass"
+    },
+    "artifact": {
+      "path": "/home/runner/work/xuan-BD/xuan-BD/audit-output/diagrams/07-governance/07-governance.html",
+      "sha256": "521410bba4c4ea75a805b2aa026cd628abf3124b6f7aa125688d6addf124f5e1",
+      "bytes": 845391
+    },
+    "diagnostics": [],
+    "recommendation": null,
+    "captureExit": 0
+  }
+]
