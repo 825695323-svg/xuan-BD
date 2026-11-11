@@ -340,6 +340,8 @@ export class R1WorkspaceService {
     // 首次发送的全部用途/限制证据必须在任何外部副作用标记前完成；失败不进入 unknown 提交恢复。
     const restriction = await this.verifyRestrictionForRequest(requestId, runtime);
     this.options.handoff.assertCalculationReadyToSend(requestId, restriction);
+    // 在报告首次外部副作用前完成远端固定记录重新读取；失败时不得发 WFD submit。
+    await this.options.handoff.assertRemoteCalculationReadyToSend(requestId, context.signal);
     await context.emit({ type: 'side_effect_started', effectId, description: '向冻结 data_only 连接提交原 request_identity',
       operation: { protocol: 'wfd.structured-ingest/1.0', requestId, bindingSha256: row.binding_sha256 } });
     const result = await this.options.handoff.submitAndAssociate(requestId, runtime.client, context.signal, restriction);
