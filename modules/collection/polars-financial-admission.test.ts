@@ -79,7 +79,7 @@ test('legacy financial candidate without trusted eligibility stays readable but 
     assert.throws(() => f.service.verifyCandidate(f.task.id, f.verify),
       code('POLARS_ELIGIBILITY_EVIDENCE_MISSING'),
       '不能把旧候选结果或自报计划冒充受信用途资格');
-    assert.throws(() => f.service.prepare(f.task.id, { ...f.verify, target: { definition: f.verify.definition } }),
+    await assert.rejects(f.service.prepare(f.task.id, { ...f.verify, target: { definition: f.verify.definition } }),
       code('POLARS_ELIGIBILITY_EVIDENCE_MISSING'));
     assert.throws(() => f.handoff.prepare({ structured: f.structured, localRefs: f.refs(f.structured) }),
       code('R1_USAGE_DECLARATION_MISSING'),
