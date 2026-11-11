@@ -1770,7 +1770,13 @@ export class CoreModelTools {
     }
     if (call.action === 'audio.transcribe' || call.action === 'video.transcribe_url') {
       const ticket = JSON.parse(call.ticket_json!) as ShareTicket;
+      // 视频无字幕时只临时下载音轨；原音轨没有可伪造的长期 fileRefId。
+      // 只有绑定本任务明确 URL 的非持久来源记录可走此分支。
+      const transientVideoSource = call.action === 'video.transcribe_url'
+        ? projectTemporaryVideoAudioSource(source.source, task.args) : null;
+      if (transientVideoSource) data.source = transientVideoSource;
       for (const key of ['source', 'textReference', 'evidenceReference'] as const) {
+        if (key === 'source' && transientVideoSource) continue;
         const reference = source[key];
         if (!isObject(reference) || typeof reference.fileRefId !== 'string' || !reference.fileRefId || reference.fileRefId.length > 300
           || !Number.isSafeInteger(reference.fileRefVersion) || Number(reference.fileRefVersion) < 1
@@ -1886,6 +1892,25 @@ function unknownLocalPersistence(): Record<string, JsonValue> {
   return { scope: 'local-task-artifacts', status: 'unknown', taskRecord: 'unknown', currentFiles: 'unknown',
     statement: '本机保存状态无法按当前权限和文件证明核实；不能声称当前已保存，也不能据此声称从未保存。' };
 }
+/** 无字幕视频的音轨只作暂存：模型可看到冻结来源身份，不能得到伪造的本地文件引用。 */
+export function projectTemporaryVideoAudioSource(value: unknown, taskArgs: unknown): Record<string, JsonValue> | null {
+  if (!isObject(value) || value.kind !== 'remote-audio-temporary') return null;
+  const allowed = new Set(['kind', 'url', 'sha256', 'byteLength', 'localRetained']);
+  let expectedUrl: string;
+  try {
+    const args = isObject(taskArgs) ? taskArgs : null;
+    if (typeof args?.url !== 'string') throw new Error('missing task URL');
+    expectedUrl = new URL(args.url).href;
+  } catch { throw publicError('MODEL_ACTION_FAILED'); }
+  if (Object.keys(value).some(key => !allowed.has(key))
+    || value.url !== expectedUrl || typeof value.url !== 'string' || value.url.length > 4096
+    || typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(value.sha256)
+    || !Number.isSafeInteger(value.byteLength) || Number(value.byteLength) < 1
+    || Number(value.byteLength) > 1_073_741_824 || value.localRetained !== false) throw publicError('MODEL_ACTION_FAILED');
+  return { kind: 'remote-audio-temporary', url: expectedUrl, sha256: value.sha256,
+    byteLength: Number(value.byteLength), localRetained: false };
+}
+
 export function isModelActionAllowed(action: string): boolean { return MODEL_ACTIONS.has(action); }
 export function modelActionApprovalMode(action: string, args: Record<string, JsonValue>): NonNullable<OperationScope['approvalMode']> {
   if (AUTOMATIC_ACTIONS.has(action)) return 'automatic';
