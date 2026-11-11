@@ -1,0 +1,1574 @@
+[
+  {
+    "path": "apps/server/algorithm-routes.ts",
+    "line": 11,
+    "method": "use",
+    "route": "/api/ui/algorithms"
+  },
+  {
+    "path": "apps/server/algorithm-routes.ts",
+    "line": 20,
+    "method": "get",
+    "route": "/"
+  },
+  {
+    "path": "apps/server/algorithm-routes.ts",
+    "line": 24,
+    "method": "get",
+    "route": "/adoption"
+  },
+  {
+    "path": "apps/server/algorithm-routes.ts",
+    "line": 28,
+    "method": "get",
+    "route": "/calls"
+  },
+  {
+    "path": "apps/server/algorithm-routes.ts",
+    "line": 29,
+    "method": "get",
+    "route": "/calls/:taskId"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 64,
+    "method": "use",
+    "route": "/api/bd/local-data"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 150,
+    "method": "use",
+    "route": "/api"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 152,
+    "method": "use",
+    "route": "/api/bd"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 161,
+    "method": "use",
+    "route": "/api"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 167,
+    "method": "get",
+    "route": "/api/health"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 168,
+    "method": "get",
+    "route": "/api/release"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 170,
+    "method": "get",
+    "route": "/api/questions"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 175,
+    "method": "post",
+    "route": "/api/questions/:id/answer"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 180,
+    "method": "post",
+    "route": "/api/questions/:id/dismiss"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 185,
+    "method": "use",
+    "route": "/api/capture-sources"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 186,
+    "method": "use",
+    "route": "/api/ui/source-settings"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 187,
+    "method": "use",
+    "route": "/api/ui/tool-library"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 189,
+    "method": "use",
+    "route": "/api/ui/algorithms"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 190,
+    "method": "use",
+    "route": "/api/conversations"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 191,
+    "method": "use",
+    "route": "/api/ui/data-browser"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 192,
+    "method": "use",
+    "route": "/api/ui"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 193,
+    "method": "get",
+    "route": "/api/conversation"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 194,
+    "method": "get",
+    "route": "/api/conversations"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 202,
+    "method": "post",
+    "route": "/api/conversations"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 212,
+    "method": "get",
+    "route": "/api/conversations/:id"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 216,
+    "method": "get",
+    "route": "/api/conversations/:id/history"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 221,
+    "method": "patch",
+    "route": "/api/conversations/:id"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 228,
+    "method": "post",
+    "route": "/api/conversations/:id/visibility"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 236,
+    "method": "patch",
+    "route": "/api/conversations/:id/project"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 241,
+    "method": "patch",
+    "route": "/api/conversations/:id/thinking"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 246,
+    "method": "get",
+    "route": "/api/conversations/:id/draft"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 254,
+    "method": "put",
+    "route": "/api/conversations/:id/draft"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 259,
+    "method": "post",
+    "route": "/api/conversations/:id/send-requests"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 278,
+    "method": "get",
+    "route": "/api/conversations/:id/send-requests"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 279,
+    "method": "get",
+    "route": "/api/conversations/:id/send-requests/:requestId"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 280,
+    "method": "post",
+    "route": "/api/conversations/:id/send-requests/:requestId/abandon"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 284,
+    "method": "post",
+    "route": "/api/conversations/:id/messages"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 314,
+    "method": "post",
+    "route": "/api/conversations/:id/interrupt-send"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 338,
+    "method": "post",
+    "route": "/api/conversations/:id/edit"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 344,
+    "method": "post",
+    "route": "/api/conversations/:id/retry"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 348,
+    "method": "post",
+    "route": "/api/conversations/:id/compact"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 353,
+    "method": "post",
+    "route": "/api/conversations/:id/branch"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 361,
+    "method": "post",
+    "route": "/api/conversations/:id/branches"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 365,
+    "method": "post",
+    "route": "/api/conversations/:id/fork"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 370,
+    "method": "post",
+    "route": "/api/conversations/:id/abort"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 373,
+    "method": "post",
+    "route": "/api/conversations/:id/queue/:commandId/cancel"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 374,
+    "method": "post",
+    "route": "/api/conversations/:id/queue/:commandId/edit"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 379,
+    "method": "post",
+    "route": "/api/conversations/:id/queue/:commandId/steer"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 384,
+    "method": "post",
+    "route": "/api/conversations/:id/queue/resume"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 385,
+    "method": "get",
+    "route": "/api/events"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 415,
+    "method": "post",
+    "route": "/api/messages"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 423,
+    "method": "post",
+    "route": "/api/abort"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 429,
+    "method": "use",
+    "route": "/api"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 430,
+    "method": "use",
+    "route": "/api"
+  },
+  {
+    "path": "apps/server/app.ts",
+    "line": 434,
+    "method": "get",
+    "route": "/"
+  },
+  {
+    "path": "apps/server/bd-routes.ts",
+    "line": 8,
+    "method": "get",
+    "route": "/runtime/status"
+  },
+  {
+    "path": "apps/server/bd-routes.ts",
+    "line": 9,
+    "method": "post",
+    "route": "/runtime/stop"
+  },
+  {
+    "path": "apps/server/bd-routes.ts",
+    "line": 13,
+    "method": "post",
+    "route": "/runtime/resume"
+  },
+  {
+    "path": "apps/server/bd-routes.ts",
+    "line": 19,
+    "method": "post",
+    "route": "/jobs"
+  },
+  {
+    "path": "apps/server/bd-routes.ts",
+    "line": 32,
+    "method": "get",
+    "route": "/jobs/:id"
+  },
+  {
+    "path": "apps/server/bd-routes.ts",
+    "line": 33,
+    "method": "get",
+    "route": "/jobs"
+  },
+  {
+    "path": "apps/server/bd-routes.ts",
+    "line": 34,
+    "method": "get",
+    "route": "/requests/:operation/:requestId"
+  },
+  {
+    "path": "apps/server/bd-routes.ts",
+    "line": 39,
+    "method": "get",
+    "route": "/jobs/:id/evidence"
+  },
+  {
+    "path": "apps/server/bd-routes.ts",
+    "line": 47,
+    "method": "post",
+    "route": "/jobs/:id/resume"
+  },
+  {
+    "path": "apps/server/bd-routes.ts",
+    "line": 79,
+    "method": "post",
+    "route": "/jobs/:id/cancel"
+  },
+  {
+    "path": "apps/server/capture-source-routes.ts",
+    "line": 8,
+    "method": "get",
+    "route": "/"
+  },
+  {
+    "path": "apps/server/capture-source-routes.ts",
+    "line": 15,
+    "method": "post",
+    "route": "/:id/login"
+  },
+  {
+    "path": "apps/server/conversation-display-metadata-routes.ts",
+    "line": 7,
+    "method": "put",
+    "route": "/:id/display-metadata"
+  },
+  {
+    "path": "apps/server/data-browser-routes.ts",
+    "line": 55,
+    "method": "get",
+    "route": "/files"
+  },
+  {
+    "path": "apps/server/data-browser-routes.ts",
+    "line": 61,
+    "method": "get",
+    "route": "/materials"
+  },
+  {
+    "path": "apps/server/data-browser-routes.ts",
+    "line": 67,
+    "method": "get",
+    "route": "/materials/:id"
+  },
+  {
+    "path": "apps/server/data-browser-routes.ts",
+    "line": 73,
+    "method": "get",
+    "route": "/jobs"
+  },
+  {
+    "path": "apps/server/data-browser-routes.ts",
+    "line": 91,
+    "method": "get",
+    "route": "/conversation-processing"
+  },
+  {
+    "path": "apps/server/fixed-calculation-routes.ts",
+    "line": 6,
+    "method": "get",
+    "route": "/capabilities"
+  },
+  {
+    "path": "apps/server/fixed-calculation-routes.ts",
+    "line": 7,
+    "method": "get",
+    "route": "/inputs"
+  },
+  {
+    "path": "apps/server/fixed-calculation-routes.ts",
+    "line": 8,
+    "method": "post",
+    "route": "/records"
+  },
+  {
+    "path": "apps/server/fixed-calculation-routes.ts",
+    "line": 9,
+    "method": "get",
+    "route": "/tasks"
+  },
+  {
+    "path": "apps/server/fixed-calculation-routes.ts",
+    "line": 10,
+    "method": "get",
+    "route": "/tasks/:id"
+  },
+  {
+    "path": "apps/server/inactive-app.ts",
+    "line": 52,
+    "method": "get",
+    "route": "/api/health"
+  },
+  {
+    "path": "apps/server/inactive-app.ts",
+    "line": 53,
+    "method": "use",
+    "route": "/api/bd/local-data"
+  },
+  {
+    "path": "apps/server/inactive-app.ts",
+    "line": 58,
+    "method": "use",
+    "route": "/api"
+  },
+  {
+    "path": "apps/server/inactive-app.ts",
+    "line": 61,
+    "method": "get",
+    "route": "/"
+  },
+  {
+    "path": "apps/server/local-data-routes.ts",
+    "line": 38,
+    "method": "get",
+    "route": "/current"
+  },
+  {
+    "path": "apps/server/local-data-routes.ts",
+    "line": 51,
+    "method": "get",
+    "route": "/"
+  },
+  {
+    "path": "apps/server/local-data-routes.ts",
+    "line": 54,
+    "method": "get",
+    "route": "/:dataId"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 37,
+    "method": "get",
+    "route": "/approvals"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 39,
+    "method": "get",
+    "route": "/approvals/:id"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 43,
+    "method": "post",
+    "route": "/approvals/:id"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 66,
+    "method": "get",
+    "route": "/skills"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 67,
+    "method": "get",
+    "route": "/context-usage"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 71,
+    "method": "get",
+    "route": "/input-rules"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 72,
+    "method": "put",
+    "route": "/input-rules/:id"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 77,
+    "method": "post",
+    "route": "/input-rules/attachment"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 81,
+    "method": "get",
+    "route": "/settings/tools"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 83,
+    "method": "get",
+    "route": "/settings/tools/adoptions"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 84,
+    "method": "get",
+    "route": "/settings/tools/operations/:requestId"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 89,
+    "method": "put",
+    "route": "/settings/tools"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 179,
+    "method": "get",
+    "route": "/personal-resources"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 180,
+    "method": "post",
+    "route": "/personal-resources"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 187,
+    "method": "post",
+    "route": "/personal-resources/selection"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 191,
+    "method": "post",
+    "route": "/personal-resources/import/preview"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 196,
+    "method": "post",
+    "route": "/personal-resources/import/commit"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 202,
+    "method": "get",
+    "route": "/personal-resources/:id"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 203,
+    "method": "post",
+    "route": "/personal-resources/:id/revise"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 207,
+    "method": "post",
+    "route": "/personal-resources/:id/enabled"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 212,
+    "method": "get",
+    "route": "/agent-skills"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 213,
+    "method": "get",
+    "route": "/agent-skills/:id"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 214,
+    "method": "post",
+    "route": "/agent-skills/:id/enabled"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 221,
+    "method": "get",
+    "route": "/files"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 227,
+    "method": "post",
+    "route": "/files"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 233,
+    "method": "post",
+    "route": "/files/upload"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 236,
+    "method": "post",
+    "route": "/files/:id/observe"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 237,
+    "method": "get",
+    "route": "/files/:id"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 238,
+    "method": "get",
+    "route": "/artifacts/:id/download"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 248,
+    "method": "get",
+    "route": "/conversations/:id/direct-messages"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 251,
+    "method": "get",
+    "route": "/tasks"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 252,
+    "method": "get",
+    "route": "/tasks/completions"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 253,
+    "method": "get",
+    "route": "/tasks/events"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 270,
+    "method": "get",
+    "route": "/tasks/:id"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 274,
+    "method": "post",
+    "route": "/tasks"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 304,
+    "method": "post",
+    "route": "/tasks/:id/command"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 326,
+    "method": "post",
+    "route": "/tasks/:id/reconcile"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 333,
+    "method": "post",
+    "route": "/tasks/:id/recover"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 340,
+    "method": "get",
+    "route": "/permissions"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 341,
+    "method": "get",
+    "route": "/permissions/snapshot"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 342,
+    "method": "post",
+    "route": "/permissions/:id/revoke"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 343,
+    "method": "post",
+    "route": "/permissions/:id/restore"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 352,
+    "method": "get",
+    "route": "/memory"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 353,
+    "method": "get",
+    "route": "/memory/export"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 354,
+    "method": "get",
+    "route": "/memory/:id"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 355,
+    "method": "post",
+    "route": "/memory/source/message"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 359,
+    "method": "post",
+    "route": "/memory"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 364,
+    "method": "put",
+    "route": "/memory/:id"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 368,
+    "method": "post",
+    "route": "/memory/:id/confirm"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 369,
+    "method": "post",
+    "route": "/memory/:id/reject"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 370,
+    "method": "post",
+    "route": "/memory/:id/resolve"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 376,
+    "method": "get",
+    "route": "/memory/:id/forget-preview"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 377,
+    "method": "post",
+    "route": "/memory/:id/forget"
+  },
+  {
+    "path": "apps/server/source-settings-routes.ts",
+    "line": 19,
+    "method": "get",
+    "route": "/"
+  },
+  {
+    "path": "apps/server/source-settings-routes.ts",
+    "line": 20,
+    "method": "get",
+    "route": "/operations/:requestId"
+  },
+  {
+    "path": "apps/server/source-settings-routes.ts",
+    "line": 25,
+    "method": "put",
+    "route": "/"
+  },
+  {
+    "path": "apps/server/source-settings-routes.ts",
+    "line": 32,
+    "method": "post",
+    "route": "/config/open"
+  },
+  {
+    "path": "apps/server/source-settings-routes.ts",
+    "line": 49,
+    "method": "post",
+    "route": "/checks"
+  },
+  {
+    "path": "apps/server/source-settings-routes.ts",
+    "line": 57,
+    "method": "get",
+    "route": "/runs"
+  },
+  {
+    "path": "apps/server/source-settings-routes.ts",
+    "line": 58,
+    "method": "post",
+    "route": "/runs"
+  },
+  {
+    "path": "apps/server/source-settings-routes.ts",
+    "line": 96,
+    "method": "get",
+    "route": "/runs/:id"
+  },
+  {
+    "path": "apps/server/tool-library-routes.ts",
+    "line": 11,
+    "method": "get",
+    "route": "/"
+  },
+  {
+    "path": "apps/server/ui-routes.ts",
+    "line": 91,
+    "method": "get",
+    "route": "/preferences"
+  },
+  {
+    "path": "apps/server/ui-routes.ts",
+    "line": 92,
+    "method": "put",
+    "route": "/preferences"
+  },
+  {
+    "path": "apps/server/ui-routes.ts",
+    "line": 96,
+    "method": "get",
+    "route": "/runtime"
+  },
+  {
+    "path": "apps/server/ui-routes.ts",
+    "line": 97,
+    "method": "get",
+    "route": "/custom-sources"
+  },
+  {
+    "path": "apps/server/ui-routes.ts",
+    "line": 98,
+    "method": "get",
+    "route": "/settings"
+  },
+  {
+    "path": "apps/server/ui-routes.ts",
+    "line": 135,
+    "method": "post",
+    "route": "/stop"
+  },
+  {
+    "path": "apps/server/ui-routes.ts",
+    "line": 159,
+    "method": "post",
+    "route": "/resume"
+  },
+  {
+    "path": "apps/server/ui-routes.ts",
+    "line": 177,
+    "method": "get",
+    "route": "/materials/:id/draft-reference"
+  },
+  {
+    "path": "apps/server/ui-routes.ts",
+    "line": 183,
+    "method": "post",
+    "route": "/draft-references"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 24,
+    "method": "get",
+    "route": "/workspace"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 28,
+    "method": "get",
+    "route": "/workspace/storage-retention"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 31,
+    "method": "get",
+    "route": "/cloud-custody/capabilities"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 32,
+    "method": "post",
+    "route": "/cloud-custody/runs"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 37,
+    "method": "get",
+    "route": "/cloud-custody/materials/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 38,
+    "method": "get",
+    "route": "/cloud-custody/tasks/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 39,
+    "method": "get",
+    "route": "/cloud-custody/tasks/:id/audit"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 40,
+    "method": "post",
+    "route": "/cloud-custody/tasks/:id/recover"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 45,
+    "method": "get",
+    "route": "/cloud-custody/tasks/:id/original"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 52,
+    "method": "get",
+    "route": "/tools"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 53,
+    "method": "get",
+    "route": "/tools/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 54,
+    "method": "get",
+    "route": "/plugins"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 55,
+    "method": "post",
+    "route": "/plugins/:id/enabled"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 70,
+    "method": "use",
+    "route": "/computation"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 73,
+    "method": "get",
+    "route": "/processing/polars/capabilities"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 74,
+    "method": "post",
+    "route": "/processing/polars/tasks"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 79,
+    "method": "get",
+    "route": "/processing/polars/tasks/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 80,
+    "method": "post",
+    "route": "/processing/polars/tasks/:id/stage"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 83,
+    "method": "post",
+    "route": "/processing/polars/tasks/:id/prepare"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 88,
+    "method": "get",
+    "route": "/processing/capabilities"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 89,
+    "method": "post",
+    "route": "/processing/route"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 94,
+    "method": "get",
+    "route": "/processing/materials/:id/routing"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 99,
+    "method": "post",
+    "route": "/processing/plans"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 104,
+    "method": "post",
+    "route": "/processing/plans/:id/revise"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 109,
+    "method": "get",
+    "route": "/processing/plans/by-request/:requestId"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 114,
+    "method": "get",
+    "route": "/processing/plans/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 115,
+    "method": "get",
+    "route": "/processing/plans/:id/steps/:stepId"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 119,
+    "method": "get",
+    "route": "/processing/plans/:id/steps/:stepId/artifact"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 123,
+    "method": "get",
+    "route": "/processing/plans/:id/outputs/:outputId/artifact"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 127,
+    "method": "post",
+    "route": "/processing/plans/:id/steps/:stepId/execute"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 132,
+    "method": "post",
+    "route": "/processing/plans/:id/run"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 137,
+    "method": "post",
+    "route": "/processing/plans/:id/recover"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 142,
+    "method": "get",
+    "route": "/processing/tasks/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 150,
+    "method": "get",
+    "route": "/processing/adapters"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 151,
+    "method": "get",
+    "route": "/processing/adapters/versions"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 152,
+    "method": "get",
+    "route": "/processing/adapters/exceptions"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 158,
+    "method": "post",
+    "route": "/processing/adapters/discover"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 162,
+    "method": "post",
+    "route": "/processing/adapters/candidates"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 166,
+    "method": "post",
+    "route": "/processing/adapters/:adapterId/:version/replay"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 174,
+    "method": "post",
+    "route": "/processing/adapters/:adapterId/:version/adopt"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 181,
+    "method": "post",
+    "route": "/processing/adapters/:adapterId/:version/retire"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 189,
+    "method": "get",
+    "route": "/corrections/capabilities"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 190,
+    "method": "get",
+    "route": "/corrections/cases"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 191,
+    "method": "get",
+    "route": "/corrections/cases/:caseId"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 192,
+    "method": "post",
+    "route": "/corrections/cases"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 196,
+    "method": "post",
+    "route": "/corrections/cases/:caseId/impact"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 200,
+    "method": "post",
+    "route": "/corrections/cases/:caseId/suspend"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 204,
+    "method": "get",
+    "route": "/corrections/cases/:caseId/audit"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 210,
+    "method": "post",
+    "route": "/corrections/cases/:caseId/prepare"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 215,
+    "method": "post",
+    "route": "/corrections/cases/:caseId/authorize"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 224,
+    "method": "post",
+    "route": "/corrections/cases/:caseId/recover"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 231,
+    "method": "get",
+    "route": "/r1/capabilities"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 232,
+    "method": "post",
+    "route": "/r1/check"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 236,
+    "method": "post",
+    "route": "/r1/products/snapshot"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 240,
+    "method": "post",
+    "route": "/r1/products/discover"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 241,
+    "method": "post",
+    "route": "/r1/query/filter"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 242,
+    "method": "post",
+    "route": "/r1/query/context"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 243,
+    "method": "post",
+    "route": "/r1/products/read"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 244,
+    "method": "get",
+    "route": "/r1/requests"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 245,
+    "method": "get",
+    "route": "/r1/requests/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 246,
+    "method": "post",
+    "route": "/r1/prepare"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 247,
+    "method": "post",
+    "route": "/r1/requests/:id/submit"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 253,
+    "method": "post",
+    "route": "/r1/requests/:id/recover"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 261,
+    "method": "get",
+    "route": "/r1/auto"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 262,
+    "method": "get",
+    "route": "/r1/auto/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 263,
+    "method": "post",
+    "route": "/r1/auto/start"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 265,
+    "method": "post",
+    "route": "/r1/auto/:id/answers"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 267,
+    "method": "post",
+    "route": "/r1/auto/:id/advance"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 273,
+    "method": "get",
+    "route": "/r1/batches/chunked"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 274,
+    "method": "post",
+    "route": "/r1/batches/chunked/start"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 276,
+    "method": "get",
+    "route": "/r1/batches/chunked/:intakeId"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 277,
+    "method": "post",
+    "route": "/r1/batches/chunked/:intakeId/advance"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 280,
+    "method": "post",
+    "route": "/r1/batches/chunked/:intakeId/resume-original"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 284,
+    "method": "get",
+    "route": "/r1/batches/chunked/:intakeId/pages/:ordinal"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 287,
+    "method": "post",
+    "route": "/r1/batches/chunked/:intakeId/chunks/:offset"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 294,
+    "method": "get",
+    "route": "/r1/batches"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 295,
+    "method": "get",
+    "route": "/r1/batches/algorithm-settings"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 296,
+    "method": "put",
+    "route": "/r1/batches/algorithm-settings"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 297,
+    "method": "post",
+    "route": "/r1/batches/classify"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 307,
+    "method": "get",
+    "route": "/r1/batches/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 308,
+    "method": "get",
+    "route": "/r1/batches/:id/calculation-evidence"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 312,
+    "method": "post",
+    "route": "/r1/batches/start"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 314,
+    "method": "post",
+    "route": "/r1/batches/:id/advance"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 317,
+    "method": "post",
+    "route": "/r1/batches/:id/items/:itemId/upload"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 327,
+    "method": "get",
+    "route": "/retrieval/joint/capabilities"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 328,
+    "method": "post",
+    "route": "/retrieval/joint"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 332,
+    "method": "get",
+    "route": "/retrieval/capabilities"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 333,
+    "method": "get",
+    "route": "/retrieval/settings"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 334,
+    "method": "post",
+    "route": "/retrieval/settings"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 342,
+    "method": "post",
+    "route": "/retrieval/artifacts"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 352,
+    "method": "get",
+    "route": "/retrieval/documents"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 353,
+    "method": "post",
+    "route": "/retrieval/documents/:id/convert"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 365,
+    "method": "get",
+    "route": "/retrieval/documents/:id/artifacts"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 369,
+    "method": "get",
+    "route": "/retrieval/documents/:id/segments"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 373,
+    "method": "get",
+    "route": "/retrieval/segments/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 374,
+    "method": "get",
+    "route": "/retrieval/index-versions"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 375,
+    "method": "get",
+    "route": "/retrieval/storage"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 376,
+    "method": "post",
+    "route": "/retrieval/index"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 380,
+    "method": "post",
+    "route": "/retrieval/search"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 391,
+    "method": "get",
+    "route": "/materials"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 392,
+    "method": "get",
+    "route": "/materials/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 393,
+    "method": "get",
+    "route": "/materials/:id/xlsx-preview"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 401,
+    "method": "get",
+    "route": "/materials/:id/semantics"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 402,
+    "method": "get",
+    "route": "/material-proposals/:id"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 404,
+    "method": "get",
+    "route": "/materials/:id/original"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 409,
+    "method": "post",
+    "route": "/materials/upload"
+  }
+]

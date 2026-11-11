@@ -1,0 +1,191 @@
+[
+  {
+    "from": "apps/server/bd-naming.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 24,
+    "kind": "resource"
+  },
+  {
+    "from": "apps/server/endpoint-adapter-model-tool.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 24,
+    "kind": "resource"
+  },
+  {
+    "from": "apps/server/full-chain-test-support.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 23,
+    "kind": "resource"
+  },
+  {
+    "from": "apps/server/live-model-test-support.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 22,
+    "kind": "resource"
+  },
+  {
+    "from": "apps/server/local-path-attachment.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 21,
+    "kind": "resource"
+  },
+  {
+    "from": "apps/server/polars-fixed.test.ts",
+    "to": null,
+    "specifier": "../../wfd/product",
+    "line": 186,
+    "kind": "resource"
+  },
+  {
+    "from": "apps/server/purpose-entry.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 183,
+    "kind": "resource"
+  },
+  {
+    "from": "apps/server/r1-routes.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 30,
+    "kind": "resource"
+  },
+  {
+    "from": "apps/server/retrieval-routes.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 18,
+    "kind": "resource"
+  },
+  {
+    "from": "modules/collection/cloud-algorithm-evidence.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 21,
+    "kind": "resource"
+  },
+  {
+    "from": "modules/collection/r1-conversation-bridge.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 24,
+    "kind": "resource"
+  },
+  {
+    "from": "modules/collection/segment-compaction.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 192,
+    "kind": "resource"
+  },
+  {
+    "from": "modules/collection/segment-compaction.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 227,
+    "kind": "resource"
+  },
+  {
+    "from": "modules/financial/algorithm-purpose-eligibility.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 20,
+    "kind": "resource"
+  },
+  {
+    "from": "platform/plugins/direct-versions.ts",
+    "to": null,
+    "specifier": "../../",
+    "line": 13,
+    "kind": "resource"
+  },
+  {
+    "from": "platform/resources/direct-trusted-resources.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 16,
+    "kind": "resource"
+  },
+  {
+    "from": "platform/resources/local-web.test.ts",
+    "to": null,
+    "specifier": "./vite.config.ts",
+    "line": 30,
+    "kind": "dynamic"
+  },
+  {
+    "from": "platform/resources/local-web.test.ts",
+    "to": null,
+    "specifier": "../..",
+    "line": 13,
+    "kind": "resource"
+  },
+  {
+    "from": "scripts/bootstrap-local-web.ts",
+    "to": null,
+    "specifier": "..",
+    "line": 102,
+    "kind": "resource"
+  },
+  {
+    "from": "scripts/local-web.mjs",
+    "to": null,
+    "specifier": "..",
+    "line": 6,
+    "kind": "resource"
+  },
+  {
+    "from": "scripts/prepare-runtime.ts",
+    "to": null,
+    "specifier": "..",
+    "line": 83,
+    "kind": "resource"
+  },
+  {
+    "from": "scripts/test-local.mjs",
+    "to": null,
+    "specifier": "..",
+    "line": 8,
+    "kind": "resource"
+  },
+  {
+    "from": "scripts/web.ts",
+    "to": null,
+    "specifier": "..",
+    "line": 8,
+    "kind": "resource"
+  },
+  {
+    "from": "scripts/window.ts",
+    "to": null,
+    "specifier": "..",
+    "line": 10,
+    "kind": "resource"
+  },
+  {
+    "from": "vite.config.ts",
+    "to": null,
+    "specifier": "./apps/web",
+    "line": 6,
+    "kind": "resource"
+  },
+  {
+    "from": "vite.config.ts",
+    "to": null,
+    "specifier": "./node_modules/.vite",
+    "line": 9,
+    "kind": "resource"
+  },
+  {
+    "from": "vite.config.ts",
+    "to": null,
+    "specifier": "./dist/web",
+    "line": 10,
+    "kind": "resource"
+  }
+]

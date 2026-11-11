@@ -1,0 +1,417 @@
+[
+  {
+    "path": "apps/server/financial-configuration.ts",
+    "line": 25,
+    "action": "execute"
+  },
+  {
+    "path": "apps/server/financial-configuration.ts",
+    "line": 88,
+    "action": "execute"
+  },
+  {
+    "path": "apps/server/full-chain-test-support.ts",
+    "line": 135,
+    "action": "read"
+  },
+  {
+    "path": "apps/server/full-chain-test-support.ts",
+    "line": 136,
+    "action": "execute"
+  },
+  {
+    "path": "apps/server/full-chain-test-support.ts",
+    "line": 217,
+    "action": "read"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 362,
+    "action": "pi.prompt"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 369,
+    "action": "pi.skill"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 382,
+    "action": "external.bd"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 402,
+    "action": "network"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 403,
+    "action": "secret"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 358,
+    "action": "conversion.document"
+  },
+  {
+    "path": "apps/web/src/ui/CaptureSourcesPage.tsx",
+    "line": 69,
+    "action": "open"
+  },
+  {
+    "path": "apps/web/src/ui/ProcessingPanel.tsx",
+    "line": 85,
+    "action": "run"
+  },
+  {
+    "path": "contracts/direct-runtime.ts",
+    "line": 101,
+    "action": "audio.transcribe"
+  },
+  {
+    "path": "modules/agent/input-router.ts",
+    "line": 32,
+    "action": "local.message"
+  },
+  {
+    "path": "modules/agent/input-router.ts",
+    "line": 130,
+    "action": "audio.transcribe"
+  },
+  {
+    "path": "modules/agent/input-rules.ts",
+    "line": 34,
+    "action": "video.transcribe_url"
+  },
+  {
+    "path": "modules/agent/model-tools.ts",
+    "line": 1590,
+    "action": "read"
+  },
+  {
+    "path": "modules/collection/accept-material.ts",
+    "line": 64,
+    "action": "read"
+  },
+  {
+    "path": "modules/collection/artifact-archive.ts",
+    "line": 62,
+    "action": "artifact.archive"
+  },
+  {
+    "path": "modules/collection/artifact-lifecycle.ts",
+    "line": 96,
+    "action": "artifact.inspect"
+  },
+  {
+    "path": "modules/collection/artifact-lifecycle.ts",
+    "line": 103,
+    "action": "artifact.release"
+  },
+  {
+    "path": "modules/collection/artifact-manifest.ts",
+    "line": 17,
+    "action": "artifact.manifest"
+  },
+  {
+    "path": "modules/collection/artifact-restore.ts",
+    "line": 31,
+    "action": "artifact.restore"
+  },
+  {
+    "path": "modules/collection/candidate-reclaim.ts",
+    "line": 108,
+    "action": "artifact.candidates.inspect"
+  },
+  {
+    "path": "modules/collection/candidate-reclaim.ts",
+    "line": 112,
+    "action": "artifact.candidates.prune"
+  },
+  {
+    "path": "modules/collection/candidate-reclaim.ts",
+    "line": 132,
+    "action": "secret"
+  },
+  {
+    "path": "modules/collection/cloud-evidence-source.ts",
+    "line": 73,
+    "action": "read"
+  },
+  {
+    "path": "modules/collection/materials/service.ts",
+    "line": 163,
+    "action": "read"
+  },
+  {
+    "path": "modules/collection/polars-fixed-service.ts",
+    "line": 198,
+    "action": "polars.fixed.calculate"
+  },
+  {
+    "path": "modules/collection/polars-fixed-service.ts",
+    "line": 329,
+    "action": "execute"
+  },
+  {
+    "path": "modules/collection/post-publication-correction.ts",
+    "line": 657,
+    "action": "data.correction.repair"
+  },
+  {
+    "path": "modules/collection/post-publication-correction.ts",
+    "line": 1081,
+    "action": "write"
+  },
+  {
+    "path": "modules/collection/processing-plan.ts",
+    "line": 323,
+    "action": "run"
+  },
+  {
+    "path": "modules/collection/processing-plan.ts",
+    "line": 338,
+    "action": "recover"
+  },
+  {
+    "path": "modules/collection/r1-workspace.ts",
+    "line": 219,
+    "action": "data.r1.submit"
+  },
+  {
+    "path": "modules/collection/r1-workspace.ts",
+    "line": 234,
+    "action": "data.r1.recover"
+  },
+  {
+    "path": "modules/collection/r1-workspace.ts",
+    "line": 258,
+    "action": "data.r1.resume"
+  },
+  {
+    "path": "modules/collection/segments/service.ts",
+    "line": 297,
+    "action": "read"
+  },
+  {
+    "path": "modules/collection/service.ts",
+    "line": 206,
+    "action": "read"
+  },
+  {
+    "path": "modules/financial/algorithm-service.ts",
+    "line": 358,
+    "action": "execute"
+  },
+  {
+    "path": "modules/financial/service.ts",
+    "line": 339,
+    "action": "execute"
+  },
+  {
+    "path": "platform/capabilities/browser/index.ts",
+    "line": 20,
+    "action": "secret"
+  },
+  {
+    "path": "platform/capabilities/browser/index.ts",
+    "line": 90,
+    "action": "browser.control"
+  },
+  {
+    "path": "platform/capabilities/browser/index.ts",
+    "line": 110,
+    "action": "network"
+  },
+  {
+    "path": "platform/capabilities/browser/index.ts",
+    "line": 137,
+    "action": "browser.control"
+  },
+  {
+    "path": "platform/capabilities/browser/public-web.ts",
+    "line": 138,
+    "action": "web.search"
+  },
+  {
+    "path": "platform/capabilities/browser/public-web.ts",
+    "line": 153,
+    "action": "network"
+  },
+  {
+    "path": "platform/capabilities/browser/public-web.ts",
+    "line": 235,
+    "action": "web.read_public"
+  },
+  {
+    "path": "platform/capabilities/browser/raw-page.ts",
+    "line": 13,
+    "action": "web.read_public"
+  },
+  {
+    "path": "platform/capabilities/browser/raw-page.ts",
+    "line": 20,
+    "action": "web.read_public"
+  },
+  {
+    "path": "platform/capabilities/browser/search.ts",
+    "line": 50,
+    "action": "web.search"
+  },
+  {
+    "path": "platform/capabilities/files/text.ts",
+    "line": 81,
+    "action": "file.glob"
+  },
+  {
+    "path": "platform/capabilities/local-actions.ts",
+    "line": 206,
+    "action": "read"
+  },
+  {
+    "path": "platform/capabilities/transcription/network.ts",
+    "line": 38,
+    "action": "network"
+  },
+  {
+    "path": "platform/capabilities/transcription/video.ts",
+    "line": 177,
+    "action": "network"
+  },
+  {
+    "path": "platform/capabilities/transcription/video.ts",
+    "line": 213,
+    "action": "network"
+  },
+  {
+    "path": "platform/config/shortcuts.ts",
+    "line": 36,
+    "action": "network"
+  },
+  {
+    "path": "platform/config/tool-settings.ts",
+    "line": 55,
+    "action": "none"
+  },
+  {
+    "path": "platform/resources/files.ts",
+    "line": 243,
+    "action": "read"
+  },
+  {
+    "path": "platform/runtime/file-workspace.ts",
+    "line": 239,
+    "action": "write"
+  },
+  {
+    "path": "plugins/api-sources/providers/tdx/runtime.ts",
+    "line": 135,
+    "action": "secret"
+  },
+  {
+    "path": "plugins/api-sources/providers/tdx/runtime.ts",
+    "line": 136,
+    "action": "network"
+  },
+  {
+    "path": "plugins/api-sources/providers/wechat/script.ts",
+    "line": 74,
+    "action": "network"
+  },
+  {
+    "path": "plugins/api-sources/runtime.ts",
+    "line": 89,
+    "action": "network"
+  },
+  {
+    "path": "plugins/api-sources/runtime.ts",
+    "line": 162,
+    "action": "source.fetch"
+  },
+  {
+    "path": "plugins/api-sources/runtime.ts",
+    "line": 168,
+    "action": "source.api.read"
+  },
+  {
+    "path": "plugins/api-sources/runtime.ts",
+    "line": 176,
+    "action": "source.kline.read"
+  },
+  {
+    "path": "plugins/api-sources/runtime.ts",
+    "line": 189,
+    "action": "source.werss.read"
+  },
+  {
+    "path": "plugins/api-sources/runtime.ts",
+    "line": 219,
+    "action": "source.wechat.extract"
+  },
+  {
+    "path": "plugins/api-sources/runtime.ts",
+    "line": 298,
+    "action": "network"
+  },
+  {
+    "path": "plugins/api-sources/runtime.ts",
+    "line": 335,
+    "action": "network"
+  },
+  {
+    "path": "plugins/api-sources/runtime.ts",
+    "line": 375,
+    "action": "secret"
+  },
+  {
+    "path": "plugins/api-sources/runtime.ts",
+    "line": 376,
+    "action": "network"
+  },
+  {
+    "path": "plugins/api-sources/runtime.ts",
+    "line": 524,
+    "action": "network"
+  },
+  {
+    "path": "plugins/capture-sources/baidu-drive/index.ts",
+    "line": 120,
+    "action": "baidu.drive"
+  },
+  {
+    "path": "plugins/capture-sources/baidu-drive/index.ts",
+    "line": 148,
+    "action": "secret"
+  },
+  {
+    "path": "plugins/capture-sources/baidu-drive/index.ts",
+    "line": 149,
+    "action": "network"
+  },
+  {
+    "path": "plugins/capture-sources/custom-register.ts",
+    "line": 92,
+    "action": "source.register"
+  },
+  {
+    "path": "plugins/capture-sources/index.ts",
+    "line": 70,
+    "action": "secret"
+  },
+  {
+    "path": "plugins/capture-sources/index.ts",
+    "line": 82,
+    "action": "network"
+  },
+  {
+    "path": "plugins/storage/baidu-drive.ts",
+    "line": 160,
+    "action": "secret"
+  },
+  {
+    "path": "plugins/storage/baidu-drive.ts",
+    "line": 161,
+    "action": "network"
+  }
+]

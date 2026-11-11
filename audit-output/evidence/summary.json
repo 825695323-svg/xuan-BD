@@ -1,0 +1,22 @@
+{
+  "revision": "cc7a4de2f3d8587d16c3d9527b2945ad5712ce4d",
+  "origin": "https://github.com/825695323-svg/xuan-BD",
+  "tracked_files": 644,
+  "code_and_test_files": 533,
+  "production_code_files": 385,
+  "test_files": 148,
+  "production_code_lines": 110822,
+  "static_edges": 2522,
+  "unresolved_relative_references": 27,
+  "entrypoint_count": 24,
+  "static_unreachable_count": 81,
+  "exact_duplicate_groups": 0,
+  "clone_window_groups": 6,
+  "http_route_declarations": 262,
+  "literal_action_declarations": 83,
+  "limitations": [
+    "Static graph omits computed imports and cross-language process invocation; unreachable is a review candidate, not proof of dead code.",
+    "12-line clone windows show exact repetition after whitespace normalization, not necessarily unnecessary duplication.",
+    "All tracked code files scanned; manual behavior review focuses on runtime entrypoints, critical paths and flagged modules."
+  ]
+}

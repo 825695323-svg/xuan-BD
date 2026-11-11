@@ -1,0 +1,327 @@
+[
+  {
+    "path": "apps/server/app.ts",
+    "line": 478,
+    "text": "res.status(404).json({ code: 'SERVICE_ROUTE_UNAVAILABLE', error: '此入口不属于当前启用的服务能力。' });"
+  },
+  {
+    "path": "apps/server/local-data-routes.ts",
+    "line": 34,
+    "text": "if (!lifecycle) throw new CoreError('LOCAL_DATA_LIFECYCLE_NOT_WIRED', '本地资料控制尚未接入真实宿主。', 503);"
+  },
+  {
+    "path": "apps/web/src/ui/ApiSourcesPage.tsx",
+    "line": 503,
+    "text": "? <section className=\"data-panel\"><p className=\"data-empty\">{words('该分类尚未接入数据。', 'No data is connected for this category yet.')}</p></section>"
+  },
+  {
+    "path": "apps/web/src/ui/ToolsPage.tsx",
+    "line": 159,
+    "text": "labelText: words('尚未接入', 'Not implemented'), basis: words('该方法尚无可执行固定实现。', 'Method has no registered fixed executor.'), tone: 'idle' }"
+  },
+  {
+    "path": "apps/web/src/ui/WorkspaceLayout.tsx",
+    "line": 96,
+    "text": "? words('本阶段尚未接入子目录对象，搜索暂不返回结果。', 'Subdirectory objects are not wired in this phase, so search returns nothing yet.')"
+  },
+  {
+    "path": "apps/web/src/ui/WorkspaceLayout.tsx",
+    "line": 97,
+    "text": ": words('本页尚未接入子目录对象。', 'No subdirectory objects are wired for this page yet.')}</p>"
+  },
+  {
+    "path": "apps/web/src/ui/labels.ts",
+    "line": 98,
+    "text": "'tools.description.material.ocr': ['为图片和 PDF 文字识别保留接口；适配器尚未接入。', 'Reserved for image and PDF text recognition. No adapter is connected.'],"
+  },
+  {
+    "path": "apps/web/src/ui/labels.ts",
+    "line": 99,
+    "text": "'tools.description.material.transcribe': ['为音视频转录保留接口；适配器尚未接入。', 'Reserved for audio and video transcription. No adapter is connected.'],"
+  },
+  {
+    "path": "contracts/algorithm-definition.ts",
+    "line": 20,
+    "text": "* - unrecorded：本工程未实现且未登记冻结的公式版本。"
+  },
+  {
+    "path": "modules/agent/model-tools.ts",
+    "line": 1954,
+    "text": "MODEL_ACTION_UNAVAILABLE: '此动作尚未接入或当前不可用；请查看动作目录中的状态与原因。本次未启动新的执行，也未生成新结果。',"
+  },
+  {
+    "path": "modules/agent/service.ts",
+    "line": 73,
+    "text": "isolation: '本机操作者入口；尚未实现远程或多主体鉴权。' };"
+  },
+  {
+    "path": "modules/collection/conversation-materials.ts",
+    "line": 241,
+    "text": "if (!adapter || !adapter.availability().available) throw new TaskError('SKILL_UNAVAILABLE', adapter?.availability().reason ?? '此材料媒体适配器尚未接入。');"
+  },
+  {
+    "path": "modules/collection/materials/plugins.ts",
+    "line": 62,
+    "text": "status: 'not_configured', available: false, reason: 'OCR（文字识别）适配器尚未接入。', adapter: null,"
+  },
+  {
+    "path": "modules/collection/materials/plugins.ts",
+    "line": 66,
+    "text": "status: 'not_configured', available: false, reason: '视频/音频转录适配器尚未接入。', adapter: null,"
+  },
+  {
+    "path": "modules/collection/processing-plan.ts",
+    "line": 211,
+    "text": "notImplemented: ['business rule applicability and implementation coverage beyond the listed bindings are unverified', 'OCR/transcription semantic validation', 'binary/code execution', 'formal database admission', 'archive member expansion']"
+  },
+  {
+    "path": "modules/collection/r1-auto-batch.ts",
+    "line": 116,
+    "text": "fail('R1_BATCH_ALGORITHM_MANUAL_ONLY', '原报批次不再配置自动算法周期；请通过 BD AGENTS 基础算法统一接口人工选择周期。');"
+  },
+  {
+    "path": "modules/collection/r1-auto-batch.ts",
+    "line": 467,
+    "text": "fail('R1_BATCH_ALGORITHM_MANUAL_ONLY', '原报批次不再接受算法参数。请先发布到 WFD，再通过会话基础算法接口明确发起计算。');"
+  },
+  {
+    "path": "modules/collection/r1-auto.ts",
+    "line": 114,
+    "text": "fail('R1_AUTO_CALCULATION_MANUAL_ONLY',"
+  },
+  {
+    "path": "modules/collection/r1-auto.ts",
+    "line": 319,
+    "text": "if (item.calculation) fail('R1_AUTO_CALCULATION_MANUAL_ONLY', '旧派生任务不再通过原报自动续办；原结果仍可查阅。');"
+  },
+  {
+    "path": "modules/collection/r1-tabular.ts",
+    "line": 82,
+    "text": "? '当前 WFD 纯数据分支未实现基期引用解析；实际价格保留待适配，不能据引用形状签发通过。'"
+  },
+  {
+    "path": "modules/financial/algorithm-design-dispositions.ts",
+    "line": 432,
+    "text": "\"finding\": \"101 的通过清单为空，191 列 165/183，WMA/SMA 别名及 36/146 TODO\","
+  },
+  {
+    "path": "modules/financial/algorithm-design-dispositions.ts",
+    "line": 462,
+    "text": "\"finding\": \"14555.62 为正确文字差额，原结构化 JSON 正确；摘要比较误用序列化；“174条未实现规则”撤销\","
+  },
+  {
+    "path": "modules/financial/basic-algorithm-tool-contract.ts",
+    "line": 7,
+    "text": "* 可调用状态来自实际算法服务目录；尚未接入的算法只能声明为 blocked。"
+  },
+  {
+    "path": "platform/config/source-settings.ts",
+    "line": 368,
+    "text": "scheduling: { supported: false as const, reason: '本版只支持明确单次执行，自动计划尚未实现。' } };"
+  },
+  {
+    "path": "plugins/financial/local-compute/assets/builtin_functions.py",
+    "line": 162,
+    "text": "raise ValueError('未实现的特殊操作：'+name)"
+  },
+  {
+    "path": "scripts/verify-wfd-product-machine.ts",
+    "line": 590,
+    "text": "'非空 range 未实现实际过滤，已明确拒绝，未返回全域。',"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/adjustment_anchors.py",
+    "line": 8,
+    "text": "all (``INTERNAL_REFERENCE_NOT_IMPLEMENTED``), so ``direction=adjusted`` could"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/duckdb_sdk.py",
+    "line": 866,
+    "text": "errors.append(ValidationIssue('INPUT_MODE_NOT_IMPLEMENTED','Prototype does not implement immutable revision/withdrawal semantics'))"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/filter_objects.py",
+    "line": 152,
+    "text": "_reject(\"UNSUPPORTED_CAPABILITY\", \"本版只支持单对象；多对象排序与分页未实现。\","
+  },
+  {
+    "path": "wfd/product/wfd_sdk/filter_objects.py",
+    "line": 170,
+    "text": "\"本版只支持单个 compare 谓词；and/or/not、between、in、compare_metrics 未实现。\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/parquet_sdk.py",
+    "line": 108,
+    "text": "errs.append(ValidationIssue('DERIVED_LINEAGE_NOT_IMPLEMENTED','Derived result needs fixed input snapshot and method identity; prototype cannot verify it'))"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/parquet_sdk.py",
+    "line": 287,
+    "text": "errors.append(ValidationIssue('INPUT_MODE_NOT_IMPLEMENTED','Prototype does not implement immutable revision/withdrawal semantics'))"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_batches.py",
+    "line": 273,
+    "text": "raise BatchError(\"BATCH_INPUT_MODE_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 1343,
+    "text": "raise ValueError(\"BUNDLE_MODE_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 1345,
+    "text": "raise ValueError(\"BUNDLE_PERSPECTIVE_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 1577,
+    "text": "raise ValueError(\"BUNDLE_MODE_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 2019,
+    "text": "raise ValueError(\"BUNDLE_MODE_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 2088,
+    "text": "raise ValueError(\"BUNDLE_MODE_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 2104,
+    "text": "raise ValueError(\"BUNDLE_REFERENCE_OPTIONAL_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 2703,
+    "text": "raise ValueError(\"BUNDLE_MAINTENANCE_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 3064,
+    "text": "raise ValueError(\"STRUCTURED_PERSPECTIVE_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 3078,
+    "text": "raise ValueError(\"STRUCTURED_READ_DEPENDENCY_NOT_IMPLEMENTED:\""
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 3431,
+    "text": "raise ValueError(\"STRUCTURED_READ_DEPENDENCY_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 3438,
+    "text": "raise ValueError(\"STRUCTURED_READ_DEPENDENCY_NOT_IMPLEMENTED:inner:\" + pid)"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 3546,
+    "text": "raise ValueError(\"STRUCTURED_READ_DEPENDENCY_NOT_IMPLEMENTED:read_layout\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 4405,
+    "text": "raise ValueError(\"STRUCTURED_READ_DEPENDENCY_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 4444,
+    "text": "raise ValueError(\"STRUCTURED_READ_DEPENDENCY_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 4518,
+    "text": "raise ValueError(\"STRUCTURED_READ_DEPENDENCY_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 4577,
+    "text": "raise ValueError(\"STRUCTURED_READ_DEPENDENCY_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 4602,
+    "text": "raise ValueError(\"STRUCTURED_PERSPECTIVE_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 4971,
+    "text": "raise ValueError(\"STRUCTURED_READ_DEPENDENCY_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_bundle.py",
+    "line": 5334,
+    "text": "raise ValueError(\"STRUCTURED_PERSPECTIVE_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_data_service.py",
+    "line": 252,
+    "text": "raise ValueError(\"INTERNAL_REFERENCE_NOT_IMPLEMENTED:\" + prefix + \".\""
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_data_service.py",
+    "line": 259,
+    "text": "raise ValueError(\"INTERNAL_REFERENCE_NOT_IMPLEMENTED:\" + prefix"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_data_service.py",
+    "line": 267,
+    "text": "raise ValueError(\"INTERNAL_REFERENCE_NOT_IMPLEMENTED:\""
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_data_service.py",
+    "line": 271,
+    "text": "raise ValueError(\"INTERNAL_REFERENCE_NOT_IMPLEMENTED:\" + prefix"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_data_service.py",
+    "line": 286,
+    "text": "raise ValueError(\"INTERNAL_REFERENCE_NOT_IMPLEMENTED:algorithm_definition.algorithm_ref\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_data_service.py",
+    "line": 642,
+    "text": "raise ValueError(\"INPUT_MODE_NOT_IMPLEMENTED:\" + str(item.get(\"input_mode\")))"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_query.py",
+    "line": 294,
+    "text": "**({\"error_code\": \"INSTANCE_HOLDING_SCOPE_NOT_IMPLEMENTED\"}"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_query.py",
+    "line": 788,
+    "text": "\"OPTIONAL_READ_DEPENDENCY_NOT_IMPLEMENTED\","
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_query.py",
+    "line": 1521,
+    "text": "\"INSTANCE_HOLDING_SCOPE_NOT_IMPLEMENTED\","
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_query.py",
+    "line": 2076,
+    "text": "raise ProductQueryError(\"OPERATION_NOT_IMPLEMENTED_P4B\","
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_query.py",
+    "line": 2529,
+    "text": "\"INSTANCE_HOLDING_SCOPE_NOT_IMPLEMENTED\","
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_service.py",
+    "line": 1089,
+    "text": "raise ValueError(\"OPTIONAL_READ_DEPENDENCY_NOT_IMPLEMENTED\")"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_service.py",
+    "line": 1226,
+    "text": "raise ValueError(\"INPUT_MODE_NOT_IMPLEMENTED:\" + mode)"
+  }
+]

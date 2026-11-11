@@ -1,0 +1,384 @@
+{
+  "(root)": {
+    "files": 10,
+    "resource": 6,
+    "lines": 9138,
+    "documentation": 1,
+    "configuration": 2,
+    "code": 1
+  },
+  ".github/workflows": {
+    "files": 2,
+    "configuration": 2,
+    "lines": 90
+  },
+  "adapters/database": {
+    "files": 5,
+    "code": 5,
+    "lines": 772
+  },
+  "adapters/llm": {
+    "files": 1,
+    "code": 1,
+    "lines": 69
+  },
+  "apps/server": {
+    "files": 59,
+    "code": 23,
+    "lines": 13947,
+    "test": 36
+  },
+  "apps/web": {
+    "files": 88,
+    "resource": 27,
+    "lines": 37404,
+    "documentation": 3,
+    "code": 58
+  },
+  "config/local-web-python-requirements.txt": {
+    "files": 1,
+    "configuration": 1,
+    "lines": 16
+  },
+  "config/local-web-toolchain.json": {
+    "files": 1,
+    "configuration": 1,
+    "lines": 8
+  },
+  "config/local-web.example.json": {
+    "files": 1,
+    "configuration": 1,
+    "lines": 12
+  },
+  "config/polars-requirements.txt": {
+    "files": 1,
+    "configuration": 1,
+    "lines": 4
+  },
+  "config/shortcuts.example.json": {
+    "files": 1,
+    "configuration": 1,
+    "lines": 1
+  },
+  "contracts/agent-question-contracts.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 12
+  },
+  "contracts/agent-skill-contracts.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 55
+  },
+  "contracts/algorithm-definition.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 124
+  },
+  "contracts/algorithm-design-catalog.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 114
+  },
+  "contracts/backend.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 103
+  },
+  "contracts/contracts.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 255
+  },
+  "contracts/conversion.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 31
+  },
+  "contracts/direct-conversation-contracts.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 16
+  },
+  "contracts/direct-runtime.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 104
+  },
+  "contracts/fixed-calculation-contracts.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 69
+  },
+  "contracts/llm.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 61
+  },
+  "contracts/memory-contracts.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 68
+  },
+  "contracts/personal-resource-contracts.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 26
+  },
+  "contracts/r1-contracts.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 124
+  },
+  "contracts/skill-contracts.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 28
+  },
+  "contracts/source-settings.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 54
+  },
+  "contracts/task-contracts.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 170
+  },
+  "contracts/tool-library.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 86
+  },
+  "contracts/ui-contracts.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 91
+  },
+  "contracts/workspace-services.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 60
+  },
+  "modules/agent": {
+    "files": 25,
+    "code": 24,
+    "lines": 8187,
+    "documentation": 1
+  },
+  "modules/collection": {
+    "files": 111,
+    "code": 70,
+    "lines": 31059,
+    "test": 41
+  },
+  "modules/financial": {
+    "files": 21,
+    "code": 18,
+    "lines": 7287,
+    "test": 3
+  },
+  "platform/capabilities": {
+    "files": 26,
+    "documentation": 2,
+    "lines": 4424,
+    "code": 21,
+    "test": 3
+  },
+  "platform/config": {
+    "files": 7,
+    "code": 7,
+    "lines": 1318
+  },
+  "platform/jobs": {
+    "files": 2,
+    "code": 2,
+    "lines": 2303
+  },
+  "platform/plugins": {
+    "files": 3,
+    "code": 3,
+    "lines": 324
+  },
+  "platform/resources": {
+    "files": 12,
+    "code": 8,
+    "lines": 1585,
+    "test": 4
+  },
+  "platform/runtime": {
+    "files": 9,
+    "code": 8,
+    "lines": 1963,
+    "test": 1
+  },
+  "platform/security": {
+    "files": 2,
+    "code": 2,
+    "lines": 723
+  },
+  "platform/state": {
+    "files": 1,
+    "code": 1,
+    "lines": 53
+  },
+  "plugins/api-sources": {
+    "files": 15,
+    "documentation": 2,
+    "lines": 1965,
+    "code": 9,
+    "test": 4
+  },
+  "plugins/capture-sources": {
+    "files": 37,
+    "documentation": 5,
+    "lines": 3198,
+    "resource": 1,
+    "code": 31
+  },
+  "plugins/financial": {
+    "files": 19,
+    "code": 14,
+    "lines": 132107,
+    "resource": 2,
+    "documentation": 3
+  },
+  "plugins/storage": {
+    "files": 1,
+    "code": 1,
+    "lines": 340
+  },
+  "scripts/adopt-bundled-resources.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 329
+  },
+  "scripts/adopt-financial-assets.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 187
+  },
+  "scripts/adopt-polars-python.test.ts": {
+    "files": 1,
+    "test": 1,
+    "lines": 103
+  },
+  "scripts/adopt-polars-python.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 255
+  },
+  "scripts/adopt-product-machine-wiring.test.ts": {
+    "files": 1,
+    "test": 1,
+    "lines": 171
+  },
+  "scripts/adopt-product-machine-wiring.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 262
+  },
+  "scripts/audit-r1-association-dangling.mjs": {
+    "files": 1,
+    "code": 1,
+    "lines": 77
+  },
+  "scripts/bd-workspace.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 25
+  },
+  "scripts/bootstrap-local-web.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 136
+  },
+  "scripts/compact-segment-storage.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 59
+  },
+  "scripts/local-web.mjs": {
+    "files": 1,
+    "code": 1,
+    "lines": 18
+  },
+  "scripts/migrate-candidate-objects.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 15
+  },
+  "scripts/prepare-runtime.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 90
+  },
+  "scripts/r1-cli.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 51
+  },
+  "scripts/repair-runtime-bindings.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 152
+  },
+  "scripts/run-wfd-product-p6.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 342
+  },
+  "scripts/share-material-originals.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 19
+  },
+  "scripts/test-local.mjs": {
+    "files": 1,
+    "code": 1,
+    "lines": 67
+  },
+  "scripts/verify-r1-real.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 207
+  },
+  "scripts/verify-r1-structured-handoff.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 173
+  },
+  "scripts/verify-wfd-product-machine.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 617
+  },
+  "scripts/web.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 60
+  },
+  "scripts/window.ts": {
+    "files": 1,
+    "code": 1,
+    "lines": 131
+  },
+  "staging/source-replacement-20261109": {
+    "files": 3,
+    "resource": 3,
+    "lines": 23
+  },
+  "staging/wfd_sdk": {
+    "files": 1,
+    "code": 1,
+    "lines": 523
+  },
+  "wfd/product": {
+    "files": 136,
+    "resource": 43,
+    "lines": 60839,
+    "documentation": 3,
+    "code": 36,
+    "test": 54
+  }
+}

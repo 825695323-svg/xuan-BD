@@ -1,0 +1,96 @@
+✖ ordinary material conversion automatically registers, indexes and reopens one linked artifact under persistent settings (549.210973ms)
+﹣ continuous correction: a real source correction supersedes the published row, recomputes the derived series and reopens (0.665731ms) # SKIP
+✖ 文档转换默认仅结构产物；显式 TXT 导出保持完整正文、来源与主产物目标语义 (1283.230265ms)
+✖ 受控模型工具：真实会话分支 perform_action → 任务审批 → 适配候选/重放/采用，拒绝取消不写 (1317.257681ms)
+﹣ 适配原件经普通 R1 发布、固定读回、来源均线与派生发布 (0.650328ms) # SKIP
+﹣ official correction full necessary paragraph: original material → ordinary conversion → reviewed exact text → actual WFD → restart (0.792392ms) # SKIP
+﹣ real split financial cell requires exact continuation and refuses altered original fragment (0.150004ms) # SKIP
+﹣ selected official company reports: original PDF → declared regions → processing → actual WFD publication → fixed rows → restart (1.065849ms) # SKIP
+﹣ financial actual fixed consistency independently checks disclosed balance identities and every correction triad (0.142202ms) # SKIP
+﹣ financial fixed application entry standardizes actual pinned L2 records and publishes legal quarters/TTM with source-version evidence (0.100891ms) # SKIP
+﹣ unified fixed routes use real small WFD records; candidate provenance applies to every R1 preparation (0.900072ms) # SKIP
+﹣ persisted Polars candidates and the original confirmed R1 bridge survive host reopen (0.168211ms) # SKIP
+﹣ 已发布错误更正：真实新加工产物、审批拒绝后重办、精确前驱与固定读回 (0.174034ms) # SKIP
+﹣ 错误适配绑定按真实裸 hex 配置摘要匹配计划 (0.087252ms) # SKIP
+﹣ 受影响均线派生：正式暂停、精确重算、正式替代与固定读回后才结案 (0.084868ms) # SKIP
+﹣ persisted per-kind settings freeze on acceptance and forged bar classification cannot calculate a non-bar original (0.646389ms) # SKIP
+﹣ one authorized mixed batch auto-calculates configured daily kinds and partitions actual source products (0.084358ms) # SKIP
+﹣ batch intake preserves sequential custody, duplicate identities, per-file returns, and pending answers across restart (0.920924ms) # SKIP
+﹣ a completed material intake is recovered after its batch journal loses the custody reply (0.142706ms) # SKIP
+﹣ a batch freezes selected source columns and returns a missing-column item before unrelated valid files continue (0.082004ms) # SKIP
+﹣ simultaneous batches serialize automatic publication and expose the queued original identity (0.063957ms) # SKIP
+﹣ batch date policy answers only the recognized source trade-date question within an explicit batch scope (0.074623ms) # SKIP
+﹣ actual registered-but-unpublished output rejection releases the batch without erasing registration or resubmitting (0.061774ms) # SKIP
+﹣ lost actual registered rejection recovers by original status after restart and releases the next batch item (0.060321ms) # SKIP
+﹣ automatic HTTP intake preserves real machine return, five steps, publication, fixed read, and idempotence (1.145293ms) # SKIP
+﹣ one actual semantic gap survives restart; invalid answers are never frozen (0.138921ms) # SKIP
+﹣ real explicit WFD definition rejection is retained when a new evidence-bound child plan succeeds (0.109736ms) # SKIP
+﹣ lost actual publication reply only recovers original identity and never submits twice (0.107393ms) # SKIP
+﹣ pending original identity survives a failed lookup and host restart without another submission (0.109035ms) # SKIP
+﹣ XLSX declarations retain material cell provenance instead of operator attribution (0.107563ms) # SKIP
+﹣ permission and unit dependency failures do not become semantic questions or a second submission (0.126352ms) # SKIP
+﹣ source semantic contracts preserve new scope through reuse, additive fields and restart (0.127222ms) # SKIP
+﹣ source semantic contracts preserve legacy scope through reuse, additive fields and restart (0.160043ms) # SKIP
+﹣ duplicate HTTP intake appends new rows first, skips identical rows, preserves conflict facts and stops automatic retries (0.887834ms) # SKIP
+﹣ duplicate batch and CSV APIs preserve pending conflicts while later files continue under exact status row pages (0.124839ms) # SKIP
+﹣ original grouped MA batch publishes separate source and calculated products, retains fixed readback and replays no publication (1.031133ms) # SKIP
+﹣ auxiliary interleaved source rows keep zeros and missing windows separate across securities (0.142836ms) # SKIP
+﹣ real selected minute rows use saved automatic routing, publish distinct source and minute MA, and retain fixed readback after reopening (0.97629ms) # SKIP
+﹣ original HTTP batch retains real source gaps, fixed values and same-series reuse (0.912423ms) # SKIP
+﹣ original sector files retain source ordinal labels and ask only the unresolved index unit (0.145891ms) # SKIP
+﹣ original browser uploads multiple real files, extends selected native columns and reopens fixed snapshots (0.076076ms) # SKIP
+﹣ original current browser scopes keep single upload and batch selection independent (0.057107ms) # SKIP
+﹣ automatic later batches use prior warmup and stop at a conflict instead of silently correcting (1.002869ms) # SKIP
+﹣ chunked CSV receipts resume exact offsets, parse all multiline records and publish every frozen page through real R1 (0.1517ms) # SKIP
+﹣ minute batches warm from prior frozen observations and recompute a corrected original minute (0.112661ms) # SKIP
+✖ fixed calculation HTTP mounts expose catalog task list and current Polars aliases (172.028362ms)
+✖ 未建索引时如实报 index_missing，能力声明列出双历史资格与处理策略 (317.735262ms)
+﹣ HTTP real Python publication, multi-object filter and persisted exact evidence join survive restart (0.659469ms) # SKIP
+﹣ four context HTTP reads use six synthetic WFD rows and fixed snapshot bounds (0.117388ms) # SKIP
+﹣ real managed-table algorithm evidence archives and restores full persistent result with exact source binding (0.837179ms) # SKIP
+﹣ 明确选择的真实 XLSX 小矩形只读回核原件与来源定位 (0.142997ms) # SKIP
+✖ financial candidate gates keep old results readable, block every new preparation/first send, and preserve sent recovery (13.962696ms)
+✖ financial candidate verification and central first send reject incompatible actual value units even with refreshed row digests (9.960712ms)
+✖ processing dedicated formats cross the genuine personal tool bridge with exact selectors (342.744735ms)
+﹣ processing financial-fixed selector survives personal tool schema and normalizes fixed refs without accepting caller values (0.19105ms) # SKIP
+✖ F05 R1 UI invalidates confirmation on detail loads and gates recovery on original submission (12.261378ms)
+✖ F05 R1 direct task refuses changed host version before workspace dispatch (208.475497ms)
+✖ F05 actual personal+companion catalogue exposes exactly six R1 actions, never model submit (334.819938ms)
+✖ F05 actual attachment → material.read → processing.plan/run keeps genuine input and plan origins (386.843001ms)
+✖ processing structure summary keeps counts when a real changed cell is too large for model evidence (490.258096ms)
+✖ F05 processing capability contract and bounded failure receipt use real selected tasks (302.912213ms)
+✖ F05 processing conversation operator evidence cannot self-authorize purpose (367.368744ms)
+✖ the batch rejects an oversized already-associated input set before calling the fixed product reader (7.544961ms)
+﹣ 真实 XLSX：直接与 ZIP 中原工作表 XML 核对每格原片段及关键原值 (0.173172ms) # SKIP
+✖ fixed bundled video and transcription dependencies keep normal authorization and path boundaries (1.560153ms)
+✖ media conversion trusts only its bundled ffmpeg and ffprobe executables (0.359094ms)
+✖ binding and manifest drift remove trust; native policy does not enable transcription (0.206753ms)
+﹣ 已明确选择的固定脚本经来源设置保存后读回同一摘要 (0.143077ms) # SKIP
+﹣ Polars adoption plans the real locked environment and atomically changes only the optional binding (0.639199ms) # SKIP
+﹣ Polars adoption refuses running owners, startup contention, identity/version drift and changed environment (0.090888ms) # SKIP
+﹣ real Polars adoption CLI accepts the numeric sha256 flag and applies its exact isolated plan (0.068283ms) # SKIP
+ℹ tests 512
+ℹ pass 406
+ℹ fail 19
+ℹ skipped 87
+✖ failing tests:
+✖ ordinary material conversion automatically registers, indexes and reopens one linked artifact under persistent settings (549.210973ms)
+✖ 文档转换默认仅结构产物；显式 TXT 导出保持完整正文、来源与主产物目标语义 (1283.230265ms)
+✖ 受控模型工具：真实会话分支 perform_action → 任务审批 → 适配候选/重放/采用，拒绝取消不写 (1317.257681ms)
+✖ fixed calculation HTTP mounts expose catalog task list and current Polars aliases (172.028362ms)
+✖ 未建索引时如实报 index_missing，能力声明列出双历史资格与处理策略 (317.735262ms)
+✖ financial candidate gates keep old results readable, block every new preparation/first send, and preserve sent recovery (13.962696ms)
+✖ financial candidate verification and central first send reject incompatible actual value units even with refreshed row digests (9.960712ms)
+✖ processing dedicated formats cross the genuine personal tool bridge with exact selectors (342.744735ms)
+✖ F05 R1 UI invalidates confirmation on detail loads and gates recovery on original submission (12.261378ms)
+✖ F05 R1 direct task refuses changed host version before workspace dispatch (208.475497ms)
+✖ F05 actual personal+companion catalogue exposes exactly six R1 actions, never model submit (334.819938ms)
+✖ F05 actual attachment → material.read → processing.plan/run keeps genuine input and plan origins (386.843001ms)
+✖ processing structure summary keeps counts when a real changed cell is too large for model evidence (490.258096ms)
+✖ F05 processing capability contract and bounded failure receipt use real selected tasks (302.912213ms)
+✖ F05 processing conversation operator evidence cannot self-authorize purpose (367.368744ms)
+✖ the batch rejects an oversized already-associated input set before calling the fixed product reader (7.544961ms)
+✖ fixed bundled video and transcription dependencies keep normal authorization and path boundaries (1.560153ms)
+✖ media conversion trusts only its bundled ffmpeg and ffprobe executables (0.359094ms)
+✖ binding and manifest drift remove trust; native policy does not enable transcription (0.206753ms)
+LOCAL_TEST_FAILED: 测试命令未通过（exit=1）；未重试或换用其他程序。

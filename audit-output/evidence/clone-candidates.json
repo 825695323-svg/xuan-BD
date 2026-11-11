@@ -1,0 +1,74 @@
+[
+  [
+    {
+      "path": "apps/server/app.ts",
+      "start": 37,
+      "end": 51
+    },
+    {
+      "path": "apps/server/inactive-app.ts",
+      "start": 27,
+      "end": 39
+    }
+  ],
+  [
+    {
+      "path": "apps/server/bd-routes.ts",
+      "start": 104,
+      "end": 119
+    },
+    {
+      "path": "modules/agent/service.ts",
+      "start": 272,
+      "end": 287
+    }
+  ],
+  [
+    {
+      "path": "plugins/capture-sources/xiaohongshu/comments.js",
+      "start": 15,
+      "end": 27
+    },
+    {
+      "path": "plugins/capture-sources/xiaohongshu/note.js",
+      "start": 15,
+      "end": 27
+    }
+  ],
+  [
+    {
+      "path": "scripts/adopt-financial-assets.ts",
+      "start": 41,
+      "end": 55
+    },
+    {
+      "path": "scripts/adopt-polars-python.ts",
+      "start": 43,
+      "end": 57
+    }
+  ],
+  [
+    {
+      "path": "staging/wfd_sdk/product_machine.py",
+      "start": 61,
+      "end": 75
+    },
+    {
+      "path": "wfd/product/wfd_sdk/product_machine.py",
+      "start": 133,
+      "end": 147
+    }
+  ],
+  [
+    {
+      "path": "wfd/product/wfd_sdk/duckdb_sdk.py",
+      "start": 55,
+      "end": 72
+    },
+    {
+      "path": "wfd/product/wfd_sdk/parquet_sdk.py",
+      "start": 53,
+      "end": 70
+    }
+  ]
+]

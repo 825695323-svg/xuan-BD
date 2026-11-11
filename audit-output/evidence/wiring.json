@@ -1,0 +1,512 @@
+[
+  {
+    "path": "apps/server/attachment-upload.ts",
+    "line": 82,
+    "text": "return services.files.register({ path, source: 'user-attached', displayName: name, conversationId });"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 21,
+    "text": "const local = createLocalActions(options, ['assembly']), artifactIdentity = inspectPath(options.artifactRoot);"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 27,
+    "text": "const baidu = options.baiduDrive ? createBaiduDriveActions({ files: options.files, artifactRoot: artifactIdentity.canonicalPath,"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 29,
+    "text": "const browser = createBrowserActions({ configuration: options.browser, unavailableReason: options.browserUnavailableReason, files: options.files, artifactRoot: artifactIdentity.canonicalPath });"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 30,
+    "text": "const conversion = createConversionActions({ files: options.files, artifactRoot: artifactIdentity.canonicalPath,"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 45,
+    "text": "const custom = options.customSources ? createCustomSourceActions(options.customSources) : undefined;"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 52,
+    "text": "...(options.artifactManifest ? [options.artifactManifest.registration] : [])]) local.registry.register(registration);"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 58,
+    "text": "...(options.artifactManifest ? [options.artifactManifest.registration] : [])]) local.registry.bindVersions(registration.action, args => {"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 64,
+    "text": "} else if (options.candidateReclaim?.handles(action)) {"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 67,
+    "text": "} else if (options.artifactLifecycle?.handles(action)) {"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 79,
+    "text": "} else if (sources?.handles(action)) {"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 90,
+    "text": "} else if (capture?.handles(action)) {"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 98,
+    "text": "} else if (custom?.handles(action)) {"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 100,
+    "text": "} else if (baidu?.handles(action)) {"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 103,
+    "text": "} else if (browser.handles(action)) {"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 106,
+    "text": "} else if (conversion.handles(action)) {"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 140,
+    "text": "const producer = capture?.handles(routed.action) && original.task.action === routed.action"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 164,
+    "text": "if (options.candidateReclaim?.handles(routed.action)) return await options.candidateReclaim.execute(context, routed.action, args);"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 165,
+    "text": "if (options.artifactLifecycle?.handles(routed.action)) return await options.artifactLifecycle.execute(context, routed.action, args);"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 168,
+    "text": "if (sources?.handles(routed.action)) return await sources.execute(context, routed.action, args);"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 169,
+    "text": "if (options.conversationMaterials?.handles(routed.action)) return await options.conversationMaterials.execute(context, routed.action, args);"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 170,
+    "text": "if (capture?.handles(routed.action)) return await capture.execute(context, routed.action, args);"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 171,
+    "text": "if (custom?.handles(routed.action)) return await custom.execute(context, routed.action, args);"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 172,
+    "text": "if (baidu?.handles(routed.action)) return await baidu.execute(context, args);"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 173,
+    "text": "if (conversion.handles(routed.action)) return await conversion.execute(context, routed.action, args);"
+  },
+  {
+    "path": "apps/server/capabilities.ts",
+    "line": 174,
+    "text": "if (browser.handles(routed.action)) return await browser.execute(context, args);"
+  },
+  {
+    "path": "apps/server/configured-app.ts",
+    "line": 169,
+    "text": "record = lifecycle.register(localDataId);"
+  },
+  {
+    "path": "apps/server/configured-app.ts",
+    "line": 198,
+    "text": "registry.register(createPiBackend({"
+  },
+  {
+    "path": "apps/server/full-chain-test-support.ts",
+    "line": 147,
+    "text": "lifecycle.register(dataId); lifecycle.bindIdentity(dataId, personalDatabase.path);"
+  },
+  {
+    "path": "apps/server/full-chain-test-support.ts",
+    "line": 216,
+    "text": "const reference = host.services.files.register({ path, source: 'user-selected' });"
+  },
+  {
+    "path": "apps/server/live-model-test-support.ts",
+    "line": 197,
+    "text": "} else localData.register(dataId);"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 183,
+    "text": "res.status(201).json(services.personalResources.register({ id, profileId: id, kind: 'persona', title, body: text,"
+  },
+  {
+    "path": "apps/server/platform-routes.ts",
+    "line": 231,
+    "text": "res.status(201).json(files.register({ path, source: 'user-selected', ...(conversationId ? { conversationId } : {}) }));"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 281,
+    "text": "const artifactArchive = createArtifactArchiveActions({ database, files, tasks: () => {"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 285,
+    "text": "const artifactRestore = createArtifactRestoreActions({ database, files, tasks: () => {"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 289,
+    "text": "const artifactLifecycle = createArtifactLifecycleActions({ database, files, tasks: () => {"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 293,
+    "text": "const candidateReclaim = createCandidateReclaimActions({ database });"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 294,
+    "text": "const artifactManifest = createArtifactManifestActions({ database, files, tasks: () => {"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 334,
+    "text": "handles: action => !!conversationR1?.handles(action) || !!conversationProcessing?.handles(action) || !!conversationMaterials?.handles(action),"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 335,
+    "text": "execute: (context, action, args) => conversationR1?.handles(action) ? conversationR1.execute(context, action, args)"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 336,
+    "text": ": conversationProcessing?.handles(action) ? conversationProcessing.execute(context, action, args)"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 341,
+    "text": "if (!conversationMaterials) for (const registration of mediaPluginRegistrations) direct.registry.register(registration);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 343,
+    "text": "direct.registry.register(entry);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 344,
+    "text": "direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['algorithms', 'process', 'material', 'materialRead'],"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 347,
+    "text": "for (const entry of conversationProcessing?.registrations ?? []) { direct.registry.register(entry); direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'], { ...(options.wo"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 349,
+    "text": "direct.registry.register(entry);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 350,
+    "text": "direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'], conversationR1!.versionBinding, {}));"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 353,
+    "text": "direct.registry.register(registration);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 354,
+    "text": "direct.registry.bindVersions(registration.action, () => {"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 362,
+    "text": "direct.registry.register({ action: 'pi.prompt', runtimeId: 'pi', kind: 'agent', modelCalls: null,"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 369,
+    "text": "direct.registry.register({ action: 'pi.skill', runtimeId: 'pi', kind: 'agent', modelCalls: null,"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 382,
+    "text": "direct.registry.register({ action: 'external.bd', runtimeId: 'external', kind: 'external', modelCalls: null,"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 540,
+    "text": "runtimes.register(modelTools.wrapDirectRuntime(direct.runtime));"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 541,
+    "text": "runtimes.register(modelTools.metadataRuntime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 544,
+    "text": "runtimes.register(bd ? { id: piRuntime.id, execute: async (context) => {"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 547,
+    "text": "if (bd) runtimes.register(bd.runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 548,
+    "text": "if (collection) runtimes.register(collection.runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 549,
+    "text": "if (financial) runtimes.register(financial.runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 550,
+    "text": "if (algorithms) runtimes.register(algorithms.runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 551,
+    "text": "if (materials) runtimes.register(materials.runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 552,
+    "text": "if (cloudCustody) runtimes.register(cloudCustody.runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 553,
+    "text": "if (semantics) runtimes.register(semantics.runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 554,
+    "text": "if (processing) runtimes.register(processing.runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 555,
+    "text": "if (segments) runtimes.register(segments.runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 556,
+    "text": "if (r1Workspace) runtimes.register(r1Workspace.runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 557,
+    "text": "if (polarsFixed) runtimes.register(polarsFixed.runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 558,
+    "text": "for (const runtime of options.taskRuntimes ?? []) runtimes.register(runtime);"
+  },
+  {
+    "path": "apps/server/services.ts",
+    "line": 573,
+    "text": "if (corrections) runtimes.register(corrections.runtime);"
+  },
+  {
+    "path": "apps/server/workspace-routes.ts",
+    "line": 194,
+    "text": "res.status(201).json(corrections.register(body.input, operator(req, body)));"
+  },
+  {
+    "path": "modules/agent/input-router.ts",
+    "line": 89,
+    "text": "const reference = match!.isReference ? this.options.files.getRef(match!.value.slice(1)) : (this.options.direct.assertPublicPath(match!.value), this.options.files.register({ path: match!.value, source: 'user-selected', conversationId }));"
+  },
+  {
+    "path": "modules/agent/model-tools.ts",
+    "line": 1134,
+    "text": "const result = this.options.conversationFinancial?.handles(context.task.action)"
+  },
+  {
+    "path": "modules/agent/model-tools.ts",
+    "line": 1135,
+    "text": "? await this.options.conversationFinancial.execute(controlled) : this.options.conversationAlgorithms?.handles(context.task.action)"
+  },
+  {
+    "path": "modules/agent/model-tools.ts",
+    "line": 1736,
+    "text": "if (call.action.startsWith('data.processing.') || call.action.startsWith('data.adapters.') || call.action.startsWith('data.r1.') || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(cal"
+  },
+  {
+    "path": "modules/agent/skills/source-card-template.ts",
+    "line": 71,
+    "text": "service.register(SOURCE_CARD_TEMPLATE_SKILL);"
+  },
+  {
+    "path": "modules/collection/accept-material.ts",
+    "line": 58,
+    "text": "const reference = upload.file_ref_id ? files.getRef(upload.file_ref_id) : files.register({ path, source: 'user-attached', displayName: name });"
+  },
+  {
+    "path": "modules/collection/artifact-archive.ts",
+    "line": 53,
+    "text": "export function createArtifactArchiveActions(options: {"
+  },
+  {
+    "path": "modules/collection/artifact-lifecycle.ts",
+    "line": 82,
+    "text": "export function createArtifactLifecycleActions(options: {"
+  },
+  {
+    "path": "modules/collection/artifact-manifest.ts",
+    "line": 13,
+    "text": "export function createArtifactManifestActions(options: {"
+  },
+  {
+    "path": "modules/collection/artifact-restore.ts",
+    "line": 23,
+    "text": "export function createArtifactRestoreActions(options: {"
+  },
+  {
+    "path": "modules/collection/candidate-reclaim.ts",
+    "line": 23,
+    "text": "export function createCandidateReclaimActions(options: { database: CoreDatabase }) {"
+  },
+  {
+    "path": "modules/collection/conversation-materials.ts",
+    "line": 105,
+    "text": "if (!this.handles(action)) throw new TaskError('UNKNOWN_ACTION', '没有此材料动作。');"
+  },
+  {
+    "path": "modules/collection/conversation-processing.ts",
+    "line": 80,
+    "text": "if (!this.handles(action)) throw new TaskError('PROCESSING_ACTION', '未登记的处理会话动作。');"
+  },
+  {
+    "path": "modules/collection/conversation-r1.ts",
+    "line": 64,
+    "text": "if (!this.handles(action)) fail('R1_CONVERSATION_INPUT', '未登记的会话R1动作。');"
+  },
+  {
+    "path": "modules/financial/conversation-algorithms.ts",
+    "line": 68,
+    "text": "if (!this.handles(action)) throw new TaskError('ALGORITHM_ACTION', '未登记的算法会话动作。');"
+  },
+  {
+    "path": "modules/financial/conversation-bridge.ts",
+    "line": 99,
+    "text": "if (!this.handles(action)) throw new TaskError('UNKNOWN_ACTION', '没有此金融会话动作。');"
+  },
+  {
+    "path": "platform/capabilities/browser/index.ts",
+    "line": 83,
+    "text": "export function createBrowserActions(options: { configuration?: BrowserConfiguration; unavailableReason?: string; files?: FileReferenceService; artifactRoot?: string; publicWeb?: PublicWebOptions }) {"
+  },
+  {
+    "path": "platform/capabilities/conversion/index.ts",
+    "line": 88,
+    "text": "export function createConversionActions(options: ConversionActionsOptions) {"
+  },
+  {
+    "path": "platform/capabilities/files/text.ts",
+    "line": 117,
+    "text": "const reference = files.register({ path, source: 'user-selected', taskId: context.task.id,"
+  },
+  {
+    "path": "platform/capabilities/local-actions.ts",
+    "line": 83,
+    "text": "export function createLocalActions(options: DirectRuntimeOptions, hostImplementation: readonly DirectImplementation[] = []): DirectRuntimeBundle {"
+  },
+  {
+    "path": "platform/capabilities/local-actions.ts",
+    "line": 134,
+    "text": "for (const registration of registry.list()) registry.bindVersions(registration.action, args => captureVersions(registration.action, args));"
+  },
+  {
+    "path": "platform/capabilities/local-actions.ts",
+    "line": 611,
+    "text": "const reference = files.register({ path: destination.path, source: 'generated', taskId: context.task.id,"
+  },
+  {
+    "path": "platform/capabilities/transcription/local.ts",
+    "line": 175,
+    "text": "const modelRef = options.files.register({ path: options.modelPath, source: 'user-selected', taskId: context.task.id });"
+  },
+  {
+    "path": "platform/capabilities/transcription/video.ts",
+    "line": 90,
+    "text": "const reference = options.files.register({ path: options.modelPath, source: 'user-selected', taskId: context.task.id });"
+  },
+  {
+    "path": "platform/plugins/registry.ts",
+    "line": 22,
+    "text": "for (const registration of registrations) this.register(registration);"
+  },
+  {
+    "path": "platform/plugins/registry.ts",
+    "line": 43,
+    "text": "bindVersions(action: string, resolve: (args: Record<string, JsonValue>, task?: TaskRecord) => Record<string, string | null>): void {"
+  },
+  {
+    "path": "platform/runtime/file-workspace.ts",
+    "line": 228,
+    "text": "const reference = this.register(destination.path);"
+  },
+  {
+    "path": "platform/runtime/file-workspace.ts",
+    "line": 265,
+    "text": "const reference = this.register(destination.path);"
+  },
+  {
+    "path": "platform/runtime/file-workspace.ts",
+    "line": 314,
+    "text": "const reference = this.files.register({ path, source: 'generated', taskId: this.context.task.id,"
+  },
+  {
+    "path": "plugins/capture-sources/baidu-drive/index.ts",
+    "line": 102,
+    "text": "export function createBaiduDriveActions(options: { files: FileReferenceService; artifactRoot: string; configuration?: BaiduDriveConfiguration;"
+  },
+  {
+    "path": "plugins/capture-sources/custom-register.ts",
+    "line": 90,
+    "text": "export function createCustomSourceActions(registry: CustomSourceRegistry) {"
+  },
+  {
+    "path": "plugins/capture-sources/custom-register.ts",
+    "line": 107,
+    "text": "const source = await registry.register(input);"
+  },
+  {
+    "path": "wfd/product/wfd_sdk/product_data_service.py",
+    "line": 1732,
+    "text": "record = adjustment_anchors.register("
+  }
+]
