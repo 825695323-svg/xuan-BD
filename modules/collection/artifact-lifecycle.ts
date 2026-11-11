@@ -171,7 +171,7 @@ export function createArtifactLifecycleActions(options: {
       remotePath: condition.receipt?.target_path ?? null, remoteId: condition.receipt?.remote_id ?? null,
       remoteStatus: remote, releaseState: condition.previous?.state ?? 'not_requested',
       eligible: condition.blockers.length === 0 && !condition.previous && remote === 'metadata_checked',
-      blockers: condition.blockers, localDeletion: 'explicit_release_only' } },
+      blockers: condition.blockers, localDeletion: 'explicit_release_only' }
   });
   return {
     registrations: [inspect, release],
