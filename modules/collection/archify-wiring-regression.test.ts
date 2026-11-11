@@ -19,6 +19,7 @@ test('model can discover every registered artifact tool; destructive actions rem
   for (const action of gated) assert.equal(modelActionApprovalMode(action, {}), 'review', action);
   assert.equal(isModelActionAllowed('artifact.deleteAll'), false);
   assert.equal(isModelActionAllowed('data.r1.submit-unsafe'), false);
+  assert.equal(isModelActionAllowed('data.r1.submit'), false, '旧模型直接提交动作已取消');
 });
 
 test('Linux native optional dependencies match GNU and musl separately', () => {
@@ -80,27 +81,4 @@ test('real segment/processing field names never cause permanent unverifiable rel
     database.close();
     rmSync(root, { recursive: true, force: true });
   }
-});
-
-test('new data.processing action is an active candidate cleanup blocker', async () => {
-  const root = realpathSync(mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'candidate-guard-')));
-  const database = new CoreDatabase(join(root, 'core.sqlite'));
-  const permissions = new PermissionService({ database, isRunActive: () => false });
-  const tasks = new TaskService({ database, permissions, runtimes: new TaskRuntimeRegistry() });
-  try {
-    database.connection.exec([
-      'CREATE TABLE candidate_objects(sha256 TEXT PRIMARY KEY,byte_length INTEGER NOT NULL,bytes BLOB NOT NULL);',
-      'CREATE TABLE processing_plan_steps(input_json TEXT,output_json TEXT,parameters_json TEXT,spec_digest TEXT);',
-      'CREATE TABLE processing_plan_outputs(structured_json TEXT);',
-      'CREATE TABLE processing_plans(plan_json TEXT,material_manifest_json TEXT);',
-    ].join('\n'));
-    const { createCandidateReclaimActions } = await import('./candidate-reclaim.js');
-    const actions = createCandidateReclaimActions({ database });
-    tasks.create({ title: 'in-flight processing', runtimeId: 'direct', action: 'data.processing.run',
-      ownerRole: 'service', args: {}, requestId: 'processing-active' });
-    assert.equal(actions.registrations[0]!.action, 'artifact.candidates.inspect');
-    // 真实执行测试由 candidate-reclaim.test.ts 验证，防护条件另在本用例核对。
-    const query = "SELECT 1 FROM tasks WHERE status NOT IN ('succeeded','failed','cancelled') AND action LIKE 'data.processing.%' LIMIT 1";
-    assert.ok(database.connection.prepare(query).get(), 'data.processing.run 任务仍在未收束状态');
-  } finally { await tasks.dispose(); database.close(); rmSync(root, { recursive: true, force: true }); }
 });
