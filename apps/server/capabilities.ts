@@ -48,15 +48,20 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
     ...(options.conversationMaterials?.registrations ?? []), ...(options.artifactArchive ? [options.artifactArchive.registration] : []),
     ...(options.artifactRestore ? [options.artifactRestore.registration] : []),
     ...(options.artifactLifecycle?.registrations ?? []),
-    ...(options.candidateReclaim?.registrations ?? [])]) local.registry.register(registration);
+    ...(options.candidateReclaim?.registrations ?? []),
+    ...(options.artifactManifest ? [options.artifactManifest.registration] : [])]) local.registry.register(registration);
   for (const registration of [...(sources?.registrations ?? []), ...(capture?.registrations ?? []), ...(baidu?.registrations ?? []), ...(custom?.registrations ?? []), ...browser.registrations, ...conversion.registrations,
     ...(options.conversationMaterials?.registrations ?? []), ...(options.artifactArchive ? [options.artifactArchive.registration] : []),
     ...(options.artifactRestore ? [options.artifactRestore.registration] : []),
     ...(options.artifactLifecycle?.registrations ?? []),
-    ...(options.candidateReclaim?.registrations ?? [])]) local.registry.bindVersions(registration.action, args => {
+    ...(options.candidateReclaim?.registrations ?? []),
+    ...(options.artifactManifest ? [options.artifactManifest.registration] : [])]) local.registry.bindVersions(registration.action, args => {
     const action = registration.action, implementation: DirectImplementation[] = ['assembly'];
     let configuration: unknown = {}, dependencies: unknown = directResourceVersions(options);
-    if (options.candidateReclaim?.handles(action)) {
+    if (options.artifactManifest && action === options.artifactManifest.registration.action) {
+      configuration = options.artifactManifest.versionBinding();
+      dependencies = directResourceVersions(options);
+    } else if (options.candidateReclaim?.handles(action)) {
       implementation.push('process'); configuration = options.candidateReclaim.versionBinding();
       dependencies = directResourceVersions(options);
     } else if (options.artifactLifecycle?.handles(action)) {
@@ -155,6 +160,7 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
       requestApproval: async (operation, capabilities, input) => { assertCapabilities(operation, capabilities); return await original.requestApproval(operation, capabilities, input); } };
     const args = routed.args as Record<string, JsonValue>;
     const execute = async (): Promise<TaskResult> => {
+      if (options.artifactManifest && routed.action === options.artifactManifest.registration.action) return await options.artifactManifest.execute(context, args);
       if (options.candidateReclaim?.handles(routed.action)) return await options.candidateReclaim.execute(context, routed.action, args);
       if (options.artifactLifecycle?.handles(routed.action)) return await options.artifactLifecycle.execute(context, routed.action, args);
       if (options.artifactRestore && routed.action === options.artifactRestore.registration.action) return await options.artifactRestore.execute(context, args);

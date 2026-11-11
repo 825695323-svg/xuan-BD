@@ -57,6 +57,8 @@ export interface DirectRuntimeOptions {
   candidateReclaim?: { registrations: readonly SkillRegistration[]; handles(action: string): boolean;
     versionBinding(): Record<string, string | null>;
     execute(context: TaskExecutionContext, action: string, args: Record<string, JsonValue>): Promise<TaskResult> };
+  artifactManifest?: { registration: SkillRegistration; versionBinding(): Record<string, string | null>;
+    execute(context: TaskExecutionContext, args: Record<string, JsonValue>): Promise<TaskResult> };
   browser?: BrowserConfiguration;
   browserUnavailableReason?: string;
   /** 仅个人宿主装配的站点独立会话；不暴露给模型参数。 */

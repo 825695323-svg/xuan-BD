@@ -21,6 +21,7 @@ on:
       - codex/artifact-restore-video-temp
       - codex/artifact-lifecycle-closeout
       - codex/candidate-retention-closeout
+      - codex/source-artifact-manifest
 
 permissions:
   contents: read
@@ -50,6 +51,7 @@ jobs:
             modules/collection/artifact-restore.test.ts \
             modules/collection/artifact-lifecycle.test.ts \
             modules/collection/candidate-reclaim.test.ts \
+            modules/collection/artifact-manifest.test.ts \
             modules/collection/cloud-custody.test.ts \
             modules/collection/baidu-drive-copy.test.ts \
             modules/collection/cloud-algorithm-evidence.test.ts \
