@@ -54,6 +54,8 @@ test('Polars financial and macro use identical R1 scalar output and signed fixed
     assert.equal(checked.structured.subject.kind, methodId === 'financial_linear' ? 'entity' : 'region');
     assert.equal(checked.structured.subject.id, methodId === 'financial_linear' ? 'company-one' : 'CN');
     assert.equal(checked.structured.expectedParentSnapshotId, binding.expectedParentSnapshotId);
+    assert.equal(checked.structured.definition.unit_code, methodId === 'financial_linear' ? 'cny' : 'percent',
+      'scalar_rows 统一定义必须有实义单位，不能使用只允许 tabular_rows 的 per_field');
     assert.equal((checked.structured.definition.field_definitions as any[])[0].unit_code,
       methodId === 'financial_linear' ? 'cny' : 'percent');
     const rows = (checked.structured.payload.rows as any[]);
