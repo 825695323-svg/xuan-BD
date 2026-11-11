@@ -11,7 +11,8 @@ import type { MaterialService } from './materials/service.js';
 import { sourceObservationMAAlgorithmDefinition, type CalculatedMAProof, type SourceObservationMAContext } from './source-observation-ma.js';
 import { assertFinancialLinearCandidate, readFinancialCalculation, type FinancialCalculation } from './data-processing/financial-fixed.js';
 import { POLARS_FIXED_VERSION, POLARS_DEPENDENCY_VERSION, POLARS_FIXED_METHODS, polarsFixedVersionBinding, assertCompletePolarsDailySeries,
-  projectDailyPolars, projectFinancialPolars, projectMacroYoYPolars, readMacroYoYCalculation, type MacroYoYCalculation } from './data-processing/polars-fixed.js';
+  projectDailyPolars, projectFinancialPolars, projectMacroYoYPolars, assertMacroYoYCandidate,
+  readMacroYoYCalculation, type MacroYoYCalculation } from './data-processing/polars-fixed.js';
 import { PURPOSE_ELIGIBILITY_RULE_VERSION, evaluatePurposeEligibility, wfdRestrictionEvidence,
   type DerivedInputEvidence, type PurposeEligibilityInput, type PurposeEligibilityResult, type PurposeEvidenceClaim,
   type RestrictionEvidence } from './purpose-eligibility.js';
@@ -273,6 +274,10 @@ export class PolarsFixedService {
     if (frozen.input.method === 'financial_linear') {
       assertFinancialLinearCandidate(frozen.input.calculation, isWfdRecord(result.evidence) ? result.evidence : {}, result.rows,
         this.options.verifyFinancialReview ?? (() => fail('POLARS_FINANCIAL_REVIEW', '本宿主尚未装配跨修订原文核对，不能新发布。')));
+    }
+    if (frozen.input.method === 'macro_yoy') {
+      // 与财务一样，准备/首次发送时重新执行数值和来源版本独立核验。
+      assertMacroYoYCandidate(frozen.input.calculation, isWfdRecord(result.evidence) ? result.evidence : {}, result.rows);
     }
     const materialId = this.stageState(taskId).materialId;
     if (!materialId || materialId !== input.materialId) fail('POLARS_PREPARE', '材料不是本次原计算任务实际保管的候选。');
