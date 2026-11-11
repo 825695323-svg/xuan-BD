@@ -5,6 +5,8 @@ import type { R1Runtime } from '../collection/r1-runtime.js';
 import type { R1WorkspaceService } from '../collection/r1-workspace.js';
 import type { AlgorithmTaskView, AlgorithmData } from './algorithm-types.js';
 import { checkDerivedForWfd } from './derived-wfd-check.js';
+import { checkUnifiedStructuredForWfd } from './unified-polars-derived.js';
+import type { UnifiedPolarsExecution } from './unified-polars-execution.js';
 import { publishRestrictionTarget, restrictionEvidenceFromUsageStatus } from '../collection/wfd-publish-restriction.js';
 
 /**
@@ -19,6 +21,7 @@ export class DerivedWfdPublisher {
     runtime(): R1Runtime | undefined;
     workspace(): R1WorkspaceService | undefined;
     handoff: R1HandoffService;
+    structuredPolars?(): UnifiedPolarsExecution | undefined;
   }) {}
 
   private requireResult(taskId: string) {
@@ -38,6 +41,24 @@ export class DerivedWfdPublisher {
     const identity = runtime.currentIdentity();
     if (identity.namespace !== proof.namespace || identity.mode !== proof.mode)
       throw new TaskError('DERIVED_WFD_BINDING_CHANGED', '原派生任务的 WFD 连接身份已变化，不允许借新连接重发。');
+    if (proof.kind === 'structured_polars') {
+      const backend = this.options.structuredPolars?.();
+      if (!backend || !backend.owns(proof.taskId)) throw new TaskError('DERIVED_STRUCTURED_UNBOUND',
+        '结构化 Polars 原算法任务不在当前受信执行器。');
+      const value = backend.view(proof.taskId), result = value.result;
+      if (value.status !== 'succeeded' || value.requiresReview || !result)
+        throw new TaskError('DERIVED_RESULT_NOT_READY', '原结构化算法未成功收束，不能复用旧发布资格。');
+      const checked = checkUnifiedStructuredForWfd(result, {
+        namespace: proof.namespace, mode: proof.mode,
+        expectedParentSnapshotId: proof.expectedParentSnapshotId,
+      }, proof.requestId);
+      if (wfdSha256(canonicalWfdJson(result)) !== proof.resultSha256
+        || checked.sourceSha256 !== refs.sourceRefs[0]?.sha256
+        || checked.sourceSha256 !== refs.evidenceRefs[0]?.content_sha256
+        || wfdSha256(canonicalWfdJson(buildStructuredIngestDocument(checked.structured))) !== documentSha256)
+        throw new TaskError('DERIVED_PROOF_CHANGED', '结构化派生结果、来源字节或原 WFD 文档与冻结证明不同。');
+      return;
+    }
     const result = this.requireResult(proof.taskId);
     const checked = checkDerivedForWfd(result, {
       namespace: proof.namespace, mode: proof.mode,
@@ -51,6 +72,7 @@ export class DerivedWfdPublisher {
   }
 
   async publish(taskId: string, signal?: AbortSignal) {
+    if (this.options.structuredPolars?.()?.owns(taskId)) return this.publishStructured(taskId, signal);
     signal?.throwIfAborted();
     const runtime = this.options.runtime(), workspace = this.options.workspace();
     if (!runtime || !workspace) throw new TaskError('DERIVED_WFD_UNAVAILABLE', '未装配正式 WFD 固定读取与 R1 提交端口。');
@@ -115,6 +137,81 @@ export class DerivedWfdPublisher {
       || ['associated','partially_associated','conflicts_pending','rejected'].includes(String(prior.state)))
       return this.publication(requestId);
     this.verify(refs, String(prior.document_sha256));
+    signal?.throwIfAborted();
+    await this.options.handoff.submitAndAssociate(requestId, runtime.client, signal);
+    return this.publication(requestId);
+  }
+
+  /** 只读复核：R1 首次正式发送前重新从原 WFD 固定版本读取，不复用缓存标签。 */
+  async verifyStructuredRemote(taskId: string, signal: AbortSignal): Promise<void> {
+    const backend = this.options.structuredPolars?.();
+    if (!backend || !backend.owns(taskId))
+      throw new TaskError('DERIVED_STRUCTURED_UNBOUND', '结构化 WFD 来源校验器未装配。');
+    await backend.verifyForPublication(taskId, signal);
+  }
+
+  /** 同一个 DerivedWfdPublisher、R1HandoffService 和 WFD 固定读回，内部方法特化而非平行业务管道。 */
+  private async publishStructured(taskId: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const backend = this.options.structuredPolars?.();
+    const runtime = this.options.runtime(), workspace = this.options.workspace();
+    if (!backend || !runtime || !workspace) throw new TaskError('DERIVED_WFD_UNAVAILABLE',
+      '统一 Polars、正式 WFD 连接或原 R1 提交端口未装配。');
+    const view = backend.view(taskId), result = view.result;
+    if (view.status !== 'succeeded' || view.requiresReview || !result)
+      throw new TaskError('DERIVED_RESULT_NOT_READY', '原计算任务未成功收束或真实候选缺失。');
+    const identity = runtime.currentIdentity();
+    const requestId = 'bd-derived:' + wfdSha256(canonicalWfdJson({
+      taskId, inputDigest: result.inputDigest, method: result.methodId, methodVersion: result.methodVersion,
+      producer: identity.namespace, connection: identity.connectionId,
+    })).slice(0, 48);
+    let prior: ReturnType<R1HandoffService['attempt']> | null = null;
+    try { prior = this.options.handoff.attempt(requestId); }
+    catch (error) { if (!(error instanceof TaskError) || error.code !== 'R1_ATTEMPT_NOT_FOUND') throw error; }
+    let refs: R1LocalReferences;
+    if (prior) {
+      refs = JSON.parse(String(prior.local_refs_json)) as R1LocalReferences;
+      this.verify(refs, String(prior.document_sha256));
+      if (['sending','pending_unknown','pending_receipt'].includes(String(prior.state))) {
+        await this.options.handoff.recoverStatus(requestId, runtime.client, signal);
+      } else if (['associated','partially_associated','conflicts_pending','rejected'].includes(String(prior.state))) {
+        return this.publication(requestId);
+      }
+    } else {
+      // 严格要求发布之前从 WFD 实际重新读取冻结的两/三条来源记录。
+      // 因此不存在用模型提供的行、latest 或旧候选摘要直接生成权威派生的路径。
+      await backend.verifyForPublication(taskId, signal ?? new AbortController().signal);
+      const current = await workspace.snapshotStatus(signal);
+      const checked = checkUnifiedStructuredForWfd(result, {
+        namespace: identity.namespace, mode: identity.mode,
+        expectedParentSnapshotId: current.snapshotId,
+      }, requestId);
+      const target = publishRestrictionTarget({ purpose: 'current_publish',
+        expectedSnapshotId: current.snapshotId, logicalDomain: 'observations',
+        subject: checked.structured.subject, definition: checked.structured.definition, definitionMode: 'create' });
+      const restriction = restrictionEvidenceFromUsageStatus(
+        (await runtime.client.usageStatus(signal)).result, target, Date.now());
+      if ('publishable' in restriction && restriction.publishable === false)
+        throw new TaskError('DERIVED_WFD_USAGE_SUSPENDED', 'WFD 使用治理禁止本次结构化派生，原算法结果仍可保留。');
+      const original = this.options.handoff.registerOriginal({
+        bytes: checked.originalBytes, originalName: 'derived-' + taskId + '.json',
+        mediaType: 'application/json', source: checked.source,
+      });
+      refs = { originalIds: [original.originalId], materialIds: [], sourceRefs: [checked.source],
+        processRefs: [], evidenceRefs: [{ ref_id: 'algorithm:' + taskId,
+          content_sha256: checked.sourceSha256, kind: 'fixed-algorithm-output' }],
+        fixedAlgorithm: { kind: 'structured_polars', taskId, requestId,
+          resultSha256: checked.resultSha256, namespace: identity.namespace,
+          mode: identity.mode, expectedParentSnapshotId: current.snapshotId },
+      };
+      this.options.handoff.prepare({ structured: checked.structured, localRefs: refs });
+    }
+    prior = this.options.handoff.attempt(requestId);
+    if (['sending','pending_unknown','pending_receipt'].includes(String(prior.state))
+      || ['associated','partially_associated','conflicts_pending','rejected'].includes(String(prior.state)))
+      return this.publication(requestId);
+    this.verify(refs, String(prior.document_sha256));
+    // 原 R1.submitAndAssociate 中同样会在 markSending 前触发受信远端再核。
     signal?.throwIfAborted();
     await this.options.handoff.submitAndAssociate(requestId, runtime.client, signal);
     return this.publication(requestId);
