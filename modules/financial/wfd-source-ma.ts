@@ -99,7 +99,7 @@ export async function readWfdMASource(raw: WfdSourceMACalculation, reader: Finan
       subject ??= rowSubject; timeZone ??= businessTime.source_timezone as string;
       if (!id(rowSubject.kind) || !id(rowSubject.namespace) || !id(rowSubject.id))
         fail('WFD_MA_SUBJECT', '源产品缺可复核的实体主体身份。');
-      const cell = rowValues[calculation.valueField];
+      const cell = rowValues[calculation.valueField] as WfdRecord;
       if (!isWfdRecord(cell) || !isWfdRecord(cell.unit)
         || !id(cell.unit.unit_code) || !['decimal', 'integer'].includes(String(cell.data_type)))
         fail('WFD_MA_FIELD', '实际 WFD 数值字段缺明确十进制类型和单位。');
@@ -118,7 +118,7 @@ export async function readWfdMASource(raw: WfdSourceMACalculation, reader: Finan
     if (next !== null && (typeof next !== 'string' || !next || next.length > 8192
       || seenCursors.has(next))) fail('WFD_MA_CURSOR', 'WFD 固定产品返回了无效或循环分页游标。');
     if (!paging.has_more && paging.next_cursor !== null) fail('WFD_MA_CURSOR', 'WFD 最后一页仍有游标。');
-    cursor = next ?? undefined;
+    cursor = typeof next === 'string' ? next : undefined;
     if (cursor) seenCursors.add(cursor);
   } while (cursor);
   if (!rawRows.length || !subject || !unitCode || !timeZone)
