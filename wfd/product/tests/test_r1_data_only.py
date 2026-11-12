@@ -231,7 +231,9 @@ def test_forecast_rating_actual_computed_business_definition_and_templates(tmp_p
                                      business_publisher=publisher)], "r1-nature-" + label,
                       parent=parent)
         result = service.submit(doc)
-        assert result["state"] == "published_formal", (label, result)
+        assert result["state"] == "published_formal", (label, {"state": result["state"],
+            "errors": result.get("errors"), "outputs": [{"key": item.get("output_key"),
+            "errors": item.get("errors")} for item in result.get("output_results", [])]})
         ids[label] = result["output_results"][0]["product_id"]
         parent = result["snapshot_id"]
     assert len(set(ids.values())) == 3

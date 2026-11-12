@@ -37,7 +37,9 @@ def bar_output(*, frequency="day", subject="security_000001", policy=True):
 
 def publish(service, output, request_id, parent=None):
     result = service.submit(request([output], request_id, parent=parent))
-    assert result["state"] == "published_formal", result
+    assert result["state"] == "published_formal", {"state": result["state"], "errors": result.get("errors"),
+        "outputs": [{"key": item.get("output_key"), "errors": item.get("errors")}
+                    for item in result.get("output_results", [])]}
     return result["snapshot_id"], result["output_results"][0]["product_id"]
 
 
@@ -178,7 +180,9 @@ def test_current_business_same_interval_cannot_enter_through_two_outputs(tmp_pat
     result = service.submit(request([first, second], "cross-output-conflict",
                                     consistency_groups={"same-bar": ["bars_a", "bars_b"]}))
     assert any(error.get("code") == "CURRENT_ONLY_BUSINESS_KEY_CONFLICT"
-               for item in result["output_results"] for error in item.get("errors", [])), result
+               for item in result["output_results"] for error in item.get("errors", [])), {
+        "state": result.get("state"), "outputs": [{"key": item.get("output_key"), "errors": item.get("errors")}
+                                          for item in result.get("output_results", [])]}
     assert service.engine.head() is None
     # A different interval remains a distinct bar of the same product.
     second["payload"]["rows"][0]["observation_time"]["earliest_utc"] = "2026-01-06T01:30:00Z"

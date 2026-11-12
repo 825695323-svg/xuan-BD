@@ -125,7 +125,9 @@ def test_registered_only_reuse_hydrates_definition_and_registry(tmp_path):
     service, target, parent_sid, registered, doc = _registered_fixture(
         tmp_path, "registered")
     result = service.submit(doc)
-    assert result["state"] == "published_formal", result
+    assert result["state"] == "published_formal", {"state": result["state"], "errors": result.get("errors"),
+        "outputs": [{"key": item.get("output_key"), "errors": item.get("errors")}
+                    for item in result.get("output_results", [])]}
     new_pid = result["output_results"][0]["product_id"]
     assert new_pid == registered["product_id"]
     collected = {item["relpath"] for item in service.last_hydration["collected_files"]}

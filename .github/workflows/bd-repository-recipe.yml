@@ -99,6 +99,19 @@ jobs:
           print('README_CONFIGURATION_COMMANDS_VERIFIED')
           PYCFG
           "$BD_NODE" --import tsx --test platform/resources/local-web.test.ts
+      - name: Verify WFD target identity and publication-guard regressions
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          export PYTHONPATH=wfd/product:wfd/product/tests
+          export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+          export PYTHONDONTWRITEBYTECODE=1
+          "$WFD_PYTHON" -m pytest -q --tb=short -p no:cacheprovider \
+            wfd/product/tests/test_market_current_only.py::test_current_business_replacement_contracts_and_pinned_technical_read \
+            wfd/product/tests/test_market_current_only.py::test_current_business_scope_is_explicit_and_ordinary_history_is_unchanged \
+            wfd/product/tests/test_market_current_only.py::test_current_business_same_interval_cannot_enter_through_two_outputs \
+            wfd/product/tests/test_p4b_registration_repair.py::test_registered_only_reuse_hydrates_definition_and_registry \
+            wfd/product/tests/test_r1_data_only.py::test_forecast_rating_actual_computed_business_definition_and_templates
       - name: Full Node regression and real WFD source-based tests
         if: runner.os == 'Linux'
         shell: bash
