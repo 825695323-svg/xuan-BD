@@ -39,9 +39,13 @@ export class ConversationAlgorithmBridge {
       permissionSummary: ['只读取固定算法目录及真实 WFD 快照能力；工具本身不能授予程序执行器权限',
         '固定算法无逐次业务审批；宿主执行器许可与方法版本仍需核实',
         '结构化计算结果由独立核对器检查，直接复用 R1 与 WFD 固定读回，不回到原报五步'],
-      available: () => ({ available: !!options.companion.productionCalculation || !!options.companion.algorithms,
-        ...(!options.companion.productionCalculation && !options.companion.algorithms
-          ? { reason: '数据生产的计算模块尚未装配。' } : {}) }),
+      available: () => {
+        const calculationAvailable = !!options.companion.productionCalculation || !!options.companion.algorithms;
+        const available = calculationAvailable || action === 'bd.session.capabilities' && !!options.companion.processing;
+        return { available, ...(!available
+          ? { reason: action === 'bd.session.capabilities'
+            ? '清洗和计算工具均未装配。' : '计算服务未装配；只读清洗能力仍可单独使用。' } : {}) };
+      },
     });
     this.registrations = [
       registration('bd.session.capabilities', '查看 BD AGENTS 统一会话工具契约',
@@ -71,8 +75,9 @@ export class ConversationAlgorithmBridge {
     const origin = this.options.origin(context.task.id);
     if (!origin) throw new TaskError('ALGORITHM_CONVERSATION_REQUIRED', '算法会话动作必须由本次真实会话代理调用。');
     const service = this.options.companion.algorithms;
-    if (!service && !this.options.companion.productionCalculation)
-      throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '数据生产计算模块尚未装配。');
+    if (!service && !this.options.companion.productionCalculation
+      && (action !== 'bd.session.capabilities' || !this.options.companion.processing))
+      throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '计算模块未装配；不能伪造可执行算法。');
     // 直接模型动作必须先取得当前模型分享回执；否则 saveResultProof 会拒绝返回。
     const authority = await acquireAuthority(context, action, args, []);
     authority.assert(); this.options.companion.bd?.assertDispatch();
