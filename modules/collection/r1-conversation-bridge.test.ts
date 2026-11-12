@@ -1104,7 +1104,7 @@ test('AGENTS iterative parse feedback can skip cleaning and annotation without a
     const identified = await invoke(h, selected.input, 'material.read',
       { fileRefId: selected.reference.id }, 'agent-iterative-identify');
     const materialId = String(identified.preview.data.materialId);
-    assert.equal(identified.preview.data.modelPreview.format, 'csv');
+    assert.equal(identified.preview.data.format, 'csv');
     const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] },
       outputs: [{ outputId: 'feedback', materialIds: [materialId], intendedAction: 'inspect',
         usage: { purpose: 'current_compute', messageId: selected.input.messageId, quote: inspectOnlyUserQuote },
