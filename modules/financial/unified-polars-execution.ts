@@ -12,6 +12,7 @@ import { POLARS_FIXED_VERSION, POLARS_DEPENDENCY_VERSION, polarsFixedVersionBind
   projectFinancialPolars, projectMacroYoYPolars, assertMacroYoYCandidate, readMacroYoYCalculation,
   type MacroYoYCalculation } from '../collection/data-processing/polars-fixed.js';
 import { verifyUnifiedPolarsForPublication } from './unified-polars-publication-proof.js';
+import { verifyProductionDerived } from '../collection/production-verifier.js';
 
 export const UNIFIED_POLARS_RUNTIME = 'bd.algorithms.polars';
 export const UNIFIED_POLARS_VERSION = 'bd.algorithms.polars/1';
@@ -140,14 +141,19 @@ export class UnifiedPolarsExecution {
     const task = this.task(taskId);
     if (task.status !== 'succeeded' || task.requiresReview) return fail('UNIFIED_POLARS_NOT_READY', '计算任务尚未成功结束。');
     const result = this.result(task);
-    return verifyUnifiedPolarsForPublication(result.methodId === 'financial_linear'
+    // 与原报数据生产共用相同的结构、有限数值与结果摘要门禁。
+    // 方法专属财务/宏观独立数值及真实 WFD 来源重读仍由原验证器完成。
+    return verifyProductionDerived({
+      rows: result.rows, expectedRowsSha256: result.candidateSha256,
+      maxRows: 5000, maxBytes: 2_000_000,
+    }, checkedSignal => verifyUnifiedPolarsForPublication(result.methodId === 'financial_linear'
       ? { methodId: 'financial_linear', calculation: result.calculation as FinancialCalculation,
         evidence: result.evidence, rows: result.rows,
         verifyFinancialReview: this.options.verifyFinancialReview ?? (() =>
           fail('POLARS_FINANCIAL_REVIEW', '跨修订原文核验未装配。')) }
       : { methodId: 'macro_yoy', calculation: result.calculation as MacroYoYCalculation,
         evidence: result.evidence, rows: result.rows },
-      this.options.workspace.readProduct.bind(this.options.workspace), signal);
+      this.options.workspace.readProduct.bind(this.options.workspace), checkedSignal), signal);
   }
   readonly runtime: TaskRuntime = { id: UNIFIED_POLARS_RUNTIME, execute: async context => {
     const task = context.task;
