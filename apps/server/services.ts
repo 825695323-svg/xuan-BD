@@ -301,7 +301,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const conversationMaterials = options.workspaceServices ? new ConversationMaterialBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
     assertPath: path => direct.assertPublicPath(path), mediaAdapters: () => mediaAdapters }) : undefined;
-  const conversationAlgorithms = options.workspaceServices?.algorithms ? new ConversationAlgorithmBridge({ database, core, files,
+  const conversationAlgorithms = (options.workspaceServices?.processing || options.workspaceServices?.algorithms) ? new ConversationAlgorithmBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null }) : undefined;
   const conversationProcessing = options.workspaceServices?.processing ? new ConversationProcessingBridge({ database, core, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
   const conversationR1 = options.role !== 'service' && options.workspaceServices?.r1Workspace
