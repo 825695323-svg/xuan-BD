@@ -246,8 +246,19 @@ test('real WFD frozen complete daily source -> Polars MA20 -> R1 full warmup/val
       });
       assert.equal(derivedReadback.result.rows.length, 21,
         'All 21 warmup and value rows must be queryable from the published WFD snapshot');
-      assert.equal(derivedReadback.result.rows.filter((row: any) =>
-        row.values.value?.value_state === 'insufficient_warmup').length, 19);
+      const warmup = derivedReadback.result.rows.filter((row: any) =>
+        row.values.value?.value_state === 'insufficient_warmup');
+      if (warmup.length !== 19) {
+        throw new Error('WFD_MA_READBACK_STATES:' + JSON.stringify({
+          warmup: warmup.length,
+          states: derivedReadback.result.rows.map((row: any) => ({
+            key: row.record_ref?.logical_key,
+            state: row.values?.value?.value_state,
+            value: row.values?.value?.value,
+            fields: Object.keys(row.values ?? {}),
+          })).slice(0, 22),
+        }).slice(0, 6500));
+      }
       assert.equal((await host.services.productionCalculation!.publish(computed.id)).requestId,
         outcome.requestId, 'Retry must reuse the frozen original WFD publication request');
     } finally { await host.close(); }
