@@ -264,7 +264,7 @@ async function actualPlan(h: Host, input: BackendInput, fileRefId: string, caseI
   const dimensions = Object.fromEntries(DIMENSION_KEYS.map(key => [key, { status: 'known', value: routingFacts[key],
     evidence: [{ source: 'user-message', messageId: input.messageId, quote: `${key}=${routingFacts[key]}` }] }]));
   const planJson = { routing: { materials: [{ materialId, dimensions, intendedAction: 'publish' }] },
-    outputs: [{ outputId: 'scalar', materialIds: [materialId], intendedAction: 'publish',
+    outputs: [{ outputId: 'scalar', materialIds: [materialId], stages: ['parse', 'clean', 'structure', 'annotate', 'check'], intendedAction: 'publish',
       usage: { purpose: 'current_publish', historyMode: null, cutoff: null, perspective: null,
         messageId: input.messageId, quote: 'intendedAction=publish' },
       tables: [{ materialId, format: 'csv', types: { value_decimal: 'decimal_string' } }],
@@ -272,7 +272,11 @@ async function actualPlan(h: Host, input: BackendInput, fileRefId: string, caseI
   const prepared = await invoke(h, input, 'data.processing.plan', { planJson: JSON.stringify(planJson) }, caseId + '-processing-plan');
   const planId = String(prepared.preview.data.planId);
   assert.ok(planId && planId !== 'undefined', JSON.stringify(prepared.preview));
-  const executed = await invoke(h, input, 'data.processing.run', { planId }, caseId + '-processing-run');
+  let executed = prepared;
+  for (const step of h.companion.processing!.get(planId).steps) {
+    executed = await invoke(h, input, 'data.processing.execute', { planId, stepId: step.stepId },
+      caseId + '-processing-' + step.stepId.replace(/[^a-z0-9-]/giu, '-'));
+  }
   const plan = h.companion.processing!.get(planId);
   assert.equal(plan.version, 'bd-processing-plan/1'); assert.equal(plan.outputs[0]!.publishEligible, true, JSON.stringify(plan));
   assert.ok(plan.steps.every(step => step.state === 'succeeded' || step.applicability === 'not_applicable'));
@@ -470,11 +474,13 @@ test('processing dedicated formats cross the genuine personal tool bridge with e
       const table = format === 'text' ? { materialId, format, necessaryTextSelection: { version: 'bd-necessary-business-paragraph/1', sourceSha256: wfdSha256(text),
         documentVersion: 'regression-v1', purpose: 'correction_scope', reviewBasis: '操作者核对完整原文段及全部限制条件用于本次工具桥回归', paragraphs: [{ start, end: start + paragraph.length, quote: paragraph }] } }
         : { materialId, format, xbrlSelection: { version: 'bd-xbrl-numeric/1', reportId: 'regression', reportVersion: 'v1', concepts: [] }, types: { value: 'decimal_string' } };
-      const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'selected', materialIds: [materialId], intendedAction: 'inspect',
+      const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'selected', materialIds: [materialId], stages: ['parse', 'clean', 'structure', 'annotate', 'check'], intendedAction: 'inspect',
         usage: { purpose: 'current_compute', messageId: selected.input.messageId, quote: inspectOnlyUserQuote }, tables: [table] }] };
       const accepted = await invoke(h, selected.input, 'data.processing.plan', { planJson: JSON.stringify(planJson) }, 'dedicated-plan-' + format);
       const planId = String(accepted.preview.data.planId);
-      await invoke(h, selected.input, 'data.processing.run', { planId }, 'dedicated-run-' + format);
+      for (const step of h.companion.processing!.get(planId).steps)
+        await invoke(h, selected.input, 'data.processing.execute', { planId, stepId: step.stepId },
+          'dedicated-step-' + format + '-' + step.stepId.replace(/[^a-z0-9-]/giu, '-'));
       const plan = h.companion.processing!.get(planId); assert.equal(plan.status, 'completed', JSON.stringify(plan));
       assert.equal(plan.outputs[0]!.publishEligible, false);
       const output = JSON.parse(h.companion.processing!.outputArtifact(planId, 'selected').bytes.toString());
@@ -496,7 +502,7 @@ test('processing financial-fixed selector survives personal tool schema and norm
       const read = await invoke(h, selected.input, 'material.read', { fileRefId: selected.reference.id }, 'financial-fixed-contract-read');
       const materialId = String(read.preview.data.materialId), financialCalculation = { version: 'bd-financial-fixed/1', operation: 'standardize',
         inputs: [{ snapshotId: 'explicit-test-snapshot', productId: 'explicit-test-product', businessKeys: ['explicit-test-key'] }] };
-      const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'calculation', materialIds: [materialId],
+      const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'calculation', materialIds: [materialId], stages: ['parse'],
         intendedAction: 'inspect', tables: [{ materialId, format: 'financial-fixed', financialCalculation }] }] };
       const accepted = await invoke(h, selected.input, 'data.processing.plan', { planJson: JSON.stringify(planJson) }, 'financial-fixed-contract-plan');
       const planId = String(accepted.preview.data.planId), plan = h.companion.processing!.get(planId);
@@ -705,12 +711,14 @@ test('processing structure summary keeps counts when a real changed cell is too 
     const selected = await selectedInput(h, 'large-normalization', Buffer.from(`value\n${originalValue}\n`), 'csv', inspectOnlyUserQuote);
     const read = await invoke(h, selected.input, 'material.read', { fileRefId: selected.reference.id }, 'large-normalization-read');
     const materialId = String(read.preview.data.materialId);
-    const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'large', materialIds: [materialId],
+    const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'large', materialIds: [materialId], stages: ['parse', 'clean', 'structure', 'annotate', 'check'],
       intendedAction: 'inspect', usage: { purpose: 'current_compute', messageId: selected.input.messageId, quote: inspectOnlyUserQuote },
       tables: [{ materialId, format: 'csv', trim: ['value'], types: { value: 'decimal_string' } }] }] };
     const prepared = await invoke(h, selected.input, 'data.processing.plan', { planJson: JSON.stringify(planJson) }, 'large-normalization-plan');
     const planId = String(prepared.preview.data.planId);
-    await invoke(h, selected.input, 'data.processing.run', { planId }, 'large-normalization-run');
+    for (const step of h.companion.processing!.get(planId).steps)
+      await invoke(h, selected.input, 'data.processing.execute', { planId, stepId: step.stepId },
+        'large-normalization-step-' + step.stepId.replace(/[^a-z0-9-]/giu, '-'));
     const plan = h.companion.processing!.get(planId);
     const structure = plan.steps.find(step => step.kind === 'structure')!;
     assert.equal(structure.state, 'succeeded', JSON.stringify(structure.error));
