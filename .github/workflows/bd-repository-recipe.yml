@@ -4,41 +4,30 @@ on:
     branches: [fix/bd-reproducible-recipe-20261112]
 permissions:
   contents: read
+concurrency:
+  group: bd-recipe-inputs-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   inventory:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Inspect official release metadata
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+      - name: Lock exact upstream downloads and Python wheels
+        run: python3 scripts/lock-build-inputs.py --output "$RUNNER_TEMP/recipe-locks"
+      - name: Lock existing browser daemon dependency graph
         run: |
-          python3 - <<'PY'
-          import json, urllib.request, pathlib, os
-          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'recipe-inputs';out.mkdir()
-          def get(url):
-              request=urllib.request.Request(url,headers={'User-Agent':'xuan-bd-recipe-audit/1'})
-              with urllib.request.urlopen(request,timeout=60) as r:return json.load(r)
-          for repo,tag in [('astral-sh/python-build-standalone','20261110'),('ggml-org/whisper.cpp','v1.9.1'),('eugeneware/ffmpeg-static','b6.1.1'),('yt-dlp/yt-dlp','latest')]:
-              url='https://api.github.com/repos/'+repo+'/releases/'+('latest' if tag=='latest' else 'tags/'+tag)
-              try:
-                  data=get(url);(out/(repo.split('/')[-1]+'.json')).write_text(json.dumps(data))
-                  assets=data['assets']
-                  if 'python-build' in repo: assets=[a for a in assets if '3.12.15+' in a['name'] and 'install_only_stripped' in a['name'] and any(x in a['name'] for x in ('aarch64-apple-darwin','x86_64-pc-windows-msvc','x86_64-unknown-linux-gnu'))]
-                  print('RELEASE',repo,data['tag_name'],data['published_at'])
-                  print(json.dumps([{k:a.get(k) for k in ('name','size','digest','browser_download_url')} for a in assets]))
-              except Exception as e: print('METADATA_ERROR',repo,type(e).__name__)
-          for name,url in [('bb-browser','https://registry.npmjs.org/bb-browser/0.14.2'),('ffprobe-static','https://registry.npmjs.org/ffprobe-static/latest'),('whisper-model','https://huggingface.co/api/models/ggerganov/whisper.cpp/tree/main?recursive=true&expand=true')]:
-              try:
-                  data=get(url);(out/(name+'.json')).write_text(json.dumps(data))
-                  if isinstance(data,list): print('MODEL',json.dumps([a for a in data if a.get('path')=='ggml-base.bin']))
-                  else: print('NPM',name,data.get('version'),data.get('dist'),data.get('dependencies'))
-              except Exception as e: print('METADATA_ERROR',name,type(e).__name__)
-          PY
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund --prefix resources/browser
+          cp resources/browser/package-lock.json "$RUNNER_TEMP/recipe-locks/browser-package-lock.json"
+          cp scripts/lock-build-inputs.py "$RUNNER_TEMP/recipe-locks/lock-build-inputs.py"
       - uses: actions/upload-artifact@v4
         with:
-          name: recipe-inputs
-          path: ${{ runner.temp }}/recipe-inputs
+          name: recipe-locks
+          path: ${{ runner.temp }}/recipe-locks
           retention-days: 1
           if-no-files-found: error
