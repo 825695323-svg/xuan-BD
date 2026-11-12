@@ -9,10 +9,16 @@ import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
 import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { OperatorContext, ProcessingPlanInput } from './processing-plan.js';
+import { PRODUCTION_MODULE_IDS, type ProductionModuleId } from './production-module-ports.js';
 
+const MODULE_ACTIONS = ['data.module.parse', 'data.module.clean', 'data.module.structure',
+  'data.module.annotate', 'data.module.check'] as const;
+const PORT_ACTIONS = [...MODULE_ACTIONS, 'data.module.read_wfd',
+  'data.factor.catalog', 'data.semantic.lookup'] as const;
 const ACTIONS = new Set(['data.processing.capabilities', 'data.processing.route', 'data.processing.plan',
   'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
-  'data.adapters.capabilities', 'data.adapters.propose', 'data.adapters.replay', 'data.adapters.adopt']);
+  'data.adapters.capabilities', 'data.adapters.propose', 'data.adapters.replay', 'data.adapters.adopt',
+  ...PORT_ACTIONS]);
 const text = (key: string, label: string, required = false, maxLength = 160): SkillField =>
   ({ key, label, type: 'text', required, maxLength });
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
@@ -33,7 +39,25 @@ export class ConversationProcessingBridge {
     const registration = (action: string, title: string, description: string, fields: SkillField[]): SkillRegistration => ({
       action, title, description, fields, runtimeId: 'direct', kind: 'direct', modelCalls: 0,
       permissionSummary: ['仅当前会话分支已保管的原件', '用户目的只引用真实用户原话', '结构检查不等于来源真实性、业务语义或发布资格'],
-      available: () => ({ available: !!options.companion.processing, ...(!options.companion.processing ? { reason: '处理计划服务未装配。' } : {}) }),
+      available: () => {
+        if ((PORT_ACTIONS as readonly string[]).includes(action)) {
+          const ports = options.companion.productionModules;
+          if (!ports) return { available: false, reason: '八个按需模块端口尚未装配。' };
+          if (action === 'data.module.read_wfd') {
+            const modules = ports.capabilities().modules;
+            const available = modules.some(m => m.status === 'ready' && m.wfd.readable);
+            return { available, ...(available ? {} : { reason: '没有启用的模块或绑定 WFD 固定读取连接。' }) };
+          }
+          const moduleId = action === 'data.factor.catalog' ? 'factor_library'
+            : action === 'data.semantic.lookup' ? 'semantic_dictionary'
+            : action.slice('data.module.'.length) as ProductionModuleId;
+          const capability = ports.capability(moduleId);
+          return { available: capability.status === 'ready',
+            ...(capability.status === 'ready' ? {} : { reason: capability.reason ?? '模块未就绪。' }) };
+        }
+        return { available: !!options.companion.processing,
+          ...(!options.companion.processing ? { reason: '处理计划服务未装配。' } : {}) };
+      },
     });
     this.registrations = [
       registration('data.processing.capabilities', '发现处理计划与六维路由能力', '先查当前会话分支已保管材料、真实用户消息、六维合同、处理步骤与限制。材料编号只能从这里列出的保管关系取得；不要让用户手填内部编号、六维状态或JSON。未知语义保持unknown并记录缺口，不阻断不依赖它的解析、清洗或结构检查。', []),
@@ -46,6 +70,32 @@ export class ConversationProcessingBridge {
       registration('data.processing.plan', '准备或修订处理计划', '按材料关系与明确输出规则准备计划；previousPlanId存在时修订原计划。planJson根对象只接受{routing:{materials:[{materialId,dimensions,suggestions,intendedAction}]},outputs:[{outputId,materialIds,tables,target,dimensions,intendedAction}]}。其中每个dimensions直接以六维英文键为根，known证据必须带source，格式与data.processing.capabilities的inputContract一致；不要再包dimensions或materials。材料编号取自本桥列出的本分支保管关系。六维未知仍会生成解析/清洗/结构检查步骤并保留语义缺口；publish仍须目标、必要语义与真实权限，结构检查不替代。修改规则或声明会形成新计划并只复用实际相关旧证明；不让用户手填内部ID或JSON。', [
         text('planJson', '明确计划对象', true, 131072),
         text('previousPlanId', '需修订的原处理计划', false),
+      ]),
+      registration('data.module.parse', '按需调用解析模块', '只执行当前分支既有计划的 parse 步骤，保留来源原文、行位置和原始字节摘要。', [
+        text('planId', '本会话受信处理计划', true), text('stepId', '计划内 parse 步骤', true),
+      ]),
+      registration('data.module.clean', '按需调用清洗模块', '只执行当前分支已冻结的 clean 步骤；前置 parse 未完成时拒绝，无隐式执行其他模块。', [
+        text('planId', '本会话受信处理计划', true), text('stepId', '计划内 clean 步骤', true),
+      ]),
+      registration('data.module.structure', '按需调用结构化模块', '只执行严格类型转换，前置原报解析/清洗证据必须已成立，转换失败不伪装成 null。', [
+        text('planId', '本会话受信处理计划', true), text('stepId', '计划内 structure 步骤', true),
+      ]),
+      registration('data.module.annotate', '按需调用标注模块', '只执行已声明常量标注；不能修改来源字段或擅自生成金融语义。', [
+        text('planId', '本会话受信处理计划', true), text('stepId', '计划内 annotate 步骤', true),
+      ]),
+      registration('data.module.check', '按需调用独立核对模块', '复用正式结构化核对和来源状态；结构检查不等于语义、来源或 WFD 发布资格。', [
+        text('planId', '本会话受信处理计划', true), text('stepId', '计划内 check 步骤', true),
+      ]),
+      registration('data.module.read_wfd', '八个平行模块按需固定读取 WFD', '选择具体受信模块及真实固定快照与产品，沿现有 WFD 只读端口获取分页数据；读取不创建加工、计算或发布任务。', [
+        { key: 'moduleId', label: '选择已登记模块', type: 'select', required: true,
+          options: PRODUCTION_MODULE_IDS.map(value => ({ value, label: value })) },
+        text('selectionJson', '固定 WFD {snapshotId,productId,cursor?,fields?}', true, 32000),
+      ]),
+      registration('data.factor.catalog', '按需读取因子与公式定义库', '只读取工程中已有因子定义、验证状态和方法版本；不采用公式、不触发计算，也不把设计稿当已验收公式。', [
+        text('methodId', '可选因子/公式编号，留空返回有界索引', false),
+      ]),
+      registration('data.semantic.lookup', '按需读取 WFD 正式语义词典', '只读取固定快照中已发布的产品定义和单位、口径、字段声明。候选模板不是正式词典；查询不进行自动语义裁决。', [
+        text('selectionJson', '固定 WFD {snapshotId,productId?,semanticCode?}', true, 32000),
       ]),
       registration('data.processing.execute', '执行已计划的一个处理步骤', '只执行本会话分支已准备计划中的单个步骤；按原计划身份、依赖和预算执行，不越过未完成前置，不重算其他步骤。已完成步骤只查询，不重复执行。', [
         text('planId', '本分支处理计划', true), text('stepId', '计划内步骤编号', true),
@@ -82,7 +132,8 @@ export class ConversationProcessingBridge {
     if (!origin) throw new TaskError('PROCESSING_ORIGIN', '处理计划工具必须由本次真实会话代理调用。');
     const service = this.options.companion.processing;
     // 适配工具只依赖适配登记；不因处理计划未装配而不可用。
-    if (!service && !action.startsWith('data.adapters.')) throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
+    if (!service && !action.startsWith('data.adapters.') && !(PORT_ACTIONS as readonly string[]).includes(action))
+      throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
     this.options.companion.bd!.assertDispatch();
     context.signal.throwIfAborted();
     // 处理计划桥不向模型发送完整行，但仍须由受控上下文确认本次结果可发送给当前模型。
@@ -92,6 +143,8 @@ export class ConversationProcessingBridge {
       action.startsWith('data.adapters.') && action !== 'data.adapters.capabilities' ? { approvalMode: 'review' } : {});
     authority.assert();
     if (action.startsWith('data.adapters.')) return this.executeAdapter(context, action, args, origin, authority);
+    if ((PORT_ACTIONS as readonly string[]).includes(action))
+      return this.executeProductionModule(context, action, args, origin, authority);
     if (!service) throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
     if (action === 'data.processing.capabilities') {
       return { summary: '已列出本分支材料关系、真实用户消息与处理计划合同；未知语义不预填。',
@@ -160,6 +213,53 @@ export class ConversationProcessingBridge {
     }
     if (!found) throw new TaskError('PROCESSING_PLAN_NOT_FOUND', '没有本会话分支可核的原处理计划、任务或材料路由。');
     return { summary: '已读取原处理计划与步骤事实；查询未触发重算。', data: view(this.planPreview(found, { query: true })) };
+  }
+
+  /** 八个模块各有独立动作；无模块能绕过原计划依赖或受信 WFD 快照。 */
+  private async executeProductionModule(context: TaskExecutionContext, action: string,
+    args: Record<string, JsonValue>, origin: ModelTaskOrigin,
+    authority: Awaited<ReturnType<typeof acquireAuthority>>): Promise<TaskResult> {
+    const ports = this.options.companion.productionModules;
+    if (!ports) throw new TaskError('PRODUCTION_MODULES_UNAVAILABLE', '受信八模块接口未装配。');
+    if (action === 'data.factor.catalog') {
+      const methodId = typeof args.methodId === 'string' && args.methodId.trim() ? args.methodId.trim() : undefined;
+      const catalog = ports.factorCatalog(methodId);
+      authority.assert();
+      return { summary: '已读取已有因子定义和实际可执行状态；没有采用公式或启动计算。', data: view(catalog) };
+    }
+    if (action === 'data.semantic.lookup' || action === 'data.module.read_wfd') {
+      let selection: unknown;
+      try { selection = JSON.parse(String(args.selectionJson)); }
+      catch { throw new TaskError('PRODUCTION_MODULE_JSON', '固定 WFD 选择不是有效 JSON 对象。'); }
+      if (action === 'data.semantic.lookup') {
+        const found = await ports.semanticLookup(selection, context.signal);
+        authority.assert();
+        return { summary: '已按原 WFD 固定快照读取正式语义定义；没有推断或采用新业务口径。',
+          data: view(found) };
+      }
+      const moduleId = String(args.moduleId ?? '');
+      if (!PRODUCTION_MODULE_IDS.includes(moduleId as ProductionModuleId))
+        throw new TaskError('PRODUCTION_MODULE_UNKNOWN', 'WFD 查询未选择已登记的八模块之一。');
+      const found = await ports.readWfd(moduleId as ProductionModuleId, selection, context.signal);
+      authority.assert();
+      // 一页仍可能很大；不把截断预览伪装成完整来源，要求再选字段或分页。
+      if (Buffer.byteLength(JSON.stringify(found), 'utf8') > 256000)
+        throw new TaskError('PRODUCTION_MODULE_READ_BUDGET', 'WFD 读取结果超过模型有界回执，请选择字段；未静默截断。');
+      return { summary: '固定 WFD 只读页已核验身份；没有触发清洗、计算或发布。',
+        data: view(found) };
+    }
+    const kind = action.slice('data.module.'.length);
+    if (!['parse', 'clean', 'structure', 'annotate', 'check'].includes(kind))
+      throw new TaskError('PRODUCTION_MODULE_UNKNOWN', '不是受信登记的五步接口。');
+    const planId = String(args.planId ?? ''), stepId = String(args.stepId ?? '');
+    this.assertPlan(planId, origin);
+    const task = ports.stage(kind as 'parse' | 'clean' | 'structure' | 'annotate' | 'check',
+      planId, stepId, this.operator(origin, context.task.id));
+    this.link(task.id, task.id, origin, 'execution', planId);
+    const done = await this.wait(context, task.id);
+    authority.assert();
+    return this.taskResult('已按原持久计划独立执行 ' + kind + ' 模块；未自动串行推进其他模块。',
+      done, this.safePlan(planId));
   }
 
   /**
@@ -295,6 +395,7 @@ export class ConversationProcessingBridge {
           dimensionsPath: 'routing.materials[].dimensions和outputs[].dimensions直接使用相同六维对象；不要加第二层dimensions或materials。' },
       },
       catalog: service.catalog(),
+      parallelModules: this.options.companion.productionModules?.capabilities() ?? null,
       guidance: '材料编号只从materials取；六维只写可核事实，未知保持unknown。用户目的必须引用conversation.userMessages中的真实原话。结构检查通过不等于来源真实性、业务语义或发布资格已验证；发布目标与用户授权不能由模型补造。' };
   }
   private taskResult(summary: string, task: TaskRecord, found: unknown): TaskResult {
