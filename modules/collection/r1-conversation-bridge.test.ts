@@ -1096,3 +1096,137 @@ test('F05 actual R1 rejects unproven source, cross-scope and non-ancestor plans 
       console.log('F05_ACTUAL_SCOPE_SOURCE', JSON.stringify({ root: f.root, checks: checks.length, counts: port.snapshot() }));
     } finally { port.restore(); await h.close(); }
   });
+
+test('AGENTS iterative parse feedback can skip cleaning and annotation without a batch run', { timeout: 60000 }, async () => {
+  const f = fixture(), h = await host(f);
+  try {
+    const selected = await selectedInput(h, 'agent-iterative-parse', rawCsv, 'csv', inspectOnlyUserQuote);
+    const identified = await invoke(h, selected.input, 'material.read',
+      { fileRefId: selected.reference.id }, 'agent-iterative-identify');
+    const materialId = String(identified.preview.data.materialId);
+    assert.equal(identified.preview.data.modelPreview.format, 'csv');
+    const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] },
+      outputs: [{ outputId: 'feedback', materialIds: [materialId], intendedAction: 'inspect',
+        usage: { purpose: 'current_compute', messageId: selected.input.messageId, quote: inspectOnlyUserQuote },
+        tables: [{ materialId, format: 'csv' }], stages: ['parse'] }] };
+    const missing = structuredClone(planJson) as any;
+    delete missing.outputs[0].stages;
+    await failure(h, selected.input, 'data.processing.plan', { planJson: JSON.stringify(missing) },
+      'PROCESSING_AGENT_STAGE_SELECTION', 'agent-iterative-forbid-default');
+
+    const planned = await invoke(h, selected.input, 'data.processing.plan',
+      { planJson: JSON.stringify(planJson) }, 'agent-iterative-first-plan');
+    const planId = String(planned.preview.data.planId);
+    const initial = h.companion.processing!.get(planId);
+    assert.deepEqual(initial.steps.map(step => step.kind), ['parse']);
+    assert.equal(initial.outputs[0]!.state, 'pending');
+    await failure(h, selected.input, 'data.processing.run', { planId },
+      'PROCESSING_AGENT_STEPWISE_REQUIRED', 'agent-iterative-no-batch');
+
+    const parsed = await invoke(h, selected.input, 'data.modules.parse',
+      { planId, stepId: initial.steps[0]!.stepId }, 'agent-iterative-parse-step');
+    const evidence = parsed.preview.data.parsedPreview;
+    assert.equal(evidence.kind, 'parsed_feedback_only');
+    assert.equal(evidence.rowCount, 2);
+    assert.deepEqual(evidence.fields, ['business_key', 'value_decimal', 'start_utc', 'end_utc']);
+    assert.equal(evidence.sample[0].business_key, 'row-1');
+    assert.equal(evidence.dataQuality, 'unreviewed');
+    assert.equal(evidence.publication, 'not_requested');
+    const afterParse = h.companion.processing!.get(planId);
+    assert.deepEqual(afterParse.steps.map(step => step.state), ['succeeded']);
+    assert.equal(afterParse.outputs[0]!.state, 'pending');
+
+    const reuse = await invoke(h, selected.input, 'data.modules.parse',
+      { planId, stepId: initial.steps[0]!.stepId }, 'agent-iterative-repeat-parse');
+    assert.equal(reuse.preview.data.parsedPreview.sourceSha256, evidence.sourceSha256);
+
+    // AGENTS examines the parsed sample and skips both clean and annotate.
+    const revision = structuredClone(planJson);
+    revision.outputs[0]!.stages = ['parse', 'structure'];
+    const revised = await invoke(h, selected.input, 'data.processing.plan',
+      { planJson: JSON.stringify(revision), previousPlanId: planId }, 'agent-iterative-structure-plan');
+    const structurePlanId = String(revised.preview.data.planId);
+    const structurePlan = h.companion.processing!.get(structurePlanId);
+    assert.deepEqual(structurePlan.steps.map(step => step.kind), ['parse', 'structure']);
+    assert.equal(structurePlan.steps[0]!.state, 'succeeded', 'Previously verified parse must be reused');
+    assert.deepEqual(structurePlan.steps[1]!.dependsOn, [structurePlan.steps[0]!.stepId]);
+    const structured = await invoke(h, selected.input, 'data.modules.structure',
+      { planId: structurePlanId, stepId: structurePlan.steps[1]!.stepId }, 'agent-iterative-structure-step');
+    assert.equal(structured.preview.data.outputs[0].awaitingAgentDecision, true);
+    assert.equal(h.companion.processing!.get(structurePlanId).outputs[0]!.state, 'pending');
+
+    const last = structuredClone(revision);
+    last.outputs[0]!.stages = ['parse', 'structure', 'check'];
+    const preparedCheck = await invoke(h, selected.input, 'data.processing.plan',
+      { planJson: JSON.stringify(last), previousPlanId: structurePlanId }, 'agent-iterative-check-plan');
+    const checkPlanId = String(preparedCheck.preview.data.planId);
+    const readyPlan = h.companion.processing!.get(checkPlanId);
+    assert.deepEqual(readyPlan.steps.map(step => step.kind), ['parse', 'structure', 'check']);
+    assert.equal(readyPlan.steps[0]!.state, 'succeeded');
+    assert.equal(readyPlan.steps[1]!.state, 'succeeded');
+    await invoke(h, selected.input, 'data.modules.check',
+      { planId: checkPlanId, stepId: readyPlan.steps[2]!.stepId }, 'agent-iterative-check-step');
+    const done = h.companion.processing!.get(checkPlanId);
+    assert.equal(done.outputs[0]!.state, 'structured', JSON.stringify(done.outputs[0]));
+    assert.equal(done.outputs[0]!.publishEligible, false);
+    assert.deepEqual(done.steps.map(step => step.kind), ['parse', 'structure', 'check']);
+
+    const caps = await invoke(h, selected.input, 'data.processing.capabilities', {},
+      'agent-iterative-query-source-options');
+    assert.ok(caps.preview.data.querySources.wfd.actions.includes('data.wfd.query'));
+    assert.ok(caps.preview.data.querySources.api.actions.includes('source.api.read'));
+    assert.ok(caps.preview.data.querySources.capture.actions.includes('capture.<site>.read'));
+  } finally { await h.close(); }
+});
+
+test('WFD optional query reuses hosted readers and never triggers processing, collection, or publication', { timeout: 60000 }, async () => {
+  const f = fixture(), h = await host(f);
+  try {
+    const port = h.companion.r1Workspace!;
+    assert.ok(port, 'The normal R1 workspace supplies the read-only query surface');
+    const capabilities = port.capabilities.bind(port);
+    const seen: string[] = [];
+    port.capabilities = () => ({ ...capabilities(), configuration: { state: 'ready', reason: null } });
+    port.snapshotStatus = async () => {
+      seen.push('snapshot');
+      return { snapshotId: 'pinned_test_snapshot', empty: false, authority: 'active_head',
+        connection: { connectionId: 'isolated', profile: 'data_only', mode: 'test', runtimeIdentity: 'test',
+          callerId: 'test', namespace: 'synthetic', roles: ['read'] }, units: {} } as never;
+    };
+    port.discoverProducts = async input => {
+      seen.push('discover');
+      assert.equal((input as { snapshotId?: string }).snapshotId, 'pinned_test_snapshot');
+      return { snapshotId: 'pinned_test_snapshot', historyMode: 'snapshot_contents',
+        connection: { connectionId: 'isolated' },
+        selections: [{ productId: 'product1', datasetId: 'dataset1', payloadKind: 'scalar_rows',
+          subject: { kind: 'entity', namespace: 'test', id: 'entity1' }, fields: ['value_decimal'], readable: true, reason: null }],
+        products: [{ product_id: 'product1', dataset_id: 'dataset1',
+          declaration: { semantic_code: 'company.revenue', unit_code: 'cny' },
+          subject: { kind: 'entity', namespace: 'test', id: 'entity1' } }] } as never;
+    };
+    port.readProduct = async input => {
+      seen.push('product');
+      assert.equal((input as { snapshotId?: string }).snapshotId, 'pinned_test_snapshot');
+      return { snapshotId: 'pinned_test_snapshot', productId: 'product1', historyMode: 'snapshot_contents',
+        connection: { connectionId: 'isolated' }, result: { snapshot_id: 'pinned_test_snapshot',
+          product_id: 'product1', rows: [{ record_ref: { logical_key: 'row1' },
+            values: { value_decimal: { value: '123.45', value_state: 'valid_value' } } }],
+          page: { has_more: false, next_cursor: null } } } as never;
+    };
+    const selected = await selectedInput(h, 'agent-wfd-query', rawCsv, 'csv', inspectOnlyUserQuote);
+    const snapshot = await invoke(h, selected.input, 'data.wfd.query', { operation: 'snapshot' }, 'agent-wfd-snapshot');
+    assert.equal(snapshot.preview.data.status.snapshotId, 'pinned_test_snapshot');
+    const discovery = await invoke(h, selected.input, 'data.wfd.query',
+      { operation: 'discover', snapshotId: 'pinned_test_snapshot', query: 'revenue' }, 'agent-wfd-discover');
+    assert.equal(discovery.preview.data.matchedCount, 1);
+    assert.equal(discovery.preview.data.products[0].productId, 'product1');
+    const read = await invoke(h, selected.input, 'data.wfd.query',
+      { operation: 'product', snapshotId: 'pinned_test_snapshot', productId: 'product1', fieldsJson: '["value_decimal"]' },
+      'agent-wfd-read-product');
+    assert.equal(read.preview.data.pageRowCount, 1);
+    assert.equal(read.preview.data.previewRows[0].values.value_decimal.value, '123.45');
+    assert.equal(read.preview.data.publication, 'not_requested');
+    assert.deepEqual(seen, ['snapshot', 'discover', 'product']);
+    assert.equal(Number(h.companionDatabase.connection.prepare('SELECT count(*) AS n FROM r1_workspace_requests').get()!.n), 0);
+  } finally { await h.close(); }
+});
