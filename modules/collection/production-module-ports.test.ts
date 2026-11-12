@@ -32,6 +32,8 @@ test('exactly eight distinct on-demand interfaces are registered, discoverable a
   assert.ok(found.modules.every(item => item.status === 'ready'));
   assert.ok(found.modules.every(item => item.wfdRead));
   assert.deepEqual(found.modules.find(item => item.id === 'calculate')?.dependencies, []);
+  assert.ok(found.modules.every(item => item.dependencies.length === 0), '接口目录不得重新引入固定五步依赖');
+  assert.equal(isModelActionAllowed('data.wfd.query'), true, 'WFD只读查询不计入八模块加工接口');
   const detached = productionModuleDirectory({ processing: processing as never,
     calculation: calculation as never, hasWfdReader: true,
     enabled: { annotate: false, calculate: false, factors: false, semantics: false } });
