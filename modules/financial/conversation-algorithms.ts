@@ -78,8 +78,25 @@ export class ConversationAlgorithmBridge {
     authority.assert(); this.options.companion.bd?.assertDispatch();
     if (action === 'bd.session.capabilities') {
       const contract = bdSessionToolContract(this.modelCatalog(service, origin), this.options.companion.unifiedPolars?.capabilities());
+      const processing = this.options.companion.processing?.catalog();
+      const cleaning = isWfdRecord(processing) && isWfdRecord(processing.cleaningEngine)
+        ? processing.cleaningEngine : { status: 'not_configured', reason: '数据清洗服务未装配。' };
+      const calculation = this.options.companion.productionCalculation?.capabilities() ?? null;
       authority.assert();
-      return { summary: '已读取 BD AGENTS 会话工具合同；只读，不创建采集、计算或发布任务。', data: view(contract) };
+      return { summary: '已读取清洗与计算两条独立按需接口；只读发现，不启动自动清洗、因子计算或发布。',
+        data: view({ ...contract, onDemand: {
+          cleaning: { description: '原报解析与严格清洗；按会话选择材料后显式计划/执行',
+            discovery: 'data.processing.capabilities', plan: 'data.processing.plan',
+            execute: 'data.processing.run', engine: cleaning,
+            source: '受管原件及冻结来源；不读取计算公式注册表' },
+          calculation: { description: '读取 WFD 固定数据，按登记方法执行 Polars 或受信 pandas 公式',
+            discovery: 'algorithms.contract', execute: 'algorithms.calculate',
+            publish: 'algorithms.publish', engine: calculation,
+            source: 'WFD fixed snapshot; not original cleaning candidates' },
+          sharedVerification: 'production-verifier (行、类型、结果摘要) + 领域专属方法核验',
+          sharedPublication: 'existing R1/WFD readback only',
+          automaticCrossTrigger: false,
+        } }) };
     }
     if (action === 'algorithms.contract') {
       const methodId = typeof args.methodId === 'string' && args.methodId.trim() ? args.methodId.trim() : undefined;

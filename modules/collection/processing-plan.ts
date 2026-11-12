@@ -9,6 +9,7 @@ import type { MaterialService } from './materials/service.js';
 import type { MaterialLocation } from './materials/contracts.js';
 import { readXlsxTableSelection, type XlsxTableSelection } from './data-processing/xlsx-table.js';
 import { readSourceProjection } from './source-reported-table.js';
+import type { PolarsSourceCleaner } from './data-processing/polars-cleaning.js';
 import { MAX_SOURCE } from '../../platform/capabilities/conversion/formats.js';
 import { readNumericFormat } from './data-processing/numeric-format.js';
 import { readXbrlSelection } from './data-processing/xbrl-table.js';
@@ -173,10 +174,13 @@ export class ProcessingPlanService {
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService; materials: MaterialService;
     objects: PlanObjectStore; financialReader?: FinancialReader; financialReaderIdentity?(): unknown;
     /** 端点适配登记：只提供已采用版本的冻结配置与漂移记录。 */
-    adapters?: EndpointAdapterRegistry }) {
+    adapters?: EndpointAdapterRegistry;
+    /** 独立清洗引擎，仅处理 parse→clean；不调用金融公式或计算任务。 */
+    polarsCleaner?: PolarsSourceCleaner }) {
     const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
     this.versionBinding = Object.freeze({ processing: PROCESSING_PLAN_VERSION,
-      implementation: wfdSha256(Buffer.concat(files)), policy: PROCESSING_POLICY_DIGEST });
+      implementation: wfdSha256(Buffer.concat(files)), policy: PROCESSING_POLICY_DIGEST,
+      ...(options.polarsCleaner ? options.polarsCleaner.versionBinding : {}) });
     options.database.migrate('collection_processing', 1, SCHEMA);
     options.database.migrate('collection_processing_semantic_checks', 1, 'ALTER TABLE processing_plan_steps ADD COLUMN semantic_json TEXT;');
     options.database.migrate('collection_processing_type_changes', 1, 'ALTER TABLE processing_plan_steps ADD COLUMN normalization_json TEXT;');
@@ -187,6 +191,10 @@ export class ProcessingPlanService {
   catalog(): JsonValue {
     return asJson({
       contract: 'bd.processing-plan/1', version: PROCESSING_PLAN_VERSION, versions: this.versionBinding, limits: PROCESSING_LIMITS,
+      cleaningEngine: this.options.polarsCleaner?.capabilities() ?? {
+        engine: 'typescript', status: 'legacy_compatibility', reason: '受信 Polars 未装配，沿原冻结处理契约执行。',
+        methods: ['trim', 'empty_to_null'], noSilentFallback: true },
+      calculationMethods: 'not_part_of_cleaning',
       custodyStates: ['inventoried', 'receiving', 'received'], routingStates: ['needs_classification', 'needs_adapter', 'needs_target', 'needs_review', 'ready_candidate', 'rejected'],
       dimensions: DIMENSION_KEYS.map(key => ({ key, label: dimensionLabel(key), statuses: ['known', 'unknown', 'conflict'] })),
       policy: PROCESSING_POLICY,
@@ -1172,9 +1180,18 @@ export class ProcessingPlanService {
     } else if (step.kind === 'clean') {
       const parsed = this.readArtifact<ParsedCandidateTable>(dependencies[0]!.output!, 'parsed-table');
       const params = step.parameters as { trim?: string[]; emptyToNull?: string[] };
-      const cleaned = cleanCandidateTable(parsed, { trim: params.trim ?? [], emptyToNull: params.emptyToNull ?? [] }), bytes = Buffer.from(canonicalWfdJson(cleaned));
-      computed = { bytes, digest: wfdSha256(bytes), checkScope: ['all_rows', 'changes_recorded', 'original_cells_preserved'],
-        gaps: ['未验证清洗规则是否符合业务含义；只执行了显式空白与空值规则。'] };
+      const rules = { trim: params.trim ?? [], emptyToNull: params.emptyToNull ?? [] };
+      // 仅在宿主明确绑定 Polars 时执行真实严格列式清洗；执行失败绝不隐式回退到 TypeScript。
+      // 未装配受信进程的旧独立/隔离运行继续按已有纯规则处理，历史身份不变。
+      const executed = this.options.polarsCleaner
+        ? await this.options.polarsCleaner.clean(context, parsed, rules) : null;
+      const cleaned = executed?.cleaned ?? cleanCandidateTable(parsed, rules);
+      const bytes = Buffer.from(canonicalWfdJson(cleaned));
+      computed = { bytes, digest: wfdSha256(bytes),
+        checkScope: ['all_rows', 'changes_recorded', 'original_cells_preserved',
+          ...(executed ? ['polars_strict_columns', 'polars_verified_against_original_rules'] : [])],
+        gaps: ['未验证清洗规则是否符合业务含义；只执行了显式空白与空值规则。'],
+        ...(executed ? { normalization: { scope: 'cleaning_engine', ...executed.evidence } } : {}) };
     } else if (step.kind === 'structure') {
       const cleaned = this.readArtifact<CleanedCandidateTable | ParsedCandidateTable>(dependencies[0]!.output!, 'cleaned-table', 'parsed-table');
       const params = step.parameters as { types?: CandidateTablePlan['types'] };

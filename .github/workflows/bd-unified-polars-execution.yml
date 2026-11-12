@@ -6,6 +6,8 @@ on:
     paths:
       - 'modules/financial/unified-polars-execution.ts'
       - 'modules/collection/production-calculation*.ts'
+      - 'modules/collection/polars-cleaning.test.ts'
+      - 'modules/collection/data-processing/polars-clean*'
       - 'modules/collection/production-verifier*.ts'
       - 'modules/collection/processing-plan.ts'
       - 'modules/collection/candidate-pipeline.ts'
@@ -71,7 +73,8 @@ jobs:
             modules/collection/data-processing/financial-fixed.test.ts \
             apps/server/unified-polars-publish-full-chain.test.ts \
             modules/collection/production-calculation.test.ts \
-            modules/collection/production-verifier.test.ts
+            modules/collection/production-verifier.test.ts \
+            modules/collection/polars-cleaning.test.ts
 
       - name: Financial module test coverage outside default npm test
         if: ${{ !cancelled() }}
