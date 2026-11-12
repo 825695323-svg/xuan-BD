@@ -49,9 +49,11 @@ export class ProductionCalculation {
     const formulas = [...FIXED_FORMULAS, ...(this.options.pandasFormulas ?? [])];
     const seen = new Set<string>();
     const methods = formulas.map(formula => {
+      // 原 Polars 的 observation_ma20 是实现名；AGENTS 统一方法名为 source_observation_ma。
+      const registeredId = formula.methodId === 'source_observation_ma' ? 'observation_ma20' : formula.methodId;
       if (seen.has(formula.methodId) || !formula.methodId
         || !['polars','pandas'].includes(formula.engine)
-        || formula.engine === 'polars' && !Object.hasOwn(FIXED_CALCULATION_METHODS, formula.methodId)
+        || formula.engine === 'polars' && !Object.hasOwn(FIXED_CALCULATION_METHODS, registeredId)
         || formula.engine === 'pandas' && !(this.options.pandasFormulas ?? []).some(x => x.methodId === formula.methodId)) {
         return fail('PRODUCTION_FORMULA_REGISTRY', '受信计算公式注册存在重名或不属于允许的计算引擎。');
       }
