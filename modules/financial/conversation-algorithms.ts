@@ -9,9 +9,9 @@ import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
 import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import type { FileReferenceService } from '../../platform/resources/files.js';
-import type { AlgorithmCatalogView } from './algorithm-types.js';
+import { ALGORITHM_CONTRACT_VERSION, ALGORITHM_RUNTIME, type { AlgorithmCatalogView } } from './algorithm-types.js';
 import { basicAlgorithmToolContract, bdSessionToolContract } from './basic-algorithm-tool-contract.js';
-import { isUnifiedPolarsMethod, UNIFIED_POLARS_RUNTIME } from './unified-polars-execution.js';
+import { UNIFIED_POLARS_RUNTIME } from './unified-polars-execution.js';
 
 const ACTIONS = new Set(['bd.session.capabilities', 'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status']);
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
@@ -39,8 +39,9 @@ export class ConversationAlgorithmBridge {
       permissionSummary: ['只读取固定算法目录及真实 WFD 快照能力；工具本身不能授予程序执行器权限',
         '固定算法无逐次业务审批；宿主执行器许可与方法版本仍需核实',
         '结构化计算结果由独立核对器检查，直接复用 R1 与 WFD 固定读回，不回到原报五步'],
-      available: () => ({ available: !!options.companion.algorithms,
-        ...(!options.companion.algorithms ? { reason: '基础算法服务尚未装配。' } : {}) }),
+      available: () => ({ available: !!options.companion.processing || !!options.companion.algorithms,
+        ...(!options.companion.processing && !options.companion.algorithms
+          ? { reason: '数据生产的计算模块尚未装配。' } : {}) }),
     });
     this.registrations = [
       registration('bd.session.capabilities', '查看 BD AGENTS 统一会话工具契约',
@@ -70,7 +71,8 @@ export class ConversationAlgorithmBridge {
     const origin = this.options.origin(context.task.id);
     if (!origin) throw new TaskError('ALGORITHM_CONVERSATION_REQUIRED', '算法会话动作必须由本次真实会话代理调用。');
     const service = this.options.companion.algorithms;
-    if (!service) throw new TaskError('ALGORITHM_UNAVAILABLE', '基础算法服务尚未装配。');
+    if (!service && !this.options.companion.processing)
+      throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '数据生产计算模块尚未装配。');
     // 直接模型动作必须先取得当前模型分享回执；否则 saveResultProof 会拒绝返回。
     const authority = await acquireAuthority(context, action, args, []);
     authority.assert(); this.options.companion.bd?.assertDispatch();
@@ -153,8 +155,28 @@ export class ConversationAlgorithmBridge {
   }
 
   /** 代理只读取真实 WFD 固定快照目录；受管原件不再提供计算资格。 */
-  private modelCatalog(service: NonNullable<WorkspaceServices['algorithms']>, _origin: ModelTaskOrigin): AlgorithmCatalogView {
-    return service.catalog();
+  private modelCatalog(service: WorkspaceServices['algorithms'], _origin: ModelTaskOrigin): AlgorithmCatalogView {
+    if (service) return service.catalog();
+    // Polars 是可独立装配的生产计算引擎，不能被旧 Python 算法采用状态阻断。
+    const reason = '原 Python 算法服务未装配；固定公式以数据生产方法表的实际能力为准。';
+    const fixed = !!this.options.companion.r1Workspace?.capabilities().connection;
+    return {
+      contractVersion: ALGORITHM_CONTRACT_VERSION, runtime: ALGORITHM_RUNTIME,
+      environment: 'local-review', status: 'unavailable', enabled: false, reason,
+      adoption: { state: 'not_adopted', reason,
+        current: { environment: 'local-review', assetsVersion: '', codeVersion: '', pythonDigest: '' },
+        record: null, required: { environment: 'local-review', expectedAssetsVersion: '',
+          expectedCodeVersion: '', confirmation: 'adopt-local-review' } },
+      implementation: { version: '', files: {}, codeVersion: '', codeFiles: {},
+        binding: 'source-code', bindingRequired: false },
+      execution: { pythonDigest: null, permission: 'unavailable', reason },
+      methods: [], inputs: {
+        managedTables: { status: 'unavailable', reason: '生产计算只读取正式 WFD 固定快照。', items: [] },
+        fixedSnapshots: { status: fixed ? 'available' : 'unavailable',
+          reason: fixed ? null : '受信 WFD 固定读取尚未装配。',
+          contract: { contract: 'wfd.data-service/v1', required: 'snapshotId,productId,recordVersion' } },
+      }, limitations: ['不提供旧 Python 算法服务时，仍可使用已装配的 Polars 固定公式。'],
+    };
   }
 
   /** 计算请求只能引用 WFD 固定快照；权限由原服务读取端口继续核实。 */
