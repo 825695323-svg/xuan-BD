@@ -210,6 +210,10 @@ export class ProcessingPlanService {
   catalog(): JsonValue {
     return asJson({
       contract: 'bd.processing-plan/1', version: PROCESSING_PLAN_VERSION, versions: this.versionBinding, limits: PROCESSING_LIMITS,
+      calculationModule: this.productionCalculation?.capabilities() ?? {
+        version: 'bd.production-calculation/1', owner: 'data_production', status: 'not_bound',
+        reason: '生产计算模块未装配，不能创建新的独立计算任务。',
+      },
       custodyStates: ['inventoried', 'receiving', 'received'], routingStates: ['needs_classification', 'needs_adapter', 'needs_target', 'needs_review', 'ready_candidate', 'rejected'],
       dimensions: DIMENSION_KEYS.map(key => ({ key, label: dimensionLabel(key), statuses: ['known', 'unknown', 'conflict'] })),
       policy: PROCESSING_POLICY,
