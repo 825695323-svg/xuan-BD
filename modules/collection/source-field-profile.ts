@@ -35,6 +35,8 @@ export interface SourceAdjustment {
   method?: string;
   basis?: string;
 }
+/** 固定适配器的版本与内容摘要已包含端点、字段次序、频率、复权及市场。 */
+export interface SourceProfileAdapterBinding { adapterId: string; version: string; configDigest: string }
 export interface SourceFieldProfile {
   version: 'bd.source-field-profile/1';
   /** 映射版本：同一系列口径变化必须升版本，旧版本请求按旧版本核对。 */
@@ -43,6 +45,8 @@ export interface SourceFieldProfile {
   sourceId: string;
   /** 来源系列；空字符串表示该来源的全部系列共用这一份档案。 */
   series: string;
+  /** 使用端点适配器取得的材料，必须显式命中这一完整绑定；旧通用档案不能跨端点套用。 */
+  adapter?: SourceProfileAdapterBinding;
   fields: SourceFieldMapping[];
   confirmation: { status: 'operator_confirmed'; basis: string; confirmedAtUtc: string };
   /** 频率与时间桶：决定两份档案能否复用同一产品定义。 */
@@ -73,6 +77,20 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
   const profileId = text(raw.profileId, 'profileId');
   const sourceId = text(raw.sourceId, 'sourceId');
   if (typeof raw.series !== 'string' || raw.series.length > 512) fail(`来源字段档案 ${name} 的 series 必须是字符串。`);
+  const adapterRaw = raw.adapter;
+  let adapter: SourceProfileAdapterBinding | undefined;
+  if (adapterRaw !== undefined) {
+    if (!adapterRaw || typeof adapterRaw !== 'object' || Array.isArray(adapterRaw)) fail(`来源字段档案 ${name} 的 adapter 必须为已登记适配器引用。`);
+    const ref = adapterRaw as Record<string, unknown>;
+    if (Object.keys(ref).sort().join(',') !== 'adapterId,configDigest,version'
+      || typeof ref.adapterId !== 'string' || !/^[a-z0-9][a-z0-9._-]{2,99}$/u.test(ref.adapterId)
+      || typeof ref.version !== 'string' || !/^[0-9]{1,4}$/u.test(ref.version)
+      || typeof ref.configDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(ref.configDigest)) {
+      fail(`来源字段档案 ${name} 的 adapter 身份/版本/摘要不完整；不能跨接口猜测字段意义。`);
+    }
+    adapter = { adapterId: ref.adapterId as string, version: ref.version as string,
+      configDigest: ref.configDigest as string };
+  }
   const confirmation = raw.confirmation as Record<string, unknown> | undefined;
   if (!confirmation || confirmation.status !== 'operator_confirmed'
     || typeof confirmation.basis !== 'string' || !confirmation.basis.trim() || unknownBasis.test(confirmation.basis.trim())) {
@@ -115,7 +133,8 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
         headers.add(alias);
       }
     }
-    return { originalHeader, fieldCode, dataType: field.dataType as SourceFieldMapping['dataType'], unitCode,
+    return { originalHeader, ...(field.aliases ? { aliases: [...field.aliases as string[]] } : {}),
+      fieldCode, dataType: field.dataType as SourceFieldMapping['dataType'], unitCode,
       role: field.role as SourceFieldRole, ...(field.measurement === undefined ? {} : { measurement: field.measurement }) };
   });
   const supersedes = raw.supersedes === undefined ? undefined : (() => {
@@ -128,7 +147,7 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
     });
   })();
   return { version: 'bd.source-field-profile/1', mappingVersion: raw.mappingVersion as number, profileId, sourceId,
-    series: raw.series, fields, frequency: raw.frequency as SourceFieldProfile['frequency'],
+    series: raw.series, ...(adapter ? { adapter } : {}), fields, frequency: raw.frequency as SourceFieldProfile['frequency'],
     timeBucket: { labelSemantics: bucket.labelSemantics as SourceTimeBucket['labelSemantics'],
       interval: bucket.interval as SourceTimeBucket['interval'], lengthMinutes: Number(bucket.lengthMinutes),
       timezone: String(bucket.timezone) },
@@ -151,11 +170,24 @@ export class SourceFieldProfileStore {
     return names.map(name => readSourceFieldProfile(JSON.parse(readFileSync(resolve(join(this.directory, name)), 'utf8')), name));
   }
   /** 按来源与系列选择档案；多份同时命中视为冲突，不自行挑一份。 */
-  match(input: { sourceId: string; series?: string | null }): SourceFieldProfile | null {
+  match(input: { sourceId: string; series?: string | null; adapter?: SourceProfileAdapterBinding }): SourceFieldProfile | null {
     const hits = this.list().filter(profile => profile.sourceId === input.sourceId
-      && (!profile.series || !input.series || profile.series === input.series));
-    if (hits.length > 1) fail(`来源 ${input.sourceId} 系列「${input.series ?? ''}」命中多份字段档案：${hits.map(hit => hit.profileId).join('、')}；请只保留一份生效版本。`);
-    return hits[0] ?? null;
+      && (!profile.series || !input.series || profile.series === input.series)
+      && (input.adapter
+        ? !!profile.adapter && canonicalWfdJson(profile.adapter) === canonicalWfdJson(input.adapter)
+        : !profile.adapter));
+    // 不存在适用档案时返回空，让原证据补充流程处理；尤其不能让旧通用档案覆盖已选端点。
+    if (!hits.length) return null;
+    if (hits.length === 1) return hits[0]!;
+    // 增补旧档案采用显式、线性的 supersedes 版本关系。旧版仍在目录中供历史身份核对。
+    const ordered = [...hits].sort((a, b) => a.mappingVersion - b.mappingVersion);
+    if (new Set(ordered.map(item => item.mappingVersion)).size !== ordered.length
+      || new Set(ordered.map(item => item.profileId)).size !== ordered.length
+      || ordered.some((item, index) => index > 0 && !item.supersedes?.some(ref =>
+        ref.profileId === ordered[index - 1]!.profileId && ref.note.trim().length >= 8))) {
+      fail(`来源 ${input.sourceId} 系列「${input.series ?? ''}」存在多份口径档案，但缺少按映射版本依次确认的 supersedes（取代依据）；拒绝自动选最新。`);
+    }
+    return ordered.at(-1)!;
   }
 }
 
@@ -197,7 +229,20 @@ export function compareProfileSemantics(left: SourceFieldProfile, right: SourceF
     || a.timeBucket.lengthMinutes !== b.timeBucket.lengthMinutes
     || a.timeBucket.timezone !== b.timeBucket.timezone) reasons.push(`分钟桶定义不同：${canonicalWfdJson(a.timeBucket)} ≠ ${canonicalWfdJson(b.timeBucket)}`);
   if (a.adjustment.status !== b.adjustment.status) reasons.push(`复权状态不同：${a.adjustment.status} ≠ ${b.adjustment.status}`);
-  return { sameProduct: reasons.length === 0, reasons };
+  if ((a.adjustment.method ?? null) !== (b.adjustment.method ?? null))
+    reasons.push(`复权方法不同：${a.adjustment.method ?? '未声明'} ≠ ${b.adjustment.method ?? '未声明'}`);
+  if ((a.adjustment.basis ?? null) !== (b.adjustment.basis ?? null))
+    reasons.push(`复权基准不同：${a.adjustment.basis ?? '未声明'} ≠ ${b.adjustment.basis ?? '未声明'}`);
+  if (a.adjustment.status === 'unknown' || b.adjustment.status === 'unknown')
+    reasons.push('至少一方复权状态未知，不能认定两个来源的口径一致');
+  if (a.timeBucket.labelSemantics === 'unknown' || b.timeBucket.labelSemantics === 'unknown'
+    || a.timeBucket.interval === 'unknown' || b.timeBucket.interval === 'unknown')
+    reasons.push('至少一方时间桶含义未知，不能认定数据为同一产品');
+  for (const field of a.fields) {
+    if (field.role === 'value' && (!field.measurement || !b.fields.find(item => item.fieldCode === field.fieldCode)?.measurement))
+      reasons.push(`${field.fieldCode} 的金融计量口径未同时明确，不能只按列名、类型和单位合并`);
+  }
+  return { sameProduct: reasons.length === 0, reasons: [...new Set(reasons)] };
 }
 
 /**
