@@ -10,7 +10,8 @@ import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
 import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { OperatorContext, ProcessingPlanInput } from './processing-plan.js';
 import { PRODUCTION_MODULES, stepModuleForAction, readWfdModulePage,
-  productionModuleDirectory, factorLibraryView, semanticDictionaryView } from './production-module-ports.js';
+  productionModuleDirectory, factorLibraryView, semanticDictionaryView,
+  readPublishedWfdSemanticDefinition } from './production-module-ports.js';
 
 const ACTIONS = new Set(['data.processing.capabilities', 'data.processing.route', 'data.processing.plan',
   'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
@@ -141,7 +142,7 @@ export class ConversationProcessingBridge {
         throw new TaskError('PRODUCTION_MODULE_UNAVAILABLE', '该并列模块未启用或其受信依赖不可用。');
       const rawReference = typeof args.wfdRefJson === 'string' && args.wfdRefJson.trim()
         ? args.wfdRefJson : null;
-      let wfdPage: unknown = null;
+      let wfdPage: unknown = null, selection: unknown = null;
       if (rawReference) {
         if (args.planId || args.stepId) throw new TaskError('PRODUCTION_MODULE_MODE',
           'WFD只读分页不能与原处理步骤执行同时提交；先分别核验来源与加工计划。');
@@ -150,6 +151,7 @@ export class ConversationProcessingBridge {
         let wfdRef: unknown;
         try { wfdRef = JSON.parse(rawReference); }
         catch { throw new TaskError('PRODUCTION_MODULE_WFD_REFERENCE', '固定WFD来源引用必须为合法JSON。'); }
+        selection = wfdRef;
         wfdPage = await readWfdModulePage(
           moduleAction.id as Exclude<typeof moduleAction.id, 'calculate'>, wfdRef,
           read.bind(this.options.companion.r1Workspace), context.signal);
@@ -163,8 +165,20 @@ export class ConversationProcessingBridge {
             ? args.factorId.trim() : undefined)
           : semanticDictionaryView(typeof args.groupId === 'string' && args.groupId.trim()
             ? args.groupId.trim() : undefined);
-        return { summary: moduleAction.title + '已经按需读取受信登记或模板；没有计算、自动标注或变更WFD。',
-          data: view({ module: moduleAction.id, catalog, wfdPage, publication: 'not_requested' }) };
+        let publishedDefinition: unknown = null;
+        if (moduleAction.id === 'semantics' && selection) {
+          const discover = this.options.companion.r1Workspace?.discoverProducts;
+          if (!discover) throw new TaskError('PRODUCTION_SEMANTIC_WFD_UNAVAILABLE',
+            '正式语义词典需要实际 WFD 固定产品发现接口；不能以模板假装已经入库。');
+          publishedDefinition = await readPublishedWfdSemanticDefinition(selection,
+            discover.bind(this.options.companion.r1Workspace), context.signal);
+          authority.assert();
+        }
+        return { summary: publishedDefinition
+          ? '语义模板与 WFD 固定快照正式定义已分开读取；没有计算、自动标注或变更 WFD。'
+          : moduleAction.title + '已按需读取受信登记或仅供参考的模板；没有计算或变更WFD。',
+          data: view({ module: moduleAction.id, catalog, wfdPage, publishedDefinition,
+            publication: 'not_requested' }) };
       }
       const stage = stepModuleForAction(action);
       if (!stage) throw new TaskError('PRODUCTION_MODULE_KIND', '此动作不是受信加工模块。');
