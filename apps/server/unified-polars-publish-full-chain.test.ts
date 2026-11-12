@@ -202,7 +202,10 @@ test('real WFD frozen complete daily source -> Polars MA20 -> R1 full warmup/val
       const association = original.currentRequest.local.associations[0];
       const snapshotId = association.snapshot_id, productId = association.product_id;
       const page = await host.call('/r1/products/read', { snapshotId, productId });
-      assert.equal(page.result.rows.length, 21);
+      assert.equal(page.result.rows.length, 21,
+        JSON.stringify({ sourceAssociations: original.currentRequest.local.associations?.length,
+          sourceCurrentRequest: original.currentRequest?.state,
+          returned: page.result, snapshotId, productId }).slice(0, 7000));
       const values = page.result.rows[0].values;
       const valueField = Object.keys(values).find(key => values[key].data_type === 'decimal'
         && values[key].unit?.unit_code === 'count');
