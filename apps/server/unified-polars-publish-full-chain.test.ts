@@ -23,7 +23,7 @@ function dailyMaCsv() {
       'daily.synthetic.close', 'entity', 'stock_1', 'day', 'day', 'UTC',
       'natural', 'decimal', 'count', 'stock'];
   });
-  return Buffer.from([cols, ...lines].map(x => x.join(',')).join('\\n') + '\\n');
+  return Buffer.from([cols, ...lines].map(x => x.join(',')).join('\n') + '\n');
 }
 
 async function publishedDailyMaSource(host: Awaited<ReturnType<typeof openFullChainHost>>) {
