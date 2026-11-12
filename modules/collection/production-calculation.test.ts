@@ -20,7 +20,7 @@ test('calculation belongs to production: one method registry selects default Pol
   };
   const gateway = new ProductionCalculation({ polars: polars as never,
     legacy: { submit: () => { legacyCalls++; return { taskId: 'legacy-original-id' }; }, view: () => ({}) } as never,
-    publisher: { publish: async taskId => {
+    publisher: { publish: async (taskId: string) => {
       assert.equal(taskId, 'original-task-id'); publishCalls++;
       return { requestId: 'r1-original', state: 'associated', published: true, requiresRecovery: false,
         fixedReadback: true, error: null };
