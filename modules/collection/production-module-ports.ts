@@ -68,14 +68,14 @@ export function productionModuleDirectory(services: {
       methods: [] as unknown[], execution: 'on_demand',
       history: 'original_plan_immutable_or_read_only_wfd_page',
       wfdRead: services.hasWfdReader,
-      dependencies: id === 'parse' ? [] : id === 'clean' ? ['parse']
-        : id === 'structure' ? ['clean'] : id === 'annotate' ? ['structure'] : ['annotate'] };
+      // 模块接口无固定前后顺序；实际处理依赖只由AGENTS当前冻结计划中的已选步骤确定。
+      dependencies: [] as string[], inputBinding: 'selected_plan_step_artifact' };
   });
   return { version: PRODUCTION_MODULE_PORTS_VERSION, owner: 'bd_service', mode: 'eight_parallel_ports',
     modules, sharedWfdReader: 'R1Workspace.readProduct (bounded, fixed snapshot, single page)',
     sharedVerifier: 'production-verifier + method-specific proof',
     sharedPublication: 'existing R1/WFD only', autoTrigger: false,
-    note: '八端口彼此并列：五步加工、公式计算、只读因子库、只读语义词典。词典模板不等于 WFD 已采用定义；旧清洗计划依赖与原 WFD 发布证据不因拔插改变。' };
+    note: '八端口彼此并列且按需调用。AGENTS先识别、只执行解析并读取实际反馈，再按证据决定下一模块；后续依赖绑定在实际选择的处理步骤，不是固定五步。历史计划与 WFD 发布证明不被改写。' };
 }
 
 const fixed = (value: unknown): value is string => typeof value === 'string'
