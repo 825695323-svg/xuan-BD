@@ -7,13 +7,13 @@ import type { SkillField } from '../../contracts/skill-contracts.js';
 import { TaskError, type TaskExecutionContext, type TaskRecord } from '../../platform/jobs/tasks.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
-import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
+import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import type { OperatorContext, ProcessingPlanInput } from './processing-plan.js';
 import { PRODUCTION_MODULES, stepModuleForAction, readWfdModulePage,
   productionModuleDirectory, factorLibraryView, semanticDictionaryView,
   readPublishedWfdSemanticDefinition } from './production-module-ports.js';
 
-const ACTIONS = new Set(['data.processing.capabilities', 'data.processing.route', 'data.processing.plan',
+const ACTIONS = new Set(['data.wfd.query', 'data.processing.capabilities', 'data.processing.route', 'data.processing.plan',
   'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
   ...PRODUCTION_MODULES.filter(item => item.id !== 'calculate').map(item => item.action),
   'data.adapters.capabilities', 'data.adapters.propose', 'data.adapters.replay', 'data.adapters.adopt']);
@@ -74,6 +74,22 @@ export class ConversationProcessingBridge {
       });
     this.registrations = [
       ...modules,
+      { ...registration('data.wfd.query', '按需查询WFD正式数据',
+        'AGENTS按需使用受信WFD只读端口：snapshot发现真实快照，discover只在固定快照寻找已发布产品，product只读所选产品分页；每次返回AGENTS判断是否还要查接口源、采集源或处理材料。查询不计算、不清洗、不发布。', [
+        { key: 'operation', label: '只读查询操作', type: 'select', required: true,
+          options: ['snapshot', 'discover', 'product'].map(value => ({ value, label: value })) },
+        text('snapshotId', '固定快照编号；snapshot操作不需要'),
+        text('query', '产品发现时可选名称/语义筛选', false, 128),
+        text('productId', '正式产品编号（product操作必需）'),
+        text('fieldsJson', '可选字段数组JSON', false, 2000),
+        text('cursor', '原分页游标（可选）', false, 8192),
+      ]), available: () => {
+        const port = options.companion.r1Workspace;
+        const ready = !!port?.snapshotStatus && !!port?.discoverProducts && !!port?.readProduct
+          && port.capabilities().configuration.state === 'ready';
+        return ready ? { available: true } : { available: false,
+          reason: 'WFD受信只读连接未装配、未配置或不可用；不能伪造数据库查询结果。' };
+      } },
       registration('data.processing.capabilities', '发现处理计划与六维路由能力', '材料先通过material.read识别，之后查看本分支已保管材料、真实用户消息、六维合同、处理步骤与限制。材料编号只能从这里列出的保管关系取得；不要让用户手填内部编号、六维状态或JSON。未知语义保持unknown并记录缺口，不阻断不依赖它的解析、清洗或结构检查。', []),
       registration('data.processing.route', '按现有原文判断材料路由', '用于单个材料的路由判断（六维：角色、信息性质、业务对象、对象与时间、目的、结构粒度）。dimensionsJson是直接以六维英文键为根的JSON对象文本，不包dimensions或materials。known须有value和evidence；每项证据必须带source：原件用{source:"material",materialId,quote}（原句重复时加start/end），真实用户消息用{source:"user-message",messageId,quote}；会话模型不能自报operator证据。用户目的须由本分支真实用户消息核对。不猜未知，不把模型建议当证据，不让用户填ID或JSON。intendedAction只接受inspect或publish；publish缺目标会needs_target。', [
         text('materialId', '本分支已保管材料编号', true),
@@ -121,7 +137,7 @@ export class ConversationProcessingBridge {
     const service = this.options.companion.processing;
     const moduleAction = PRODUCTION_MODULES.find(item => item.action === action && item.id !== 'calculate');
     // 因子/语义目录是独立只读模块；既有处理计划与端点适配仍按原边界装配。
-    if (!service && !moduleAction && !action.startsWith('data.adapters.'))
+    if (!service && !moduleAction && action !== 'data.wfd.query' && !action.startsWith('data.adapters.'))
       throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
     this.options.companion.bd!.assertDispatch();
     context.signal.throwIfAborted();
@@ -132,6 +148,80 @@ export class ConversationProcessingBridge {
       action.startsWith('data.adapters.') && action !== 'data.adapters.capabilities' ? { approvalMode: 'review' } : {});
     authority.assert();
     if (action.startsWith('data.adapters.')) return this.executeAdapter(context, action, args, origin, authority);
+    if (action === 'data.wfd.query') {
+      const port = this.options.companion.r1Workspace;
+      if (!port?.snapshotStatus || !port.discoverProducts || !port.readProduct)
+        throw new TaskError('AGENT_WFD_UNAVAILABLE', 'WFD实际快照、发现或产品只读接口未装配，未替换为模板或缓存。');
+      const operation = args.operation, snapshotId = args.snapshotId;
+      if (operation === 'snapshot') {
+        if (Object.keys(args).some(key => key !== 'operation'))
+          throw new TaskError('AGENT_WFD_QUERY', '查询当前快照无需提供产品、字段或其它范围参数。');
+        const status = await port.snapshotStatus(context.signal);
+        authority.assert();
+        return { summary: status.empty ? 'WFD当前为空快照；AGENTS可判断是否需要改查来源。' : '已读取WFD当前快照身份；后续查询必须固定此快照。',
+          data: view({ kind: 'wfd_source_read_only', operation, status, next: status.empty ? 'no_fixed_snapshot' : 'optional_discover',
+            execution: 'not_requested', publication: 'not_requested' }) };
+      }
+      if (operation === 'discover') {
+        if (typeof snapshotId !== 'string' || args.productId || args.fieldsJson || args.cursor
+          || Object.keys(args).some(key => !['operation','snapshotId','query'].includes(key)))
+          throw new TaskError('AGENT_WFD_QUERY', '产品发现只接受固定快照与可选的产品/语义搜索词。');
+        const term = typeof args.query === 'string' ? args.query.trim().toLowerCase() : '';
+        const discovered = await port.discoverProducts({ snapshotId }, context.signal);
+        authority.assert();
+        const matches = discovered.products.filter(item => {
+          if (!isWfdRecord(item)) return false;
+          const subject = isWfdRecord(item.subject) ? item.subject : {};
+          const declaration = isWfdRecord(item.declaration) ? item.declaration : {};
+          return !term || [item.product_id, item.dataset_id, subject.kind, subject.namespace, subject.id,
+            declaration.semantic_code, declaration.unit_code].some(value => typeof value === 'string' && value.toLowerCase().includes(term));
+        });
+        const products = matches.slice(0, 30).map(item => {
+          const subject = isWfdRecord(item.subject) ? item.subject : {};
+          const declaration = isWfdRecord(item.declaration) ? item.declaration : {};
+          const selected = discovered.selections.find(entry => entry.productId === item.product_id);
+          return { productId: item.product_id, datasetId: item.dataset_id, subject,
+            semanticCode: declaration.semantic_code ?? null, unitCode: declaration.unit_code ?? null,
+            fields: selected?.fields.slice(0, 64) ?? [], readable: selected?.readable === true };
+        });
+        return { summary: '已按WFD实际发布产品合同完成固定快照检索；返回有界结果供AGENTS再决策。',
+          data: view({ kind: 'wfd_source_read_only', operation, snapshotId, query: term || null,
+            productCount: discovered.products.length, matchedCount: matches.length, returnedCount: products.length,
+            truncated: matches.length > products.length, products,
+            connectionSha256: wfdSha256(canonicalWfdJson(discovered.connection)),
+            execution: 'not_requested', publication: 'not_requested' }) };
+      }
+      if (operation === 'product') {
+        if (typeof snapshotId !== 'string' || typeof args.productId !== 'string' || args.query
+          || Object.keys(args).some(key => !['operation','snapshotId','productId','fieldsJson','cursor'].includes(key)))
+          throw new TaskError('AGENT_WFD_QUERY', '产品只读必须显式选择固定快照与已发布产品编号。');
+        let fields: unknown;
+        if (typeof args.fieldsJson === 'string') {
+          try { fields = JSON.parse(args.fieldsJson); }
+          catch { throw new TaskError('AGENT_WFD_QUERY', 'WFD字段选择不是有效JSON数组。'); }
+        }
+        const selection = { snapshotId, productId: args.productId,
+          ...(fields !== undefined ? { fields } : {}), ...(typeof args.cursor === 'string' ? { cursor: args.cursor } : {}) };
+        const read = await port.readProduct(selection, context.signal);
+        authority.assert();
+        const page = read.result, rows = page.rows;
+        const sample = rows.slice(0, 5).map(row => ({
+          recordRef: row.record_ref,
+          values: Object.fromEntries(Object.entries(row.values).slice(0, 12).map(([field, value]) => {
+            const serialized = canonicalWfdJson(value);
+            return [field, serialized.length > 600 ? { sampleJson: serialized.slice(0, 600), truncated: true } : value];
+          })),
+        }));
+        return { summary: '已读取WFD固定产品的实际分页，返回有界样本供AGENTS选择后续查询或处理；不冒充全量。',
+          data: view({ kind: 'wfd_source_read_only', operation, snapshotId, productId: args.productId,
+            source: { historyMode: read.historyMode, connectionSha256: wfdSha256(canonicalWfdJson(read.connection)),
+              resultSha256: wfdSha256(canonicalWfdJson(page)) }, page: page.page,
+            pageRowCount: rows.length, previewRows: sample,
+            previewTruncated: rows.length > sample.length || rows.some(row => Object.keys(row.values).length > 12),
+            execution: 'not_requested', publication: 'not_requested' }) };
+      }
+      throw new TaskError('AGENT_WFD_QUERY', '只支持snapshot、discover、product三种已登记WFD只读操作。');
+    }
     if (moduleAction) {
       const directory = productionModuleDirectory({
         processing: service, calculation: this.options.companion.productionCalculation,
@@ -429,6 +519,15 @@ export class ConversationProcessingBridge {
           dimensionsPath: 'routing.materials[].dimensions和outputs[].dimensions直接使用相同六维对象；不要加第二层dimensions或materials。' },
       },
       catalog: service.catalog(),
+      querySources: {
+        decision: '由AGENTS依据材料与解析反馈按需决定，查询结果必须返回AGENTS重新评估，不把来源动作当处理阶段',
+        wfd: { actions: ['data.wfd.query'], operations: ['snapshot','discover','product'],
+          mode: 'trusted_read_only_fixed_snapshot', available: this.options.companion.r1Workspace?.capabilities().configuration.state === 'ready' },
+        api: { actions: ['source.api.read','source.kline.read','source.werss.read','source.fetch'],
+          discoverVia: 'list_actions', readiness: 'depends_on_registered_connections', preservesOriginalReceipt: true },
+        capture: { actions: ['capture.<site>.read','source.wechat.extract','web.read_public','web.search'],
+          discoverVia: 'list_actions', readiness: 'depends_on_source_session_and_permissions', preservesOriginalReceipt: true },
+      },
       parallelModuleDirectory: productionModuleDirectory({
         processing: service, calculation: this.options.companion.productionCalculation,
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
