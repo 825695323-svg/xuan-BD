@@ -64,7 +64,7 @@ jobs:
             modules/collection/production-verifier.test.ts
 
       - name: Financial module test coverage outside default npm test
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           XUAN_TEST_ROOT: ${{ runner.temp }}/bd-financial-module-tests
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-financial-full-chain
@@ -82,7 +82,7 @@ jobs:
           env -u WFD_PYTHON -u POLARS_PYTHON node --import tsx --test apps/server/r1-routes.test.ts
           node --import tsx --test modules/collection/polars-financial-admission.test.ts
       - name: Full native Node and TypeScript regression (failures remain visible)
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           XUAN_TEST_ROOT: ${{ runner.temp }}/bd-unified-full-tests
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-unified-full-chain
