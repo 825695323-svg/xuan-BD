@@ -4,6 +4,8 @@ import type { AlgorithmCatalogView } from './algorithm-types.js';
 import { basicAlgorithmToolContract, bdSessionToolContract,
   isUnmigratedLegacyAlgorithmMethod, LEGACY_FIXED_METHOD_ALIASES } from './basic-algorithm-tool-contract.js';
 import { LocalAlgorithmService } from './algorithm-service.js';
+import { ConversationAlgorithmBridge } from './conversation-algorithms.js';
+import { CoreDatabase } from '../../platform/state/database.js';
 
 const catalog = { methods: [
   { id: 'ma', title: 'MA', status: 'ready', reason: null, methodVersion: 'ma/full-window-v1',
@@ -83,4 +85,25 @@ test('unified financial and macro readiness follows the bound executor, not the 
   assert.equal(disabled.find(method => method.methodId === 'macro_yoy')?.status, 'blocked');
   assert.match(disabled.find(method => method.methodId === 'financial_linear')?.reason ?? '', /not registered/u);
   assert.equal(basicAlgorithmToolContract(catalog, 'macro_yoy', ready).methods[0]?.status, 'ready');
+});
+
+
+test('Polars-only service exposes one AGENTS calculation tool through production without adopting legacy Python', () => {
+  const database = new CoreDatabase();
+  try {
+    const ready = { status: 'ready' as const, reason: null, version: 'bd.algorithms.polars/1',
+      methods: ['financial_linear', 'macro_yoy'] };
+    const bridge = new ConversationAlgorithmBridge({
+      database, core: {} as never, origin: () => null,
+      companion: { processing: { calculationCapabilities: () => ({ owner: 'data_production' }) },
+        unifiedPolars: { capabilities: () => ready }, r1Workspace: { capabilities: () => ({ connection: { connectionId: 'wfd' } }) } } as never,
+    });
+    assert.equal(bridge.registrations.find(item => item.action === 'algorithms.calculate')?.available().available, true);
+    const catalog = (bridge as never as { modelCatalog(service: unknown, origin: unknown): AlgorithmCatalogView })
+      .modelCatalog(undefined, null);
+    assert.equal(catalog.methods.length, 0, '不把未装配的旧 Python 算法伪造为可执行');
+    const directory = basicAlgorithmToolContract(catalog, undefined, ready);
+    assert.equal(directory.methods.find(method => method.methodId === 'financial_linear')?.status, 'ready');
+    assert.equal(directory.methods.find(method => method.methodId === 'source_observation_ma')?.status, 'blocked');
+  } finally { database.close(); }
 });
