@@ -138,7 +138,7 @@ test('real isolated WFD publishes source, unified Polars computes and R1 publish
       const methods = host.services.productionCalculation!.capabilities();
       assert.equal(methods.owner, 'data_production');
       assert.equal(methods.methods.find(item => item.methodId === 'macro_yoy')?.status, 'ready');
-      assert.equal(methods.methods.find(item => item.methodId === 'source_observation_ma')?.status, 'blocked');
+      assert.equal(methods.methods.find(item => item.methodId === 'source_observation_ma')?.status, 'ready');
       assert.ok(host.services.derivedPublisher, '发布适配器仍复用原 R1，而不新建第二份账本');
       const sourceView = await publishedSource(host);
       const associated = sourceView.currentRequest.local.associations;
