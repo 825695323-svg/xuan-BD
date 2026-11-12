@@ -69,13 +69,13 @@ export async function readWfdMASource(raw: WfdSourceMACalculation, reader: Finan
     if (connection !== undefined && canonicalWfdJson(response.connection ?? null) !== canonicalWfdJson(connection))
       fail('WFD_MA_CONNECTION_CHANGED', '固定系列分页期间数据连接身份发生变化。');
     connection = response.connection ?? null;
-    const page = response.result;
+    const page = response.result, pageRows = page.rows, paging = page.page;
     if (page.snapshot_id !== calculation.snapshotId || page.product_id !== calculation.productId
       || page.history_mode !== undefined && page.history_mode !== 'snapshot_contents'
-      || !Array.isArray(page.rows) || !isWfdRecord(page.page)
-      || typeof page.page.has_more !== 'boolean' || page.rows.length > 100)
+      || !Array.isArray(pageRows) || !isWfdRecord(paging)
+      || typeof paging.has_more !== 'boolean' || pageRows.length > 100)
       fail('WFD_MA_PAGE_INVALID', '固定 WFD 产品、历史读取模式或分页回执不符合契约。');
-    for (const row of page.rows) {
+    for (const row of pageRows as WfdRecord[]) {
       if (!isWfdRecord(row) || !isWfdRecord(row.record_ref)
         || !isWfdRecord(row.subject) || !isWfdRecord(row.values) || !isWfdRecord(row.business_time))
         fail('WFD_MA_ROW_INVALID', '源观测缺固定身份、主体、业务时间或值。');
@@ -96,7 +96,7 @@ export async function readWfdMASource(raw: WfdSourceMACalculation, reader: Finan
         || timeZone !== null && timeZone !== businessTime.source_timezone)
         fail('WFD_MA_MIXED_SUBJECT', '当前固定算法一次只允许同一来源主体和时间口径的完整日线序列。');
       subject ??= row.subject; timeZone ??= businessTime.source_timezone as string;
-      if (!id(subject.kind) || !id(subject.namespace) || !id(subject.id))
+      if (!id(row.subject.kind) || !id(row.subject.namespace) || !id(row.subject.id))
         fail('WFD_MA_SUBJECT', '源产品缺可复核的实体主体身份。');
       const cell = row.values[calculation.valueField];
       if (!isWfdRecord(cell) || !isWfdRecord(cell.unit)
@@ -113,10 +113,10 @@ export async function readWfdMASource(raw: WfdSourceMACalculation, reader: Finan
       rawRows.push(row);
       if (rawRows.length > 5000) fail('WFD_MA_BUDGET', '固定产品超过5000行，不能截断预热窗口或漏行计算。');
     }
-    const next = page.page.has_more ? page.page.next_cursor : null;
+    const next = paging.has_more ? paging.next_cursor : null;
     if (next !== null && (typeof next !== 'string' || !next || next.length > 8192
       || seenCursors.has(next))) fail('WFD_MA_CURSOR', 'WFD 固定产品返回了无效或循环分页游标。');
-    if (!page.page.has_more && page.page.next_cursor !== null) fail('WFD_MA_CURSOR', 'WFD 最后一页仍有游标。');
+    if (!paging.has_more && paging.next_cursor !== null) fail('WFD_MA_CURSOR', 'WFD 最后一页仍有游标。');
     cursor = next ?? undefined;
     if (cursor) seenCursors.add(cursor);
   } while (cursor);
@@ -136,12 +136,15 @@ export async function readWfdMASource(raw: WfdSourceMACalculation, reader: Finan
   for (let i=1;i<input.length;i++)
     if (input[i-1]!.start === input[i]!.start || input[i-1]!.end > input[i]!.start)
       fail('WFD_MA_DUPLICATE_TIME', '同一固定来源主体存在同日或重叠日期，不自行选一条。');
-  const rows = evaluateWfdMA20(input, unitCode);
+  const actualUnit = unitCode ?? fail('WFD_MA_EMPTY', '来源没有统一单位。');
+  const actualSubject = subject ?? fail('WFD_MA_EMPTY', '来源主体不存在。');
+  const actualTimeZone = timeZone ?? fail('WFD_MA_EMPTY', '来源时间口径不存在。');
+  const rows = evaluateWfdMA20(input, actualUnit);
   const algorithmDefinition = sourceObservationMAAlgorithmDefinition({
     period: 20, valueColumn: calculation.valueField, groupColumns: ['WFD pinned subject'],
     dateColumn: 'business_time', inputScope: 'frozen_series_snapshot',
   });
-  return { calculation, input, rows, subject, unitCode, timeZone,
+  return { calculation, input, rows, subject: actualSubject, unitCode: actualUnit, timeZone: actualTimeZone,
     sourceRowsSha256: sha(sorted), recordVersionsSha256: sha(input.map(x=>[x.key,x.revision])),
     connection: connection ?? null, historicalQualification: 'not_asserted', algorithmDefinition };
 }
