@@ -79,6 +79,7 @@ import { ToolLibraryService } from '../../modules/financial/tool-library.js';
 import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
 import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
 import { ProductionCalculation } from '../../modules/collection/production-calculation.js';
+import { PolarsSourceCleaner } from '../../modules/collection/data-processing/polars-cleaning.js';
 import { UnifiedPolarsExecution } from '../../modules/financial/unified-polars-execution.js';
 import type { LocalDataLifecycle, LocalDataLifecycleRecord } from '../../platform/runtime/local-data-lifecycle.js';
 
@@ -438,6 +439,8 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   // R1 只使用已完整装配的真实加工服务和共用内容仓储。
   processing = materials && candidates ? new ProcessingPlanService({ database, tasks: currentTasks, materials,
     adapters: endpointAdapters,
+    ...(options.role === 'service' && options.processRuntime
+      ? { polarsCleaner: new PolarsSourceCleaner(options.processRuntime) } : {}),
     financialReader: (value, signal): ReturnType<R1WorkspaceService['readProduct']> => {
       if (!r1Workspace) throw new TaskError('R1_NOT_CONFIGURED', '财务固定读取尚未装配。');
       return r1Workspace.readProduct(value, signal);
