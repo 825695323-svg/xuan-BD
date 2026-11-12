@@ -15,10 +15,16 @@ on:
       - 'modules/collection/data-processing/polars-structure-worker.py'
       - 'modules/collection/production-verifier*.ts'
       - 'modules/collection/processing-plan.ts'
+      - 'modules/collection/production-module-*.ts'
+      - 'modules/collection/conversation-processing.ts'
+      - 'modules/financial/algorithm-definitions.ts'
+      - 'modules/financial/algorithm-registry.ts'
+      - 'modules/agent/model-tools.ts'
       - 'modules/collection/candidate-pipeline.ts'
       - 'modules/financial/conversation-algorithms.ts'
       - 'modules/financial/basic-algorithm-tool-contract.ts'
       - 'apps/server/services.ts'
+      - 'contracts/workspace-services.ts'
       - '.github/workflows/bd-unified-polars-execution.yml'
   workflow_dispatch:
   pull_request:
@@ -27,6 +33,11 @@ on:
       - 'modules/collection/production-calculation*.ts'
       - 'modules/collection/production-verifier*.ts'
       - 'modules/collection/processing-plan.ts'
+      - 'modules/collection/production-module-*.ts'
+      - 'modules/collection/conversation-processing.ts'
+      - 'modules/financial/algorithm-definitions.ts'
+      - 'modules/financial/algorithm-registry.ts'
+      - 'modules/agent/model-tools.ts'
       - 'modules/collection/candidate-pipeline.ts'
       - 'modules/financial/conversation-algorithms.ts'
       - 'apps/server/services.ts'
@@ -78,6 +89,8 @@ jobs:
             modules/collection/data-processing/financial-fixed.test.ts \
             apps/server/unified-polars-publish-full-chain.test.ts \
             modules/collection/production-calculation.test.ts \
+            modules/collection/production-module-ports.test.ts \
+            modules/collection/production-module-discovery.test.ts \
             modules/collection/production-verifier.test.ts \
             modules/collection/polars-cleaning.test.ts
 
