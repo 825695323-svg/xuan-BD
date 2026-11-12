@@ -142,10 +142,10 @@ test('BD repeated intake preserves the former acceptance digest, rejects conflic
   } finally { await h.close(); }
 });
 
-test('BD rule identity captures the unchanged body and rejects former frozen rule execution', () => {
+test('BD rule identity captures current v18 and rejects unrelated former rule execution', () => {
   const current = captureInternalAgentRules();
   assert.equal(current.internalAgentRules!.id, 'xuan-bd-internal-agent');
-  assert.equal(current.internalAgentRules!.version, 17);
+  assert.equal(current.internalAgentRules!.version, 18);
   assertInternalAgentRules(current as FrozenRunConfiguration);
   const former = { ...current, internalAgentRules: { id: 'xuan-harness-internal-agent', version: 16,
     digest: 'f03b0fec5c2de43dfdb0920961b952de76d65f31019357d78ba5fefe9839a098' } };
