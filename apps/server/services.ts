@@ -193,6 +193,8 @@ export interface ApplicationServices {
   structuredRetrieval?: StructuredRetrievalService;
   polarsFixed?: PolarsFixedService;
   unifiedPolars?: UnifiedPolarsExecution;
+  /** 与原报清洗服务并列，方法内部可选 Polars/pandas 的计算入口。 */
+  productionCalculation?: ProductionCalculation;
   fixedCalculations?: FixedCalculationService;
   candidates?: CandidateService;
   semantics?: MaterialSemanticService;
@@ -301,7 +303,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const conversationMaterials = options.workspaceServices ? new ConversationMaterialBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
     assertPath: path => direct.assertPublicPath(path), mediaAdapters: () => mediaAdapters }) : undefined;
-  const conversationAlgorithms = (options.workspaceServices?.processing || options.workspaceServices?.algorithms) ? new ConversationAlgorithmBridge({ database, core, files,
+  const conversationAlgorithms = (options.workspaceServices?.productionCalculation || options.workspaceServices?.algorithms) ? new ConversationAlgorithmBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null }) : undefined;
   const conversationProcessing = options.workspaceServices?.processing ? new ConversationProcessingBridge({ database, core, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
   const conversationR1 = options.role !== 'service' && options.workspaceServices?.r1Workspace
@@ -545,11 +547,11 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   unifiedPolars = options.role === 'service' && r1Workspace && options.processRuntime
     ? new UnifiedPolarsExecution({ database, tasks: currentTasks, workspace: r1Workspace,
       processRuntime: options.processRuntime }) : undefined;
-  // Polars/pandas 及受信公式注册属于原 ProcessingPlanService；实际任务、权限、
-  // 独立方法核验和 R1/WFD 发布仍复用旧实现及持久身份，不再提供旁路业务入口。
-  processing?.bindProductionCalculation(new ProductionCalculation({
-    polars: unifiedPolars, legacy: algorithms, publisher: derivedPublisher,
-  }));
+  // 计算与清洗分别装配：公式/因子只由受信计算模块执行，
+  // 五步清洗仍由 ProcessingPlanService 持有；共用核对与原 R1/WFD 不新增任务账本。
+  const productionCalculation = options.role === 'service'
+    ? new ProductionCalculation({ polars: unifiedPolars, legacy: algorithms, publisher: derivedPublisher })
+    : undefined;
   const questions = new AgentQuestionService(database, core);
   modelTools = createCoreModelTools({ database, core, permissions, files, registry: direct.registry, service: bd, conversationFinancial, conversationAlgorithms, businessGoals, questions,
     codeRoot: options.codeRoot ?? options.projectRoot,
@@ -713,5 +715,5 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   queueMicrotask(() => core.dispatchTaskCompletions());
   return { core, database, permissions, files, tasks: runningTasks, memory, agentSkills, questions, toolSettings, sourceSettings, personalResources, uiPreferences, contextLedger, inputRules, inputRouter, directConversations, direct, modelTools,
     ...(options.localData ? { localData: options.localData.lifecycle, localDataId: options.localData.dataId } : {}),
-    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, unifiedPolars, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
+    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, unifiedPolars, productionCalculation, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
 }
