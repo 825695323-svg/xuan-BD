@@ -176,17 +176,31 @@ export class ProcessingPlanService {
     /** 端点适配登记：只提供已采用版本的冻结配置与漂移记录。 */
     adapters?: EndpointAdapterRegistry;
     /** 独立清洗引擎，仅处理 parse→clean；不调用金融公式或计算任务。 */
-    polarsCleaner?: PolarsSourceCleaner }) {
+    polarsCleaner?: PolarsSourceCleaner;
+    /** 受信宿主静态装配；单模块拔除只阻止新调用，历史计划与产物保留。 */
+    enabledModules?: Partial<Record<ProcessingStepKind, boolean>> }) {
     const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
     this.versionBinding = Object.freeze({ processing: PROCESSING_PLAN_VERSION,
       implementation: wfdSha256(Buffer.concat(files)), policy: PROCESSING_POLICY_DIGEST,
-      ...(options.polarsCleaner ? options.polarsCleaner.versionBinding : {}) });
+      ...(options.polarsCleaner ? options.polarsCleaner.versionBinding : {}),
+      ...(options.enabledModules ? { productionModuleBinding: wfdSha256(canonicalWfdJson(options.enabledModules)) } : {}) });
     options.database.migrate('collection_processing', 1, SCHEMA);
     options.database.migrate('collection_processing_semantic_checks', 1, 'ALTER TABLE processing_plan_steps ADD COLUMN semantic_json TEXT;');
     options.database.migrate('collection_processing_type_changes', 1, 'ALTER TABLE processing_plan_steps ADD COLUMN normalization_json TEXT;');
   }
   private get db() { return this.options.database.connection; }
   private get tasks() { return this.options.tasks(); }
+
+  moduleStatus(kind: ProcessingStepKind): { available: boolean; reason: string | null; implementation: string } {
+    if (!PROCESSING_STEP_KINDS.includes(kind)) fail('PROCESSING_MODULE_UNKNOWN', '不是已登记的原报加工模块。');
+    const available = this.options.enabledModules?.[kind] !== false;
+    return { available, reason: available ? null : '该模块被受信宿主拔除；原历史计划仍保留，不自动串入其他模块。',
+      implementation: CANDIDATE_STAGE_VERSIONS[kind] };
+  }
+  private assertModuleEnabled(kind: ProcessingStepKind): void {
+    if (!this.moduleStatus(kind).available)
+      fail('PROCESSING_MODULE_DISABLED', '原报加工模块未装配或已停用；不得通过旧串行运行入口绕过独立端口。');
+  }
 
   catalog(): JsonValue {
     return asJson({
@@ -195,6 +209,8 @@ export class ProcessingPlanService {
         engine: 'typescript', status: 'legacy_compatibility', reason: '受信 Polars 未装配，沿原冻结处理契约执行。',
         methods: ['trim', 'empty_to_null'], noSilentFallback: true },
       calculationMethods: 'not_part_of_cleaning',
+      modules: PROCESSING_STEP_KINDS.map(kind => ({ kind, action: 'data.module.' + kind, ...this.moduleStatus(kind),
+        wfdReadMode: 'read_wfd', execution: 'explicit_stage_with_frozen_dependencies' })),
       custodyStates: ['inventoried', 'receiving', 'received'], routingStates: ['needs_classification', 'needs_adapter', 'needs_target', 'needs_review', 'ready_candidate', 'rejected'],
       dimensions: DIMENSION_KEYS.map(key => ({ key, label: dimensionLabel(key), statuses: ['known', 'unknown', 'conflict'] })),
       policy: PROCESSING_POLICY,
@@ -312,6 +328,7 @@ export class ProcessingPlanService {
     validId(planId, 'PROCESSING_PLAN_ID'); validStepId(stepId);
     const plan = this.planRow(planId); if (!plan) fail('PROCESSING_PLAN_NOT_FOUND', '没有该处理计划。');
     const step = this.stepRow(planId, stepId); if (!step) fail('PROCESSING_STEP_NOT_FOUND', '没有该处理步骤。');
+    this.assertModuleEnabled(step.kind as ProcessingStepKind);
     if (step.state === 'succeeded') fail('PROCESSING_STEP_ALREADY_SUCCEEDED', '该步骤已有完成产物；查询原步骤，不重复执行。');
     const contentDigest = digestOperationArgs({ planId, stepId });
     const requestKey = requestKeyFor('execute', operator.requestId), previous = this.request(requestKey);
@@ -503,6 +520,8 @@ export class ProcessingPlanService {
       const next = plan.steps.find(step => step.state === 'pending' && step.applicability !== 'unknown'
         && step.dependsOn.every(dep => plan.steps.find(item => item.stepId === dep)?.state === 'succeeded'));
       if (!next) break;
+      // 拔除模块时保留原计划与已完成步骤，不把不可用当作失败数据或自动重选实现。
+      this.assertModuleEnabled(next.kind);
       try {
         await this.executeStepCore(context, planId, next.stepId);
         executed++;
@@ -1130,6 +1149,7 @@ export class ProcessingPlanService {
 
   private async executeStepCore(context: TaskExecutionContext, planId: string, stepId: string): Promise<void> {
     const plan = this.planView(planId), step = plan.steps.find(item => item.stepId === stepId)!;
+    this.assertModuleEnabled(step.kind);
     const started = Date.now(), dependencies = step.dependsOn.map(id => plan.steps.find(item => item.stepId === id)!);
     for (const dependency of dependencies) if (dependency.state !== 'succeeded') fail('PROCESSING_DEPENDENCY', `前置步骤 ${dependency.stepId} 尚未完成；未越过依赖执行。`);
     this.assertActive(context);
