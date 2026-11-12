@@ -247,8 +247,16 @@ function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceS
     fingerprint, registeredDatasetId: datasetId, fieldCount: profile.fields.length,
     displayedFields: displayFields.length, fieldPreviewComplete: filtered.length <= 8
       && displayFields.every(field => !field.previewMayTruncate),
-    fields: displayFields, frequency: profile.frequency, timeBucket: profile.timeBucket,
-    adjustment: profile.adjustment, supersedes: profile.supersedes ?? [],
+    fields: displayFields, frequency: profile.frequency,
+    timeBucket: { ...profile.timeBucket, timezone: profile.timeBucket.timezone.slice(0, 128),
+      previewTruncated: profile.timeBucket.timezone.length > 128 },
+    adjustment: { status: profile.adjustment.status,
+      method: profile.adjustment.method?.slice(0, 192) ?? null, basis: profile.adjustment.basis?.slice(0, 192) ?? null,
+      previewTruncated: (profile.adjustment.method?.length ?? 0) > 192 || (profile.adjustment.basis?.length ?? 0) > 192 },
+    supersedes: (profile.supersedes ?? []).slice(0, 8).map(item => ({ ...item, note: item.note.slice(0, 192) })),
+    totalSupersedes: profile.supersedes?.length ?? 0,
+    supersedesPreviewComplete: (profile.supersedes ?? []).length <= 8
+      && (profile.supersedes ?? []).every(item => item.note.length <= 192),
     confirmation: { status: profile.confirmation.status, confirmedAtUtc: profile.confirmation.confirmedAtUtc },
     gaps, authority: 'local_operator_confirmed_source_profile_not_formal_wfd_definition',
     adoption: 'not_granted' };
@@ -279,7 +287,9 @@ export function sourceSemanticView(query: unknown, ports: SourceSemanticPorts = 
   const leftDataset = ports.products?.datasetFor(profileFingerprint(left)) ?? null;
   const rightDataset = ports.products?.datasetFor(profileFingerprint(right)) ?? null;
   return { ...result, status: compared.sameProduct ? 'candidate_equivalent' : 'different_semantics',
-    comparison: { sameSignature: compared.sameProduct, reasons: compared.reasons,
+    comparison: { sameSignature: compared.sameProduct, reasons: compared.reasons.slice(0, 24).map(reason => reason.slice(0, 240)),
+      reasonCount: compared.reasons.length,
+      reasonsPreviewComplete: compared.reasons.length <= 24 && compared.reasons.every(reason => reason.length <= 240),
       registeredSameDataset: !!leftDataset && leftDataset === rightDataset,
       implication: compared.sameProduct
         ? '仅来源档案口径候选相同；仍需按 WFD 固定产品定义与来源权限独立核对，不自动合并或发布。'
