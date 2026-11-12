@@ -142,12 +142,14 @@ export class ProductionModulePorts {
       .filter(entry => !methodId || methodId === entry.id || methodId === entry.fixedMethodId);
     const records = definitions.map(item => {
       const registration = ALGORITHM_REGISTRY.find(reg => reg.id === item.registryId);
-      return { id: item.id, registryId: item.registryId, title: item.title,
-        definitionKind: item.definitionKind, status: item.status, formula: item.formula,
-        semantics: item.semantics, warmup: item.warmup, missingPolicy: item.missingPolicy,
-        implementationRefs: item.implementations, registryRecord: registration
+      const summary = { id: item.id, registryId: item.registryId, title: item.title,
+        definitionKind: item.definitionKind, status: item.status,
+        registryRecord: registration
           ? { state: registration.state, status: registration.status, missing: registration.missing } : null,
         currentExecution: formula.find(method => method.methodId === item.registryId) ?? null };
+      return methodId ? { ...summary, formula: item.formula, semantics: item.semantics,
+        warmup: item.warmup, missingPolicy: item.missingPolicy, implementationRefs: item.implementations }
+        : summary;
     });
     if (methodId && !records.length && !fixed.length)
       return fail('PRODUCTION_FACTOR_UNKNOWN', '因子定义不存在，未按名字猜测或自动采用未知计算公式。');
