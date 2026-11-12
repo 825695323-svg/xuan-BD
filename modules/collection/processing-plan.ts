@@ -337,7 +337,7 @@ export class ProcessingPlanService {
     validId(planId, 'PROCESSING_PLAN_ID'); validStepId(stepId);
     const plan = this.planRow(planId); if (!plan) fail('PROCESSING_PLAN_NOT_FOUND', '没有该处理计划。');
     const step = this.stepRow(planId, stepId); if (!step) fail('PROCESSING_STEP_NOT_FOUND', '没有该处理步骤。');
-    this.assertModuleEnabled(step.kind as ProcessingStepKind);
+    if (step.applicability === 'applicable') this.assertModuleEnabled(step.kind as ProcessingStepKind);
     if (step.state === 'succeeded') fail('PROCESSING_STEP_ALREADY_SUCCEEDED', '该步骤已有完成产物；查询原步骤，不重复执行。');
     const contentDigest = digestOperationArgs({ planId, stepId });
     const requestKey = requestKeyFor('execute', operator.requestId), previous = this.request(requestKey);
@@ -507,7 +507,7 @@ export class ProcessingPlanService {
     const plan = this.planView(args.planId);
     const step = plan.steps.find(item => item.stepId === args.stepId);
     if (!step) fail('PROCESSING_STEP_NOT_FOUND', '没有该处理步骤。');
-    this.assertModuleEnabled(step.kind as ProcessingStepKind);
+    if (step.applicability === 'applicable') this.assertModuleEnabled(step.kind as ProcessingStepKind);
     if (step.state === 'succeeded') return this.result(plan);
     if (step.applicability === 'unknown') fail('PROCESSING_STEP_BLOCKED', `步骤存在未决适用性：${step.gaps.join('；') || '未说明'}`);
     if (step.state === 'blocked') fail('PROCESSING_STEP_BLOCKED', `步骤被上游或语义缺口阻塞：${step.gaps.join('；') || '未说明'}`);
@@ -1159,6 +1159,7 @@ export class ProcessingPlanService {
 
   private async executeStepCore(context: TaskExecutionContext, planId: string, stepId: string): Promise<void> {
     const plan = this.planView(planId), step = plan.steps.find(item => item.stepId === stepId)!;
+    if (step.applicability === 'applicable') this.assertModuleEnabled(step.kind as ProcessingStepKind);
     const started = Date.now(), dependencies = step.dependsOn.map(id => plan.steps.find(item => item.stepId === id)!);
     for (const dependency of dependencies) if (dependency.state !== 'succeeded') fail('PROCESSING_DEPENDENCY', `前置步骤 ${dependency.stepId} 尚未完成；未越过依赖执行。`);
     this.assertActive(context);
