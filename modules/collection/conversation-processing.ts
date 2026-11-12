@@ -9,9 +9,12 @@ import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
 import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { OperatorContext, ProcessingPlanInput } from './processing-plan.js';
+import { PRODUCTION_MODULES, stepModuleForAction, readWfdModulePage,
+  productionModuleDirectory, factorLibraryView, semanticDictionaryView } from './production-module-ports.js';
 
 const ACTIONS = new Set(['data.processing.capabilities', 'data.processing.route', 'data.processing.plan',
   'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
+  ...PRODUCTION_MODULES.filter(item => item.id !== 'calculate').map(item => item.action),
   'data.adapters.capabilities', 'data.adapters.propose', 'data.adapters.replay', 'data.adapters.adopt']);
 const text = (key: string, label: string, required = false, maxLength = 160): SkillField =>
   ({ key, label, type: 'text', required, maxLength });
@@ -35,7 +38,41 @@ export class ConversationProcessingBridge {
       permissionSummary: ['仅当前会话分支已保管的原件', '用户目的只引用真实用户原话', '结构检查不等于来源真实性、业务语义或发布资格'],
       available: () => ({ available: !!options.companion.processing, ...(!options.companion.processing ? { reason: '处理计划服务未装配。' } : {}) }),
     });
+    const moduleCatalog = () => productionModuleDirectory({
+      processing: options.companion.processing,
+      calculation: options.companion.productionCalculation,
+      hasWfdReader: !!options.companion.r1Workspace?.readProduct,
+      enabled: options.companion.productionModuleSwitches,
+    });
+    const modules: SkillRegistration[] = PRODUCTION_MODULES
+      .filter(module => module.id !== 'calculate')
+      .map(module => {
+        const fields: SkillField[] = module.id === 'factors'
+          ? [text('factorId', '可选：已登记因子编号'),
+            text('wfdRefJson', '可选：WFD固定产品只读引用', false, 16000)]
+          : module.id === 'semantics'
+            ? [text('groupId', '可选：语义词典模板分组'),
+              text('wfdRefJson', '可选：WFD固定产品只读引用', false, 16000)]
+            : [text('planId', '当前分支已冻结的处理计划'),
+              text('stepId', '该计划中同类步骤编号'),
+              text('wfdRefJson', '可选：WFD固定产品只读引用', false, 16000)];
+        const standard = registration(module.action, module.title + '（按需独立接口）',
+          '与其他模块并列；五步计划的前置证据仍必须完整。WFD固定来源读取为只读模式，不替代加工、核验或发布。',
+          fields);
+        return { ...standard,
+          permissionSummary: ['受信宿主独立拔插；同一TaskService保留真实任务身份',
+            '只有冻结计划同类步骤才可执行；WFD为签名固定快照只读，不自动变成可发布加工产物',
+            '因子库登记不启用计算；语义模板不等于词典已采用，不自动裁决来源'],
+          available: () => {
+            const capability = moduleCatalog().modules.find(item => item.id === module.id);
+            const available = capability?.status === 'ready';
+            return { available, ...(!available
+              ? { reason: '本模块未装配、已被受信宿主拔除或依赖未就绪。' } : {}) };
+          },
+        };
+      });
     this.registrations = [
+      ...modules,
       registration('data.processing.capabilities', '发现处理计划与六维路由能力', '先查当前会话分支已保管材料、真实用户消息、六维合同、处理步骤与限制。材料编号只能从这里列出的保管关系取得；不要让用户手填内部编号、六维状态或JSON。未知语义保持unknown并记录缺口，不阻断不依赖它的解析、清洗或结构检查。', []),
       registration('data.processing.route', '按现有原文判断材料路由', '用于单个材料的路由判断（六维：角色、信息性质、业务对象、对象与时间、目的、结构粒度）。dimensionsJson是直接以六维英文键为根的JSON对象文本，不包dimensions或materials。known须有value和evidence；每项证据必须带source：原件用{source:"material",materialId,quote}（原句重复时加start/end），真实用户消息用{source:"user-message",messageId,quote}；会话模型不能自报operator证据。用户目的须由本分支真实用户消息核对。不猜未知，不把模型建议当证据，不让用户填ID或JSON。intendedAction只接受inspect或publish；publish缺目标会needs_target。', [
         text('materialId', '本分支已保管材料编号', true),
@@ -81,8 +118,10 @@ export class ConversationProcessingBridge {
     const origin = this.options.origin(context.task.id);
     if (!origin) throw new TaskError('PROCESSING_ORIGIN', '处理计划工具必须由本次真实会话代理调用。');
     const service = this.options.companion.processing;
-    // 适配工具只依赖适配登记；不因处理计划未装配而不可用。
-    if (!service && !action.startsWith('data.adapters.')) throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
+    const moduleAction = PRODUCTION_MODULES.find(item => item.action === action && item.id !== 'calculate');
+    // 因子/语义目录是独立只读模块；既有处理计划与端点适配仍按原边界装配。
+    if (!service && !moduleAction && !action.startsWith('data.adapters.'))
+      throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
     this.options.companion.bd!.assertDispatch();
     context.signal.throwIfAborted();
     // 处理计划桥不向模型发送完整行，但仍须由受控上下文确认本次结果可发送给当前模型。
@@ -92,6 +131,62 @@ export class ConversationProcessingBridge {
       action.startsWith('data.adapters.') && action !== 'data.adapters.capabilities' ? { approvalMode: 'review' } : {});
     authority.assert();
     if (action.startsWith('data.adapters.')) return this.executeAdapter(context, action, args, origin, authority);
+    if (moduleAction) {
+      const directory = productionModuleDirectory({
+        processing: service, calculation: this.options.companion.productionCalculation,
+        hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
+        enabled: this.options.companion.productionModuleSwitches,
+      });
+      if (directory.modules.find(item => item.id === moduleAction.id)?.status !== 'ready')
+        throw new TaskError('PRODUCTION_MODULE_UNAVAILABLE', '该并列模块未启用或其受信依赖不可用。');
+      const rawReference = typeof args.wfdRefJson === 'string' && args.wfdRefJson.trim()
+        ? args.wfdRefJson : null;
+      let wfdPage: unknown = null;
+      if (rawReference) {
+        if (args.planId || args.stepId) throw new TaskError('PRODUCTION_MODULE_MODE',
+          'WFD只读分页不能与原处理步骤执行同时提交；先分别核验来源与加工计划。');
+        const read = this.options.companion.r1Workspace?.readProduct;
+        if (!read) throw new TaskError('PRODUCTION_MODULE_WFD_UNAVAILABLE', '真实WFD只读端口尚未装配。');
+        let wfdRef: unknown;
+        try { wfdRef = JSON.parse(rawReference); }
+        catch { throw new TaskError('PRODUCTION_MODULE_WFD_REFERENCE', '固定WFD来源引用必须为合法JSON。'); }
+        wfdPage = await readWfdModulePage(
+          moduleAction.id as Exclude<typeof moduleAction.id, 'calculate'>, wfdRef,
+          read.bind(this.options.companion.r1Workspace), context.signal);
+        authority.assert();
+      }
+      if (moduleAction.id === 'factors' || moduleAction.id === 'semantics') {
+        if (args.planId || args.stepId) throw new TaskError('PRODUCTION_MODULE_MODE',
+          '因子库与语义词典只读，不执行原报五步计划。');
+        const catalog = moduleAction.id === 'factors'
+          ? factorLibraryView(typeof args.factorId === 'string' && args.factorId.trim()
+            ? args.factorId.trim() : undefined)
+          : semanticDictionaryView(typeof args.groupId === 'string' && args.groupId.trim()
+            ? args.groupId.trim() : undefined);
+        return { summary: moduleAction.title + '已经按需读取受信登记或模板；没有计算、自动标注或变更WFD。',
+          data: view({ module: moduleAction.id, catalog, wfdPage, publication: 'not_requested' }) };
+      }
+      const stage = stepModuleForAction(action);
+      if (!stage) throw new TaskError('PRODUCTION_MODULE_KIND', '此动作不是受信加工模块。');
+      if (wfdPage) return { summary: '已按该模块接口读取固定WFD当页事实；没有执行清洗五步。',
+        data: view({ module: stage, wfdPage, execution: 'read_only' }) };
+      if (!service) throw new TaskError('PROCESSING_UNAVAILABLE', '本宿主没有原报加工计划执行服务。');
+      const planId = typeof args.planId === 'string' ? args.planId : '';
+      const stepId = typeof args.stepId === 'string' ? args.stepId : '';
+      if (!planId || !stepId) throw new TaskError('PRODUCTION_MODULE_STEP',
+        '执行处理模块须提供当前分支真实计划与其中同类步骤；否则请指定固定WFD只读引用。');
+      this.assertPlan(planId, origin);
+      const found = service.get(planId);
+      if (!found.steps.some(step => step.stepId === stepId && step.kind === stage))
+        throw new TaskError('PRODUCTION_MODULE_STEP_MISMATCH',
+          '该计划没有所选模块对应步骤，不能改写冻结步骤类型。');
+      const task = service.executeStep(planId, stepId, this.operator(origin, context.task.id));
+      this.link(task.id, task.id, origin, 'execution', planId);
+      const done = await this.wait(context, task.id);
+      authority.assert();
+      return this.taskResult('已按需执行所选独立加工模块，结果仍遵守原冻结计划前置证明。',
+        done, this.safePlan(planId));
+    }
     if (!service) throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
     if (action === 'data.processing.capabilities') {
       return { summary: '已列出本分支材料关系、真实用户消息与处理计划合同；未知语义不预填。',
@@ -295,6 +390,11 @@ export class ConversationProcessingBridge {
           dimensionsPath: 'routing.materials[].dimensions和outputs[].dimensions直接使用相同六维对象；不要加第二层dimensions或materials。' },
       },
       catalog: service.catalog(),
+      parallelModuleDirectory: productionModuleDirectory({
+        processing: service, calculation: this.options.companion.productionCalculation,
+        hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
+        enabled: this.options.companion.productionModuleSwitches,
+      }),
       guidance: '材料编号只从materials取；六维只写可核事实，未知保持unknown。用户目的必须引用conversation.userMessages中的真实原话。结构检查通过不等于来源真实性、业务语义或发布资格已验证；发布目标与用户授权不能由模型补造。' };
   }
   private taskResult(summary: string, task: TaskRecord, found: unknown): TaskResult {

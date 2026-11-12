@@ -60,6 +60,9 @@ const MODEL_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIO
   'financial.list', 'financial.describe', 'financial.call', 'financial.result', 'financial.status',
   'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status', 'bd.session.capabilities',
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
+  'data.modules.parse', 'data.modules.clean', 'data.modules.structure',
+  'data.modules.annotate', 'data.modules.check', 'data.modules.calculate',
+  'data.modules.factors', 'data.modules.semantics',
   'data.adapters.capabilities', 'data.adapters.propose', 'data.adapters.replay', 'data.adapters.adopt',
   'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
   'artifact.manifest', 'artifact.archive', 'artifact.restore', 'artifact.inspect', 'artifact.release',
@@ -73,6 +76,9 @@ const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_A
   'web.read_public', 'web.search', 'video.transcribe_url', 'material.read', 'material.process', 'material.ocr', 'material.transcribe',
   'financial.list', 'financial.describe', 'financial.result', 'financial.status',
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
+  'data.modules.parse', 'data.modules.clean', 'data.modules.structure',
+  'data.modules.annotate', 'data.modules.check', 'data.modules.calculate',
+  'data.modules.factors', 'data.modules.semantics',
   // 适配候选提交、重放与采用都是写入或权限动作：保留审核，不进入自动动作集合。
   'data.adapters.capabilities',
   'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
@@ -1737,7 +1743,7 @@ export class CoreModelTools {
         : source.status === 'partial' ? '原件转换部分完成，须核对未确认项。' : '原件转换失败，已保留来源和失败原因。';
       return this.pagePreview(call, { ok: true, taskId: task.id, action: call.action, summary, data, artifactIds: task.result.artifactIds ?? [] });
     }
-    if (call.action.startsWith('data.processing.') || call.action.startsWith('data.adapters.') || call.action.startsWith('data.r1.') || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(call.action) || call.action === 'material.read' || call.action === 'material.process' || call.action === 'material.transcribe' || call.action === 'baidu.drive' || call.action === 'browser.control' || call.action === 'web.read_public' || call.action === 'web.search' || this.options.conversationFinancial?.handles(call.action) || this.options.conversationAlgorithms?.handles(call.action)) {
+    if (call.action.startsWith('data.processing.') || call.action.startsWith('data.modules.') || call.action.startsWith('data.adapters.') || call.action.startsWith('data.r1.') || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(call.action) || call.action === 'material.read' || call.action === 'material.process' || call.action === 'material.transcribe' || call.action === 'baidu.drive' || call.action === 'browser.control' || call.action === 'web.read_public' || call.action === 'web.search' || this.options.conversationFinancial?.handles(call.action) || this.options.conversationAlgorithms?.handles(call.action)) {
       // The closed host bridge constructs this bounded projection; no arbitrary result body is shared.
       if (!isObject(source.modelPreview)) throw publicError('MODEL_ACTION_FAILED');
       const { localPersistence: _untrustedPersistence, ...modelPreview } = source.modelPreview as Record<string, JsonValue>;

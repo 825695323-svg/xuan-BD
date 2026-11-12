@@ -12,8 +12,9 @@ import type { FileReferenceService } from '../../platform/resources/files.js';
 import { ALGORITHM_CONTRACT_VERSION, ALGORITHM_RUNTIME, type AlgorithmCatalogView } from './algorithm-types.js';
 import { basicAlgorithmToolContract, bdSessionToolContract } from './basic-algorithm-tool-contract.js';
 import { UNIFIED_POLARS_RUNTIME } from './unified-polars-execution.js';
+import { productionModuleDirectory } from '../collection/production-module-ports.js';
 
-const ACTIONS = new Set(['bd.session.capabilities', 'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status']);
+const ACTIONS = new Set(['bd.session.capabilities', 'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status', 'data.modules.calculate']);
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
 const text = (key: string, label: string, maxLength = 160, required = true): SkillField =>
   ({ key, label, type: 'text', required, maxLength });
@@ -41,7 +42,10 @@ export class ConversationAlgorithmBridge {
         '结构化计算结果由独立核对器检查，直接复用 R1 与 WFD 固定读回，不回到原报五步'],
       available: () => {
         const calculationAvailable = !!options.companion.productionCalculation || !!options.companion.algorithms;
-        const available = calculationAvailable || action === 'bd.session.capabilities' && !!options.companion.processing;
+        const enabled = options.companion.productionModuleSwitches?.calculate !== false;
+        const available = action === 'data.modules.calculate' || action === 'algorithms.calculate'
+          ? calculationAvailable && enabled
+          : calculationAvailable || action === 'bd.session.capabilities' && !!options.companion.processing;
         return { available, ...(!available
           ? { reason: action === 'bd.session.capabilities'
             ? '清洗和计算工具均未装配。' : '计算服务未装配；只读清洗能力仍可单独使用。' } : {}) };
@@ -59,6 +63,9 @@ export class ConversationAlgorithmBridge {
         'calculationJson 由 BD AGENTS 按算法契约和真实 WFD 固定快照组装。固定算法直接计算，独立核对器检查数据身份、方法版本、行值和摘要，复用 R1 正式提交与 WFD 固定读回。无需人工算法执行或派生入库审批，也不走原报五步加工。', [
           text('calculationJson', '算法计算请求（模型从实际元数据组装）', 100_000),
         ]),
+      registration('data.modules.calculate', '并列计算模块（Polars / 按需 pandas）',
+        '该入口是已有 algorithms.calculate 的受信别名，只接受登记公式和真实 WFD 固定引用，不允许用户指定执行器。结果保留原任务与 R1/WFD 发布身份。',
+        [text('calculationJson', '算法计算请求，按固定WFD与方法契约组成', 100_000)]),
       registration('algorithms.publish', '按原算法任务恢复 WFD 派生结果发布',
         '不重新计算、不接受自填数据行。按本会话已成功的原算法任务，核独立派生校验并沿原 R1 请求恢复提交与固定读回。',
         [text('taskId', '已完成算法任务编号')]),
@@ -87,9 +94,15 @@ export class ConversationAlgorithmBridge {
       const cleaning = isWfdRecord(processing) && isWfdRecord(processing.cleaningEngine)
         ? processing.cleaningEngine : { status: 'not_configured', reason: '数据清洗服务未装配。' };
       const calculation = this.options.companion.productionCalculation?.capabilities() ?? null;
+      const modules = productionModuleDirectory({
+        processing: this.options.companion.processing,
+        calculation: this.options.companion.productionCalculation,
+        hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
+        enabled: this.options.companion.productionModuleSwitches,
+      });
       authority.assert();
       return { summary: '已读取清洗与计算两条独立按需接口；只读发现，不启动自动清洗、因子计算或发布。',
-        data: view({ ...contract, onDemand: {
+        data: view({ ...contract, parallelModuleDirectory: modules, onDemand: {
           cleaning: { description: '原报解析与严格清洗；按会话选择材料后显式计划/执行',
             discovery: 'data.processing.capabilities', plan: 'data.processing.plan',
             execute: 'data.processing.run', engine: cleaning,
@@ -127,7 +140,7 @@ export class ConversationAlgorithmBridge {
           handoff: '独立核对后由专用 WFD 发布者复用 R1 正式写入和固定读回；无派生五步加工。',
         } }) };
     }
-    if (action === 'algorithms.calculate') {
+    if (action === 'algorithms.calculate' || action === 'data.modules.calculate') {
       let calculation: unknown;
       try { calculation = JSON.parse(String(args.calculationJson)); }
       catch { throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求不是有效JSON。'); }

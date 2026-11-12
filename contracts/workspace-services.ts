@@ -10,10 +10,11 @@ import type { ProcessingPlanService } from '../modules/collection/processing-pla
 import type { EndpointAdapterRegistry } from '../modules/collection/endpoint-adapter-registry.js';
 import type { JsonValue } from './task-contracts.js';
 import type { TaskRecord } from '../platform/jobs/tasks.js';
-import type { R1CapabilitiesView, R1RequestView } from './r1-contracts.js';
+import type { R1CapabilitiesView, R1RequestView, R1ProductRead } from './r1-contracts.js';
 import type { AlgorithmCatalogView, AlgorithmTaskView } from '../modules/financial/algorithm-types.js';
 import type { UnifiedPolarsExecution } from '../modules/financial/unified-polars-execution.js';
 import type { ProductionCalculation } from '../modules/collection/production-calculation.js';
+import type { ProductionModuleId } from '../modules/collection/production-module-ports.js';
 
 /** Trusted companion services used by material and result handoff, independent of HTTP startup. */
 import type { CandidateService } from '../modules/collection/candidate-service.js';
@@ -31,6 +32,8 @@ export interface AlgorithmConversationPort {
 export interface R1ConversationPort {
   readonly versionBinding: Record<string, string | null>;
   capabilities(): R1CapabilitiesView;
+  /** 仅宿主实际装配时开放的 WFD 固定快照只读分页，非模型自报来源。 */
+  readProduct?(input: unknown, signal?: AbortSignal): Promise<R1ProductRead>;
   prepare(input: unknown): R1RequestView;
   prepareWithRestriction(input: unknown): Promise<R1RequestView>;
   get(requestId: string): R1RequestView;
@@ -59,6 +62,8 @@ export interface WorkspaceServices {
   semantics?: MaterialSemanticService;
   /** 计算与清洗是并列入口，只复用生产核对及原 R1/WFD 发布服务。 */
   productionCalculation?: ProductionCalculation;
+  /** Host-fixed independent module availability; model/HTTP requests cannot mutate it. */
+  productionModuleSwitches?: Partial<Record<ProductionModuleId, boolean>>;
   processing?: ProcessingPlanService;
   /** 端点适配登记：会话受控工具只读取/提交/重放/审批后采用。 */
   endpointAdapters?: EndpointAdapterRegistry;
