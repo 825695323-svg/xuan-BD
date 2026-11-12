@@ -10,7 +10,7 @@ import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import type { OperatorContext, ProcessingPlanInput } from './processing-plan.js';
 import { PRODUCTION_MODULES, stepModuleForAction, readWfdModulePage,
-  productionModuleDirectory, factorLibraryView, semanticDictionaryView,
+  productionModuleDirectory, factorLibraryView, semanticDictionaryView, sourceSemanticView,
   readPublishedWfdSemanticDefinition } from './production-module-ports.js';
 
 const ACTIONS = new Set(['data.wfd.query', 'data.processing.capabilities', 'data.processing.route', 'data.processing.plan',
@@ -43,6 +43,7 @@ export class ConversationProcessingBridge {
       processing: options.companion.processing,
       calculation: options.companion.productionCalculation,
       hasWfdReader: !!options.companion.r1Workspace?.readProduct,
+      hasSourceProfiles: !!options.companion.sourceFieldProfiles,
       enabled: options.companion.productionModuleSwitches,
     });
     const modules: SkillRegistration[] = PRODUCTION_MODULES
@@ -53,7 +54,8 @@ export class ConversationProcessingBridge {
             text('wfdRefJson', '可选：WFD固定产品只读引用', false, 16000)]
           : module.id === 'semantics'
             ? [text('groupId', '可选：语义词典模板分组'),
-              text('wfdRefJson', '可选：WFD固定产品只读引用', false, 16000)]
+              text('wfdRefJson', '可选：WFD固定产品只读引用', false, 16000),
+              text('sourceQueryJson', '可选：G5来源字段档案查询/跨来源语义比较（只读JSON身份）', false, 4096)]
             : [text('planId', '当前分支已冻结的处理计划'),
               text('stepId', '该计划中同类步骤编号'),
               text('wfdRefJson', '可选：WFD固定产品只读引用', false, 16000)];
@@ -63,7 +65,7 @@ export class ConversationProcessingBridge {
         return { ...standard,
           permissionSummary: ['受信宿主独立拔插；同一TaskService保留真实任务身份',
             '只运行AGENTS选择的单步；完成后返回AGENTS重新判断。WFD固定快照只读，不能冒充发布证明',
-            '因子库登记不启用计算；语义模板不等于词典已采用，不自动裁决来源'],
+            '因子库登记不启用计算；G5 可只读来源档案及跨来源比较，模板/本机登记均不等于 WFD 正式采用'],
           available: () => {
             const capability = moduleCatalog().modules.find(item => item.id === module.id);
             const available = capability?.status === 'ready';
@@ -228,12 +230,17 @@ export class ConversationProcessingBridge {
       const directory = productionModuleDirectory({
         processing: service, calculation: this.options.companion.productionCalculation,
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
+        hasSourceProfiles: !!this.options.companion.sourceFieldProfiles,
         enabled: this.options.companion.productionModuleSwitches,
       });
       if (directory.modules.find(item => item.id === moduleAction.id)?.status !== 'ready')
         throw new TaskError('PRODUCTION_MODULE_UNAVAILABLE', '该并列模块未启用或其受信依赖不可用。');
       const rawReference = typeof args.wfdRefJson === 'string' && args.wfdRefJson.trim()
         ? args.wfdRefJson : null;
+      const rawSourceQuery = moduleAction.id === 'semantics' && typeof args.sourceQueryJson === 'string' && args.sourceQueryJson.trim()
+        ? args.sourceQueryJson.trim() : null;
+      if (rawSourceQuery && (rawReference || args.groupId || args.planId || args.stepId))
+        throw new TaskError('PRODUCTION_SEMANTIC_SOURCE_QUERY', 'G5 来源语义读取不能与模板分组、WFD 产品读取或加工步骤同时提交；逐项核对后由 AGENTS 决定下一步。');
       let wfdPage: unknown = null, selection: unknown = null;
       if (rawReference) {
         if (args.planId || args.stepId) throw new TaskError('PRODUCTION_MODULE_MODE',
@@ -257,6 +264,14 @@ export class ConversationProcessingBridge {
             ? args.factorId.trim() : undefined)
           : semanticDictionaryView(typeof args.groupId === 'string' && args.groupId.trim()
             ? args.groupId.trim() : undefined);
+        let sourceSemantics: unknown = null;
+        if (rawSourceQuery) {
+          let query: unknown;
+          try { query = JSON.parse(rawSourceQuery); }
+          catch { throw new TaskError('PRODUCTION_SEMANTIC_SOURCE_QUERY', 'G5 来源字段查询必须为合法 JSON；不接受直接配置正文或路径。'); }
+          sourceSemantics = sourceSemanticView(query, { profiles: this.options.companion.sourceFieldProfiles,
+            products: this.options.companion.semanticProducts });
+        }
         let publishedDefinition: unknown = null;
         if (moduleAction.id === 'semantics' && selection) {
           const discover = this.options.companion.r1Workspace?.discoverProducts;
@@ -266,10 +281,13 @@ export class ConversationProcessingBridge {
             discover.bind(this.options.companion.r1Workspace), context.signal);
           authority.assert();
         }
-        return { summary: publishedDefinition
-          ? '语义模板与 WFD 固定快照正式定义已分开读取；没有计算、自动标注或变更 WFD。'
-          : moduleAction.title + '已按需读取受信登记或仅供参考的模板；没有计算或变更WFD。',
-          data: view({ module: moduleAction.id, catalog, wfdPage, publishedDefinition,
+        authority.assert();
+        return { summary: sourceSemantics
+          ? 'G5 已按指定来源身份只读核对字段档案与跨来源语义；缺口保留，不采用定义、不合并数据或写入 WFD。'
+          : publishedDefinition
+            ? '语义模板与 WFD 固定快照正式定义已分开读取；没有计算、自动标注或变更 WFD。'
+            : moduleAction.title + '已按需读取受信登记或仅供参考的模板；没有计算或变更WFD。',
+          data: view({ module: moduleAction.id, catalog, wfdPage, publishedDefinition, sourceSemantics,
             publication: 'not_requested' }) };
       }
       const stage = stepModuleForAction(action);
@@ -533,6 +551,7 @@ export class ConversationProcessingBridge {
       parallelModuleDirectory: productionModuleDirectory({
         processing: service, calculation: this.options.companion.productionCalculation,
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
+        hasSourceProfiles: !!this.options.companion.sourceFieldProfiles,
         enabled: this.options.companion.productionModuleSwitches,
       }),
       guidance: '先material.read识别材料，再用stages:["parse"]形成解析单步计划，执行后读取parsedPreview，返回AGENTS选择下一步并修订原计划；新计划禁止data.processing.run批量跳过反馈。材料编号只从materials取；六维只写可核事实，未知保持unknown。用户目的必须引用conversation.userMessages中的真实原话。结构检查通过不等于来源真实性、业务语义或发布资格已验证；发布目标与用户授权不能由模型补造。' };
