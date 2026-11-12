@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { readWfdMASource, readWfdSourceMACalculation, checkWfdMACandidate,
-  WFD_SOURCE_MA_VERSION } from './wfd-source-ma.js';
+  WFD_SOURCE_MA_VERSION, type WfdSourceMACalculation } from './wfd-source-ma.js';
 import { checkUnifiedStructuredForWfd } from './unified-polars-derived.js';
 import type { UnifiedPolarsResult } from './unified-polars-execution.js';
 import type { FinancialReader } from '../collection/data-processing/financial-fixed.js';
 
 const digest = (x: unknown) => wfdSha256(canonicalWfdJson(x));
-const calculation = { version: WFD_SOURCE_MA_VERSION, snapshotId: 'snap-fixed', productId: 'daily-one', valueField: 'close' };
+const calculation: WfdSourceMACalculation = { version: WFD_SOURCE_MA_VERSION, snapshotId: 'snap-fixed', productId: 'daily-one', valueField: 'close' };
 const subject = { kind: 'entity', namespace: 'test.market', id: 'one' };
 const rows: WfdRecord[] = Array.from({ length: 21 }, (_, i) => {
   const start = new Date(Date.UTC(2026, 0, i + 1)), end = new Date(start.getTime() + 86400000);
@@ -91,7 +91,7 @@ test('WFD-only MA20 maps every window into one signed R1 scalar output with expl
     candidateSha256: digest(source.rows), rows: source.rows,
     algorithmDefinition: source.algorithmDefinition, evidence,
     computedAt: '2026-02-01T00:00:00.000Z', publication: 'candidate_only',
-  } as UnifiedPolarsResult;
+  } as unknown as UnifiedPolarsResult;
   const published = checkUnifiedStructuredForWfd(result, {
     namespace: 'fixture.bd', mode: 'user_test', expectedParentSnapshotId: null,
   }, 'bd-derived:test-ma20');
