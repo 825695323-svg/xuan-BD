@@ -176,10 +176,13 @@ export class ProcessingPlanService {
     /** 端点适配登记：只提供已采用版本的冻结配置与漂移记录。 */
     adapters?: EndpointAdapterRegistry;
     /** 独立清洗引擎，仅处理 parse→clean；不调用金融公式或计算任务。 */
-    polarsCleaner?: PolarsSourceCleaner }) {
+    polarsCleaner?: PolarsSourceCleaner;
+    /** Host-only module switches; cannot be changed by model tools or an existing plan. */
+    modules?: Partial<Record<ProcessingStepKind, boolean>> }) {
     const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
     this.versionBinding = Object.freeze({ processing: PROCESSING_PLAN_VERSION,
       implementation: wfdSha256(Buffer.concat(files)), policy: PROCESSING_POLICY_DIGEST,
+      ...(options.modules ? { productionModules: wfdSha256(canonicalWfdJson(options.modules)) } : {}),
       ...(options.polarsCleaner ? options.polarsCleaner.versionBinding : {}) });
     options.database.migrate('collection_processing', 1, SCHEMA);
     options.database.migrate('collection_processing_semantic_checks', 1, 'ALTER TABLE processing_plan_steps ADD COLUMN semantic_json TEXT;');
@@ -188,9 +191,31 @@ export class ProcessingPlanService {
   private get db() { return this.options.database.connection; }
   private get tasks() { return this.options.tasks(); }
 
+  /** Each of five stages is independently detachable without creating another TaskService runtime. */
+  moduleCapability(kind: ProcessingStepKind) {
+    if (!PROCESSING_STEP_KINDS.includes(kind)) fail('PRODUCTION_MODULE_KIND', '未登记的数据处理模块。');
+    const enabled = this.options.modules?.[kind] !== false;
+    const numerical = kind === 'clean' || kind === 'structure';
+    const backend = numerical ? this.options.polarsCleaner?.capabilities() : undefined;
+    const status = !enabled ? 'unplugged' as const
+      : backend?.status === 'blocked' ? 'blocked' as const : 'ready' as const;
+    return { module: kind, status, reason: !enabled ? '受信宿主已拔除该处理模块。'
+      : backend?.status === 'blocked' ? backend.reason
+        : null, engine: numerical ? backend ? 'polars' : 'typescript_compatibility'
+        : kind === 'check' ? 'shared_production_verifier' : 'fixed_typescript',
+      interface: 'data.modules.' + kind, ownsTaskRuntime: false,
+      sourcePolicy: 'frozen_material_plan_or_wfd_read_only' };
+  }
+  private assertModuleEnabled(kind: ProcessingStepKind): void {
+    const capability = this.moduleCapability(kind);
+    if (capability.status !== 'ready') fail('PRODUCTION_MODULE_UNAVAILABLE',
+      capability.reason ?? '该数据生产模块尚不可执行。');
+  }
+
   catalog(): JsonValue {
     return asJson({
       contract: 'bd.processing-plan/1', version: PROCESSING_PLAN_VERSION, versions: this.versionBinding, limits: PROCESSING_LIMITS,
+      stageModules: PROCESSING_STEP_KINDS.map(kind => this.moduleCapability(kind)),
       cleaningEngine: this.options.polarsCleaner?.capabilities() ?? {
         engine: 'typescript', status: 'legacy_compatibility', reason: '受信 Polars 未装配，沿原冻结处理契约执行。',
         methods: ['trim', 'empty_to_null'], noSilentFallback: true },
@@ -312,6 +337,7 @@ export class ProcessingPlanService {
     validId(planId, 'PROCESSING_PLAN_ID'); validStepId(stepId);
     const plan = this.planRow(planId); if (!plan) fail('PROCESSING_PLAN_NOT_FOUND', '没有该处理计划。');
     const step = this.stepRow(planId, stepId); if (!step) fail('PROCESSING_STEP_NOT_FOUND', '没有该处理步骤。');
+    this.assertModuleEnabled(step.kind as ProcessingStepKind);
     if (step.state === 'succeeded') fail('PROCESSING_STEP_ALREADY_SUCCEEDED', '该步骤已有完成产物；查询原步骤，不重复执行。');
     const contentDigest = digestOperationArgs({ planId, stepId });
     const requestKey = requestKeyFor('execute', operator.requestId), previous = this.request(requestKey);
@@ -328,6 +354,8 @@ export class ProcessingPlanService {
 
   runPlan(planId: string, operator: OperatorContext): TaskRecord {
     validId(planId, 'PROCESSING_PLAN_ID'); if (!this.planRow(planId)) fail('PROCESSING_PLAN_NOT_FOUND', '没有该处理计划。');
+    for (const step of this.stepRows(planId)) if (step.state === 'pending' && step.applicability === 'applicable')
+      this.assertModuleEnabled(step.kind as ProcessingStepKind);
     const contentDigest = digestOperationArgs({ planId, action: 'run' });
     const requestKey = requestKeyFor('run', operator.requestId), previous = this.request(requestKey);
     if (previous) {
@@ -479,6 +507,7 @@ export class ProcessingPlanService {
     const plan = this.planView(args.planId);
     const step = plan.steps.find(item => item.stepId === args.stepId);
     if (!step) fail('PROCESSING_STEP_NOT_FOUND', '没有该处理步骤。');
+    this.assertModuleEnabled(step.kind as ProcessingStepKind);
     if (step.state === 'succeeded') return this.result(plan);
     if (step.applicability === 'unknown') fail('PROCESSING_STEP_BLOCKED', `步骤存在未决适用性：${step.gaps.join('；') || '未说明'}`);
     if (step.state === 'blocked') fail('PROCESSING_STEP_BLOCKED', `步骤被上游或语义缺口阻塞：${step.gaps.join('；') || '未说明'}`);
