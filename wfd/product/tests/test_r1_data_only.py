@@ -22,7 +22,7 @@ NAMESPACE = "wfd.local"
 
 def make_data_service(tmp_path, roles=ALL_ROLES):
     engine = WFDDuckDBPrototype(
-        tmp_path / "store", load_protocol_validator(HERE / "protocol"),
+        tmp_path / "store", load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
         runtime_root=tmp_path / "runtime", sandbox=False, writer_host="r1-test")
     service = WFDDataOnlyService(
         engine, caller_roles=roles, caller_id="r1-test", unit_registry=UNITS,
@@ -275,7 +275,7 @@ def test_forecast_rating_actual_computed_business_definition_and_templates(tmp_p
 
 def test_bd_unavailable_read_and_machine_data_only_profile(tmp_path):
     # Provision this new fixture explicitly; machine requests only open existing stores.
-    validator = load_protocol_validator(HERE / "protocol")
+    validator = load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json")
     engine = WFDDuckDBPrototype.initialize_new(
         tmp_path / "store", validator, runtime_root=tmp_path / "runtime",
         sandbox=False, writer_host="r1-test")

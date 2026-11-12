@@ -25,7 +25,7 @@ HERE = Path(__file__).resolve().parents[1]
 
 
 def _open(store: Path, runtime: Path):
-    engine = WFDDuckDBPrototype(store, load_protocol_validator(HERE / "protocol"),
+    engine = WFDDuckDBPrototype(store, load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
                                 runtime_root=runtime, sandbox=False, writer_host="r2b-test")
     service = WFDDataOnlyService(
         engine, caller_roles={"read", "read_evidence", "submit", "register",

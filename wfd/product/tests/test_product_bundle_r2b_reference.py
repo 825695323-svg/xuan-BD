@@ -169,7 +169,7 @@ def test_structured_reference_wrong_dataset_snapshot_digest_permission(tmp_path)
     (other_root / "catalog/product_service/dataset.json").write_bytes(
         canonical({"dataset_id": "other_dataset"}))
     other_engine = WFDDuckDBPrototype(
-        other_root, load_protocol_validator(HERE / "protocol"),
+        other_root, load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
         runtime_root=tmp_path / "other_rt", sandbox=False, writer_host=None)
     other = WFDDataOnlyService(other_engine, caller_roles={"read"},
                                caller_id="other")

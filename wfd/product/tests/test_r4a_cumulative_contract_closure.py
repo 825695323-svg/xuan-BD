@@ -115,7 +115,7 @@ def _plan_target(summary, prep: Path, target: Path) -> None:
 def _read_only_service(target: Path, tmp_path: Path) -> WFDDataOnlyService:
     StateStore(target).ensure_initialized()
     engine = WFDDuckDBPrototype(
-        target, load_protocol_validator(HERE / "protocol"),
+        target, load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
         runtime_root=tmp_path / "plan-read-runtime", sandbox=False,
         writer_host=None, read_only=True,
     )

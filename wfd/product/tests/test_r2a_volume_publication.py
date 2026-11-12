@@ -67,7 +67,7 @@ def publisher(tmp_path: Path, name: str):
 
 def target_service(target: Path, tmp_path: Path) -> WFDDataOnlyService:
     engine = WFDDuckDBPrototype(
-        target, load_protocol_validator(HERE / "protocol"),
+        target, load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
         runtime_root=tmp_path / "target_read_runtime", sandbox=False,
         writer_host="volume-test",
     )

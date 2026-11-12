@@ -45,7 +45,7 @@ def _volume_for(target: Path, runtime: Path) -> WFDVolumeService:
 
 def _local(target: Path, runtime: Path, *, readonly: bool = False):
     engine = WFDDuckDBPrototype(
-        target, load_protocol_validator(HERE / "protocol"),
+        target, load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
         runtime_root=runtime, sandbox=False, writer_host="p4b-hydration",
         read_only=readonly)
     return WFDDataOnlyService(
@@ -72,7 +72,7 @@ from pathlib import Path
 from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, load_protocol_validator
 from wfd_sdk.product_data_service import WFDDataOnlyService
 target, protocol, runtime, pid, sid, units, ns = sys.argv[1:8]
-engine = WFDDuckDBPrototype(Path(target), load_protocol_validator(Path(protocol)),
+engine = WFDDuckDBPrototype(Path(target), load_protocol_validator(Path(protocol), entry="wfd-data-only-write.schema.json"),
                             runtime_root=Path(runtime), sandbox=False, read_only=True)
 service = WFDDataOnlyService(engine, caller_roles=("read",), caller_id="repair-read",
                              unit_registry=json.loads(units),
