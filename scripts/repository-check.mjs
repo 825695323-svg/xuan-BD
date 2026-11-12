@@ -74,6 +74,9 @@ export function checkRepository(root, tracked) {
     if (info.isFile() && info.size < 1024 && text(path).startsWith('version https://git-lfs.github.com/spec/v1\n'))
       errors.push(`只有LFS指针，缺少实际文件：${path}`);
   }
+  const modelExample = json('config/model.example.json');
+  if (modelExample.credential?.kind !== 'keychain' || !modelExample.credential.service || !modelExample.credential.account)
+    errors.push('模型配置示例必须采用有明确身份的系统钥匙串引用，不能重新引入弃用的 DSH 文件引用');
   const pins = json('config/local-web-toolchain.json');
   if (text('.nvmrc').trim() !== pins.node || text('.node-version').trim() !== pins.node) errors.push('Node版本选择文件与工具链不符');
   if (json('package.json').packageManager !== `npm@${pins.npm}`) errors.push('npm版本声明与工具链不符');

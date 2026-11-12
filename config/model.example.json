@@ -14,8 +14,8 @@
     "reasoning": false
   },
   "credential": {
-    "kind": "dsh-ref",
-    "path": "<ABSOLUTE_EXTERNAL_CREDENTIAL_FILE>",
-    "ref": "MODEL_API_KEY"
+    "kind": "keychain",
+    "service": "xuan-bd-model",
+    "account": "MODEL_ACCOUNT_REPLACE_ME"
   }
 }

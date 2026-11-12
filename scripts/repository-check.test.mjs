@@ -22,6 +22,14 @@ test('Python哈希锁拒绝浮动版本、遗漏依赖和无摘要输入', () =>
   assert.equal(checkPythonLock('a==1','a==1'),false);
   assert.equal(checkPythonLock('a==1',`a>=1 --hash=sha256:${hash}`),false);
 });
+test('模型模板采用受信钥匙串引用，不携带旧DSH文件定位或明文密钥', () => {
+  const model=JSON.parse(readFileSync(new URL('../config/model.example.json',import.meta.url)));
+  assert.equal(model.credential.kind,'keychain');
+  assert.equal(typeof model.credential.service,'string');
+  assert.equal(typeof model.credential.account,'string');
+  assert.equal('path' in model.credential,false);
+  assert.equal('ref' in model.credential,false);
+});
 test('固定资源锁完整，摘要、动态版本和重复资源负例均拒绝', () => {
   const lock=JSON.parse(readFileSync(new URL('../config/resource-sources.lock.json',import.meta.url))), pins=JSON.parse(readFileSync(new URL('../config/local-web-toolchain.json',import.meta.url)));
   assert.deepEqual(validateResourceLock(lock,pins),[]);
