@@ -657,12 +657,13 @@ test('F05 actual personal+companion catalogue exposes exactly six R1 actions, ne
   } finally { await h.close(); }
 });
 
-test('F05 actual attachment → material.read → processing.plan/run keeps genuine input and plan origins', { timeout: 60000 }, async () => {
+test('F05 actual attachment → material.read → staged processing plan/execute keeps genuine input and origins', { timeout: 60000 }, async () => {
   const f = fixture(), h = await host(f);
   try {
     const selected = await selectedInput(h, 'processing-origin');
     const guidance = h.services.modelContext(selected.input);
-    assert.match(guidance, /material\.process仅保存语义判断和受控清洗，不是五步处理文件产物/u);
+    assert.match(guidance, /material\.process会执行被明确选定的受控清洗，不是每份材料都必须运行的加工步骤/u);
+    assert.match(guidance, /data\.wfd\.query.*source\.api\.read.*capture\.<site>\.read/u);
     assert.match(guidance, /继续加工或形成可流转处理产物.*data\.processing\.capabilities/u);
     assert.match(guidance, /应用受控产物区.*无需另找个人目录/u);
     assert.match(guidance, /material\.ocr.*不等于.*image\.ocr/u);
