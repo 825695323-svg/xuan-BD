@@ -357,6 +357,8 @@ export class ProcessingPlanService {
 
   runPlan(planId: string, operator: OperatorContext): TaskRecord {
     validId(planId, 'PROCESSING_PLAN_ID'); if (!this.planRow(planId)) fail('PROCESSING_PLAN_NOT_FOUND', '没有该处理计划。');
+    if (this.planView(planId).outputs.some(output => output.stages !== null))
+      fail('PROCESSING_AGENT_STEPWISE_REQUIRED', '显式阶段计划只能由AGENTS或受信操作者逐步执行，不允许一次性跳过阶段反馈。');
     for (const step of this.stepRows(planId)) if (step.state === 'pending' && step.applicability === 'applicable')
       this.assertModuleEnabled(step.kind as ProcessingStepKind);
     const contentDigest = digestOperationArgs({ planId, action: 'run' });
@@ -1071,7 +1073,7 @@ export class ProcessingPlanService {
       materials: input.materials.map(material => ({ ...material.facts, dimensions: material.dimensions,
         suggestions: material.suggestions, routingState: material.routingState, gaps: material.gaps, intendedAction: material.intendedAction })),
       outputs: input.outputs.map(output => ({ outputId: output.outputId, materialIds: output.materialIds, tables: output.tables,
-        target: output.target, intendedAction: output.intendedAction, usage: output.usage, dimensions: output.dimensions, suggestions: output.suggestions, rejectReason: output.rejectReason,
+        target: output.target, stages: output.stages, intendedAction: output.intendedAction, usage: output.usage, dimensions: output.dimensions, suggestions: output.suggestions, rejectReason: output.rejectReason,
         coverage: output.coverage, adapterGaps: output.adapterGaps, routingState: output.routingState, gaps: output.gaps,
         steps: output.steps.map(step => step.stepId) })),
       steps: input.steps.map(spec => ({ ...spec, reuseFrom: steps.find(step => step.spec.stepId === spec.stepId)?.reusedFrom ?? null })) };
