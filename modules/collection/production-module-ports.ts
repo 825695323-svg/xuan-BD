@@ -214,7 +214,9 @@ function sourceScope(value: unknown, name: string): SourceScope {
       || typeof ref.version !== 'string' || !/^[0-9]{1,4}$/u.test(ref.version)
       || typeof ref.configDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(ref.configDigest))
       badSourceQuery(name + ' 的端点适配必须有已登记的 adapterId（编号）、version（版本）与 configDigest（配置摘要）。');
-    adapter = { adapterId: ref.adapterId as string, version: ref.version as string, configDigest: ref.configDigest as string };
+    const verified = ref as WfdRecord;
+    adapter = { adapterId: verified.adapterId as string, version: verified.version as string,
+      configDigest: verified.configDigest as string };
   }
   return { sourceId: record.sourceId as string, series: record.series as string, ...(adapter ? { adapter } : {}) };
 }
