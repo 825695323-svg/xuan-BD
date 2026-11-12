@@ -8,6 +8,7 @@ on:
       - 'modules/collection/production-calculation*.ts'
       - 'modules/collection/polars-cleaning.test.ts'
       - 'modules/collection/data-processing/polars-clean*'
+      - 'modules/collection/data-processing/polars-structure-worker.py'
       - 'modules/collection/production-verifier*.ts'
       - 'modules/collection/processing-plan.ts'
       - 'modules/collection/candidate-pipeline.ts'
