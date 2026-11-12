@@ -2,7 +2,7 @@ import { TaskError } from '../../platform/jobs/tasks.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { ProcessingPlanService, ProcessingStepKind } from './processing-plan.js';
 import type { ProductionCalculation } from './production-calculation.js';
-import type { R1ProductRead } from '../../contracts/r1-contracts.js';
+import type { R1ProductRead, R1ProductDiscovery } from '../../contracts/r1-contracts.js';
 import { readFileSync } from 'node:fs';
 import { ALGORITHM_REGISTRY, ALGORITHM_REGISTRY_VERSION, ALGORITHM_REGISTRY_NOTE,
   registryCounts } from '../financial/algorithm-registry.js';
@@ -125,6 +125,45 @@ export async function readWfdModulePage(module: ProductionWfdModuleId, raw: unkn
     note: '这是只读的正式 WFD 数据页，不授权跳过既有原报计划的解析/清洗/核对，不自动入库。' };
 }
 
+
+/**
+ * Semantic dictionary's authoritative view: published product declarations inside an
+ * explicitly pinned WFD snapshot. Templates (semanticDictionaryView) stay separately
+ * marked as unadopted reference material and never replace this fixed read.
+ */
+export async function readPublishedWfdSemanticDefinition(raw: unknown,
+  discover: (input: { snapshotId: string }, signal?: AbortSignal) => Promise<R1ProductDiscovery>,
+  signal: AbortSignal) {
+  const selection = fixedWfdModuleReference(raw);
+  signal.throwIfAborted();
+  const reply = await discover({ snapshotId: selection.snapshotId }, signal);
+  signal.throwIfAborted();
+  if (reply.snapshotId !== selection.snapshotId || reply.historyMode !== 'snapshot_contents'
+    || !isWfdRecord(reply.connection) || !Array.isArray(reply.products)) {
+    return fail('PRODUCTION_SEMANTIC_WFD_CHANGED',
+      '语义词典返回了不同快照、历史视角或不可核对的正式产品目录。');
+  }
+  const found = reply.products.filter(item => isWfdRecord(item) && item.product_id === selection.productId);
+  if (found.length !== 1 || !isWfdRecord(found[0]!.declaration)
+    || !isWfdRecord(found[0]!.subject) || !identifier(found[0]!.dataset_id)) {
+    return fail('PRODUCTION_SEMANTIC_WFD_NOT_FOUND',
+      '该 WFD 固定快照不存在唯一且完整的产品声明；未使用本地语义模板填补。');
+  }
+  const entry = found[0]!, declaration = entry.declaration as WfdRecord;
+  if (!identifier(declaration.semantic_code) || !identifier(declaration.unit_code)
+    || typeof declaration.measurement_nature !== 'string') {
+    return fail('PRODUCTION_SEMANTIC_WFD_INVALID',
+      '已发布产品的语义编号、单位或测量属性不完整；不伪造词典定义。');
+  }
+  return { version: PRODUCTION_MODULE_PORTS_VERSION,
+    kind: 'wfd_published_semantic_definition', authority: 'actual_fixed_snapshot',
+    snapshotId: selection.snapshotId, productId: selection.productId,
+    datasetId: entry.dataset_id, subject: entry.subject, declaration,
+    declarationSha256: wfdSha256(canonicalWfdJson(declaration)),
+    source: { historyMode: 'snapshot_contents', connectionSha256: wfdSha256(canonicalWfdJson(reply.connection)) },
+    execution: 'not_requested', publication: 'not_requested',
+    note: '正式定义只按原 WFD Snapshot 读取；仅查询，不采用/修订口径，也不触发自动标注或计算。' };
+}
 
 /** 因子库直接读取当前已有登记/公式谱系；登记不能直接赋予计算或 WFD 发布资格。 */
 export function factorLibraryView(factorId?: string) {
