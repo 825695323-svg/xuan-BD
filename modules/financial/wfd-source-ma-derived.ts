@@ -32,7 +32,7 @@ export function checkWfdMADerivedForWfd(
     || evidence.workerSha256 !== result.implementationVersion
     || digest(result.rows) !== result.candidateSha256
     || digest(result.algorithmDefinition) !== digest(evidence.algorithmDefinition)
-    || digest(result.rows) !== digest(evaluateWfdMA20(evidence.frozenInput as never, evidence.unitCode))
+    || digest(result.rows) !== digest(evaluateWfdMA20(evidence.frozenInput as never, String(evidence.unitCode ?? '')))
     || digest(calculation) !== digest(evidence.fixedCalculation)
     || typeof evidence.sourceRowsSha256 !== 'string'
     || typeof evidence.recordVersionsSha256 !== 'string') fail('全量均线结果缺少原始 WFD 来源、独立精确公式证明或有效冻结版本。');
