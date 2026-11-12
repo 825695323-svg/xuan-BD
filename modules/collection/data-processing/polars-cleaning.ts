@@ -5,7 +5,9 @@ import { TaskError, type TaskExecutionContext } from '../../../platform/jobs/tas
 import { digestOperationArgs } from '../../../platform/security/permissions.js';
 import { runDirectProcess } from '../../../platform/runtime/process.js';
 import type { ProcessRuntime } from '../../../platform/runtime/programs.js';
-import { cleanCandidateTable, type CleanedCandidateTable, type ParsedCandidateTable } from '../candidate-pipeline.js';
+import { cleanCandidateTable, structureCandidateTable, type CandidateTablePlan,
+  type CleanedCandidateTable, type ParsedCandidateTable, type StructuredCandidateTable } from '../candidate-pipeline.js';
+import { normalizeNumericLexeme } from './numeric-format.js';
 import { POLARS_DEPENDENCY_VERSION } from './polars-fixed.js';
 
 /**
@@ -16,6 +18,9 @@ import { POLARS_DEPENDENCY_VERSION } from './polars-fixed.js';
 export const POLARS_CLEAN_VERSION = 'bd.polars-clean/1';
 const worker = fileURLToPath(new URL('./polars-clean-worker.py', import.meta.url));
 const workerSha256 = wfdSha256(readFileSync(worker));
+export const POLARS_STRUCTURE_VERSION = 'bd.polars-structure/1';
+const structureWorker = fileURLToPath(new URL('./polars-structure-worker.py', import.meta.url));
+const structureWorkerSha256 = wfdSha256(readFileSync(structureWorker));
 const fail = (code: string, message: string): never => { throw new TaskError(code, message); };
 const digest = (value: unknown) => wfdSha256(canonicalWfdJson(value));
 const BATCH_ROWS = 2500;
@@ -28,6 +33,7 @@ export class PolarsSourceCleaner {
   readonly versionBinding = Object.freeze({
     polarsClean: POLARS_CLEAN_VERSION, polarsCleanWorker: workerSha256,
     polarsCleanDependency: POLARS_DEPENDENCY_VERSION,
+    polarsStructure: POLARS_STRUCTURE_VERSION, polarsStructureWorker: structureWorkerSha256,
   });
   constructor(private readonly runtime: ProcessRuntime) {}
 
@@ -38,7 +44,7 @@ export class PolarsSourceCleaner {
       if (!statSync(realpathSync(path)).isFile()) throw Error('受信 Polars Python 不是普通文件。');
     } catch (error) { reason = error instanceof Error ? error.message : String(error); }
     return { engine: 'polars' as const, status: reason ? 'blocked' as const : 'ready' as const,
-      reason, version: POLARS_CLEAN_VERSION, methods: ['trim', 'empty_to_null'] as const,
+      reason, version: POLARS_CLEAN_VERSION, methods: ['trim', 'empty_to_null', 'strict_structure'] as const,
       policy: 'strict_utf8_values_no_auto_null_no_fallback' };
   }
 
@@ -140,4 +146,109 @@ export class PolarsSourceCleaner {
       strictConversion: true, fallback: false,
     } };
   }
+  /** 与金融计算隔离的显式 schema 结构化；Polars 执行声明类型，原 TS 数值规则独立校核。 */
+  async structure(context: TaskExecutionContext,
+    cleaned: CleanedCandidateTable | ParsedCandidateTable, types?: CandidateTablePlan['types'],
+  ): Promise<{ structured: StructuredCandidateTable; evidence: WfdRecord }> {
+    const caps = this.capabilities();
+    if (caps.status !== 'ready') return fail('POLARS_STRUCTURE_UNAVAILABLE', caps.reason ?? '受信 Polars 结构化进程未装配。');
+    const applied = types ?? cleaned.types ?? {};
+    if (Object.entries(applied).some(([field, type]) => !cleaned.columns.includes(field)
+      || !['string', 'safe_integer', 'decimal_string', 'boolean', 'binary64_hex'].includes(type)))
+      return fail('POLARS_STRUCTURE_DECLARATION', '固定类型声明含不在来源表中的字段或未知类型。');
+    const expected = structureCandidateTable(cleaned, types);
+    const values = cleaned.rows.map(row => row.map((cell, col) => {
+      const value = cell.value, format = cleaned.numericFormats?.[cleaned.columns[col]!];
+      const lexeme = format && value !== null
+        ? typeof value === 'string' ? normalizeNumericLexeme(value, format)
+          : fail('POLARS_STRUCTURE_NUMERIC_FORMAT', '地域数值规则只接收原文字符串，禁止浮点倒推原词。')
+        : value;
+      return { value: lexeme === null ? null : String(lexeme),
+        kind: lexeme === null ? 'null' : typeof lexeme };
+    }));
+    const results: unknown[][] = [];
+    const receipts: string[] = [];
+    const registeredPython = this.runtime.path('polars-python'), frozenPython = realpathSync(registeredPython);
+    const assertAuthorized = () => {
+      context.signal.throwIfAborted();
+      if (realpathSync(this.runtime.path('polars-python')) !== frozenPython
+        || wfdSha256(readFileSync(structureWorker)) !== structureWorkerSha256)
+        return fail('POLARS_STRUCTURE_CHANGED', '受信 Polars 可执行程序或结构化实现发生改变。');
+      context.assertAuthorized({ operationId: 'processing.polars.structure.execute', operationVersion: 1,
+        approvalMode: 'automatic', argsDigest: digestOperationArgs(context.task.args),
+        targets: [{ kind: 'file', path: registeredPython }] },
+        [{ action: 'execute', target: { kind: 'file', path: registeredPython } }]);
+    };
+    let offset = 0;
+    while (offset < values.length) {
+      context.signal.throwIfAborted();
+      let chunk: typeof values = [];
+      for (let i = offset; i < values.length && chunk.length < BATCH_ROWS; i++) {
+        const next = [...chunk, values[i]!];
+        if (Buffer.byteLength(canonicalWfdJson({ version: POLARS_STRUCTURE_VERSION,
+          operation: 'structure', columns: cleaned.columns, rows: next, types: applied })) > BATCH_INPUT_BYTES) {
+          if (!chunk.length) return fail('POLARS_STRUCTURE_INPUT_BUDGET', '单行结构化输入超预算，拒绝截断。');
+          break;
+        }
+        chunk = next;
+      }
+      if (!chunk.length) return fail('POLARS_STRUCTURE_INPUT_BUDGET', '结构化批次没有完整原始行。');
+      const request = { version: POLARS_STRUCTURE_VERSION,
+        operation: 'structure', columns: cleaned.columns, rows: chunk, types: applied };
+      assertAuthorized();
+      const output = await runDirectProcess({ binary: 'polars-python', binaryPath: registeredPython,
+        runtime: this.runtime, args: ['-I', '-B', structureWorker], stdin: canonicalWfdJson(request), cwd: '/',
+        signal: context.signal, assertAuthorized, timeoutMs: 15_000, maxOutputBytes: 2_100_000,
+        onProcessState: event => context.emit({ type: 'process_state', ...event }),
+        onHeartbeat: event => context.emit({ type: 'heartbeat', ...event }) });
+      assertAuthorized();
+      let received: unknown;
+      try { received = JSON.parse(output.stdout); } catch {
+        return fail('POLARS_STRUCTURE_RESPONSE', '结构化进程未返回有效的 JSON 回执。');
+      }
+      if (isWfdRecord(received) && received.ok === false)
+        return fail('POLARS_STRUCTURE_' + String(received.code), String(received.message ?? '严格类型转换拒绝。'));
+      if (!isWfdRecord(received) || received.version !== POLARS_STRUCTURE_VERSION
+        || received.executor !== 'polars' || received.polars_version !== POLARS_DEPENDENCY_VERSION
+        || received.operation !== 'structure' || received.input_sha256 !== digest(request)
+        || !Array.isArray(received.rows) || received.rows.length !== chunk.length)
+        return fail('POLARS_STRUCTURE_RESPONSE', '结构化回执的执行器、版本、原值摘要或完整行数不匹配。');
+      for (let row = 0; row < chunk.length; row++) {
+        const actual = received.rows[row];
+        if (!Array.isArray(actual) || actual.length !== cleaned.columns.length)
+          return fail('POLARS_STRUCTURE_RESPONSE', '结构化回执行宽与原字段不一致。');
+        const mapped: unknown[] = [];
+        for (let col = 0; col < cleaned.columns.length; col++) {
+          const name = cleaned.columns[col]!, declared = applied[name];
+          const expectedCell = expected.rows[offset + row]![col]!.value;
+          // 未声明类型不授权隐式转换；沿原数据契约保留原/精度校核的值。
+          const candidate = declared ? actual[col] : expectedCell;
+          if (candidate !== expectedCell) return fail('POLARS_STRUCTURE_MISMATCH',
+            'Polars 严格转换与原已验收的无损类型规则不一致，拒绝采用或生成空值。');
+          mapped.push(candidate);
+        }
+        results.push(mapped);
+      }
+      receipts.push(digest(received));
+      await context.emit({ type: 'checkpoint', checkpoint: {
+        stage: 'structure', engine: 'polars', verifiedRows: offset + chunk.length,
+        workerSha256: structureWorkerSha256, sourceSha256: cleaned.source_sha256,
+        chunkReceiptSha256: receipts[receipts.length - 1],
+      } });
+      offset += chunk.length;
+    }
+    if (results.length !== expected.rows.length) return fail('POLARS_STRUCTURE_MISMATCH', '未处理完全部固定来源行。');
+    const structured: StructuredCandidateTable = { ...expected,
+      rows: expected.rows.map((row, ri) => row.map((cell, ci) => ({ ...cell, value: results[ri]![ci] as typeof cell.value }))) };
+    if (canonicalWfdJson(structured) !== canonicalWfdJson(expected))
+      return fail('POLARS_STRUCTURE_MISMATCH', '类型产物或原始证据与冻结独立核验不一致。');
+    return { structured, evidence: {
+      engine: 'polars', version: POLARS_STRUCTURE_VERSION, workerSha256: structureWorkerSha256,
+      inputSha256: digest({ source: cleaned.source_sha256, columns: cleaned.columns, types: applied }),
+      outputSha256: digest(structured), rows: structured.rows.length,
+      chunkCount: receipts.length, chunkReceiptsSha256: digest(receipts),
+      strictConversion: true, silentNullFallback: false,
+    } };
+  }
+
 }
