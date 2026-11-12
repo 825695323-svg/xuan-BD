@@ -79,6 +79,7 @@ import { ToolLibraryService } from '../../modules/financial/tool-library.js';
 import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
 import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
 import { ProductionCalculation } from '../../modules/collection/production-calculation.js';
+import type { ProductionModuleId } from '../../modules/collection/production-module-ports.js';
 import { PolarsSourceCleaner } from '../../modules/collection/data-processing/polars-cleaning.js';
 import { UnifiedPolarsExecution } from '../../modules/financial/unified-polars-execution.js';
 import type { LocalDataLifecycle, LocalDataLifecycleRecord } from '../../platform/runtime/local-data-lifecycle.js';
@@ -156,6 +157,8 @@ export interface ServiceOptions {
   r1ConnectionId?: string;
   /** Same-process service owned by this host; never supplied by a client or model. */
   workspaceServices?: ApplicationServices;
+  /** 仅由受信宿主冻结的独立模块拔插状态；不允许模型或 HTTP 请求修改。 */
+  productionModuleSwitches?: Partial<Record<ProductionModuleId, boolean>>;
   /** 仅本机可信启动器装配持久用户测试实例。 */
   /** Additional, already registered and authenticated lines. Selection is held in the core transaction. */
 }
@@ -196,6 +199,8 @@ export interface ApplicationServices {
   unifiedPolars?: UnifiedPolarsExecution;
   /** 与原报清洗服务并列，方法内部可选 Polars/pandas 的计算入口。 */
   productionCalculation?: ProductionCalculation;
+  /** 当前宿主冻结的八模块拔插开关。 */
+  productionModuleSwitches?: Partial<Record<ProductionModuleId, boolean>>;
   fixedCalculations?: FixedCalculationService;
   candidates?: CandidateService;
   semantics?: MaterialSemanticService;
@@ -306,7 +311,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     assertPath: path => direct.assertPublicPath(path), mediaAdapters: () => mediaAdapters }) : undefined;
   const conversationAlgorithms = (options.workspaceServices?.processing || options.workspaceServices?.productionCalculation || options.workspaceServices?.algorithms) ? new ConversationAlgorithmBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null }) : undefined;
-  const conversationProcessing = options.workspaceServices?.processing ? new ConversationProcessingBridge({ database, core, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
+  const conversationProcessing = options.workspaceServices ? new ConversationProcessingBridge({ database, core, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
   const conversationR1 = options.role !== 'service' && options.workspaceServices?.r1Workspace
     ? new ConversationR1Bridge({ database, core, files, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
   const conversationFinancial = options.workspaceServices?.financial ? new ConversationFinancialBridge({ database,
@@ -439,6 +444,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   // R1 只使用已完整装配的真实加工服务和共用内容仓储。
   processing = materials && candidates ? new ProcessingPlanService({ database, tasks: currentTasks, materials,
     adapters: endpointAdapters,
+    ...(options.productionModuleSwitches ? { modules: options.productionModuleSwitches } : {}),
     ...(options.role === 'service' && options.processRuntime
       ? { polarsCleaner: new PolarsSourceCleaner(options.processRuntime) } : {}),
     financialReader: (value, signal): ReturnType<R1WorkspaceService['readProduct']> => {
@@ -718,5 +724,5 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   queueMicrotask(() => core.dispatchTaskCompletions());
   return { core, database, permissions, files, tasks: runningTasks, memory, agentSkills, questions, toolSettings, sourceSettings, personalResources, uiPreferences, contextLedger, inputRules, inputRouter, directConversations, direct, modelTools,
     ...(options.localData ? { localData: options.localData.lifecycle, localDataId: options.localData.dataId } : {}),
-    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, unifiedPolars, productionCalculation, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
+    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, unifiedPolars, productionCalculation, productionModuleSwitches: options.productionModuleSwitches, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
 }
