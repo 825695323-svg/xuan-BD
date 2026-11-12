@@ -107,7 +107,7 @@ export function basicAlgorithmToolContract(
     calculateAction: 'algorithms.calculate', statusAction: 'algorithms.status',
     sourcePolicy: 'WFD fixed snapshot only; no managed file, no latest, no hidden data acquisition',
     agentTriggered: true, uiExecution: false, agentMayRead: true, agentMaySelfAuthorize: false,
-    publication: 'one independent fixed-algorithm verification -> existing R1 WFD submit -> fixed readback',
+    publication: 'data production shared verifier + method-specific proof -> existing R1 WFD submit -> fixed readback',
     methods: selected, unknownMethod: selectedMethod !== undefined && selected.length === 0 };
 }
 
@@ -131,6 +131,6 @@ export function bdSessionToolContract(catalog: AlgorithmCatalogView, unified?: U
         next: '正式发布、固定读回和历史资格仍归 WFD；本契约不授予数据库写权' },
       { id: 'basic_algorithms', title: '基础算法 / Basic Algorithms',
         tools: ['algorithms.contract', 'algorithms.capabilities', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status'],
-        next: 'AGENTS 调用 → WFD 固定快照 → 固定算法结构化结果 → 独立核对 → WFD 正式发布与固定读回' },
+        next: 'AGENTS 调用同一数据生产计算模块 → WFD 固定快照 → 注册方法/Polars 或按需 pandas → 共用生产核对与方法独立复核 → R1/WFD 正式发布读回' },
     ], algorithms: basicAlgorithmToolContract(catalog, undefined, unified) };
 }
