@@ -233,8 +233,21 @@ test('real WFD frozen complete daily source -> Polars MA20 -> R1 full warmup/val
       assert.equal(state.state, 'associated');
       const refs = JSON.parse(String(state.local_refs_json));
       assert.equal(refs.fixedAlgorithm.kind, 'structured_polars');
-      const derivedAssociations = JSON.parse(String(state.associations_json ?? '[]'));
-      assert.equal(derivedAssociations.length, 21);
+      // The authoritative per-row association is stored in r1_record_associations, not
+      // in a synthetic associations_json column on r1_handoff_attempts.
+      const derivedAssociations = host.services.r1!.localExplanation(outcome.requestId).associations as any[];
+      assert.equal(derivedAssociations.length, 21, 'R1 must associate every WFD MA20 row to its actual record version');
+      const first = derivedAssociations[0];
+      assert.ok(first?.snapshot_id && first?.product_id);
+      assert.ok(derivedAssociations.every(row => row.snapshot_id === first.snapshot_id
+        && row.product_id === first.product_id), 'One derived source series must remain one WFD product');
+      const derivedReadback = await host.call('/r1/products/read', {
+        snapshotId: first.snapshot_id, productId: first.product_id,
+      });
+      assert.equal(derivedReadback.result.rows.length, 21,
+        'All 21 warmup and value rows must be queryable from the published WFD snapshot');
+      assert.equal(derivedReadback.result.rows.filter((row: any) =>
+        row.values.value?.value_state === 'insufficient_warmup').length, 19);
       assert.equal((await host.services.productionCalculation!.publish(computed.id)).requestId,
         outcome.requestId, 'Retry must reuse the frozen original WFD publication request');
     } finally { await host.close(); }
