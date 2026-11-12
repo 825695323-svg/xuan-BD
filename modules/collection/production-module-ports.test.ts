@@ -196,7 +196,7 @@ test('G5 shares R1 source profile store, compares canonical semantics, and never
     const products = { datasetFor: (fingerprint: string) =>
       fingerprint === profileFingerprint(left) ? 'market_daily' : null };
     const query = { left: syntheticScope('synthetic-a', 'a'), right: syntheticScope('synthetic-b', 'b') };
-    const result = sourceSemanticView(query, { profiles, products });
+    const result = sourceSemanticView(query, { profiles, products }) as any;
     assert.equal(result.kind, 'read_only_source_semantics');
     assert.equal(result.status, 'candidate_equivalent');
     assert.equal(result.adoption, 'not_granted');
@@ -210,7 +210,7 @@ test('G5 shares R1 source profile store, compares canonical semantics, and never
     assert.equal(result.left.fields[1]?.fieldCode, 'close');
     assert.equal(result.left.fields[1]?.aliases[0], 'close');
     assert.equal(result.left.fieldPreviewComplete, true);
-    assert.equal(sourceSemanticView({ left: query.left, fieldCode: 'close' }, { profiles }).left.displayedFields, 1);
+    assert.equal((sourceSemanticView({ left: query.left, fieldCode: 'close' }, { profiles }) as any).left.displayedFields, 1);
     assert.equal(sourceSemanticView({ left: query.left }, {}).status, 'not_configured');
     assert.equal(sourceSemanticView({ left: { ...query.left, adapter: {
       ...query.left.adapter, configDigest: 'b'.repeat(64) } } }, { profiles }).status, 'needs_evidence');
@@ -220,7 +220,7 @@ test('G5 shares R1 source profile store, compares canonical semantics, and never
     const changed = syntheticProfile('synthetic-b', 'b', { adjustment: { status: 'qfq',
       method: 'supplier-adjusted', basis: '2026-11-13' } });
     writeFileSync(join(directory, 'b.json'), JSON.stringify(changed));
-    const different = sourceSemanticView(query, { profiles, products });
+    const different = sourceSemanticView(query, { profiles, products }) as any;
     assert.equal(different.status, 'different_semantics');
     assert.equal(different.comparison?.sameSignature, false);
     assert.match(different.comparison!.reasons.join(';'), /复权状态不同/);

@@ -203,6 +203,7 @@ function sourceScope(value: unknown, name: string): SourceScope {
   if (!isWfdRecord(value) || Object.keys(value).some(key => !['sourceId','series','adapter'].includes(key))
     || typeof value.sourceId !== 'string' || !scopeCode.test(value.sourceId)
     || typeof value.series !== 'string' || !value.series.trim() || value.series.length > 512
+    || value.series.includes('*') || value.series.includes('?')
     || /[\u0000-\u001f]/u.test(value.series)) badSourceQuery(name + ' 需要真实来源编号和明确的数据系列；不能用模糊检索或文件路径代替。');
   let adapter: SourceProfileAdapterBinding | undefined;
   if (value.adapter !== undefined) {
