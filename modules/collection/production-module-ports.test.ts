@@ -146,9 +146,9 @@ test('semantic dictionary resolves actual published WFD definitions without conf
   await assert.rejects(readPublishedWfdSemanticDefinition({ ...target, snapshotId: 'latest' },
     actual, new AbortController().signal), code('PRODUCTION_MODULE_WFD_REFERENCE'));
   await assert.rejects(readPublishedWfdSemanticDefinition(target,
-    async () => ({ ...(await actual(target)), snapshotId: 'unrelated_snapshot' }) as never,
+    async () => ({ ...((await actual(target)) as unknown as Record<string, unknown>), snapshotId: 'unrelated_snapshot' }) as never,
     new AbortController().signal), code('PRODUCTION_SEMANTIC_WFD_CHANGED'));
   await assert.rejects(readPublishedWfdSemanticDefinition(target,
-    async () => ({ ...(await actual(target)), products: [] }) as never,
+    async () => ({ ...((await actual(target)) as unknown as Record<string, unknown>), products: [] }) as never,
     new AbortController().signal), code('PRODUCTION_SEMANTIC_WFD_NOT_FOUND'));
 });
