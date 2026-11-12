@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { CoreDatabase } from '../../platform/state/database.js';
 import { TaskRuntimeRegistry, TaskService } from '../../platform/jobs/tasks.js';
@@ -39,11 +39,13 @@ test('real Polars worker executes one unified algorithms.calculate task and free
     const fixture = createFullChainFixture({ name: 'unified-polars-live', machine: false });
     const bindingsPath = join(fixture.runtime, 'config/machine.bindings.json');
     const bindings = JSON.parse(readFileSync(bindingsPath, 'utf8'));
-    bindings.resources.polars_python = { kind: 'program', path: realpathSync(python!) };
+    // Keep the explicitly selected virtual-environment invocation path; the runtime checks canonical identity separately.
+    bindings.resources.polars_python = { kind: 'program', path: resolve(python!) };
     bindings.revision++;
     writeFileSync(bindingsPath, JSON.stringify(bindings, null, 2));
     const resources = new ResourceBindings(fixture.runtime);
     const processRuntime = new ProcessRuntime(resources);
+    assert.equal(processRuntime.path('polars-python'), resolve(python!));
     const database = new CoreDatabase(join(fixture.runtime, 'state', 'unified-test.sqlite'));
     const registry = new TaskRuntimeRegistry();
     let tasks!: TaskService;
@@ -61,7 +63,7 @@ test('real Polars worker executes one unified algorithms.calculate task and free
     const backend = new UnifiedPolarsExecution({ database, tasks: () => tasks, workspace: workspace as never, processRuntime });
     registry.register(backend.runtime);
     tasks = new TaskService({ database, permissions, runtimes: registry });
-    permissions.grant({ capabilities: [{ action: 'execute', target: { kind: 'file', path: realpathSync(python!) } }],
+    permissions.grant({ capabilities: [{ action: 'execute', target: { kind: 'file', path: resolve(python!) } }],
       scope: { kind: 'persistent' }, label: 'isolated registered Polars worker' });
     try {
       assert.equal(backend.capabilities().status, 'ready');
