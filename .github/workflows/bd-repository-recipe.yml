@@ -1,0 +1,57 @@
+name: BD repository recipe verification
+
+on:
+  push:
+    branches: [fix/bd-reproducible-recipe-20261112]
+  pull_request:
+    paths:
+      - '.github/workflows/bd-repository-recipe.yml'
+      - 'scripts/repository-*.mjs'
+      - 'scripts/bootstrap-*.mjs'
+      - 'config/**'
+      - '.gitignore'
+      - 'README.md'
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Inspect tracked source without executing project code
+        run: |
+          python3 - <<'PY'
+          import subprocess, json, pathlib, hashlib
+          files = subprocess.check_output(['git','ls-files','-z']).decode().split('\0')[:-1]
+          ignored = subprocess.run(['git','ls-files','-ci','--exclude-standard'], capture_output=True, text=True).stdout.splitlines()
+          print('TRACKED_COUNT', len(files))
+          print('TRACKED_IGNORED', json.dumps(ignored, ensure_ascii=False))
+          print('SUBMODULES', subprocess.check_output(['git','ls-files','--stage']).decode().count('160000 '))
+          suspicious = []
+          for name in files:
+              p=pathlib.Path(name)
+              if not p.is_file(): continue
+              b=p.read_bytes()
+              if name.startswith(('staging/','audit-output/','.audit/')) or p.suffix in ('.sqlite','.db','.log','.pyc','.parquet') or p.name in ('05zt4vhz','2zqkfew_'):
+                  suspicious.append({'path':name,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()})
+          print('SUSPECTS', json.dumps(suspicious, ensure_ascii=False))
+          print('LARGEST', json.dumps(sorted([(pathlib.Path(n).stat().st_size,n) for n in files if pathlib.Path(n).is_file()], reverse=True)[:20], ensure_ascii=False))
+          for prefix in ('config/','scripts/','.github/workflows/','docs/'):
+              print('INPUTS', prefix, json.dumps([n for n in files if n.startswith(prefix)], ensure_ascii=False))
+          for term in ('staging/', '05zt4vhz', '2zqkfew_', 'legacy_samples', 'bundled/', 'ffmpeg', 'whisper', 'launcher.json'):
+              r=subprocess.run(['git','grep','-n','-F',term,'--',':(exclude)package-lock.json',':(exclude).github/workflows/bd-repository-recipe.yml'],capture_output=True,text=True)
+              print('REFERENCES',term, '\n'.join(r.stdout.splitlines()[:40]))
+          PY
+          git archive --format=tar -o "$RUNNER_TEMP/xuan-bd-tracked-source.tar" HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xuan-bd-tracked-source
+          path: ${{ runner.temp }}/xuan-bd-tracked-source.tar
+          retention-days: 1
+          if-no-files-found: error
