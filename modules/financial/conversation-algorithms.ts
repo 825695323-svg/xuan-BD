@@ -98,6 +98,7 @@ export class ConversationAlgorithmBridge {
         processing: this.options.companion.processing,
         calculation: this.options.companion.productionCalculation,
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
+        hasSourceProfiles: !!this.options.companion.sourceFieldProfiles,
         enabled: this.options.companion.productionModuleSwitches,
       });
       authority.assert();

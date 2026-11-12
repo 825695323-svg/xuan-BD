@@ -2,12 +2,53 @@
 
 ## 一条主线，不重复建立语义数据库
 
-**端点适配**（`endpoint-adapter`，确定实际请求/结构、字段序号与有证据的单位转换）
-→ **来源字段档案**（`source-field-profile`，确定某个接口版本的原表头、规范字段、单位和口径）
-→ **R1 正式交接预检**（`r1-auto`，对照 WFD 已发布的定义、缺口、历史版本和来源证据）
-→ **WFD 产品定义与 Snapshot**（正式语义及数据的唯一权威版本）。
+**来源接口及采集** → **端点适配**（`endpoint-adapter`，读取结构、字段序号及有依据的单位转换）→ **R1 原报预检**（`r1-auto`，复用来源字段档案，核对证据与已有定义）→ **WFD**（正式定义与 Snapshot 固定快照）。
 
-`data.modules.semantics`（语义词典模块）继续只读：列模板及固定 WFD 快照中的实际已发布定义。它不会偷偷采信模型判断、修改 WFD 或启动计算。端点映射也不塞进这份全局词典。
+**G5 统一语义词典是八个并列工具之一**。它通过 `data.modules.semantics`（AGENTS 的语义词典只读动作）按需读取与 R1 *同一个* `SourceFieldProfileStore`（来源字段档案服务）、`SemanticProductRegistryStore`（语义产品登记服务）、语义模板和已发布 WFD 产品声明，并使用 `compareProfileSemantics`（跨来源规范语义比较）报告差异。来源映射配置仍由本机受信运行根保管；查询能力并不意味着 AGENTS 可直接修改配置、采用新定义或绕过 WFD 正式准入。**G5 不是原报必须经过的额外加工步骤**，不存在来源管道里的平行 G3 语义服务。
+
+## G5 与八个并列模块的当前接线（Mermaid 源图）
+
+```mermaid
+flowchart TB
+    AG["BD AGENTS：发现工具 / 每步读取反馈"]
+    INPUT["外部数据：采集源 / 接口源 / 用户文件"]
+    ADAPT["来源端点适配：解析 / 转换<br/>限制：真实回执、已采用适配版本、单位依据"]
+    MAT["原件保管及来源证据"]
+    CFG[("同一受信运行配置<br/>source-fields + semantic-products")]
+    WFD[("WFD：正式定义、产品与固定 Snapshot")]
+
+    INPUT --> ADAPT --> MAT
+    MAT --> AG
+
+    subgraph EIGHT["八个并列模块：只按 AGENTS 决策调用"]
+      direction LR
+      P["解析"] 
+      C["清洗"]
+      S["结构化"]
+      A["标注"]
+      K["核对"]
+      X["计算"]
+      F["因子库：只读登记"]
+      G5["G5 语义词典：只读<br/>来源字段 / 跨源对比 / 缺口 / 模板 / 固定 WFD 定义"]
+    end
+
+    AG -. "按需调用，不存在固定五步" .-> EIGHT
+    G5 -. "只读：精确来源 + 系列 + 适配摘要" .-> CFG
+    G5 -. "只读：真实产品与固定快照" .-> WFD
+    MAT --> R1["R1：已有来源字段档案 / 用途 / 产品定义预检"]
+    CFG -. "原 R1 使用相同档案，不经 G5 代理写入" .-> R1
+    R1 --> GATE{"约束：来源身份、字段口径、授权、WFD 写入目标全部合格？"}
+    GATE -->|"不合格"| GAP["保留原证据与语义缺口；不自动合并或发布"]
+    GATE -->|"合格"| PUBLISH["原 R1 / WFD 正式交接与固定读回"]
+    PUBLISH --> WFD
+    EIGHT --> FEEDBACK["结果、差异与缺口统一反馈"]
+    GAP --> FEEDBACK
+    PUBLISH --> FEEDBACK
+    FEEDBACK --> AG
+```
+
+注意：G5 的 `compareProfileSemantics`（来源语义比较）是**按需查询能力**，并非全部 R1 请求的自动强制跨供应商比较门禁；R1 已有自己的来源档案选择、原件证据和 WFD 定义预检。图中虚线表示只读依赖，不是自动触发。
+
 
 ## 发现字段差异
 
@@ -52,6 +93,16 @@
 **跨来源认同**：`compareProfileSemantics`（来源语义比较）比较规范字段的类型、单位、角色、计量口径，比较频率、时间桶、复权状态、复权方法与基准。只知道列名或单位、但值的金融计量含义未知，不认定两家供应商的数据可合并。标准化后可独立比较，不改写来源原件。
 
 若运营者已经明确登记同义语义对应哪个数据集，可以在实际运行根 `<运行根>/config/semantic-products.json` 中登记 `profileFingerprint`（规范语义签名的内容摘要）到 `datasetId`（正式数据集编号）的关系。仓库 [`config/semantic-products.example.json`](../config/semantic-products.example.json) 只是格式模板，其全零指纹不代表真实数据。登记只有**映射约束**，不是 WFD 产品授权，也不自动把不同来源的历史产品合并。
+
+## G5 的只读工具参数与约束
+
+`data.modules.semantics`（语义词典工具）原有 `groupId`（模板分组）和 `wfdRefJson`（WFD 固定产品只读引用）保持兼容。新增可选的 `sourceQueryJson`（来源语义查询 JSON），仅在 G5 内使用：
+
+- 单来源查询：`{"left":{"sourceId":"synthetic-a","series":"daily-kline","adapter":{"adapterId":"synthetic.daily","version":"1","configDigest":"<64位实际摘要>"}}}`；其中摘要必须来自已采用配置，不能从示例中的占位字符推断有效
+- 跨来源比较：增加 `"right"`（第二个来源身份），可选 `"fieldCode"`（只筛选可见预览字段；内部比较始终覆盖完整档案）
+- 输出：`status`（查询状态）、`digest/fingerprint`（完整来源档案内容摘要/规范语义指纹）、字段与来源口径**有界预览**、差异原因、`gaps`（待补证据）及本机登记的数据集编号（若存在）
+- 与 `groupId`、`wfdRefJson` 或加工计划参数互斥；不会修改映射、远程注册或发布 WFD
+- `candidate_equivalent`（来源签名候选等同）不代表 WFD 正式产品相同，需按固定合同和授权另行核对；`not_configured`（本机未装配）和 `needs_evidence`（缺依据）均不能说成通过
 
 ## 发现新知识时的处理
 

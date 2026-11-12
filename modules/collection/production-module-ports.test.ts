@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CoreDatabase } from '../../platform/state/database.js';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SourceFieldProfileStore, readSourceFieldProfile, profileFingerprint, type SourceFieldProfile } from './source-field-profile.js';
+import { modelActionApprovalMode } from '../agent/model-tools.js';
 import { isModelActionAllowed } from '../agent/model-tools.js';
 import { ConversationProcessingBridge } from './conversation-processing.js';
 import { ConversationAlgorithmBridge } from '../financial/conversation-algorithms.js';
 import { PRODUCTION_MODULES, productionModuleDirectory,
   fixedWfdModuleReference, readWfdModulePage,
-  factorLibraryView, semanticDictionaryView, readPublishedWfdSemanticDefinition,
+  factorLibraryView, semanticDictionaryView, sourceSemanticView, readPublishedWfdSemanticDefinition,
   PRODUCTION_MODULE_PORTS_VERSION } from './production-module-ports.js';
 
 const code = (target: string) => (error: unknown) => (error as { code?: string }).code === target;
@@ -153,4 +158,126 @@ test('semantic dictionary resolves actual published WFD definitions without conf
   await assert.rejects(readPublishedWfdSemanticDefinition(target,
     async () => ({ ...((await actual(target)) as unknown as Record<string, unknown>), products: [] }) as never,
     new AbortController().signal), code('PRODUCTION_SEMANTIC_WFD_NOT_FOUND'));
+});
+
+
+const syntheticScope = (sourceId: string, suffix: string) => ({
+  sourceId, series: 'daily-kline',
+  adapter: { adapterId: suffix + '.daily', version: '1', configDigest: 'a'.repeat(64) },
+});
+function syntheticProfile(sourceId: string, suffix: string, changes: Record<string, unknown> = {}): SourceFieldProfile {
+  return readSourceFieldProfile({
+    version: 'bd.source-field-profile/1', mappingVersion: 1, profileId: suffix + '-1', sourceId, series: 'daily-kline',
+    adapter: syntheticScope(sourceId, suffix).adapter,
+    fields: [
+      { originalHeader: suffix + '_date', fieldCode: 'trade_date', dataType: 'text', unitCode: 'date', role: 'date' },
+      { originalHeader: suffix + '_close', aliases: ['close'], fieldCode: 'close', dataType: 'decimal',
+        unitCode: 'cny_per_share', role: 'value', measurement: '未复权每股收盘价' },
+    ],
+    frequency: 'day', timeBucket: { labelSemantics: 'start', interval: 'closed_open',
+      lengthMinutes: 1440, timezone: 'Asia/Shanghai' },
+    adjustment: { status: 'raw' },
+    confirmation: { status: 'operator_confirmed', basis: '本测试固定合成样本，不代表生产供应商口径',
+      confirmedAtUtc: '2026-11-13T00:00:00Z' },
+    ...changes,
+  }, suffix + '.json');
+}
+const badSemanticQuery = (input: unknown) => assert.throws(() => sourceSemanticView(input),
+  code('PRODUCTION_SEMANTIC_SOURCE_QUERY'));
+
+test('G5 shares R1 source profile store, compares canonical semantics, and never grants formal WFD adoption', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'bd-g5-source-profile-'));
+  try {
+    const left = syntheticProfile('synthetic-a', 'a');
+    const right = syntheticProfile('synthetic-b', 'b');
+    writeFileSync(join(directory, 'a.json'), JSON.stringify(left));
+    writeFileSync(join(directory, 'b.json'), JSON.stringify(right));
+    const profiles = new SourceFieldProfileStore(directory);
+    const products = { datasetFor: (fingerprint: string) =>
+      fingerprint === profileFingerprint(left) ? 'market_daily' : null };
+    const query = { left: syntheticScope('synthetic-a', 'a'), right: syntheticScope('synthetic-b', 'b') };
+    const result = sourceSemanticView(query, { profiles, products }) as any;
+    assert.equal(result.kind, 'read_only_source_semantics');
+    assert.equal(result.status, 'candidate_equivalent');
+    assert.equal(result.adoption, 'not_granted');
+    assert.equal(result.publication, 'not_requested');
+    assert.equal(result.dataWrite, 'forbidden');
+    assert.deepEqual(result.comparison?.reasons, []);
+    assert.equal(result.comparison?.sameSignature, true);
+    assert.equal(result.comparison?.registeredSameDataset, true);
+    assert.equal(result.left.fingerprint, (result as any).right.fingerprint);
+    assert.equal(result.left.registeredDatasetId, 'market_daily');
+    assert.equal(result.left.fields[1]?.fieldCode, 'close');
+    assert.equal(result.left.fields[1]?.aliases[0], 'close');
+    assert.equal(result.left.fieldPreviewComplete, true);
+    assert.equal((sourceSemanticView({ left: query.left, fieldCode: 'close' }, { profiles }) as any).left.displayedFields, 1);
+    assert.equal(sourceSemanticView({ left: query.left }, {}).status, 'not_configured');
+    assert.equal(sourceSemanticView({ left: { ...query.left, adapter: {
+      ...query.left.adapter, configDigest: 'b'.repeat(64) } } }, { profiles }).status, 'needs_evidence');
+    assert.equal(sourceSemanticView({ ...query, right: syntheticScope('synthetic-missing', 'missing') },
+      { profiles }).status, 'needs_evidence');
+
+    const changed = syntheticProfile('synthetic-b', 'b', { adjustment: { status: 'qfq',
+      method: 'supplier-adjusted', basis: '2026-11-13' } });
+    writeFileSync(join(directory, 'b.json'), JSON.stringify(changed));
+    const different = sourceSemanticView(query, { profiles, products }) as any;
+    assert.equal(different.status, 'different_semantics');
+    assert.equal(different.comparison?.sameSignature, false);
+    assert.match(different.comparison!.reasons.join(';'), /复权状态不同/);
+    assert.equal(different.comparison?.registeredSameDataset, false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('G5 source query rejects whole configs, arbitrary paths, wildcard/ambiguous identities and unknown keys', () => {
+  badSemanticQuery({});
+  badSemanticQuery({ left: { sourceId: 'provider-a' } });
+  badSemanticQuery({ left: { sourceId: 'provider-a', series: '*' } , path: '/secret/config' });
+  badSemanticQuery({ left: { sourceId: '../private', series: 'daily' } });
+  badSemanticQuery({ left: { sourceId: 'provider-a', series: 'daily',
+    adapter: { adapterId: 'valid.daily', version: 'latest', configDigest: 'a'.repeat(64) } } });
+  badSemanticQuery({ left: { sourceId: 'provider-a', series: 'daily',
+    adapter: { adapterId: 'valid.daily', version: '1', configDigest: 'a'.repeat(64), fields: [] } } });
+  badSemanticQuery({ left: { sourceId: 'provider-a', series: 'daily' }, fieldCode: '../passwd' });
+  badSemanticQuery({ left: { sourceId: 'provider-a', series: 'daily' },
+    sourceProfile: syntheticProfile('provider-a', 'a') });
+});
+
+test('G5 is a single read-only AGENTS action, not a new task runtime or adoption capability', async () => {
+  assert.equal(modelActionApprovalMode('data.modules.semantics', {}), 'automatic');
+  const database = new CoreDatabase(':memory:');
+  try {
+    let lookups = 0, authorized = 0;
+    const profile = syntheticProfile('synthetic-a', 'a');
+    const bridge = new ConversationProcessingBridge({
+      database, core: {} as never,
+      origin: () => ({ conversationId: 'c1', branchId: 'b1', messageId: 'm1' }) as never,
+      companion: {
+        bd: { assertDispatch: () => {} },
+        sourceFieldProfiles: { match: () => { lookups++; return profile; } },
+        semanticProducts: { datasetFor: () => null },
+      } as never,
+    });
+    const skill = bridge.registrations.find(item => item.action === 'data.modules.semantics')!;
+    assert.deepEqual(skill.fields.map(field => field.key), ['groupId','wfdRefJson','sourceQueryJson']);
+    assert.equal(skill.available().available, true);
+    const context = {
+      task: { id: 't-g5', action: 'data.modules.semantics', args: {}, versions: {} },
+      signal: new AbortController().signal,
+      assertAuthorized: () => { authorized++; },
+      requestApproval: async () => { throw new Error('G5 read must not ask for write approval'); },
+    };
+    const query = JSON.stringify({ left: syntheticScope('synthetic-a','a') });
+    const reply = await bridge.execute(context as never, 'data.modules.semantics', { sourceQueryJson: query });
+    const preview = (reply.data as any).modelPreview.sourceSemantics;
+    assert.equal(preview.status, 'registered');
+    assert.equal(preview.left.profileId, profile.profileId);
+    assert.equal(preview.left.adoption, 'not_granted');
+    assert.equal(lookups, 1);
+    assert.ok(authorized >= 2, 'model sharing authority still must be asserted');
+    await assert.rejects(bridge.execute(context as never, 'data.modules.semantics',
+      { sourceQueryJson: query, groupId: 'market' }), code('PRODUCTION_SEMANTIC_SOURCE_QUERY'));
+    await assert.rejects(bridge.execute(context as never, 'data.modules.semantics',
+      { sourceQueryJson: '{invalid' }), code('PRODUCTION_SEMANTIC_SOURCE_QUERY'));
+    assert.equal(lookups, 1, 'invalid requests must not access the store');
+  } finally { database.close(); }
 });
