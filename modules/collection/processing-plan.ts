@@ -1196,8 +1196,13 @@ export class ProcessingPlanService {
       const cleaned = this.readArtifact<CleanedCandidateTable | ParsedCandidateTable>(dependencies[0]!.output!, 'cleaned-table', 'parsed-table');
       const params = step.parameters as { types?: CandidateTablePlan['types'] };
       // 未显式声明类型时沿用上游产物类型：适配配置声明的 decimal/integer 必须在此实际生效。
-      const structured = structureCandidateTable(cleaned, params.types && Object.keys(params.types).length ? params.types : undefined),
-        bytes = Buffer.from(canonicalWfdJson(structured));
+      const declared = params.types && Object.keys(params.types).length ? params.types : undefined;
+      // 清洗与算法计算仍为不同业务模块；只有固定结构化步骤才运行严格 Polars 类型转换。
+      // 原 TypeScript 规则作为无损精度的独立核验，真实结果必须来自受信 Polars 回执。
+      const executed = this.options.polarsCleaner
+        ? await this.options.polarsCleaner.structure(context, cleaned, declared) : null;
+      const structured = executed?.structured ?? structureCandidateTable(cleaned, declared);
+      const bytes = Buffer.from(canonicalWfdJson(structured));
       const typeChanges: StructuredCandidateTable['type_changes'] = [];
       const normalizationBase = { state: 'recorded', scope: 'structure_type_changes',
         clean_changes_total: structured.changes_total, type_changes_total: structured.type_changes_total,
@@ -1212,9 +1217,13 @@ export class ProcessingPlanService {
         if (Buffer.byteLength(canonicalWfdJson(candidate), 'utf8') > NORMALIZATION_SUMMARY_MAX_BYTES) break;
         typeChanges.push(change);
       }
-      computed = { bytes, digest: wfdSha256(bytes), checkScope: ['finite_scalars', 'precision_checked', 'original_cells_preserved'],
+      computed = { bytes, digest: wfdSha256(bytes), checkScope: ['finite_scalars', 'precision_checked', 'original_cells_preserved',
+          ...(executed ? ['polars_strict_structure', 'independent_precision_comparison'] : [])],
         gaps: ['未验证类型是否符合外部业务定义；只执行显式类型。'],
-        normalization: { ...normalizationBase, type_changes: typeChanges,
+        normalization: { ...normalizationBase,
+          ...(executed ? { engine: 'polars', workerSha256: executed.evidence.workerSha256,
+            engineReceiptSha256: executed.evidence.chunkReceiptsSha256 } : {}),
+          type_changes: typeChanges,
           type_changes_sample_count: typeChanges.length,
           type_changes_truncated: structured.type_changes_total > typeChanges.length } };
     } else if (step.kind === 'annotate') {
