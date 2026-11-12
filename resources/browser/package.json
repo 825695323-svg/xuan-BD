@@ -1,0 +1,9 @@
+{
+  "name": "xuan-bd-browser-recipe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Locked build input for the existing bundled browser daemon; not a second application.",
+  "dependencies": {
+    "bb-browser": "0.14.2"
+  }
+}
