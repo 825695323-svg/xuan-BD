@@ -1,0 +1,58 @@
+{
+  "version": "bd.source-field-profile/1",
+  "mappingVersion": 1,
+  "profileId": "synthetic.daily.v1",
+  "sourceId": "synthetic-market-a",
+  "series": "daily.bars",
+  "adapter": {
+    "adapterId": "synthetic.kline.daily",
+    "version": "1",
+    "configDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "fields": [
+    {
+      "originalHeader": "trade_date",
+      "aliases": [
+        "date_label"
+      ],
+      "fieldCode": "trade_date",
+      "dataType": "text",
+      "unitCode": "date",
+      "role": "date"
+    },
+    {
+      "originalHeader": "closing_price",
+      "aliases": [
+        "close"
+      ],
+      "fieldCode": "close",
+      "dataType": "decimal",
+      "unitCode": "cny_per_share",
+      "role": "value",
+      "measurement": "模拟示例：未复权每股收盘价"
+    },
+    {
+      "originalHeader": "traded_shares",
+      "fieldCode": "volume",
+      "dataType": "integer",
+      "unitCode": "share",
+      "role": "value",
+      "measurement": "模拟示例：当日增量成交股数"
+    }
+  ],
+  "frequency": "day",
+  "timeBucket": {
+    "labelSemantics": "start",
+    "interval": "closed_open",
+    "lengthMinutes": 1440,
+    "timezone": "Asia/Shanghai"
+  },
+  "adjustment": {
+    "status": "raw"
+  },
+  "confirmation": {
+    "status": "operator_confirmed",
+    "basis": "仅展示JSON格式的合成样本；实际采用时须改为具体接口文档及原始样本证据",
+    "confirmedAtUtc": "2026-11-13T00:00:00Z"
+  }
+}

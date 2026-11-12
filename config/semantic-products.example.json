@@ -1,0 +1,10 @@
+{
+  "version": "bd.semantic-products/1",
+  "products": [
+    {
+      "fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+      "datasetId": "synthetic_demo_only",
+      "note": "模拟占位；实际项目必须使用profileFingerprint按受信档案计算并核对实际产品定义后登记"
+    }
+  ]
+}

@@ -29,7 +29,7 @@ npm test
 
 ## 工程入口
 
-[工程维护规则](AGENTS.md) · [重建与配置](docs/REBUILD.md) · [仓库文件边界](docs/REPOSITORY-POLICY.md) · [WFD 说明](wfd/product/README.md)
+[工程维护规则](AGENTS.md) · [来源语义与版本补充](docs/SOURCE-SEMANTIC-ADOPTION.md) · [重建与配置](docs/REBUILD.md) · [仓库文件边界](docs/REPOSITORY-POLICY.md) · [WFD 说明](wfd/product/README.md)
 
 内置代理规则仍由 [运行规则](modules/agent/instructions/AGENTS.md) 和 [摘要加载器](modules/agent/instructions/rules.ts) 绑定。应用身份为 `xuan-bd`，接口前缀为 `/api/bd`。机器资源解析见 [绑定实现](platform/resources/bindings.ts)。
 
