@@ -9,16 +9,18 @@ import type { R1WorkspaceService } from '../collection/r1-workspace.js';
 import { FINANCIAL_LINEAR_ADMISSION_VERSION, readFinancialCalculation, assertFinancialLinearCandidate,
   type FinancialCalculation } from '../collection/data-processing/financial-fixed.js';
 import { POLARS_FIXED_VERSION, POLARS_DEPENDENCY_VERSION, polarsFixedVersionBinding,
-  projectFinancialPolars, projectMacroYoYPolars, assertMacroYoYCandidate, readMacroYoYCalculation,
+  projectFinancialPolars, projectMacroYoYPolars, projectWfdMA20Polars, assertMacroYoYCandidate, readMacroYoYCalculation,
   type MacroYoYCalculation } from '../collection/data-processing/polars-fixed.js';
 import { verifyUnifiedPolarsForPublication } from './unified-polars-publication-proof.js';
 import { verifyProductionDerived } from '../collection/production-verifier.js';
+import { WFD_SOURCE_MA_VERSION, readWfdSourceMACalculation, readWfdMASource, evaluateWfdMA20,
+  type WfdSourceMACalculation } from './wfd-source-ma.js';
 
 export const UNIFIED_POLARS_RUNTIME = 'bd.algorithms.polars';
 export const UNIFIED_POLARS_VERSION = 'bd.algorithms.polars/1';
-type PolarsMethod = 'financial_linear' | 'macro_yoy';
+type PolarsMethod = 'financial_linear' | 'macro_yoy' | 'source_observation_ma';
 type Input = { methodId: PolarsMethod; source: { kind: 'fixed_snapshot' };
-  calculation: FinancialCalculation | MacroYoYCalculation; usage: { purpose: 'current_compute' } };
+  calculation: FinancialCalculation | MacroYoYCalculation | WfdSourceMACalculation; usage: { purpose: 'current_compute' } };
 type FrozenInput = { input: Input; connection: unknown; python: string };
 export interface UnifiedPolarsResult {
   version: typeof UNIFIED_POLARS_VERSION;
@@ -33,7 +35,7 @@ const id = (v: unknown) => typeof v === 'string' && /^[a-zA-Z0-9_.:-]{1,160}$/u.
 const frozenKeys = (value: WfdRecord, allowed: string[]) =>
   Object.keys(value).sort().join(',') === [...allowed].sort().join(',');
 export const isUnifiedPolarsMethod = (value: unknown): value is PolarsMethod =>
-  value === 'financial_linear' || value === 'macro_yoy';
+  value === 'financial_linear' || value === 'macro_yoy' || value === 'source_observation_ma';
 
 /**
  * 内部方法执行器，不是第二个 AGENTS 入口或第二份业务账本。
@@ -54,7 +56,7 @@ export class UnifiedPolarsExecution {
       if (!statSync(realpathSync(path)).isFile()) throw Error('Polars 受信程序不是普通文件。');
     } catch (error) { reason = error instanceof Error ? error.message : String(error); }
     return { status: reason ? 'blocked' as const : 'ready' as const, reason,
-      methods: ['financial_linear', 'macro_yoy'] as const, version: UNIFIED_POLARS_VERSION };
+      methods: ['financial_linear', 'macro_yoy', 'source_observation_ma'] as const, version: UNIFIED_POLARS_VERSION };
   }
   private normalize(raw: unknown): Input {
     if (!isWfdRecord(raw) || !frozenKeys(raw, ['methodId', 'source', 'calculation', 'usage'])
@@ -65,8 +67,9 @@ export class UnifiedPolarsExecution {
       || raw.usage.purpose !== 'current_compute') {
       return fail('UNIFIED_POLARS_INPUT', '统一 Polars 只接受登记方法、固定快照引用及当前内容计算；不接受自填数据、路径、引擎或历史资格。');
     }
-    const calculation = raw.methodId === 'financial_linear'
-      ? readFinancialCalculation(raw.calculation) : readMacroYoYCalculation(raw.calculation);
+    const calculation = raw.methodId === 'financial_linear' ? readFinancialCalculation(raw.calculation)
+      : raw.methodId === 'macro_yoy' ? readMacroYoYCalculation(raw.calculation)
+      : readWfdSourceMACalculation(raw.calculation);
     if (raw.methodId === 'financial_linear' && (calculation as FinancialCalculation).operation === 'standardize')
       return fail('UNIFIED_POLARS_METHOD', '统一 Polars 只允许已核验的财务期间算术；来源标准化属于原报生产管线。');
     return { methodId: raw.methodId, source: { kind: 'fixed_snapshot' },
@@ -132,9 +135,16 @@ export class UnifiedPolarsExecution {
     const rows = result.rows as WfdRecord[], evidence = result.evidence as WfdRecord;
     if (frozen.input.methodId === 'macro_yoy')
       assertMacroYoYCandidate(frozen.input.calculation as MacroYoYCalculation, evidence, rows);
-    else
+    else if (frozen.input.methodId === 'financial_linear')
       assertFinancialLinearCandidate(frozen.input.calculation as FinancialCalculation, evidence, rows,
         this.options.verifyFinancialReview ?? (() => fail('POLARS_FINANCIAL_REVIEW', '跨修订原文核验未装配。')));
+    else {
+      if (evidence.version !== WFD_SOURCE_MA_VERSION || !Array.isArray(evidence.frozenInput)
+        || typeof evidence.unitCode !== 'string' || evidence.sourceRowsSha256 === undefined
+        || evidence.recordVersionsSha256 === undefined
+        || digest(rows) !== digest(evaluateWfdMA20(evidence.frozenInput as never, evidence.unitCode)))
+        return fail('WFD_MA_RESULT_MISMATCH', '原固定均线任务的全量来源、方法窗口或精确结果证明不一致。');
+    }
     return result as unknown as UnifiedPolarsResult;
   }
   async verifyForPublication(taskId: string, signal: AbortSignal) {
@@ -146,14 +156,29 @@ export class UnifiedPolarsExecution {
     return verifyProductionDerived({
       rows: result.rows, expectedRowsSha256: result.candidateSha256,
       maxRows: 5000, maxBytes: 2_000_000,
-    }, checkedSignal => verifyUnifiedPolarsForPublication(result.methodId === 'financial_linear'
-      ? { methodId: 'financial_linear', calculation: result.calculation as FinancialCalculation,
-        evidence: result.evidence, rows: result.rows,
-        verifyFinancialReview: this.options.verifyFinancialReview ?? (() =>
-          fail('POLARS_FINANCIAL_REVIEW', '跨修订原文核验未装配。')) }
-      : { methodId: 'macro_yoy', calculation: result.calculation as MacroYoYCalculation,
-        evidence: result.evidence, rows: result.rows },
-      this.options.workspace.readProduct.bind(this.options.workspace), checkedSignal), signal);
+    }, async checkedSignal => {
+      const reader = this.options.workspace.readProduct.bind(this.options.workspace);
+      if (result.methodId === 'source_observation_ma') {
+        const refreshed = await readWfdMASource(result.calculation as WfdSourceMACalculation, reader, checkedSignal);
+        if (digest(refreshed.connection) !== digest(result.evidence.connection)
+          || refreshed.sourceRowsSha256 !== result.evidence.sourceRowsSha256
+          || refreshed.recordVersionsSha256 !== result.evidence.recordVersionsSha256
+          || digest(refreshed.subject) !== digest(result.evidence.subject)
+          || refreshed.unitCode !== result.evidence.unitCode
+          || digest(refreshed.rows) !== digest(result.rows))
+          return fail('WFD_MA_SOURCE_CHANGED', '发布前重新读取的 WFD 全量来源、记录版本或独立均线结果与原计算不一致。');
+        return { version: 'bd.wfd-ma20-publication-proof/1', methodId: result.methodId,
+          sourceRowsSha256: refreshed.sourceRowsSha256, recordVersionsSha256: refreshed.recordVersionsSha256,
+          resultSha256: digest(refreshed.rows), historyQualification: 'not_asserted' };
+      }
+      return verifyUnifiedPolarsForPublication(result.methodId === 'financial_linear'
+        ? { methodId: 'financial_linear', calculation: result.calculation as FinancialCalculation,
+          evidence: result.evidence, rows: result.rows,
+          verifyFinancialReview: this.options.verifyFinancialReview ?? (() =>
+            fail('POLARS_FINANCIAL_REVIEW', '跨修订原文核验未装配。')) }
+        : { methodId: 'macro_yoy', calculation: result.calculation as MacroYoYCalculation,
+          evidence: result.evidence, rows: result.rows }, reader, checkedSignal);
+    }, signal);
   }
   readonly runtime: TaskRuntime = { id: UNIFIED_POLARS_RUNTIME, execute: async context => {
     const task = context.task;
@@ -187,14 +212,19 @@ export class UnifiedPolarsExecution {
       ? await projectFinancialPolars(execution, input.calculation as FinancialCalculation,
         this.options.workspace.readProduct.bind(this.options.workspace),
         this.options.verifyFinancialReview ?? (() => fail('POLARS_FINANCIAL_REVIEW', '跨修订原文核验未装配。')))
-      : await projectMacroYoYPolars(execution, input.calculation as MacroYoYCalculation,
-        this.options.workspace.readProduct.bind(this.options.workspace));
+      : input.methodId === 'macro_yoy'
+        ? await projectMacroYoYPolars(execution, input.calculation as MacroYoYCalculation,
+          this.options.workspace.readProduct.bind(this.options.workspace))
+        : await projectWfdMA20Polars(execution, await readWfdMASource(
+          input.calculation as WfdSourceMACalculation,
+          this.options.workspace.readProduct.bind(this.options.workspace), context.signal));
     assertAuthorized();
     const rows = JSON.parse(output.jsonBytes.toString('utf8')) as WfdRecord[];
     const evidence = output.evidence as WfdRecord;
     const result: UnifiedPolarsResult = {
       version: UNIFIED_POLARS_VERSION, taskId: task.id, methodId: input.methodId,
-      methodVersion: input.methodId === 'financial_linear' ? FINANCIAL_LINEAR_ADMISSION_VERSION : 'bd.macro-yoy/1',
+      methodVersion: input.methodId === 'financial_linear' ? FINANCIAL_LINEAR_ADMISSION_VERSION
+        : input.methodId === 'macro_yoy' ? 'bd.macro-yoy/1' : WFD_SOURCE_MA_VERSION,
       implementationVersion: String(task.versions.polarsWorker), source: input.source,
       calculation: input.calculation, inputDigest: digest(frozen),
       candidateSha256: digest(rows), algorithmDefinition: evidence.algorithmDefinition as WfdRecord,
