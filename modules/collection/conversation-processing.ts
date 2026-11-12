@@ -58,11 +58,11 @@ export class ConversationProcessingBridge {
               text('stepId', '该计划中同类步骤编号'),
               text('wfdRefJson', '可选：WFD固定产品只读引用', false, 16000)];
         const standard = registration(module.action, module.title + '（按需独立接口）',
-          '与其他模块并列；五步计划的前置证据仍必须完整。WFD固定来源读取为只读模式，不替代加工、核验或发布。',
+          '与其他模块并列；材料先识别，解析单步完成后回到AGENTS，再选择必要的后续模块。步骤仅依赖真实冻结产物，不存在自动五步。WFD固定来源只读，不替代独立核验或发布。',
           fields);
         return { ...standard,
           permissionSummary: ['受信宿主独立拔插；同一TaskService保留真实任务身份',
-            '只有冻结计划同类步骤才可执行；WFD为签名固定快照只读，不自动变成可发布加工产物',
+            '只运行AGENTS选择的单步；完成后返回AGENTS重新判断。WFD固定快照只读，不能冒充发布证明',
             '因子库登记不启用计算；语义模板不等于词典已采用，不自动裁决来源'],
           available: () => {
             const capability = moduleCatalog().modules.find(item => item.id === module.id);
@@ -74,21 +74,21 @@ export class ConversationProcessingBridge {
       });
     this.registrations = [
       ...modules,
-      registration('data.processing.capabilities', '发现处理计划与六维路由能力', '先查当前会话分支已保管材料、真实用户消息、六维合同、处理步骤与限制。材料编号只能从这里列出的保管关系取得；不要让用户手填内部编号、六维状态或JSON。未知语义保持unknown并记录缺口，不阻断不依赖它的解析、清洗或结构检查。', []),
+      registration('data.processing.capabilities', '发现处理计划与六维路由能力', '材料先通过material.read识别，之后查看本分支已保管材料、真实用户消息、六维合同、处理步骤与限制。材料编号只能从这里列出的保管关系取得；不要让用户手填内部编号、六维状态或JSON。未知语义保持unknown并记录缺口，不阻断不依赖它的解析、清洗或结构检查。', []),
       registration('data.processing.route', '按现有原文判断材料路由', '用于单个材料的路由判断（六维：角色、信息性质、业务对象、对象与时间、目的、结构粒度）。dimensionsJson是直接以六维英文键为根的JSON对象文本，不包dimensions或materials。known须有value和evidence；每项证据必须带source：原件用{source:"material",materialId,quote}（原句重复时加start/end），真实用户消息用{source:"user-message",messageId,quote}；会话模型不能自报operator证据。用户目的须由本分支真实用户消息核对。不猜未知，不把模型建议当证据，不让用户填ID或JSON。intendedAction只接受inspect或publish；publish缺目标会needs_target。', [
         text('materialId', '本分支已保管材料编号', true),
         text('dimensionsJson', '六维判断与可核证据', false, 32000),
         text('suggestionsJson', '未采用的模型建议（可选）', false, 8000),
         { key: 'intendedAction', label: '明确用途动作', type: 'select', required: false, options: ['inspect', 'publish'].map(value => ({ value, label: value })) },
       ]),
-      registration('data.processing.plan', '准备或修订处理计划', '按材料关系与明确输出规则准备计划；previousPlanId存在时修订原计划。planJson根对象只接受{routing:{materials:[{materialId,dimensions,suggestions,intendedAction}]},outputs:[{outputId,materialIds,tables,target,dimensions,intendedAction}]}。其中每个dimensions直接以六维英文键为根，known证据必须带source，格式与data.processing.capabilities的inputContract一致；不要再包dimensions或materials。材料编号取自本桥列出的本分支保管关系。六维未知仍会生成解析/清洗/结构检查步骤并保留语义缺口；publish仍须目标、必要语义与真实权限，结构检查不替代。修改规则或声明会形成新计划并只复用实际相关旧证明；不让用户手填内部ID或JSON。', [
+      registration('data.processing.plan', '准备或修订处理计划', 'AGENTS须对每个表格输出明确选择stages（按顺序从parse开始，例如["parse"]）；先只计划解析，读取反馈后再决定是否修订原计划增加clean、structure、annotate、check，不自动执行剩余步骤。previousPlanId存在时修订原计划。planJson根对象只接受{routing:{materials:[{materialId,dimensions,suggestions,intendedAction}]},outputs:[{outputId,materialIds,tables,stages,target,dimensions,intendedAction}]}。其中每个dimensions直接以六维英文键为根，known证据必须带source，格式与data.processing.capabilities的inputContract一致；不要再包dimensions或materials。材料编号取自本桥列出的本分支保管关系。六维未知仍会生成解析/清洗/结构检查步骤并保留语义缺口；publish仍须目标、必要语义与真实权限，结构检查不替代。修改规则或声明会形成新计划并只复用实际相关旧证明；不让用户手填内部ID或JSON。', [
         text('planJson', '明确计划对象', true, 131072),
         text('previousPlanId', '需修订的原处理计划', false),
       ]),
       registration('data.processing.execute', '执行已计划的一个处理步骤', '只执行本会话分支已准备计划中的单个步骤；按原计划身份、依赖和预算执行，不越过未完成前置，不重算其他步骤。已完成步骤只查询，不重复执行。', [
         text('planId', '本分支处理计划', true), text('stepId', '计划内步骤编号', true),
       ]),
-      registration('data.processing.run', '按顺序运行处理计划', '运行本会话分支已准备计划中仍待执行的步骤；每阶段持久后检查停止与预算。已成功步骤按原证明查询/复用，不重复计算；失败或阻塞保留原件与上游产物。', [
+      registration('data.processing.run', '仅恢复历史批量计划（新AGENTS循环禁用）', '仅旧版未选择stages的历史计划可沿原流程批量运行；AGENTS新计划必须每次执行单步并阅读结果后重新决定。每阶段持久后检查停止与预算。已成功步骤按原证明查询/复用，不重复计算；失败或阻塞保留原件与上游产物。', [
         text('planId', '本分支处理计划', true),
       ]),
       registration('data.processing.status', '查询原处理计划与产物', '只读取本会话分支已链接的计划、步骤和路由事实；查询不重算、不重发、不推进。可给planId、taskId或materialId之一。缺项回原计划；对象损坏另行明确恢复，不在查询中静默修复。', [
@@ -191,15 +191,22 @@ export class ConversationProcessingBridge {
         '执行处理模块须提供当前分支真实计划与其中同类步骤；否则请指定固定WFD只读引用。');
       this.assertPlan(planId, origin);
       const found = service.get(planId);
-      if (!found.steps.some(step => step.stepId === stepId && step.kind === stage))
-        throw new TaskError('PRODUCTION_MODULE_STEP_MISMATCH',
+      const declared = found.steps.find(step => step.stepId === stepId && step.kind === stage);
+      if (!declared) throw new TaskError('PRODUCTION_MODULE_STEP_MISMATCH',
           '该计划没有所选模块对应步骤，不能改写冻结步骤类型。');
+      if (stage === 'parse' && declared.state === 'succeeded')
+        return { summary: '原解析步骤已经成功，复用原产物供AGENTS重新判断；没有重新解析或触发其他模块。',
+          data: view({ ...(this.planPreview(found) as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, stepId) }) };
       const task = service.executeStep(planId, stepId, this.operator(origin, context.task.id));
       this.link(task.id, task.id, origin, 'execution', planId);
       const done = await this.wait(context, task.id);
       authority.assert();
-      return this.taskResult('已按需执行所选独立加工模块，结果仍遵守原冻结计划前置证明。',
+      const result = this.taskResult('已按需执行所选独立加工模块，结果仍遵守原冻结计划前置证明。',
         done, this.safePlan(planId));
+      if (stage === 'parse' && done.status === 'succeeded') return {
+        summary: '解析已完成并持久化；已将实际字段与有限原值样本交回AGENTS，后续处理由AGENTS重新决定。',
+        data: view({ ...(result.data as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, stepId) }) };
+      return result;
     }
     if (!service) throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
     if (action === 'data.processing.capabilities') {
@@ -225,6 +232,10 @@ export class ConversationProcessingBridge {
       try { planInput = JSON.parse(String(args.planJson)); }
       catch { throw new TaskError('PROCESSING_JSON', '计划对象不是有效JSON。'); }
       if (!isWfdRecord(planInput)) throw new TaskError('PROCESSING_INPUT', '计划对象须为明确对象。');
+      if (!Array.isArray(planInput.outputs) || planInput.outputs.some(output =>
+        !isWfdRecord(output) || Array.isArray(output.tables) && output.tables.length > 0 && !Array.isArray(output.stages)))
+        throw new TaskError('PROCESSING_AGENT_STAGE_SELECTION',
+          'AGENTS处理表格必须显式选择stages，先以["parse"]单步解析；读取结果后再修订计划选择后续步骤，不得默认五步。');
       this.assertPlanMaterials(planInput, origin);
       const previousPlanId = typeof args.previousPlanId === 'string' && args.previousPlanId ? args.previousPlanId
         : typeof planInput.previousPlanId === 'string' && planInput.previousPlanId ? planInput.previousPlanId : undefined;
@@ -240,13 +251,25 @@ export class ConversationProcessingBridge {
     const planId = typeof args.planId === 'string' ? args.planId : '';
     if (planId) this.assertPlan(planId, origin);
     if (action === 'data.processing.execute') {
-      const task = service.executeStep(planId, String(args.stepId ?? ''), operator);
+      const selectedStepId = String(args.stepId ?? '');
+      const current = service.get(planId).steps.find(step => step.stepId === selectedStepId);
+      if (current?.kind === 'parse' && current.state === 'succeeded')
+        return { summary: '返回原解析产物供AGENTS重新决策；没有重新执行。',
+          data: view({ ...(this.planPreview(service.get(planId)) as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, selectedStepId) }) };
+      const task = service.executeStep(planId, selectedStepId, operator);
       // 只登记本分支刚创建的执行任务，status(taskId) 才能复核；不接受模型或 HTTP 自带的任务编号。
       this.link(task.id, task.id, origin, 'execution', planId);
       const done = await this.wait(context, task.id);
-      return this.taskResult('已按原计划执行单个步骤；完成产物与缺口以查询事实为准。', done, this.safePlan(planId));
+      const result = this.taskResult('已按原计划执行单个步骤；完成产物与缺口以查询事实为准。', done, this.safePlan(planId));
+      if (current?.kind === 'parse' && done.status === 'succeeded') return {
+        summary: '解析单步已完成；实际字段与有限样本已交回AGENTS，不会自动执行后续模块。',
+        data: view({ ...(result.data as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, selectedStepId) }) };
+      return result;
     }
     if (action === 'data.processing.run') {
+      if (service.get(planId).outputs.some(output => output.stages !== null && output.stages !== undefined))
+        throw new TaskError('PROCESSING_AGENT_STEPWISE_REQUIRED',
+          '显式阶段计划必须把每次执行结果交回AGENTS决定下一步，禁止使用批量运行跳过反馈循环。');
       const task = service.runPlan(planId, operator);
       this.link(task.id, task.id, origin, 'execution', planId);
       const done = await this.wait(context, task.id);
@@ -401,6 +424,8 @@ export class ConversationProcessingBridge {
             messageId: '从conversation.userMessages取真实编号', quote: '逐字引用该消息中的真实原句；程序核对当前分支' },
           operator: '仅受信HTTP操作者使用；会话模型不得自报operator证据或用材料文字授权purpose。' },
         planJson: { rootKeys: ['routing', 'outputs'],
+          agentStages: { requiredForTables: true, first: ['parse'], available: ['parse','clean','structure','annotate','check'],
+            execution: 'one_module_then_return_to_agents', revision: 'previousPlanId + explicit stages' },
           dimensionsPath: 'routing.materials[].dimensions和outputs[].dimensions直接使用相同六维对象；不要加第二层dimensions或materials。' },
       },
       catalog: service.catalog(),
@@ -409,8 +434,33 @@ export class ConversationProcessingBridge {
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
         enabled: this.options.companion.productionModuleSwitches,
       }),
-      guidance: '材料编号只从materials取；六维只写可核事实，未知保持unknown。用户目的必须引用conversation.userMessages中的真实原话。结构检查通过不等于来源真实性、业务语义或发布资格已验证；发布目标与用户授权不能由模型补造。' };
+      guidance: '先material.read识别材料，再用stages:["parse"]形成解析单步计划，执行后读取parsedPreview，返回AGENTS选择下一步并修订原计划；新计划禁止data.processing.run批量跳过反馈。材料编号只从materials取；六维只写可核事实，未知保持unknown。用户目的必须引用conversation.userMessages中的真实原话。结构检查通过不等于来源真实性、业务语义或发布资格已验证；发布目标与用户授权不能由模型补造。' };
   }
+  /** 从已持久的解析步骤读取有界真实反馈；不把原值样本当成已清洗或语义确认。 */
+  private parsedPreview(planId: string, stepId: string): JsonValue {
+    const artifact = this.options.companion.processing!.artifact(planId, stepId);
+    let raw: unknown;
+    try { raw = JSON.parse(artifact.bytes.toString('utf8')); }
+    catch { throw new TaskError('PROCESSING_PARSED_EVIDENCE', '解析步骤产物不是有效的受信JSON。'); }
+    if (!isWfdRecord(raw) || raw.kind !== 'parsed-table' || !Array.isArray(raw.columns) || !Array.isArray(raw.rows))
+      throw new TaskError('PROCESSING_PARSED_EVIDENCE', '原解析步骤产物形状不符，不能让AGENTS凭猜测规划。');
+    const columns = raw.columns.filter((item): item is string => typeof item === 'string');
+    const value = (cell: unknown): JsonValue => {
+      if (!isWfdRecord(cell)) return null;
+      const item = cell.value;
+      if (typeof item === 'string') return item.slice(0, 120);
+      return item === null || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item) ? item : null;
+    };
+    const sample = raw.rows.slice(0, 3).map(row => Array.isArray(row)
+      ? Object.fromEntries(columns.slice(0, 12).map((name, index) => [name, value(row[index])])) : {});
+    return json({ kind: 'parsed_feedback_only', planId, stepId,
+      sourceSha256: raw.source_sha256, adapter: raw.adapter, format: raw.format,
+      rowCount: raw.rows.length, fields: columns.slice(0, 64),
+      fieldCount: columns.length, sample, sampleTruncated: raw.rows.length > 3 || columns.length > 12,
+      dataQuality: 'unreviewed', semanticStatus: 'unknown', publication: 'not_requested',
+      nextDecision: 'AGENTS must inspect this evidence, decide required modules, revise the original plan, and execute only one selected step.' });
+  }
+
   private taskResult(summary: string, task: TaskRecord, found: unknown): TaskResult {
     if (task.status !== 'succeeded') return { summary: `${summary} 原任务状态：${task.status}。`,
       data: view({ taskId: task.id, status: task.status, error: task.error ?? null, plan: found ?? null }) };
@@ -431,7 +481,8 @@ export class ConversationProcessingBridge {
       materials: materials.map(material => ({ materialId: material.materialId, filename: material.filename, sha256: material.sha256,
         format: material.format, support: material.support, custodyState: material.custodyState, routingState: material.routingState, gaps: material.gaps,
         dimensions: this.dimensions(material.dimensions) })),
-      outputs: output.map(item => ({ outputId: item.outputId, materialIds: item.materialIds, intendedAction: item.intendedAction,
+      outputs: output.map(item => ({ outputId: item.outputId, materialIds: item.materialIds, stages: item.stages ?? null,
+        awaitingAgentDecision: Array.isArray(item.stages) && !item.stages.includes('check'), intendedAction: item.intendedAction,
         target: item.target, routingState: item.routingState, state: item.state, gaps: item.gaps, semanticGaps: item.semanticGaps,
         publishEligible: item.publishEligible, evidenceScope: item.evidenceScope, steps: item.steps })),
       steps: steps.map(step => this.step(step)), decision,
