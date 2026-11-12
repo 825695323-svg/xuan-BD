@@ -105,7 +105,8 @@ test('factor library reuses frozen source definitions, never falsely treats a dr
   assert.ok(index.definitions.some(x => x.registryId === 'ma'));
   const exact = ports.factorCatalog('ma');
   assert.equal(exact.definitions.length, 1);
-  assert.ok(Array.isArray(exact.definitions[0]?.formula));
+  assert.ok(exact.definitions[0] && 'formula' in exact.definitions[0]
+    && Array.isArray(exact.definitions[0].formula));
   assert.throws(() => ports.factorCatalog('invented.factor'), failCode('PRODUCTION_FACTOR_UNKNOWN'));
   assert.deepEqual(calls, []);
 });
@@ -117,8 +118,8 @@ test('semantic dictionary reads actual pinned WFD declarations and never self-ad
   assert.equal(result.historyMode, 'snapshot_contents');
   assert.equal(result.templatesNotAcceptedAsFacts, true);
   assert.equal(result.count, 1);
-  assert.equal(result.definitions[0]?.declaration.semantic_code, 'company.revenue');
-  assert.equal(result.definitions[0]?.declaration.unit_code, 'cny');
+  assert.equal((result.definitions[0]?.declaration as any)?.semantic_code, 'company.revenue');
+  assert.equal((result.definitions[0]?.declaration as any)?.unit_code, 'cny');
   assert.deepEqual(calls, ['discover:snapshot_2026']);
   await assert.rejects(ports.semanticLookup({ snapshotId: 'latest' }, signal()), failCode('PRODUCTION_SEMANTIC_INPUT'));
 });
@@ -132,7 +133,7 @@ test('all eight modules use one authorized, bounded WFD read-only port; no impli
     assert.equal(result.mode, 'read_only');
     assert.equal(result.moduleId, moduleId);
     assert.equal(result.snapshotId, selected.snapshotId);
-    assert.equal(result.response.result.rows[0].record_ref.revision_id, 'fixed-r1');
+    assert.equal(((result.response.result.rows as any[])[0].record_ref as any).revision_id, 'fixed-r1');
   }
   assert.equal(calls.filter(x => x.startsWith('read:')).length, 8);
   assert.equal(calls.includes('calculate'), false);
