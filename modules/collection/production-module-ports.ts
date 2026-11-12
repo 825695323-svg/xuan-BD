@@ -205,9 +205,10 @@ function sourceScope(value: unknown, name: string): SourceScope {
     || typeof value.series !== 'string' || !value.series.trim() || value.series.length > 512
     || value.series.includes('*') || value.series.includes('?')
     || /[\u0000-\u001f]/u.test(value.series)) badSourceQuery(name + ' 需要真实来源编号和明确的数据系列；不能用模糊检索或文件路径代替。');
+  const record = value as WfdRecord;
   let adapter: SourceProfileAdapterBinding | undefined;
-  if (value.adapter !== undefined) {
-    const ref = value.adapter;
+  if (record.adapter !== undefined) {
+    const ref = record.adapter;
     if (!isWfdRecord(ref) || Object.keys(ref).sort().join(',') !== 'adapterId,configDigest,version'
       || typeof ref.adapterId !== 'string' || !/^[a-z0-9][a-z0-9._-]{2,99}$/u.test(ref.adapterId)
       || typeof ref.version !== 'string' || !/^[0-9]{1,4}$/u.test(ref.version)
@@ -215,7 +216,7 @@ function sourceScope(value: unknown, name: string): SourceScope {
       badSourceQuery(name + ' 的端点适配必须有已登记的 adapterId（编号）、version（版本）与 configDigest（配置摘要）。');
     adapter = { adapterId: ref.adapterId as string, version: ref.version as string, configDigest: ref.configDigest as string };
   }
-  return { sourceId: value.sourceId as string, series: value.series as string, ...(adapter ? { adapter } : {}) };
+  return { sourceId: record.sourceId as string, series: record.series as string, ...(adapter ? { adapter } : {}) };
 }
 function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceScope, ports: SourceSemanticPorts, fieldCode?: string) {
   if (!profile) return { status: 'not_registered', scope, gaps: ['指定来源、系列与适配器身份无已确认字段档案；不能使用其他接口的映射。'],
@@ -256,8 +257,9 @@ export function sourceSemanticView(query: unknown, ports: SourceSemanticPorts = 
   if (!isWfdRecord(query) || Object.keys(query).some(key => !['left','right','fieldCode'].includes(key))
     || !Object.hasOwn(query, 'left') || JSON.stringify(query).length > 4096)
     badSourceQuery('G5 来源语义查询只接受 left（来源身份）、可选 right（对照来源身份）和 fieldCode（规范字段筛选）。');
-  const leftScope = sourceScope(query.left, 'left'), rightScope = query.right === undefined ? null : sourceScope(query.right, 'right');
-  const fieldCode = query.fieldCode === undefined ? undefined : query.fieldCode;
+  const record = query as WfdRecord;
+  const leftScope = sourceScope(record.left, 'left'), rightScope = record.right === undefined ? null : sourceScope(record.right, 'right');
+  const fieldCode = record.fieldCode === undefined ? undefined : record.fieldCode;
   if (fieldCode !== undefined && (typeof fieldCode !== 'string' || !scopeCode.test(fieldCode)))
     badSourceQuery('fieldCode 必须是已登记的规范字段编号，不能使用通配符或路径。');
   if (!ports.profiles) return { version: G5_SOURCE_SEMANTICS_VERSION, kind: 'read_only_source_semantics',
