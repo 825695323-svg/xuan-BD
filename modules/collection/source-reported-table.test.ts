@@ -5,13 +5,15 @@ import type { WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { inspectMaterial } from './data-processing/material-inspector/index.js';
 import { parseTableSource, prepareCandidateTable } from './candidate-pipeline.js';
 import { resolveR1Evidence } from './r1-evidence.js';
+import { readSourceFieldProfile, profileFingerprint, sourceFieldProfileDigest,
+  type FrozenSourceFieldProfile } from './source-field-profile.js';
 import { projectSourceReportedTable, readSourceProjection, sourceReportedCode } from './source-reported-table.js';
 import type { MaterialEnvelope } from './materials/contracts.js';
 
 const first = { '交易日期':'20251215','对象代码':'A01','对象名称':'甲','原报金额（亿元）':'13.9700','原报比例%':'0','标签':'' };
 function resolve(rows: Record<string,unknown>[], options: { answers?:Record<string,string>; series?:string; sourceValueColumns?:string[]; filename?:string;
   registeredKeyColumns?:string[];registeredUnits?:Record<string,string>;registeredTypes?:Record<string,'decimal'|'integer'|'text'|'boolean'>;
-  registeredSourceDefinition?:WfdRecord } = {}) {
+  registeredSourceDefinition?:WfdRecord; sourceFieldProfile?:FrozenSourceFieldProfile } = {}) {
   const original = Buffer.from(JSON.stringify(rows));
   const envelope: MaterialEnvelope = { materialId:'source-test',taskId:'test-task',category:'data',environment:'synthetic-test',
     filename:options.filename ?? 'unrelated-name.json',mediaType:'application/json',byteLength:original.length,sha256:wfdSha256(original),
@@ -22,6 +24,7 @@ function resolve(rows: Record<string,unknown>[], options: { answers?:Record<stri
     registeredKeyColumns:options.registeredKeyColumns,registeredUnits:options.registeredUnits,
     registeredTypes:options.registeredTypes,
     registeredSourceDefinition:options.registeredSourceDefinition,
+    sourceFieldProfile:options.sourceFieldProfile,
     source:{source_id:'same-provider-export',provider:'test-declared-provider',requested_url:`file:///explicit-source/${encodeURIComponent(options.series ?? '原报指标系列')}/2025/file.json`,
       requested_at_utc:'2026-11-04T00:00:00Z',acquired_at_utc:'2026-11-04T00:00:00Z',usage_scope:'synthetic projection test'} });
   return {original,result};
@@ -244,4 +247,34 @@ test('registered source contracts retain their known scope while only new fields
   assert.deepEqual(Object.keys(newer.proposal!.target.definition.field_semantic_context as WfdRecord),[sourceReportedCode('src_','新观察次数')]);
   assert.equal(newer.evidence.find(fact=>fact.key==='source_semantics_contract')?.origin,'contract');
   assert.equal(JSON.parse(newer.evidence.find(fact=>fact.key==='source_semantics_contract')!.value).disposition,'retain_registered_scope');
+});
+
+test('an operator-confirmed source profile maps a verified header alias and blocks ambiguous duplicate columns', () => {
+  const profile = readSourceFieldProfile({
+    version: 'bd.source-field-profile/1', mappingVersion: 1,
+    profileId: 'synthetic-series-1', sourceId: 'same-provider-export', series: '原报指标系列',
+    fields: [
+      { originalHeader: '交易日期', fieldCode: 'trade_date', dataType: 'text', unitCode: 'date', role: 'date' },
+      { originalHeader: '对象代码', fieldCode: 'object_code', dataType: 'text', unitCode: 'not_applicable', role: 'identity' },
+      { originalHeader: '原报金额（亿元）', aliases: ['当前金额'], fieldCode: 'amount_cny_100million',
+        dataType: 'decimal', unitCode: 'cny_100million', role: 'value', measurement: '报告期金额，单位亿元' },
+    ],
+    frequency: 'day', timeBucket: { labelSemantics: 'start', interval: 'closed_open',
+      lengthMinutes: 1440, timezone: 'Asia/Shanghai' },
+    adjustment: { status: 'raw' },
+    confirmation: { status: 'operator_confirmed', basis: '仅供回归验证的合成来源字段样例',
+      confirmedAtUtc: '2026-11-13T00:00:00Z' },
+  }, 'synthetic-profile.json');
+  const frozen = { profile, digest: sourceFieldProfileDigest(profile), fingerprint: profileFingerprint(profile) };
+  const incoming = { '交易日期': '20251215', '对象代码': 'A01', '当前金额': '13.9700' };
+  const result = resolve([incoming], { sourceFieldProfile: frozen, sourceValueColumns: ['当前金额'] }).result;
+  assert.deepEqual(result.questions, [], JSON.stringify(result.questions));
+  assert.deepEqual(result.proposal?.mapping.fields.map(field => [field.value, field.fieldCode]), [
+    ['交易日期', 'trade_date'], ['对象代码', 'object_code'], ['当前金额', 'amount_cny_100million'],
+  ]);
+  assert.equal(result.evidence.find(fact => fact.key === 'unit.当前金额')?.origin, 'contract');
+  assert.equal(result.evidence.find(fact => fact.key === 'source_measurement.当前金额')?.value, '报告期金额，单位亿元');
+  assert.throws(() => resolve([{ ...incoming, '原报金额（亿元）': '13.9700' }], {
+    sourceFieldProfile: frozen, sourceValueColumns: ['当前金额'],
+  }), /同义原表头/);
 });
