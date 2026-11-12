@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import stat
 import tarfile
@@ -37,7 +38,11 @@ class ResourceRecipeTests(unittest.TestCase):
     def test_normal_tar_and_executable_bit(self):
         archive=self.tar([('root/bin/tool','file',b'hello')]);module.extract(archive,self.root/'out',strip=1)
         self.assertEqual((self.root/'out/bin/tool').read_bytes(),b'hello')
-        self.assertTrue((self.root/'out/bin/tool').stat().st_mode & stat.S_IXUSR)
+        # Windows does not expose POSIX execute bits; preserve byte and read/write checks there.
+        if os.name != 'nt':
+            self.assertTrue((self.root/'out/bin/tool').stat().st_mode & stat.S_IXUSR)
+        else:
+            self.assertTrue(os.access(self.root/'out/bin/tool', os.R_OK | os.W_OK))
     def test_relative_internal_symlink(self):
         archive=self.tar([('root/bin/tool','file',b'hello'),('root/bin/alias','sym','tool')])
         module.extract(archive,self.root/'out',strip=1)

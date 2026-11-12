@@ -3,9 +3,9 @@ name: BD source recipe and clean rebuild
 on:
   push:
     branches: [main, fix/bd-reproducible-recipe-20261112]
-    paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', 'AGENTS.md', 'LICENSE']
+    paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', '.gitattributes', 'AGENTS.md', 'LICENSE']
   pull_request:
-    paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', 'AGENTS.md', 'LICENSE', 'staging/**', 'wfd/product/**']
+    paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', '.gitattributes', 'AGENTS.md', 'LICENSE', 'staging/**', 'wfd/product/**']
   workflow_dispatch:
 
 permissions:
@@ -66,6 +66,20 @@ jobs:
         run: |
           export XUAN_TEST_ROOT="$RUNNER_TEMP/bd-native-fixtures"
           mkdir -p "$XUAN_TEST_ROOT"
+          python - <<'PYCFG'
+          import json,os,pathlib,subprocess
+          base=pathlib.Path(os.environ['RUNNER_TEMP']).resolve()
+          proof=base/'bd-command-proof';proof.mkdir()
+          node=os.environ['BD_NODE']
+          config=proof/'local-web.json'
+          subprocess.run([node,'scripts/create-local-config.mjs',
+              '--toolchain='+str(base/'bd-tools'), '--python='+os.environ['WFD_PYTHON'],
+              '--runtime-root='+str(proof/'runtime'), '--launcher='+str(proof/'launcher.json'),
+              '--output='+str(config)],check=True)
+          for command in ('check','prepare'):
+              subprocess.run([node,'scripts/local-web.mjs',command,'--config='+str(config)],check=True)
+          print('README_CONFIGURATION_COMMANDS_VERIFIED')
+          PYCFG
           "$BD_NODE" --import tsx --test platform/resources/local-web.test.ts
       - name: Full Node regression and real WFD source-based tests
         if: runner.os == 'Linux'
