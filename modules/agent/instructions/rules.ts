@@ -8,7 +8,7 @@ const AGENTS_FILE = new URL('./AGENTS.md', import.meta.url);
 
 /** 与已审核正文绑定；规则改版同步更新版本与可信摘要。 */
 export const INTERNAL_AGENT_RULES = Object.freeze({ id: 'xuan-bd-internal-agent', version: 18,
-  digest: 'b9412db9f1bdc7ee8564f128b0c7e14d1d5a2cae4d5803390bf1c41e2bddc45b' });
+  digest: 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c' });
 /** 旧任务携带的完整冻结规则仅按原版本/摘要验真，不能被新版 AGENTS 正文替换。 */
 const FROZEN_PRIOR_AGENT_RULES = Object.freeze({ version: 17,
   digest: '9651321f74451fb58f9dbf07af464aa97107703bf42c23a637c9222b6f8c4d28' });
