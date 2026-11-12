@@ -78,6 +78,7 @@ import { requireFinancialComputedResult } from '../../modules/financial/contract
 import { ToolLibraryService } from '../../modules/financial/tool-library.js';
 import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
 import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
+import { ProductionCalculation } from '../../modules/collection/production-calculation.js';
 import { UnifiedPolarsExecution } from '../../modules/financial/unified-polars-execution.js';
 import type { LocalDataLifecycle, LocalDataLifecycleRecord } from '../../platform/runtime/local-data-lifecycle.js';
 
@@ -300,7 +301,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const conversationMaterials = options.workspaceServices ? new ConversationMaterialBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
     assertPath: path => direct.assertPublicPath(path), mediaAdapters: () => mediaAdapters }) : undefined;
-  const conversationAlgorithms = options.workspaceServices?.algorithms ? new ConversationAlgorithmBridge({ database, core, files,
+  const conversationAlgorithms = (options.workspaceServices?.processing || options.workspaceServices?.algorithms) ? new ConversationAlgorithmBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null }) : undefined;
   const conversationProcessing = options.workspaceServices?.processing ? new ConversationProcessingBridge({ database, core, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
   const conversationR1 = options.role !== 'service' && options.workspaceServices?.r1Workspace
@@ -544,6 +545,11 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   unifiedPolars = options.role === 'service' && r1Workspace && options.processRuntime
     ? new UnifiedPolarsExecution({ database, tasks: currentTasks, workspace: r1Workspace,
       processRuntime: options.processRuntime }) : undefined;
+  // Polars/pandas 及受信公式注册属于原 ProcessingPlanService；实际任务、权限、
+  // 独立方法核验和 R1/WFD 发布仍复用旧实现及持久身份，不再提供旁路业务入口。
+  processing?.bindProductionCalculation(new ProductionCalculation({
+    polars: unifiedPolars, legacy: algorithms, publisher: derivedPublisher,
+  }));
   const questions = new AgentQuestionService(database, core);
   modelTools = createCoreModelTools({ database, core, permissions, files, registry: direct.registry, service: bd, conversationFinancial, conversationAlgorithms, businessGoals, questions,
     codeRoot: options.codeRoot ?? options.projectRoot,

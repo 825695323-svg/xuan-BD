@@ -9,6 +9,7 @@ import type { MaterialService } from './materials/service.js';
 import type { MaterialLocation } from './materials/contracts.js';
 import { readXlsxTableSelection, type XlsxTableSelection } from './data-processing/xlsx-table.js';
 import { readSourceProjection } from './source-reported-table.js';
+import type { ProductionCalculation } from './production-calculation.js';
 import { MAX_SOURCE } from '../../platform/capabilities/conversion/formats.js';
 import { readNumericFormat } from './data-processing/numeric-format.js';
 import { readXbrlSelection } from './data-processing/xbrl-table.js';
@@ -170,6 +171,7 @@ CREATE INDEX routing_decisions_output ON routing_decisions(plan_id,output_id);
  */
 export class ProcessingPlanService {
   readonly versionBinding: Record<string, string>;
+  private productionCalculation: ProductionCalculation | null = null;
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService; materials: MaterialService;
     objects: PlanObjectStore; financialReader?: FinancialReader; financialReaderIdentity?(): unknown;
     /** 端点适配登记：只提供已采用版本的冻结配置与漂移记录。 */
@@ -184,9 +186,34 @@ export class ProcessingPlanService {
   private get db() { return this.options.database.connection; }
   private get tasks() { return this.options.tasks(); }
 
+  /**
+   * 计算模块直接挂在原数据生产服务中；仅由受信装配层绑定一次。
+   * 不创建独立任务表/调度器/第二条 R1 发布线；旧任务仍按其冻结版本恢复。
+   */
+  bindProductionCalculation(registry: ProductionCalculation): void {
+    if (this.productionCalculation) fail('PRODUCTION_CALCULATION_ALREADY_BOUND', '生产计算模块已绑定，不可运行中替换。');
+    this.productionCalculation = registry;
+  }
+  calculationCapabilities() {
+    if (!this.productionCalculation) fail('PRODUCTION_CALCULATION_UNAVAILABLE', '生产计算模块尚未完成装配。');
+    return this.productionCalculation.capabilities();
+  }
+  calculate(requestId: string, input: unknown) {
+    if (!this.productionCalculation) fail('PRODUCTION_CALCULATION_UNAVAILABLE', '生产计算模块未装配；不能绕过数据生产路由另行执行。');
+    return this.productionCalculation.submit(requestId, input);
+  }
+  publishCalculation(taskId: string, signal?: AbortSignal) {
+    if (!this.productionCalculation) fail('PRODUCTION_CALCULATION_UNAVAILABLE', '原 R1 发布链未装配。');
+    return this.productionCalculation.publish(taskId, signal);
+  }
+
   catalog(): JsonValue {
     return asJson({
       contract: 'bd.processing-plan/1', version: PROCESSING_PLAN_VERSION, versions: this.versionBinding, limits: PROCESSING_LIMITS,
+      calculationModule: this.productionCalculation?.capabilities() ?? {
+        version: 'bd.production-calculation/1', owner: 'data_production', status: 'not_bound',
+        reason: '生产计算模块未装配，不能创建新的独立计算任务。',
+      },
       custodyStates: ['inventoried', 'receiving', 'received'], routingStates: ['needs_classification', 'needs_adapter', 'needs_target', 'needs_review', 'ready_candidate', 'rejected'],
       dimensions: DIMENSION_KEYS.map(key => ({ key, label: dimensionLabel(key), statuses: ['known', 'unknown', 'conflict'] })),
       policy: PROCESSING_POLICY,
