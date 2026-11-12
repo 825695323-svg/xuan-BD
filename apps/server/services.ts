@@ -212,6 +212,9 @@ export interface ApplicationServices {
   /** 已发布错误更正编排；用途暂停权威在 WFD catalog。 */
   corrections?: PostPublicationCorrectionService;
   endpointAdapters?: EndpointAdapterRegistry;
+  /** 同一来源语义配置由 R1 与 AGENTS 的 G5 只读入口复用。 */
+  sourceFieldProfiles?: SourceFieldProfileStore;
+  semanticProducts?: SemanticProductRegistryStore;
   r1Configuration?: { state: 'ready' | 'not_configured' | 'unavailable'; reason: string | null };
   processing?: ProcessingPlanService;
   /** 文档片段与精选索引（4.2A / 4.3 §8）；与加工服务并列，不是第十个模块。 */
@@ -724,5 +727,5 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   queueMicrotask(() => core.dispatchTaskCompletions());
   return { core, database, permissions, files, tasks: runningTasks, memory, agentSkills, questions, toolSettings, sourceSettings, personalResources, uiPreferences, contextLedger, inputRules, inputRouter, directConversations, direct, modelTools,
     ...(options.localData ? { localData: options.localData.lifecycle, localDataId: options.localData.dataId } : {}),
-    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, unifiedPolars, productionCalculation, productionModuleSwitches: options.productionModuleSwitches, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
+    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, unifiedPolars, productionCalculation, productionModuleSwitches: options.productionModuleSwitches, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, sourceFieldProfiles, semanticProducts, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
 }

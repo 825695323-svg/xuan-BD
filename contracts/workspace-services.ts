@@ -15,6 +15,7 @@ import type { AlgorithmCatalogView, AlgorithmTaskView } from '../modules/financi
 import type { UnifiedPolarsExecution } from '../modules/financial/unified-polars-execution.js';
 import type { ProductionCalculation } from '../modules/collection/production-calculation.js';
 import type { ProductionModuleId } from '../modules/collection/production-module-ports.js';
+import type { SourceFieldProfileStore, SemanticProductRegistryStore } from '../modules/collection/source-field-profile.js';
 
 /** Trusted companion services used by material and result handoff, independent of HTTP startup. */
 import type { CandidateService } from '../modules/collection/candidate-service.js';
@@ -71,5 +72,8 @@ export interface WorkspaceServices {
   processing?: ProcessingPlanService;
   /** 端点适配登记：会话受控工具只读取/提交/重放/审批后采用。 */
   endpointAdapters?: EndpointAdapterRegistry;
+  /** G5 只读来源语义：与 R1 使用同一受信本机档案及登记，不建立第二词典。 */
+  sourceFieldProfiles?: Pick<SourceFieldProfileStore, 'match'>;
+  semanticProducts?: Pick<SemanticProductRegistryStore, 'datasetFor'>;
   r1Workspace?: R1ConversationPort;
 }

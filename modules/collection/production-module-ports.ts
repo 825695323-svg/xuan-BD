@@ -8,6 +8,9 @@ import { ALGORITHM_REGISTRY, ALGORITHM_REGISTRY_VERSION, ALGORITHM_REGISTRY_NOTE
   registryCounts } from '../financial/algorithm-registry.js';
 import { ALGORITHM_DEFINITION_SUMMARY, definitionFor } from '../financial/algorithm-definitions.js';
 import { MATERIAL_CLEANING_RULES_VERSION, MATERIAL_SEMANTIC_PROPOSAL_VERSION } from './materials/semantic-contracts.js';
+import { compareProfileSemantics, profileFingerprint, sourceFieldProfileDigest,
+  type SourceFieldProfile, type SourceFieldProfileStore, type SemanticProductRegistryStore,
+  type SourceProfileAdapterBinding } from './source-field-profile.js';
 
 /**
  * 八个平行的业务模块端口。这里仅复用现有清洗/计算服务，不设新任务状态、数据表或发布器。
@@ -22,7 +25,7 @@ export const PRODUCTION_MODULES = [
   { id: 'check', action: 'data.modules.check', title: '核对', source: 'declared_material_or_fixed_wfd' },
   { id: 'calculate', action: 'data.modules.calculate', title: '计算公式与因子', source: 'fixed_wfd_only' },
   { id: 'factors', action: 'data.modules.factors', title: '因子库', source: 'registered_definitions_and_fixed_wfd' },
-  { id: 'semantics', action: 'data.modules.semantics', title: '语义词典', source: 'read_only_semantic_templates_and_fixed_wfd' },
+  { id: 'semantics', action: 'data.modules.semantics', title: '语义词典', source: 'read_only_templates_source_profiles_and_fixed_wfd' },
 ] as const;
 export type ProductionModuleId = typeof PRODUCTION_MODULES[number]['id'];
 export type ProductionStepModuleId = Exclude<ProductionModuleId, 'calculate' | 'factors' | 'semantics'>;
@@ -39,6 +42,7 @@ export function productionModuleDirectory(services: {
   processing?: Pick<ProcessingPlanService, 'moduleCapability'>;
   calculation?: Pick<ProductionCalculation, 'capabilities'>;
   hasWfdReader: boolean;
+  hasSourceProfiles?: boolean;
   enabled?: Partial<Record<ProductionModuleId, boolean>>;
 }) {
   const modules = PRODUCTION_MODULES.map(({ id, action, title, source }) => {
@@ -51,7 +55,9 @@ export function productionModuleDirectory(services: {
         history: 'registered_definitions_are_not_adoption_or_historical_qualification',
         wfdRead: services.hasWfdReader,
         dependencies: [] as string[], readOnly: true,
-        sourceVersion: id === 'factors' ? ALGORITHM_REGISTRY_VERSION : SEMANTIC_TEMPLATES_VERSION };
+        sourceVersion: id === 'factors' ? ALGORITHM_REGISTRY_VERSION : SEMANTIC_TEMPLATES_VERSION,
+        ...(id === 'semantics' ? { sourceProfilesAvailable: services.hasSourceProfiles === true,
+          sourceSemanticsMode: 'read_only_lookup_or_comparison_not_authority' } : {}) };
     }
     if (id === 'calculate') {
       const capability = services.calculation?.capabilities();
@@ -181,6 +187,98 @@ export function factorLibraryView(factorId?: string) {
       publication: 'not_granted_by_library',
       execution: 'only_registered_calculation_module_can_execute',
     })) };
+}
+
+
+/** G5 复用 R1 已有来源档案与产品登记：只读查询和比较，既不修改配置也不授予 WFD 采用权。 */
+export const G5_SOURCE_SEMANTICS_VERSION = 'bd.g5.source-semantics/1';
+export interface SourceSemanticPorts {
+  profiles?: Pick<SourceFieldProfileStore, 'match'>;
+  products?: Pick<SemanticProductRegistryStore, 'datasetFor'>;
+}
+type SourceScope = { sourceId: string; series: string; adapter?: SourceProfileAdapterBinding };
+const scopeCode = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/u;
+const badSourceQuery = (message: string): never => { throw new TaskError('PRODUCTION_SEMANTIC_SOURCE_QUERY', message); };
+function sourceScope(value: unknown, name: string): SourceScope {
+  if (!isWfdRecord(value) || Object.keys(value).some(key => !['sourceId','series','adapter'].includes(key))
+    || typeof value.sourceId !== 'string' || !scopeCode.test(value.sourceId)
+    || typeof value.series !== 'string' || !value.series.trim() || value.series.length > 512
+    || /[\u0000-\u001f]/u.test(value.series)) badSourceQuery(name + ' 需要真实来源编号和明确的数据系列；不能用模糊检索或文件路径代替。');
+  let adapter: SourceProfileAdapterBinding | undefined;
+  if (value.adapter !== undefined) {
+    const ref = value.adapter;
+    if (!isWfdRecord(ref) || Object.keys(ref).sort().join(',') !== 'adapterId,configDigest,version'
+      || typeof ref.adapterId !== 'string' || !/^[a-z0-9][a-z0-9._-]{2,99}$/u.test(ref.adapterId)
+      || typeof ref.version !== 'string' || !/^[0-9]{1,4}$/u.test(ref.version)
+      || typeof ref.configDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(ref.configDigest))
+      badSourceQuery(name + ' 的端点适配必须有已登记的 adapterId（编号）、version（版本）与 configDigest（配置摘要）。');
+    adapter = { adapterId: ref.adapterId as string, version: ref.version as string, configDigest: ref.configDigest as string };
+  }
+  return { sourceId: value.sourceId as string, series: value.series as string, ...(adapter ? { adapter } : {}) };
+}
+function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceScope, ports: SourceSemanticPorts, fieldCode?: string) {
+  if (!profile) return { status: 'not_registered', scope, gaps: ['指定来源、系列与适配器身份无已确认字段档案；不能使用其他接口的映射。'],
+    candidate: '需由受信操作者根据接口文档和保管原件补充来源字段档案；本工具不登记或采用。' };
+  const fingerprint = profileFingerprint(profile), datasetId = ports.products?.datasetFor(fingerprint) ?? null;
+  const filtered = fieldCode ? profile.fields.filter(field => field.fieldCode === fieldCode) : profile.fields;
+  const displayFields = filtered.slice(0, 8).map(field => ({
+    fieldCode: field.fieldCode, originalHeader: field.originalHeader.slice(0, 128),
+    aliases: (field.aliases ?? []).slice(0, 2).map(alias => alias.slice(0, 128)),
+    totalAliases: field.aliases?.length ?? 0, dataType: field.dataType,
+    unitCode: field.unitCode, role: field.role, measurement: field.measurement?.slice(0, 192) ?? null,
+    previewMayTruncate: field.originalHeader.length > 128 || (field.aliases ?? []).length > 2
+      || (field.aliases ?? []).some(alias => alias.length > 128) || (field.measurement?.length ?? 0) > 192,
+  }));
+  const gaps = [
+    ...(profile.adjustment.status === 'unknown' ? ['复权状态未知；不能跨来源认定等价。'] : []),
+    ...(profile.timeBucket.labelSemantics === 'unknown' || profile.timeBucket.interval === 'unknown'
+      ? ['时间桶起止和区间口径未知；不能跨来源认定等价。'] : []),
+    ...profile.fields.filter(field => field.role === 'value' && !field.measurement)
+      .slice(0, 8).map(field => '计量字段 ' + field.fieldCode + ' 缺金融语义口径。'),
+    ...(fieldCode && !filtered.length ? ['来源档案没有规范字段 ' + fieldCode + '。'] : []),
+    ...(!datasetId ? ['没有该语义指纹对应的本机数据集登记；来源档案不等于 WFD 已发布定义。'] : []),
+  ];
+  return { status: 'registered_source_profile', scope, profileId: profile.profileId,
+    mappingVersion: profile.mappingVersion, digest: sourceFieldProfileDigest(profile),
+    fingerprint, registeredDatasetId: datasetId, fieldCount: profile.fields.length,
+    displayedFields: displayFields.length, fieldPreviewComplete: filtered.length <= 8
+      && displayFields.every(field => !field.previewMayTruncate),
+    fields: displayFields, frequency: profile.frequency, timeBucket: profile.timeBucket,
+    adjustment: profile.adjustment, supersedes: profile.supersedes ?? [],
+    confirmation: { status: profile.confirmation.status, confirmedAtUtc: profile.confirmation.confirmedAtUtc },
+    gaps, authority: 'local_operator_confirmed_source_profile_not_formal_wfd_definition',
+    adoption: 'not_granted' };
+}
+
+/** 仅按明确两份来源档案比较完整语义签名；模型不能提交自造档案、修订、路径或产品身份。 */
+export function sourceSemanticView(query: unknown, ports: SourceSemanticPorts = {}) {
+  if (!isWfdRecord(query) || Object.keys(query).some(key => !['left','right','fieldCode'].includes(key))
+    || !Object.hasOwn(query, 'left') || JSON.stringify(query).length > 4096)
+    badSourceQuery('G5 来源语义查询只接受 left（来源身份）、可选 right（对照来源身份）和 fieldCode（规范字段筛选）。');
+  const leftScope = sourceScope(query.left, 'left'), rightScope = query.right === undefined ? null : sourceScope(query.right, 'right');
+  const fieldCode = query.fieldCode === undefined ? undefined : query.fieldCode;
+  if (fieldCode !== undefined && (typeof fieldCode !== 'string' || !scopeCode.test(fieldCode)))
+    badSourceQuery('fieldCode 必须是已登记的规范字段编号，不能使用通配符或路径。');
+  if (!ports.profiles) return { version: G5_SOURCE_SEMANTICS_VERSION, kind: 'read_only_source_semantics',
+    status: 'not_configured', scope: leftScope, compareWith: rightScope,
+    gaps: ['本宿主没有装配受信来源字段档案目录。'], adoption: 'not_granted', publication: 'not_requested' };
+  const left = ports.profiles.match(leftScope), right = rightScope ? ports.profiles.match(rightScope) : null;
+  const result = { version: G5_SOURCE_SEMANTICS_VERSION, kind: 'read_only_source_semantics',
+    operation: rightScope ? 'compare' : 'lookup', left: sourceProfilePreview(left, leftScope, ports, fieldCode as string | undefined),
+    ...(rightScope ? { right: sourceProfilePreview(right, rightScope, ports, fieldCode as string | undefined) } : {}),
+    adoption: 'not_granted', publication: 'not_requested', dataWrite: 'forbidden' };
+  if (!rightScope) return { ...result, status: left ? 'registered' : 'needs_evidence' };
+  if (!left || !right) return { ...result, status: 'needs_evidence', comparison: null,
+    gaps: ['至少一个来源没有匹配完整端点身份的已确认字段档案，不能认定同一金融语义。'] };
+  const compared = compareProfileSemantics(left, right);
+  const leftDataset = ports.products?.datasetFor(profileFingerprint(left)) ?? null;
+  const rightDataset = ports.products?.datasetFor(profileFingerprint(right)) ?? null;
+  return { ...result, status: compared.sameProduct ? 'candidate_equivalent' : 'different_semantics',
+    comparison: { sameSignature: compared.sameProduct, reasons: compared.reasons,
+      registeredSameDataset: !!leftDataset && leftDataset === rightDataset,
+      implication: compared.sameProduct
+        ? '仅来源档案口径候选相同；仍需按 WFD 固定产品定义与来源权限独立核对，不自动合并或发布。'
+        : '来源语义不同或未知；不得自动映射为同一个正式金融产品。' } };
 }
 
 /** WFD 语义模板并非权威已采用产品词典；按需公开真实模板和当前材料语义合同。 */
