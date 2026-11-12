@@ -79,6 +79,8 @@ import { ToolLibraryService } from '../../modules/financial/tool-library.js';
 import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
 import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
 import { ProductionCalculation } from '../../modules/collection/production-calculation.js';
+import { ProductionModulePorts, PRODUCTION_MODULE_PORTS_VERSION,
+  type ProductionModuleId } from '../../modules/collection/production-module-ports.js';
 import { PolarsSourceCleaner } from '../../modules/collection/data-processing/polars-cleaning.js';
 import { UnifiedPolarsExecution } from '../../modules/financial/unified-polars-execution.js';
 import type { LocalDataLifecycle, LocalDataLifecycleRecord } from '../../platform/runtime/local-data-lifecycle.js';
@@ -131,6 +133,8 @@ export interface ServiceOptions {
   taskRuntimes?: readonly TaskRuntime[];
   /** 受信宿主固定角色；客户端请求不能选择角色或阶段。 */
   role?: 'personal' | 'service';
+  /** 八个平行模块的宿主装配开关，调用方/模型不得传此配置。 */
+  enabledProductionModules?: Partial<Record<ProductionModuleId, boolean>>;
   serviceVersions?: Record<string, string | null>;
   /** 服务状态库与控制记录所在根；不作为普通文件能力开放。 */
   controlStateRoot?: string;
@@ -196,6 +200,8 @@ export interface ApplicationServices {
   unifiedPolars?: UnifiedPolarsExecution;
   /** 与原报清洗服务并列，方法内部可选 Polars/pandas 的计算入口。 */
   productionCalculation?: ProductionCalculation;
+  /** 八个按需可拔插模块，共享原任务与 WFD 只读端口，没有新运行时。 */
+  productionModules?: ProductionModulePorts;
   fixedCalculations?: FixedCalculationService;
   candidates?: CandidateService;
   semantics?: MaterialSemanticService;
@@ -350,7 +356,13 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['algorithms', 'process', 'material', 'materialRead'],
       { algorithms: options.workspaceServices?.algorithms?.versionBinding ?? null }, {}));
   }
-  for (const entry of conversationProcessing?.registrations ?? []) { direct.registry.register(entry); direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'], { ...(options.workspaceServices?.processing?.versionBinding ?? {}) }, {})); }
+  for (const entry of conversationProcessing?.registrations ?? []) {
+    direct.registry.register(entry);
+    direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'],
+      { ...(options.workspaceServices?.processing?.versionBinding ?? {}),
+        ...((entry.action.startsWith('data.module.') || entry.action === 'data.factor.catalog'
+          || entry.action === 'data.semantic.lookup') ? { modulePorts: PRODUCTION_MODULE_PORTS_VERSION } : {}) }, {}));
+  }
   for (const entry of conversationR1?.registrations ?? []) {
     direct.registry.register(entry);
     direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'], conversationR1!.versionBinding, {}));
@@ -439,6 +451,9 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   // R1 只使用已完整装配的真实加工服务和共用内容仓储。
   processing = materials && candidates ? new ProcessingPlanService({ database, tasks: currentTasks, materials,
     adapters: endpointAdapters,
+    ...(options.enabledProductionModules ? { enabledModules: Object.fromEntries(
+      ['parse', 'clean', 'structure', 'annotate', 'check'].map(k =>
+        [k, options.enabledProductionModules?.[k as ProductionModuleId] !== false])) } : {}),
     ...(options.role === 'service' && options.processRuntime
       ? { polarsCleaner: new PolarsSourceCleaner(options.processRuntime) } : {}),
     financialReader: (value, signal): ReturnType<R1WorkspaceService['readProduct']> => {
@@ -555,6 +570,10 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const productionCalculation = options.role === 'service'
     ? new ProductionCalculation({ polars: unifiedPolars, legacy: algorithms, publisher: derivedPublisher })
     : undefined;
+  const productionModules = options.role === 'service' ? new ProductionModulePorts({
+    processing, calculation: productionCalculation, wfd: r1Workspace,
+    enabledModules: options.enabledProductionModules,
+  }) : undefined;
   const questions = new AgentQuestionService(database, core);
   modelTools = createCoreModelTools({ database, core, permissions, files, registry: direct.registry, service: bd, conversationFinancial, conversationAlgorithms, businessGoals, questions,
     codeRoot: options.codeRoot ?? options.projectRoot,
@@ -718,5 +737,5 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   queueMicrotask(() => core.dispatchTaskCompletions());
   return { core, database, permissions, files, tasks: runningTasks, memory, agentSkills, questions, toolSettings, sourceSettings, personalResources, uiPreferences, contextLedger, inputRules, inputRouter, directConversations, direct, modelTools,
     ...(options.localData ? { localData: options.localData.lifecycle, localDataId: options.localData.dataId } : {}),
-    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, unifiedPolars, productionCalculation, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
+    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, unifiedPolars, productionCalculation, productionModules, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
 }
