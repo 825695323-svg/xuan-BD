@@ -204,10 +204,12 @@ export class ConversationProcessingBridge {
           ...(fields !== undefined ? { fields } : {}), ...(typeof args.cursor === 'string' ? { cursor: args.cursor } : {}) };
         const read = await port.readProduct(selection, context.signal);
         authority.assert();
-        const page = read.result, rows = page.rows;
+        const page = read.result, rows = Array.isArray(page.rows) ? page.rows.filter(isWfdRecord) : [];
+        if (!Array.isArray(page.rows) || rows.length !== page.rows.length)
+          throw new TaskError('AGENT_WFD_RESPONSE', 'WFD产品行缺少可核对的记录形状，未作为查询结果交回AGENTS。');
         const sample = rows.slice(0, 5).map(row => ({
           recordRef: row.record_ref,
-          values: Object.fromEntries(Object.entries(row.values).slice(0, 12).map(([field, value]) => {
+          values: Object.fromEntries(Object.entries(isWfdRecord(row.values) ? row.values : {}).slice(0, 12).map(([field, value]) => {
             const serialized = canonicalWfdJson(value);
             return [field, serialized.length > 600 ? { sampleJson: serialized.slice(0, 600), truncated: true } : value];
           })),
@@ -217,7 +219,7 @@ export class ConversationProcessingBridge {
             source: { historyMode: read.historyMode, connectionSha256: wfdSha256(canonicalWfdJson(read.connection)),
               resultSha256: wfdSha256(canonicalWfdJson(page)) }, page: page.page,
             pageRowCount: rows.length, previewRows: sample,
-            previewTruncated: rows.length > sample.length || rows.some(row => Object.keys(row.values).length > 12),
+            previewTruncated: rows.length > sample.length || rows.some(row => isWfdRecord(row.values) && Object.keys(row.values).length > 12),
             execution: 'not_requested', publication: 'not_requested' }) };
       }
       throw new TaskError('AGENT_WFD_QUERY', '只支持snapshot、discover、product三种已登记WFD只读操作。');
