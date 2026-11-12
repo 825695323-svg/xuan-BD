@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { canonicalWfdJson } from '../../adapters/database/wfd-transport.js';
 import { createFullChainFixture, openFullChainHost } from '../../apps/server/full-chain-test-support.js';
+import { readPublishedWfdSemanticDefinition } from '../../modules/collection/production-module-ports.js';
 
 const python = process.env.POLARS_PYTHON;
 const wfdPython = process.env.WFD_PYTHON;
@@ -144,6 +145,11 @@ test('real isolated WFD publishes source, unified Polars computes and R1 publish
       const associated = sourceView.currentRequest.local.associations;
       const snapshotId = associated[0].snapshot_id, productId = associated[0].product_id;
       assert.ok(snapshotId); assert.ok(productId);
+      const publishedDefinition = await readPublishedWfdSemanticDefinition({ snapshotId, productId },
+        host.services.r1Workspace!.discoverProducts.bind(host.services.r1Workspace!), new AbortController().signal);
+      assert.equal(publishedDefinition.authority, 'actual_fixed_snapshot');
+      assert.ok((publishedDefinition.declaration as any).semantic_code);
+      assert.equal(publishedDefinition.publication, 'not_requested');
       const page = await host.call('/r1/products/read', { snapshotId, productId });
       const ref = (key: string) => {
         const actual = page.result.rows.find((item: any) => item.record_ref.logical_key === key);
