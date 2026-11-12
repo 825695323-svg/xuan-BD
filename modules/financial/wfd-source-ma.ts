@@ -69,7 +69,7 @@ export async function readWfdMASource(raw: WfdSourceMACalculation, reader: Finan
     if (connection !== undefined && canonicalWfdJson(response.connection ?? null) !== canonicalWfdJson(connection))
       fail('WFD_MA_CONNECTION_CHANGED', '固定系列分页期间数据连接身份发生变化。');
     connection = response.connection ?? null;
-    const page = response.result, pageRows = page.rows, paging = page.page;
+    const page = response.result, pageRows = page.rows, paging = page.page as WfdRecord;
     if (page.snapshot_id !== calculation.snapshotId || page.product_id !== calculation.productId
       || page.history_mode !== undefined && page.history_mode !== 'snapshot_contents'
       || !Array.isArray(pageRows) || !isWfdRecord(paging)
@@ -79,13 +79,14 @@ export async function readWfdMASource(raw: WfdSourceMACalculation, reader: Finan
       if (!isWfdRecord(row) || !isWfdRecord(row.record_ref)
         || !isWfdRecord(row.subject) || !isWfdRecord(row.values) || !isWfdRecord(row.business_time))
         fail('WFD_MA_ROW_INVALID', '源观测缺固定身份、主体、业务时间或值。');
-      const record = row.record_ref, key = record.logical_key ?? record.record_id;
+      const record = row.record_ref as WfdRecord, key = record.logical_key ?? record.record_id;
       if (!id(key) || !id(record.revision_id) || seenKeys.has(key as string)
         || record.snapshot_id !== undefined && record.snapshot_id !== calculation.snapshotId
         || record.product_id !== undefined && record.product_id !== calculation.productId)
         fail('WFD_MA_ROW_IDENTITY', '源观测业务键、记录版本或固定快照不唯一。');
       seenKeys.add(key as string);
-      const businessTime = row.business_time;
+      const businessTime = row.business_time as WfdRecord;
+      const rowSubject = row.subject as WfdRecord, rowValues = row.values as WfdRecord;
       if (businessTime.status !== undefined && businessTime.status !== 'known'
         || businessTime.precision !== 'day' || !utc(businessTime.earliest_utc)
         || !utc(businessTime.latest_exclusive_utc)
@@ -95,10 +96,10 @@ export async function readWfdMASource(raw: WfdSourceMACalculation, reader: Finan
       if (subject && canonicalWfdJson(subject) !== canonicalWfdJson(row.subject)
         || timeZone !== null && timeZone !== businessTime.source_timezone)
         fail('WFD_MA_MIXED_SUBJECT', '当前固定算法一次只允许同一来源主体和时间口径的完整日线序列。');
-      subject ??= row.subject; timeZone ??= businessTime.source_timezone as string;
-      if (!id(row.subject.kind) || !id(row.subject.namespace) || !id(row.subject.id))
+      subject ??= rowSubject; timeZone ??= businessTime.source_timezone as string;
+      if (!id(rowSubject.kind) || !id(rowSubject.namespace) || !id(rowSubject.id))
         fail('WFD_MA_SUBJECT', '源产品缺可复核的实体主体身份。');
-      const cell = row.values[calculation.valueField];
+      const cell = rowValues[calculation.valueField];
       if (!isWfdRecord(cell) || !isWfdRecord(cell.unit)
         || !id(cell.unit.unit_code) || !['decimal', 'integer'].includes(String(cell.data_type)))
         fail('WFD_MA_FIELD', '实际 WFD 数值字段缺明确十进制类型和单位。');
