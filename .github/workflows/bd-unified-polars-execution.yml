@@ -2,11 +2,15 @@ name: BD unified algorithm Polars execution
 
 on:
   push:
-    branches: [refactor/unified-polars-execution, fix/bd-completion-20261112]
+    branches: [refactor/unified-polars-execution, fix/bd-completion-20261112, refactor/production-calculation-verification-20261112]
   workflow_dispatch:
   pull_request:
     paths:
       - 'modules/financial/unified-polars-execution.ts'
+      - 'modules/collection/production-calculation*.ts'
+      - 'modules/collection/production-verifier*.ts'
+      - 'modules/collection/processing-plan.ts'
+      - 'modules/collection/candidate-pipeline.ts'
       - 'modules/financial/conversation-algorithms.ts'
       - 'apps/server/services.ts'
       - 'contracts/workspace-services.ts'
@@ -55,7 +59,9 @@ jobs:
             modules/financial/unified-algorithm-discovery.test.ts \
             modules/collection/data-processing/polars-macro-independent.test.ts \
             modules/collection/data-processing/financial-fixed.test.ts \
-            apps/server/unified-polars-publish-full-chain.test.ts
+            apps/server/unified-polars-publish-full-chain.test.ts \
+            modules/collection/production-calculation.test.ts \
+            modules/collection/production-verifier.test.ts
 
       - name: Financial module test coverage outside default npm test
         if: always()
