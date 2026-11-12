@@ -1,0 +1,21 @@
+{
+  "provider": "configured-provider",
+  "model": "<PROVIDER_MODEL_ID>",
+  "defaultThinkingLevel": "off",
+  "customModel": {
+    "api": "openai-completions",
+    "baseUrl": "https://provider.example.invalid/v1",
+    "name": "<PROVIDER_MODEL_NAME>",
+    "contextWindow": 32768,
+    "maxTokens": 4096,
+    "input": [
+      "text"
+    ],
+    "reasoning": false
+  },
+  "credential": {
+    "kind": "dsh-ref",
+    "path": "<ABSOLUTE_EXTERNAL_CREDENTIAL_FILE>",
+    "ref": "MODEL_API_KEY"
+  }
+}

@@ -13,4 +13,4 @@
 
 新机器准备入口 `scripts/prepare-runtime.ts` 会在准备结果的 `apiSources` 中列出申请／提供密钥提醒。旧机器引用或旧已配置状态与当前应用身份不符时，管理器拒绝沿用；宿主精确核验本机指定引用可读后才报告 `ready`（本机凭据就绪）。本机可读不代表供应商已批准权限、额度可用或网络接口已经验通。检查由宿主显式触发，不在后台反复索要密钥。
 
-当前来源设置、连接与范围策略由 [source-settings.ts](../../platform/config/source-settings.ts)（来源配置服务）管理，业务读取由 [runtime.ts](runtime.ts)（受控来源运行时）显式装配 `source.fetch`（指定来源读取）、`source.api.read`（接口来源读取）、`source.kline.read`（公开行情读取）、`source.werss.read`（WeRSS 本地缓存读取）与 `source.wechat.extract`（微信公众号正文提取）。已实现的操作和参数以该登记为准；共同边界见[数据接入与分类路由](../../../../Xuan%20BD-规划/规划文件/模块细则/4.1-数据接入与分类路由.md)。调用复用原任务、网络与秘密权限、预算、版本和产物通路；申请信息、文档或凭据就绪不直接授予取数、批量下载或正式入库权限，配置与实际来源可用性分别核对。
+当前来源设置、连接与范围策略由 [source-settings.ts](../../platform/config/source-settings.ts)（来源配置服务）管理，业务读取由 [runtime.ts](runtime.ts)（受控来源运行时）显式装配 `source.fetch`（指定来源读取）、`source.api.read`（接口来源读取）、`source.kline.read`（公开行情读取）、`source.werss.read`（WeRSS 本地缓存读取）与 `source.wechat.extract`（微信公众号正文提取）。已实现的操作和参数以该登记为准；共同边界见[来源配置与授权边界](../../docs/REBUILD.md#6-wfd模型与来源连接)。调用复用原任务、网络与秘密权限、预算、版本和产物通路；申请信息、文档或凭据就绪不直接授予取数、批量下载或正式入库权限，配置与实际来源可用性分别核对。

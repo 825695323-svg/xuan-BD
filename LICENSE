@@ -1,0 +1,13 @@
+PROJECT LICENSE STATUS — NO NEW LICENSE GRANT
+
+This repository does not currently declare a project-wide license grant.
+This notice documents that status; it does not assign copyright ownership,
+relicense existing code, or grant permission to use, modify, or redistribute
+material for which no such permission has otherwise been granted.
+
+Third-party files retain their own notices and license terms. Existing notices
+under apps/web/public/licenses/ must be preserved. Downloaded dependencies,
+browser binaries, FFmpeg, whisper.cpp, and models are subject to their respective
+upstream terms. A resource hash is not a license or redistribution permission.
+
+The repository owner must choose and approve any future project-wide license.

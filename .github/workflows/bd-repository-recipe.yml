@@ -1,33 +1,91 @@
-name: BD repository recipe verification
+name: BD source recipe and clean rebuild
+
 on:
   push:
-    branches: [fix/bd-reproducible-recipe-20261112]
+    branches: [main, fix/bd-reproducible-recipe-20261112]
+    paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', 'AGENTS.md', 'LICENSE']
+  pull_request:
+    paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', 'AGENTS.md', 'LICENSE', 'staging/**', 'wfd/product/**']
+  workflow_dispatch:
+
 permissions:
   contents: read
 concurrency:
-  group: bd-recipe-inputs-${{ github.ref }}
+  group: bd-source-recipe-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
-  inventory:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  rebuild:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: '24.22.1'
-      - name: Lock exact upstream downloads and Python wheels
-        run: python3 scripts/lock-build-inputs.py --output "$RUNNER_TEMP/recipe-locks"
-      - name: Lock existing browser daemon dependency graph
+          python-version: '3.12'
+      - name: Test downloader boundaries and build pinned toolchain
+        shell: bash
         run: |
-          npm install --package-lock-only --ignore-scripts --no-audit --no-fund --prefix resources/browser
-          cp resources/browser/package-lock.json "$RUNNER_TEMP/recipe-locks/browser-package-lock.json"
-          cp scripts/lock-build-inputs.py "$RUNNER_TEMP/recipe-locks/lock-build-inputs.py"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: recipe-locks
-          path: ${{ runner.temp }}/recipe-locks
-          retention-days: 1
-          if-no-files-found: error
+          python scripts/bootstrap-resources.test.py
+          python scripts/bootstrap-resources.py --profile toolchain --output "$RUNNER_TEMP/bd-tools"
+          python - <<'PY'
+          import json,os,pathlib
+          receipt=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'bd-tools/recipe-receipt.json').read_text())
+          with open(os.environ['GITHUB_ENV'],'a') as env:
+              for key,value in [('BD_NODE',receipt['node']),('BD_NPM',receipt['npmCli']),('BD_PYTHON',receipt['python'])]: env.write(key+'='+value+'\n')
+          with open(os.environ['GITHUB_PATH'],'a') as path:path.write(str(pathlib.Path(receipt['node']).parent)+'\n')
+          PY
+      - name: Install locked dependencies and build source
+        shell: bash
+        run: |
+          "$BD_NODE" "$BD_NPM" ci
+          "$BD_NODE" "$BD_NPM" run repo:check
+          "$BD_NODE" "$BD_NPM" run test:recipe
+          "$BD_NODE" "$BD_NPM" run build
+          "$BD_PYTHON" -m venv "$RUNNER_TEMP/bd-venv"
+          python - <<'PY'
+          import os,pathlib
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'bd-venv'/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+          with open(os.environ['GITHUB_ENV'],'a') as env:
+              env.write('WFD_PYTHON='+str(p)+'\n')
+              env.write('XUAN_TEST_NPM_CLI='+os.environ['BD_NPM']+'\n')
+          PY
+      - name: Install hash-locked WFD and calculation requirements
+        shell: bash
+        run: |
+          "$WFD_PYTHON" -m pip install --only-binary=:all: --require-hashes -r config/local-web-python.lock.txt -r config/polars.lock.txt
+          echo "POLARS_PYTHON=$WFD_PYTHON" >> "$GITHUB_ENV"
+      - name: Prepare and start isolated native application, preserve restart identity
+        shell: bash
+        run: |
+          export XUAN_TEST_ROOT="$RUNNER_TEMP/bd-native-fixtures"
+          mkdir -p "$XUAN_TEST_ROOT"
+          "$BD_NODE" --import tsx --test platform/resources/local-web.test.ts
+      - name: Full Node regression and real WFD source-based tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          export XUAN_TEST_ROOT="$RUNNER_TEMP/bd-full-tests"
+          export XUAN_FULL_CHAIN_ROOT="$RUNNER_TEMP/bd-full-chain"
+          export PYTHONPYCACHEPREFIX="$RUNNER_TEMP/bd-fresh-bytecode"
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
+          env -u WFD_PYTHON -u POLARS_PYTHON "$BD_NODE" "$BD_NPM" test
+          "$BD_NODE" --import tsx --test modules/financial/*.test.ts modules/agent/*.test.ts apps/server/unified-polars-publish-full-chain.test.ts
+          "$BD_NODE" "$BD_NPM" run test:python -- --python="$WFD_PYTHON"
+      - name: Rebuild optional bundle and verify existing manifest consumer
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          python scripts/bootstrap-resources.py --profile bundle --output "$GITHUB_WORKSPACE/resources/bundled"
+          "$BD_NODE" --import tsx -e "import {BundledResources} from './platform/resources/bundled.ts'; new BundledResources(process.cwd()).verify(); console.log('BUNDLE_MANIFEST_VERIFIED');"
+      - name: Reject tracked build outputs or changes to source
+        shell: bash
+        run: |
+          "$BD_NODE" "$BD_NPM" run repo:check
+          git diff --exit-code

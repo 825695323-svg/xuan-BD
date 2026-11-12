@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "kind": "wfd-product-machine",
+  "connection_id": "<EXISTING_CONNECTION_ID>",
+  "id": "<EXISTING_CONNECTION_ID>",
+  "environment": "user_test",
+  "mode": "user_test",
+  "purpose": "user_test",
+  "protocol": "wfd.product-machine/0.1",
+  "profile": "data_only",
+  "harness_binding": {
+    "root": "<ABSOLUTE_BD_RUNTIME_ROOT>",
+    "root_id": "<ACTUAL_RUNTIME_ID>"
+  },
+  "config_path": "<ABSOLUTE_WFD_CONFIG_JSON>",
+  "store": "<ABSOLUTE_EXISTING_WFD_STORE>",
+  "runtime": "<ABSOLUTE_WFD_RUNTIME>",
+  "python_path": "<ABSOLUTE_VENV_PYTHON>",
+  "entry_path": "<ABSOLUTE_REPOSITORY>/wfd/product/wfd_sdk/product_machine.py",
+  "harness_root": "<ABSOLUTE_BD_RUNTIME_ROOT>",
+  "harness_root_id": "<ACTUAL_RUNTIME_ID>",
+  "maintenance_intent": "register explicitly selected existing WFD test connection"
+}
