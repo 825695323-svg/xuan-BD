@@ -521,7 +521,7 @@ export class ProcessingPlanService {
         && step.dependsOn.every(dep => plan.steps.find(item => item.stepId === dep)?.state === 'succeeded'));
       if (!next) break;
       // 拔除模块时保留原计划与已完成步骤，不把不可用当作失败数据或自动重选实现。
-      this.assertModuleEnabled(next.kind);
+      this.assertModuleEnabled(next.kind as ProcessingStepKind);
       try {
         await this.executeStepCore(context, planId, next.stepId);
         executed++;
@@ -1149,7 +1149,7 @@ export class ProcessingPlanService {
 
   private async executeStepCore(context: TaskExecutionContext, planId: string, stepId: string): Promise<void> {
     const plan = this.planView(planId), step = plan.steps.find(item => item.stepId === stepId)!;
-    this.assertModuleEnabled(step.kind);
+    this.assertModuleEnabled(step.kind as ProcessingStepKind);
     const started = Date.now(), dependencies = step.dependsOn.map(id => plan.steps.find(item => item.stepId === id)!);
     for (const dependency of dependencies) if (dependency.state !== 'succeeded') fail('PROCESSING_DEPENDENCY', `前置步骤 ${dependency.stepId} 尚未完成；未越过依赖执行。`);
     this.assertActive(context);
