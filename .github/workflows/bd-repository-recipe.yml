@@ -61,6 +61,23 @@ jobs:
         run: |
           "$WFD_PYTHON" -m pip install --only-binary=:all: --require-hashes -r config/local-web-python.lock.txt -r config/polars.lock.txt
           echo "POLARS_PYTHON=$WFD_PYTHON" >> "$GITHUB_ENV"
+      - name: Diagnose isolated WFD publish fixture without changing admission rules
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          PYTHONPATH=wfd/product:wfd/product/tests "$WFD_PYTHON" - <<'PY'
+          import tempfile, json
+          from pathlib import Path
+          from test_r1_data_only import make_data_service, request, scalar_output
+          with tempfile.TemporaryDirectory() as temp:
+              result = make_data_service(Path(temp)).submit(
+                  request([scalar_output('m1', 'r1.metric', '10')], 'fixture-inspect-only'))
+              print('WFD_FIXTURE_DIAG', json.dumps({
+                  'state':result.get('state'),'errors':result.get('errors'),
+                  'outputs':[{'key':r.get('output_key'),'state':r.get('registration_state'),
+                  'errors':r.get('errors')} for r in result.get('output_results',[])]},
+                  ensure_ascii=False))
+          PY
       - name: Prepare and start isolated native application, preserve restart identity
         shell: bash
         run: |
