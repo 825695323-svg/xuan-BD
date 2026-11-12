@@ -13,6 +13,7 @@ import type { TaskRecord } from '../platform/jobs/tasks.js';
 import type { R1CapabilitiesView, R1RequestView } from './r1-contracts.js';
 import type { AlgorithmCatalogView, AlgorithmTaskView } from '../modules/financial/algorithm-types.js';
 import type { UnifiedPolarsExecution } from '../modules/financial/unified-polars-execution.js';
+import type { ProductionCalculation } from '../modules/collection/production-calculation.js';
 
 /** Trusted companion services used by material and result handoff, independent of HTTP startup. */
 import type { CandidateService } from '../modules/collection/candidate-service.js';
@@ -56,6 +57,8 @@ export interface WorkspaceServices {
   materials?: MaterialService;
   candidates?: CandidateService;
   semantics?: MaterialSemanticService;
+  /** 计算与清洗是并列入口，只复用生产核对及原 R1/WFD 发布服务。 */
+  productionCalculation?: ProductionCalculation;
   processing?: ProcessingPlanService;
   /** 端点适配登记：会话受控工具只读取/提交/重放/审批后采用。 */
   endpointAdapters?: EndpointAdapterRegistry;
