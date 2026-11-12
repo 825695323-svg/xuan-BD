@@ -9,7 +9,7 @@ import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
 import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import type { FileReferenceService } from '../../platform/resources/files.js';
-import { ALGORITHM_CONTRACT_VERSION, ALGORITHM_RUNTIME, type { AlgorithmCatalogView } } from './algorithm-types.js';
+import { ALGORITHM_CONTRACT_VERSION, ALGORITHM_RUNTIME, type AlgorithmCatalogView } from './algorithm-types.js';
 import { basicAlgorithmToolContract, bdSessionToolContract } from './basic-algorithm-tool-contract.js';
 import { UNIFIED_POLARS_RUNTIME } from './unified-polars-execution.js';
 
