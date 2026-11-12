@@ -226,7 +226,8 @@ def test_forecast_rating_actual_computed_business_definition_and_templates(tmp_p
         "actual": ("actual_outcome", "flow", None),
     }
     for label, (nature, measurement, publisher) in variants.items():
-        doc = request([scalar_output("m-" + label, "r1.claim", "12",
+        # 不同事实性质、计量类型属于不同产品定义，不复用一个写入目标。
+        doc = request([scalar_output("m-" + label, "r1.claim." + label, "12",
                                      nature=nature, measurement=measurement,
                                      business_publisher=publisher)], "r1-nature-" + label,
                       parent=parent)

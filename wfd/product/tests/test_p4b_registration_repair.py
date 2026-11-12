@@ -99,6 +99,12 @@ def _registered_fixture(tmp_path, name):
         _internal_output("registered", "repair.registered.not.in.snapshot"),
         DATASET, {"_wfd_data_only": True})
     assert state == "registered", state
+    # 注册但未发布的产品必须由受信操作者显式绑定写入目标；
+    # 测试不通过请求内容或语义相似性自动采用目标。
+    binding = service.register_write_target(
+        DATASET, registered["product_id"], registered["definition_ref"],
+        reason="explicit fixture for registered-only hydration")
+    assert binding["state"] == "registered", binding
     reuse = scalar_output("reuse", "ignored.request.semantic", "7")
     reuse.update(definition_mode="reuse",
                  definition_ref=copy.deepcopy(registered["definition_ref"]),
