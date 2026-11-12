@@ -9,7 +9,8 @@ export const REQUIRED = [
   'tsconfig.json','vite.config.ts','.nvmrc','.node-version',
   'config/local-web.example.json','config/local-web-toolchain.json','config/local-web-python-requirements.txt',
   'config/local-web-python.lock.txt','config/polars-requirements.txt','config/polars.lock.txt',
-  'config/resource-sources.lock.json','config/connections.example.json','config/wfd-machine.example.json',
+  'config/resource-sources.lock.json','config/connections.example.json','config/source-field-profile.example.json',
+  'config/semantic-products.example.json','config/wfd-machine.example.json',
   'config/wfd-wiring.example.json','config/model.example.json',
   'resources/browser/package.json','resources/browser/package-lock.json',
   'scripts/local-web.mjs','scripts/bootstrap-local-web.ts','scripts/bootstrap-resources.py','scripts/lock-build-inputs.py',
@@ -18,6 +19,7 @@ export const REQUIRED = [
   'wfd/product/wfd_sdk/product_machine.py','wfd/product/protocol/schemas/wfd-structured-ingest.schema.json',
   'wfd/product/legacy_samples/old_codec_example.parquet',
   '.github/workflows/bd-repository-recipe.yml','docs/REBUILD.md','docs/REPOSITORY-POLICY.md',
+  'docs/SOURCE-SEMANTIC-ADOPTION.md',
 ];
 
 export function isOutputPath(path) {

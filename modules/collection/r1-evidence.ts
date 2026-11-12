@@ -376,7 +376,8 @@ function resolveSourceReport(input: EvidenceInput, parsed: ParsedCandidateTable,
   const valueColumns = selected ? columns.filter(column => keyColumns.includes(column) || selected.includes(column)) : columns;
   // 来源字段档案：已确认的映射直接给出标准字段/类型/单位，不再把原表头派生成正式字段身份。
   const profileMap = input.sourceFieldProfile
-    ? new Map(input.sourceFieldProfile.profile.fields.map(field => [field.originalHeader, field])) : null;
+    ? new Map(input.sourceFieldProfile.profile.fields.flatMap(field =>
+      [field.originalHeader, ...(field.aliases ?? [])].map(header => [header, field] as const))) : null;
   if (input.sourceFieldProfile) {
     const profile = input.sourceFieldProfile.profile;
     if (profile.sourceId !== String(sourceId)) fail(`来源字段档案 ${profile.profileId} 属于其他来源；未跨来源套用映射。`);
@@ -384,10 +385,12 @@ function resolveSourceReport(input: EvidenceInput, parsed: ParsedCandidateTable,
     const unmapped = valueColumns.filter(column => !profileMap!.has(column));
     if (unmapped.length) fail(`来源字段档案 ${profile.profileId} 未映射本件字段 ${JSON.stringify(unmapped)}；不据列名相似补映射。`);
     for (const field of profile.fields) {
-      const present = columns.includes(field.originalHeader);
-      if (field.role === 'date' && present && field.originalHeader !== dateColumn) fail(`来源字段档案 ${profile.profileId} 声明「${field.originalHeader}」为日期列，但本件日期列是「${dateColumn}」。`);
-      if (field.role === 'minute' && present && field.originalHeader !== minuteColumn) fail(`来源字段档案 ${profile.profileId} 声明「${field.originalHeader}」为分钟列，但本件分钟列是「${minuteColumn}」。`);
-      if (field.role === 'identity' && present && !keyColumns.includes(field.originalHeader)) fail(`来源字段档案 ${profile.profileId} 声明「${field.originalHeader}」为标识列，但本件键列是 ${JSON.stringify(keyColumns)}。`);
+      const present = [field.originalHeader, ...(field.aliases ?? [])].filter(header => columns.includes(header));
+      if (present.length > 1) fail(`来源字段档案 ${profile.profileId} 的同义原表头 ${JSON.stringify(present)} 同时出现，不能重复写入同一规范字段。`);
+      const header = present[0];
+      if (field.role === 'date' && header && header !== dateColumn) fail(`来源字段档案 ${profile.profileId} 声明「${header}」为日期列，但本件日期列是「${dateColumn}」。`);
+      if (field.role === 'minute' && header && header !== minuteColumn) fail(`来源字段档案 ${profile.profileId} 声明「${header}」为分钟列，但本件分钟列是「${minuteColumn}」。`);
+      if (field.role === 'identity' && header && !keyColumns.includes(header)) fail(`来源字段档案 ${profile.profileId} 声明「${header}」为标识列，但本件键列是 ${JSON.stringify(keyColumns)}。`);
     }
     if (!profile.fields.some(field => field.role === 'date')) fail(`来源字段档案 ${profile.profileId} 没有登记日期列；分钟行情档案必须明确日期与分钟列。`);
     evidence.push({ key: 'source_field_profile', value: profile.profileId, origin: 'contract' },
@@ -432,6 +435,8 @@ function resolveSourceReport(input: EvidenceInput, parsed: ParsedCandidateTable,
       || registeredType === 'integer' && allInteger || registeredType === 'boolean' && allBoolean) ? registeredType : undefined;
     const proposedType = sourceTypeFixed ? fileType : registeredType ? compatibleRegisteredType : fileType;
     let type: ValueType | '';
+    if (mappedField && adapterType && mappedField.dataType !== adapterType)
+      fail(`来源字段档案与适配器对「${column}」的有效数据类型声明不一致；不能以旧档案覆盖实际转换结果。`);
     if (mappedField) {
       checked.add('type.'+column);
       evidence.push({ key:'type.'+column, value:mappedField.dataType, origin:'contract', field:`sourceFieldProfile.fields.${column}.dataType` });
@@ -458,6 +463,8 @@ function resolveSourceReport(input: EvidenceInput, parsed: ParsedCandidateTable,
       : countHeader.test(column) ? 'count' : undefined);
     const registeredUnit = fieldCode ? input.registeredUnits?.[fieldCode] : undefined;
     let unit: string;
+    if (mappedField && adapterUnit && mappedField.unitCode !== adapterUnit)
+      fail(`来源字段档案与适配器对「${column}」的有效单位不一致；须有新的映射依据，不以旧档案覆盖单位转换。`);
     if (mappedField) {
       checked.add('unit.'+column);
       evidence.push({ key:'unit.'+column, value:mappedField.unitCode, origin:'contract', field:`sourceFieldProfile.fields.${column}.unitCode` });
@@ -481,6 +488,8 @@ function resolveSourceReport(input: EvidenceInput, parsed: ParsedCandidateTable,
     mappingFields.push({ fieldCode, value:column, state:stateColumn });
     definitions.push({ field_code:fieldCode,data_type:type,unit_code:unit,measurement_nature:'mixed_observation',time_role:'observation' });
     evidence.push({ key:'state.'+column,value:'nonempty_valid_blank_unknown',origin:'file',column });
+    if (mappedField?.measurement) evidence.push({ key:'source_measurement.'+column, value:mappedField.measurement,
+      origin:'contract', field:`sourceFieldProfile.fields.${column}.measurement` });
     const qualification = sourceFieldQualification(column, dateColumn, identity, minuteColumn);
     fieldContexts[fieldCode] = { content: { assertion_status: qualification.assertion_status } };
     evidence.push({ key:'source_semantics.'+column,value:canonicalWfdJson(qualification),origin:'file',column });

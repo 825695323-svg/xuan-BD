@@ -116,7 +116,8 @@ export class R1AutoService {
   }
 
   private startBound(input: R1AutoStartInput, operator: OperatorContext, calculation?: AutoRecord['calculation'], selectedKeyReplacement = false): R1AutoView {
-    const fieldProfile = this.options.fieldProfiles?.match({ sourceId: input.source.source_id, series: declaredSourceSeries(input.source) }) ?? null;
+    const fieldProfile = this.options.fieldProfiles?.match({ sourceId: input.source.source_id,
+      series: declaredSourceSeries(input.source), ...(input.sourceAdapter ? { adapter: input.sourceAdapter } : {}) }) ?? null;
     const frozenProfile = fieldProfile
       ? { profile: fieldProfile, digest: sourceFieldProfileDigest(fieldProfile), fingerprint: profileFingerprint(fieldProfile) }
       : undefined;
@@ -151,6 +152,13 @@ export class R1AutoService {
           ...(input.sourceContext === undefined ? {} : { context: input.sourceContext }),
           ...(input.sourceReceiptTaskId === undefined ? {} : { sourceReceiptTaskId: input.sourceReceiptTaskId }) })
       : undefined;
+    if (adapter && fieldProfile) {
+      const frequency = adapter.config.match.frequency === 'event' ? 'other' : adapter.config.match.frequency;
+      const adjustment = adapter.config.match.adjustment === 'none' ? 'raw' : adapter.config.match.adjustment;
+      if (fieldProfile.frequency !== frequency || fieldProfile.adjustment.status !== adjustment)
+        fail('R1_SOURCE_PROFILE_SEMANTICS_CHANGED',
+          '来源字段档案与本次已采用适配器的频率或复权状态冲突；须提供新的、有来源依据的档案版本，不覆盖旧口径。');
+    }
     // 发布用途依赖匹配：没有本材料实际取得回执或与配置不符时，结构解析可另行办理，但不能据此发布。
     if (adapter && !(adapter.match?.verified === true || adapter.match?.consistent === true))
       fail('R1_ADAPTER_CONTEXT_REQUIRED', 'R1 发布用途须提供本材料取得回执或明确标注的合成上下文，并核过地址/协议/字段顺序/频率/复权/市场；未按已采用配置自动取得。');
