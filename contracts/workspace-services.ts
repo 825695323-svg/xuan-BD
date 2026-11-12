@@ -10,7 +10,7 @@ import type { ProcessingPlanService } from '../modules/collection/processing-pla
 import type { EndpointAdapterRegistry } from '../modules/collection/endpoint-adapter-registry.js';
 import type { JsonValue } from './task-contracts.js';
 import type { TaskRecord } from '../platform/jobs/tasks.js';
-import type { R1CapabilitiesView, R1RequestView, R1ProductRead, R1ProductDiscovery } from './r1-contracts.js';
+import type { R1CapabilitiesView, R1RequestView, R1ProductRead, R1ProductDiscovery, R1SnapshotStatus } from './r1-contracts.js';
 import type { AlgorithmCatalogView, AlgorithmTaskView } from '../modules/financial/algorithm-types.js';
 import type { UnifiedPolarsExecution } from '../modules/financial/unified-polars-execution.js';
 import type { ProductionCalculation } from '../modules/collection/production-calculation.js';
@@ -32,6 +32,8 @@ export interface AlgorithmConversationPort {
 export interface R1ConversationPort {
   readonly versionBinding: Record<string, string | null>;
   capabilities(): R1CapabilitiesView;
+  /** 只读查询当前已发布快照身份，后续查询必须固定此快照，不接收当前/最新的动态别名。 */
+  snapshotStatus?(signal?: AbortSignal): Promise<R1SnapshotStatus>;
   /** 仅宿主实际装配时开放的 WFD 固定快照只读分页，非模型自报来源。 */
   readProduct?(input: unknown, signal?: AbortSignal): Promise<R1ProductRead>;
   /** 语义词典只读取实际 WFD 冻结快照的已发布产品声明，不推断或采用模板。 */

@@ -7,13 +7,13 @@ import type { SkillField } from '../../contracts/skill-contracts.js';
 import { TaskError, type TaskExecutionContext, type TaskRecord } from '../../platform/jobs/tasks.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
-import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
+import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import type { OperatorContext, ProcessingPlanInput } from './processing-plan.js';
 import { PRODUCTION_MODULES, stepModuleForAction, readWfdModulePage,
   productionModuleDirectory, factorLibraryView, semanticDictionaryView,
   readPublishedWfdSemanticDefinition } from './production-module-ports.js';
 
-const ACTIONS = new Set(['data.processing.capabilities', 'data.processing.route', 'data.processing.plan',
+const ACTIONS = new Set(['data.wfd.query', 'data.processing.capabilities', 'data.processing.route', 'data.processing.plan',
   'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
   ...PRODUCTION_MODULES.filter(item => item.id !== 'calculate').map(item => item.action),
   'data.adapters.capabilities', 'data.adapters.propose', 'data.adapters.replay', 'data.adapters.adopt']);
@@ -58,11 +58,11 @@ export class ConversationProcessingBridge {
               text('stepId', '该计划中同类步骤编号'),
               text('wfdRefJson', '可选：WFD固定产品只读引用', false, 16000)];
         const standard = registration(module.action, module.title + '（按需独立接口）',
-          '与其他模块并列；五步计划的前置证据仍必须完整。WFD固定来源读取为只读模式，不替代加工、核验或发布。',
+          '与其他模块并列；材料先识别，解析单步完成后回到AGENTS，再选择必要的后续模块。步骤仅依赖真实冻结产物，不存在自动五步。WFD固定来源只读，不替代独立核验或发布。',
           fields);
         return { ...standard,
           permissionSummary: ['受信宿主独立拔插；同一TaskService保留真实任务身份',
-            '只有冻结计划同类步骤才可执行；WFD为签名固定快照只读，不自动变成可发布加工产物',
+            '只运行AGENTS选择的单步；完成后返回AGENTS重新判断。WFD固定快照只读，不能冒充发布证明',
             '因子库登记不启用计算；语义模板不等于词典已采用，不自动裁决来源'],
           available: () => {
             const capability = moduleCatalog().modules.find(item => item.id === module.id);
@@ -74,21 +74,37 @@ export class ConversationProcessingBridge {
       });
     this.registrations = [
       ...modules,
-      registration('data.processing.capabilities', '发现处理计划与六维路由能力', '先查当前会话分支已保管材料、真实用户消息、六维合同、处理步骤与限制。材料编号只能从这里列出的保管关系取得；不要让用户手填内部编号、六维状态或JSON。未知语义保持unknown并记录缺口，不阻断不依赖它的解析、清洗或结构检查。', []),
+      { ...registration('data.wfd.query', '按需查询WFD正式数据',
+        'AGENTS按需使用受信WFD只读端口：snapshot发现真实快照，discover只在固定快照寻找已发布产品，product只读所选产品分页；每次返回AGENTS判断是否还要查接口源、采集源或处理材料。查询不计算、不清洗、不发布。', [
+        { key: 'operation', label: '只读查询操作', type: 'select', required: true,
+          options: ['snapshot', 'discover', 'product'].map(value => ({ value, label: value })) },
+        text('snapshotId', '固定快照编号；snapshot操作不需要'),
+        text('query', '产品发现时可选名称/语义筛选', false, 128),
+        text('productId', '正式产品编号（product操作必需）'),
+        text('fieldsJson', '可选字段数组JSON', false, 2000),
+        text('cursor', '原分页游标（可选）', false, 8192),
+      ]), available: () => {
+        const port = options.companion.r1Workspace;
+        const ready = !!port?.snapshotStatus && !!port?.discoverProducts && !!port?.readProduct
+          && port.capabilities().configuration.state === 'ready';
+        return ready ? { available: true } : { available: false,
+          reason: 'WFD受信只读连接未装配、未配置或不可用；不能伪造数据库查询结果。' };
+      } },
+      registration('data.processing.capabilities', '发现处理计划与六维路由能力', '材料先通过material.read识别，之后查看本分支已保管材料、真实用户消息、六维合同、处理步骤与限制。材料编号只能从这里列出的保管关系取得；不要让用户手填内部编号、六维状态或JSON。未知语义保持unknown并记录缺口，不阻断不依赖它的解析、清洗或结构检查。', []),
       registration('data.processing.route', '按现有原文判断材料路由', '用于单个材料的路由判断（六维：角色、信息性质、业务对象、对象与时间、目的、结构粒度）。dimensionsJson是直接以六维英文键为根的JSON对象文本，不包dimensions或materials。known须有value和evidence；每项证据必须带source：原件用{source:"material",materialId,quote}（原句重复时加start/end），真实用户消息用{source:"user-message",messageId,quote}；会话模型不能自报operator证据。用户目的须由本分支真实用户消息核对。不猜未知，不把模型建议当证据，不让用户填ID或JSON。intendedAction只接受inspect或publish；publish缺目标会needs_target。', [
         text('materialId', '本分支已保管材料编号', true),
         text('dimensionsJson', '六维判断与可核证据', false, 32000),
         text('suggestionsJson', '未采用的模型建议（可选）', false, 8000),
         { key: 'intendedAction', label: '明确用途动作', type: 'select', required: false, options: ['inspect', 'publish'].map(value => ({ value, label: value })) },
       ]),
-      registration('data.processing.plan', '准备或修订处理计划', '按材料关系与明确输出规则准备计划；previousPlanId存在时修订原计划。planJson根对象只接受{routing:{materials:[{materialId,dimensions,suggestions,intendedAction}]},outputs:[{outputId,materialIds,tables,target,dimensions,intendedAction}]}。其中每个dimensions直接以六维英文键为根，known证据必须带source，格式与data.processing.capabilities的inputContract一致；不要再包dimensions或materials。材料编号取自本桥列出的本分支保管关系。六维未知仍会生成解析/清洗/结构检查步骤并保留语义缺口；publish仍须目标、必要语义与真实权限，结构检查不替代。修改规则或声明会形成新计划并只复用实际相关旧证明；不让用户手填内部ID或JSON。', [
+      registration('data.processing.plan', '准备或修订处理计划', 'AGENTS须对每个表格输出明确选择stages（按顺序从parse开始，例如["parse"]）；先只计划解析，读取反馈后再决定是否修订原计划增加clean、structure、annotate、check，不自动执行剩余步骤。previousPlanId存在时修订原计划。planJson根对象只接受{routing:{materials:[{materialId,dimensions,suggestions,intendedAction}]},outputs:[{outputId,materialIds,tables,stages,target,dimensions,intendedAction}]}。其中每个dimensions直接以六维英文键为根，known证据必须带source，格式与data.processing.capabilities的inputContract一致；不要再包dimensions或materials。材料编号取自本桥列出的本分支保管关系。六维未知仍会生成解析/清洗/结构检查步骤并保留语义缺口；publish仍须目标、必要语义与真实权限，结构检查不替代。修改规则或声明会形成新计划并只复用实际相关旧证明；不让用户手填内部ID或JSON。', [
         text('planJson', '明确计划对象', true, 131072),
         text('previousPlanId', '需修订的原处理计划', false),
       ]),
       registration('data.processing.execute', '执行已计划的一个处理步骤', '只执行本会话分支已准备计划中的单个步骤；按原计划身份、依赖和预算执行，不越过未完成前置，不重算其他步骤。已完成步骤只查询，不重复执行。', [
         text('planId', '本分支处理计划', true), text('stepId', '计划内步骤编号', true),
       ]),
-      registration('data.processing.run', '按顺序运行处理计划', '运行本会话分支已准备计划中仍待执行的步骤；每阶段持久后检查停止与预算。已成功步骤按原证明查询/复用，不重复计算；失败或阻塞保留原件与上游产物。', [
+      registration('data.processing.run', '仅恢复历史批量计划（新AGENTS循环禁用）', '仅旧版未选择stages的历史计划可沿原流程批量运行；AGENTS新计划必须每次执行单步并阅读结果后重新决定。每阶段持久后检查停止与预算。已成功步骤按原证明查询/复用，不重复计算；失败或阻塞保留原件与上游产物。', [
         text('planId', '本分支处理计划', true),
       ]),
       registration('data.processing.status', '查询原处理计划与产物', '只读取本会话分支已链接的计划、步骤和路由事实；查询不重算、不重发、不推进。可给planId、taskId或materialId之一。缺项回原计划；对象损坏另行明确恢复，不在查询中静默修复。', [
@@ -121,7 +137,7 @@ export class ConversationProcessingBridge {
     const service = this.options.companion.processing;
     const moduleAction = PRODUCTION_MODULES.find(item => item.action === action && item.id !== 'calculate');
     // 因子/语义目录是独立只读模块；既有处理计划与端点适配仍按原边界装配。
-    if (!service && !moduleAction && !action.startsWith('data.adapters.'))
+    if (!service && !moduleAction && action !== 'data.wfd.query' && !action.startsWith('data.adapters.'))
       throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
     this.options.companion.bd!.assertDispatch();
     context.signal.throwIfAborted();
@@ -132,6 +148,82 @@ export class ConversationProcessingBridge {
       action.startsWith('data.adapters.') && action !== 'data.adapters.capabilities' ? { approvalMode: 'review' } : {});
     authority.assert();
     if (action.startsWith('data.adapters.')) return this.executeAdapter(context, action, args, origin, authority);
+    if (action === 'data.wfd.query') {
+      const port = this.options.companion.r1Workspace;
+      if (!port?.snapshotStatus || !port.discoverProducts || !port.readProduct)
+        throw new TaskError('AGENT_WFD_UNAVAILABLE', 'WFD实际快照、发现或产品只读接口未装配，未替换为模板或缓存。');
+      const operation = args.operation, snapshotId = args.snapshotId;
+      if (operation === 'snapshot') {
+        if (Object.keys(args).some(key => key !== 'operation'))
+          throw new TaskError('AGENT_WFD_QUERY', '查询当前快照无需提供产品、字段或其它范围参数。');
+        const status = await port.snapshotStatus(context.signal);
+        authority.assert();
+        return { summary: status.empty ? 'WFD当前为空快照；AGENTS可判断是否需要改查来源。' : '已读取WFD当前快照身份；后续查询必须固定此快照。',
+          data: view({ kind: 'wfd_source_read_only', operation, status, next: status.empty ? 'no_fixed_snapshot' : 'optional_discover',
+            execution: 'not_requested', publication: 'not_requested' }) };
+      }
+      if (operation === 'discover') {
+        if (typeof snapshotId !== 'string' || args.productId || args.fieldsJson || args.cursor
+          || Object.keys(args).some(key => !['operation','snapshotId','query'].includes(key)))
+          throw new TaskError('AGENT_WFD_QUERY', '产品发现只接受固定快照与可选的产品/语义搜索词。');
+        const term = typeof args.query === 'string' ? args.query.trim().toLowerCase() : '';
+        const discovered = await port.discoverProducts({ snapshotId }, context.signal);
+        authority.assert();
+        const matches = discovered.products.filter(item => {
+          if (!isWfdRecord(item)) return false;
+          const subject = isWfdRecord(item.subject) ? item.subject : {};
+          const declaration = isWfdRecord(item.declaration) ? item.declaration : {};
+          return !term || [item.product_id, item.dataset_id, subject.kind, subject.namespace, subject.id,
+            declaration.semantic_code, declaration.unit_code].some(value => typeof value === 'string' && value.toLowerCase().includes(term));
+        });
+        const products = matches.slice(0, 30).map(item => {
+          const subject = isWfdRecord(item.subject) ? item.subject : {};
+          const declaration = isWfdRecord(item.declaration) ? item.declaration : {};
+          const selected = discovered.selections.find(entry => entry.productId === item.product_id);
+          return { productId: item.product_id, datasetId: item.dataset_id, subject,
+            semanticCode: declaration.semantic_code ?? null, unitCode: declaration.unit_code ?? null,
+            fields: selected?.fields.slice(0, 64) ?? [], readable: selected?.readable === true };
+        });
+        return { summary: '已按WFD实际发布产品合同完成固定快照检索；返回有界结果供AGENTS再决策。',
+          data: view({ kind: 'wfd_source_read_only', operation, snapshotId, query: term || null,
+            productCount: discovered.products.length, matchedCount: matches.length, returnedCount: products.length,
+            truncated: matches.length > products.length, products,
+            connectionSha256: wfdSha256(canonicalWfdJson(discovered.connection)),
+            execution: 'not_requested', publication: 'not_requested' }) };
+      }
+      if (operation === 'product') {
+        if (typeof snapshotId !== 'string' || typeof args.productId !== 'string' || args.query
+          || Object.keys(args).some(key => !['operation','snapshotId','productId','fieldsJson','cursor'].includes(key)))
+          throw new TaskError('AGENT_WFD_QUERY', '产品只读必须显式选择固定快照与已发布产品编号。');
+        let fields: unknown;
+        if (typeof args.fieldsJson === 'string') {
+          try { fields = JSON.parse(args.fieldsJson); }
+          catch { throw new TaskError('AGENT_WFD_QUERY', 'WFD字段选择不是有效JSON数组。'); }
+        }
+        const selection = { snapshotId, productId: args.productId,
+          ...(fields !== undefined ? { fields } : {}), ...(typeof args.cursor === 'string' ? { cursor: args.cursor } : {}) };
+        const read = await port.readProduct(selection, context.signal);
+        authority.assert();
+        const page = read.result, rows = Array.isArray(page.rows) ? page.rows.filter(isWfdRecord) : [];
+        if (!Array.isArray(page.rows) || rows.length !== page.rows.length)
+          throw new TaskError('AGENT_WFD_RESPONSE', 'WFD产品行缺少可核对的记录形状，未作为查询结果交回AGENTS。');
+        const sample = rows.slice(0, 5).map(row => ({
+          recordRef: row.record_ref,
+          values: Object.fromEntries(Object.entries(isWfdRecord(row.values) ? row.values : {}).slice(0, 12).map(([field, value]) => {
+            const serialized = canonicalWfdJson(value);
+            return [field, serialized.length > 600 ? { sampleJson: serialized.slice(0, 600), truncated: true } : value];
+          })),
+        }));
+        return { summary: '已读取WFD固定产品的实际分页，返回有界样本供AGENTS选择后续查询或处理；不冒充全量。',
+          data: view({ kind: 'wfd_source_read_only', operation, snapshotId, productId: args.productId,
+            source: { historyMode: read.historyMode, connectionSha256: wfdSha256(canonicalWfdJson(read.connection)),
+              resultSha256: wfdSha256(canonicalWfdJson(page)) }, page: page.page,
+            pageRowCount: rows.length, previewRows: sample,
+            previewTruncated: rows.length > sample.length || rows.some(row => isWfdRecord(row.values) && Object.keys(row.values).length > 12),
+            execution: 'not_requested', publication: 'not_requested' }) };
+      }
+      throw new TaskError('AGENT_WFD_QUERY', '只支持snapshot、discover、product三种已登记WFD只读操作。');
+    }
     if (moduleAction) {
       const directory = productionModuleDirectory({
         processing: service, calculation: this.options.companion.productionCalculation,
@@ -191,15 +283,22 @@ export class ConversationProcessingBridge {
         '执行处理模块须提供当前分支真实计划与其中同类步骤；否则请指定固定WFD只读引用。');
       this.assertPlan(planId, origin);
       const found = service.get(planId);
-      if (!found.steps.some(step => step.stepId === stepId && step.kind === stage))
-        throw new TaskError('PRODUCTION_MODULE_STEP_MISMATCH',
+      const declared = found.steps.find(step => step.stepId === stepId && step.kind === stage);
+      if (!declared) throw new TaskError('PRODUCTION_MODULE_STEP_MISMATCH',
           '该计划没有所选模块对应步骤，不能改写冻结步骤类型。');
+      if (stage === 'parse' && declared.state === 'succeeded')
+        return { summary: '原解析步骤已经成功，复用原产物供AGENTS重新判断；没有重新解析或触发其他模块。',
+          data: view({ ...(this.planPreview(found) as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, stepId) }) };
       const task = service.executeStep(planId, stepId, this.operator(origin, context.task.id));
       this.link(task.id, task.id, origin, 'execution', planId);
       const done = await this.wait(context, task.id);
       authority.assert();
-      return this.taskResult('已按需执行所选独立加工模块，结果仍遵守原冻结计划前置证明。',
+      const result = this.taskResult('已按需执行所选独立加工模块，结果仍遵守原冻结计划前置证明。',
         done, this.safePlan(planId));
+      if (stage === 'parse' && done.status === 'succeeded') return {
+        summary: '解析已完成并持久化；已将实际字段与有限原值样本交回AGENTS，后续处理由AGENTS重新决定。',
+        data: view({ ...(result.data as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, stepId) }) };
+      return result;
     }
     if (!service) throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
     if (action === 'data.processing.capabilities') {
@@ -225,6 +324,10 @@ export class ConversationProcessingBridge {
       try { planInput = JSON.parse(String(args.planJson)); }
       catch { throw new TaskError('PROCESSING_JSON', '计划对象不是有效JSON。'); }
       if (!isWfdRecord(planInput)) throw new TaskError('PROCESSING_INPUT', '计划对象须为明确对象。');
+      if (!Array.isArray(planInput.outputs) || planInput.outputs.some(output =>
+        !isWfdRecord(output) || Array.isArray(output.tables) && output.tables.length > 0 && !Array.isArray(output.stages)))
+        throw new TaskError('PROCESSING_AGENT_STAGE_SELECTION',
+          'AGENTS处理表格必须显式选择stages，先以["parse"]单步解析；读取结果后再修订计划选择后续步骤，不得默认五步。');
       this.assertPlanMaterials(planInput, origin);
       const previousPlanId = typeof args.previousPlanId === 'string' && args.previousPlanId ? args.previousPlanId
         : typeof planInput.previousPlanId === 'string' && planInput.previousPlanId ? planInput.previousPlanId : undefined;
@@ -240,13 +343,25 @@ export class ConversationProcessingBridge {
     const planId = typeof args.planId === 'string' ? args.planId : '';
     if (planId) this.assertPlan(planId, origin);
     if (action === 'data.processing.execute') {
-      const task = service.executeStep(planId, String(args.stepId ?? ''), operator);
+      const selectedStepId = String(args.stepId ?? '');
+      const current = service.get(planId).steps.find(step => step.stepId === selectedStepId);
+      if (current?.kind === 'parse' && current.state === 'succeeded')
+        return { summary: '返回原解析产物供AGENTS重新决策；没有重新执行。',
+          data: view({ ...(this.planPreview(service.get(planId)) as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, selectedStepId) }) };
+      const task = service.executeStep(planId, selectedStepId, operator);
       // 只登记本分支刚创建的执行任务，status(taskId) 才能复核；不接受模型或 HTTP 自带的任务编号。
       this.link(task.id, task.id, origin, 'execution', planId);
       const done = await this.wait(context, task.id);
-      return this.taskResult('已按原计划执行单个步骤；完成产物与缺口以查询事实为准。', done, this.safePlan(planId));
+      const result = this.taskResult('已按原计划执行单个步骤；完成产物与缺口以查询事实为准。', done, this.safePlan(planId));
+      if (current?.kind === 'parse' && done.status === 'succeeded') return {
+        summary: '解析单步已完成；实际字段与有限样本已交回AGENTS，不会自动执行后续模块。',
+        data: view({ ...(result.data as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, selectedStepId) }) };
+      return result;
     }
     if (action === 'data.processing.run') {
+      if (service.get(planId).outputs.some(output => output.stages !== null && output.stages !== undefined))
+        throw new TaskError('PROCESSING_AGENT_STEPWISE_REQUIRED',
+          '显式阶段计划必须把每次执行结果交回AGENTS决定下一步，禁止使用批量运行跳过反馈循环。');
       const task = service.runPlan(planId, operator);
       this.link(task.id, task.id, origin, 'execution', planId);
       const done = await this.wait(context, task.id);
@@ -401,16 +516,52 @@ export class ConversationProcessingBridge {
             messageId: '从conversation.userMessages取真实编号', quote: '逐字引用该消息中的真实原句；程序核对当前分支' },
           operator: '仅受信HTTP操作者使用；会话模型不得自报operator证据或用材料文字授权purpose。' },
         planJson: { rootKeys: ['routing', 'outputs'],
+          agentStages: { requiredForTables: true, first: ['parse'], available: ['parse','clean','structure','annotate','check'],
+            execution: 'one_module_then_return_to_agents', revision: 'previousPlanId + explicit stages' },
           dimensionsPath: 'routing.materials[].dimensions和outputs[].dimensions直接使用相同六维对象；不要加第二层dimensions或materials。' },
       },
       catalog: service.catalog(),
+      querySources: {
+        decision: '由AGENTS依据材料与解析反馈按需决定，查询结果必须返回AGENTS重新评估，不把来源动作当处理阶段',
+        wfd: { actions: ['data.wfd.query'], operations: ['snapshot','discover','product'],
+          mode: 'trusted_read_only_fixed_snapshot', available: this.options.companion.r1Workspace?.capabilities().configuration.state === 'ready' },
+        api: { actions: ['source.api.read','source.kline.read','source.werss.read','source.fetch'],
+          discoverVia: 'list_actions', readiness: 'depends_on_registered_connections', preservesOriginalReceipt: true },
+        capture: { actions: ['capture.<site>.read','source.wechat.extract','web.read_public','web.search'],
+          discoverVia: 'list_actions', readiness: 'depends_on_source_session_and_permissions', preservesOriginalReceipt: true },
+      },
       parallelModuleDirectory: productionModuleDirectory({
         processing: service, calculation: this.options.companion.productionCalculation,
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
         enabled: this.options.companion.productionModuleSwitches,
       }),
-      guidance: '材料编号只从materials取；六维只写可核事实，未知保持unknown。用户目的必须引用conversation.userMessages中的真实原话。结构检查通过不等于来源真实性、业务语义或发布资格已验证；发布目标与用户授权不能由模型补造。' };
+      guidance: '先material.read识别材料，再用stages:["parse"]形成解析单步计划，执行后读取parsedPreview，返回AGENTS选择下一步并修订原计划；新计划禁止data.processing.run批量跳过反馈。材料编号只从materials取；六维只写可核事实，未知保持unknown。用户目的必须引用conversation.userMessages中的真实原话。结构检查通过不等于来源真实性、业务语义或发布资格已验证；发布目标与用户授权不能由模型补造。' };
   }
+  /** 从已持久的解析步骤读取有界真实反馈；不把原值样本当成已清洗或语义确认。 */
+  private parsedPreview(planId: string, stepId: string): JsonValue {
+    const artifact = this.options.companion.processing!.artifact(planId, stepId);
+    let raw: unknown;
+    try { raw = JSON.parse(artifact.bytes.toString('utf8')); }
+    catch { throw new TaskError('PROCESSING_PARSED_EVIDENCE', '解析步骤产物不是有效的受信JSON。'); }
+    if (!isWfdRecord(raw) || raw.kind !== 'parsed-table' || !Array.isArray(raw.columns) || !Array.isArray(raw.rows))
+      throw new TaskError('PROCESSING_PARSED_EVIDENCE', '原解析步骤产物形状不符，不能让AGENTS凭猜测规划。');
+    const columns = raw.columns.filter((item): item is string => typeof item === 'string');
+    const value = (cell: unknown): JsonValue => {
+      if (!isWfdRecord(cell)) return null;
+      const item = cell.value;
+      if (typeof item === 'string') return item.slice(0, 120);
+      return item === null || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item) ? item : null;
+    };
+    const sample = raw.rows.slice(0, 3).map(row => Array.isArray(row)
+      ? Object.fromEntries(columns.slice(0, 12).map((name, index) => [name, value(row[index])])) : {});
+    return json({ kind: 'parsed_feedback_only', planId, stepId,
+      sourceSha256: raw.source_sha256, adapter: raw.adapter, format: raw.format,
+      rowCount: raw.rows.length, fields: columns.slice(0, 64),
+      fieldCount: columns.length, sample, sampleTruncated: raw.rows.length > 3 || columns.length > 12,
+      dataQuality: 'unreviewed', semanticStatus: 'unknown', publication: 'not_requested',
+      nextDecision: 'AGENTS must inspect this evidence, decide required modules, revise the original plan, and execute only one selected step.' });
+  }
+
   private taskResult(summary: string, task: TaskRecord, found: unknown): TaskResult {
     if (task.status !== 'succeeded') return { summary: `${summary} 原任务状态：${task.status}。`,
       data: view({ taskId: task.id, status: task.status, error: task.error ?? null, plan: found ?? null }) };
@@ -431,7 +582,8 @@ export class ConversationProcessingBridge {
       materials: materials.map(material => ({ materialId: material.materialId, filename: material.filename, sha256: material.sha256,
         format: material.format, support: material.support, custodyState: material.custodyState, routingState: material.routingState, gaps: material.gaps,
         dimensions: this.dimensions(material.dimensions) })),
-      outputs: output.map(item => ({ outputId: item.outputId, materialIds: item.materialIds, intendedAction: item.intendedAction,
+      outputs: output.map(item => ({ outputId: item.outputId, materialIds: item.materialIds, stages: item.stages ?? null,
+        awaitingAgentDecision: Array.isArray(item.stages) && !item.stages.includes('check'), intendedAction: item.intendedAction,
         target: item.target, routingState: item.routingState, state: item.state, gaps: item.gaps, semanticGaps: item.semanticGaps,
         publishEligible: item.publishEligible, evidenceScope: item.evidenceScope, steps: item.steps })),
       steps: steps.map(step => this.step(step)), decision,

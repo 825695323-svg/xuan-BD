@@ -33,5 +33,5 @@ jobs:
         run: |
           mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
           node --import tsx --test \
-            --test-name-pattern='processing dedicated formats|processing structure summary|F05 processing conversation operator evidence cannot self-authorize purpose' \
+            --test-name-pattern='processing dedicated formats|processing structure summary|F05 processing conversation operator evidence cannot self-authorize purpose|AGENTS iterative parse feedback|WFD optional query' \
             modules/collection/r1-conversation-bridge.test.ts

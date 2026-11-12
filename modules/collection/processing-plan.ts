@@ -75,6 +75,8 @@ export interface ProcessingTargetInput { productRef?: WfdRecord; declaration?: W
 export interface ProcessingUsageInput { purpose?: string; historyMode?: string | null; cutoff?: string | null;
   perspective?: string | null; messageId?: string; quote?: string }
 export interface ProcessingOutputInput { outputId: string; materialIds: string[]; tables?: CandidateTablePlan[]; target?: ProcessingTargetInput;
+  /** AGENTS按本轮已核证据选择的步骤；省略时仅保留原有计划格式的历史行为。 */
+  stages?: ProcessingStepKind[];
   dimensions?: Partial<Record<DimensionKey, ProcessingDimensionInput>>; suggestions?: ProcessingSuggestionInput[]; rejectReason?: string;
   coverage?: { complete: boolean; gaps: string[]; scope: string }; intendedAction?: 'inspect' | 'publish'; usage?: ProcessingUsageInput }
 export interface ProcessingPlanInput { routing: { materials: ProcessingMaterialRoutingInput[] }; outputs: ProcessingOutputInput[];
@@ -98,6 +100,7 @@ export interface ProcessingSemanticEvidence {
 interface NormalizedMaterialRouting { materialId: string; facts: MaterialFacts; dimensions: NormalizedDimension[];
   suggestions: DimensionSuggestion[]; routingState: RoutingState; gaps: string[]; intendedAction: 'inspect' | 'publish' }
 interface NormalizedOutput { outputId: string; materialIds: string[]; tables: CandidateTablePlan[]; target: ProcessingTargetInput | null;
+  stages: ProcessingStepKind[] | null;
   intendedAction: 'inspect' | 'publish'; usage: StructuredUsage; dimensions: NormalizedDimension[]; suggestions: DimensionSuggestion[]; rejectReason: string | null;
   coverage: { complete: boolean; gaps: string[]; scope: string } | null; adapterGaps: string[]; routingState: RoutingState;
   gaps: string[]; steps: StepSpec[] }
@@ -354,6 +357,8 @@ export class ProcessingPlanService {
 
   runPlan(planId: string, operator: OperatorContext): TaskRecord {
     validId(planId, 'PROCESSING_PLAN_ID'); if (!this.planRow(planId)) fail('PROCESSING_PLAN_NOT_FOUND', '没有该处理计划。');
+    if (this.planView(planId).outputs.some(output => output.stages !== null))
+      fail('PROCESSING_AGENT_STEPWISE_REQUIRED', '显式阶段计划只能由AGENTS或受信操作者逐步执行，不允许一次性跳过阶段反馈。');
     for (const step of this.stepRows(planId)) if (step.state === 'pending' && step.applicability === 'applicable')
       this.assertModuleEnabled(step.kind as ProcessingStepKind);
     const contentDigest = digestOperationArgs({ planId, action: 'run' });
@@ -601,13 +606,18 @@ export class ProcessingPlanService {
     const outputInputs = readArray(raw.outputs, 1, PROCESSING_LIMITS.maxOutputs, 'PROCESSING_OUTPUTS');
     const outputs: NormalizedOutput[] = [], seenOutputs = new Set<string>(), allSteps: StepSpec[] = [];
     for (const item of outputInputs) {
-      const record = readRecord(item, ['outputId', 'materialIds', 'tables', 'target', 'dimensions', 'suggestions', 'rejectReason', 'coverage', 'intendedAction', 'usage'], 'PROCESSING_OUTPUT');
+      const record = readRecord(item, ['outputId', 'materialIds', 'tables', 'target', 'dimensions', 'suggestions', 'rejectReason', 'coverage', 'intendedAction', 'usage', 'stages'], 'PROCESSING_OUTPUT');
       const outputId = readId(record.outputId, 'PROCESSING_OUTPUT_ID');
       if (seenOutputs.has(outputId)) fail('PROCESSING_OUTPUTS', '输出编号不能重复。'); seenOutputs.add(outputId);
       const materialIds = readArray(record.materialIds, 1, CANDIDATE_LIMITS.maxOriginals, 'PROCESSING_OUTPUT_MATERIALS').map(value => readId(value, 'PROCESSING_MATERIAL_ID'));
       if (new Set(materialIds).size !== materialIds.length) fail('PROCESSING_OUTPUTS', '一个输出不能重复引用同一原件。');
       const outputFacts = materialIds.map(materialId => facts.get(materialId) ?? fail('PROCESSING_MATERIAL_NOT_FOUND', `输出引用了未路由的材料 ${materialId}。`));
       const tables = readTables(record.tables, materialIds);
+      const stages = readProcessingStages(record.stages);
+      if (stages && !stages.includes('clean') && tables.some(table => (table.trim?.length ?? 0) > 0 || (table.emptyToNull?.length ?? 0) > 0))
+        fail('PROCESSING_STAGE_RULES', '本轮未选择清洗模块，不能暗中应用已声明清洗规则。');
+      if (stages && !stages.includes('annotate') && tables.some(table => Object.keys(table.annotations ?? {}).length > 0))
+        fail('PROCESSING_STAGE_RULES', '本轮未选择标注模块，不能暗中应用已声明的标注常量。');
       for (const table of tables) {
         if (!table.sourceAdapter) continue;
         if (!this.options.adapters) fail('PROCESSING_ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记，不能使用声明式适配表源。');
@@ -649,12 +659,12 @@ export class ProcessingPlanService {
         ...tables.flatMap(table => table.sourceAdapter && 'match' in table.sourceAdapter && table.sourceAdapter.match
           && table.sourceAdapter.match.kind === 'unverified' ? table.sourceAdapter.match.gaps : [])];
       const semanticGaps = dimensions.filter(dimension => dimension.status !== 'known').map(dimension => `${dimension.key}: ${dimension.gap ?? '未知'}`);
-      const steps = rejectReason ? [] : this.buildSteps(outputId, materialIds, tables, dimensions, semanticGaps, intendedAction, outputFacts, target);
+      const steps = rejectReason ? [] : this.buildSteps(outputId, materialIds, tables, dimensions, semanticGaps, intendedAction, outputFacts, target, stages);
       const usageQualification = this.usageQualification(usage, base.facts.sha256);
       const outputRouting = deriveOutputRouting({ material: this.outputMaterialFacts(base.facts, tables), dimensions, target: target ? { present: true, kind: target.productRef ? 'productRef' : target.declaration ? 'declaration' : 'none', expectedSnapshotId: target.expectedSnapshotId ?? null } : undefined,
         rejected: !!rejectReason, outputId, outputState: steps.length ? 'pending' : 'custody_only', intendedAction, usage: usageQualification,
         processingGaps: steps.flatMap(step => step.gaps), adapterGaps });
-      outputs.push({ outputId, materialIds, tables, target, intendedAction, usage, dimensions, suggestions: dimensions.flatMap(item => item.suggestions),
+      outputs.push({ outputId, materialIds, tables, target, stages, intendedAction, usage, dimensions, suggestions: dimensions.flatMap(item => item.suggestions),
         rejectReason, coverage, adapterGaps, routingState: outputRouting.routingState, gaps: outputRouting.gaps, steps });
       allSteps.push(...steps);
     }
@@ -665,7 +675,7 @@ export class ProcessingPlanService {
     const executionDigest = wfdSha256(canonicalWfdJson({ policy: PROCESSING_POLICY.version,
       materials: materials.map(item => ({ materialId: item.materialId, sha256: item.facts.sha256 })).sort((a, b) => a.materialId.localeCompare(b.materialId)),
       outputs: outputs.map(item => ({ outputId: item.outputId, materialIds: item.materialIds, tables: item.tables, target: item.target,
-        intendedAction: item.intendedAction, usage: item.usage,
+        stages: item.stages, intendedAction: item.intendedAction, usage: item.usage,
         dimensions: item.dimensions.map(dimension => ({ key: dimension.key, status: dimension.status, value: dimension.value })) })),
       steps: allSteps.map(step => ({ stepId: step.stepId, specDigest: step.specDigest })) }));
     const previousPlanId = raw.previousPlanId === undefined ? null : readId(raw.previousPlanId, 'PROCESSING_PLAN_ID');
@@ -674,7 +684,7 @@ export class ProcessingPlanService {
       materials: materials.map(material => ({ materialId: material.materialId, sha256: material.facts.sha256,
         dimensions: material.dimensions, suggestions: material.suggestions, intendedAction: material.intendedAction })),
       outputs: outputs.map(output => ({ outputId: output.outputId, materialIds: output.materialIds, tables: output.tables,
-        target: output.target, usage: output.usage, dimensions: output.dimensions, suggestions: output.suggestions,
+        target: output.target, stages: output.stages, usage: output.usage, dimensions: output.dimensions, suggestions: output.suggestions,
         rejectReason: output.rejectReason, coverage: output.coverage })) }));
     if (Buffer.byteLength(canonicalWfdJson({ materials, outputs, steps: allSteps }), 'utf8') > 2 * 1024 * 1024) fail('PROCESSING_INPUT_BUDGET', '计划输入超过持久化预算。');
     return { requestId: operator.requestId, previousPlanId, operator: storedOperator(operator), materials, outputs, steps: allSteps, scopeKey,
@@ -936,8 +946,10 @@ export class ProcessingPlanService {
   }
 
   private buildSteps(outputId: string, materialIds: string[], tables: CandidateTablePlan[], dimensions: NormalizedDimension[],
-    semanticGaps: string[], intendedAction: 'inspect' | 'publish', facts: MaterialFacts[], target: ProcessingTargetInput | null): StepSpec[] {
+    semanticGaps: string[], intendedAction: 'inspect' | 'publish', facts: MaterialFacts[], target: ProcessingTargetInput | null,
+    stages: ProcessingStepKind[] | null): StepSpec[] {
     const steps: StepSpec[] = [], lastBySource: string[] = [];
+    const selected = (kind: ProcessingStepKind) => stages === null || stages.includes(kind);
     tables.forEach((table, index) => {
       const factsById = new Map(facts.map(fact => [fact.materialId, fact]));
       const fact = factsById.get(table.materialId)!;
@@ -977,14 +989,17 @@ export class ProcessingPlanService {
         completion: cleanApplicable ? { kind: 'cleaned_table', all_rows: true, changes_recorded: true, change_window: 1000 }
           : { kind: 'pass_through', reason: '未声明 trim 或 empty_to_null；规则不适用。' },
         input: { kind: 'step', stepId: parseId, specDigest: parse.specDigest }, gaps: [], specDigest: '' };
-      clean.specDigest = stepDigest(clean, parse); steps.push(clean);
+      clean.specDigest = stepDigest(clean, parse);
+      if (selected('clean')) steps.push(clean);
+      const sourceForStructure = selected('clean') ? clean : parse;
       const structureId = `structure:${outputId}:${index}`;
       const structure: StepSpec = { stepId: structureId, outputId, kind: 'structure', required: true, applicability: 'applicable',
-        dependsOn: [cleanId], implementation: CANDIDATE_STAGE_VERSIONS.structure,
+        dependsOn: [sourceForStructure.stepId], implementation: CANDIDATE_STAGE_VERSIONS.structure,
         parameters: { materialId: table.materialId, types: table.types ?? {}, fieldMapping: table.fieldMapping ?? {} },
         completion: { kind: 'structured_table', finite_scalars: true, precision_checked: true, original_cells_preserved: true },
-        input: { kind: 'step', stepId: cleanId, specDigest: clean.specDigest }, gaps: [], specDigest: '' };
-      structure.specDigest = stepDigest(structure, clean); steps.push(structure);
+        input: { kind: 'step', stepId: sourceForStructure.stepId, specDigest: sourceForStructure.specDigest }, gaps: [], specDigest: '' };
+      structure.specDigest = stepDigest(structure, sourceForStructure);
+      if (selected('structure')) steps.push(structure);
       const annotateId = `annotate:${outputId}:${index}`;
       const annotateApplicable = Object.keys(table.annotations ?? {}).length > 0;
       const annotate: StepSpec = { stepId: annotateId, outputId, kind: 'annotate', required: annotateApplicable,
@@ -993,10 +1008,11 @@ export class ProcessingPlanService {
         completion: annotateApplicable ? { kind: 'annotated_table', constants_do_not_override: true }
           : { kind: 'pass_through', reason: '未声明常量标注；规则不适用。' },
         input: { kind: 'step', stepId: structureId, specDigest: structure.specDigest }, gaps: [], specDigest: '' };
-      annotate.specDigest = stepDigest(annotate, structure); steps.push(annotate);
-      lastBySource.push(annotateId);
+      annotate.specDigest = stepDigest(annotate, structure);
+      if (selected('annotate')) steps.push(annotate);
+      if (selected('check')) lastBySource.push(selected('annotate') ? annotateId : structureId);
     });
-    if (tables.length) {
+    if (tables.length && selected('check')) {
       const checkId = `check:${outputId}`;
       const deps = lastBySource.map(stepId => steps.find(step => step.stepId === stepId)!);
       const semantic = isR1TabularDeclaration(target?.declaration)
@@ -1057,7 +1073,7 @@ export class ProcessingPlanService {
       materials: input.materials.map(material => ({ ...material.facts, dimensions: material.dimensions,
         suggestions: material.suggestions, routingState: material.routingState, gaps: material.gaps, intendedAction: material.intendedAction })),
       outputs: input.outputs.map(output => ({ outputId: output.outputId, materialIds: output.materialIds, tables: output.tables,
-        target: output.target, intendedAction: output.intendedAction, usage: output.usage, dimensions: output.dimensions, suggestions: output.suggestions, rejectReason: output.rejectReason,
+        target: output.target, stages: output.stages, intendedAction: output.intendedAction, usage: output.usage, dimensions: output.dimensions, suggestions: output.suggestions, rejectReason: output.rejectReason,
         coverage: output.coverage, adapterGaps: output.adapterGaps, routingState: output.routingState, gaps: output.gaps,
         steps: output.steps.map(step => step.stepId) })),
       steps: input.steps.map(spec => ({ ...spec, reuseFrom: steps.find(step => step.spec.stepId === spec.stepId)?.reusedFrom ?? null })) };
@@ -1475,7 +1491,7 @@ export class ProcessingPlanService {
         const state = outputs.find(item => item.output_id === output.outputId);
         if (!state) {
           // 输出行已缺失：不能凭空读字段，也不能据此给出发布资格。
-          return { outputId: output.outputId, materialIds: output.materialIds, target: output.target, intendedAction: output.intendedAction,
+          return { outputId: output.outputId, materialIds: output.materialIds, target: output.target, stages: output.stages ?? null, intendedAction: output.intendedAction,
             usage: output.usage ?? null, rejectReason: null, routingState: 'needs_review' as const, state: 'missing', structured: null,
             gaps: ['输出记录缺失：计划规格存在但持久输出行不在，禁止据此发布。'], dimensions: [], semanticGaps: [], semantic: null,
             publishEligible: false,
@@ -1487,7 +1503,7 @@ export class ProcessingPlanService {
         const check = steps.find(step => step.output_id === output.outputId && step.kind === 'check');
         const semantic = this.outputSemantic(output.target, check?.semantic_json ? parseJson<ProcessingSemanticEvidence>(check.semantic_json) : null, dimensions);
         const routingState = semantic && semantic.quality !== 'pass' && state.routing_state === 'ready_candidate' ? 'needs_review' : state.routing_state;
-        return { outputId: output.outputId, materialIds: output.materialIds, target: output.target, intendedAction: output.intendedAction,
+        return { outputId: output.outputId, materialIds: output.materialIds, target: output.target, stages: output.stages ?? null, intendedAction: output.intendedAction,
           usage: output.usage ?? null,
           rejectReason: typeof output.rejectReason === 'string' ? output.rejectReason : null,
           routingState, state: state.state, structured: state.structured_json ? parseJson<ManagedObjectRef>(state.structured_json) : null,
@@ -1726,6 +1742,20 @@ function readDimensions(value: unknown): Partial<Record<DimensionKey, Processing
 function readSuggestions(value: unknown): ProcessingSuggestionInput[] {
   if (value === undefined) return [];
   return readArray(value, 0, PROCESSING_LIMITS.maxSuggestions, 'PROCESSING_SUGGESTIONS') as ProcessingSuggestionInput[];
+}
+/** 显式的AGENTS循环选择：先解析，之后按需扩大阶段集合；缺失字段仅兼容历史计划。 */
+function readProcessingStages(value: unknown): ProcessingStepKind[] | null {
+  if (value === undefined) return null;
+  const selected = readArray(value, 1, PROCESSING_STEP_KINDS.length, 'PROCESSING_STAGE_SELECTION');
+  if (selected.some(kind => !PROCESSING_STEP_KINDS.includes(kind as ProcessingStepKind))
+    || new Set(selected).size !== selected.length
+    || selected[0] !== 'parse'
+    || canonicalWfdJson(selected) !== canonicalWfdJson(PROCESSING_STEP_KINDS.filter(kind => selected.includes(kind)))
+    || ((selected.includes('annotate') || selected.includes('check')) && !selected.includes('structure'))) {
+    fail('PROCESSING_STAGE_SELECTION',
+      '步骤必须从解析开始、按登记顺序且不重复；标注/核对需要本计划明确选择结构化，不能偷偷补齐五步。');
+  }
+  return selected as ProcessingStepKind[];
 }
 function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[] {
   if (value === undefined) return [];

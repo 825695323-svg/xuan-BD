@@ -7,7 +7,10 @@ import type { FrozenRunConfiguration } from '../../../contracts/ui-contracts.js'
 const AGENTS_FILE = new URL('./AGENTS.md', import.meta.url);
 
 /** 与已审核正文绑定；规则改版同步更新版本与可信摘要。 */
-export const INTERNAL_AGENT_RULES = Object.freeze({ id: 'xuan-bd-internal-agent', version: 17,
+export const INTERNAL_AGENT_RULES = Object.freeze({ id: 'xuan-bd-internal-agent', version: 18,
+  digest: 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c' });
+/** 旧任务携带的完整冻结规则仅按原版本/摘要验真，不能被新版 AGENTS 正文替换。 */
+const FROZEN_PRIOR_AGENT_RULES = Object.freeze({ version: 17,
   digest: '9651321f74451fb58f9dbf07af464aa97107703bf42c23a637c9222b6f8c4d28' });
 
 export function captureInternalAgentRules(): Pick<FrozenRunConfiguration, 'internalAgentRules' | 'internalAgentRulesText'> {
@@ -24,9 +27,11 @@ export function captureInternalAgentRules(): Pick<FrozenRunConfiguration, 'inter
 /** 旧记录仍可显示，但执行时不能把缺失或未知的规则快照替换成当前正文。 */
 export function assertInternalAgentRules(configuration: FrozenRunConfiguration): void {
   const reference = configuration.internalAgentRules, body = configuration.internalAgentRulesText;
+  const trusted = !!reference && (reference.version === INTERNAL_AGENT_RULES.version
+    && reference.digest === INTERNAL_AGENT_RULES.digest || reference.version === FROZEN_PRIOR_AGENT_RULES.version
+    && reference.digest === FROZEN_PRIOR_AGENT_RULES.digest);
   if (!reference || typeof body !== 'string' || reference.id !== INTERNAL_AGENT_RULES.id
-    || reference.version !== INTERNAL_AGENT_RULES.version || reference.digest !== INTERNAL_AGENT_RULES.digest
-    || digestOperationArgs({ id: reference.id, version: reference.version, body }) !== reference.digest) {
+    || !trusted || digestOperationArgs({ id: reference.id, version: reference.version, body }) !== reference.digest) {
     throw new CoreError('RUN_CONFIGURATION_UNAVAILABLE', '原任务的内置代理运行规则缺失、摘要不符或版本不可用，不能套用当前规则恢复；请核对后明确建立新任务。');
   }
 }

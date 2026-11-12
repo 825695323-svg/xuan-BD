@@ -62,7 +62,7 @@ const MODEL_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIO
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
   'data.modules.parse', 'data.modules.clean', 'data.modules.structure',
   'data.modules.annotate', 'data.modules.check', 'data.modules.calculate',
-  'data.modules.factors', 'data.modules.semantics',
+  'data.modules.factors', 'data.modules.semantics', 'data.wfd.query',
   'data.adapters.capabilities', 'data.adapters.propose', 'data.adapters.replay', 'data.adapters.adopt',
   'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
   'artifact.manifest', 'artifact.archive', 'artifact.restore', 'artifact.inspect', 'artifact.release',
@@ -78,7 +78,7 @@ const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_A
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
   'data.modules.parse', 'data.modules.clean', 'data.modules.structure',
   'data.modules.annotate', 'data.modules.check', 'data.modules.calculate',
-  'data.modules.factors', 'data.modules.semantics',
+  'data.modules.factors', 'data.modules.semantics', 'data.wfd.query',
   // 适配候选提交、重放与采用都是写入或权限动作：保留审核，不进入自动动作集合。
   'data.adapters.capabilities',
   'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
@@ -87,6 +87,12 @@ const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_A
   'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.status', 'bd.session.capabilities']);
 const SHARE_NOTICE = '本次选定资料及动作结果将按当前权限发送给当前模型，大结果按证据分页读取；删除和修改既有内容仍需审核。';
 const SAFE_TASK_FAILURES: Readonly<Record<string, string>> = Object.freeze({
+  PROCESSING_AGENT_STAGE_SELECTION: 'AGENTS新加工计划必须显式指定stages；先只选择parse解析，读取实际结果后再按需增加阶段。',
+  PROCESSING_STAGE_SELECTION: '处理阶段只能按已登记顺序显式选择；必须包含parse，核对须有structure的真实处理证据。',
+  PROCESSING_STAGE_RULES: '没有选择清洗或标注时不能暗中应用清洗与标注参数；如需执行先更新计划并核验原证据。',
+  PROCESSING_AGENT_STEPWISE_REQUIRED: '新AGENTS循环必须执行一个模块并返回结果后再决定下一步，禁止批量调用run。',
+  AGENT_WFD_QUERY: 'WFD查询只能按已登记的snapshot、discover、product模式选择真实快照、产品及字段。',
+  AGENT_WFD_UNAVAILABLE: 'WFD固定快照只读端口不可用；先检查真实插件和连接状态，不能使用模板或猜测值。',
   PROCESSING_EVIDENCE: '处理证据须带source：原件使用material及当前materialId与真实quote；用户消息使用user-message及本分支messageId与真实quote。',
   PROCESSING_DIMENSIONS: 'dimensionsJson须直接以role、informationNature、businessObject、objectTime、purpose、structureGranularity为根；不要包dimensions或materials。',
   PROCESSING_DIMENSION: '六维判断须用known、unknown或conflict；known要有明确value和可核证据，未知不能携带已确定值。',
@@ -1743,7 +1749,7 @@ export class CoreModelTools {
         : source.status === 'partial' ? '原件转换部分完成，须核对未确认项。' : '原件转换失败，已保留来源和失败原因。';
       return this.pagePreview(call, { ok: true, taskId: task.id, action: call.action, summary, data, artifactIds: task.result.artifactIds ?? [] });
     }
-    if (call.action.startsWith('data.processing.') || call.action.startsWith('data.modules.') || call.action.startsWith('data.adapters.') || call.action.startsWith('data.r1.') || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(call.action) || call.action === 'material.read' || call.action === 'material.process' || call.action === 'material.transcribe' || call.action === 'baidu.drive' || call.action === 'browser.control' || call.action === 'web.read_public' || call.action === 'web.search' || this.options.conversationFinancial?.handles(call.action) || this.options.conversationAlgorithms?.handles(call.action)) {
+    if (call.action.startsWith('data.processing.') || call.action.startsWith('data.modules.') || call.action.startsWith('data.adapters.') || call.action.startsWith('data.r1.') || call.action === 'data.wfd.query' || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(call.action) || call.action === 'material.read' || call.action === 'material.process' || call.action === 'material.transcribe' || call.action === 'baidu.drive' || call.action === 'browser.control' || call.action === 'web.read_public' || call.action === 'web.search' || this.options.conversationFinancial?.handles(call.action) || this.options.conversationAlgorithms?.handles(call.action)) {
       // The closed host bridge constructs this bounded projection; no arbitrary result body is shared.
       if (!isObject(source.modelPreview)) throw publicError('MODEL_ACTION_FAILED');
       const { localPersistence: _untrustedPersistence, ...modelPreview } = source.modelPreview as Record<string, JsonValue>;
