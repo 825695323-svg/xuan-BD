@@ -144,6 +144,21 @@ test('real isolated WFD publishes source, unified Polars computes and R1 publish
       const associated = sourceView.currentRequest.local.associations;
       const snapshotId = associated[0].snapshot_id, productId = associated[0].product_id;
       assert.ok(snapshotId); assert.ok(productId);
+      const modules = host.services.productionModules!;
+      assert.ok(modules, 'Eight parallel ports must be bound in the same trusted service host');
+      const descriptors = modules.capabilities().modules;
+      assert.deepEqual(descriptors.map(x => x.id), ['parse', 'clean', 'structure', 'annotate', 'check',
+        'calculate', 'factor_library', 'semantic_dictionary']);
+      assert.ok(descriptors.every(x => x.status === 'ready'), JSON.stringify(descriptors));
+      const factorIndex = modules.factorCatalog('ma');
+      assert.equal(factorIndex.definitions.length, 1, 'Read existing formula definitions, not a separate invented registry');
+      const dictionary = await modules.semanticLookup({ snapshotId, productId }, new AbortController().signal);
+      assert.equal(dictionary.count, 1, 'Only actual WFD published definition is a dictionary entry');
+      assert.ok(dictionary.definitions[0]?.declaration);
+      const sharedRead = await modules.readWfd('factor_library', { snapshotId, productId }, new AbortController().signal);
+      assert.equal(sharedRead.mode, 'read_only');
+      assert.equal((sharedRead.response.result.rows as any[]).length, 2,
+        'Factor metadata query can read fixed WFD source without running a formula');
       const page = await host.call('/r1/products/read', { snapshotId, productId });
       const ref = (key: string) => {
         const actual = page.result.rows.find((item: any) => item.record_ref.logical_key === key);
