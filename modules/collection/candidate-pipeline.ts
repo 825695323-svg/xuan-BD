@@ -4,6 +4,7 @@ import type { MaterialCell, MaterialLimits, MaterialLocation, MaterialScalar, Ma
 import { candidateCsvRecords } from './candidate-csv-records.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
+import { verifyProductionRows } from './production-verifier.js';
 import { officeNative } from '../../platform/capabilities/conversion/office.js';
 import { MAX_SOURCE } from '../../platform/capabilities/conversion/formats.js';
 import { projectXlsxNativeSelection, type XlsxTableSelection, type XlsxSelectionEvidence } from './data-processing/xlsx-table.js';
@@ -355,8 +356,10 @@ export function checkCandidateTables(tables: AnnotatedCandidateTable[]): { bytes
       if (rows.length > CANDIDATE_LIMITS.maxRows) fail('CANDIDATE_ROW_BUDGET', '合并后的完整表超过行数预算。');
     }
   }
-  const bytes = Buffer.from(canonicalWfdJson({ rows }));
-  if (bytes.byteLength > CANDIDATE_LIMITS.maxStructuredBytes) fail('CANDIDATE_OUTPUT_BUDGET', '完整结构结果超过 64 MiB；没有截断提交。');
+  // 与正式派生算法共用生产结构/精度核对，既保留全部来源行也不静默填充坏值。
+  const checked = verifyProductionRows({ kind: 'source', rows, fields,
+    maxRows: CANDIDATE_LIMITS.maxRows, maxBytes: CANDIDATE_LIMITS.maxStructuredBytes });
+  const bytes = checked.bytes;
   return { bytes, rows, evidence: { version: CANDIDATE_STAGE_VERSIONS.check, fields: [...fields], row_count: rows.length,
     structured_sha256: wfdSha256(bytes), changes_total: tables.reduce((total, table) => total + (Number.isFinite(table.changes_total) ? table.changes_total : 0), 0),
     type_changes_total: tables.reduce((total, table) => total + table.type_changes_total, 0),
