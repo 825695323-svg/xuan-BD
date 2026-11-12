@@ -6,7 +6,8 @@ import { ConversationProcessingBridge } from './conversation-processing.js';
 import { ConversationAlgorithmBridge } from '../financial/conversation-algorithms.js';
 import { PRODUCTION_MODULES, productionModuleDirectory,
   fixedWfdModuleReference, readWfdModulePage,
-  factorLibraryView, semanticDictionaryView, PRODUCTION_MODULE_PORTS_VERSION } from './production-module-ports.js';
+  factorLibraryView, semanticDictionaryView, readPublishedWfdSemanticDefinition,
+  PRODUCTION_MODULE_PORTS_VERSION } from './production-module-ports.js';
 
 const code = (target: string) => (error: unknown) => (error as { code?: string }).code === target;
 
@@ -115,4 +116,39 @@ test('AGENTS registers all eight endpoints without adding a new runtime; disable
     assert.equal(algorithmBridge.registrations.find(item => item.action === 'algorithms.calculate')?.available().available,
       false, 'Host removal must block old public calculation path too');
   } finally { database.close(); }
+});
+
+
+test('semantic dictionary resolves actual published WFD definitions without confusing reference templates with adopted data', async () => {
+  const target = { snapshotId: 'fixed_snapshot_2026', productId: 'product_revenue_1' };
+  let called = 0;
+  const actual = async ({ snapshotId }: { snapshotId: string }) => {
+    called++;
+    return { snapshotId, historyMode: 'snapshot_contents',
+      connection: { connectionId: 'real_frozen_connection' },
+      products: [{
+        product_id: target.productId, dataset_id: 'company_finance',
+        subject: { kind: 'entity', namespace: 'SSE', id: 'company_1' },
+        declaration: { semantic_code: 'company.revenue', unit_code: 'cny',
+          measurement_nature: 'flow',
+          field_definitions: [{ field_code: 'value', data_type: 'decimal' }] },
+      }] } as never;
+  };
+  const proof = await readPublishedWfdSemanticDefinition(target, actual, new AbortController().signal);
+  assert.equal(proof.kind, 'wfd_published_semantic_definition');
+  assert.equal(proof.authority, 'actual_fixed_snapshot');
+  assert.equal((proof.declaration as any).unit_code, 'cny');
+  assert.equal((proof.declaration as any).semantic_code, 'company.revenue');
+  assert.equal(proof.source.historyMode, 'snapshot_contents');
+  assert.equal(proof.publication, 'not_requested');
+  assert.equal(proof.declarationSha256.length, 64);
+  assert.equal(called, 1);
+  await assert.rejects(readPublishedWfdSemanticDefinition({ ...target, snapshotId: 'latest' },
+    actual, new AbortController().signal), code('PRODUCTION_MODULE_WFD_REFERENCE'));
+  await assert.rejects(readPublishedWfdSemanticDefinition(target,
+    async () => ({ ...(await actual(target)), snapshotId: 'unrelated_snapshot' }) as never,
+    new AbortController().signal), code('PRODUCTION_SEMANTIC_WFD_CHANGED'));
+  await assert.rejects(readPublishedWfdSemanticDefinition(target,
+    async () => ({ ...(await actual(target)), products: [] }) as never,
+    new AbortController().signal), code('PRODUCTION_SEMANTIC_WFD_NOT_FOUND'));
 });
