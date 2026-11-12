@@ -41,7 +41,11 @@ export class ConversationAlgorithmBridge {
         '结构化计算结果由独立核对器检查，直接复用 R1 与 WFD 固定读回，不回到原报五步'],
       available: () => {
         const calculationAvailable = !!options.companion.productionCalculation || !!options.companion.algorithms;
-        const available = calculationAvailable || action === 'bd.session.capabilities' && !!options.companion.processing;
+        const ports = options.companion.productionModules;
+        const executionAvailable = ports ? ports.capability('calculate').status === 'ready' : calculationAvailable;
+        const available = ['algorithms.calculate', 'algorithms.publish'].includes(action)
+          ? executionAvailable : calculationAvailable
+          || action === 'bd.session.capabilities' && (!!options.companion.processing || !!ports);
         return { available, ...(!available
           ? { reason: action === 'bd.session.capabilities'
             ? '清洗和计算工具均未装配。' : '计算服务未装配；只读清洗能力仍可单独使用。' } : {}) };
@@ -76,7 +80,8 @@ export class ConversationAlgorithmBridge {
     if (!origin) throw new TaskError('ALGORITHM_CONVERSATION_REQUIRED', '算法会话动作必须由本次真实会话代理调用。');
     const service = this.options.companion.algorithms;
     if (!service && !this.options.companion.productionCalculation
-      && (action !== 'bd.session.capabilities' || !this.options.companion.processing))
+      && (action !== 'bd.session.capabilities'
+        || (!this.options.companion.processing && !this.options.companion.productionModules)))
       throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '计算模块未装配；不能伪造可执行算法。');
     // 直接模型动作必须先取得当前模型分享回执；否则 saveResultProof 会拒绝返回。
     const authority = await acquireAuthority(context, action, args, []);
@@ -94,10 +99,14 @@ export class ConversationAlgorithmBridge {
             discovery: 'data.processing.capabilities', plan: 'data.processing.plan',
             execute: 'data.processing.run', engine: cleaning,
             source: '受管原件及冻结来源；不读取计算公式注册表' },
+          parallelModules: this.options.companion.productionModules?.capabilities() ?? null,
           calculation: { description: '读取 WFD 固定数据，按登记方法执行 Polars 或受信 pandas 公式',
             discovery: 'algorithms.contract', execute: 'algorithms.calculate',
             publish: 'algorithms.publish', engine: calculation,
             source: 'WFD fixed snapshot; not original cleaning candidates' },
+          factorLibrary: { discovery: 'data.factor.catalog', mode: 'read_only_definitions', noAutomaticExecution: true },
+          semanticDictionary: { discovery: 'data.semantic.lookup', source: 'WFD_fixed_snapshot_declarations', noAutomaticJudgment: true },
+          wfdForEachModule: 'data.module.read_wfd',
           sharedVerification: 'production-verifier (行、类型、结果摘要) + 领域专属方法核验',
           sharedPublication: 'existing R1/WFD readback only',
           automaticCrossTrigger: false,
@@ -136,8 +145,10 @@ export class ConversationAlgorithmBridge {
       const production = this.options.companion.productionCalculation;
       if (!production) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE',
         '计算模块未装配，不能把清洗管线当算法执行器。');
-      // 各方法按受信注册表选择 Polars / pandas；仍由唯一 TaskService 持有原任务。
-      const submitted = production.submit('conversation:algorithms:' + context.task.id, calculation);
+      // 八个模块与已有 AGENTS 公式入口使用同一受信端口；拔除 calculate 不能绕过它直调执行器。
+      const submitted = this.options.companion.productionModules
+        ? this.options.companion.productionModules.calculate('conversation:algorithms:' + context.task.id, calculation)
+        : production.submit('conversation:algorithms:' + context.task.id, calculation);
       const taskId = submitted.taskId;
       this.link(taskId, context.task.id, 'calculate', origin);
       await this.wait(context, taskId);
@@ -148,7 +159,9 @@ export class ConversationAlgorithmBridge {
           data: view(this.statusPayload(taskId)) };
       }
       // 算法与清洗分别执行，结果只共用生产核对门禁和原 R1/WFD 正式交接。
-      const publication = await production.publish(taskId, context.signal);
+      const publication = await (this.options.companion.productionModules
+        ? this.options.companion.productionModules.publishCalculation(taskId, context.signal)
+        : production.publish(taskId, context.signal));
       authority.assert();
       return { summary: publication.published
         ? '生产管线固定计算、独立来源核对和 WFD 正式发布/固定读回已完成。'
