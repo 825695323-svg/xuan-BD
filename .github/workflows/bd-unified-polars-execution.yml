@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - 'modules/financial/unified-polars-execution.ts'
+      - 'modules/financial/wfd-source-ma*.ts'
+      - 'modules/collection/data-processing/polars-fixed.ts'
+      - 'modules/financial/unified-polars-derived.ts'
+      - 'modules/financial/basic-algorithm-tool-contract.ts'
       - 'modules/collection/production-calculation*.ts'
       - 'modules/collection/polars-cleaning.test.ts'
       - 'modules/collection/data-processing/polars-clean*'

@@ -4,6 +4,7 @@ import { buildStructuredIngestDocument, type R1SourceRef, type R1StructuredReque
 import { FINANCIAL_LINEAR_ADMISSION_VERSION, financialAlgorithmDefinition } from '../collection/data-processing/financial-fixed.js';
 import { macroYoYAlgorithmDefinition } from '../collection/data-processing/polars-fixed.js';
 import type { UnifiedPolarsResult } from './unified-polars-execution.js';
+import { checkWfdMADerivedForWfd } from './wfd-source-ma-derived.js';
 
 export const UNIFIED_STRUCTURED_DERIVED_VERSION = 'bd.unified-structured-derived/1';
 export interface UnifiedStructuredBinding {
@@ -28,6 +29,8 @@ const utc = (value: unknown) => typeof value === 'string' && /^\d{4}-\d\d-\d\dT\
 export function checkUnifiedStructuredForWfd(
   result: UnifiedPolarsResult, binding: UnifiedStructuredBinding, requestId: string,
 ): CheckedStructuredDerived {
+  if (result.methodId === 'source_observation_ma')
+    return checkWfdMADerivedForWfd(result, binding, requestId);
   if (!result || result.version !== 'bd.algorithms.polars/1' || result.publication !== 'candidate_only'
     || !valid(result.taskId) || !valid(requestId) || !valid(binding.namespace)
     || !['production', 'user_test'].includes(binding.mode)

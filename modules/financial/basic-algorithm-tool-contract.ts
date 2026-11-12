@@ -2,6 +2,7 @@ import type { AlgorithmCatalogView } from './algorithm-types.js';
 import { ALGORITHM_REGISTRY } from './algorithm-registry.js';
 import { FIXED_CALCULATION_METHODS } from '../../contracts/fixed-calculation-contracts.js';
 import { FINANCIAL_FIXED_VERSION, FINANCIAL_LINEAR_ADMISSION_VERSION } from '../collection/data-processing/financial-fixed.js';
+import { WFD_SOURCE_MA_VERSION } from './wfd-source-ma.js';
 
 /**
  * BD AGENTS 只读统一入口契约（Unified Agent Tool Contract）。
@@ -52,7 +53,8 @@ export function basicAlgorithmToolContract(
       // must not claim that a Polars calculation can create a verified WFD derivative.
       const ready = unified?.status === 'ready' && unified.methods.includes(methodId);
       const methodVersion = id === 'macro_yoy' ? 'bd.macro-yoy/1' : id === 'financial_linear'
-        ? FINANCIAL_LINEAR_ADMISSION_VERSION : 'not_adopted';
+        ? FINANCIAL_LINEAR_ADMISSION_VERSION : id === 'observation_ma20'
+          ? WFD_SOURCE_MA_VERSION : 'not_adopted';
       const calculationVersion = id === 'financial_linear' ? FINANCIAL_FIXED_VERSION : methodVersion;
       return {
         methodId, legacyMethodId: id, title: definition.title, status: ready ? 'ready' as const : 'blocked' as const,
@@ -65,6 +67,12 @@ export function basicAlgorithmToolContract(
           calculation: id === 'financial_linear' ? {
             version: calculationVersion, operations: ['quarter_difference', 'ttm'],
             inputs: '明确固定 snapshotId/productId/businessKeys 的财务记录',
+          } : id === 'observation_ma20' ? {
+            version: WFD_SOURCE_MA_VERSION, method: 'MA20',
+            snapshotId: '固定快照编号，禁止 latest',
+            productId: '单主体日线产品编号',
+            valueField: '该产品已登记的精确数值字段代码',
+            policy: '整产品完整分页、5000 行预算、分组主体单一、20 行窗口；不得跳行或自行补交易日',
           } : {
             version: methodVersion, historyMode: 'snapshot_contents',
             knowledgeCutoff: '明确 UTC 校验截止',
@@ -78,7 +86,9 @@ export function basicAlgorithmToolContract(
         outputFields: id === 'financial_linear' ? ['value'] : id === 'macro_yoy' ? ['yoy'] : ['moving_average'],
         limitations: [definition.scope, '不得重开旧原报批次自动算法', '必须完成独立数值验收和统一 WFD 发布适配才能启用'],
         input: { kind: 'fixed_snapshot', referenceKind: 'wfd_fixed_snapshot',
-          requiredIdentity: ['snapshotId', 'productId', 'businessKey', 'recordVersion'],
+          requiredIdentity: id === 'observation_ma20'
+            ? ['snapshotId', 'productId', 'valueField', 'completeProductRead']
+            : ['snapshotId', 'productId', 'businessKey', 'recordVersion'],
           requiredEvidence: ['原始 WFD 固定行', '记录版本', '同一受信连接', '财务或宏观独立数值复核'],
           historical: '仅固定快照内容；未证明历史时点可知' },
         output: { state: 'computed', persistence: 'not_requested', publication: 'not_requested' },
