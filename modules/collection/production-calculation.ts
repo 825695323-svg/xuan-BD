@@ -22,11 +22,15 @@ export interface ProductionFormula {
   engine: ProductionEngineId;
   description: string;
 }
-const FIXED_FORMULAS: readonly ProductionFormula[] = Object.freeze([
-  { methodId: 'financial_linear', engine: 'polars', description: '固定财务单季与近十二个月' },
-  { methodId: 'macro_yoy', engine: 'polars', description: '宏观同比' },
-  { methodId: 'source_observation_ma', engine: 'polars', description: '来源观测均线；统一 WFD 固定输入与多行派生发布待验收' },
-]);
+/** 公式只以现有固定方法表为真相源；不能把一张第二套方法表同步给 AGENTS。 */
+const FIXED_FORMULAS: readonly ProductionFormula[] = Object.freeze(
+  (Object.keys(FIXED_CALCULATION_METHODS) as Array<keyof typeof FIXED_CALCULATION_METHODS>)
+    .map(method => ({
+      methodId: method === 'observation_ma20' ? 'source_observation_ma' : method,
+      engine: FIXED_CALCULATION_METHODS[method].defaultImplementation,
+      description: FIXED_CALCULATION_METHODS[method].description,
+    })),
+);
 const fail = (code: string, message: string): never => { throw new TaskError(code, message); };
 
 export class ProductionCalculation {
