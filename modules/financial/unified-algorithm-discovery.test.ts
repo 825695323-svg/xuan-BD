@@ -107,3 +107,21 @@ test('Polars-only service exposes one AGENTS calculation tool through production
     assert.equal(directory.methods.find(method => method.methodId === 'source_observation_ma')?.status, 'blocked');
   } finally { database.close(); }
 });
+
+
+test('cleaning-only deployment exposes read-only BD capability directory without opening algorithms.calculate', () => {
+  const database = new CoreDatabase();
+  try {
+    const bridge = new ConversationAlgorithmBridge({
+      database, core: {} as never, origin: () => null,
+      companion: { processing: { catalog: () => ({
+        cleaningEngine: { engine: 'polars', status: 'ready', methods: ['trim', 'empty_to_null'] },
+      }) } } as never,
+    });
+    const describe = (action: string) => bridge.registrations.find(item => item.action === action)?.available();
+    assert.equal(describe('bd.session.capabilities')?.available, true);
+    assert.equal(describe('algorithms.calculate')?.available, false);
+    assert.equal(describe('algorithms.publish')?.available, false);
+    assert.equal(describe('algorithms.status')?.available, false);
+  } finally { database.close(); }
+});
