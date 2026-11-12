@@ -95,7 +95,7 @@ test('Polars-only service exposes one AGENTS calculation tool through production
       methods: ['financial_linear', 'macro_yoy'] };
     const bridge = new ConversationAlgorithmBridge({
       database, core: {} as never, origin: () => null,
-      companion: { processing: { calculationCapabilities: () => ({ owner: 'data_production' }) },
+      companion: { productionCalculation: { capabilities: () => ({ owner: 'data_production' }) },
         unifiedPolars: { capabilities: () => ready }, r1Workspace: { capabilities: () => ({ connection: { connectionId: 'wfd' } }) } } as never,
     });
     assert.equal(bridge.registrations.find(item => item.action === 'algorithms.calculate')?.available().available, true);

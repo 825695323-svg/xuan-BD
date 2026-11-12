@@ -82,8 +82,13 @@ test('real isolated WFD publishes source, unified Polars computes and R1 publish
     const host = await openFullChainHost(fixture);
     try {
       assert.ok(host.services.unifiedPolars, '原 Polars 任务运行时仍由宿主登记，旧任务身份不变');
-      assert.ok(host.services.processing, '计算与核对必须属于原数据生产服务');
-      const methods = host.services.processing!.calculationCapabilities();
+      assert.ok(host.services.processing, '原报清洗与结构化仍归生产加工计划服务');
+      assert.ok(host.services.productionCalculation, '计算模块与清洗模块在 BD 生产体系内并列装配');
+      assert.equal(typeof (host.services.processing as unknown as { calculate?: unknown }).calculate, 'undefined',
+        '清洗服务不得暴露固定公式执行接口');
+      assert.equal(Object.hasOwn(host.services.processing!.catalog() as object, 'calculationModule'), false,
+        '清洗能力目录不得混入因子计算方法');
+      const methods = host.services.productionCalculation!.capabilities();
       assert.equal(methods.owner, 'data_production');
       assert.equal(methods.methods.find(item => item.methodId === 'macro_yoy')?.status, 'ready');
       assert.equal(methods.methods.find(item => item.methodId === 'source_observation_ma')?.status, 'blocked');
@@ -100,7 +105,7 @@ test('real isolated WFD publishes source, unified Polars computes and R1 publish
       };
       host.services.permissions.grant({ capabilities: [{ action: 'execute', target: { kind: 'file', path: python! } }],
         label: 'isolated exact Polars execution', scope: { kind: 'persistent' } });
-      const submitted = host.services.processing!.calculate('unified-e2e-macro', {
+      const submitted = host.services.productionCalculation!.submit('unified-e2e-macro', {
         methodId: 'macro_yoy', source: { kind: 'fixed_snapshot' },
         calculation: { version: 'bd.macro-yoy/1', historyMode: 'snapshot_contents',
           knowledgeCutoff: '2026-02-15T00:00:00Z',
@@ -111,7 +116,7 @@ test('real isolated WFD publishes source, unified Polars computes and R1 publish
       assert.equal(computed.status, 'succeeded', JSON.stringify(computed.error));
       assert.equal((computed.result?.data as any).rows[0].value, '20.00000000');
       const before = (await host.services.r1Workspace!.snapshotStatus()).snapshotId;
-      const outcome = await host.services.processing!.publishCalculation(computed.id);
+      const outcome = await host.services.productionCalculation!.publish(computed.id);
       assert.equal(outcome.published, true, JSON.stringify({
         outcome, isolatedReceipt: host.services.r1!.attempt(outcome.requestId).receipt_json,
       }));
@@ -121,7 +126,7 @@ test('real isolated WFD publishes source, unified Polars computes and R1 publish
       assert.equal(host.services.r1!.attempt(outcome.requestId).state, 'associated');
       const original = host.services.r1!.attempt(outcome.requestId);
       assert.equal((JSON.parse(String(original.local_refs_json))).fixedAlgorithm.kind, 'structured_polars');
-      const again = await host.services.processing!.publishCalculation(computed.id);
+      const again = await host.services.productionCalculation!.publish(computed.id);
       assert.equal(again.requestId, outcome.requestId);
       assert.equal(again.published, true);
       assert.equal(Number(host.database.connection.prepare(
