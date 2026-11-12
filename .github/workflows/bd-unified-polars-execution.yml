@@ -2,7 +2,8 @@ name: BD unified algorithm Polars execution
 
 on:
   push:
-    branches: [refactor/unified-polars-execution]
+    branches: [refactor/unified-polars-execution, fix/bd-completion-20261112]
+  workflow_dispatch:
   pull_request:
     paths:
       - 'modules/financial/unified-polars-execution.ts'
@@ -13,6 +14,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: bd-unified-polars-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   execution:
@@ -31,8 +36,9 @@ jobs:
           python-version: '3.11'
       - name: Install exactly pinned Polars worker
         run: |
-          python -m pip install -r config/polars-requirements.txt
+          python -m pip install -r config/polars-requirements.txt -r wfd/product/requirements-duckdb.txt
           echo "POLARS_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+          echo "WFD_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
       - name: Typecheck and frontend production build
         run: npm run build
       - name: Test unified task route and existing Polars verifiers
@@ -48,4 +54,34 @@ jobs:
             modules/financial/unified-polars-live.test.ts \
             modules/financial/unified-algorithm-discovery.test.ts \
             modules/collection/data-processing/polars-macro-independent.test.ts \
-            modules/collection/data-processing/financial-fixed.test.ts
+            modules/collection/data-processing/financial-fixed.test.ts \
+            apps/server/unified-polars-publish-full-chain.test.ts
+
+      - name: Financial module test coverage outside default npm test
+        if: always()
+        env:
+          XUAN_TEST_ROOT: ${{ runner.temp }}/bd-financial-module-tests
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-financial-full-chain
+        run: |
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
+          node --import tsx --test modules/financial/*.test.ts
+      - name: Check legacy R1 and Polars admission compatibility
+        env:
+          XUAN_TEST_ROOT: ${{ runner.temp }}/bd-regression-legacy-tests
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-regression-legacy-chain
+        run: |
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
+          # Legacy route regressions exercise only local HTTP; the separate WFD full-chain step above
+          # explicitly supplies WFD_PYTHON and validates actual remote publishing/readback.
+          env -u WFD_PYTHON -u POLARS_PYTHON node --import tsx --test apps/server/r1-routes.test.ts
+          node --import tsx --test modules/collection/polars-financial-admission.test.ts
+      - name: Full native Node and TypeScript regression (failures remain visible)
+        if: always()
+        env:
+          XUAN_TEST_ROOT: ${{ runner.temp }}/bd-unified-full-tests
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-unified-full-chain
+        run: |
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
+          # Runtime-only suites already run with explicit WFD_PYTHON/POLARS_PYTHON above.
+          # Default full suite keeps the fixture-less environment of scripts/test-local.mjs.
+          env -u WFD_PYTHON -u POLARS_PYTHON npm test

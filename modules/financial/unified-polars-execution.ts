@@ -158,8 +158,11 @@ export class UnifiedPolarsExecution {
       || task.versions.unifiedInput !== digest(frozen) || task.versions.unifiedConnection !== digest(frozen.connection)
       || task.versions.polars !== POLARS_FIXED_VERSION || task.versions.polarsDependency !== POLARS_DEPENDENCY_VERSION)
       return fail('UNIFIED_POLARS_FROZEN_CHANGED', '方法、输入或执行器冻结版本已经变化。');
+    // The registered path is the permission/process identity; the realpath is the
+    // frozen executable target. A stable symlink is valid, a retarget is not.
+    const registeredPython = this.options.processRuntime.path('polars-python');
     if (digest(this.options.workspace.capabilities().connection) !== digest(frozen.connection)
-      || this.options.processRuntime.path('polars-python') !== frozen.python)
+      || realpathSync(registeredPython) !== frozen.python)
       return fail('UNIFIED_POLARS_BINDING_CHANGED', '受信 WFD 连接或 Polars 程序与原任务不同。');
     const assertAuthorized = () => {
       context.signal.throwIfAborted();
@@ -168,12 +171,12 @@ export class UnifiedPolarsExecution {
         return fail('UNIFIED_POLARS_TASK_STALE', '原任务尝试失效。');
       context.assertAuthorized({ operationId: 'algorithms.polars.execute', operationVersion: 1,
         approvalMode: 'automatic', argsDigest: digestOperationArgs(task.args),
-        targets: [{ kind: 'file', path: frozen.python }] },
-        [{ action: 'execute', target: { kind: 'file', path: frozen.python } }]);
+        targets: [{ kind: 'file', path: registeredPython }] },
+        [{ action: 'execute', target: { kind: 'file', path: registeredPython } }]);
     };
     assertAuthorized();
     const execution = { context, processRuntime: this.options.processRuntime,
-      pythonExecutable: frozen.python, assertAuthorized };
+      pythonExecutable: registeredPython, assertAuthorized };
     const output = input.methodId === 'financial_linear'
       ? await projectFinancialPolars(execution, input.calculation as FinancialCalculation,
         this.options.workspace.readProduct.bind(this.options.workspace),

@@ -75,23 +75,24 @@ export class ConversationAlgorithmBridge {
     const authority = await acquireAuthority(context, action, args, []);
     authority.assert(); this.options.companion.bd?.assertDispatch();
     if (action === 'bd.session.capabilities') {
-      const contract = bdSessionToolContract(this.modelCatalog(service, origin));
+      const contract = bdSessionToolContract(this.modelCatalog(service, origin), this.options.companion.unifiedPolars?.capabilities());
       authority.assert();
       return { summary: '已读取 BD AGENTS 会话工具合同；只读，不创建采集、计算或发布任务。', data: view(contract) };
     }
     if (action === 'algorithms.contract') {
       const methodId = typeof args.methodId === 'string' && args.methodId.trim() ? args.methodId.trim() : undefined;
-      const contract = basicAlgorithmToolContract(this.modelCatalog(service, origin), methodId);
+      const contract = basicAlgorithmToolContract(this.modelCatalog(service, origin), methodId, this.options.companion.unifiedPolars?.capabilities());
       authority.assert();
       return { summary: '已读取基础算法独立接口及真实可用状态；未采用或执行任何方法。', data: view(contract) };
     }
     if (action === 'algorithms.capabilities') {
-      const catalog = this.modelCatalog(service, origin);
+      const catalog = this.modelCatalog(service, origin), unified = this.options.companion.unifiedPolars?.capabilities();
       authority.assert();
-      return { summary: catalog.enabled
+      return { summary: catalog.enabled || unified?.status === 'ready'
         ? '已读取基础算法目录、固定代码版本与 WFD 快照能力；本动作只读，不创建计算。'
         : `算法运行条件尚未就绪（${catalog.reason ?? '执行器或 WFD 快照端口不可用'}）；本次仅返回目录。`,
-        data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog).methods,
+        data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog, undefined, unified).methods,
+          unifiedPolars: unified ? json(unified) : null,
           database: json(catalog.inputs.fixedSnapshots), guidance: {
           humanInput: '用户说明 WFD 数据和目标算法，由模型读取真实快照与方法契约形成调用，无需人工逐次计算确认。',
           adoption: '工具不能自 adopt；未启用时不要改用旧 financial/compute_assets 入口。',

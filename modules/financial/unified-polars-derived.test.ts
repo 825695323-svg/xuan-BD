@@ -51,9 +51,13 @@ test('Polars financial and macro use identical R1 scalar output and signed fixed
     const checked = checkUnifiedStructuredForWfd(result, binding, 'bd-derived:request-one');
     assert.equal(checked.structured.payload.kind, 'scalar_rows');
     assert.equal(checked.structured.inputMode, 'partial_observation');
+    assert.equal(checked.structured.coverage.basis, 'observed_partial',
+      'WFD 覆盖依据必须使用协议受控枚举，而不是拼接算法内部版本');
     assert.equal(checked.structured.subject.kind, methodId === 'financial_linear' ? 'entity' : 'region');
     assert.equal(checked.structured.subject.id, methodId === 'financial_linear' ? 'company-one' : 'CN');
     assert.equal(checked.structured.expectedParentSnapshotId, binding.expectedParentSnapshotId);
+    assert.equal(checked.structured.definition.unit_code, methodId === 'financial_linear' ? 'cny' : 'percent',
+      'scalar_rows 统一定义必须有实义单位，不能使用只允许 tabular_rows 的 per_field');
     assert.equal((checked.structured.definition.field_definitions as any[])[0].unit_code,
       methodId === 'financial_linear' ? 'cny' : 'percent');
     const rows = (checked.structured.payload.rows as any[]);

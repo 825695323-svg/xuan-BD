@@ -1616,17 +1616,24 @@ test('fixed calculation HTTP mounts expose catalog task list and current Polars 
     const polars = await h.call('/processing/polars/capabilities');
     assert.equal(polars.runtime, 'bd.polars-fixed');
     assert.equal(typeof polars.configured, 'boolean');
-    for (const path of ['/computation/tasks', '/processing/polars/tasks']) {
-      const invalid = await h.call(path, {}, 409); assert.equal(invalid.code, 'POLARS_INPUT');
-    }
+    // New calculations belong only to BD AGENTS: the display-only /computation router
+    // has no POST actions, while the legacy Polars service retains its old, strict route.
+    const disabled = await h.call('/computation/tasks', {}, 404);
+    assert.equal(disabled.code, 'SERVICE_ROUTE_UNAVAILABLE');
+    const legacyInvalid = await h.call('/processing/polars/tasks', {}, 409);
+    assert.equal(legacyInvalid.code, 'POLARS_INPUT');
     for (const prefix of ['/computation/tasks', '/processing/polars/tasks']) {
       const missing = await h.call(prefix + '/missing-calculation', undefined, 404);
       assert.equal(missing.code, 'TASK_NOT_FOUND');
-      const stage = await h.call(prefix + '/missing-calculation/stage', {}, 404);
-      assert.equal(stage.code, 'TASK_NOT_FOUND');
-      const prepare = await h.call(prefix + '/missing-calculation/prepare', {}, 409);
-      assert.equal(prepare.code, 'POLARS_STAGE_PENDING');
     }
+    for (const suffix of ['/stage', '/prepare']) {
+      const disabledAction = await h.call('/computation/tasks/missing-calculation' + suffix, {}, 404);
+      assert.equal(disabledAction.code, 'SERVICE_ROUTE_UNAVAILABLE');
+    }
+    const stage = await h.call('/processing/polars/tasks/missing-calculation/stage', {}, 404);
+    assert.equal(stage.code, 'TASK_NOT_FOUND');
+    const prepare = await h.call('/processing/polars/tasks/missing-calculation/prepare', {}, 409);
+    assert.equal(prepare.code, 'POLARS_STAGE_PENDING');
     assert.equal(h.database.connection.prepare('SELECT count(*) AS count FROM tasks').get()?.count, countBefore);
   } finally { await h.close(); }
 });

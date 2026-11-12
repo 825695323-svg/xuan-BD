@@ -71,26 +71,23 @@ async function fixture() {
     async close() { await tasks.dispose(); database.close(); } };
 }
 
-test('financial candidate gates keep old results readable, block every new preparation/first send, and preserve sent recovery', async () => {
+test('legacy financial candidate without trusted eligibility stays readable but cannot prepare or send', async () => {
   const f = await fixture();
   try {
-    f.service.verifyCandidate(f.task.id, f.verify);
-    f.handoff.prepare({ structured: f.structured, localRefs: f.refs(f.structured) });
-    delete (f.data.evidence as WfdRecord).linearAdmission; f.store();
     const stored = f.database.connection.prepare('SELECT result FROM tasks WHERE id=?').get(f.task.id)!.result;
-    assert.equal(f.service.get(f.task.id).candidate!.rowCount, 1);
-    assert.throws(() => f.service.prepare(f.task.id, { ...f.verify, target: { definition: f.verify.definition } }), code('FINANCIAL_FIXED_PROOF_REQUIRED'));
-    const next = { ...f.structured, requestId: 'new-financial-prepare' };
-    assert.throws(() => f.handoff.prepare({ structured: next, localRefs: f.refs(next) }), code('FINANCIAL_FIXED_PROOF_REQUIRED'));
-    const state = f.handoff.attempt(f.structured.requestId).state;
-    let sends = 0;
-    await assert.rejects(f.handoff.submitAndAssociate(f.structured.requestId, { submit: async () => { sends++; } } as never), code('FINANCIAL_FIXED_PROOF_REQUIRED'));
-    assert.equal(sends, 0); assert.equal(f.prepares(), 0); assert.equal(f.handoff.attempt(f.structured.requestId).state, state);
+    assert.equal(f.service.get(f.task.id).candidate!.rowCount, 1, '旧成功计算结果依旧可查询');
+    assert.throws(() => f.service.verifyCandidate(f.task.id, f.verify),
+      code('POLARS_ELIGIBILITY_EVIDENCE_MISSING'),
+      '不能把旧候选结果或自报计划冒充受信用途资格');
+    await assert.rejects(f.service.prepare(f.task.id, { ...f.verify, target: { definition: f.verify.definition } }),
+      code('POLARS_ELIGIBILITY_EVIDENCE_MISSING'));
+    assert.throws(() => f.handoff.prepare({ structured: f.structured, localRefs: f.refs(f.structured) }),
+      code('R1_USAGE_DECLARATION_MISSING'),
+      '旧合成计划无可信发布用途，不进入正式 R1 提交');
+    assert.equal(f.prepares(), 0);
     assert.equal(f.database.connection.prepare('SELECT result FROM tasks WHERE id=?').get(f.task.id)!.result, stored);
-    for (const sent of ['sending', 'pending_unknown', 'pending_receipt', 'associated']) {
-      f.database.connection.prepare('UPDATE r1_handoff_attempts SET state=? WHERE request_id=?').run(sent, f.structured.requestId);
-      assert.doesNotThrow(() => f.handoff.assertCalculationReadyToSend(f.structured.requestId));
-    }
+    assert.equal(f.database.connection.prepare(
+      'SELECT count(*) AS n FROM r1_handoff_attempts WHERE request_id=?').get(f.structured.requestId)?.n, 0);
   } finally { await f.close(); }
 });
 
@@ -117,10 +114,9 @@ test('queued financial calculations without the admission version reject before 
   assert.equal(reads, 0);
 });
 
-test('financial candidate verification and central first send reject incompatible actual value units even with refreshed row digests', async () => {
+test('independent financial numerical admission rejects changed value unit even with refreshed source hashes', async () => {
   const f = await fixture();
   try {
-    f.handoff.prepare({ structured: f.structured, localRefs: f.refs(f.structured) });
     const originalRows = structuredClone(f.data.evidence.linearAdmission!.rows);
     const originalUnit = ((originalRows[0]!.values as WfdRecord).value as WfdRecord).unit as WfdRecord;
     const countDefinition = { dimension: 'count' };
@@ -137,10 +133,13 @@ test('financial candidate verification and central first send reject incompatibl
       Object.assign((proof.rows[0]!.values as WfdRecord).value as WfdRecord, patch);
       f.data.evidence.inputs[0]!.selectedRowsSha256 = wfdSha256(canonicalWfdJson([proof.rows[0]]));
       f.store();
-      assert.throws(() => f.service.verifyCandidate(f.task.id, f.verify), /数值单元/u);
-      let sends = 0;
-      await assert.rejects(f.handoff.submitAndAssociate(f.structured.requestId, { submit: async () => { sends++; } } as never), /数值单元/u);
-      assert.equal(sends, 0);
+      assert.throws(() => assertFinancialLinearCandidate(f.calculation, f.data.evidence, f.data.rows, () => {}),
+        /数值单元/u, '改写来源摘要不能使错误的数据类型或货币单位通过独立数值核验');
+      assert.throws(() => f.service.verifyCandidate(f.task.id, f.verify),
+        code('POLARS_ELIGIBILITY_EVIDENCE_MISSING'),
+        '无受信用途资格的旧任务必须继续在数值/发送之前被拒绝');
     }
+    assert.throws(() => f.handoff.prepare({ structured: f.structured, localRefs: f.refs(f.structured) }),
+      code('R1_USAGE_DECLARATION_MISSING'));
   } finally { await f.close(); }
 });

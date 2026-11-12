@@ -137,42 +137,26 @@ const managed = (materialId: string): AlgorithmCallRequest => ({ methodId: 'ma',
       barClosed: true, synthetic: true, availability: { kind: 'column' } }, calendar: { mode: 'dense' } },
   usage: { purpose: 'historical_compute', historyMode: 'market_known_at', cutoff: '2025-02-01T00:00:00Z', perspective: 'market_known_at' } });
 
-test('本机算法受管表：历史用途必须带真实提交证据；结果保留实际计算时间与回放标记',
+test('WFD-only 计算入口拒绝受管表，即使有真实用户用途授权也不创建历史任务',
   { skip: missing.length ? `未显式选择 ${missing.join('、')}` : false, timeout: 90_000 }, async () => {
     const parent = process.env.XUAN_ALGORITHM_ELIGIBILITY_ROOT ?? process.env.XUAN_TEST_ROOT ?? tmpdir();
     const root = realpathSync(mkdtempSync(join(parent, 'algorithm-eligibility-')));
     configure(root);
-    let host = open(root);
-    let persistedTaskId = '';
+    const host = open(root);
     try {
       const material = await host.material('source.csv', csv);
-      assert.throws(() => host.algorithms.submit('historical-no-evidence', managed(material.materialId)),
-        { code: 'ALGORITHM_PURPOSE_EVIDENCE_REQUIRED' });
-      const started = host.algorithms.submit('historical-with-operator', managed(material.materialId),
-        { authority: 'operator-http', requestId: 'historical-with-operator', observedAtUtc: '2026-04-30T00:00:00Z' });
-      persistedTaskId = started.taskId;
-      const repeated = host.algorithms.submit('historical-with-operator', managed(material.materialId),
-        { authority: 'operator-http', requestId: 'historical-with-operator', observedAtUtc: '2026-04-30T00:00:01Z' });
-      assert.equal(repeated.taskId, started.taskId, '用途证据受理时间不同不应造成同一请求冲突');
-      const review = await settle(host.tasks, started.taskId);
-      if (review.status === 'waiting_approval' && review.approvalId) host.tasks.approve(review.approvalId);
-      const done = review.status === 'waiting_approval' ? await host.tasks.wait(started.taskId) : review;
-      assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
-      const view = host.algorithms.view(started.taskId);
-      const result = view.result!;
-      assert.equal(result.eligibility?.input.status, 'eligible', JSON.stringify(result.eligibility?.input.gaps));
-      assert.equal(result.eligibility?.input.history.mode, 'market_known_at');
-      assert.equal(result.eligibility?.result.historyUse, 'replay');
-      assert.ok(result.eligibility?.result.gaps.some(gap => gap.code === 'REPLAY_COMPUTED_AFTER_CUTOFF'));
-      assert.equal(result.eligibility?.result.timings?.latestInputAvailableAtUtc, '2025-01-03T07:00:00Z');
-      assert.ok(result.computedAt >= '2026-11-07T00:00:00Z');
-      assert.deepEqual(result.rows.map(row => row.MA), [null, 1.5, 2.5]);
-    } finally { await host.close(); }
-    host = open(root);
-    try {
-      const reopened = host.algorithms.view(persistedTaskId).result!;
-      assert.equal(reopened.eligibility?.result.historyUse, 'replay');
-      assert.equal(reopened.computedAt, JSON.parse(host.database.connection.prepare('SELECT result_json FROM algorithm_calls WHERE task_id=?').get(persistedTaskId)!.result_json as string).computedAt);
+      const call = managed(material.materialId);
+      const before = host.database.connection.prepare('SELECT count(*) AS n FROM tasks WHERE runtime_id=?')
+        .get('bd.algorithms')?.n;
+      assert.throws(() => host.algorithms.submit('historical-no-evidence', call), {
+        code: 'ALGORITHM_WFD_ONLY',
+      });
+      assert.throws(() => host.algorithms.submit('historical-with-operator', call,
+        { authority: 'operator-http', requestId: 'historical-with-operator', observedAtUtc: '2026-04-30T00:00:00Z' }), {
+        code: 'ALGORITHM_WFD_ONLY',
+      }, '授权声明不能重新启用已经退出的原件直接计算路线');
+      assert.equal(host.database.connection.prepare('SELECT count(*) AS n FROM tasks WHERE runtime_id=?')
+        .get('bd.algorithms')?.n, before, '被拒绝的请求不能产生计算任务');
     } finally { await host.close(); }
   });
 
@@ -220,7 +204,7 @@ test('本机算法固定快照：4月历史只接受3月版本，5月修订与�
   });
 
 
-test('受管表只有 bar_close 声明、缺公开字段或回执时不得取得历史资格',
+test('只有 bar_close（收盘时间声明）的原件，不能绕过 WFD 固定读取取得历史资格',
   { skip: missing.length ? `未显式选择 ${missing.join('、')}` : false, timeout: 90_000 }, async () => {
     const parent = process.env.XUAN_ALGORITHM_ELIGIBILITY_ROOT ?? process.env.XUAN_TEST_ROOT ?? tmpdir();
     const root = realpathSync(mkdtempSync(join(parent, 'algorithm-bar-close-')));
@@ -237,11 +221,11 @@ test('受管表只有 bar_close 声明、缺公开字段或回执时不得取得
             barClosed: true, synthetic: true, availability: { kind: 'bar_close', closeTime: '15:00:00' } },
           calendar: { mode: 'dense' } },
         usage: { purpose: 'historical_compute', historyMode: 'market_known_at', cutoff: '2025-02-01T00:00:00Z', perspective: 'market_known_at' } };
-      const submitted = host.algorithms.submit('bar-close-no-public-evidence', call,
-        { authority: 'operator-http', requestId: 'bar-close-no-public-evidence', observedAtUtc: '2026-04-30T00:00:00Z' });
-      const done = await settle(host.tasks, submitted.taskId);
-      assert.equal(done.error?.code, 'PURPOSE_ELIGIBILITY_INELIGIBLE', JSON.stringify(done.error));
-      assert.match(String(done.error?.message), /DECLARED_BAR_CLOSE_NOT_PUBLIC_EVIDENCE/);
+      assert.throws(() => host.algorithms.submit('bar-close-no-public-evidence', call,
+        { authority: 'operator-http', requestId: 'bar-close-no-public-evidence', observedAtUtc: '2026-04-30T00:00:00Z' }),
+      { code: 'ALGORITHM_WFD_ONLY' });
+      assert.equal(host.database.connection.prepare('SELECT count(*) AS n FROM tasks WHERE runtime_id=?')
+        .get('bd.algorithms')?.n ?? 0, 0);
     } finally { await host.close(); }
   });
 
