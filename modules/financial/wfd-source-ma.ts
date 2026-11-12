@@ -100,12 +100,13 @@ export async function readWfdMASource(raw: WfdSourceMACalculation, reader: Finan
       if (!id(rowSubject.kind) || !id(rowSubject.namespace) || !id(rowSubject.id))
         fail('WFD_MA_SUBJECT', '源产品缺可复核的实体主体身份。');
       const cell = rowValues[calculation.valueField] as WfdRecord;
-      if (!isWfdRecord(cell) || !isWfdRecord(cell.unit)
-        || !id(cell.unit.unit_code) || !['decimal', 'integer'].includes(String(cell.data_type)))
+      const fieldUnit = cell?.unit as WfdRecord;
+      if (!isWfdRecord(cell) || !isWfdRecord(fieldUnit)
+        || !id(fieldUnit.unit_code) || !['decimal', 'integer'].includes(String(cell.data_type)))
         fail('WFD_MA_FIELD', '实际 WFD 数值字段缺明确十进制类型和单位。');
-      if (unitCode && unitCode !== cell.unit.unit_code)
+      if (unitCode && unitCode !== fieldUnit.unit_code)
         fail('WFD_MA_UNIT', '固定系列数值单位发生变化，不拼接均线。');
-      unitCode = cell.unit.unit_code as string;
+      unitCode = fieldUnit.unit_code as string;
       const state = String(cell.value_state);
       if (!['valid_value', 'reported_zero'].includes(state)
         ? cell.value !== null
