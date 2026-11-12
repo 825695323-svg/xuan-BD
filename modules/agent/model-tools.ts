@@ -60,6 +60,8 @@ const MODEL_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIO
   'financial.list', 'financial.describe', 'financial.call', 'financial.result', 'financial.status',
   'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status', 'bd.session.capabilities',
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
+  'data.module.parse', 'data.module.clean', 'data.module.structure', 'data.module.annotate', 'data.module.check',
+  'data.module.read_wfd', 'data.factor.catalog', 'data.semantic.lookup',
   'data.adapters.capabilities', 'data.adapters.propose', 'data.adapters.replay', 'data.adapters.adopt',
   'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
   'artifact.manifest', 'artifact.archive', 'artifact.restore', 'artifact.inspect', 'artifact.release',
@@ -73,6 +75,8 @@ const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_A
   'web.read_public', 'web.search', 'video.transcribe_url', 'material.read', 'material.process', 'material.ocr', 'material.transcribe',
   'financial.list', 'financial.describe', 'financial.result', 'financial.status',
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
+  'data.module.parse', 'data.module.clean', 'data.module.structure', 'data.module.annotate', 'data.module.check',
+  'data.module.read_wfd', 'data.factor.catalog', 'data.semantic.lookup',
   // 适配候选提交、重放与采用都是写入或权限动作：保留审核，不进入自动动作集合。
   'data.adapters.capabilities',
   'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
