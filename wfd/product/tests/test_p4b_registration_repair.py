@@ -45,7 +45,7 @@ def _volume_for(target: Path, runtime: Path) -> WFDVolumeService:
 
 def _local(target: Path, runtime: Path, *, readonly: bool = False):
     engine = WFDDuckDBPrototype(
-        target, load_protocol_validator(HERE / "protocol"),
+        target, load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
         runtime_root=runtime, sandbox=False, writer_host="p4b-hydration",
         read_only=readonly)
     return WFDDataOnlyService(
@@ -72,7 +72,7 @@ from pathlib import Path
 from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, load_protocol_validator
 from wfd_sdk.product_data_service import WFDDataOnlyService
 target, protocol, runtime, pid, sid, units, ns = sys.argv[1:8]
-engine = WFDDuckDBPrototype(Path(target), load_protocol_validator(Path(protocol)),
+engine = WFDDuckDBPrototype(Path(target), load_protocol_validator(Path(protocol), entry="wfd-data-only-write.schema.json"),
                             runtime_root=Path(runtime), sandbox=False, read_only=True)
 service = WFDDataOnlyService(engine, caller_roles=("read",), caller_id="repair-read",
                              unit_registry=json.loads(units),
@@ -99,6 +99,12 @@ def _registered_fixture(tmp_path, name):
         _internal_output("registered", "repair.registered.not.in.snapshot"),
         DATASET, {"_wfd_data_only": True})
     assert state == "registered", state
+    # 注册但未发布的产品必须由受信操作者显式绑定写入目标；
+    # 测试不通过请求内容或语义相似性自动采用目标。
+    binding = service.register_write_target(
+        DATASET, registered["product_id"], registered["definition_ref"],
+        reason="explicit fixture for registered-only hydration")
+    assert binding["state"] == "registered", binding
     reuse = scalar_output("reuse", "ignored.request.semantic", "7")
     reuse.update(definition_mode="reuse",
                  definition_ref=copy.deepcopy(registered["definition_ref"]),
@@ -125,7 +131,9 @@ def test_registered_only_reuse_hydrates_definition_and_registry(tmp_path):
     service, target, parent_sid, registered, doc = _registered_fixture(
         tmp_path, "registered")
     result = service.submit(doc)
-    assert result["state"] == "published_formal", result
+    assert result["state"] == "published_formal", {"state": result["state"], "errors": result.get("errors"),
+        "outputs": [{"key": item.get("output_key"), "errors": item.get("errors")}
+                    for item in result.get("output_results", [])]}
     new_pid = result["output_results"][0]["product_id"]
     assert new_pid == registered["product_id"]
     collected = {item["relpath"] for item in service.last_hydration["collected_files"]}

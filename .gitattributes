@@ -1,0 +1,10 @@
+# Keep byte-bound source rules, schemas and script digests stable across checkouts.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.parquet binary
+*.ttf binary
+*.woff binary
+*.woff2 binary

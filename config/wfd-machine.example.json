@@ -1,0 +1,19 @@
+{
+  "protocol_version": "wfd.product-machine-config/0.1",
+  "profile": "data_only",
+  "connection_id": "<EXISTING_CONNECTION_ID>",
+  "store": "<ABSOLUTE_EXISTING_WFD_STORE>",
+  "runtime": "<ABSOLUTE_WFD_RUNTIME>",
+  "project_root": "<ABSOLUTE_REPOSITORY>/wfd/product",
+  "protocol_root": "<ABSOLUTE_REPOSITORY>/wfd/product/protocol",
+  "caller": {
+    "caller_id": "<REGISTERED_CALLER_ID>",
+    "trusted_actor_namespace": "<REGISTERED_NAMESPACE>",
+    "roles": [
+      "read"
+    ]
+  },
+  "units": {},
+  "sources": {},
+  "limits": {}
+}

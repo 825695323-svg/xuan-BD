@@ -1,6 +1,8 @@
 # Local Web + WFD reproducible native toolchain; install only in an explicitly selected venv.
 # Installation is manual; bootstrap/check never downloads or installs packages.
 attrs==26.1.0
+# pytest has a Windows-only transitive dependency; pin it for all supported installations.
+colorama==0.4.6
 duckdb==2.0.0
 iniconfig==2.3.1
 jsonschema==4.26.0

@@ -130,7 +130,7 @@ def fresh_machine(tmp_path):
     writer = "p3b-machine"
     # Provision before connecting: batch_begin must not initialize a formal volume.
     WFDDuckDBPrototype.initialize_new(
-        store, load_protocol_validator(HERE / "protocol"), runtime_root=runtime,
+        store, load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"), runtime_root=runtime,
         sandbox=False, writer_host=writer)
     return machine_config(tmp_path, store=store, runtime=runtime, name=writer)
 

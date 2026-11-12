@@ -1,28 +1,47 @@
+# Dependencies and reproducible build outputs
+node_modules/
+vendor/
+.venv/
+dist/
+build/
+target/
+.next/
+coverage/
+*.egg-info/
 __pycache__/
 *.py[cod]
 .pytest_cache/
-*.egg-info/
-.venv/
-.private/
-**/.private/
-work/
-**/work/
-var/
-.DS_Store
-._*
-*.sqlite-wal
-*.sqlite-shm
-node_modules/
-dist/
+
+# Machine-specific state and credentials (examples remain tracked)
 .env
 .env.*
 !.env.example
+.private/
 .local/
-coverage/
+work/
+var/
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db-wal
+*.db-shm
 *.log
-.DS_Store
+config/*.local.json
+config/launcher.json
+config/machine.bindings.json
+config/connections.json
+config/r1-machine.json
 
-.codegraph/
-
-# 打包用的二进制运行时（Chrome/ffmpeg/node/语音模型，体积过大不入库）
+# Explicitly generated resources and disposable analysis
 resources/bundled/
+staging/
+.codegraph/
+audit-output/
+
+# Editor and OS metadata
+.DS_Store
+._*
+.vscode/
+.idea/
+Thumbs.db

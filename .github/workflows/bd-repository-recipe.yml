@@ -1,0 +1,136 @@
+name: BD source recipe and clean rebuild
+
+on:
+  push:
+    branches: [main, fix/bd-reproducible-recipe-20261112]
+    paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', '.gitattributes', 'AGENTS.md', 'LICENSE']
+  pull_request:
+    paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', '.gitattributes', 'AGENTS.md', 'LICENSE', 'staging/**', 'wfd/product/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: bd-source-recipe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rebuild:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test downloader boundaries and build pinned toolchain
+        shell: bash
+        run: |
+          python scripts/bootstrap-resources.test.py
+          python scripts/bootstrap-resources.py --profile toolchain --output "$RUNNER_TEMP/bd-tools"
+          python - <<'PY'
+          import json,os,pathlib
+          receipt=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'bd-tools/recipe-receipt.json').read_text())
+          with open(os.environ['GITHUB_ENV'],'a') as env:
+              for key,value in [('BD_NODE',receipt['node']),('BD_NPM',receipt['npmCli']),('BD_PYTHON',receipt['python'])]: env.write(key+'='+value+'\n')
+          with open(os.environ['GITHUB_PATH'],'a') as path:path.write(str(pathlib.Path(receipt['node']).parent)+'\n')
+          PY
+      - name: Install locked dependencies and build source
+        shell: bash
+        run: |
+          "$BD_NODE" "$BD_NPM" ci
+          "$BD_NODE" "$BD_NPM" run repo:check
+          "$BD_NODE" "$BD_NPM" run test:recipe
+          "$BD_NODE" "$BD_NPM" run build
+          "$BD_PYTHON" -m venv "$RUNNER_TEMP/bd-venv"
+          python - <<'PY'
+          import os,pathlib
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'bd-venv'/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+          with open(os.environ['GITHUB_ENV'],'a') as env:
+              env.write('WFD_PYTHON='+str(p)+'\n')
+              env.write('XUAN_TEST_NPM_CLI='+os.environ['BD_NPM']+'\n')
+          PY
+      - name: Install hash-locked WFD and calculation requirements
+        shell: bash
+        run: |
+          "$WFD_PYTHON" -m pip install --only-binary=:all: --require-hashes -r config/local-web-python.lock.txt -r config/polars.lock.txt
+          echo "POLARS_PYTHON=$WFD_PYTHON" >> "$GITHUB_ENV"
+      - name: Verify the isolated WFD data_only fixture publishes under its registered protocol
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          PYTHONPATH=wfd/product:wfd/product/tests "$WFD_PYTHON" - <<'PY'
+          import tempfile, json
+          from pathlib import Path
+          from test_r1_data_only import make_data_service, request, scalar_output
+          with tempfile.TemporaryDirectory() as temp:
+              result = make_data_service(Path(temp)).submit(
+                  request([scalar_output('m1', 'r1.metric', '10')], 'fixture-inspect-only'))
+              assert result['state'] == 'published_formal', json.dumps(result, ensure_ascii=False)
+              print('WFD_DATA_ONLY_SMOKE_OK', json.dumps({
+                  'state':result.get('state'),'errors':result.get('errors'),
+                  'outputs':[{'key':r.get('output_key'),'state':r.get('registration_state'),
+                  'errors':r.get('errors')} for r in result.get('output_results',[])]},
+                  ensure_ascii=False))
+          PY
+      - name: Prepare and start isolated native application, preserve restart identity
+        shell: bash
+        run: |
+          export XUAN_TEST_ROOT="$RUNNER_TEMP/bd-native-fixtures"
+          mkdir -p "$XUAN_TEST_ROOT"
+          python - <<'PYCFG'
+          import json,os,pathlib,subprocess
+          base=pathlib.Path(os.environ['RUNNER_TEMP']).resolve()
+          proof=base/'bd-command-proof';proof.mkdir()
+          node=os.environ['BD_NODE']
+          config=proof/'local-web.json'
+          subprocess.run([node,'scripts/create-local-config.mjs',
+              '--toolchain='+str(base/'bd-tools'), '--python='+os.environ['WFD_PYTHON'],
+              '--runtime-root='+str(proof/'runtime'), '--launcher='+str(proof/'launcher.json'),
+              '--output='+str(config)],check=True)
+          for command in ('check','prepare'):
+              subprocess.run([node,'scripts/local-web.mjs',command,'--config='+str(config)],check=True)
+          print('README_CONFIGURATION_COMMANDS_VERIFIED')
+          PYCFG
+          "$BD_NODE" --import tsx --test platform/resources/local-web.test.ts
+      - name: Verify WFD target identity and publication-guard regressions
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          export PYTHONPATH=wfd/product:wfd/product/tests
+          export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+          export PYTHONDONTWRITEBYTECODE=1
+          "$WFD_PYTHON" -m pytest -q --tb=short -p no:cacheprovider \
+            wfd/product/tests/test_market_current_only.py::test_current_business_replacement_contracts_and_pinned_technical_read \
+            wfd/product/tests/test_market_current_only.py::test_current_business_scope_is_explicit_and_ordinary_history_is_unchanged \
+            wfd/product/tests/test_market_current_only.py::test_current_business_same_interval_cannot_enter_through_two_outputs \
+            wfd/product/tests/test_p4b_registration_repair.py::test_registered_only_reuse_hydrates_definition_and_registry \
+            wfd/product/tests/test_r1_data_only.py::test_forecast_rating_actual_computed_business_definition_and_templates
+      - name: Full Node regression and real WFD source-based tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          export XUAN_TEST_ROOT="$RUNNER_TEMP/bd-full-tests"
+          export XUAN_FULL_CHAIN_ROOT="$RUNNER_TEMP/bd-full-chain"
+          export PYTHONPYCACHEPREFIX="$RUNNER_TEMP/bd-fresh-bytecode"
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
+          env -u WFD_PYTHON -u POLARS_PYTHON "$BD_NODE" "$BD_NPM" test
+          "$BD_NODE" --import tsx --test modules/financial/*.test.ts modules/agent/*.test.ts apps/server/unified-polars-publish-full-chain.test.ts
+          "$BD_NODE" "$BD_NPM" run test:python -- --python="$WFD_PYTHON"
+      - name: Rebuild optional bundle and verify existing manifest consumer
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          python scripts/bootstrap-resources.py --profile bundle --output "$GITHUB_WORKSPACE/resources/bundled"
+          "$BD_NODE" --import tsx -e "import {BundledResources} from './platform/resources/bundled.ts'; new BundledResources(process.cwd()).verify(); console.log('BUNDLE_MANIFEST_VERIFIED');"
+      - name: Reject tracked build outputs or changes to source
+        shell: bash
+        run: |
+          "$BD_NODE" "$BD_NPM" run repo:check
+          git diff --exit-code

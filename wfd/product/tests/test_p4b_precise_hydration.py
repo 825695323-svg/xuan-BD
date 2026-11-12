@@ -94,7 +94,7 @@ from pathlib import Path
 from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, load_protocol_validator
 from wfd_sdk.product_data_service import WFDDataOnlyService
 target, protocol, runtime, pid, sid, units, namespace = sys.argv[1:8]
-engine = WFDDuckDBPrototype(Path(target), load_protocol_validator(Path(protocol)),
+engine = WFDDuckDBPrototype(Path(target), load_protocol_validator(Path(protocol), entry="wfd-data-only-write.schema.json"),
                             runtime_root=Path(runtime), sandbox=False, read_only=True)
 service = WFDDataOnlyService(engine, caller_roles=("read",),
                              caller_id="p4b-new-process",

@@ -109,7 +109,7 @@ def delta_env(tmp_path):
 
 
 def _reader(store, runtime):
-    engine = WFDDuckDBPrototype(store, load_protocol_validator(HERE / "protocol"),
+    engine = WFDDuckDBPrototype(store, load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
                                 runtime_root=runtime, sandbox=False, writer_host=None)
     return WFDDataOnlyService(engine, caller_roles={"read"}, caller_id="r2b-delta")
 

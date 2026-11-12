@@ -22,7 +22,7 @@ NAMESPACE = "wfd.local"
 
 def make_data_service(tmp_path, roles=ALL_ROLES):
     engine = WFDDuckDBPrototype(
-        tmp_path / "store", load_protocol_validator(HERE / "protocol"),
+        tmp_path / "store", load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
         runtime_root=tmp_path / "runtime", sandbox=False, writer_host="r1-test")
     service = WFDDataOnlyService(
         engine, caller_roles=roles, caller_id="r1-test", unit_registry=UNITS,
@@ -226,12 +226,15 @@ def test_forecast_rating_actual_computed_business_definition_and_templates(tmp_p
         "actual": ("actual_outcome", "flow", None),
     }
     for label, (nature, measurement, publisher) in variants.items():
-        doc = request([scalar_output("m-" + label, "r1.claim", "12",
+        # 不同事实性质、计量类型属于不同产品定义，不复用一个写入目标。
+        doc = request([scalar_output("m-" + label, "r1.claim." + label, "12",
                                      nature=nature, measurement=measurement,
                                      business_publisher=publisher)], "r1-nature-" + label,
                       parent=parent)
         result = service.submit(doc)
-        assert result["state"] == "published_formal", (label, result)
+        assert result["state"] == "published_formal", (label, {"state": result["state"],
+            "errors": result.get("errors"), "outputs": [{"key": item.get("output_key"),
+            "errors": item.get("errors")} for item in result.get("output_results", [])]})
         ids[label] = result["output_results"][0]["product_id"]
         parent = result["snapshot_id"]
     assert len(set(ids.values())) == 3
@@ -275,7 +278,7 @@ def test_forecast_rating_actual_computed_business_definition_and_templates(tmp_p
 
 def test_bd_unavailable_read_and_machine_data_only_profile(tmp_path):
     # Provision this new fixture explicitly; machine requests only open existing stores.
-    validator = load_protocol_validator(HERE / "protocol")
+    validator = load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json")
     engine = WFDDuckDBPrototype.initialize_new(
         tmp_path / "store", validator, runtime_root=tmp_path / "runtime",
         sandbox=False, writer_host="r1-test")

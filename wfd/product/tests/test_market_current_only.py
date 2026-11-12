@@ -12,7 +12,10 @@ from wfd_sdk.product_query import ProductQuery, ProductQueryError
 
 def bar_output(*, frequency="day", subject="security_000001", policy=True):
     fields = ["open", "high", "low", "close", "volume", "amount"]
-    output = scalar_output("bars", "test.basic-bars", "1")
+    # 频率与当前视图业务语义的不同产品使用不同的稳定语义编号；
+    # 不允许靠未登记的定义漂移在既有产品族中自动分叉。
+    code = "test.basic-bars." + frequency + (".current" if policy else ".historical")
+    output = scalar_output("bars", code, "1")
     output["subject"] = {"kind": "instrument", "namespace": "wfd.local", "id": subject}
     definition = output["definition"]
     definition.update(unit_code="per_field", measurement_nature="mixed_observation",
@@ -37,7 +40,9 @@ def bar_output(*, frequency="day", subject="security_000001", policy=True):
 
 def publish(service, output, request_id, parent=None):
     result = service.submit(request([output], request_id, parent=parent))
-    assert result["state"] == "published_formal", result
+    assert result["state"] == "published_formal", {"state": result["state"], "errors": result.get("errors"),
+        "outputs": [{"key": item.get("output_key"), "errors": item.get("errors")}
+                    for item in result.get("output_results", [])]}
     return result["snapshot_id"], result["output_results"][0]["product_id"]
 
 
@@ -71,8 +76,16 @@ def test_current_business_replacement_contracts_and_pinned_technical_read(tmp_pa
     assert product["contracts"]["publication"]["business_view"] == "unique_current_leaf"
     assert set(product["contract_refs"]) == {"semantic", "read_layout", "algorithm_dependency", "update_release"}
     assert len(ProductQuery(service).execute(query_request("wfd_r1_local", sid2, pid, ["close"]))["rows"]) == 1
-    # Subject and frequency remain product identity dimensions.
-    for index, variant in enumerate([bar_output(subject="security_000002"), bar_output(frequency="day")]):
+    # 对同一产品族提交不同频率声明，必须先显式登记/改绑写入目标。
+    incompatible = bar_output(frequency="day")
+    incompatible["definition"]["semantic_code"] = original["definition"]["semantic_code"]
+    blocked = service.submit(request([incompatible], "current-definition-drift-rejected", parent=sid2))
+    assert blocked["state"] == "rejected", blocked
+    assert any(error.get("code") == "WRITE_TARGET_DEFINITION_DRIFT"
+               for outcome in blocked["output_results"] for error in outcome.get("errors", [])), blocked
+    assert service.engine.head()["snapshot_id"] == sid2
+    # 不同主体，或不同稳定语义编号的频率，各自拥有独立产品身份。
+    for index, variant in enumerate([bar_output(subject="security_000002", frequency="minute"), bar_output(frequency="day")]):
         sid2, other = publish(service, variant, "current-distinct-" + str(index), sid2)
         assert other != pid
 
@@ -175,10 +188,22 @@ def test_current_business_same_interval_cannot_enter_through_two_outputs(tmp_pat
     first["payload"]["rows"][0]["business_key"] = "key-a"
     second["payload"]["rows"][0]["business_key"] = "key-b"
     second["payload"]["rows"][0]["values"]["close"]["value"] = "11.5"
+    # 两输出共享同一个正式产品族，先按现有契约显式登记并绑定目标。
+    # 否则首输出的未发布注册将触发 WRITE_TARGET_UNBOUND，遮蔽真正的同区间冲突。
+    registered, state = service._register(
+        service._internal_output(first), "wfd_r1_local", {"_wfd_data_only": True})
+    assert state == "registered"
+    bound = service.register_write_target(
+        "wfd_r1_local", registered["product_id"], registered["definition_ref"],
+        reason="explicit isolated same-interval test target")
+    assert bound["state"] == "registered"
+    assert service.engine.head() is None
     result = service.submit(request([first, second], "cross-output-conflict",
                                     consistency_groups={"same-bar": ["bars_a", "bars_b"]}))
     assert any(error.get("code") == "CURRENT_ONLY_BUSINESS_KEY_CONFLICT"
-               for item in result["output_results"] for error in item.get("errors", [])), result
+               for item in result["output_results"] for error in item.get("errors", [])), {
+        "state": result.get("state"), "outputs": [{"key": item.get("output_key"), "errors": item.get("errors")}
+                                          for item in result.get("output_results", [])]}
     assert service.engine.head() is None
     # A different interval remains a distinct bar of the same product.
     second["payload"]["rows"][0]["observation_time"]["earliest_utc"] = "2026-01-06T01:30:00Z"

@@ -226,7 +226,7 @@ def fixture_document():
 
 def _service(tmp_path, roles=ALL_ROLES):
     engine = WFDDuckDBPrototype(
-        tmp_path / "store", load_protocol_validator(HERE / "protocol"),
+        tmp_path / "store", load_protocol_validator(HERE / "protocol", entry="wfd-data-only-write.schema.json"),
         runtime_root=tmp_path / "runtime", sandbox=False, writer_host="p4a1-test")
     return WFDDataOnlyService(
         engine, caller_roles=roles, caller_id="p4a1-test", unit_registry=UNITS,
