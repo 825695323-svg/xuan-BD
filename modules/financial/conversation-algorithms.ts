@@ -93,6 +93,8 @@ export class ConversationAlgorithmBridge {
         : `算法运行条件尚未就绪（${catalog.reason ?? '执行器或 WFD 快照端口不可用'}）；本次仅返回目录。`,
         data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog, undefined, unified).methods,
           unifiedPolars: unified ? json(unified) : null,
+          productionCalculation: this.options.companion.processing
+            ? json(this.options.companion.processing.calculationCapabilities()) : null,
           database: json(catalog.inputs.fixedSnapshots), guidance: {
           humanInput: '用户说明 WFD 数据和目标算法，由模型读取真实快照与方法契约形成调用，无需人工逐次计算确认。',
           adoption: '工具不能自 adopt；未启用时不要改用旧 financial/compute_assets 入口。',
@@ -107,13 +109,11 @@ export class ConversationAlgorithmBridge {
       catch { throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求不是有效JSON。'); }
       if (!isWfdRecord(calculation)) throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求必须是对象。');
       this.assertCalculationMaterials(calculation, origin);
-      const structured = isUnifiedPolarsMethod(calculation.methodId);
-      const backend = this.options.companion.unifiedPolars;
-      if (structured && !backend) throw new TaskError('UNIFIED_POLARS_UNAVAILABLE',
-        '财务/宏观固定算法执行器尚未装配；不会重新走旧材料候选五步。');
-      const submitted = structured
-        ? backend!.submit('conversation:algorithms:' + context.task.id, calculation)
-        : service.submit('conversation:algorithms:' + context.task.id, calculation);
+      const production = this.options.companion.processing;
+      if (!production) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE',
+        '数据生产计算模块未装配，不能另起独立算法管线。');
+      // 各方法按受信注册表选择 Polars / pandas；仍由唯一 TaskService 持有原任务。
+      const submitted = production.calculate('conversation:algorithms:' + context.task.id, calculation);
       const taskId = submitted.taskId;
       this.link(taskId, context.task.id, 'calculate', origin);
       await this.wait(context, taskId);
@@ -123,40 +123,26 @@ export class ConversationAlgorithmBridge {
         return { summary: `原固定算法任务状态为 ${current.status}；尚未发布 WFD，必须按原号核对。`,
           data: view(this.statusPayload(taskId)) };
       }
-      if (structured) {
-        const publisher = this.options.companion.derivedPublisher;
-        if (!publisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE',
-          '统一 Polars 计算已完成，但独立 WFD 发布端口未装配。保留原任务身份。');
-        const publication = await publisher.publish(taskId, context.signal);
-        authority.assert();
-        return { summary: publication.published
-          ? '统一 Polars 固定计算、独立来源再核及 WFD 正式发布/固定读回已完成。'
-          : '统一 Polars 计算已完成，R1 原提交尚未取得全部正式读回；保留原任务继续核对。',
-          data: view({ ...this.statusPayload(taskId), wfdPublication: publication }) };
-      }
-      const publisher = this.options.companion.derivedPublisher;
-      if (!publisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE',
-        '算法已完成，但 WFD 独立核验/正式入库未装配；保留原任务，不能冒充已入库。');
-      const publication = await publisher.publish(taskId, context.signal);
+      // 算法产物与普通结构化产物共用生产核对门禁和原 R1/WFD 正式交接。
+      const publication = await production.publishCalculation(taskId, context.signal);
       authority.assert();
       return { summary: publication.published
-        ? '固定算法计算与独立结果核对完成，WFD 正式发布及固定读回已确认。'
-        : `算法计算成功；WFD 派生提交状态为 ${publication.state}，尚未证明正式入库，按原请求恢复。`,
+        ? '生产管线固定计算、独立来源核对和 WFD 正式发布/固定读回已完成。'
+        : `计算已完成，但原 R1 提交状态为 ${publication.state}；未确认正式入库，必须按原任务继续核对。`,
         data: view({ ...this.statusPayload(taskId), wfdPublication: publication }) };
     }
     const taskId = String(args.taskId ?? '');
     this.assertLink(taskId, origin);
     if (action === 'algorithms.publish') {
-      const publisher = this.options.companion.derivedPublisher;
-      if (!publisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', 'WFD 固定算法独立入库未装配。');
-      const result = this.options.companion.tasks.get(taskId).runtimeId === UNIFIED_POLARS_RUNTIME
-        ? this.options.companion.unifiedPolars?.view(taskId) : service.view(taskId);
-      if (!result || result.status !== 'succeeded' || result.requiresReview)
+      const production = this.options.companion.processing;
+      if (!production) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '数据生产的统一 R1/WFD 发布模块未装配。');
+      const task = this.options.companion.tasks.get(taskId);
+      if (task.status !== 'succeeded' || task.requiresReview)
         throw new TaskError('DERIVED_RESULT_NOT_READY', '原计算任务未完成，不重新计算或更换任务身份。');
-      const publication = await publisher.publish(taskId, context.signal);
+      const publication = await production.publishCalculation(taskId, context.signal);
       authority.assert();
-      return { summary: publication.published ? '原派生请求已完成 WFD 正式读回。'
-        : `派生原请求状态为 ${publication.state}，保留身份继续核对。`,
+      return { summary: publication.published ? '原生产计算结果已完成 WFD 正式读回。'
+        : `原派生请求状态为 ${publication.state}，保留身份继续核对。`,
         data: view({ taskId, wfdPublication: publication }) };
     }
     if (action === 'algorithms.status') {
