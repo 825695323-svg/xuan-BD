@@ -9,6 +9,7 @@ import { buildSourceObservationMA, type CalculatedMAProof, type SourceObservatio
 import { FINANCIAL_LINEAR_ADMISSION_VERSION, projectFinancialFixed, type FinancialCalculation, type FinancialReader } from './financial-fixed.js';
 import { FIXED_CALCULATION_METHODS } from '../../../contracts/fixed-calculation-contracts.js';
 import { selectWfdFixedRecords } from '../../financial/wfd-fixed-selection.js';
+import { checkWfdMACandidate, type WfdMASource } from '../../financial/wfd-source-ma.js';
 
 export const POLARS_FIXED_VERSION = 'bd.polars-fixed/1';
 export const POLARS_DEPENDENCY_VERSION = '2.0.0';
@@ -85,6 +86,36 @@ export async function projectDailyPolars(execution: PolarsExecution, valueColumn
     method: 'observation_ma20', checkedInput: checked.proof, workerSha256: workerDigest, execution: receipt,
     temporalPolicy: 'inherits existing source snapshot/current-only restrictions; no historical availability claim',
     publication: 'candidate_only' } };
+}
+
+/** WFD-only MA20 uses the *entire* pinned read_product series, never managed originals or batch rows. */
+export async function projectWfdMA20Polars(execution: PolarsExecution, source: WfdMASource) {
+  const workerRows = source.input.map(row => ({
+    key: row.key, group: canonicalWfdJson(source.subject), value: row.value,
+  }));
+  const receipt = await execute(execution, 'observation_ma20', workerRows,
+    { period: 20, scale: 8, rounding: 'half_even' });
+  const actual = receipt.rows as WfdRecord[];
+  if (actual.length !== source.rows.length) fail('WFD_MA_RESULT_MISMATCH', 'Polars 观测行数与 WFD 冻结全量不一致。');
+  const rows = source.rows.map((original, index) => {
+    const candidate = actual[index]!;
+    if (candidate.key !== original.business_key || candidate.status !== original.calculation_status
+      || candidate.value !== original.value) {
+      fail('WFD_MA_RESULT_MISMATCH', 'Polars MA20 与原始冻结行的独立 BigInt 精确公式不一致。');
+    }
+    return { ...original, value: candidate.value as string | null };
+  });
+  checkWfdMACandidate(source, rows);
+  const evidence: WfdRecord = {
+    version: 'bd.wfd-source-ma20/1', method: 'source_observation_ma',
+    fixedCalculation: source.calculation, sourceRowsSha256: source.sourceRowsSha256,
+    recordVersionsSha256: source.recordVersionsSha256, frozenInput: source.input,
+    subject: source.subject, unitCode: source.unitCode, timeZone: source.timeZone,
+    connection: source.connection, historicalQualification: source.historicalQualification,
+    algorithmDefinition: source.algorithmDefinition,
+    workerSha256: workerDigest, execution: receipt, publication: 'candidate_only',
+  };
+  return { jsonBytes: Buffer.from(canonicalWfdJson(rows)), evidence };
 }
 
 /** Financial semantics/formula validation is reused, rather than reimplemented for Polars. */
