@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { setWorkspaceObject } from './workspace-context';
 import { useObjectSelection } from './useStoredSelection';
 import type { DragEvent } from 'react';
-import { Search } from 'lucide-react';
+import { PageSearch, PageButton, PageActions, PageField } from './PageUI';
 import type { SourceConnection, SourceOperationId, SourceOperationPolicy, SourceSettingsView } from '../../../../contracts/source-settings';
 import { request } from '../api';
 import { usePreferences } from './Preferences';
@@ -176,12 +176,8 @@ export function ApiSourcesPage() {
   const matchesMarket = (label: string) => !searching || label.toLocaleLowerCase().includes(marketQuery.trim().toLocaleLowerCase());
   const nav = <aside className="data-nav" aria-label={words('接口源分类', 'API source categories')}>
     <div className="sidebar-search-slot">
-      <div className="data-search data-nav-search">
-        <Search size={15} aria-hidden="true" />
-        <input type="search" aria-label={words('搜索接口源分类', 'Search API source categories')}
-          placeholder={words('搜索接口源…', 'Search API sources…')} value={marketQuery}
-          onChange={(event) => setMarketQuery(event.currentTarget.value)} />
-      </div>
+      <PageSearch compact label={words('搜索接口源分类', 'Search API source categories')}
+        placeholder={words('搜索接口源…', 'Search API sources…')} value={marketQuery} onChange={setMarketQuery} />
     </div>
     <div onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); moveTo('root'); }}>
       <button type="button" className="data-nav-item is-group" aria-expanded={open.has('region')} onClick={() => toggle('region')}>
@@ -598,12 +594,17 @@ function ApiRunDialog({ connection, plugin, scopes, onClose, receipt, onReceipt,
         options={(operations.length ? operations : [{ id: 'daily_bars' as const, label: words('日线', 'Daily') }]).map(item => ({ value: item.id, label: item.label }))}
         onChange={value => setOperation(value as SourceOperationId)} />
     </div>
-    <label className="field-label">{words('参数（JSON，按公开接口填写）', 'Parameters (JSON, per public API)')}
-      <textarea value={parameters} disabled={busy} rows={4} onChange={event => setParameters(event.currentTarget.value)} spellCheck={false} /></label>
+    <PageField label={words('参数（JSON，按公开接口填写）', 'Parameters (JSON, per public API)')}>
+      <textarea value={parameters} disabled={busy} rows={4} onChange={event => setParameters(event.currentTarget.value)} spellCheck={false} />
+    </PageField>
     {receipt && <RunReceipt task={receipt} />}
     {error && <ErrorNote detail={error}>{words('来源运行未确认；没有换请求编号重发。', 'The source run is unconfirmed; it was not resent with a new request ID.')}</ErrorNote>}
-    <div className="dialog-actions"><button type="button" className="text-button" disabled={busy} onClick={onClose}>{words('关闭', 'Close')}</button>
-      <button type="button" className="primary-button" disabled={busy || !plugin} onClick={() => void run()}>{busy ? words('发起中…', 'Starting…') : words('明确运行一次', 'Run once explicitly')}</button></div>
+    <PageActions className="dialog-actions" align="end">
+      <PageButton disabled={busy} onClick={onClose}>{words('关闭', 'Close')}</PageButton>
+      <PageButton variant="primary" disabled={busy || !plugin} onClick={() => void run()}>
+        {busy ? words('发起中…', 'Starting…') : words('明确运行一次', 'Run once explicitly')}
+      </PageButton>
+    </PageActions>
   </Modal>;
 }
 
