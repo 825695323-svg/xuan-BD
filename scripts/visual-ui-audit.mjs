@@ -59,8 +59,13 @@ function verify(data) {
   assert.equal(data.rootFont, 15, '默认视觉字体须与应用运行时基线一致');
   if (viewport.width <= 1180) {
     const button = requireNode('agentFloat');
-    inViewport(button, viewport.width, viewport.height, 'Agent 浮动入口');
-    assert.ok(button.width >= 36 && button.height >= 36, 'Agent 浮动入口触控尺寸不足');
+    inViewport(button, viewport.width, viewport.height, 'Agent 停靠入口');
+    assert.ok(button.width >= 36 && button.height >= 36, 'Agent 入口触控尺寸不足');
+    assert.ok(button.x >= main.right - 2, 'Agent 入口不应遮盖业务内容区');
+    const search = requireNode('search');
+    const overlaps = button.x < search.right && button.right > search.x
+      && button.y < search.bottom && button.bottom > search.y;
+    assert.ok(!overlaps, 'Agent 入口遮挡搜索框');
   } else requireNode('agent');
   if (view === 'modal') {
     const dialog = requireNode('dialog');
