@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "base": "6b96149e0387c5e4d01e7acc738e5d05f7569e53",
+  "files": [
+    {
+      "path": "modules/financial/algorithm-service.ts",
+      "before": "d76cdc8ef091b1e6af28059804e029e73db571baefede7478a3e01a122058c32",
+      "after": "924ee2b142ef0f5976fc71de72a6e6f32bc3614da052c2f2b875dbf7df5bb18b",
+      "edits": [
+        {"start": 20, "end": 21, "text": "  type AlgorithmSubmissionContext, type AlgorithmUsage, type AlgorithmTaskView, type ManagedTableData, type ManagedTableReader,\n"},
+        {"start": 131, "end": 133, "text": " * 新计算只从 WFD 固定快照形成显式输入，经 TaskService 与 ProcessRuntime 调用第一方 Python 实现，\n * 保管并读回结果。旧受管表身份仅用于历史解码。计算与数据库发布分离；本类没有发布写者。\n"},
+        {"start": 150, "end": 151, "text": "    // 本机固定实现按真实执行条件使用；静态 enabled 仅控制隔离合成测试，历史采用记录不再是运行开关。\n"},
+        {"start": 178, "end": 179, "text": "  /** 只读历史采用诊断，不是当前计算资格或启停依据；原记录不被迁移覆盖。 */\n"},
+        {"start": 193, "end": 194, "text": "        return { state: 'stale', reason: '当前实现与历史采用记录不同；仅保留诊断，当前计算资格由真实执行器、输入及权限核对决定。',\n"},
+        {"start": 203, "end": 204, "text": "   * 历史采用记录写入兼容。只允许本机预览环境，且必须逐字提供当前两个摘要和确认短语；\n"},
+        {"start": 307, "end": 310, "text": "  list(methodId?: string): AlgorithmTaskView[] {\n    const rows = methodId === undefined\n      ? this.db.prepare('SELECT task_id FROM algorithm_calls ORDER BY created_at DESC,task_id LIMIT 20').all()\n      : this.db.prepare('SELECT task_id FROM algorithm_calls WHERE method_id=? ORDER BY created_at DESC,task_id LIMIT 20').all(methodId);\n    return rows.map(row => this.view(String(row.task_id)));\n"},
+        {"start": 772, "end": 777, "text": "\n"},
+        {"start": 778, "end": 779, "text": "    if (!this.snapshots) return { status: 'unavailable', reason: '固定快照端口尚未装配；新计算不可用，旧任务结果仍可按原编号只读查询。', contract: SNAPSHOT_CONTRACT };\n"}
+      ]
+    },
+    {
+      "path": "modules/financial/basic-algorithm-tool-contract.test.ts",
+      "before": "e5b11e20a23d85ecabff60ab99330c2b4f7ed91254d1401832426bc6cac30506",
+      "after": "1b6f5dd867e83fbc419cb82692a75ea15e9e22d9dcc8381f57928b1b7abc4fbc",
+      "edits": [
+        {"start": 47, "end": 47, "text": "\n\ntest('new task contract never recommends bulk processing; module actions derive from existing ports', async () => {\n  const { processingSessionContract, PRODUCTION_MODULES, stepModuleForAction } = await import('../collection/production-module-ports.js');\n  const processing = processingSessionContract();\n  const files = bdSessionToolContract(catalog).toolGroups.find(item => item.id === 'files')!;\n  assert.equal(processing.execute, 'data.processing.execute');\n  assert.deepEqual(processing.moduleActions,\n    PRODUCTION_MODULES.filter(module => stepModuleForAction(module.action) !== null).map(module => module.action));\n  assert.ok(files.tools.includes(processing.execute));\n  assert.ok(files.tools.includes(processing.recover), 'existing single-step plans retain explicit artifact recovery');\n  assert.equal(files.tools.includes('data.processing.run'), false);\n  assert.deepEqual(files.legacyRecovery, processing.legacyRecovery);\n  assert.equal(files.legacyRecovery?.newTasks, false);\n});\n\ntest('BD capability response and session tool groups agree about stepwise work and historical recovery', async () => {\n  const { CoreDatabase } = await import('../../platform/state/database.js');\n  const { ConversationAlgorithmBridge } = await import('./conversation-algorithms.js');\n  const { processingSessionContract } = await import('../collection/production-module-ports.js');\n  const database = new CoreDatabase(':memory:');\n  let dispatchChecks = 0;\n  try {\n    const bridge = new ConversationAlgorithmBridge({\n      database, core: {} as never, origin: () => ({ conversationId: 'isolated', branchId: 'main' } as never),\n      companion: { bd: { assertDispatch: () => { dispatchChecks++; } },\n        processing: { catalog: () => ({ cleaningEngine: { status: 'ready' } }),\n          moduleCapability: () => ({ status: 'ready', engine: 'fixed' }) } } as never,\n    });\n    const result = await bridge.execute({ task: { id: 'capability-only', action: 'bd.session.capabilities', args: {} },\n      signal: new AbortController().signal, assertAuthorized: () => ({ approvalId: null }) } as never);\n    const preview = (result.data as any).modelPreview;\n    assert.equal(preview.onDemand.cleaning.execute, processingSessionContract().execute);\n    assert.equal(preview.onDemand.cleaning.recover, 'data.processing.recover');\n    assert.deepEqual(preview.onDemand.cleaning.moduleActions, processingSessionContract().moduleActions);\n    assert.equal(preview.onDemand.cleaning.legacyRecovery.newTasks, false);\n    assert.equal(dispatchChecks, 1);\n    assert.equal(preview.parallelModuleDirectory.autoTrigger, false);\n  } finally { database.close(); }\n});\n"}
+      ]
+    },
+    {
+      "path": "modules/financial/basic-algorithm-tool-contract.ts",
+      "before": "39c3d652b1594d4637608de873648a537cd4249fec5ed2bd41a7c93e9e866b96",
+      "after": "3b0118ad80ad0c21dbed9e40548015b377428aba5902a95d0e43ff1b5dfd44dc",
+      "edits": [
+        {"start": 5, "end": 5, "text": "import { processingSessionContract } from '../collection/production-module-ports.js';\n"},
+        {"start": 11, "end": 12, "text": "export const BD_SESSION_TOOL_CONTRACT_VERSION = 'bd.session-tools/2';\n"},
+        {"start": 125, "end": 125, "text": "  const processing = processingSessionContract();\n"},
+        {"start": 130, "end": 131, "text": "        next: '材料先保管并识别，逐步处理后返回AGENTS判断，不自动运行算法' },\n"},
+        {"start": 135, "end": 138, "text": "        tools: ['file.read', 'material.read', 'material.process', processing.discovery,\n          processing.route, processing.plan, processing.execute, processing.status, processing.recover, ...processing.moduleActions],\n        next: processing.feedback, legacyRecovery: processing.legacyRecovery },\n"}
+      ]
+    },
+    {
+      "path": "modules/financial/conversation-algorithms.ts",
+      "before": "41edad083d5d5cf46fee82173a1f9a80980b7e724f5c660067ff3f0ed5fc2784",
+      "after": "d0c0ce183c159ccf5f15f57e6b6e86cda441f77e88c6cff7035edd3edcbd75fe",
+      "edits": [
+        {"start": 14, "end": 15, "text": "import { productionModuleDirectory, processingSessionContract } from '../collection/production-module-ports.js';\n"},
+        {"start": 25, "end": 26, "text": " * - capabilities 只读目录、历史采用诊断和真实数据库能力，不能启用或授予 Python 执行权限。\n"},
+        {"start": 106, "end": 109, "text": "          cleaning: { description: '原报解析与严格清洗；AGENTS每次执行一个步骤，读取反馈后再决定下一步',\n            ...processingSessionContract(), engine: cleaning,\n"},
+        {"start": 137, "end": 138, "text": "          adoption: '人工采用仅为历史诊断，不决定当前计算资格；执行器或固定快照不可用时不得改走旧入口。',\n"}
+      ]
+    },
+    {
+      "path": "platform/config/source-settings.ts",
+      "before": "9bd316ea2d3f8bf3573dd935b21a12585dae13daeff18bf7a1c2ae286dcaac7c",
+      "after": "d6c5a23f9a09445ec02f2d08666aed9307883eb0a8303ad50cc8120010f5ba6d",
+      "edits": [
+        {"start": 475, "end": 475, "text": "  /** 历史备用调用仍复用相同资格校验，不再复制启停、主备和市场范围规则。 */\n"},
+        {"start": 476, "end": 483, "text": "    return this.assertOperationConnectionEnabled(connectionId, scopeId, operationId);\n"}
+      ]
+    },
+    {
+      "path": "plugins/api-sources/operations.ts",
+      "before": "f9b8abc1e3f178a5832c8f107cf56224fff91e84320107f251f8608fca330375",
+      "after": "4719a7dfa9d4ad906421b17f466ecba298bed3bcd0f09c71eec7c1f496c4388e",
+      "edits": [
+        {"start": 1, "end": 2, "text": "import { publicKlineProvider, publicKlineProviders } from './public-kline.js';\n"},
+        {"start": 26, "end": 26, "text": "\n/** 按执行器投影同一目录，供旧请求适配和工具选项复用；不再另写支持动作名单。 */\nexport function sourceOperationsForAction(action: SourceOperationView['run']['action']): SourceOperationView[] {\n  const operations = [...Object.values(providerOperations).flat(),\n    ...publicKlineProviders.flatMap(provider => sourceOperations(provider.id))];\n  return [...new Map(operations.filter(operation => operation.run.action === action)\n    .map(operation => [operation.id, operation])).values()];\n}\n"}
+      ]
+    },
+    {
+      "path": "plugins/api-sources/runtime.ts",
+      "before": "a32b1920f9124699ff589b83a8cc56498954d3bf9739616164daf49e5659bca3",
+      "after": "4960cbb88e562ea30a20123fa76daa9401fcb7322e15202c96ffb15041d22517",
+      "edits": [
+        {"start": 19, "end": 19, "text": "import { sourceOperationsForAction } from './operations.js';\n"},
+        {"start": 170, "end": 171, "text": "        { key: 'operation', label: '公开接口动作', type: 'select', required: true, options: sourceOperationsForAction('source.api.read').map(item => ({ value: item.id, label: item.label })) },\n"},
+        {"start": 178, "end": 179, "text": "        { key: 'operation', label: 'K线类型', type: 'select', required: true, options: sourceOperationsForAction('source.kline.read').map(item => ({ value: item.id, label: item.label })) },\n"}
+      ]
+    },
+    {
+      "path": "plugins/api-sources/source-routing.test.ts",
+      "before": "b2d3d35bb2ba8f25e82e6026801302399a7b8e765f12bbf757d9e4fdf860e59e",
+      "after": "2e6992a4de890c34bec96bf0aae68105d80edc02e5616b86bb24908e26f2eed1",
+      "edits": [
+        {"start": 130, "end": 130, "text": "\ntest('主源与历史备用资格共用校验，停用、显式空备用、市场范围规则保持一致', () => {\n  const { root, settings } = isolatedSettings();\n  const outcome = (check: () => SourceConnection) => {\n    try { return { id: check().id }; } catch (error) { return { code: sourceCode(error) }; }\n  };\n  try {\n    for (const [connection, scope] of [['tdx-primary', 'CN/A_STOCK'], ['ths-scope-backup', 'CN/A_STOCK'],\n      ['eastmoney-disabled', 'CN/A_STOCK'], ['tdx-primary', 'US/STOCK'], ['tdx-primary', 'MISSING']] as const) {\n      assert.deepEqual(outcome(() => settings.assertOperationFallbackEnabled(connection, scope, 'minute_bars')),\n        outcome(() => settings.assertOperationConnectionEnabled(connection, scope, 'minute_bars')));\n    }\n    const current = settings.get();\n    settings.update({ ...current, plugins: current.plugins.map(plugin => plugin.id === 'tdx' ? { ...plugin, enabled: false } : plugin) });\n    assert.equal(outcome(() => settings.assertOperationFallbackEnabled('tdx-primary', 'CN/A_STOCK', 'minute_bars')).code, 'SOURCE_DISABLED');\n  } finally { rmSync(root, { recursive: true, force: true }); }\n});\n"}
+      ]
+    },
+    {
+      "path": "scripts/logic-maintenance-check.mjs",
+      "before": null,
+      "after": "69876dade5c7e6a5a88c3cf4c7986937b7bcfc250f24fdbb6e1ecf69292e6298",
+      "edits": [
+        {"start": 0, "end": 0, "text": "import { spawnSync } from 'node:child_process';\nimport { fileURLToPath, pathToFileURL } from 'node:url';\nimport { resolve } from 'node:path';\n\n/** 已清理模块的未使用声明门禁；其他模块的历史告警明确报告，不静默宣称全仓清零。 */\nexport const CLEANED_LOGIC_FILES = new Set([\n  'apps/server/algorithm-routes.ts', 'apps/server/workspace-routes.ts', 'apps/server/source-settings-routes.ts',\n  'apps/server/logic-cleanup.test.ts',\n  'apps/web/src/App.tsx', 'apps/web/src/algorithm-api.ts',\n  'apps/web/src/ui/ToolsPage.tsx', 'apps/web/src/ui/SettingsPage.tsx', 'apps/web/src/ui/ComputationPanel.tsx',\n  'apps/web/src/ui/useAlgorithmResult.ts', 'apps/web/src/ui/useStoredSelection.ts', 'apps/web/src/ui/logic-cleanup.test.tsx',\n  'modules/financial/algorithm-service.ts', 'modules/financial/conversation-algorithms.ts',\n  'modules/financial/basic-algorithm-tool-contract.ts', 'modules/financial/basic-algorithm-tool-contract.test.ts',\n  'plugins/api-sources/operations.ts',\n]);\nconst unusedCodes = new Set(['6133', '6138', '6192', '6196', '6198', '6199']);\nexport function classifyDiagnostics(output, checked = CLEANED_LOGIC_FILES) {\n  const failures = [], deferred = [];\n  for (const line of output.split(/\\r?\\n/u).filter(line => line.trim())) {\n    const match = /^(.*?)\\(\\d+,\\d+\\): error TS(\\d+): /u.exec(line);\n    const file = match?.[1].replaceAll('\\\\', '/').replace(/^\\.\\//u, '');\n    // 非未使用声明错误、未知输出和本轮清理模块的告警都必须失败。\n    if (!match || !unusedCodes.has(match[2]) || checked.has(file)) failures.push(line);\n    else deferred.push(line);\n  }\n  return { failures, deferred };\n}\nexport function runMaintenanceCheck() {\n  const root = fileURLToPath(new URL('..', import.meta.url));\n  const result = spawnSync(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--pretty', 'false',\n    '--noUnusedLocals', '--noUnusedParameters'], { cwd: root, encoding: 'utf8', timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });\n  if (result.error || result.signal) throw new Error(`LOGIC_CHECK_TOOL_FAILED: 未完成类型检查：${result.error?.message ?? result.signal}`);\n  const { failures, deferred } = classifyDiagnostics(`${result.stdout ?? ''}\\n${result.stderr ?? ''}`);\n  if (failures.length || result.status !== 0 && !deferred.length) {\n    throw new Error(`LOGIC_CHECK_FAILED: 清理范围内存在未使用声明，或类型检查失败。\\n${failures.join('\\n')}`);\n  }\n  console.log(`LOGIC_MAINTENANCE_OK: ${CLEANED_LOGIC_FILES.size} 个已清理文件没有未使用声明。`);\n  console.log(`DEFERRED_UNUSED_DIAGNOSTICS: 其他模块仍有 ${deferred.length} 条历史告警；未作为本轮已清理内容。`);\n}\nif (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {\n  try { runMaintenanceCheck(); }\n  catch (error) { console.error(error.message); process.exitCode = 1; }\n}\n"}
+      ]
+    },
+    {
+      "path": "scripts/logic-maintenance-check.test.mjs",
+      "before": null,
+      "after": "98bf813209839c297c22b9103574ea26ec183d1912a61ead142f91d944b8d436",
+      "edits": [
+        {"start": 0, "end": 0, "text": "import assert from 'node:assert/strict';\nimport { test } from 'node:test';\nimport { classifyDiagnostics } from './logic-maintenance-check.mjs';\n\ntest('本轮范围告警失败，历史范围仅允许明确的未使用声明代码', () => {\n  const checked = new Set(['apps/web/src/App.tsx']);\n  const result = classifyDiagnostics([\n    \"apps\\\\web\\\\src\\\\App.tsx(2,3): error TS6133: 'obsolete' is declared but never read.\",\n    \"modules/old.ts(9,1): error TS6196: 'OldShape' is declared but never used.\",\n    \"modules/old.ts(10,1): error TS2322: Type 'number' is not assignable to type 'string'.\",\n    'unexpected compiler error',\n  ].join('\\n'), checked);\n  assert.equal(result.failures.length, 3);\n  assert.equal(result.deferred.length, 1);\n  assert.match(result.deferred[0], /OldShape/u);\n});\n\ntest('空输出没有历史告警，不借空输出伪造错误分类', () => {\n  assert.deepEqual(classifyDiagnostics('\\n\\r\\n'), { failures: [], deferred: [] });\n});\n"}
+      ]
+    }
+  ]
+}
