@@ -154,6 +154,41 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
     const sina = await adopt(host, 'sina.kline.daily', '1', [sinaId], [badId], 'sina');
     const ths = await adopt(host, 'ths.kline.daily', '1', [thsId], [badId], 'ths');
 
+    // 不同来源的同类数据共用模块接口；只按实际需求执行解析、结构化、核对。
+    // 语义未知仍交给 G5 和 R1 的独立证据关口，不依据“都是日线”自动合并。
+    const runSelectedModules = async (label: string, materialId: string, adapterId: string) => {
+      const input = { routing: { materials: [{ materialId }] },
+        outputs: [{ outputId: 'observations', materialIds: [materialId], intendedAction: 'inspect',
+          tables: [{ materialId, format: 'json', sourceAdapter: { adapterId } }],
+          stages: ['parse', 'structure', 'check'] }] };
+      const pending = await host.call('/processing/plans', { requestId: label + '-select-plan', input }, 202);
+      const planned = await host.settled(pending.jobId);
+      assert.equal(planned.status, 'succeeded', JSON.stringify(planned.error));
+      const planId = host.services.processing!.getByTask(planned.id)!.plan!.planId;
+      for (const kind of ['parse', 'structure', 'check']) {
+        const step = host.services.processing!.get(planId).steps.find(step => step.kind === kind)!;
+        assert.ok(step);
+        const task = await host.call(`/processing/plans/${planId}/steps/${step.stepId}/execute`,
+          { requestId: label + '-module-' + kind }, 202);
+        const settled = await host.settled(task.jobId);
+        assert.equal(settled.status, 'succeeded', JSON.stringify(settled.error));
+      }
+      const result = host.services.processing!.get(planId);
+      assert.deepEqual(result.steps.map(step => step.kind), ['parse', 'structure', 'check']);
+      assert.equal(result.status, 'completed');
+      const output = await host.call(`/processing/plans/${planId}/outputs/observations/artifact`);
+      return { result, output };
+    };
+    const sinaModular = await runSelectedModules('sina-modular', sinaId, 'sina.kline.daily');
+    const eastmoneyModular = await runSelectedModules('eastmoney-modular', eastmoneyId, 'eastmoney.kline.daily');
+    assert.deepEqual(sinaModular.result.steps.map(step => step.kind),
+      eastmoneyModular.result.steps.map(step => step.kind), '来源不同不应复制一套处理模块');
+    assert.equal(sinaModular.output.rows[0].close, '1443.31');
+    assert.equal(eastmoneyModular.output.rows[0].close, '1443.31');
+    assert.equal(sinaModular.output.rows[0].volume, 2521364);
+    assert.equal(eastmoneyModular.output.rows[0].volume, 2521400,
+      '按已验证的单位转换保留不同数值，不根据列名推测等价');
+
     const planInput = (outputId: string, materialId: string, binding: { adapterId: string; version?: string; configDigest?: string },
       fieldMapping?: Record<string, string>, sourceContext?: Record<string, unknown>) => ({
       routing: { materials: [{ materialId }] },
