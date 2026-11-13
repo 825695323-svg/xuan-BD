@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "base": "6b96149e0387c5e4d01e7acc738e5d05f7569e53",
+  "files": [
+    {
+      "path": ".github/workflows/bd-ui-source-unification.yml",
+      "before": "9d380460e49ff63e2bb7df0609c15e9efa57bf66b4da7cc7f85b9a5909629c08",
+      "after": "bf1f9fed959a663ff5d43baa485664eeb236bfc9b01b1eee758fd88691fa982b",
+      "edits": [
+        {
+          "start": 7,
+          "end": 7,
+          "text": "      - 'apps/server/algorithm-routes.ts'\n      - 'apps/server/workspace-routes.ts'\n      - 'apps/server/logic-cleanup.test.ts'\n      - 'apps/server/r1-routes.test.ts'\n      - 'apps/server/polars-fixed.test.ts'\n"
+        },
+        {
+          "start": 14,
+          "end": 14,
+          "text": "      - 'modules/collection/production-module-ports.ts'\n      - 'modules/financial/**'\n      - 'scripts/logic-maintenance-check.mjs'\n      - 'scripts/logic-maintenance-check.test.mjs'\n      - 'docs/逻辑维护与历史兼容边界.md'\n"
+        },
+        {
+          "start": 42,
+          "end": 42,
+          "text": "      - name: Check cleaned modules for unused declarations\n        run: |\n          node --test scripts/logic-maintenance-check.test.mjs\n          node scripts/logic-maintenance-check.mjs\n"
+        },
+        {
+          "start": 47,
+          "end": 48,
+          "text": "            apps/web/src/ui/PageUI.test.tsx \\\n            apps/web/src/ui/logic-cleanup.test.tsx \\\n            apps/server/logic-cleanup.test.ts \\\n            modules/financial/basic-algorithm-tool-contract.test.ts \\\n            modules/financial/unified-algorithm-discovery.test.ts \\\n            modules/collection/production-module-ports.test.ts\n      - name: Verify retired HTTP creation and stepwise AGENTS feedback\n        run: |\n          node --import tsx --test --test-name-pattern='fixed calculation HTTP' apps/server/r1-routes.test.ts\n          node --import tsx --test --test-name-pattern='AGENTS iterative parse feedback' modules/collection/r1-conversation-bridge.test.ts\n"
+        }
+      ]
+    },
+    {
+      "path": "AGENTS.md",
+      "before": "40282e973115d562892007bca971a2f3aacc200457903e4543d826822228d096",
+      "after": "288f95d817175b963c6c68b097f16f720571ef382f58fd7e33e44d78c34a25f4",
+      "edits": [
+        {
+          "start": 12,
+          "end": 12,
+          "text": "9. 逻辑清理遵守 `docs/逻辑维护与历史兼容边界.md`：同一规则只有一个修改位置，兼容入口只转接不另写业务；清理后运行 `node scripts/logic-maintenance-check.mjs`（未使用声明门禁）。保留原任务读取/恢复和历史解析，不将测试替身或跳过项冒充实证。\n"
+        }
+      ]
+    },
+    {
+      "path": "apps/server/algorithm-routes.ts",
+      "before": "4021b5f29607551021a8ecde3df2dec1f4bae7837b07ab2eb66e5f20d187b452",
+      "after": "8222319f28785d30da9fb4715dcb084a814d13f7cd98189bd3915bf13459a68b",
+      "edits": [
+        {
+          "start": 27,
+          "end": 28,
+          "text": "  router.get('/calls', (req, res) => {\n    const methodId = req.query.methodId;\n    // 按持久方法身份查询，允许历史方法；不按当前登记列表否定旧任务。\n    if (Object.keys(req.query).some(key => key !== 'methodId')\n      || methodId !== undefined && (typeof methodId !== 'string' || !/^[a-z][a-z0-9_]{0,159}$/u.test(methodId)))\n      throw new CoreError('INVALID_ALGORITHM_QUERY', '算法任务查询只接受明确的 methodId（方法编号）。', 400);\n    res.json({ items: services.algorithms ? services.algorithms.list(methodId as string | undefined) : [] });\n  });\n"
+        },
+        {
+          "start": 65,
+          "end": 72,
+          "text": ""
+        }
+      ]
+    },
+    {
+      "path": "apps/server/logic-cleanup.test.ts",
+      "before": null,
+      "after": "122220e697c6c20d3194e8696b45014124f66567377331cfe623482250003025",
+      "edits": [
+        {
+          "start": 0,
+          "end": 0,
+          "text": "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { once } from 'node:events';\nimport { mkdtempSync, rmSync } from 'node:fs';\nimport { tmpdir } from 'node:os';\nimport { join } from 'node:path';\nimport express, { type ErrorRequestHandler, type Router } from 'express';\nimport { CoreDatabase } from '../../platform/state/database.js';\nimport { CoreError } from '../../platform/runtime/errors.js';\nimport { SourceSettingsService } from '../../platform/config/source-settings.js';\nimport { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';\nimport { createAlgorithmRouter } from './algorithm-routes.js';\nimport { createSourceSettingsRouter } from './source-settings-routes.js';\nimport { sourceOperations, sourceOperationsForAction } from '../../plugins/api-sources/operations.js';\nimport { createSourceRuntime } from '../../plugins/api-sources/runtime.js';\nimport type { ApplicationServices } from './services.js';\n\nasync function serve(router: Router) {\n  const app = express(); app.use(express.json()); app.use(router);\n  const errors: ErrorRequestHandler = (error, _req, res, _next) => res.status(error instanceof CoreError ? error.status : 500)\n    .json({ code: error.code, error: error.message });\n  app.use(errors);\n  const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');\n  const address = server.address(); assert.ok(address && typeof address === 'object');\n  return { async call(path: string, body?: unknown) {\n    const response = await fetch(`http://127.0.0.1:${address.port}${path}`, body === undefined ? undefined : {\n      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),\n    });\n    return { status: response.status, value: await response.json() };\n  }, async close() { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); } };\n}\n\ntest('算法任务按方法在 SQL 限页前筛选，旧方法身份仍可查询', async () => {\n  const database = new CoreDatabase(':memory:');\n  // Test the production list SQL with an isolated identity index; no computation or publication is involved.\n  database.connection.exec('CREATE TABLE algorithm_calls(task_id TEXT PRIMARY KEY, method_id TEXT, created_at INTEGER)');\n  database.connection.prepare('INSERT INTO algorithm_calls VALUES(?,?,?)').run('older-ma', 'ma', 0);\n  database.connection.prepare('INSERT INTO algorithm_calls VALUES(?,?,?)').run('historic-method', 'retired_method', -1);\n  for (let i = 0; i < 30; i++) database.connection.prepare('INSERT INTO algorithm_calls VALUES(?,?,?)').run(`macd-${i}`, 'macd', i + 1);\n  const service = Object.create(LocalAlgorithmService.prototype) as LocalAlgorithmService;\n  Object.defineProperty(service, 'options', { value: { database } });\n  service.view = (taskId: string) => ({ taskId, methodId: database.connection.prepare('SELECT method_id FROM algorithm_calls WHERE task_id=?').get(taskId)!.method_id } as never);\n  const host = await serve(createAlgorithmRouter({ algorithms: service }));\n  try {\n    assert.equal(service.list().length, 20);\n    assert.deepEqual(service.list('ma').map(task => task.taskId), ['older-ma']);\n    assert.deepEqual(service.list('missing'), []);\n    assert.equal((await host.call('/calls?methodId=ma')).value.items[0].taskId, 'older-ma');\n    assert.equal((await host.call('/calls?methodId=retired_method')).value.items[0].taskId, 'historic-method');\n    for (const query of ['methodId=', 'methodId=ma&methodId=macd', 'other=ma', 'methodId=ma%27%20OR%201%3D1']) {\n      const invalid = await host.call('/calls?' + query);\n      assert.equal(invalid.status, 400); assert.equal(invalid.value.code, 'INVALID_ALGORITHM_QUERY');\n    }\n  } finally { await host.close(); database.close(); }\n});\n\ntest('新旧来源请求仅格式不同，执行器、参数与工具选项均来自唯一目录', async () => {\n  const directory = mkdtempSync(join(tmpdir(), 'logic-source-routing-')), database = new CoreDatabase(':memory:');\n  const settings = new SourceSettingsService(join(directory, 'sources.json'), database);\n  const current = settings.get();\n  settings.update({ ...current, connections: current.connections.map(item => item.pluginId === 'tdx' ? { ...item, enabled: true } : item) });\n  const routed: Array<{ action: string; args: Record<string, unknown> }> = [];\n  const accepted: Array<{ title: string; requestId: string }> = [];\n  const services = { core: { healthy: true }, sourceSettings: settings,\n    tasks: { create: (input: { title: string; requestId: string }) => {\n      accepted.push(input); return { ...input, status: 'paused', id: 'isolated-receipt' }; } },\n    direct: { registry: { route: (input: { action: string; args: Record<string, unknown> }) => { routed.push(input); return input; },\n      captureVersions: () => ({}) } } } as unknown as ApplicationServices;\n  const host = await serve(createSourceSettingsRouter(services));\n  try {\n    const base = { requestId: 'explicit-read-only-test', scopeId: 'CN/A_STOCK', parameters: { symbol: '600519.SH' } };\n    for (const [pluginId, operationId, legacy] of [\n      ['ths', 'index_constituents', { apiOperation: 'index_constituents' }],\n      ['ths', 'daily_bars', { apiOperation: 'daily_bars' }],\n      ['eastmoney', 'minute_bars', { klineOperation: 'minute_bars' }],\n      ['tencent', 'daily_bars', { klineOperation: 'daily_bars' }],\n      ['tdx', 'minute_bars', { sourceId: 'tdx' }],\n    ] as const) {\n      const connectionId = settings.get().connections.find(item => item.pluginId === pluginId)!.id;\n      const response = await host.call('/runs', { ...base, requestId: `${pluginId}-${operationId}-canonical`, connectionId, operationId });\n      assert.equal(response.status, 202);\n      const canonical = routed.at(-1)!;\n      assert.equal(canonical.action, sourceOperations(pluginId).find(item => item.id === operationId)!.run.action);\n      assert.equal((await host.call('/runs', { ...base, requestId: `${pluginId}-${operationId}-legacy`, ...legacy })).status, 202);\n      const expectedTitle = 'apiOperation' in legacy ? '读取接口源 · 已配置组合'\n        : 'klineOperation' in legacy ? '读取公开K线 · 已配置组合' : '下载来源原件 · tdx';\n      assert.equal(accepted.at(-1)!.title, expectedTitle, 'historical request title is part of the persisted idempotency digest');\n      assert.deepEqual(routed.at(-1), canonical);\n    }\n    const before = routed.length;\n    for (const invalid of [{ apiOperation: 'daily_bars', klineOperation: 'daily_bars' },\n      { apiOperation: 'daily_bars', sourceId: 'tdx' }, { klineOperation: 'index_constituents' },\n      { connectionId: 'tdx-main', operationId: 'daily_bars' }]) {\n      const response = await host.call('/runs', { ...base, ...invalid });\n      assert.equal(response.status, 400); assert.equal(response.value.code, 'SOURCE_REQUEST_INVALID');\n    }\n    assert.equal(routed.length, before, 'ambiguous requests cannot reach dispatch');\n    const runtime = createSourceRuntime({ settings, files: {} as never, artifactRoot: directory });\n    for (const action of ['source.api.read', 'source.kline.read'] as const) {\n      const field = runtime.registrations.find(item => item.action === action)!.fields.find(item => item.key === 'operation')!;\n      assert.deepEqual(field.options?.map(item => item.value), sourceOperationsForAction(action).map(item => item.id));\n    }\n  } finally { await host.close(); database.close(); rmSync(directory, { recursive: true, force: true }); }\n});\n"
+        }
+      ]
+    },
+    {
+      "path": "apps/server/polars-fixed.test.ts",
+      "before": "1df01f705968171f7e2812282eb664ef6abb96877de04e14ec3266e5c6f33ad6",
+      "after": "b1d6ea026ac0fd71bfd35dfa30176e4b2a89eaf9ee63f04fbca3566407670e4e",
+      "edits": [
+        {
+          "start": 56,
+          "end": 58,
+          "text": "  // Historical recovery fixture: construct the old task through the isolated trusted service,\n  // never reopen the retired public HTTP creation route for new callers.\n  const accepted = await host.services.fixedCalculations!.create(input);\n  const task = await host.settled(accepted.task.id);\n"
+        },
+        {
+          "start": 213,
+          "end": 214,
+          "text": "    assert.equal((await host.call('/processing/polars/tasks', selectedDaily, 410)).code, 'ALGORITHM_AGENT_ENTRY_REQUIRED');\n    assert.equal((await host.services.fixedCalculations!.create(selectedDaily)).task.id, normalDaily.id);\n"
+        },
+        {
+          "start": 307,
+          "end": 309,
+          "text": "      autoRequestIds: ['polars-daily-1', 'polars-daily-11'], valueColumn: '收盘价（元）' }, 410);\n    assert.equal(repeated.code, 'ALGORITHM_AGENT_ENTRY_REQUIRED');\n    assert.equal(daily.task.id, proof.normalDaily.id, 'Historical lookup keeps the original task and never refreezes inputs.');\n"
+        }
+      ]
+    },
+    {
+      "path": "apps/server/r1-routes.test.ts",
+      "before": "f4b7f92656f6e2855672451140d941e8ac5775001d1a887f1eebf5fb9dfd04cf",
+      "after": "e15f4d808e3513e91db90d5802293429ac2f6c0271619a497d1639e0502120c3",
+      "edits": [
+        {
+          "start": 1606,
+          "end": 1607,
+          "text": "test('fixed calculation HTTP is read-only for new work and retains historical Polars lookup/recovery', async () => {\n"
+        },
+        {
+          "start": 1618,
+          "end": 1620,
+          "text": "    // New calculations belong only to BD AGENTS. Retired creation cannot allocate tasks,\n    // even with a formerly valid payload; original task lookup and recovery stay available.\n"
+        },
+        {
+          "start": 1622,
+          "end": 1624,
+          "text": "    for (const input of [{}, { requestId: 'retired-create', method: 'macro_yoy', calculation: {} }]) {\n      const rejected = await h.call('/processing/polars/tasks', input, 410);\n      assert.equal(rejected.code, 'ALGORITHM_AGENT_ENTRY_REQUIRED');\n    }\n"
+        }
+      ]
+    },
+    {
+      "path": "apps/server/source-settings-routes.ts",
+      "before": "d4ff237aa44c50c4c5abe895e58d40be7bab406b5812c67aa50fd058ff026ef1",
+      "after": "8f4ae7f65f3fa0ca2b438d177fa2e8b6a14fb144054a8aaf29dd2d9d4255d479",
+      "edits": [
+        {
+          "start": 9,
+          "end": 9,
+          "text": "import { sourceOperations, sourceOperationsForAction } from '../../plugins/api-sources/operations.js';\nimport type { SourceOperationView } from '../../contracts/source-settings.js';\n"
+        },
+        {
+          "start": 79,
+          "end": 79,
+          "text": "      let operation: SourceOperationView | undefined, legacyTitle: string | undefined;\n"
+        },
+        {
+          "start": 88,
+          "end": 90,
+          "text": "        operation = sourceOperations(connection.pluginId).find(item => item.id === body.operationId);\n"
+        },
+        {
+          "start": 91,
+          "end": 91,
+          "text": "      } else if (body.klineOperation !== undefined || body.apiOperation !== undefined) {\n        // 兼容入口只转换字段，不继续维护另一份动作支持与分派规则。\n        const field = body.klineOperation !== undefined ? 'klineOperation' : 'apiOperation';\n        if (Object.keys(body).some(key => !['requestId', 'scopeId', 'parameters', field].includes(key))\n          || typeof body[field] !== 'string') invalid();\n        operation = sourceOperationsForAction(field === 'klineOperation' ? 'source.kline.read' : 'source.api.read')\n          .find(item => item.id === body[field]);\n        if (!operation) invalid();\n        // 标题参与 TaskService 的原请求摘要；旧请求重放必须保留原标题，不制造幂等冲突。\n        legacyTitle = field === 'klineOperation' ? '读取公开K线 · 已配置组合' : '读取接口源 · 已配置组合';\n      }\n      if (operation) {\n"
+        },
+        {
+          "start": 94,
+          "end": 101,
+          "text": "        title = legacyTitle ?? `读取接口类型 · ${operation.label} · 已配置组合`;\n"
+        },
+        {
+          "start": 102,
+          "end": 103,
+          "text": "        // 既有原件下载有不同契约，不把官方网页与采集端点冒充为行情操作。\n        if (Object.keys(body).some(key => !['sourceId', 'requestId', 'scopeId', 'parameters'].includes(key))\n          || !['tdx', 'eastmoney', 'official_web'].includes(String(body.sourceId))) invalid();\n"
+        }
+      ]
+    }
+  ]
+}
