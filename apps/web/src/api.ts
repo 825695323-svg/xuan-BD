@@ -113,31 +113,49 @@ export function readStateEnvelope(data: string): StateEnvelope {
   if (!isRecord(value) || !isConversationState(value.state)) throw new RequestError('会话数据暂时无法同步。');
   return value as unknown as StateEnvelope;
 }
-export async function request(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' = 'GET', body?: unknown): Promise<unknown> {
+/** 一处管理私有资料代次、失效撤销、请求头、超时与错误；调用方只提供业务差异。 */
+export interface RequestOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  keepalive?: boolean;
+  requireLocalData?: boolean;
+  missingContextMessage?: string;
+  networkErrorMessage?: string;
+  unreadableMessage?: string;
+}
+export async function request(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' = 'GET', body?: unknown,
+  options: RequestOptions = {}): Promise<unknown> {
   let response: Response;
   const privateRequest = !path.startsWith('/api/bd/local-data') && !path.startsWith('/api/health');
   // 请求发出前固定本页已核实的 dataId 代次与撤销 epoch；迟到回执不能进入新上下文。
   const generation = privateRequest ? localDataGeneration() : null;
   const revision = privateRequest ? localDataRevision() : 0;
+  if (options.requireLocalData && generation === null) throw new RequestError(
+    options.missingContextMessage ?? '本地资料资格尚未确认，请重新核对后再操作。', 409, 'LOCAL_DATA_CONTEXT_MISSING');
   const sameContext = () => localDataRevision() === revision && localDataGeneration() === generation;
   const stale = () => new RequestError('本次请求的回执属于旧本地资料代次，未用于当前界面。', 409, 'STALE_LOCAL_DATA_GENERATION');
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...options.headers };
   const binary = body instanceof Blob;
-  if (method !== 'GET') { headers['Content-Type'] = binary ? 'application/octet-stream' : 'application/json'; headers['x-mashiro-client'] = 'web'; }
+  if (method !== 'GET') {
+    headers['Content-Type'] = headers['Content-Type'] ?? (binary ? 'application/octet-stream' : 'application/json');
+    headers['x-mashiro-client'] = 'web';
+  }
   if (generation !== null) headers['x-local-data-generation'] = String(generation);
+  const timeoutSignal = AbortSignal.timeout(options.timeoutMs ?? (method === 'GET' ? 8_000 : 30_000));
   try {
     response = await fetch(path, {
-      method, credentials: 'same-origin', cache: 'no-store', keepalive: method === 'PUT',
-      signal: AbortSignal.timeout(method === 'GET' ? 8_000 : 30_000),
+      method, credentials: 'same-origin', cache: 'no-store', keepalive: options.keepalive ?? method === 'PUT',
+      signal: options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal,
       headers,
       ...(method === 'GET' ? {} : { body: binary ? body : JSON.stringify(body) }),
     });
-  } catch { throw new RequestError('未收到本机服务的确认，请检查连接状态。'); }
+  } catch { throw new RequestError(options.networkErrorMessage ?? '未收到本机服务的确认，请检查连接状态。'); }
   let value: unknown;
   try { value = await response.json(); }
   catch {
     if (privateRequest && !sameContext()) throw stale();
-    throw new RequestError('本机服务返回了无法读取的响应。', response.status);
+    throw new RequestError(options.unreadableMessage ?? '本机服务返回了无法读取的响应。', response.status);
   }
   if (privateRequest && !sameContext()) throw stale();
   if (!response.ok) {

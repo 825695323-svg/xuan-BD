@@ -101,7 +101,7 @@ export function createUiRouter(services: ApplicationServices) {
     const selectedRuntime = companion?.r1Runtime ?? services.r1Runtime;
     const selectedDatabase = (companion?.r1Workspace ?? services.r1Workspace)?.capabilities().connection;
     const settings: UiSettingsView = {
-      model: { id: health.model, displayName: health.model === 'deepseek-flash' ? 'DeepSeek-V41-Flash' : health.model,
+      model: { id: health.model, displayName: health.displayName ?? health.model,
         provider: health.provider, configured: health.configured, availability: health.configured ? 'not_probed' : 'not_configured',
         endpoint: publicEndpoint(services.options.modelConnection?.endpoint), protocol: services.options.modelConnection?.protocol ?? null,
         supportedThinkingLevels: [...(thinking?.supportedLevels ?? [])], configurationVersion: services.options.modelConfigurationVersion ?? null,

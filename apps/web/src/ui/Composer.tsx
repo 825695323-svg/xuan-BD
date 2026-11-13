@@ -75,7 +75,7 @@ function ModelSelector({ chat }: { chat: Chat }) {
   const panel = useRef<HTMLDivElement>(null);
   const canvas = useCanvasContainer();
   const configured = ready && (chat.health?.configured || chat.health?.backend === 'demo');
-  const modelName = (id: string) => id === 'deepseek-flash' ? 'DeepSeek-V41-Flash' : id;
+  const modelName = (id: string) => chat.health?.model === id ? (chat.health.displayName ?? id) : id;
   const name = configured && preferences.modelId ? modelName(preferences.modelId) : words('未配置', 'Not configured');
   const configuredModelId = configured ? chat.health?.model ?? null : null;
   const supported = chat.conversation?.thinking?.supportedLevels ?? [];

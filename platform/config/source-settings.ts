@@ -7,6 +7,7 @@ import { CAPTURE_SITE_RULES, captureSiteRule, normalizeCaptureArgs } from '../..
 import type { CaptureSessionService } from '../../plugins/capture-sources/session.js';
 import { thsSource } from '../../plugins/api-sources/providers/ths/api.js';
 import { publicKlineProvider, publicKlineProviders, publicKlineProviderIds } from '../../plugins/api-sources/public-kline.js';
+import { sourceOperations } from '../../plugins/api-sources/operations.js';
 import { validWerssBaseUrl } from '../../plugins/api-sources/providers/werss/cache.js';
 import { CoreError } from '../runtime/errors.js';
 import { directFileVersion } from '../plugins/direct-versions.js';
@@ -19,7 +20,9 @@ const scopes = [
   { id: 'HK/STOCK', country: 'HK', market: 'STOCK', label: '中国香港 · 股票' },
   { id: 'US/STOCK', country: 'US', market: 'STOCK', label: '美国 · 股票' },
 ];
-const operationIds: SourceOperationId[] = ['minute_bars', 'daily_bars', 'index_constituents'];
+const operationIds: SourceOperationId[] = [...new Set(
+  ['tdx', 'ths', ...publicKlineProviderIds].flatMap(pluginId => sourceOperations(pluginId).map(operation => operation.id)),
+)];
 const providerIds = ['tdx', 'ths', ...publicKlineProviderIds, 'werss'] as const;
 const providerIdSet = new Set<string>(providerIds);
 /** 已由本次明确选择的脚本字节核对；更换脚本版本须受控更新实现。 */
@@ -344,20 +347,20 @@ export class SourceSettingsService {
     return { ...value, scopes, apiPlugins: [{ id: 'tdx', title: '通达信官方数据', shortLabel: '通达信', upstream: '通达信数据服务或TQ客户端', version: 'tdx-official/1', applicationUrl: 'https://help.tdx.com.cn/quant/docs/markdown/mindoc-1hjbgqpdhv114.html',
       defaultBaseUrl: 'tdxaidata://data-service', connectionModes: [{ id: 'data_service', label: '官方SDK后台数据服务', baseUrl: 'tdxaidata://data-service' }, { id: 'client_http', label: '本机TQ客户端HTTP接口',
         ...clientEndpoint(value) }],
-      operations: [{ id: 'minute_bars', label: '1分钟K线', dataCapability: 'history', assetScope: 'equity' }],
+      operations: sourceOperations('tdx'),
       capabilities: [
         { kind: 'minute_bars', supported: true, reason: '官方行情能力；后台数据服务Key类型、SDK依赖或TQ客户端须在本机核实。' },
         { kind: 'announcement', supported: false, reason: '本版未装配通达信公告原文动作。' },
         { kind: 'index_change', supported: false, reason: '本版未装配通达信指数变更公告动作。' },
       ] }, { id: 'ths', title: thsSource.displayName, shortLabel: '同花顺', upstream: 'fuyao.aicubes.cn', version: 'ths-read/1', applicationUrl: thsSource.applicationUrl, defaultBaseUrl: thsSource.apiBaseUrl,
-      operations: [{ id: 'daily_bars', label: '日线行情', dataCapability: 'history', assetScope: 'equity' }],
+      operations: sourceOperations('ths'),
       capabilities: [
         { kind: 'minute_bars', supported: false, reason: '服务公开文档未开放端外分钟K线。' },
         { kind: 'announcement', supported: false, reason: '本版没有已核实可公开取公告原文的端点。' },
         { kind: 'index_change', supported: false, reason: '当前成分表不能替代历史指数变更公告。' },
         { kind: 'index_constituents', supported: true, reason: '已装配公开GET成分表端点，仍须实际账号授权。' },
       ] }, ...publicKlineProviders.map(provider => ({ id: provider.id, title: provider.title, shortLabel: provider.shortLabel, upstream: provider.upstream, version: 'public-kline/1',
-        applicationUrl: provider.applicationUrl, defaultBaseUrl: provider.baseUrl, operations: provider.operations, capabilities: [] })),
+        applicationUrl: provider.applicationUrl, defaultBaseUrl: provider.baseUrl, operations: sourceOperations(provider.id), capabilities: [] })),
       { id: 'werss', title: 'WeRSS 本地缓存', shortLabel: 'WeRSS', upstream: '本机已配置的 WeRSS 服务', version: 'werss-cache-read/1',
         applicationUrl: null, defaultBaseUrl: '', operations: [], capabilities: [] }],
       capturePlugins: CAPTURE_SOURCE_IDS.map(sourceId => {
@@ -372,7 +375,7 @@ export class SourceSettingsService {
         const row = this.database.connection.prepare('SELECT requests,last_requested_at FROM source_usage WHERE account_id=?').get(accountId);
         return { accountId, connectionIds: value.connections.filter(connection => this.accountId(connection) === accountId).map(connection => connection.id), measurement: 'local_attempts' as const, attempts: Number(row?.requests ?? 0), lastAttemptedAt: row ? String(row.last_requested_at) : null };
       }),
-      supportedApiOperations: [{ id: 'index_constituents', label: '同花顺当前指数成分' }, { id: 'daily_bars', label: '同花顺日线行情' }],
+      supportedApiOperations: sourceOperations('ths').map(operation => ({ id: operation.id, label: operation.label })),
       concurrency: { scope: 'shared_account', activeLimit: 1, numericOfficialLimit: null,
         reason: '每个共享账号串行1为本机保守策略；官方通用并发或每秒数未知，未进行并发上限测试。限流不立即重试。',
         references: [{ title: '同花顺官方调用频率与限流', url: 'https://fuyao.aicubes.cn/docs/api-reference/overview/' },

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AlgorithmEntryFocus } from './algorithm-catalog';
 import type { AlgorithmCatalogView, AlgorithmTaskView } from '../../../../modules/financial/algorithm-types';
 import { loadAlgorithmCatalog, listAlgorithmCalls, readAlgorithmCall } from '../algorithm-api';
@@ -12,11 +12,12 @@ export function ComputationPanel({ focus = null }: {
   const [tasks, setTasks] = useState<AlgorithmTaskView[]>([]);
   const [selected, setSelected] = useState<AlgorithmTaskView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const selectedRequest = useRef(0);
   useEffect(() => { let active = true;
     void Promise.all([loadAlgorithmCatalog(), listAlgorithmCalls()])
       .then(([methods, calls]) => { if (active) { setCatalog(methods); setTasks(calls); } })
       .catch(reason => { if (active) setError(errorDetail(reason)); });
-    return () => { active = false; };
+    return () => { active = false; selectedRequest.current += 1; };
   }, []);
   return <section id="fixed-calculation" className="r1-stage" aria-label="基础算法只读展示">
     <h3>基础算法 / Basic Algorithms</h3>
@@ -33,7 +34,13 @@ export function ComputationPanel({ focus = null }: {
     }}>刷新结果</button></div>
     <p className="r1-help">本地算法原任务（只读）。任务结果中的 publication=not_requested 仅表示计算阶段，WFD 是否正式发布须以单独 R1 回执为准。</p>
     {tasks.map(item => <button key={item.taskId} type="button" className="database-row database-row--button"
-      onClick={() => { void readAlgorithmCall(item.taskId).then(setSelected).catch(reason => setError(errorDetail(reason))); }}>
+      onClick={() => {
+        const token = ++selectedRequest.current;
+        setSelected(null); setError(null);
+        void readAlgorithmCall(item.taskId)
+          .then(detail => { if (token === selectedRequest.current) setSelected(detail); })
+          .catch(reason => { if (token === selectedRequest.current) setError(errorDetail(reason)); });
+      }}>
       <span>{item.methodId} · <code>{item.taskId}</code></span><span>{item.status}</span>
     </button>)}
     {selected && <details open><summary>原算法结果和输入：{selected.taskId}</summary>

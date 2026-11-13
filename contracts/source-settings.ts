@@ -14,6 +14,11 @@ export interface SourceConnection {
 export interface SourcePolicy { scopeId: string; enabled: boolean; mode: 'inherit' | 'override'; primary: string | null; backups: string[] }
 export type SourceOperationId = 'minute_bars' | 'daily_bars' | 'index_constituents';
 export interface SourceOperationPolicy { scopeId: string; operationId: SourceOperationId; primary: string | null; backups: string[] }
+/** 来源操作同时描述可见能力与已登记的真实执行器，禁止页面自行分派。 */
+export interface SourceOperationView {
+  id: SourceOperationId; label: string; dataCapability: SourceDataCapability; assetScope: SourceAssetScope;
+  run: { action: 'source.kline.read' | 'source.api.read' } | { action: 'source.fetch'; sourceId: 'tdx' };
+}
 export interface CaptureSourceSetting {
   sourceId: CaptureSourceId; enabled: boolean; operation: string;
   parameters: Record<string, string | number>; watchTargets: string[];
@@ -39,7 +44,7 @@ export interface SourceSettingsView extends SourceSettingsDocument {
   scopes: SourceScope[];
   apiPlugins: Array<{ id: string; title: string; shortLabel: string; upstream: string; version: string; applicationUrl: string | null;
     defaultBaseUrl: string; connectionModes?: Array<{ id: 'data_service' | 'client_http'; label: string; baseUrl?: string }>;
-    operations: Array<{ id: SourceOperationId; label: string; dataCapability: SourceDataCapability; assetScope: SourceAssetScope }>;
+    operations: SourceOperationView[];
     capabilities: Array<{ kind: SourceDataKind | 'index_constituents'; supported: boolean; reason: string }> }>;
   capturePlugins: Array<{ sourceId: CaptureSourceId; label: string; available: boolean; reason: string | null;
     operations: Array<{ operation: string; parameters: Record<string, { kind: string; required?: boolean; min?: number; max?: number; values?: readonly string[] }> }>;

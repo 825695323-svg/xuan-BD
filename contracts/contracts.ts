@@ -251,5 +251,7 @@ export interface HealthResponse {
   configured: boolean;
   model: string | null;
   provider: string | null;
+  /** 受信模型配置中的显示名，旧宿主缺少时界面回落模型编号。 */
+  displayName?: string | null;
   notice: string;
 }

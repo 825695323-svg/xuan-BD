@@ -44,13 +44,13 @@ export interface ObjectSelection {
 export function useObjectSelection(key: string, ids: readonly string[] | null, ready: boolean): ObjectSelection {
   const [stored, setStored] = useStoredSelection(key);
   const valid = ready && ids !== null && stored !== null && ids.includes(stored);
-  const pending = stored !== null && !ready;
+  const pending = stored !== null && (!ready || ids === null);
   // 列表每次渲染都是新数组；用内容签名做依赖，避免无谓地重跑清理。
   const signature = ids === null ? null : ids.join('\u0000');
   useEffect(() => {
     // 只在列表真正读回后清理；读取失败或进行中一律保留原记录。
-    if (signature === null || stored === null) return;
+    if (!ready || signature === null || stored === null) return;
     if (!signature.split('\u0000').includes(stored)) setStored(null);
-  }, [signature, stored, setStored]);
+  }, [ready, signature, stored, setStored]);
   return { id: valid ? stored : null, pending, select: setStored };
 }

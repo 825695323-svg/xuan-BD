@@ -1,4 +1,6 @@
 import type { R1ConnectionIdentity, R1SourceDeclaration } from '../../contracts/r1-contracts.js';
+import { R1_BATCH_MAX_FILES, R1_BATCH_MAX_BYTES, MATERIAL_UPLOAD_LIMIT } from '../../contracts/upload-limits.js';
+export { R1_BATCH_MAX_FILES, R1_BATCH_MAX_BYTES } from '../../contracts/upload-limits.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { TaskError, type TaskService } from '../../platform/jobs/tasks.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
@@ -15,8 +17,6 @@ import { readSourceObservationMASelection, summarizeCalculatedMAProof,
 import { readAdapterBindingRef, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
 
-export const R1_BATCH_MAX_FILES = 100;
-export const R1_BATCH_MAX_BYTES = 128 * 1024 * 1024;
 export interface R1BatchFile { name: string; relativePath: string; sha256: string; byteLength: number }
 export interface R1BatchStartInput {
   batchId: string; source: R1SourceDeclaration; datasetId: string; files: R1BatchFile[];
@@ -481,7 +481,7 @@ function readStart(value: unknown): R1BatchStartInput {
       || ['.', '..'].includes(file.name) || typeof file.relativePath !== 'string' || !file.relativePath || file.relativePath.length > 2048
       || /[\\:\u0000-\u001f\u007f]/u.test(file.relativePath) || file.relativePath.split('/').some(part => !part || part === '.' || part === '..')
       || file.relativePath.split('/').at(-1) !== file.name || typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(file.sha256)
-      || !Number.isSafeInteger(file.byteLength) || Number(file.byteLength) < 1 || Number(file.byteLength) > 25 * 1024 * 1024) fail('R1_BATCH_FILE', '每项需要实际文件名、来源系列内相对位置、摘要和 25 MiB 内非空字节长度。');
+      || !Number.isSafeInteger(file.byteLength) || Number(file.byteLength) < 1 || Number(file.byteLength) > MATERIAL_UPLOAD_LIMIT) fail('R1_BATCH_FILE', `每项需要实际文件名、来源系列内相对位置、摘要和 ${MATERIAL_UPLOAD_LIMIT / 1024 / 1024} MiB 内非空字节长度。`);
     fileUrl(String(source.requested_url), file.relativePath);
     return file as unknown as R1BatchFile;
   });
@@ -491,7 +491,7 @@ function readStart(value: unknown): R1BatchStartInput {
     if (previous && previous !== file.sha256) fail('R1_BATCH_SOURCE_PATH_CONFLICT', '不同字节不能共用本批同一来源位置。请保留实际子目录，或按不同来源系列分批选择。');
     positions.set(file.relativePath, file.sha256);
   }
-  if (files.reduce((total, file) => total + file.byteLength, 0) > R1_BATCH_MAX_BYTES) fail('R1_BATCH_BYTE_BUDGET', '本批清单总量不能超过 128 MiB。');
+  if (files.reduce((total, file) => total + file.byteLength, 0) > R1_BATCH_MAX_BYTES) fail('R1_BATCH_BYTE_BUDGET', `本批清单总量不能超过 ${R1_BATCH_MAX_BYTES / 1024 / 1024} MiB。`);
   const algorithmRouting = body.algorithmRouting === undefined ? undefined : readR1BatchAlgorithmRouting(body.algorithmRouting);
   if (algorithmRouting && body.calculation !== undefined) fail('R1_ALGORITHM_ROUTING', '按类自动路由与旧明确均线参数不能同时提交。');
   if (algorithmRouting && (algorithmRouting.files.length !== new Set(files.map(file => file.sha256)).size

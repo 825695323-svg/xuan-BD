@@ -12,6 +12,7 @@ import type { AuthorizationReceipt } from '../../platform/security/permissions.j
 import { CoreDatabase } from '../../platform/state/database.js';
 import { publicKlineProviders } from './public-kline.js';
 import { createSourceRuntime } from './runtime.js';
+import { sourceOperations } from './operations.js';
 import { thsSource } from './providers/ths/api.js';
 
 const providerBase = (id: 'eastmoney' | 'sina' | 'tencent'): string => publicKlineProviders.find(item => item.id === id)!.baseUrl;
@@ -84,5 +85,46 @@ test('分钟K线执行只遍历明确选中的主备，不追加未入选连接'
       (error: unknown) => sourceCode(error) === 'SOURCE_NO_ELIGIBLE_CONNECTION',
     );
     assert.deepEqual(settings.checks().map(check => check.id), ['tdx-primary']);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('来源操作目录同时确定可见功能与执行器', () => {
+  assert.equal(sourceOperations('ths').find(item => item.id === 'index_constituents')?.run.action, 'source.api.read');
+  assert.equal(sourceOperations('tdx').find(item => item.id === 'minute_bars')?.run.action, 'source.fetch');
+  assert.deepEqual(sourceOperations('tdx').find(item => item.id === 'minute_bars')?.run,
+    { action: 'source.fetch', sourceId: 'tdx' });
+  for (const id of ['eastmoney', 'sina', 'tencent']) {
+    for (const operation of sourceOperations(id)) assert.equal(operation.run.action, 'source.kline.read');
+  }
+});
+
+test('公开行情检查只核对登记状态，不会使用同花顺凭据或发出真实请求', async () => {
+  const { root, settings } = isolatedSettings();
+  try {
+    const value = structuredClone(settings.get());
+    value.connections = value.connections.map(connection => ['eastmoney', 'sina', 'tencent'].includes(connection.pluginId)
+      ? { ...connection, enabled: true } : connection);
+    settings.update(value);
+    const runtime = createSourceRuntime({ settings, files: {} as FileReferenceService, artifactRoot: join(root, 'artifacts') });
+    for (const id of ['eastmoney-disabled', 'sina-disabled', 'tencent-disabled']) {
+      const check = await runtime.check(id);
+      assert.equal(check.status, 'partial');
+      assert.equal(check.reachable, null);
+      assert.equal(check.authorized, null);
+      assert.equal(check.capabilityAvailable, null);
+      assert.match(check.reason, /尚未发起真实读取/u);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('来源设置视图操作清单与唯一目录一致，不遗漏同花顺指数成分', async () => {
+  const { root, settings } = isolatedSettings();
+  try {
+    const view = await settings.view();
+    for (const plugin of view.apiPlugins) {
+      assert.deepEqual(plugin.operations, sourceOperations(plugin.id), `来源 ${plugin.id} 的页面目录必须与运行目录相同`);
+    }
+    assert.ok(view.apiPlugins.find(plugin => plugin.id === 'ths')?.operations.some(operation => operation.id === 'index_constituents'));
+    assert.deepEqual(view.supportedApiOperations.map(operation => operation.id), sourceOperations('ths').map(operation => operation.id));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

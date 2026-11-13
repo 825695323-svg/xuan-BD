@@ -2,6 +2,7 @@ import { R1DuplicateResult } from './R1DuplicateResult';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { R1SourceDeclaration } from '../../../../contracts/r1-contracts';
 import type { R1BatchFile } from '../../../../modules/collection/r1-auto-batch';
+import { R1_BATCH_MAX_FILES, R1_BATCH_MAX_BYTES, MATERIAL_UPLOAD_LIMIT } from '../../../../contracts/upload-limits';
 import { r1SourceGaps, r1SourceReadyForHandoff, type R1SourceAuthorization } from '../../../../modules/collection/r1-source';
 import { RequestError } from '../api';
 import type { AlgorithmEntryFocus } from './algorithm-catalog';
@@ -99,11 +100,11 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
     const epoch = ++selectionEpoch.current; setHashing(true); setSelected([]); setDirectoryName(''); setConsent(false); setError(null); attempted.current.clear();
     try {
       if (!files.length) throw new Error('请明确选择本批原文件。');
-      if (files.length > 100) throw new Error(`已选 ${files.length} 件，本批上限 100 件。请缩小选择范围后重新选择，未读取文件字节。`);
+      if (files.length > R1_BATCH_MAX_FILES) throw new Error(`已选 ${files.length} 件，本批上限 ${R1_BATCH_MAX_FILES} 件。请缩小选择范围后重新选择，未读取文件字节。`);
       const totalBytes = files.reduce((total, file) => total + file.size, 0);
-      if (totalBytes > 128 * 1024 * 1024) throw new Error(`已选文件共 ${(totalBytes / 1024 / 1024).toFixed(2)} MiB，本批上限 128 MiB。请移出超限文件或分批重新选择，未读取文件字节。`);
-      const invalid = files.find(file => !file.size || file.size > 25 * 1024 * 1024);
-      if (invalid) throw new Error(`${invalid.name}：${invalid.size ? `单件 ${(invalid.size / 1024 / 1024).toFixed(2)} MiB，保管上限为 25 MiB` : '原件为空'}。请移出该件后重新选择，未读取文件字节。`);
+      if (totalBytes > R1_BATCH_MAX_BYTES) throw new Error(`已选文件共 ${(totalBytes / 1024 / 1024).toFixed(2)} MiB，本批上限 ${R1_BATCH_MAX_BYTES / 1024 / 1024} MiB。请移出超限文件或分批重新选择，未读取文件字节。`);
+      const invalid = files.find(file => !file.size || file.size > MATERIAL_UPLOAD_LIMIT);
+      if (invalid) throw new Error(`${invalid.name}：${invalid.size ? `单件 ${(invalid.size / 1024 / 1024).toFixed(2)} MiB，保管上限为 ${MATERIAL_UPLOAD_LIMIT / 1024 / 1024} MiB` : '原件为空'}。请移出该件后重新选择，未读取文件字节。`);
       const result: SelectedFile[] = [];
       const inspected = new Map<string, R1AlgorithmClassification>();
       const root = directory ? files[0]!.webkitRelativePath.split('/')[0] : '';

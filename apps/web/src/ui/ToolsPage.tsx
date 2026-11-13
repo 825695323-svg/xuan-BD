@@ -12,6 +12,7 @@ import { ALGORITHM_GROUPS, BATCH_ALGORITHMS, OTHER_GROUP, algorithmGroup, batchA
   appendixGroup, DESIGN_RELATED, designGroup, fixedGroup, libraryGroup, type AlgorithmFocusRequest, type AlgorithmGroup, type AlgorithmGroupId,
   type BatchAlgorithmEntry } from './algorithm-catalog';
 import { ErrorNote, errorDetail, useWords } from './Controls';
+import { taskStateText } from './TaskResults';
 import { usePreferences } from './Preferences';
 import { useObjectSelection } from './useStoredSelection';
 import { DetailDiagnostics, DetailFacts, DetailHeader, ObjectDetailPanel } from './ObjectDetailPanel';
@@ -212,13 +213,6 @@ function overallStatus(cells: StatusCell[], words: Words): { title: string; tone
   return { title: words('当前不能执行正式计算', 'Formal computation is not available now'), tone: runtime?.tone ?? 'warn' };
 }
 
-function taskStatusLabel(status: string, words: Words): string {  const labels: Record<string, [string, string]> = { ready: ['待开始', 'Ready'], running: ['计算中', 'Running'],
-    waiting_approval: ['等待授权', 'Waiting for approval'], paused: ['已暂停', 'Paused'], interrupted: ['已中断', 'Interrupted'],
-    succeeded: ['已完成', 'Succeeded'], failed: ['失败', 'Failed'], cancelled: ['已取消', 'Cancelled'],
-    needs_review: ['结果待核对', 'Needs review'], blocked: ['受阻', 'Blocked'], awaiting_review: ['等待成果审核', 'Awaiting review'] };
-  const label = labels[status];
-  return label ? words(label[0], label[1]) : status;
-}
 function initialForm(): FormState {
   let timezone = '';
   try { timezone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? ''; } catch { /* 保留空值，由服务端核验。 */ }
@@ -858,7 +852,7 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
 
           {callView && <section className="tools-section tools-result" aria-labelledby="tools-result">
             <div className="tools-section-head"><h4 id="tools-result">{words('计算任务与结果', 'Computation task and result')}</h4>
-              <span className="tools-status" data-status={callView.status === 'succeeded' ? 'ready' : callView.status === 'failed' || callView.status === 'cancelled' ? 'unavailable' : 'blocked'}>{taskStatusLabel(callView.status, words)}</span>
+              <span className="tools-status" data-status={callView.status === 'succeeded' ? 'ready' : callView.status === 'failed' || callView.status === 'cancelled' ? 'unavailable' : 'blocked'}>{taskStateText(callView.status, words)}</span>
             </div>
             <dl className="tools-meta">
               <div><dt>{words('任务编号', 'Task ID')}</dt><dd className="tools-mono">{callView.taskId}</dd></div>

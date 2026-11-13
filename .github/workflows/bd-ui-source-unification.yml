@@ -1,0 +1,46 @@
+name: BD unified UI and source routing
+
+on:
+  pull_request:
+    paths:
+      - 'apps/web/src/**'
+      - 'apps/server/source-settings-routes.ts'
+      - 'apps/server/configured-app.ts'
+      - 'apps/server/ui-routes.ts'
+      - 'apps/server/attachment-upload.ts'
+      - 'contracts/source-settings.ts'
+      - 'contracts/contracts.ts'
+      - 'contracts/upload-limits.ts'
+      - 'modules/collection/accept-material.ts'
+      - 'modules/collection/r1-auto-batch.ts'
+      - 'platform/config/source-settings.ts'
+      - 'plugins/api-sources/**'
+      - '.github/workflows/bd-ui-source-unification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Verify source recipe and production typecheck/build
+        run: |
+          npm run repo:check
+          npm run build
+      - name: Verify source operation and web request regressions without accounts
+        run: |
+          node --import tsx --test \
+            plugins/api-sources/source-routing.test.ts \
+            apps/web/src/ui/sourceSettingsClient.test.ts
