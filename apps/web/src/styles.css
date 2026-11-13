@@ -34,6 +34,17 @@
   --brand-background: var(--ink);
   --brand-foreground: var(--surface);
   --brand-symbol: var(--ink);
+  /* 业务页面共用的尺寸令牌；颜色继续复用主题语义变量。 */
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 24px;
+  --ui-control-height: 36px;
+  --ui-radius-control: 8px;
+  --ui-radius-panel: 12px;
+  --ui-title-size: 1rem;
+  --ui-body-size: .86rem;
   --conversation-list-width: 250px;
 }
 :root[data-theme="dark"] {
@@ -632,4 +643,26 @@ button svg, a svg { flex-shrink: 0; }
   .database-overview-actions { justify-content: flex-start; }
   .source-check-row { flex-wrap: wrap; }
   .source-check-actions { justify-content: flex-start; }
+}
+
+
+/* 统一业务页面原语：仅描述视觉；业务组件不得自行改写主题或请求行为。 */
+.ui-page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ui-space-3); min-width: 0; }
+.ui-page-heading-copy { flex: 1 1 auto; min-width: 0; }
+.ui-page-heading-title { margin: 0; color: var(--ink); font-size: var(--ui-title-size); line-height: 1.45; font-weight: 600; overflow-wrap: anywhere; }
+.ui-page-heading-description { margin: var(--ui-space-1) 0 0; max-width: 78ch; color: var(--muted); font-size: var(--ui-body-size); line-height: 1.65; overflow-wrap: anywhere; }
+.ui-page-heading-actions { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-2); }
+.ui-page-search:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 13%, transparent); }
+.ui-page-empty { margin: 0; padding: var(--ui-space-3); min-width: 0; border: 1px dashed var(--line); border-radius: var(--ui-radius-control); background: var(--surface-2); line-height: 1.6; overflow-wrap: anywhere; }
+.ui-page-empty[data-state="loading"] { border-style: solid; }
+.ui-page-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ui-space-2); min-width: 0; }
+.ui-page-actions[data-align="end"] { justify-content: flex-end; }
+.ui-page-field { gap: var(--ui-space-2); min-width: 0; color: var(--ink); font-size: var(--ui-body-size); }
+.ui-page-field-label { font-weight: 500; }
+.ui-page-field-hint { color: var(--muted); font-size: .78rem; line-height: 1.55; }
+.ui-page-field :is(input:not([type="checkbox"]), textarea, select) { width: 100%; min-width: 0; min-height: var(--ui-control-height); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--ui-radius-control); background: var(--surface-2); color: var(--ink); }
+.ui-page-field textarea { resize: vertical; }
+@media (max-width: 760px) {
+  .ui-page-heading { flex-wrap: wrap; }
+  .ui-page-heading-actions { flex: 1 1 100%; }
 }
