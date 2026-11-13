@@ -163,7 +163,7 @@ test('受控模型工具：真实会话分支 perform_action → 任务审批 �
     const propose = await callWithDecision(h, input, 'data.adapters.propose', { configJson: JSON.stringify(config) }, 'approve', 'adapter-propose');
     const proposed = preview(await propose.pending);
     assert.equal(proposed.data.status, 'candidate');
-    // 重放：批准后实际五步重放。
+    // 适配候选重放仅核载体、字段和有据单位转换；不自动执行其他加工模块。
     const replay = await callWithDecision(h, input, 'data.adapters.replay', { adapterId: config.adapterId, version: '1',
       samplesJson: JSON.stringify([{ materialId: goodMaterial, expectation: 'accept', expect: { values: { qty: '125' } } },
         { materialId: badMaterial, expectation: 'reject' }]) }, 'approve', 'adapter-replay');
