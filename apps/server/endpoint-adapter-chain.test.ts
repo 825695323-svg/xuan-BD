@@ -332,13 +332,10 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
     assert.equal((currentParse.parameters as any).sourceAdapter.version, '2',
       '稳定接口只指定适配器编号，使用当前生效配置');
     assert.equal((currentParse.parameters as any).sourceAdapter.configDigest, v2.adopted.configDigest);
-    const currentRows = host.services.endpointAdapters!.list('eastmoney.kline.daily') as any[];
-    assert.equal(currentRows.filter(row => row.status === 'adopted').length, 1,
-      '同一适配器只有当前实现可供新任务使用');
-    assert.equal(currentRows.find(row => row.version === '1')?.status, 'retired');
-    await rejected(host, '/processing/plans', { requestId: 'reject-retired-adapter',
-      input: planInput('observations', eastmoneyId,
-        bind(eastmoney.adopted.configDigest, 'eastmoney.kline.daily', '1')) }, 'ADAPTER_NOT_ADOPTED');
+    assert.equal(host.services.endpointAdapters!.latestAdopted('eastmoney.kline.daily')?.version, '2',
+      '稳定适配器编号始终指向最新已采用实现；此前已冻结任务无需重新适配');
+    assert.equal((reloaded.steps.find((step: { kind: string }) => step.kind === 'parse')!.parameters as any)
+      .sourceAdapter.version, '1', '旧任务保留冻结解释，升级不回写或重算既有行');
     assert.notEqual(v2Run.plan.steps.find((step: { kind: string }) => step.kind === 'parse')!.specDigest,
       eastmoneyRun.plan.steps.find((step: { kind: string }) => step.kind === 'parse')!.specDigest);
 

@@ -249,7 +249,8 @@ export class R1AutoBatchService {
           auto = start({ requestId: item.autoRequestId, materialId: item.materialId,
             source: { ...record.input.source, requested_url: item.requestedUrl }, datasetId: record.input.datasetId,
             ...(record.input.sourceValueColumns ? { sourceValueColumns: record.input.sourceValueColumns } : {}),
-            ...(record.input.sourceAdapter ? { sourceAdapter: record.input.sourceAdapter } : {}),
+            ...(record.adapter ? { sourceAdapter: { adapterId: record.adapter.adapterId,
+              version: record.adapter.version, configDigest: record.adapter.configDigest } } : {}),
             ...(record.input.sourceContextTemplate ? { sourceContext: this.sourceContextFor(record, item) } : {}) }, record.operator);
           // This opt-in declares the scope of the selected batch. The recognizer must
           // independently identify a source trade-date question; generic dates are never answered here.

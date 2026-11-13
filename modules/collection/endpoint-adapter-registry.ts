@@ -250,10 +250,8 @@ export class EndpointAdapterRegistry {
       replays: replays.map(replay => ({ replayId: replay.replay_id, materialId: replay.material_id, expectation: replay.expectation,
         outcome: replay.outcome, passed: replay.passed })) };
     this.options.database.transaction(() => {
-      // 同一稳定接口只能有一个当前生效实现；此前已采用版本不再参与新请求选择。
-      // 仅修改配置采用状态，已冻结任务和正式 WFD 数据不受影响。
-      this.db.prepare("UPDATE source_adapters SET status='retired',revision=revision+1,updated_at=? WHERE adapter_id=? AND version<>? AND status='adopted'")
-        .run(now, adapterId, version);
+      // 历史未完成批次可能仍需要其已冻结的旧适配配置。当前版本由稳定 adapterId
+      // 的 latestAdopted 选择，旧版本仅按明确的历史引用核对，不因采用新版就破坏旧任务。
       this.db.prepare(`UPDATE source_adapters SET status='adopted',revision=revision+1,updated_at=?,adopted_at=?,adopted_by=?,adoption_json=?
         WHERE adapter_id=? AND version=? AND config_digest=?`).run(now, now, operator.operatorId, canonicalWfdJson(adoption), adapterId, version, row.config_digest);
     });
