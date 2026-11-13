@@ -182,6 +182,9 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
   const env: NodeJS.ProcessEnv = { MASHIRO_BACKEND: 'pi',
     ...(!assets.modelDisabled ? { MASHIRO_CONFIG: resolve(resources.path('config'), 'model.json') } : {}) };
   const configuration = await loadAppConfiguration(workspaceRoot, env, processRuntime);
+  // 显示名称直接取当前受信模型配置；模型编号和真实路由保持不变。
+  configuration.health.displayName = assets.modelDisabled ? null
+    : configuration.pi.customModel?.name ?? configuration.health.model;
   if (assets.modelDisabled) configuration.health.notice = '本地 Web 基础数据宿主；模型代理明确未启用，不读取模型配置或凭据。' + (assets.transcriptionUnavailableReason ?? '');
   const modelConfigurationVersion = assets.modelDisabled ? digestOperationArgs({ resourceMode: 'native', model: 'disabled' })
     : digestOperationArgs({ provider: configuration.pi.provider, model: configuration.pi.model,
