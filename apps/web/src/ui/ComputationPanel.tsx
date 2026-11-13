@@ -13,7 +13,8 @@ export function ComputationPanel({ focus = null }: {
   const words = useWords();
   const [catalog, setCatalog] = useState<AlgorithmCatalogView | null>(null);
   const [tasks, setTasks] = useState<AlgorithmTaskView[]>([]);
-  const detail = useAlgorithmResult(focus?.methodId ?? null);
+  // 跨页定位提示会自动清除，已选任务仍属于当前面板。
+  const detail = useAlgorithmResult('database:computation');
   const selected = detail.task;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);

@@ -424,7 +424,9 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
    * 三栏布局里当前选中的条目。只认目录里真实存在的 key：
    * 目录未读回前保持 pending，不先回落到"没有条目"。
    */
-  const selection = useObjectSelection('xuan.tools.object', entries.map((entry) => entry.key), !loading && !fixedLoading, 'first');
+  const catalogsComplete = loadError === null && fixedError === null;
+  const selection = useObjectSelection('xuan.tools.object', entries.map((entry) => entry.key),
+    !loading && !fixedLoading, 'first', catalogsComplete);
   const selectedKey = selection.id;
   const result = useAlgorithmResult(selectedKey);
   const { task: callView, error: callError, loading: busy } = result;
@@ -642,6 +644,7 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
         {selectedOutsideFilter && <p className="tools-scope-note" role="status">{words('当前详情仍保留显示，但不在当前筛选结果中。', 'The current detail remains visible but is outside the filter results.')}</p>}
 
         {!selectedEntry && (loading || fixedLoading || selection.pending ? <p className="tools-loading" role="status"><Loader2 className="tools-spin" size={16} aria-hidden="true" />{words('正在读取算法目录…', 'Loading the algorithm catalog…')}</p>
+          : !catalogsComplete && entries.length > 0 ? <p className="tools-muted">{words('请选择已读取的条目，或重新读取目录。', 'Select an available entry or refresh the catalog.')}</p>
           : <div className="tools-state-block"><p className="tools-empty-title">{words('当前没有可显示的算法条目。', 'No algorithm entries are available to show.')}</p>
             <p className="tools-muted">{words('基础库、固定计算与批量入口各自保留读取状态；未用本地旧数据补造条目。', 'Base-library, fixed and batch entries keep their own load states; no stale local entries are invented.')}</p></div>)}
 

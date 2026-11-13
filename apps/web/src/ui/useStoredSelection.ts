@@ -39,21 +39,21 @@ export interface ObjectSelection {
 /**
  * 对象选择：只认列表里真实存在的 id。
  * - 列表未就绪（`ids` 为 null 或 `ready` 为假）时保持 `pending`，不错误回落；
- * - 就绪后仍找不到该 id（被删除、换了市场、跨版本残留）就清掉记录，不留幽灵选择。
+ * - 完整列表读回后仍找不到该 id（被删除、换了市场、跨版本残留）就回落；部分列表不能判定对象失效。
  */
 export function resolveObjectSelection(stored: string | null, ids: readonly string[] | null,
-  ready: boolean, fallback: 'none' | 'first' = 'none'): { id: string | null; pending: boolean } {
+  ready: boolean, fallback: 'none' | 'first' = 'none', complete = true): { id: string | null; pending: boolean } {
   if (!ready || ids === null) return { id: null, pending: stored !== null };
-  return { id: stored !== null && ids.includes(stored) ? stored : fallback === 'first' ? ids[0] ?? null : null, pending: false };
+  if (stored !== null && ids.includes(stored)) return { id: stored, pending: false };
+  return { id: complete && fallback === 'first' ? ids[0] ?? null : null, pending: false };
 }
 
 export function useObjectSelection(key: string, ids: readonly string[] | null, ready: boolean,
-  fallback: 'none' | 'first' = 'none'): ObjectSelection {
+  fallback: 'none' | 'first' = 'none', complete = true): ObjectSelection {
   const [stored, setStored] = useStoredSelection(key);
-  const resolved = resolveObjectSelection(stored, ids, ready, fallback);
+  const resolved = resolveObjectSelection(stored, ids, ready, fallback, complete);
   useEffect(() => {
-    // 未读完目录时不清除也不默认选择。回落只由本公共模块处理。
-    if (ready && ids !== null && stored !== resolved.id) setStored(resolved.id);
-  }, [ready, ids !== null, stored, resolved.id, setStored]);
+    if (ready && ids !== null && complete && stored !== resolved.id) setStored(resolved.id);
+  }, [ready, ids !== null, complete, stored, resolved.id, setStored]);
   return { ...resolved, select: setStored };
 }
