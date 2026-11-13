@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CANDIDATE_LIMITS, parseTableSource, prepareCandidateTable, type CandidateTablePlan } from './candidate-pipeline.js';
+import { CANDIDATE_LIMITS, parseTableSource, cleanCandidateTable, structureCandidateTable,
+  checkCandidateTables, type CandidateTablePlan } from './candidate-pipeline.js';
 import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 
 // 小型合成夹具只核 CSV 结构和选件，不代表真实行情或金融语义验收。
@@ -29,35 +30,43 @@ test('CSV exact selection scans EOF, preserves every raw column/value and origin
     selectionComplete: true, scannedRows: 3, selectedRows: 2, excludedRows: 1, sourceBytes: bytes.length, sourceSha256: wfdSha256(bytes) });
   assert.equal(parsed.source_sha256, wfdSha256(bytes));
   assert.deepEqual(parsed.adapter, { id: 'utf8-csv-exact-selection', version: '1' });
-  const result = prepareCandidateTable(bytes, plan());
-  assert.deepEqual(result.rows, [{ 证券代码: '000001', 名称: '甲\r\n乙', 原值: '00001.2300', 备注: '含"引号"' },
+  // 未选择清洗和标注，仅测试共用结构化与独立核对。
+  const structured = structureCandidateTable(parsed);
+  const checked = checkCandidateTables([structured]);
+  assert.deepEqual(checked.rows, [{ 证券代码: '000001', 名称: '甲\r\n乙', 原值: '00001.2300', 备注: '含"引号"' },
     { 证券代码: '000001', 名称: '末行', 原值: '01', 备注: '结束' }]);
-  assert.deepEqual((result.evidence.check.sources[0] as unknown as Record<string, unknown>).selection, parsed.selection);
+  assert.deepEqual((checked.evidence.sources[0] as unknown as Record<string, unknown>).selection, parsed.selection);
 });
 
 test('CSV exact selection uses original column names and strings before mapping, trimming or typing', () => {
   const source = Buffer.from('证券代码,值\n000001,1\n 000001,2\n1,3\n000001 ,4\n');
-  const result = prepareCandidateTable(source, plan({ fieldMapping: { 证券代码: 'symbol', 值: 'value' }, trim: ['symbol'], types: { value: 'safe_integer' } }));
-  assert.deepEqual(result.rows, [{ symbol: '000001', value: 1 }]);
+  const rules = plan({ fieldMapping: { 证券代码: 'symbol', 值: 'value' }, trim: ['symbol'], types: { value: 'safe_integer' } });
+  const parsed = parseTableSource(source, rules);
+  const cleaned = cleanCandidateTable(parsed, { trim: rules.trim });
+  const structured = structureCandidateTable(cleaned, rules.types);
+  assert.deepEqual(checkCandidateTables([structured]).rows, [{ symbol: '000001', value: 1 }]);
   rejects(source, 'CANDIDATE_SELECTION_FIELD', plan({ selection: { predicate: { column: 'symbol', equals: '000001' }, maxSelectedRows: 5, maxScannedRows: 5 } }));
   rejects(source, 'CANDIDATE_EMPTY_SELECTION', plan({ selection: { predicate: { column: '证券代码', equals: 'missing' }, maxSelectedRows: 5, maxScannedRows: 5 } }));
 });
 
 test('structure records only actual type and decimal lexeme changes separately from cleaning', () => {
   const source = Buffer.from('证券代码,值,整数\n000001,31.0,30\n000001,1.2300,7\n');
-  const result = prepareCandidateTable(source, plan({ types: { 值: 'decimal_string', 整数: 'safe_integer' } }));
-  assert.deepEqual(result.rows, [{ 证券代码: '000001', 值: '31', 整数: 30 }, { 证券代码: '000001', 值: '1.23', 整数: 7 }]);
-  assert.equal(result.evidence.check.changes_total, 0);
-  assert.equal(result.evidence.check.type_changes_total, 4);
-  assert.equal(result.evidence.check.decimal_lexeme_changes_total, 2);
-  assert.equal(result.evidence.type_changes_total, 4);
-  assert.equal(result.evidence.decimal_lexeme_changes_total, 2);
-  assert.equal(result.evidence.type_changes_truncated, false);
-  assert.deepEqual(result.evidence.type_changes.map(change => [change.operation, change.row, change.field, change.before, change.after]), [
+  const rules = plan({ types: { 值: 'decimal_string', 整数: 'safe_integer' } });
+  const parsed = parseTableSource(source, rules);
+  const structured = structureCandidateTable(parsed, rules.types);
+  const checked = checkCandidateTables([structured]);
+  assert.deepEqual(checked.rows, [{ 证券代码: '000001', 值: '31', 整数: 30 }, { 证券代码: '000001', 值: '1.23', 整数: 7 }]);
+  assert.equal(checked.evidence.changes_total, 0);
+  assert.equal(checked.evidence.type_changes_total, 4);
+  assert.equal(checked.evidence.decimal_lexeme_changes_total, 2);
+  assert.equal(structured.type_changes_total, 4);
+  assert.equal(structured.decimal_lexeme_changes_total, 2);
+  assert.equal(structured.type_changes_truncated, false);
+  assert.deepEqual(structured.type_changes.map(change => [change.operation, change.row, change.field, change.before, change.after]), [
     ['decimal_lexeme', 1, '值', '31.0', '31'], ['type_conversion', 1, '整数', '30', 30],
     ['decimal_lexeme', 2, '值', '1.2300', '1.23'], ['type_conversion', 2, '整数', '7', 7],
   ]);
-  for (const change of result.evidence.type_changes) {
+  for (const change of structured.type_changes) {
     assert.equal(change.original, change.before);
     assert.equal(source.toString('utf8').slice(change.location.start, change.location.end), change.quote);
   }
@@ -65,14 +74,15 @@ test('structure records only actual type and decimal lexeme changes separately f
 
 test('type change evidence uses the existing 1000 item window without losing total counts', () => {
   const source = Buffer.from('证券代码,值\n' + '000001,1.0\n'.repeat(1001));
-  const result = prepareCandidateTable(source, plan({ types: { 值: 'decimal_string' } }));
-  assert.equal(result.evidence.check.changes_total, 0);
-  assert.equal(result.evidence.type_changes_total, 1001);
-  assert.equal(result.evidence.decimal_lexeme_changes_total, 1001);
-  assert.equal(result.evidence.type_change_window_limit, 1000);
-  assert.equal(result.evidence.type_changes.length, 1000);
-  assert.equal(result.evidence.type_changes_truncated, true);
-  assert.equal(result.evidence.type_changes.at(-1)?.row, 1000);
+  const rules = plan({ types: { 值: 'decimal_string' } });
+  const structured = structureCandidateTable(parseTableSource(source, rules), rules.types);
+  assert.equal(structured.changes_total, 0);
+  assert.equal(structured.type_changes_total, 1001);
+  assert.equal(structured.decimal_lexeme_changes_total, 1001);
+  assert.equal(structured.type_change_window_limit, 1000);
+  assert.equal(structured.type_changes.length, 1000);
+  assert.equal(structured.type_changes_truncated, true);
+  assert.equal(structured.type_changes.at(-1)?.row, 1000);
 });
 
 test('CSV exact selection rejects malformed excluded tails and ambiguous headers instead of ending at the first match', () => {
@@ -138,8 +148,11 @@ test('显式表格保留继承属性同名列，不静默改名或遗漏', () =>
   const row = Object.fromEntries(keys.map(key => [key, '1.2300']));
   const types = Object.fromEntries(keys.map(key => [key, 'decimal_string'])) as CandidateTablePlan['types'];
   for (const declared of [undefined, types]) {
-    const result = prepareCandidateTable(Buffer.from(JSON.stringify([row])), { materialId: 'own-keys', format: 'json', ...(declared ? { types: declared } : {}) });
-    assert.deepEqual(result.rows, [Object.fromEntries(keys.map(key => [key, declared ? '1.23' : '1.2300']))]);
-    assert.deepEqual(result.evidence.fields, keys);
+    const rules: CandidateTablePlan = { materialId: 'own-keys', format: 'json', ...(declared ? { types: declared } : {}) };
+    const parsed = parseTableSource(Buffer.from(JSON.stringify([row])), rules);
+    const structured = structureCandidateTable(parsed, rules.types);
+    const checked = checkCandidateTables([structured]);
+    assert.deepEqual(checked.rows, [Object.fromEntries(keys.map(key => [key, declared ? '1.23' : '1.2300']))]);
+    assert.deepEqual(checked.evidence.fields, keys);
   }
 });
