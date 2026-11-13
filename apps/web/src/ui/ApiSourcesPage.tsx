@@ -502,9 +502,9 @@ export function ApiSourcesPage() {
         : marketSummary}
       diagnostics={selectedConnection ? <DetailDiagnostics label={words('来源标识与范围', 'Source identity and scope')}>
         <dl className="object-detail-facts">
-          <div><dt>{words('连接编号', 'Connection ID')}</dt><dd className="tools-mono">{selectedConnection.id}</dd></div>
+          <div><dt>{words('连接编号', 'Connection ID')}</dt><dd><code>{selectedConnection.id}</code></dd></div>
           <div><dt>{words('别名', 'Alias')}</dt><dd>{selectedConnection.alias}</dd></div>
-          <div><dt>{words('范围编号', 'Scope IDs')}</dt><dd className="tools-mono">{selectedConnection.scopes.join(' / ')}</dd></div>
+          <div><dt>{words('范围编号', 'Scope IDs')}</dt><dd><code>{selectedConnection.scopes.join(' / ')}</code></dd></div>
           <div><dt>{words('适配插件', 'Plugin')}</dt><dd>{pluginOf(selectedConnection)?.shortLabel ?? '—'}</dd></div>
           <div><dt>{words('检查时间', 'Checked at')}</dt><dd>{selectedCheck ? new Date(selectedCheck.checkedAt).toLocaleString() : '—'}</dd></div>
         </dl>

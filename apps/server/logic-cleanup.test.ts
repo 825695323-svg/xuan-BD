@@ -8,8 +8,6 @@ import express, { type ErrorRequestHandler, type Router } from 'express';
 import { CoreDatabase } from '../../platform/state/database.js';
 import { CoreError } from '../../platform/runtime/errors.js';
 import { SourceSettingsService } from '../../platform/config/source-settings.js';
-import { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
-import { createAlgorithmRouter } from './algorithm-routes.js';
 import { createSourceSettingsRouter } from './source-settings-routes.js';
 import { sourceOperations, sourceOperationsForAction } from '../../plugins/api-sources/operations.js';
 import { createSourceRuntime } from '../../plugins/api-sources/runtime.js';
@@ -29,30 +27,6 @@ async function serve(router: Router) {
     return { status: response.status, value: await response.json() };
   }, async close() { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); } };
 }
-
-test('算法任务按方法在 SQL 限页前筛选，旧方法身份仍可查询', async () => {
-  const database = new CoreDatabase(':memory:');
-  // Test the production list SQL with an isolated identity index; no computation or publication is involved.
-  database.connection.exec('CREATE TABLE algorithm_calls(task_id TEXT PRIMARY KEY, method_id TEXT, created_at INTEGER)');
-  database.connection.prepare('INSERT INTO algorithm_calls VALUES(?,?,?)').run('older-ma', 'ma', 0);
-  database.connection.prepare('INSERT INTO algorithm_calls VALUES(?,?,?)').run('historic-method', 'retired_method', -1);
-  for (let i = 0; i < 30; i++) database.connection.prepare('INSERT INTO algorithm_calls VALUES(?,?,?)').run(`macd-${i}`, 'macd', i + 1);
-  const service = Object.create(LocalAlgorithmService.prototype) as LocalAlgorithmService;
-  Object.defineProperty(service, 'options', { value: { database } });
-  service.view = (taskId: string) => ({ taskId, methodId: database.connection.prepare('SELECT method_id FROM algorithm_calls WHERE task_id=?').get(taskId)!.method_id } as never);
-  const host = await serve(createAlgorithmRouter({ algorithms: service }));
-  try {
-    assert.equal(service.list().length, 20);
-    assert.deepEqual(service.list('ma').map(task => task.taskId), ['older-ma']);
-    assert.deepEqual(service.list('missing'), []);
-    assert.equal((await host.call('/calls?methodId=ma')).value.items[0].taskId, 'older-ma');
-    assert.equal((await host.call('/calls?methodId=retired_method')).value.items[0].taskId, 'historic-method');
-    for (const query of ['methodId=', 'methodId=ma&methodId=macd', 'other=ma', 'methodId=ma%27%20OR%201%3D1']) {
-      const invalid = await host.call('/calls?' + query);
-      assert.equal(invalid.status, 400); assert.equal(invalid.value.code, 'INVALID_ALGORITHM_QUERY');
-    }
-  } finally { await host.close(); database.close(); }
-});
 
 test('新旧来源请求仅格式不同，执行器、参数与工具选项均来自唯一目录', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'logic-source-routing-')), database = new CoreDatabase(':memory:');

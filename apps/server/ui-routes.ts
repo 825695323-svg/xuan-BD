@@ -33,7 +33,6 @@ export function createUiRouter(services: ApplicationServices) {
     .map(row => services.core.getState(row.conversation_id).lastRun!).filter(Boolean);
   function indicators(): UiIndicator[] {
     const now = new Date().toISOString();
-    const financial = companion?.financial ?? services.financial;
     const sourceSettings = services.sourceSettings.get(), checks = services.sourceSettings.checks();
     const enabledSourceIds = [...sourceSettings.connections.filter(item => item.enabled && sourceSettings.plugins.some(plugin => plugin.id === item.pluginId && plugin.enabled)).map(item => item.id),
       ...sourceSettings.capture.filter(item => item.enabled).map(item => item.sourceId)];
@@ -44,12 +43,7 @@ export function createUiRouter(services: ApplicationServices) {
     if (enabledSourceIds.some(id => !checks.some(check => check.id === id))) sourceIssues.push('部分启用来源尚未检查，连接声明不代表实际可用。');
     if (passed) sourceIssues.push('已通过检查的端点可达与授权已核验；其他能力及数据及时性仍须按任务核对。');
     if (!enabledSourceIds.length) sourceIssues.push('所有来源连接与采集源均已停用。');
-    const toolState = financial?.status();
     const toolLibrary = companion?.toolLibrary ?? services.toolLibrary;
-    const algorithms = companion?.algorithms ?? services.algorithms;
-    // 这里只读采用账本；完整目录可能解析大表，不由运行态轮询触发。
-    const adoption = algorithms?.adoptionStatus();
-    const hasToolLibrary = !!toolLibrary || !!algorithms || !!toolState;
     const database = (companion?.r1Workspace ?? services.r1Workspace)?.capabilities();
     const selectedDatabase = database?.connection;
     return [
@@ -61,16 +55,10 @@ export function createUiRouter(services: ApplicationServices) {
         source: selectedDatabase ? `r1.capabilities:${selectedDatabase.connectionId}:${selectedDatabase.profile}` : `DatabasePort:${DATABASE_PORT_RESERVATION.code}`,
         scope: selectedDatabase ? `已装配连接 ${selectedDatabase.connectionId}，范围 ${selectedDatabase.profile}，用途 ${selectedDatabase.mode}；材料提交与质量须分别核对` : '当前没有已装配的数据库连接', checkedAt: null, observedAt: now, staleAfterMs: null,
         issues: [selectedDatabase ? '连接已装配；本次状态读取不发起网络或权限探测。' : '数据库连接尚未装配。'], settingsTarget: 'storage' },
-      { id: 'tool_library', name: '工具库', status: hasToolLibrary ? 'unknown' : 'missing',
-        source: algorithms ? 'algorithms.adoptionStatus' : toolLibrary ? 'toolLibrary.registry' : toolState ? 'financial.plugins.status' : 'missing: algorithm catalog',
-        scope: '基础算法目录装配与采用状态；输入、权限、真实执行和发布资格仍须分别核对',
-        checkedAt: null, observedAt: now, staleAfterMs: null,
-        issues: [adoption ? adoption.state === 'adopted'
-          ? '基础算法目录与受控入口已装配，采用记录与当前实现一致；本次状态读取未核验输入、执行权限或真实运行结果。'
-          : `基础算法目录与受控入口已装配；${adoption.reason ?? '尚未核对采用状态。'}`
-          : toolLibrary ? '只读基础算法目录已装配；受控计算入口尚未装配。'
-            : toolState ? toolState.enabled ? '金融插件已启用；未提供当前运行依赖的综合检查时间。' : '金融插件已登记但未启用。'
-              : '基础算法目录未装配。'], settingsTarget: 'plugins' },
+      { id: 'tool_library', name: '工具库', status: toolLibrary ? 'unknown' : 'missing',
+        source: toolLibrary ? 'toolLibrary.registry' : 'missing: algorithm catalog',
+        scope: 'MACD 算法目录装配', checkedAt: null, observedAt: now, staleAfterMs: null,
+        issues: [toolLibrary ? '算法目录已装配。' : '算法目录未装配。'], settingsTarget: 'plugins' },
     ];
   }
   function runtime(): UiRuntimeView {

@@ -6,9 +6,13 @@ const MATERIAL_RECORDS_SCHEMA = `CREATE TABLE material_object_records (
  envelope_json TEXT NOT NULL, envelope_digest TEXT NOT NULL, preview_json TEXT NOT NULL, preview_digest TEXT NOT NULL,
  content_sha256 TEXT NOT NULL REFERENCES r1_original_contents(sha256)
 );`;
-const MATERIAL_VIEW_SCHEMA = `CREATE VIEW material_objects AS
- SELECT m.material_id,m.envelope_json,m.envelope_digest,m.preview_json,m.preview_digest,c.original_bytes
- FROM material_object_records m LEFT JOIN r1_original_contents c ON c.sha256=m.content_sha256;
+const SHARED_MATERIAL_SELECT = `SELECT m.material_id,m.envelope_json,m.envelope_digest,m.preview_json,m.preview_digest,c.original_bytes
+ FROM material_object_records m LEFT JOIN r1_original_contents c ON c.sha256=m.content_sha256`;
+const MATERIAL_VIEW_SCHEMA = `CREATE VIEW material_objects AS ${SHARED_MATERIAL_SELECT};`;
+const MANAGED_MATERIAL_VIEW = `CREATE VIEW material_objects AS ${SHARED_MATERIAL_SELECT}
+ UNION ALL SELECT material_id,envelope_json,envelope_digest,preview_json,preview_digest,NULL
+ FROM managed_material_object_records;`;
+const MATERIAL_VIEW_TRIGGERS = `
 CREATE TRIGGER material_objects_insert INSTEAD OF INSERT ON material_objects BEGIN
  SELECT CASE WHEN typeof(NEW.original_bytes)<>'blob'
    OR length(NEW.original_bytes) IS NOT json_extract(NEW.envelope_json,'$.byteLength')
@@ -26,16 +30,28 @@ END;
 -- Existing maintenance callers can still expose storage corruption through the old column.
 -- Normal intake is insert-only; all consumers verify the frozen digest before using bytes.
 CREATE TRIGGER material_objects_update_bytes INSTEAD OF UPDATE OF original_bytes ON material_objects BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM material_object_records WHERE material_id=OLD.material_id)
+   THEN RAISE(ABORT,'MATERIAL_ORIGINAL_CHANGED') END;
  UPDATE r1_original_contents SET original_bytes=NEW.original_bytes
    WHERE sha256=(SELECT content_sha256 FROM material_object_records WHERE material_id=OLD.material_id);
-END;
-INSERT INTO schema_versions(module,version) VALUES('material-original-sharing',1);
-`;
+END;`;
+const MATERIAL_SHARING_VERSION = `INSERT INTO schema_versions(module,version) VALUES('material-original-sharing',1);`;
 // Reuse R1's existing content table. Acquisitions and material envelopes retain separate IDs.
 export const SHARED_MATERIAL_OBJECTS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS r1_original_contents (sha256 TEXT PRIMARY KEY, original_bytes BLOB NOT NULL);
 ${MATERIAL_RECORDS_SCHEMA}
-${MATERIAL_VIEW_SCHEMA}`;
+${MATERIAL_VIEW_SCHEMA}
+${MATERIAL_VIEW_TRIGGERS}
+${MATERIAL_SHARING_VERSION}`;
+
+export const MANAGED_MATERIAL_RECORDS_SCHEMA = `
+CREATE TABLE managed_material_object_records (
+ material_id TEXT PRIMARY KEY REFERENCES material_inputs(material_id),
+ envelope_json TEXT NOT NULL, envelope_digest TEXT NOT NULL, preview_json TEXT NOT NULL, preview_digest TEXT NOT NULL
+);`;
+export const MANAGED_MATERIAL_VIEW_MIGRATION = `DROP VIEW material_objects;
+${MANAGED_MATERIAL_VIEW}
+${MATERIAL_VIEW_TRIGGERS}`;
 
 export interface OriginalSharingPlan {
   mode: 'legacy' | 'shared'; materialCount: number; materialLogicalBytes: number;
@@ -56,6 +72,10 @@ export function planMaterialOriginalSharing(db: DatabaseSync): OriginalSharingPl
   const mode = type === 'table' ? 'legacy' : 'shared';
   if (mode === 'shared' && (Number(db.prepare("SELECT version FROM schema_versions WHERE module='material-original-sharing'").get()?.version) !== 1
     || objectType(db, 'material_object_records') !== 'table')) fail('共享材料格式或版本无法核对。');
+  if (objectType(db, 'managed_material_object_records') === 'table'
+    && db.prepare('SELECT 1 FROM managed_material_object_records LIMIT 1').get()) {
+    fail('材料包含受管外置原件；旧 BLOB 共享维护入口不处理此格式。');
+  }
   const hasContents = objectType(db, 'r1_original_contents') === 'table';
   if (mode === 'legacy') {
     if (![2,3].includes(Number(db.prepare("SELECT version FROM schema_versions WHERE module='r1-structured-handoff'").get()?.version)) || !hasContents) {
@@ -130,7 +150,8 @@ export function migrateMaterialOriginalSharing(db: DatabaseSync): { applied: boo
         OR c.original_bytes IS NULL OR o.original_bytes<>c.original_bytes`).get();
     if (Number(mismatches?.n) !== 0) fail('原件或元数据逐项读回不符。');
     db.exec('DROP TABLE material_objects');
-    db.exec(MATERIAL_VIEW_SCHEMA);
+    db.exec((objectType(db, 'managed_material_object_records') === 'table' ? MANAGED_MATERIAL_VIEW : MATERIAL_VIEW_SCHEMA)
+      + MATERIAL_VIEW_TRIGGERS + MATERIAL_SHARING_VERSION);
     const after = planMaterialOriginalSharing(db);
     if (after.materialCount !== before.materialCount || after.materialLogicalBytes !== before.materialLogicalBytes
       || after.existingContentBytes !== before.projectedContentBytes || db.prepare('PRAGMA foreign_key_check').all().length) fail('迁移后的数量、字节或外键核对不符。');

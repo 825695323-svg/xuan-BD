@@ -10,7 +10,6 @@ import { CLOUD_EVIDENCE_ROOT, CLOUD_EVIDENCE_TOPICS, CLOUD_MAX_BYTES, CLOUD_ROOT
 import { classifyCloudEvidenceTopic } from './cloud-evidence-classification.js';
 import { CloudEvidenceReader, normalizeEvidenceSource, type CloudEvidenceBinding, type CloudEvidenceSource } from './cloud-evidence-source.js';
 import type { ProcessingPlanService } from './processing-plan.js';
-import type { LocalAlgorithmService } from '../financial/algorithm-service.js';
 import type { MaterialService } from './materials/service.js';
 
 export const CLOUD_CUSTODY_RUNTIME = 'bd.cloud-custody';
@@ -91,7 +90,7 @@ export class CloudCustodyService {
   readonly versionBinding: Record<string, string | null>;
   private readonly evidence?: CloudEvidenceReader;
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService; materials: MaterialService;
-    files?: FileReferenceService; backend?: CloudCustodyBackend; processing?(): ProcessingPlanService | undefined; algorithms?(): LocalAlgorithmService | undefined }) {
+    files?: FileReferenceService; backend?: CloudCustodyBackend; processing?(): ProcessingPlanService | undefined }) {
     this.evidence = options.files ? new CloudEvidenceReader({ ...options, files: options.files }) : undefined;
     this.versionBinding = Object.freeze({ cloudCustody: 'bd-cloud-custody/6', ...options.backend?.versionBinding });
     options.database.migrate('cloud_custody', 1, SCHEMA);

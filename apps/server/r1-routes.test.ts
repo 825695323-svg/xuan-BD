@@ -19,7 +19,7 @@ import { LocalDataLifecycle } from '../../platform/runtime/local-data-lifecycle.
 import { PersonalCore } from '../../modules/agent/runtime/core.js';
 import { DIMENSION_KEYS } from '../../modules/collection/processing-routing.js';
 import { WfdProductMachineClient, WfdProductMachineError } from '../../adapters/database/wfd-product-machine.js';
-import { parseProductMachineConnectionProfile, resolveProductMachineConnection } from '../../modules/financial/product-machine-connection.js';
+import { parseProductMachineConnectionProfile, resolveProductMachineConnection } from '../../adapters/database/wfd-product-connection.js';
 import { buildStructuredIngestDocument } from '../../modules/collection/r1-structured-handoff.js';
 import { createR1HandoffRuntime } from '../../modules/collection/r1-runtime.js';
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
@@ -356,28 +356,39 @@ test('F09 actual HTTP persists a verified Python page, restarts and resumes the 
     assert.ok(process.env.PYTHONPYCACHEPREFIX, 'Source-proof HTTP tests require a fresh Python read-cache prefix (provided by test-local)');
     const f = fixture(true); let h = await host(f);
     try {
-      const csv = Buffer.from('business_key,value_decimal,start_utc,end_utc\n' + Array.from({ length: 300 }, (_, i) =>
+      const totalRows = 1_001; // Exceeds the current maximum negotiated page size.
+      const csv = Buffer.from('business_key,value_decimal,start_utc,end_utc\n' + Array.from({ length: totalRows }, (_, i) =>
         `row-${String(i).padStart(4, '0')},12.30,2026-01-02T00:00:00Z,2026-01-03T00:00:00Z\n`).join(''));
       const draft = await actualPlan(h, 'r1-paged-http', null, true, csv);
       const prepared: R1RequestView = await h.call('/r1/prepare', draft, 201);
-      assert.equal(prepared.rowCount, 300);
+      assert.equal(prepared.rowCount, totalRows);
       const client = h.services.r1Runtime!.client, readPage = client.fixedReadPage.bind(client);
-      let actualFirstPage: Record<string, unknown> | null = null;
+      let actualFirstPage: { rows: number; cursor: string; result: Record<string, unknown> } | null = null;
       client.fixedReadPage = async (options, signal) => {
         if (options.cursor) throw new Error('TEST_AFTER_FIRST_REAL_FIXED_PAGE');
-        const value = await readPage(options, signal); actualFirstPage = value.result;
-        assert.equal((value.result.rows as unknown[]).length, 256); return value;
+        const value = await readPage(options, signal);
+        const rows = (value.result.rows as unknown[]).length;
+        const page = value.result.pagination as Record<string, unknown>;
+        assert.ok(rows > 0 && rows < totalRows && rows <= options.pageSize!);
+        assert.equal(page.returned_rows, rows);
+        assert.equal(page.page_size, options.pageSize);
+        assert.equal(page.has_more, true);
+        assert.equal(typeof page.next_cursor, 'string');
+        assert.ok(page.next_cursor);
+        actualFirstPage = { rows, cursor: String(page.next_cursor), result: value.result };
+        return value;
       };
       client.fixedRead = async () => { throw new Error('Paged mode cannot fall back to an unbounded product read'); };
       const submitted = await h.call('/r1/requests/r1-paged-http/submit', { confirmationDigest: prepared.documentSha256 }, 202);
       assert.equal((await settled(h, submitted.jobId)).status, 'needs_review');
-      assert.ok(actualFirstPage, 'First page must come from actual Python, not a fabricated receipt');
+      const first = actualFirstPage as { rows: number; cursor: string; result: Record<string, unknown> } | null;
+      assert.ok(first, 'First page must come from actual Python, not a fabricated receipt');
       const pending: R1RequestView = await h.call('/r1/requests/r1-paged-http');
       assert.equal(pending.state, 'pending_receipt'); assert.equal((pending.local.associations as unknown[]).length, 0);
-      assert.equal((pending.local.readback as Record<string, unknown>).verifiedRows, 256);
+      assert.equal((pending.local.readback as Record<string, unknown>).verifiedRows, first.rows);
       const checkpoint = h.database.connection.prepare('SELECT state_json FROM r1_readback_checkpoints WHERE request_id=?').get(prepared.requestId)!;
-      const expectedCursor = JSON.parse(String(checkpoint.state_json)).cursor; assert.equal(typeof expectedCursor, 'string');
-      json(join(f.root, 'first-real-page.json'), actualFirstPage);
+      const expectedCursor = JSON.parse(String(checkpoint.state_json)).cursor; assert.equal(expectedCursor, first.cursor);
+      json(join(f.root, 'first-real-page.json'), first.result);
       await h.close(); h = await host(f);
       const resumed = h.services.r1Runtime!.client, actualRead = resumed.fixedReadPage.bind(resumed);
       const resumedCursors: Array<string | null> = [];
@@ -419,14 +430,16 @@ test('F09 actual HTTP persists a verified Python page, restarts and resumes the 
         checkpointUnchanged: true, associations: 0, originalCursorPreserved: expectedCursor });
       const recovery = await h.call('/r1/requests/r1-paged-http/recover', { lookupId: 'resume-saved-page' }, 202);
       assert.equal(recovery.jobId, submitted.jobId); assert.equal(h.services.tasks.get(submitted.jobId).status, 'succeeded');
-      assert.deepEqual(resumedCursors, [expectedCursor]);
+      assert.equal(resumedCursors[0], expectedCursor);
+      assert.ok(resumedCursors.every(cursor => typeof cursor === 'string' && cursor.length > 0));
+      assert.equal(new Set(resumedCursors).size, resumedCursors.length);
       const complete: R1RequestView = await h.call('/r1/requests/r1-paged-http');
       assert.equal(complete.state, 'associated'); assert.equal(complete.documentSha256, prepared.documentSha256);
       assert.deepEqual(complete.connection, prepared.connection);
-      assert.equal((complete.local.associations as unknown[]).length, 300);
-      assert.deepEqual(complete.local.readback, { mode: 'page', verifiedRows: 300, pages: 2, complete: true, hasMore: false });
+      assert.equal((complete.local.associations as unknown[]).length, totalRows);
+      assert.deepEqual(complete.local.readback, { mode: 'page', verifiedRows: totalRows, pages: 1 + resumedCursors.length, complete: true, hasMore: false });
       json(join(f.root, 'paged-recovery-result.json'), { syntheticInput: true, mockedContracts: false, requestId: prepared.requestId,
-        originalTaskId: submitted.jobId, resumedTaskId: recovery.jobId, firstPageRows: 256, resumedCursors,
+        originalTaskId: submitted.jobId, resumedTaskId: recovery.jobId, firstPageRows: first.rows, resumedCursors,
         associations: complete.local.associations, readback: complete.local.readback, noResubmit: true,
         pythonReadCachePrefix: process.env.PYTHONPYCACHEPREFIX, verificationProjectionOnly: true, productionAcceptance: false });
     } finally { await h.close(); }
@@ -1015,11 +1028,11 @@ test('R1 registry-selected production admits qualified daily and minute bars and
       assert.equal(connection.store, f.store); assert.equal(connection.profile, 'data_only');
       assert.equal((await h.call('/r1/check', {})).supported, true);
       const client = h.services.r1Runtime!.client;
-      const realSubmit = client.submit.bind(client), realFixedRead = client.fixedRead.bind(client);
+      const realSubmit = client.submit.bind(client), realFixedRead = client.fixedReadPage.bind(client);
       const submittedStates: string[] = [], actualReads: Record<string, unknown>[] = [];
       client.submit = async (...args) => { const reply = await realSubmit(...args);
         submittedStates.push(String(reply.result.state)); return reply; };
-      client.fixedRead = async (...args) => { const reply = await realFixedRead(...args);
+      client.fixedReadPage = async (...args) => { const reply = await realFixedRead(...args);
         actualReads.push(reply.result); return reply; };
       for (const variant of ['bad-ohlc', 'unknown-unit', 'forecast', 'denied-authorization', 'unknown-auth', 'missing-auth', 'status-word-basis',
         'denial-basis', 'denial-scope', 'english-denial'] as const) {
@@ -1084,6 +1097,12 @@ test('R1 registry-selected production admits qualified daily and minute bars and
         assert.deepEqual(Object.keys(receipt.contract_refs as object).sort(), ['algorithm_dependency','read_layout','semantic','update_release']);
         assert.ok((receipt.contract_bundle_ref as Record<string, unknown>).digest);
         const fixed = actualReads.at(-1)!;
+        assert.equal(fixed.snapshot_id, link.snapshot_id);
+        assert.equal(fixed.product_id, link.product_id);
+        const product = (fixed.products as Record<string, unknown>[]).find(item => item.product_id === link.product_id);
+        assert.ok(product);
+        assert.deepEqual(product.contract_refs, receipt.contract_refs);
+        assert.deepEqual(product.contract_bundle_ref, receipt.contract_bundle_ref);
         const fixedRows = fixed.rows as Record<string, unknown>[];
         assert.equal(fixedRows.length, 1);
         assert.equal(fixedRows[0]!.record_id, link.record_id);
@@ -1091,6 +1110,10 @@ test('R1 registry-selected production admits qualified daily and minute bars and
         const fixedRow = fixedRows[0]!.row as Record<string, unknown>;
         assert.deepEqual(fixedRow.subject, built.input.target.subject);
         assert.deepEqual(fixedRow.values, prepared.previewRows[0]!.values);
+        const ref = fixedRows[0]!.record_ref as Record<string, unknown>;
+        assert.equal(ref.revision_id, link.record_version);
+        assert.equal(ref.logical_key, link.record_id);
+        assert.equal(ref.snapshot_id, link.snapshot_id);
         assert.equal(actualReads.length, frequency === 'day' ? 1 : 2);
         parent = String(link.snapshot_id);
       }
@@ -1129,11 +1152,11 @@ test('data line real HTTP daily/minute tabular publish fixes four contracts and 
         const changed = await h.call('/r1/prepare', { ...built.input, source: { ...built.input.source, provider: 'changed-after-plan' } }, 409);
         assert.ok(['R1_SOURCE_CHANGED','R1_TARGET_CHANGED','R1_REQUEST_CONFLICT'].includes(changed.code));
         const client = h.services.r1Runtime!.client;
-        const realRead = client.fixedRead.bind(client), realSubmit = client.submit.bind(client);
+        const realRead = client.fixedReadPage.bind(client), realSubmit = client.submit.bind(client);
         const injectedReadbacks: string[] = [];
         let actualSubmissions = 0, corruption: 'contract' | 'subject' | null = frequency === 'minute' ? 'contract' : null;
         client.submit = async (...args) => { actualSubmissions++; return realSubmit(...args); };
-        client.fixedRead = async (...args) => {
+        client.fixedReadPage = async (...args) => {
           const result = await realRead(...args);
           if (!corruption) return result;
           const altered = structuredClone(result);
@@ -1152,16 +1175,18 @@ test('data line real HTTP daily/minute tabular publish fixes four contracts and 
           let pending = await h.call(`/r1/requests/${frozen.requestId}`) as R1RequestView;
           assert.equal(pending.state, 'pending_receipt'); assert.equal((pending.local.associations as unknown[]).length, 0);
           corruption = 'subject';
-          const badRowRecovery = await h.call(`/r1/requests/${frozen.requestId}/recover`, { lookupId: 'bar-subject-check' }, 202);
-          done = await settled(h, badRowRecovery.jobId); assert.notEqual(done.status, 'succeeded'); assert.ok(injectedReadbacks.includes('subject'));
+          const badRowRecovery = await h.call(`/r1/requests/${frozen.requestId}/recover`, { lookupId: 'bar-subject-check' }, 409);
+          assert.equal(badRowRecovery.code, 'R1_READBACK_ROW_CONTENT');
+          assert.ok(injectedReadbacks.includes('subject'));
           pending = await h.call(`/r1/requests/${frozen.requestId}`) as R1RequestView;
           assert.equal((pending.local.associations as unknown[]).length, 0, 'A changed subject must not be linked even when values and row IDs match');
           corruption = null;
           const recovery = await h.call(`/r1/requests/${frozen.requestId}/recover`, { lookupId: 'bar-original-recovery' }, 202);
+          assert.equal(recovery.jobId, submitted.jobId);
           done = await settled(h, recovery.jobId);
         }
         assert.equal(done.status, 'succeeded', JSON.stringify(done.error)); assert.equal(actualSubmissions, 1, 'Recovery must never resubmit');
-        client.fixedRead = realRead; client.submit = realSubmit;
+        client.fixedReadPage = realRead; client.submit = realSubmit;
         const associated = await h.call(`/r1/requests/${frozen.requestId}`) as R1RequestView;
         assert.equal(associated.state, 'associated');
         const links = associated.local.associations as Record<string, unknown>[]; assert.equal(links.length, 1);
@@ -1604,38 +1629,23 @@ test('retired handoff routes and schemas stay absent while material processing a
 });
 
 
-test('fixed calculation HTTP is read-only for new work and retains historical Polars lookup/recovery', async () => {
-  const f = fixture(), h = await host(f);
+test('read-only algorithm catalog exposes one entry and retired routes create no tasks', async () => {
+  const f = fixture(), h = await host(f, join(f.root, 'web'));
   try {
     const countBefore = h.database.connection.prepare('SELECT count(*) AS count FROM tasks').get()?.count;
-    const capabilities = await h.call('/computation/capabilities');
-    assert.equal(capabilities.routing, 'fixed_by_method');
-    assert.deepEqual(capabilities.methods.map((method: { id: string }) => method.id).sort(),
-      ['financial_linear', 'macro_yoy', 'observation_ma20']);
-    assert.deepEqual(await h.call('/computation/tasks'), { items: [] });
-    const polars = await h.call('/processing/polars/capabilities');
-    assert.equal(polars.runtime, 'bd.polars-fixed');
-    assert.equal(typeof polars.configured, 'boolean');
-    // New calculations belong only to BD AGENTS. Retired creation cannot allocate tasks,
-    // even with a formerly valid payload; original task lookup and recovery stay available.
-    const disabled = await h.call('/computation/tasks', {}, 404);
-    assert.equal(disabled.code, 'SERVICE_ROUTE_UNAVAILABLE');
-    for (const input of [{}, { requestId: 'retired-create', method: 'macro_yoy', calculation: {} }]) {
-      const rejected = await h.call('/processing/polars/tasks', input, 410);
-      assert.equal(rejected.code, 'ALGORITHM_AGENT_ENTRY_REQUIRED');
+    const ui = h.base.replace('/api/bd', '/api/ui');
+    const headers = { 'x-local-data-generation': '1' };
+    const catalog = await fetch(ui + '/tool-library', { headers });
+    assert.equal(catalog.status, 200);
+    assert.deepEqual((await catalog.json()).tools.map((tool: { id: string }) => tool.id), ['macd']);
+    assert.equal((await fetch(ui + '/algorithms', { headers })).status, 404);
+    for (const path of ['/tools', '/plugins', '/computation/capabilities', '/processing/polars/capabilities']) {
+      assert.equal((await h.call(path, undefined, 404)).code, 'SERVICE_ROUTE_UNAVAILABLE');
     }
-    for (const prefix of ['/computation/tasks', '/processing/polars/tasks']) {
-      const missing = await h.call(prefix + '/missing-calculation', undefined, 404);
-      assert.equal(missing.code, 'TASK_NOT_FOUND');
+    assert.equal((await h.call('/r1/batches/algorithm-settings', undefined, 404)).code, 'R1_BATCH_NOT_FOUND');
+    for (const path of ['/computation/tasks', '/processing/polars/tasks', '/r1/batches/classify']) {
+      assert.equal((await h.call(path, {}, 404)).code, 'SERVICE_ROUTE_UNAVAILABLE');
     }
-    for (const suffix of ['/stage', '/prepare']) {
-      const disabledAction = await h.call('/computation/tasks/missing-calculation' + suffix, {}, 404);
-      assert.equal(disabledAction.code, 'SERVICE_ROUTE_UNAVAILABLE');
-    }
-    const stage = await h.call('/processing/polars/tasks/missing-calculation/stage', {}, 404);
-    assert.equal(stage.code, 'TASK_NOT_FOUND');
-    const prepare = await h.call('/processing/polars/tasks/missing-calculation/prepare', {}, 409);
-    assert.equal(prepare.code, 'POLARS_STAGE_PENDING');
     assert.equal(h.database.connection.prepare('SELECT count(*) AS count FROM tasks').get()?.count, countBefore);
   } finally { await h.close(); }
 });

@@ -35,6 +35,12 @@ export interface TaskDispatchGuard {
   assertAction(taskId: string, attemptGeneration: number): void;
   release?(taskId: string): void;
 }
+/** A host-registered creation capability. A task payload cannot supply it. */
+export interface TaskInitialBudgetPolicy {
+  readonly runtimeId: string;
+  readonly action: string;
+  readonly maxNoProgressMs: number;
+}
 export interface TaskCreateInput {
   title: string; conversationId?: string; runtimeId: string; action: string; args: JsonValue; requestId: string;
   dependencies?: string[]; reviewRequired?: boolean;
@@ -233,16 +239,26 @@ export class TaskService {
   private readonly staleAfterMs: number;
   private readonly controlsAllTasks: boolean;
   private readonly dispatchGuard?: TaskDispatchGuard;
+  private readonly initialBudgetPolicy?: { token: TaskInitialBudgetPolicy; rule: TaskInitialBudgetPolicy };
 
   constructor(options: { database: CoreDatabase; runtimes: TaskRuntimeRegistry; permissions?: PermissionService; recover?: boolean;
     isConversationActive?: (id: string) => boolean; heartbeatIntervalMs?: number; staleAfterMs?: number; controlsAllTasks?: boolean;
-    dispatchGuard?: TaskDispatchGuard }) {
+    dispatchGuard?: TaskDispatchGuard; initialBudgetPolicy?: TaskInitialBudgetPolicy }) {
     this.database = options.database;
     this.runtimes = options.runtimes;
     this.permissions = options.permissions;
     this.isConversationActive = options.isConversationActive;
     this.controlsAllTasks = options.controlsAllTasks ?? false;
     this.dispatchGuard = options.dispatchGuard;
+    if (options.initialBudgetPolicy) {
+      const token = options.initialBudgetPolicy;
+      validId(token.runtimeId);
+      validId(token.action);
+      if (!Number.isSafeInteger(token.maxNoProgressMs) || token.maxNoProgressMs <= DEFAULT_BUDGET.maxNoProgressMs
+        || token.maxNoProgressMs > DEFAULT_BUDGET.maxActiveMs)
+        throw new TaskError('INVALID_BUDGET', '受信任务初始等待上限无效。');
+      this.initialBudgetPolicy = { token, rule: { runtimeId: token.runtimeId, action: token.action, maxNoProgressMs: token.maxNoProgressMs } };
+    }
     const interval = options.heartbeatIntervalMs ?? 5000;
     this.staleAfterMs = options.staleAfterMs ?? 60_000;
     if (!Number.isSafeInteger(interval) || interval < 10 || interval > 60_000 || !Number.isSafeInteger(this.staleAfterMs) || this.staleAfterMs <= interval) {
@@ -261,9 +277,9 @@ export class TaskService {
     return created.task;
   }
 
-  createInTransaction(input: TaskCreateInput): { task: TaskRecord; publish(): void } {
+  createInTransaction(input: TaskCreateInput, initialBudgetPolicy?: TaskInitialBudgetPolicy): { task: TaskRecord; publish(): void } {
     if (!this.database.connection.isTransaction) throw new TaskError('TRANSACTION_REQUIRED', '任务接收须在所属核心数据库事务内进行。');
-    const created = this.persistCreate(input);
+    const created = this.persistCreate(input, initialBudgetPolicy);
     let published = false;
     return { task: created.task, publish: () => {
       if (published || !created.envelope) return;
@@ -277,7 +293,7 @@ export class TaskService {
     } };
   }
 
-  private persistCreate(input: TaskCreateInput): { task: TaskRecord; envelope?: TaskEventEnvelope } {
+  private persistCreate(input: TaskCreateInput, initialBudgetPolicy?: TaskInitialBudgetPolicy): { task: TaskRecord; envelope?: TaskEventEnvelope } {
     this.assertOpen();
     if (typeof input.title !== 'string' || !input.title.trim() || input.title.length > 1000) throw new TaskError('INVALID_TASK', '任务需要 1 到 1,000 个字符的标题。');
     for (const value of [input.runtimeId, input.action, input.requestId]) validId(value);
@@ -290,7 +306,15 @@ export class TaskService {
     if (input.budgetScope !== undefined) validId(input.budgetScope);
     const now = Date.now();
     if (input.deadlineAt !== undefined && input.deadlineAt <= now) throw new TaskError('INVALID_DEADLINE', '任务截止时刻必须晚于受理时间。');
-    const budget = validateBudget(input.budget);
+    const registered = this.initialBudgetPolicy;
+    let maxNoProgressMs: number | undefined;
+    if (initialBudgetPolicy !== undefined) {
+      if (registered?.token !== initialBudgetPolicy || ownerRole !== 'service' || input.runtimeId !== registered.rule.runtimeId
+        || input.action !== registered.rule.action || input.parentTaskId !== undefined || input.budgetScope !== undefined)
+        throw new TaskError('INVALID_BUDGET', '受信初始等待预算只用于已登记的服务动作与独立新目标。');
+      maxNoProgressMs = registered.rule.maxNoProgressMs;
+    }
+    const budget = validateBudget(input.budget, maxNoProgressMs);
     const versions = validateVersions(input.versions ?? {});
     const dependencyIds = validateDependencies(input.dependencies ?? []);
     if (input.reviewRequired !== undefined && typeof input.reviewRequired !== 'boolean') throw new TaskError('INVALID_TASK', '成果审核选项必须是布尔值。');
@@ -776,6 +800,11 @@ export class TaskService {
     if (!recovered || !['pending', 'succeeded', 'failed', 'not_applied'].includes(recovered.outcome) || typeof recovered.evidence !== 'string' || !recovered.evidence.trim()
       || recovered.evidence.length > 32_000 || !Array.isArray(recovered.effects) || recovered.effects.length > effects.length) throw new TaskError('INVALID_RECOVERY', '原身份核对没有返回有效证据。');
     const result = recovered.result === undefined ? null : validateResult(recovered.result);
+    const recoveryEvidenceKey = recovered.progressEvidenceKey;
+    if (recoveryEvidenceKey !== undefined && (typeof recoveryEvidenceKey !== 'string' || !recoveryEvidenceKey.trim()
+      || recoveryEvidenceKey.length > 240 || recoveryEvidenceKey.includes('\0') || task.ownerRole !== 'service'
+      || recovered.outcome === 'pending' || recovered.outcome === 'failed'))
+      throw new TaskError('INVALID_RECOVERY', '续办进度须由服务运行时核对实际外部里程碑。');
     if (result && recovered.outcome !== 'succeeded') throw new TaskError('INVALID_RECOVERY', '只有确认成功的原动作能回填成果。');
     let envelope!: TaskEventEnvelope;
     let dependencyEvents: TaskEventEnvelope[] = [];
@@ -783,6 +812,7 @@ export class TaskService {
       const current = this.get(taskId); this.assertVersion(current, task.version);
       if (this.active.has(taskId)) throw new TaskError('TASK_BUSY', '核对期间任务已开始新的尝试。');
       const seen = new Set<string>();
+      let successfulNewEffect = false;
       for (const update of recovered.effects) {
         const key = `${update.attemptId}\0${update.effectId}`;
         const original = effects.find((effect) => effect.attemptId === update.attemptId && effect.effectId === update.effectId);
@@ -795,7 +825,13 @@ export class TaskService {
         this.database.connection.prepare('UPDATE task_effects SET status=?,evidence=?,data=? WHERE attempt_id=? AND id=? AND status=\'started\'')
           .run(update.outcome, update.evidence.trim(), update.data === undefined ? null : json(update.data).text, update.attemptId, update.effectId);
         this.database.connection.prepare('UPDATE task_attempts SET unconfirmed_effects=MAX(0,unconfirmed_effects-1) WHERE id=?').run(update.attemptId);
+        if (update.outcome === 'succeeded') successfulNewEffect = true;
       }
+      if (recoveryEvidenceKey !== undefined && !successfulNewEffect)
+        throw new TaskError('INVALID_RECOVERY', '续办进度须核对至少一项本次新增确认的成功外部动作。');
+      const freshProgress = recoveryEvidenceKey !== undefined && this.database.connection
+        .prepare('INSERT OR IGNORE INTO task_progress_evidence(scope,evidence_key) VALUES(?,?)')
+        .run(current.budgetScope, 'recovered:' + recoveryEvidenceKey).changes === 1;
       const unknown = this.hasUnconfirmedTaskEffects(taskId);
       if (recovered.outcome !== 'pending' && unknown) throw new TaskError('RECOVERY_INCOMPLETE', '仍有原动作缺少确认，不能把任务核对为已完成。');
       if (recovered.outcome === 'pending') {
@@ -808,11 +844,12 @@ export class TaskService {
       current.requiresReview = false;
       current.result = recovered.outcome === 'succeeded' ? result ?? { summary: '原动作已按固定身份核对完成。', data: { recoveryEvidence: recovered.evidence.trim() } } : null;
       current.error = recovered.outcome === 'failed' ? { ...classifiedFailure('RECOVERED_FAILED', '原外部动作核对为失败。'), stage: 'recovery' as const } : null;
-      if (recovered.outcome === 'succeeded') this.database.connection.prepare('UPDATE task_budgets SET progress_active_ms=active_ms WHERE scope=?').run(current.budgetScope);
+      if (recovered.outcome === 'succeeded' || freshProgress) this.database.connection.prepare('UPDATE task_budgets SET progress_active_ms=active_ms WHERE scope=?').run(current.budgetScope);
       if (current.currentAttemptId) this.database.connection.prepare("UPDATE task_workers SET status='exited' WHERE attempt_id=?").run(current.currentAttemptId);
       if (current.currentRunId) this.database.connection.prepare('UPDATE task_runs SET status=?,result=?,error=?,ended_at=? WHERE id=?')
         .run(current.status, encode(current.result), encode(current.error), Date.now(), current.currentRunId);
-      envelope = this.record(current, 'TASK_RECONCILED', { outcome: recovered.outcome, evidence: recovered.evidence.trim(), stopRequested: stopIntent ? String(stopIntent) : null, source: 'runtime_original_identity' });
+      envelope = this.record(current, 'TASK_RECONCILED', { outcome: recovered.outcome, evidence: recovered.evidence.trim(), stopRequested: stopIntent ? String(stopIntent) : null, source: 'runtime_original_identity',
+        ...(freshProgress ? { progressEvidenceKey: recoveryEvidenceKey! } : {}) });
       dependencyEvents = this.refreshDependents(current.id);
     });
     this.publishMany([envelope, ...dependencyEvents]);
@@ -1649,11 +1686,11 @@ const FAILURE_NEXT_ACTION: Record<TaskFailureCategory, string> = {
 function validId(value: string): void {
   if (typeof value !== 'string' || !value.trim() || value.length > 256 || value.includes('\0')) throw new TaskError('INVALID_TASK', '任务、运行时或动作标识无效。');
 }
-function validateBudget(input: Partial<TaskBudgetLimits> | undefined): TaskBudgetLimits {
+function validateBudget(input: Partial<TaskBudgetLimits> | undefined, maxNoProgressMs = DEFAULT_BUDGET.maxNoProgressMs): TaskBudgetLimits {
   if (input !== undefined && (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !(key in DEFAULT_BUDGET)))) throw new TaskError('INVALID_BUDGET', '任务预算字段无效。');
   const result = { ...DEFAULT_BUDGET, ...input } as TaskBudgetLimits;
   for (const [key, value] of Object.entries(result)) {
-    const hostLimit = DEFAULT_BUDGET[key as keyof TaskBudgetLimits];
+    const hostLimit = key === 'maxNoProgressMs' ? maxNoProgressMs : DEFAULT_BUDGET[key as keyof TaskBudgetLimits];
     if (value === null) {
       if (hostLimit !== null) throw new TaskError('INVALID_BUDGET', '基础预算不能为空。');
       continue;

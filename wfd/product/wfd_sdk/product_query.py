@@ -600,17 +600,41 @@ class ProductQuery:
                                     {"relative": str(relative)})
         return target
 
-    def _snapshot_metadata(self, snapshot_id):
+    def _snapshot_metadata(self, snapshot_id, *, expected_sha=None):
         """Read one commit/snapshot/manifest chain without scanning payloads."""
         commit_path = self.root / "catalog/commits" / (snapshot_id + ".json")
+        from . import indexed_bulk as bulk
         try:
             commit_bytes = commit_path.read_bytes()
             marker = json.loads(commit_bytes.decode("utf-8"))
             if marker.get("snapshot_id") != snapshot_id:
                 raise ValueError("commit marker snapshot id mismatch")
+            if str(marker.get("snapshot_file", "")).startswith(bulk.SNAPSHOT_PREFIXES):
+                if expected_sha is not None or commit_path.is_symlink():
+                    raise ValueError("BULK_LEGACY_ANCHOR_INVALID")
+                snapshot = bulk.read_snapshot(self.root, snapshot_id, commit_raw=commit_bytes)
+                roots = bulk.index_roots(snapshot)
+                products = bulk.indexed_products(self.root, snapshot)
+                root_size = sum(self._rooted(bulk.node_relative(ref, protocol=protocol)).stat().st_size
+                                for protocol, ref in bulk.root_nodes(snapshot))
+                # A fixed ordinary product query uses the ordinary predecessor's
+                # manifest and the requested HEAD's immutable indexed catalog.
+                anchor = snapshot["legacy_anchor"]
+                manifest = {"files": []}
+                anchor_commit = anchor_snapshot = anchor_manifest = 0
+                if anchor is not None:
+                    bulk.snapshot_relative(anchor["snapshot_id"])
+                    _, manifest, anchor_commit, anchor_snapshot, anchor_manifest = self._snapshot_metadata(
+                        anchor["snapshot_id"], expected_sha=anchor["sha256"])
+                return ({**snapshot, **roots},
+                        {**manifest, "_indexed_product_ids": list(products)},
+                        len(commit_bytes) + anchor_commit,
+                        self._rooted(bulk.snapshot_relative(snapshot_id)).stat().st_size + anchor_snapshot,
+                        anchor_manifest + 3 * root_size)
             snapshot_path = self._rooted(row_version_objects.snapshot_relative(marker, snapshot_id))
             snapshot_bytes = snapshot_path.read_bytes()
-            if sha(snapshot_bytes) != marker["snapshot_sha256"]:
+            checksum = sha(snapshot_bytes)
+            if checksum != marker["snapshot_sha256"] or (expected_sha is not None and "sha256:" + checksum != expected_sha):
                 raise ValueError("snapshot digest mismatch")
             snapshot = json.loads(snapshot_bytes.decode("utf-8"))
             if snapshot.get("snapshot_id") != snapshot_id:
@@ -622,6 +646,12 @@ class ProductQuery:
             manifest = json.loads(manifest_bytes.decode("utf-8"))
             if manifest.get("files") != snapshot.get("files"):
                 raise ValueError("manifest/snapshot file list mismatch")
+            roots = bulk.validate_ordinary_roots(self.root, snapshot, manifest)
+            root_size = 0
+            if roots:
+                manifest["_indexed_product_ids"] = list(bulk.indexed_products(self.root, snapshot))
+                root_size = sum(self._rooted(bulk.node_relative(ref, protocol=protocol)).stat().st_size
+                                for protocol, ref in bulk.root_nodes(snapshot))
             row_version_objects.project_snapshot(self.root, snapshot)
             # Equality above binds the physical lists. Reuse only the validated
             # source projections; iteration/canonical bytes remain physical.
@@ -635,7 +665,7 @@ class ProductQuery:
                 "Fixed snapshot metadata is unavailable or fails its declared digests",
                 {"snapshot_id": snapshot_id, "detail": str(exc)}) from exc
         return (snapshot, manifest, len(commit_bytes), len(snapshot_bytes),
-                len(manifest_bytes))
+                len(manifest_bytes) + 3 * root_size)
 
     def _preflight_snapshot(self, snapshot_id):
         return self._snapshot_metadata(snapshot_id)
@@ -655,6 +685,8 @@ class ProductQuery:
             raise ProductQueryError("SCAN_BUDGET_EXCEEDED", "Fixed filter metadata exceeds the scan allowance",
                                     {"required_scan_bytes": metadata_bytes, "max_scan_bytes": max_scan_bytes})
         selected = set(product_ids)
+        if selected.intersection(manifest.get("_indexed_product_ids", [])):
+            raise ProductQueryError("BULK_PARTITION_LOCATOR_REQUIRED", "Use batch_read_page for indexed products")
         entries = [entry for entry in manifest["files"] if entry.get("product_id") in selected]
         self._authorize_metadata_sources(self._source_ids_from_entries(entries), require_nonempty=bool(entries))
         products = self._manifest_products(entries)
@@ -1525,6 +1557,9 @@ class ProductQuery:
         business_range = self._business_time_range(request)
         snapshot, manifest, commit_bytes, snapshot_bytes, manifest_bytes = \
             self._preflight_snapshot(request["snapshot_id"])
+        if manifest.get("_indexed_product_ids"):
+            raise ProductQueryError("SOURCE_MINUTE_SNAPSHOT_OPERATION_UNSUPPORTED",
+                                    "Whole-snapshot context queries require indexed product support")
         groups, metas = {}, {}
         for entry in manifest["files"]:
             groups.setdefault(entry["product_id"], []).append(entry)
@@ -2556,6 +2591,8 @@ class ProductQuery:
 
         (snapshot, manifest, commit_bytes, snapshot_bytes,
          manifest_bytes) = self._preflight_snapshot(request["snapshot_id"])
+        if request["product_id"] in manifest.get("_indexed_product_ids", []):
+            raise ProductQueryError("BULK_PARTITION_LOCATOR_REQUIRED", "Use batch_read_page for indexed products")
         entries = [entry for entry in manifest["files"]
                    if entry.get("product_id") == request["product_id"]]
         if not entries:

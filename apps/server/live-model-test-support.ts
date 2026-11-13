@@ -7,14 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { loadAppConfiguration } from '../../platform/config/model.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { BundledResources } from '../../platform/resources/bundled.js';
+import { localAlgorithmConfiguration } from './financial-configuration.js';
 import { ProcessRuntime } from '../../platform/runtime/programs.js';
 import { LocalDataLifecycle } from '../../platform/runtime/local-data-lifecycle.js';
 import { startBrowserHost, type BrowserHost } from '../../platform/capabilities/browser/host.js';
 import { digestOperationArgs } from '../../platform/security/permissions.js';
 import { createPiBackend } from '../../modules/agent/runtime/pi.js';
 import { WORKSPACE_BD_VERSION, WORKSPACE_SYSTEM_PROMPT } from '../../modules/agent/service.js';
-import { createMaterialTableReader } from '../../modules/financial/managed-table.js';
-import { localAlgorithmConfiguration, localFinancialConfiguration } from './financial-configuration.js';
 import { createApplicationServices, type ApplicationServices } from './services.js';
 import { createFullChainFixture, type FullChainFixture } from './full-chain-test-support.js';
 import { startLocalServer } from './boot.js';
@@ -209,9 +208,7 @@ export async function startLiveModelTestHost(input: { realRoot: string; evidence
         localData: { lifecycle: localData, dataId }, localDataControlPath: controlDatabasePath,
         controlStateRoot: serviceRoot,
         materials: { environment: 'local-review' },
-        configureFinancial: localFinancialConfiguration(resources),
-        configureAlgorithms: localAlgorithmConfiguration({ projectRoot: codeRoot, resources,
-          tables: materials => createMaterialTableReader(materials) }),
+        configureAlgorithms: localAlgorithmConfiguration(codeRoot, processRuntime),
         credentialReference: configuration.credentialReference, modelConfigurationVersion,
         modelConnection: { endpoint: configuration.pi.customModel!.baseUrl, protocol: configuration.pi.customModel!.api },
         modelInput: configuration.pi.customModel!.input,

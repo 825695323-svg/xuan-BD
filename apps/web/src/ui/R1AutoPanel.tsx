@@ -8,7 +8,6 @@ import { dataBrowserApi } from '../data-browser-api';
 import { RequestError } from '../api';
 import { r1AutoApi, type R1AutoView } from '../r1-auto-api';
 import { r1Api, type R1XlsxPreview } from '../r1-api';
-import type { AlgorithmEntryFocus } from './algorithm-catalog';
 import { ErrorNote, errorDetail, useWords } from './Controls';
 import { R1AutoBatchPanel } from './R1AutoBatchPanel';
 
@@ -19,7 +18,6 @@ interface Props {
   ready: boolean; disabled: boolean;
   onChooseMaterial(id: string): void; onSourceChange(source: SourceEditor): void;
   onUpload(file: File, category: MaterialCategory): Promise<void>;
-  focus?: Extract<AlgorithmEntryFocus, { kind: 'batch' }> | null;
 }
 const activeKey = 'xuan-bd.r1-auto.request';
 function rememberedRequest(): string { try { return localStorage.getItem(activeKey) ?? ''; } catch { return ''; } }
@@ -70,7 +68,7 @@ function cellText(cell: R1XlsxPreview['preview']['rows'][number]['cells'][number
   return cell.formula ? '' : cell.resolvedSharedString ?? cell.inlineString ?? cell.rawStorage ?? '';
 }
 
-export function R1AutoPanel({ materials, materialId, material, materialLoading, materialError, source, ready, disabled, onChooseMaterial, onSourceChange, onUpload, focus = null }: Props) {
+export function R1AutoPanel({ materials, materialId, material, materialLoading, materialError, source, ready, disabled, onChooseMaterial, onSourceChange, onUpload }: Props) {
   const words = useWords();
   const [activeId, setActiveId] = useState(rememberedRequest), [current, setCurrent] = useState<R1AutoView | null>(null);
   const [recent, setRecent] = useState<R1AutoView[]>([]), [lookupId, setLookupId] = useState('');
@@ -169,7 +167,7 @@ export function R1AutoPanel({ materials, materialId, material, materialLoading, 
   const completed = current?.state === 'associated' && current.currentRequest?.state === 'associated';
   const mayStartAnother = current && ['associated', 'conflicts_pending', 'blocked', 'stopped'].includes(current.state) && !current.currentRequest?.requiresRecovery;
 
-  return <><R1AutoBatchPanel source={source} ready={ready} disabled={disabled || busy} onSourceChange={onSourceChange} focus={focus} onOpenAuto={view => {
+  return <><R1AutoBatchPanel source={source} ready={ready} disabled={disabled || busy} onSourceChange={onSourceChange} onOpenAuto={view => {
     chooseRequest(view.requestId); accept(view);
   }} />
   <section className="r1-stage" aria-label={words('文件自动交接', 'Automatic file handoff')} aria-busy={busy || loading}>

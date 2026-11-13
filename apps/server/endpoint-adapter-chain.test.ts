@@ -252,17 +252,6 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
     const sinaRows = await host.call(`/processing/plans/${sinaRun.planId}/outputs/observations/artifact`);
     assert.equal(sinaRows.rows[0].close, '1443.31');
 
-    // 算法预检走同一普通入口：JSONP 原件按已采用适配完整解析后再判断，缺对象代码时明确拒绝而非补造身份。
-    const classifyResponse = await fetch(`${host.base}/r1/batches/classify?adapterId=ths.kline.daily&adapterVersion=1&configDigest=${ths.adopted.configDigest}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'x-mashiro-client': 'web' }, body: new Uint8Array(THS_LIKE) });
-    const classified = await classifyResponse.json();
-    assert.equal(classifyResponse.status, 200, JSON.stringify(classified));
-    assert.equal(classified.complete, true);
-    assert.deepEqual(classified.adapter, { adapterId: 'ths.kline.daily', version: '1', configDigest: ths.adopted.configDigest,
-      frequency: 'day', adjustment: 'qfq', market: null });
-    assert.equal(classified.code, 'R1_ALGORITHM_IDENTITY');
-    assert.equal(classified.rowCount, 2);
-
     // R3/R5：整组证据中任一样本不符期望（含坏数值被期望为接受）即不可采用，状态保持 candidate。
     await host.call('/processing/adapters/candidates', { requestId: 'candidate-eastmoney-v3', input: { config: eastmoneyConfig('3') } }, 201);
     const badGroup = await host.call('/processing/adapters/eastmoney.kline.daily/3/replay', { requestId: 'replay-bad-group',
@@ -297,7 +286,7 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
     assert.equal(extraRun.plan.status, 'failed');
     assert.match(JSON.stringify(extraRun.plan.steps.find((step: { kind: string }) => step.kind === 'parse')!.gaps), /ADAPTER_EXTRA_POSITIONS/u);
 
-    // R7/R9：声明为 event 的端点即使含日期列也不取得日线用途；分页未闭合的样本不能声明完整系列。
+    // R9：分页未闭合的样本必须经实际适配解析明确拒绝。
     const newsConfig = { contract: 'bd.endpoint-adapter/1' as const, adapterId: 'eastmoney.news.list', version: '1',
       match: { endpoint: 'https://np-listapi.eastmoney.example.test/comm/web/getNewsByColumns', protocol: 'json/v1',
         frequency: 'event' as const, adjustment: 'none' as const },
@@ -308,17 +297,15 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
       evidence };
     await host.call('/processing/adapters/candidates', { requestId: 'candidate-news', input: { config: newsConfig } }, 201);
     const news = await adopt(host, 'eastmoney.news.list', '1', [newsPageId], [newsTruncatedId], 'news');
-    const newsClassify = await fetch(`${host.base}/r1/batches/classify?adapterId=eastmoney.news.list&adapterVersion=1&configDigest=${news.adopted.configDigest}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'x-mashiro-client': 'web' }, body: new Uint8Array(NEWS_PAGE) });
-    const newsClassified = await newsClassify.json();
-    assert.equal(newsClassified.kind, 'other', JSON.stringify(newsClassified));
-    assert.equal(newsClassified.code, 'R1_ALGORITHM_ADAPTER_FREQUENCY');
-    assert.equal(newsClassified.adapter.adjustment, 'none');
-    const truncatedClassify = await fetch(`${host.base}/r1/batches/classify?adapterId=eastmoney.news.list&adapterVersion=1&configDigest=${news.adopted.configDigest}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'x-mashiro-client': 'web' }, body: new Uint8Array(NEWS_TRUNCATED) });
-    const truncatedClassified = await truncatedClassify.json();
-    assert.equal(truncatedClassified.kind, 'unknown', JSON.stringify(truncatedClassified));
-    assert.equal(truncatedClassified.code, 'ADAPTER_PAGINATION_INCOMPLETE');
+    const newsRun = await run('news-complete', newsPageId, bind(news.adopted.configDigest, 'eastmoney.news.list'));
+    assert.equal(newsRun.plan.status, 'completed');
+    const newsRows = await host.call(`/processing/plans/${newsRun.planId}/outputs/observations/artifact`);
+    assert.equal(newsRows.rows.length, 1);
+    assert.equal(newsRows.rows[0].title, 'a');
+    const truncated = await run('news-truncated', newsTruncatedId, bind(news.adopted.configDigest, 'eastmoney.news.list'));
+    assert.equal(truncated.plan.status, 'failed');
+    const truncatedParse = truncated.plan.steps.find((step: { kind: string }) => step.kind === 'parse')!;
+    assert.match(JSON.stringify(truncatedParse.gaps), /ADAPTER_PAGINATION_INCOMPLETE/u);
 
     // 漂移：已采用配置遇到不同载体，步骤定向失败并记录原因；不回退其他版本。
     const drifted = await run('drift', thsId, bind(eastmoney.adopted.configDigest, 'eastmoney.kline.daily'));

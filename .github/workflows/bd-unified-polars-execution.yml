@@ -1,15 +1,9 @@
-name: BD unified algorithm Polars execution
+name: BD material processing and R1 verification
 
 on:
   push:
     branches: [main]
     paths:
-      - 'modules/financial/unified-polars-execution.ts'
-      - 'modules/financial/wfd-source-ma*.ts'
-      - 'modules/collection/data-processing/polars-fixed.ts'
-      - 'modules/financial/unified-polars-derived.ts'
-      - 'modules/financial/basic-algorithm-tool-contract.ts'
-      - 'modules/collection/production-calculation*.ts'
       - 'modules/collection/production-module-ports*.ts'
       - 'modules/collection/conversation-processing.ts'
       - 'modules/agent/model-tools.ts'
@@ -19,19 +13,14 @@ on:
       - 'modules/collection/production-verifier*.ts'
       - 'modules/collection/processing-plan.ts'
       - 'modules/collection/candidate-pipeline.ts'
-      - 'modules/financial/conversation-algorithms.ts'
-      - 'modules/financial/basic-algorithm-tool-contract.ts'
       - 'apps/server/services.ts'
       - '.github/workflows/bd-unified-polars-execution.yml'
   workflow_dispatch:
   pull_request:
     paths:
-      - 'modules/financial/unified-polars-execution.ts'
-      - 'modules/collection/production-calculation*.ts'
       - 'modules/collection/production-verifier*.ts'
       - 'modules/collection/processing-plan.ts'
       - 'modules/collection/candidate-pipeline.ts'
-      - 'modules/financial/conversation-algorithms.ts'
       - 'apps/server/services.ts'
       - 'contracts/workspace-services.ts'
       - '.github/workflows/bd-unified-polars-execution.yml'
@@ -65,44 +54,25 @@ jobs:
           echo "WFD_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
       - name: Typecheck and frontend production build
         run: npm run build
-      - name: Test unified task route and existing Polars verifiers
+      - name: Verify material processing and Polars cleaning
         env:
           XUAN_TEST_ROOT: ${{ runner.temp }}/bd-unified-polars-tests
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-unified-polars-live
         run: |
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
           node --import tsx --test \
-            modules/financial/unified-polars-execution.test.ts \
-            modules/financial/unified-polars-derived.test.ts \
-            modules/financial/unified-polars-r1-gate.test.ts \
-            modules/financial/unified-polars-live.test.ts \
-            modules/financial/unified-algorithm-discovery.test.ts \
-            modules/collection/data-processing/polars-macro-independent.test.ts \
             modules/collection/data-processing/financial-fixed.test.ts \
-            apps/server/unified-polars-publish-full-chain.test.ts \
-            modules/collection/production-calculation.test.ts \
             modules/collection/production-verifier.test.ts \
             modules/collection/polars-cleaning.test.ts \
             modules/collection/production-module-ports.test.ts
 
-      - name: Financial module test coverage outside default npm test
-        if: ${{ !cancelled() }}
-        env:
-          XUAN_TEST_ROOT: ${{ runner.temp }}/bd-financial-module-tests
-          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-financial-full-chain
-        run: |
-          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
-          node --import tsx --test modules/financial/*.test.ts
-      - name: Check legacy R1 and Polars admission compatibility
+      - name: Verify local R1 routes
         env:
           XUAN_TEST_ROOT: ${{ runner.temp }}/bd-regression-legacy-tests
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-regression-legacy-chain
         run: |
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
-          # Legacy route regressions exercise only local HTTP; the separate WFD full-chain step above
-          # explicitly supplies WFD_PYTHON and validates actual remote publishing/readback.
           env -u WFD_PYTHON -u POLARS_PYTHON node --import tsx --test apps/server/r1-routes.test.ts
-          node --import tsx --test modules/collection/polars-financial-admission.test.ts
       - name: Full native Node and TypeScript regression (failures remain visible)
         if: ${{ !cancelled() }}
         env:

@@ -8,7 +8,6 @@ import { ControlTooltip } from './ui/Controls';
 import { DetailFacts, DetailHeader, DetailSection, ObjectDetailPanel } from './ui/ObjectDetailPanel';
 import './styles.css';
 import './ui/WorkspaceLayout.css';
-import './ui/ToolsPage.css';
 
 /** 只渲染真实 UI 组件及其布局样式，不读取后端、账号、用户数据或运行状态。 */
 const params = new URLSearchParams(window.location.search);

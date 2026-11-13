@@ -84,7 +84,9 @@ test('batch intake preserves sequential custody, duplicate identities, per-file 
       'Pending evidence resumes from the active head after unrelated files have published');
     assert.equal(final.items[0]!.auto!.source.source_id, source.source_id);
     assert.equal(final.items[0]!.auto!.source.provider, source.provider);
-    assert.equal(final.state, 'completed');
+    assert.equal(final.state, 'blocked');
+    assert.deepEqual(final.items.map(item => item.state), ['associated', 'associated', 'associated', 'blocked', 'associated']);
+    assert.equal(final.items[3]!.error?.code, returned.items[3]!.error?.code);
     assert.deepEqual(host.services.materials!.readOriginal(final.items[0]!.materialId!).bytes, gap);
     const tasksAfter = host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get()!.n;
     assert.ok(Number(tasksAfter) > Number(tasksBefore));
@@ -239,17 +241,17 @@ test('actual registered-but-unpublished output rejection releases the batch with
     client.submit = async (...args) => { sends++; const reply = await actualSubmit(...args); actualReply = reply.result; return reply; };
     await host.call('/r1/batches/start', input, 202); await upload(host, input.batchId, 'item-1', invalid);
     const returned = await readUntil(host, input.batchId, view => view.items[0]!.state === 'blocked');
-    assert.equal((actualReply as unknown as WfdRecord).state, 'registered_not_published');
+    assert.equal((actualReply as unknown as WfdRecord).state, 'rejected');
     assert.equal(returned.items[0]!.auto!.currentRequest!.state, 'rejected');
     assert.equal(returned.items[0]!.auto!.currentRequest!.requiresRecovery, false);
     assert.equal(returned.items[0]!.auto!.wfdRejection!.registration_preserved, true);
     assert.match(JSON.stringify(returned.items[0]!.error), /UNIT_DIMENSION_MISMATCH|WFD/);
     assert.equal(returned.nextUploadItemId, 'item-2'); assert.equal(associations(returned.items[0]!).length, 0);
     const receipt = returned.items[0]!.auto!.currentRequest!.local.receipt as WfdRecord;
-    assert.equal(receipt.state, 'registered_not_published');
+    assert.equal(receipt.state, 'rejected');
     const registered = (receipt.output_results as WfdRecord[])[0]!;
     assert.equal(registered.registration_state, 'registered'); assert.equal(registered.publication_state, 'not_published');
-    assert.ok(registered.product_id); assert.equal(registered.records, undefined);
+    assert.ok(registered.product_id); assert.deepEqual(registered.records, []);
     assert.equal((registered.errors as WfdRecord[])[0]!.code, 'UNIT_DIMENSION_MISMATCH');
     assert.equal((await host.call('/r1/products/snapshot', {})).snapshotId, null);
     const request = returned.items[0]!.auto!.currentRequest!;
@@ -279,7 +281,7 @@ test('lost actual registered rejection recovers by original status after restart
     let actualReply: WfdRecord | null = null;
     client.submit = async (...args) => {
       sends++; const reply = await actualSubmit(...args); actualReply = reply.result;
-      assert.equal(reply.result.state, 'registered_not_published');
+      assert.equal(reply.result.state, 'rejected');
       throw new WfdProductMachineError('TEST_REGISTERED_REPLY_LOST', 'Reply lost after actual registration and complete output rejection.',
         { operation: 'submit', requestId: input.batchId, mayHaveBeenAccepted: true });
     };
@@ -296,7 +298,7 @@ test('lost actual registered rejection recovers by original status after restart
     assert.equal(returned.items[0]!.auto!.wfdRejection!.registration_preserved, true);
     assert.equal(returned.nextUploadItemId, 'item-2'); assert.equal(associations(returned.items[0]!).length, 0);
     const receipt = request.local.receipt as WfdRecord;
-    assert.equal(receipt.state, 'registered_not_published'); assert.equal(receipt.outputs_complete, true);
+    assert.equal(receipt.state, 'rejected'); assert.equal(receipt.outputs_complete, true);
     assert.equal((receipt.pagination as WfdRecord).detail, 'full');
     assert.equal(((receipt.output_results as WfdRecord[])[0]!.errors as WfdRecord[])[0]!.code, 'UNIT_DIMENSION_MISMATCH');
     await host.call(`/r1/requests/${request.requestId}/recover`, { lookupId: 'preserved-registered-failure' }, 202);

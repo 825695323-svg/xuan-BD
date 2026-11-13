@@ -4,13 +4,14 @@ import { resolve } from 'node:path';
 
 /** 已清理模块的未使用声明门禁；其他模块的历史告警明确报告，不静默宣称全仓清零。 */
 export const CLEANED_LOGIC_FILES = new Set([
-  'apps/server/algorithm-routes.ts', 'apps/server/workspace-routes.ts', 'apps/server/source-settings-routes.ts',
+  'apps/server/workspace-routes.ts', 'apps/server/source-settings-routes.ts',
   'apps/server/logic-cleanup.test.ts',
-  'apps/web/src/App.tsx', 'apps/web/src/algorithm-api.ts',
-  'apps/web/src/ui/ToolsPage.tsx', 'apps/web/src/ui/SettingsPage.tsx', 'apps/web/src/ui/ComputationPanel.tsx',
-  'apps/web/src/ui/useAlgorithmResult.ts', 'apps/web/src/ui/useStoredSelection.ts', 'apps/web/src/ui/logic-cleanup.test.tsx',
-  'modules/financial/algorithm-service.ts', 'modules/financial/conversation-algorithms.ts',
-  'modules/financial/basic-algorithm-tool-contract.ts', 'modules/financial/basic-algorithm-tool-contract.test.ts',
+  'apps/web/src/App.tsx',
+  'apps/web/src/ui/ToolsPage.tsx', 'apps/web/src/ui/SettingsPage.tsx',
+  'apps/web/src/ui/useStoredSelection.ts', 'apps/web/src/ui/logic-cleanup.test.tsx',
+  'modules/financial/algorithm-definitions.ts', 'modules/financial/algorithm-registry.ts',
+  'modules/financial/conversation-algorithms.ts', 'modules/financial/tool-library.ts',
+  'modules/financial/basic-algorithm-tool-contract.ts',
   'plugins/api-sources/operations.ts',
 ]);
 const unusedCodes = new Set(['6133', '6138', '6192', '6196', '6198', '6199']);

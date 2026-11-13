@@ -23,6 +23,17 @@ interface RequestRow { request_id: string; binding_json: string; binding_sha256:
 /** The host-only bridge never accepts caller rows, processing hashes, runtime roots or namespaces. */
 export class R1WorkspaceService {
   private readonly reader: R1ProductReader;
+  private tabularBulk?: Pick<TaskRuntime, 'execute' | 'recover'>;
+  setTabularBulkHandler(handler: Pick<TaskRuntime, 'execute' | 'recover'>): void {
+    if (this.tabularBulk) fail('R1_BULK_RUNTIME', '批量动作已装配。');
+    this.tabularBulk = handler;
+  }
+  setSourceMinuteBulkHandler(handler: Pick<TaskRuntime, 'execute' | 'recover'>): void {
+    this.setTabularBulkHandler(handler);
+  }
+  private bulkAction(action: string) {
+    return action === 'data.r1.source-minute.stage' || action === 'data.r1.source-minute.commit';
+  }
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService; handoff: R1HandoffService;
     processing: ProcessingPlanService; materials: MaterialService; runtime?: R1Runtime;
     configuration: { state: string; reason: string | null } }) {
@@ -76,24 +87,33 @@ export class R1WorkspaceService {
   }
 
   /** 统一异步限制 verifier：prepare 与 auto/Polars 共用同一实际 WFD usage_status 检查。 */
-  async prepareWithRestriction(value: unknown): Promise<R1RequestView> {
+  async prepareWithRestriction(value: unknown, signal?: AbortSignal): Promise<R1RequestView> {
+    signal?.throwIfAborted();
     const input = readInput(value), runtime = this.requireRuntime(); this.assertDispatch();
+    if (this.row(input.requestId)) return this.prepareInternal(input, runtime, null);
+    const generation = this.tasks.getControl().generation, connection = runtime.currentIdentity();
     const plan = this.options.processing.get(input.planId);
     const fixedOutput = plan.outputs.find(item => item.outputId === input.outputId);
-    const restriction = await this.verifyPublishRestriction(input, fixedOutput, runtime);
+    const restriction = await this.verifyPublishRestriction(input, fixedOutput, runtime, signal);
+    signal?.throwIfAborted();
+    this.assertDispatch();
+    if (generation !== this.tasks.getControl().generation) fail('TASK_NOT_ACTIVE', '核对期间停止代次已改变，未准备交接。');
+    if (canonicalWfdJson(connection) !== canonicalWfdJson(runtime.currentIdentity()))
+      fail('R1_CONNECTION_BINDING_CHANGED', '限制核对期间连接发生变化，未准备交接。');
     return this.prepareInternal(input, runtime, restriction);
   }
 
   private async verifyPublishRestriction(input: R1PrepareInput, fixedOutput: { usage?: unknown; target?: unknown } | undefined,
-    runtime: ReturnType<R1WorkspaceService['requireRuntime']>): Promise<RestrictionEvidence | null> {
+    runtime: ReturnType<R1WorkspaceService['requireRuntime']>, signal?: AbortSignal): Promise<RestrictionEvidence | null> {
     const usage = fixedOutput && isWfdRecord(fixedOutput.usage) ? fixedOutput.usage : null;
     if (!usage || (usage.purpose !== 'current_publish' && usage.purpose !== 'historical_publish')) return null;
     const target = this.publishRestrictionTarget(input, fixedOutput!);
     let result: unknown;
     try {
-      const reply = await runtime.client.usageStatus();
+      const reply = await runtime.client.usageStatus(signal);
       result = reply.result;
     } catch (error) {
+      signal?.throwIfAborted();
       fail('R1_USAGE_STATUS_UNAVAILABLE', '无法读取 WFD 权威 usage_status；发布准备不得降级为 no_known_issue。' + (error instanceof Error ? ` ${error.message.slice(0, 500)}` : ''));
     }
     return restrictionEvidenceFromUsageStatus(result, target, Date.now());
@@ -312,6 +332,10 @@ export class R1WorkspaceService {
   }
 
   readonly runtime: TaskRuntime = { id: R1_WORKSPACE_RUNTIME, execute: async context => {
+    if (this.bulkAction(context.task.action)) {
+      if (!this.tabularBulk) return fail('R1_BULK_UNAVAILABLE', '批量接收尚未装配。');
+      return this.tabularBulk.execute(context);
+    }
     const requestId = String((context.task.args as { requestId?: unknown }).requestId ?? '');
     const row = this.requireRow(requestId), runtime = this.assertBinding(row);
     const attempt = this.options.handoff.attempt(requestId);
@@ -339,9 +363,7 @@ export class R1WorkspaceService {
     await context.emit({ type: 'checkpoint', checkpoint: { requestId, bindingSha256: row.binding_sha256, documentSha256: String(attempt.document_sha256) } });
     // 首次发送的全部用途/限制证据必须在任何外部副作用标记前完成；失败不进入 unknown 提交恢复。
     const restriction = await this.verifyRestrictionForRequest(requestId, runtime);
-    this.options.handoff.assertCalculationReadyToSend(requestId, restriction);
-    // 在报告首次外部副作用前完成远端固定记录重新读取；失败时不得发 WFD submit。
-    await this.options.handoff.assertRemoteCalculationReadyToSend(requestId, context.signal);
+    this.options.handoff.assertPublicationReadyToSend(requestId, restriction);
     await context.emit({ type: 'side_effect_started', effectId, description: '向冻结 data_only 连接提交原 request_identity',
       operation: { protocol: 'wfd.structured-ingest/1.0', requestId, bindingSha256: row.binding_sha256 } });
     const result = await this.options.handoff.submitAndAssociate(requestId, runtime.client, context.signal, restriction);
@@ -356,6 +378,10 @@ export class R1WorkspaceService {
     if (result.state === 'rejected') fail('R1_WFD_REJECTED', '原请求已由 WFD 明确拒绝，原回执保存在 BD。');
     fail('R1_HANDOFF_PENDING', '未获得完整处理回执与已接收行的固定读回；保留原请求待核对，不能声称全部已导入。');
   }, recover: async ({ task, effects, signal }) => {
+    if (this.bulkAction(task.action)) {
+      if (!this.tabularBulk?.recover) return fail('R1_BULK_UNAVAILABLE', '批量接收尚未装配。');
+      return this.tabularBulk.recover({ task, effects, signal });
+    }
     const requestId = String((task.args as { requestId?: unknown }).requestId ?? '');
     const row = this.requireRow(requestId), runtime = this.assertBinding(row), attempt = this.options.handoff.attempt(requestId);
     if (task.versions.r1Workspace !== R1_WORKSPACE_VERSION || task.versions.protocol !== 'wfd.structured-ingest/1.0'

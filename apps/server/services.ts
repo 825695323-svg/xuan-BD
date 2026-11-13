@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { PersonalCore } from '../../modules/agent/runtime/core.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
@@ -32,15 +32,15 @@ import { readConnectionRegistry } from '../../platform/config/connections.js';
 import { DirectConversationService } from '../../modules/agent/direct-conversations.js';
 import { BdService } from '../../modules/agent/service.js';
 import { CollectionService } from '../../modules/collection/service.js';
-import { FinancialService } from '../../modules/financial/service.js';
+import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
 import { ConversationAlgorithmBridge } from '../../modules/financial/conversation-algorithms.js';
+import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
+import type { LocalAlgorithmFactory } from './financial-configuration.js';
 import { ConversationProcessingBridge } from '../../modules/collection/conversation-processing.js';
 import { ConversationR1Bridge } from '../../modules/collection/conversation-r1.js';
 import { initializeCandidateSharing } from '../../modules/collection/candidate-object-storage.js';
 import { CandidateService } from '../../modules/collection/candidate-service.js';
 import { MaterialService } from '../../modules/collection/materials/service.js';
-import { PolarsFixedService } from '../../modules/collection/polars-fixed-service.js';
-import { FixedCalculationService } from '../../modules/collection/fixed-calculation-service.js';
 import { StructuredRetrievalService } from '../../modules/collection/structured-retrieval.js';
 import { CloudCustodyService } from '../../modules/collection/cloud-custody.js';
 import { createArtifactArchiveActions } from '../../modules/collection/artifact-archive.js';
@@ -51,18 +51,21 @@ import { createArtifactManifestActions } from '../../modules/collection/artifact
 import { createBaiduCustodyBackend, type CloudCustodyBackend } from '../../plugins/storage/baidu-drive.js';
 import { MaterialSemanticService } from '../../modules/collection/materials/semantic.js';
 import { SegmentService } from '../../modules/collection/segments/service.js';
-import { R1HandoffService, type R1CalculationCandidateVerification } from '../../modules/collection/r1-structured-handoff.js';
-import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
+import { R1HandoffService, type R1LocalReferences } from '../../modules/collection/r1-structured-handoff.js';
 import { createR1HandoffRuntime, type R1Runtime } from '../../modules/collection/r1-runtime.js';
 import { ProcessingPlanService } from '../../modules/collection/processing-plan.js';
-import { R1WorkspaceService } from '../../modules/collection/r1-workspace.js';
+import { R1_WORKSPACE_RUNTIME, R1WorkspaceService } from '../../modules/collection/r1-workspace.js';
 import { R1AutoService } from '../../modules/collection/r1-auto.js';
 import { R1AutoBatchService } from '../../modules/collection/r1-auto-batch.js';
+import { ManagedOriginalStore } from '../../modules/collection/managed-originals.js';
+import { TabularBulkProfileStore } from '../../modules/collection/tabular-bulk-profile.js';
+import { buildTabularBatchHeader, verifyTabularBatchReceipt, verifyTabularBatchReadback } from '../../modules/collection/r1-tabular-bulk-transport.js';
+import { assertTabularBulkDiskGrowth, R1TabularBulkService, R1_TABULAR_BULK_ACTIONS, R1_TABULAR_BULK_COMMIT_NO_PROGRESS_MS } from '../../modules/collection/r1-source-minute-bulk-service.js';
+import { buildSourceMinuteBatchHeader, verifySourceMinuteBatchReadback, verifySourceMinuteBatchReceipt } from '../../modules/collection/r1-source-minute-transport.js';
 import { EndpointAdapterRegistry, readSourceReceiptFromTask } from '../../modules/collection/endpoint-adapter-registry.js';
 import { PostPublicationCorrectionService } from '../../modules/collection/post-publication-correction.js';
 import { acceptWorkspaceMaterial } from '../../modules/collection/accept-material.js';
 import { ConversationMaterialBridge } from '../../modules/collection/conversation-materials.js';
-import { ConversationFinancialBridge } from '../../modules/financial/conversation-bridge.js';
 import { mediaPluginCatalog, mediaPluginRegistrations } from '../../modules/collection/materials/plugins.js';
 import { createMaterialTranscriptionAdapter } from '../../modules/collection/materials/media-adapter.js';
 import { UiPreferenceService } from '../../platform/config/ui-preferences.js';
@@ -73,40 +76,14 @@ import type { BrowserConfiguration } from '../../platform/capabilities/browser/i
 import type { CaptureSessionService } from '../../plugins/capture-sources/session.js';
 import { BusinessGoalService } from '../../platform/jobs/business-goals.js';
 import { ConversationTaskCompletions } from '../../modules/agent/task-completions.js';
-import { directDependencyVersions, directResourceVersions, directoryVersion } from '../../platform/plugins/direct-versions.js';
-import { requireFinancialComputedResult } from '../../modules/financial/contracts.js';
+import { directDependencyVersions, directoryVersion } from '../../platform/plugins/direct-versions.js';
 import { ToolLibraryService } from '../../modules/financial/tool-library.js';
-import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
-import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
-import { ProductionCalculation } from '../../modules/collection/production-calculation.js';
 import type { ProductionModuleId } from '../../modules/collection/production-module-ports.js';
 import { PolarsSourceCleaner } from '../../modules/collection/data-processing/polars-cleaning.js';
-import { UnifiedPolarsExecution } from '../../modules/financial/unified-polars-execution.js';
 import type { LocalDataLifecycle, LocalDataLifecycleRecord } from '../../platform/runtime/local-data-lifecycle.js';
 
 export type CollectionConfiguration = Omit<ConstructorParameters<typeof CollectionService>[0], 'database' | 'tasks' | 'files'>;
-export type FinancialConfiguration = Omit<ConstructorParameters<typeof FinancialService>[0], 'database' | 'tasks' | 'permissions'>;
 export type MaterialConfiguration = Omit<ConstructorParameters<typeof MaterialService>[0], 'database' | 'tasks' | 'files'>;
-
-
-/**
- * 固定计算入口的本机开关（`config/fixed-calculation.json`）。
- *
- * 只在服务装配时读取；缺文件、格式异常或不可读一律按“启用”处理，避免配置损坏误停能力。
- * 关闭后只影响固定计算入口，不改算法登记、白名单、批量均线与任何已存结果。
- */
-function fixedCalculationEnabled(resources?: ResourceBindings): boolean {
-  if (!resources) return true;
-  try {
-    const path = join(resources.path('config'), 'fixed-calculation.json');
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return true;
-    const value = JSON.parse(readFileSync(path, 'utf8')) as { enabled?: unknown };
-    return value.enabled !== false;
-  } catch {
-    return true;
-  }
-}
 
 export interface ServiceOptions {
   projectRoot: string;
@@ -148,10 +125,7 @@ export interface ServiceOptions {
   modelInput?: readonly ('text' | 'image')[];
   /** 仅受信宿主装配隔离合成输入与版本；不接受浏览器或模型动态注册。 */
   configureCollection?: (context: { files: FileReferenceService; permissions: PermissionService }) => CollectionConfiguration;
-  configureFinancial?: (context: { files: FileReferenceService; permissions: PermissionService }) => FinancialConfiguration;
-  /** 仅受信宿主装配；由持久受控采用记录决定是否启用，不读取目录自动采用。 */
-  configureAlgorithms?: (context: { database: CoreDatabase; tasks(): TaskService; permissions: PermissionService;
-    materials?: MaterialService }) => LocalAlgorithmService;
+  configureAlgorithms?: LocalAlgorithmFactory;
   materials?: MaterialConfiguration;
   /** Host-selected registered data-only connection for new R1 requests; never accepted from HTTP. */
   r1ConnectionId?: string;
@@ -188,20 +162,14 @@ export interface ApplicationServices {
   options: ServiceOptions;
   bd?: BdService;
   collection?: CollectionService;
-  financial?: FinancialService;
   algorithms?: LocalAlgorithmService;
   derivedPublisher?: DerivedWfdPublisher;
   toolLibrary?: ToolLibraryService;
   materials?: MaterialService;
   cloudCustody?: CloudCustodyService;
   structuredRetrieval?: StructuredRetrievalService;
-  polarsFixed?: PolarsFixedService;
-  unifiedPolars?: UnifiedPolarsExecution;
-  /** 与原报清洗服务并列，方法内部可选 Polars/pandas 的计算入口。 */
-  productionCalculation?: ProductionCalculation;
   /** 当前宿主冻结的八模块拔插开关。 */
   productionModuleSwitches?: Partial<Record<ProductionModuleId, boolean>>;
-  fixedCalculations?: FixedCalculationService;
   candidates?: CandidateService;
   semantics?: MaterialSemanticService;
   r1?: R1HandoffService;
@@ -230,7 +198,8 @@ export interface ApplicationServices {
 
 export function createApplicationServices(core: PersonalCore, database: CoreDatabase, options: ServiceOptions): ApplicationServices {
   if (options.configureCollection && options.role !== 'service') throw new TaskError('SERVICE_ROLE_REQUIRED', '数据收集只能由独立服务角色显式装配。');
-  if ((options.configureFinancial || options.materials) && options.role !== 'service') throw new TaskError('SERVICE_ROLE_REQUIRED', '金融工具与材料入口需要独立服务角色。');
+  if (options.configureAlgorithms && options.role !== 'service') throw new TaskError('SERVICE_ROLE_REQUIRED', 'MACD 需要独立服务角色。');
+  if (options.materials && options.role !== 'service') throw new TaskError('SERVICE_ROLE_REQUIRED', '材料入口需要独立服务角色。');
   let tasks: TaskService | undefined;
   const permissions = new PermissionService({ database, isRunActive: (id, generation) => core.isRunActive(id, generation) || !!tasks?.isRunActive(id, generation) });
   const files = new FileReferenceService({ database, permissions, resources: options.resources });
@@ -312,13 +281,11 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const conversationMaterials = options.workspaceServices ? new ConversationMaterialBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
     assertPath: path => direct.assertPublicPath(path), mediaAdapters: () => mediaAdapters }) : undefined;
-  const conversationAlgorithms = (options.workspaceServices?.processing || options.workspaceServices?.productionCalculation || options.workspaceServices?.algorithms) ? new ConversationAlgorithmBridge({ database, core, files,
-    companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null }) : undefined;
+  const conversationAlgorithms = options.workspaceServices?.toolLibrary ? new ConversationAlgorithmBridge({
+    database, companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null }) : undefined;
   const conversationProcessing = options.workspaceServices ? new ConversationProcessingBridge({ database, core, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
   const conversationR1 = options.role !== 'service' && options.workspaceServices?.r1Workspace
     ? new ConversationR1Bridge({ database, core, files, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
-  const conversationFinancial = options.workspaceServices?.financial ? new ConversationFinancialBridge({ database,
-    companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null }) : undefined;
   if (selectedTools.shortcutConfigPath) protectedPaths.push(selectedTools.shortcutConfigPath);
   direct = createDirectRuntime({ files, artifactRoot, processRuntime: options.processRuntime, resources: options.resources, protectedPaths, whisperModelPath: selectedTools.whisperModelPath ?? undefined, shortcuts: selectedTools.shortcuts, videoMaxMinutes: selectedTools.videoMaxMinutes, videoMaxBytes: selectedTools.videoMaxBytes,
     sourceSettings,
@@ -355,23 +322,13 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   if (!conversationMaterials) for (const registration of mediaPluginRegistrations) direct.registry.register(registration);
   for (const entry of conversationAlgorithms?.registrations ?? []) {
     direct.registry.register(entry);
-    direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['algorithms', 'process', 'material', 'materialRead'],
-      { algorithms: options.workspaceServices?.algorithms?.versionBinding ?? null }, {}));
+    direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['algorithms'],
+      { ...conversationAlgorithms!.versionBinding, execution: options.workspaceServices?.algorithms?.versionBinding ?? null }, {}));
   }
   for (const entry of conversationProcessing?.registrations ?? []) { direct.registry.register(entry); direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'], { ...(options.workspaceServices?.processing?.versionBinding ?? {}) }, {})); }
   for (const entry of conversationR1?.registrations ?? []) {
     direct.registry.register(entry);
     direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'], conversationR1!.versionBinding, {}));
-  }
-  for (const registration of conversationFinancial?.registrations ?? []) {
-    direct.registry.register(registration);
-    direct.registry.bindVersions(registration.action, () => {
-      const status = options.workspaceServices?.financial?.status();
-      return directDependencyVersions(registration.action, ['financial'], {
-        financial: options.workspaceServices?.financial?.versionBinding ?? null,
-        plugin: status ? { pluginId: status.pluginId, pluginVersion: status.pluginVersion, enabled: status.enabled, revision: status.version } : null,
-      }, directResourceVersions({ files, artifactRoot, resources: options.resources }));
-    });
   }
   direct.registry.register({ action: 'pi.prompt', runtimeId: 'pi', kind: 'agent', modelCalls: null,
     title: '智能任务', description: '让当前模型理解与处理明确请求，结果显示在关联会话中。',
@@ -425,15 +382,9 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const collection = options.configureCollection ? new CollectionService({
     ...options.configureCollection({ files, permissions }), database, tasks: currentTasks, files,
   }) : undefined;
-  const financial = options.configureFinancial ? new FinancialService({ ...options.configureFinancial({ files, permissions }),
-    database, tasks: currentTasks, permissions }) : undefined;
-  const materials = options.materials ? new MaterialService({ ...options.materials, database, tasks: currentTasks, files }) : undefined;
-  const cloudCustody = materials ? new CloudCustodyService({ database, tasks: currentTasks, materials, files, processing: () => processing, algorithms: () => algorithms,
+  const materials = options.materials ? new MaterialService({ ...options.materials, database, tasks: currentTasks, files, resources: options.resources }) : undefined;
+  const cloudCustody = materials ? new CloudCustodyService({ database, tasks: currentTasks, materials, files, processing: () => processing,
     backend: archiveBackend }) : undefined;
-  // 算法服务必须能读取已装配材料与数据库线路；采用记录在服务内核对，目录读取不会自动启用。
-  const algorithms = options.configureAlgorithms ? options.configureAlgorithms({ database, tasks: currentTasks,
-    permissions, materials }) : undefined;
-  const toolLibrary = options.role === 'service' ? new ToolLibraryService({ financial, algorithms }) : undefined;
   let processing: ProcessingPlanService | undefined;
   const candidates = materials ? new CandidateService({ database, materials }) : undefined;
   if (candidates) initializeCandidateSharing(database.connection);
@@ -459,55 +410,16 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       verify: ref => candidates.verifyObject(ref) } }) : undefined;
   let r1Runtime: R1Runtime | undefined;
   let derivedPublisher: DerivedWfdPublisher | undefined;
-  let unifiedPolars: UnifiedPolarsExecution | undefined;
-  const verifyFixedDerived = (refs: import('../../modules/collection/r1-structured-handoff.js').R1LocalReferences, digest: string) => {
-    if (!derivedPublisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', '固定算法独立核验尚未装配。');
+  const verifyFixedDerived = (refs: R1LocalReferences, digest: string) => {
+    if (!derivedPublisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', 'MACD 固定结果发布核验尚未装配。');
     derivedPublisher.verify(refs, digest);
-  };
-  const verifyCalculationCandidate = (input: R1CalculationCandidateVerification) => {
-    if (!polarsFixed) throw new TaskError('R1_CALCULATION_VERIFIER_UNBOUND', '计算候选缺受信验证器。');
-    polarsFixed.verifyCandidate(input.taskId, input);
-  };
-  const verifyCalculationCandidateRemote = async (taskId: string, signal: AbortSignal) => {
-    if (!polarsFixed) throw new TaskError('R1_CALCULATION_VERIFIER_UNBOUND', 'Polars 原 WFD 来源固定复核器未装配。');
-    await polarsFixed.verifySourceForPublication(taskId, signal);
-  };
-  const verifyFixedDerivedRemote = async (taskId: string, signal: AbortSignal) => {
-    if (!derivedPublisher) throw new TaskError('DERIVED_PUBLISHER_UNAVAILABLE', '统一结构化算法正式来源复核器尚未装配。');
-    await derivedPublisher.verifyStructuredRemote(taskId, signal);
-  };
-  const verifyAlgorithmCandidate = (input: R1CalculationCandidateVerification) => {
-    if (!algorithms || !materials || !processing)
-      throw new TaskError('R1_ALGORITHM_VERIFIER_UNBOUND', '基础算法、材料与加工证据验证器尚未完整装配。');
-    const finished = algorithms.view(input.taskId), result = finished.result;
-    if (finished.status !== 'succeeded' || finished.requiresReview || !result || result.status !== 'computed'
-      || result.taskId !== input.taskId || !result.source || typeof result.source !== 'object'
-      || !('kind' in result.source) || result.source.kind !== 'wfd_fixed_snapshot')
-      throw new TaskError('R1_ALGORITHM_PROOF_MISSING', '派生材料不是已完成的 WFD 固定快照算法结果。');
-    const sha = wfdSha256(canonicalWfdJson(result.rows));
-    const original = materials.readOriginal(input.materialId);
-    if (original.sha256 !== sha || canonicalWfdJson(JSON.parse(original.bytes.toString('utf8'))) !== canonicalWfdJson(result.rows))
-      throw new TaskError('R1_ALGORITHM_ROWS_CHANGED', '计算结果与受管派生材料实际行不一致。');
-    const plan = processing.get(input.planId);
-    const output = plan.outputs.find(item => item.outputId === input.outputId);
-    if (!output || !output.materialIds.includes(input.materialId) || output.publishEligible !== true)
-      throw new TaskError('R1_ALGORITHM_PLAN_INVALID', '派生计划未绑定原计算材料或尚未获得发布资格。');
-    const def = input.definition, algorithm = isWfdRecord(def.algorithm_definition) ? def.algorithm_definition : null;
-    if (def.measurement_nature !== 'derived' || !isWfdRecord(def.semantic_context)
-      || def.semantic_context.content_nature !== 'deterministic_derived'
-      || !algorithm || algorithm.method_id !== result.methodId
-      || algorithm.method_version !== result.methodVersion
-      || algorithm.implementation_version !== result.implementationVersion
-      || algorithm.input_digest !== result.inputDigest)
-      throw new TaskError('R1_ALGORITHM_DEFINITION_CHANGED', 'WFD派生定义与原算法编号、方法版本、实现版本及输入摘要不一致。');
   };
   let r1Configuration: { state: 'ready' | 'not_configured' | 'unavailable'; reason: string | null } =
     { state: 'unavailable', reason: 'materials service not assembled' };
   if (materials && options.resources) {
     try {
       r1Runtime = createR1HandoffRuntime({ resources: options.resources, database, materials, processing, candidates,
-        connectionId: options.r1ConnectionId, verifyCalculationCandidate, verifyCalculationCandidateRemote, verifyFixedDerivedRemote,
-        verifyAlgorithmCandidate, verifyFixedDerived });
+        connectionId: options.r1ConnectionId, verifyFixedDerived });
       r1Configuration = { state: 'ready', reason: null };
     } catch (error) {
       r1Configuration = { state: 'not_configured',
@@ -515,24 +427,18 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     }
   }
   const r1: R1HandoffService | undefined = r1Runtime?.service ?? (materials ? new R1HandoffService({
-    database, materials, processing, candidates, verifyCalculationCandidate, verifyCalculationCandidateRemote,
-    verifyFixedDerivedRemote, verifyAlgorithmCandidate, verifyFixedDerived }) : undefined);
+    database, materials, processing, candidates, verifyFixedDerived }) : undefined);
   const r1Workspace: R1WorkspaceService | undefined = r1 && processing && materials ? new R1WorkspaceService({ database, tasks: currentTasks,
     handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration }) : undefined;
-  // 独立确定性算法唯一发布路径：复用 R1 正式写入与固定读回，不走原报五步。
-  derivedPublisher = r1Runtime && r1Workspace && r1 && (algorithms || (options.role === 'service' && options.processRuntime))
-    ? new DerivedWfdPublisher({
-      viewAlgorithm: taskId => {
-        if (!algorithms) throw new TaskError('ALGORITHM_UNAVAILABLE', '当前未装配原 Python 固定算法。');
-        return algorithms.view(taskId);
-      },
-      readAlgorithmInput: taskId => {
-        if (!algorithms) throw new TaskError('ALGORITHM_UNAVAILABLE', '当前未装配原 Python 固定算法。');
-        return algorithms.verifiedInput(taskId);
-      },
+  const algorithms = options.configureAlgorithms?.({ database, tasks: currentTasks, permissions, r1Runtime });
+  const toolLibrary = options.role === 'service' ? new ToolLibraryService({ algorithms }) : undefined;
+  if (algorithms && r1Runtime && r1Workspace && r1) {
+    derivedPublisher = new DerivedWfdPublisher({
+      viewAlgorithm: taskId => algorithms.view(taskId),
+      readAlgorithmInput: taskId => algorithms.verifiedInput(taskId),
       runtime: () => r1Runtime, workspace: () => r1Workspace, handoff: r1,
-      structuredPolars: () => unifiedPolars })
-    : undefined;
+    });
+  }
   // 来源字段档案放在本机配置资源下；未绑定时退回工程外运行根，不读源码树。
   const sourceFieldProfiles = options.resources
     ? new SourceFieldProfileStore(join(options.resources.path('config'), 'source-fields')) : undefined;
@@ -547,25 +453,10 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const segments = materials ? new SegmentService({ database, databasePath: segmentDatabasePath, tasks: currentTasks, files, materials }) : undefined;
   const structuredRetrieval = r1Workspace && r1 && segments ? new StructuredRetrievalService({ structured: r1Workspace, handoff: r1, segments }) : undefined;
   const bd = options.role === 'service' ? new BdService({ tasks: currentTasks,
-    core, health: options.health, versions: options.serviceVersions, collection, financial, materials, semantics }) : undefined;
+    core, health: options.health, versions: options.serviceVersions, collection, materials, semantics }) : undefined;
   const batchCustody = { core, database, get tasks() { return currentTasks(); }, files, permissions, attachmentRoot, bd, materials };
-  const polarsFixed = r1Auto && r1Workspace && processing && materials && bd ? new PolarsFixedService({ database,
-    tasks: currentTasks, workspace: r1Workspace, auto: r1Auto, processing, materials, processRuntime: options.processRuntime,
-    accept: input => acceptWorkspaceMaterial(batchCustody, input) }) : undefined;
-  const fixedCalculations = polarsFixed && r1Workspace && r1Auto && processing && materials
-    ? new FixedCalculationService({ polars: polarsFixed, tasks: currentTasks, workspace: r1Workspace,
-      auto: r1Auto, processing, materials, enabled: fixedCalculationEnabled(options.resources) }) : undefined;
-  // 新算法 Polars 在统一 algorithms.calculate 下使用独立方法执行器，不走旧原报候选五步。
-  unifiedPolars = options.role === 'service' && r1Workspace && options.processRuntime
-    ? new UnifiedPolarsExecution({ database, tasks: currentTasks, workspace: r1Workspace,
-      processRuntime: options.processRuntime }) : undefined;
-  // 计算与清洗分别装配：公式/因子只由受信计算模块执行，
-  // 五步清洗仍由 ProcessingPlanService 持有；共用核对与原 R1/WFD 不新增任务账本。
-  const productionCalculation = options.role === 'service'
-    ? new ProductionCalculation({ polars: unifiedPolars, legacy: algorithms, publisher: derivedPublisher })
-    : undefined;
   const questions = new AgentQuestionService(database, core);
-  modelTools = createCoreModelTools({ database, core, permissions, files, registry: direct.registry, service: bd, conversationFinancial, conversationAlgorithms, businessGoals, questions,
+  modelTools = createCoreModelTools({ database, core, permissions, files, registry: direct.registry, service: bd, conversationAlgorithms, businessGoals, questions,
     codeRoot: options.codeRoot ?? options.projectRoot,
     mediaPlugins: () => mediaPluginCatalog(conversationMaterials?.mediaAdapters() ?? []),
     // 工具桥按当次已批准结果承接编辑后的版本；这里仍固定原用户选择身份。
@@ -591,7 +482,6 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   } } : piRuntime);
   if (bd) runtimes.register(bd.runtime);
   if (collection) runtimes.register(collection.runtime);
-  if (financial) runtimes.register(financial.runtime);
   if (algorithms) runtimes.register(algorithms.runtime);
   if (materials) runtimes.register(materials.runtime);
   if (cloudCustody) runtimes.register(cloudCustody.runtime);
@@ -599,22 +489,36 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   if (processing) runtimes.register(processing.runtime);
   if (segments) runtimes.register(segments.runtime);
   if (r1Workspace) runtimes.register(r1Workspace.runtime);
-  if (polarsFixed) runtimes.register(polarsFixed.runtime);
-  if (unifiedPolars) runtimes.register(unifiedPolars.runtime);
   for (const runtime of options.taskRuntimes ?? []) runtimes.register(runtime);
+  const bulkCommitBudgetPolicy = options.role === 'service' ? Object.freeze({ runtimeId: R1_WORKSPACE_RUNTIME,
+    action: R1_TABULAR_BULK_ACTIONS[1], maxNoProgressMs: R1_TABULAR_BULK_COMMIT_NO_PROGRESS_MS }) : undefined;
   tasks = new TaskService({ database, runtimes, permissions, controlsAllTasks: options.role !== 'service',
+    initialBudgetPolicy: bulkCommitBudgetPolicy,
     ...(options.localData ? { dispatchGuard: options.localData.lifecycle } : {}),
     isConversationActive: (id) => core.getState(id).visibility === 'active' });
   const runningTasks = tasks;
+  let tabularBulk: R1TabularBulkService | undefined;
+  if (bd && materials && processing && r1Workspace && r1Runtime && sourceFieldProfiles
+    && bulkCommitBudgetPolicy && options.resources?.ownedDirectoryAvailable('bulk_csv')) {
+    const resources = options.resources;
+    const store = new ManagedOriginalStore({ database, bindings: resources, ownedRoot: 'bulk_csv', materials,
+      assertGrowth: (_path, bytes) => assertTabularBulkDiskGrowth(database.path, resources.path('bulk_csv'), bytes) });
+    const profiles = new TabularBulkProfileStore(join(resources.path('config'), 'tabular-bulk-profiles'), sourceFieldProfiles);
+    tabularBulk = new R1TabularBulkService({ database, tasks: currentTasks, materials, store, resources,
+      profileStore: sourceFieldProfiles, runtime: r1Runtime, processing, workspace: r1Workspace, commitBudgetPolicy: bulkCommitBudgetPolicy,
+      tabular: { profiles, transport: { buildHeader: buildTabularBatchHeader, verifyReceipt: verifyTabularBatchReceipt,
+        verifyReadback: verifyTabularBatchReadback } },
+      transport: { buildHeader: buildSourceMinuteBatchHeader, verifyReceipt: verifySourceMinuteBatchReceipt, verifyReadback: verifySourceMinuteBatchReadback } });
+    r1Workspace.setTabularBulkHandler(tabularBulk);
+  }
   const r1Batches = r1Auto && r1Workspace && materials && bd ? new R1AutoBatchService({ database, tasks: currentTasks,
-    custodyRoot: attachmentRoot,
+    custodyRoot: attachmentRoot, bulk: tabularBulk,
     auto: r1Auto, materials, connection: () => r1Workspace.capabilities().connection,
     adapters: endpointAdapters,
-    readCalculationInput: (item, selection) => r1Auto.readCalculationInput(item, selection),
     accept: input => acceptWorkspaceMaterial(batchCustody, input) }) : undefined;
-  const corrections = r1Runtime && r1Batches && processing && materials && endpointAdapters && r1Auto
+  const corrections = r1Runtime && processing && materials && endpointAdapters && r1Auto
     ? new PostPublicationCorrectionService({ database, tasks: currentTasks, runtime: r1Runtime,
-      processing, materials, batches: r1Batches, adapters: endpointAdapters }) : undefined;
+      processing, materials, adapters: endpointAdapters }) : undefined;
   // 运行时注册可晚于 TaskService 构造：TaskService 持有同一个 registry 引用。
   if (corrections) runtimes.register(corrections.runtime);
   segments?.attach();
@@ -727,5 +631,5 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   queueMicrotask(() => core.dispatchTaskCompletions());
   return { core, database, permissions, files, tasks: runningTasks, memory, agentSkills, questions, toolSettings, sourceSettings, personalResources, uiPreferences, contextLedger, inputRules, inputRouter, directConversations, direct, modelTools,
     ...(options.localData ? { localData: options.localData.lifecycle, localDataId: options.localData.dataId } : {}),
-    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, financial, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, polarsFixed, unifiedPolars, productionCalculation, productionModuleSwitches: options.productionModuleSwitches, fixedCalculations, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, sourceFieldProfiles, semanticProducts, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
+    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, productionModuleSwitches: options.productionModuleSwitches, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, sourceFieldProfiles, semanticProducts, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
 }

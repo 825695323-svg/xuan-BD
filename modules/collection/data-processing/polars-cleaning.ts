@@ -8,13 +8,13 @@ import type { ProcessRuntime } from '../../../platform/runtime/programs.js';
 import { cleanCandidateTable, structureCandidateTable, type CandidateTablePlan,
   type CleanedCandidateTable, type ParsedCandidateTable, type StructuredCandidateTable } from '../candidate-pipeline.js';
 import { normalizeNumericLexeme } from './numeric-format.js';
-import { POLARS_DEPENDENCY_VERSION } from './polars-fixed.js';
 
 /**
  * 清洗引擎独立于算法/因子引擎。仅对已解析并保留原值、原句与原位置的
  * 列执行受信 Polars trim/empty_to_null。TypeScript 规则只充当独立等价核对；
  * 最终单元格值必须来自 Python/Polars 的真实回执，不能自动回退到 JS。
  */
+export const POLARS_DEPENDENCY_VERSION = '2.0.0';
 export const POLARS_CLEAN_VERSION = 'bd.polars-clean/1';
 const worker = fileURLToPath(new URL('./polars-clean-worker.py', import.meta.url));
 const workerSha256 = wfdSha256(readFileSync(worker));

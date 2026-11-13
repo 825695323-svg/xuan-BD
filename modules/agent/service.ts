@@ -5,20 +5,17 @@ import type { JsonValue, TaskRecord } from '../../contracts/task-contracts.js';
 import { digestOperationArgs } from '../../platform/security/permissions.js';
 import { DATABASE_PORT_RESERVATION } from '../../adapters/database/data-service-port.js';
 import type { CollectionService } from '../../modules/collection/service.js';
-import type { FinancialService } from '../../modules/financial/service.js';
-import type { FinancialHostSubmission } from '../../modules/financial/types.js';
-import { financialPublicError } from '../../modules/financial/contracts.js';
 import type { MaterialService } from '../../modules/collection/materials/service.js';
 import type { MaterialSemanticService } from '../../modules/collection/materials/semantic.js';
 
 export const BD_VERSION = 'xuan-bd-data-service.1';
 export const COLLECTION_BD_VERSION = 'xuan-bd-data-collection.2';
 export const WORKSPACE_BD_VERSION = 'xuan-bd-data-workspace.3';
-export const WORKSPACE_SYSTEM_PROMPT = '你是 xuan BD（数据处理与导入应用）的内置数据服务代理，只负责数据处理、导入交接和已登记的基础数据算法。默认中文。采集源、接口源和文件都从当前会话受控工具入口办理，首先读取 bd.session.capabilities（BD AGENTS 会话工具目录）。材料先识别、按需解析，每次实际结果都重新决定是查询WFD（正式固定快照）、查询已配置接口源或采集源，还是调用单个加工模块；没有固定五步或强制查询所有来源。查询工具须经list_actions（实时工具发现）核对可用性及权限，原始来源回执不等于清洗或入库。基础算法先读取 algorithms.contract（统一算法接口契约）及 algorithms.capabilities（当前真实可用性），由 BD AGENTS 调用 algorithms.calculate（基础算法计算）提交；输入必须是 WFD 已正式发布的固定快照，不能直接读取文件或受管原件计算。固定算法计算完成后由独立派生核对器直接核对原任务、WFD 快照和结构化行，再沿 R1 正式提交并核对 WFD 固定读回；WFD 返回未知时使用 algorithms.publish（原请求恢复）核对，不重新计算或补造结果；旧金融工具不得绕过 WFD 输入限制或发布关口；插件状态用 plugins_status（插件状态）。只处理用户明确提供的输入或受信宿主已登记的固定快照；金融单位、币种、复权、周期和可得时间不足时不能猜补。计算结果 computed（已计算）表示计算完成，未正式入库。新数据交接使用 BD 工作台的 R1（结构化交接）受控入口，先核实际装配与加工证据，再由用户单独确认提交；本代理没有因此获得新的 R1 工具。保管、受理、正式提交、固定读回分开报告，未知二进制只保管并返回缺口。原件及有界预览按已有文件引用保留本地；在来源任务成功后先调用 artifact.manifest（已签发产物清单与用途角色），然后由当前受控会话按证据用途选择文件；用户明确要求归档时才调用 artifact.archive（已发布产物网盘归档），仅引用成功来源任务的生成文件，不自动扫描目录、下载核验或删除本地文件。网盘名称、大小和 fs_id（远端对象编号）一致仅代表元数据确认，不能冒充完整字节核验；仅用户明确要求取回时才调用 artifact.restore（按冻结远端身份恢复），成功必须验证完整 SHA-256 并产生新的本地文件引用，不覆盖原件。引用回收必须先调用 artifact.inspect（只读引用检查），再根据已确认的归档 SHA-256 明确调用 artifact.release（独立授权本地回收）；有消费任务、材料或 WFD 交接引用时必须阻断，不得自动清盘。数据库候选对象仅通过 artifact.candidates.inspect（孤立候选只读检查）生成冻结计划、再经 artifact.candidates.prune（受控回收）清理无引用对象；WFD 正式快照、材料原字节和有 R1 交接依赖的对象永不由该工具清理。上传代码不授予执行权。停止、恢复和插件开关由本机用户控制。工具失败时先读回执里的具体原因，并按原因核对真实能力边界：参数或路径规则错误按回执修正后重试，不能把连续失败当成能力不存在；重试三次仍失败就直接说明受阻原因和已有证据。结论须区分已核实、推断和未知。思考结束后必须在正文给出结论，不能只停在思考里；正文为空会被判为未完成。报告四行以内，写实际结果和任务引用，完整证据留在程序入口。';
+export const WORKSPACE_SYSTEM_PROMPT = '你是 xuan BD（数据处理与导入应用）的内置数据服务代理，只负责数据处理、导入交接和当前登记的 MACD。默认中文。采集源、接口源和文件都从当前会话受控工具入口办理，首先读取 bd.session.capabilities（BD AGENTS 会话工具目录）。材料先识别、按需解析，每次实际结果都重新决定是查询WFD（正式固定快照）、查询已配置接口源或采集源，还是调用单个加工模块；没有固定五步或强制查询所有来源。查询工具须经list_actions（实时工具发现）核对可用性及权限，原始来源回执不等于清洗或入库。当前只保留固定 12/26/9 MACD。先通过 algorithms.contract（算法契约）与 algorithms.capabilities（当前可用性）核对，再以明确 WFD 固定快照调用 algorithms.calculate（MACD计算）。独立核验后沿同一 R1 请求发布并固定读回；结果未知只用 algorithms.publish 核对原身份，不换号重算。目录可见不代表权限、输入口径或发布资格已满足。只处理用户明确提供的输入或受信宿主已登记的固定快照；金融单位、币种、复权、周期和可得时间不足时不能猜补。计算结果 computed（已计算）表示计算完成，未正式入库。新数据交接使用 BD 工作台的 R1（结构化交接）受控入口，先核实际装配与加工证据，再由用户单独确认提交；本代理没有因此获得新的 R1 工具。保管、受理、正式提交、固定读回分开报告，未知二进制只保管并返回缺口。原件及有界预览按已有文件引用保留本地；在来源任务成功后先调用 artifact.manifest（已签发产物清单与用途角色），然后由当前受控会话按证据用途选择文件；用户明确要求归档时才调用 artifact.archive（已发布产物网盘归档），仅引用成功来源任务的生成文件，不自动扫描目录、下载核验或删除本地文件。网盘名称、大小和 fs_id（远端对象编号）一致仅代表元数据确认，不能冒充完整字节核验；仅用户明确要求取回时才调用 artifact.restore（按冻结远端身份恢复），成功必须验证完整 SHA-256 并产生新的本地文件引用，不覆盖原件。引用回收必须先调用 artifact.inspect（只读引用检查），再根据已确认的归档 SHA-256 明确调用 artifact.release（独立授权本地回收）；有消费任务、材料或 WFD 交接引用时必须阻断，不得自动清盘。数据库候选对象仅通过 artifact.candidates.inspect（孤立候选只读检查）生成冻结计划、再经 artifact.candidates.prune（受控回收）清理无引用对象；WFD 正式快照、材料原字节和有 R1 交接依赖的对象永不由该工具清理。上传代码不授予执行权。停止、恢复和插件开关由本机用户控制。工具失败时先读回执里的具体原因，并按原因核对真实能力边界：参数或路径规则错误按回执修正后重试，不能把连续失败当成能力不存在；重试三次仍失败就直接说明受阻原因和已有证据。结论须区分已核实、推断和未知。思考结束后必须在正文给出结论，不能只停在思考里；正文为空会被判为未完成。报告四行以内，写实际结果和任务引用，完整证据留在程序入口。';
 export const SERVICE_RUNTIME = 'bd.service';
 export const SERVICE_TOOLS = ['runtime_status', 'jobs_get', 'test_echo'] as const;
-export const SERVICE_SYSTEM_PROMPT = '你是 xuan BD（数据处理与导入应用）的内置数据服务代理，只负责数据处理、导入交接和已登记的基础数据算法。默认中文。只使用本阶段提供的平台只读工具和合成测试工具；业务事实以工具的持久结果及编号为依据。数据收集、金融工具、外部主体、风险和市场模块均未启用。停止及恢复由用户的程序入口控制，你没有否决权。不要声称已执行工具未证明的操作。';
-export const COLLECTION_SYSTEM_PROMPT = '你是 xuan BD（数据处理与导入应用）的内置数据服务代理，只负责数据处理和已登记的基础数据算法。默认中文。当前入口只启用平台查询及宿主已登记的隔离合成材料收集和本地五步加工。collection_run（合成材料处理）只接受 processed（加工完成）；新交接使用 BD 工作台 R1（结构化交接）受控入口并由用户单独确认，不因本提示获得新工具或权限。原件、单位、精度、质量和状态以工具持久事实为准，禁止口头补全。停止及恢复由用户程序入口控制。报告四行以内，写实际结果和任务引用。';
+export const SERVICE_SYSTEM_PROMPT = '你是 xuan BD（数据处理与导入应用）的内置数据服务代理，只负责数据处理、导入交接和当前登记的 MACD。默认中文。只使用本阶段提供的平台只读工具和合成测试工具；业务事实以工具的持久结果及编号为依据。数据收集、金融工具、外部主体、风险和市场模块均未启用。停止及恢复由用户的程序入口控制，你没有否决权。不要声称已执行工具未证明的操作。';
+export const COLLECTION_SYSTEM_PROMPT = '你是 xuan BD（数据处理与导入应用）的内置数据服务代理，只负责数据处理和当前登记的 MACD。默认中文。当前入口只启用平台查询及宿主已登记的隔离合成材料收集和本地五步加工。collection_run（合成材料处理）只接受 processed（加工完成）；新交接使用 BD 工作台 R1（结构化交接）受控入口并由用户单独确认，不因本提示获得新工具或权限。原件、单位、精度、质量和状态以工具持久事实为准，禁止口头补全。停止及恢复由用户程序入口控制。报告四行以内，写实际结果和任务引用。';
 
 /** 本地服务角色的窄门面；任务、尝试、结果与控制仍由现有 TaskService 唯一持有。 */
 export class BdService {
@@ -26,20 +23,18 @@ export class BdService {
     tasks(): TaskService; core: PersonalCore; health: HealthResponse;
     versions?: Record<string, string | null>;
     collection?: CollectionService;
-    financial?: FinancialService;
     materials?: MaterialService;
     semantics?: MaterialSemanticService;
   }) {}
 
-  get toolNames(): readonly string[] { return [...SERVICE_TOOLS, ...(this.options.collection ? ['collection_run'] : []), ...(this.options.financial ? ['tools_list', 'tools_describe', 'tools_call', 'plugins_status'] : [])]; }
+  get toolNames(): readonly string[] { return [...SERVICE_TOOLS, ...(this.options.collection ? ['collection_run'] : [])]; }
   get systemPrompt(): string { return this.isWorkspace ? WORKSPACE_SYSTEM_PROMPT : this.options.collection ? COLLECTION_SYSTEM_PROMPT : SERVICE_SYSTEM_PROMPT; }
-  get isWorkspace(): boolean { return !!(this.options.financial || this.options.materials); }
+  get isWorkspace(): boolean { return !!this.options.materials; }
 
   get versions(): Record<string, string | null> {
     return { bd: this.isWorkspace ? WORKSPACE_BD_VERSION : this.options.collection ? COLLECTION_BD_VERSION : BD_VERSION, contract: 'bd-service/1', module: 'bd_agent',
       role: 'service', caller: 'local-operator', environment: 'local', ...this.options.versions,
       ...(this.options.collection ? { collectionBinding: digestOperationArgs(this.options.collection.versionBinding) } : {}),
-      ...(this.options.financial ? { financialBinding: digestOperationArgs(this.options.financial.versionBinding) } : {}),
       ...(this.options.materials ? { materialsBinding: digestOperationArgs(this.options.materials.versionBinding) } : {}),
       ...(this.options.semantics ? { semanticsBinding: digestOperationArgs(this.options.semantics.versionBinding) } : {}) };
   }
@@ -62,13 +57,12 @@ export class BdService {
       model: { provider: health.provider, model: health.model, configured: health.configured,
         availability: 'not_probed', note: '配置可用不代表模型当前在线；实际调用以任务结果为准。' },
       tools: [...this.toolNames],
-      modules: { bd_agent: 'enabled', collection: collection ? 'isolated_synthetic' : 'not_enabled', financial_tools: this.options.financial ? 'enabled' : 'not_enabled', materials: this.options.materials ? 'local_review' : 'not_enabled',
+      modules: { bd_agent: 'enabled', collection: collection ? 'isolated_synthetic' : 'not_enabled', materials: this.options.materials ? 'local_review' : 'not_enabled',
         external_subject: 'not_enabled', risk: 'not_enabled', market: 'not_enabled' },
       database: { binding: DATABASE_PORT_RESERVATION.state, code: DATABASE_PORT_RESERVATION.code,
         contract: 'reserved', realIntegration: 'not_executed',
         note: '本代理的数据库交接由独立 R1（结构化交接）入口按实际装配与用户确认执行。' },
       ...(collection ? { collection: collection.status() } : {}),
-      ...(this.options.financial ? { financial: asJson(this.options.financial.status()) } : {}),
       limits: { modelRequests: this.isWorkspace ? 4 : 2, timeoutMs: 60_000, maxOutputTokens: 1024 },
       isolation: '本机操作者入口；尚未实现远程或多主体鉴权。' };
   }
@@ -90,19 +84,16 @@ export class BdService {
 
   taskView(id: string): Record<string, JsonValue> {
     const task = this.getTask(id);
-    const publicFinancial = this.options.financial?.publicTaskView?.(task) as Record<string, JsonValue> | null | undefined;
     return asJson({ ownerService: 'bd_agents', requestId: task.requestId, jobId: task.id,
       parentJobId: task.parentTaskId, operation: task.action, status: task.status, version: task.version,
       runId: task.currentRunId, attemptId: task.currentAttemptId, generation: task.generation,
       controlGeneration: task.controlGeneration, approvalId: task.approvalId, versions: task.versions, resultRef: task.resultRef,
-      result: publicFinancial ? publicFinancial.result : task.result, error: publicFinancial ? publicFinancial.error : task.error,
-      ...(publicFinancial ? { publicContract: publicFinancial } : {}), requiresReview: task.requiresReview }) as Record<string, JsonValue>;
+      result: task.result, error: task.error, requiresReview: task.requiresReview }) as Record<string, JsonValue>;
   }
 
   requestTask(operation: string, requestId: string): TaskRecord | null {
     identifier(operation); identifier(requestId);
     if (this.options.collection && isCollectionOperation(operation)) return this.options.collection.requestTask(operation, requestId);
-    if (this.options.financial && operation === 'tools.call') return this.options.financial.requestTask(operation, requestId);
     if (this.options.materials && operation === 'materials.inspect') return this.options.materials.requestTask(requestId);
     if (this.options.semantics && operation === 'materials.semantic-process') return this.options.semantics.requestTask(requestId);
     const row = this.options.core.store.one<{ id: string }>('SELECT id FROM tasks WHERE request_id=? AND owner_role=?',
@@ -113,9 +104,6 @@ export class BdService {
   /** 模型只取完成判断与追溯编号；完整原件、步骤和读回仍在程序证据入口。 */
   modelTaskView(id: string): Record<string, JsonValue> {
     const task = this.getTask(id);
-    const publicFinancial = this.options.financial?.publicTaskView?.(task);
-    if (publicFinancial) return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
-      publicContract: publicFinancial, requiresReview: task.requiresReview }) as Record<string, JsonValue>;
     if (task.action === 'jobs.get' && task.status === 'succeeded') {
       const target = object(task.result?.data);
       return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
@@ -128,21 +116,6 @@ export class BdService {
       return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
         runtime: { ...status, control: { stopped: control.stopped, generation: control.generation,
           activeTaskCount: Array.isArray(control.activeTaskIds) ? control.activeTaskIds.length : null } } }) as Record<string, JsonValue>;
-    }
-    if (task.action === 'tools.list' && task.status === 'succeeded') {
-      const data = task.result?.data;
-      return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
-        tools: Array.isArray(data) ? data.map(value => { const tool = object(value); return { capabilityId: tool.capabilityId,
-          title: tool.title, pluginVersion: tool.pluginVersion, methodVersion: tool.methodVersion, implementationVersion: tool.implementationVersion }; }) : [],
-        next: '计算前使用 tools_describe 读取所选方法的精确输入契约。' }) as Record<string, JsonValue>;
-    }
-    if (task.action === 'tools.call' && task.status === 'succeeded') {
-      const result = object(task.result?.data);
-      return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status, resultRef: task.resultRef,
-        computation: result.status, persistence: result.persistence, capabilityId: result.capabilityId,
-        inputDigest: result.inputDigest, rowCount: Array.isArray(result.rows) ? result.rows.length : null,
-        validInterval: result.validInterval, invalidIntervals: result.invalidIntervals,
-        lastRows: Array.isArray(result.rows) ? result.rows.slice(-3) : [], limitations: result.limitations }) as Record<string, JsonValue>;
     }
     if (task.action === 'materials.inspect' || task.action === 'materials.semantic-process') return asJson({ ownerService: 'bd_agents', jobId: task.id, status: task.status,
       resultRef: task.resultRef, note: '原件与预览仅供本机查看；模型入口不返回材料内容。' }) as Record<string, JsonValue>;
@@ -165,7 +138,6 @@ export class BdService {
   validate(operation: string, args: unknown): Record<string, JsonValue> {
     const data = object(args);
     if (this.options.collection && isCollectionOperation(operation)) return this.options.collection.validate(operation, data);
-    if (this.options.financial && ['tools.list', 'tools.describe', 'tools.call', 'plugins.status'].includes(operation)) return this.options.financial.validate(operation, data);
     if (operation === 'runtime.status') keys(data, []);
     else if (operation === 'jobs.get') { keys(data, ['jobId']); identifier(data.jobId); this.getTask(data.jobId); }
     else if (operation === 'test.echo') {
@@ -188,12 +160,11 @@ export class BdService {
     return data as Record<string, JsonValue>;
   }
 
-  submit(operation: string, args: unknown, requestId: string, parentTaskId?: string, host?: FinancialHostSubmission): TaskRecord {
+  submit(operation: string, args: unknown, requestId: string, parentTaskId?: string): TaskRecord {
     identifier(requestId);
     const data = this.validate(operation, args);
     if (parentTaskId !== undefined) this.getTask(parentTaskId);
     if (this.options.collection && isCollectionOperation(operation)) return this.options.collection.submit(operation, data, requestId, parentTaskId);
-    if (this.options.financial && operation === 'tools.call') return this.options.financial.submit(operation, data, requestId, parentTaskId, host);
     const namespacedRequest = `service:local-operator:${operation}:${requestId}`;
     const existing = this.requestTask(operation, requestId);
     if (existing) {
@@ -228,11 +199,6 @@ export class BdService {
       if (context.task.ownerRole !== 'service') throw new TaskError('SERVICE_ROLE_REQUIRED', '需要服务任务身份。');
       this.assertVersion(context.task);
       context.signal.throwIfAborted(); this.assertDispatch();
-      if (this.options.financial && ['tools.list', 'tools.describe', 'plugins.status'].includes(context.task.action)) {
-        const args = this.validate(context.task.action, context.task.args), financial = this.options.financial;
-        return { summary: '金融能力查询已完成。', data: asJson(context.task.action === 'tools.list' ? financial.list()
-          : context.task.action === 'tools.describe' ? financial.describe(String(args.capabilityId)) : financial.status()) };
-      }
       if (context.task.action === 'collection.run' && this.options.collection) {
         const args = this.validate(context.task.action, context.task.args), collection = this.options.collection;
         const receive = collection.submit(args.kind === 'file' ? 'collection.receive' : 'collection.collect',

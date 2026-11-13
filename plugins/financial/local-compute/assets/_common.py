@@ -20,11 +20,6 @@ def number(value, label, positive=False, nonnegative=False):
     require(not nonnegative or value >= 0, label + '不能为负数')
     return value
 
-def integer(value, label, min_value=1, max_value=None):
-    require(type(value) is int, label + '须为整数，不能是布尔值')
-    require(value >= min_value and (max_value is None or value <= max_value), label + '超出整数范围')
-    return value
-
 def exact_keys(obj, required, optional=(), label='object'):
     require(isinstance(obj, dict), label + '须为对象')
     missing = set(required) - set(obj)
@@ -78,22 +73,3 @@ def validate_bars(data, required=('close',), frequency='1d'):
                     require(row[key] <= row['high'], key + '不能高于已提供的最高价')
     require(metadata['window_start'] == rows[0]['timestamp'] and metadata['window_end'] == rows[-1]['timestamp'], '窗口声明须与所供记录首尾一致')
     return metadata, rows
-
-def rolling(values, n, operation='mean'):
-    integer(n, 'window')
-    require(operation in ('mean', 'sum', 'min', 'max'), '不支持该滚动操作')
-    result = []
-    for i in range(len(values)):
-        part = values[max(0, i + 1 - n):i + 1]
-        if len(part) < n or any(x is None for x in part):
-            result.append(None)
-        elif operation == 'min':
-            result.append(min(part))
-        elif operation == 'max':
-            result.append(max(part))
-        else:
-            result.append(math.fsum(part) / (n if operation == 'mean' else 1))
-    return result
-
-def columns(rows, names):
-    return tuple([row[name] for row in rows] for name in names)

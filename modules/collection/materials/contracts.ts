@@ -104,6 +104,8 @@ export interface MaterialEnvelope {
   adapter: { id: string; version: string } | null;
   createdAt: number;
   localOnly: true;
+  /** 省略表示历史 SQLite BLOB；外置文件身份只保留在受信宿主的冻结输入中。 */
+  originalStorage?: 'managed-file/v1';
 }
 export interface MaterialRecord { envelope: MaterialEnvelope; preview: MaterialPreview }
 export interface MaterialSubmitInput {

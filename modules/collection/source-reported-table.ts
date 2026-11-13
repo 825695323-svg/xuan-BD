@@ -72,10 +72,8 @@ export function sourceReportedMinute(value: unknown): string | null {
 }
 
 /** UTC（协调世界时）区间只是本地标签的储存桶；不推断原行情标签表示开端还是终点。 */
-function minuteBucket(label: string, timezone: string): [string,string] {
+function minuteBucket(label: string, formatter: Intl.DateTimeFormat): [string,string] {
   const target = Date.parse(label+'Z');
-  const formatter = new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',
-    hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
   const localMilliseconds = (utc: number) => {
     const parts = Object.fromEntries(formatter.formatToParts(new Date(utc)).map(part=>[part.type,part.value]));
     return Date.parse(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`);
@@ -84,6 +82,23 @@ function minuteBucket(label: string, timezone: string): [string,string] {
   const instants = [...offsets].map(offset=>target-offset).filter(instant=>localMilliseconds(instant)===target);
   if (instants.length !== 1) return fail(`原报分钟 ${label} 在所选时区不能唯一对应 UTC；须提供明确时间映射。`);
   return [instants[0]!,instants[0]!+60_000].map(instant=>new Date(instant).toISOString().replace('.000Z','Z')) as [string,string];
+}
+
+/** Share the exact civil-time mapping between source projection and fixed bulk readback. */
+export function createSourceReportedMinuteResolver(timezone: string): (label: string) => [string, string] {
+  const formatter = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+  const cache = new Map<string, [string, string]>();
+  return label => {
+    const normalized = sourceReportedMinute(label);
+    if (!normalized) return fail('原报分钟标签无效。');
+    let result = cache.get(normalized);
+    if (!result) {
+      result = minuteBucket(normalized, formatter);
+      if (cache.size < 512) cache.set(normalized, result);
+    }
+    return [...result];
+  };
 }
 
 function midnight(date: string, timezone: string): string {
@@ -115,6 +130,7 @@ export function projectSourceReportedTable(parsed: ParsedCandidateTable, raw: Ca
     || originalNames.length + generated.length + Object.keys(parsed.annotations).length > 256) fail('来源原报投影须绑定完整原列目录、保留所有身份轴，且不得覆盖原列或超出字段预算。');
   const dateIndex = originalNames.indexOf(projection.dateColumn), keyIndices = projection.keyColumns.map(column => originalNames.indexOf(column));
   const seen = new Set<string>();
+  const resolveMinute = projection.minute && createSourceReportedMinuteResolver(projection.timezone);
   const rows = parsed.rows.map((row, rowIndex) => {
     const dateCell = row[dateIndex]!, date = sourceReportedDate(dateCell.original, projection.dateEncoding);
     if (!date) return fail(`第 ${rowIndex+1} 行「${projection.dateColumn}」不是有效的原报公历日期；未从文件名补日期。`);
@@ -132,7 +148,9 @@ export function projectSourceReportedTable(parsed: ParsedCandidateTable, raw: Ca
       projection: { version: projection.version, operation,
         sources: sources.map((cell,index) => ({ column: columns[index]!, original: cell.original, quote: cell.quote, location: cell.location })) },
     });
-    const interval = minute ? minuteBucket(minute,projection.timezone) : [midnight(date,projection.timezone),midnight(nextDate,projection.timezone)];
+    let interval: [string, string];
+    if (minute && resolveMinute) interval = resolveMinute(minute);
+    else interval = [midnight(date,projection.timezone),midnight(nextDate,projection.timezone)];
     const timeSources = minuteCell ? [dateCell,minuteCell] : [dateCell], timeColumns = projection.minute ? [projection.dateColumn,projection.minute.column] : [projection.dateColumn];
     return [...row, derived(key, 'business_key', keyCells, projection.keyColumns),
       derived(interval[0]!, minute ? 'minute_label_start' : 'date_start', timeSources, timeColumns),

@@ -5,9 +5,8 @@ on:
     branches: [refactor/unified-algorithm-fixed-read]
   pull_request:
     paths:
-      - 'modules/financial/wfd-fixed-selection*'
+      - 'modules/collection/data-processing/wfd-fixed-selection*'
       - 'modules/collection/data-processing/financial-fixed.ts'
-      - 'modules/collection/data-processing/polars-fixed.ts'
       - '.github/workflows/bd-unified-fixed-read.yml'
 
 permissions:
@@ -26,13 +25,11 @@ jobs:
       - run: npm ci
       - name: Check full TS build and frontend
         run: npm run build
-      - name: Prove shared WFD input and existing Polars financial checks
+      - name: Verify fixed WFD selection and financial source mapping
         env:
           XUAN_TEST_ROOT: ${{ runner.temp }}/fixed-selection
         run: |
           mkdir -p "$XUAN_TEST_ROOT"
           node --import tsx --test \
-            modules/financial/wfd-fixed-selection.test.ts \
-            modules/collection/data-processing/financial-fixed.test.ts \
-            modules/collection/data-processing/polars-macro-independent.test.ts \
-            modules/collection/polars-eligibility-gate.test.ts
+            modules/collection/data-processing/wfd-fixed-selection.test.ts \
+            modules/collection/data-processing/financial-fixed.test.ts

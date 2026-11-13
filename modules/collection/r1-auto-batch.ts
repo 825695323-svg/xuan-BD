@@ -9,11 +9,6 @@ import type { MaterialService } from './materials/service.js';
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import type { R1AutoService, R1AutoState, R1AutoView } from './r1-auto.js';
 import { R1ChunkedCsvService } from './r1-chunked-csv.js';
-import { classifyR1AlgorithmInput, readR1AlgorithmSettings, readR1BatchAlgorithmRouting,
-  type R1AlgorithmClassification, type R1AlgorithmSettings, type R1BarKind, type R1BatchAlgorithmRouting } from './r1-algorithm-routing.js';
-import { readSourceObservationMASelection, summarizeCalculatedMAProof,
-  type CalculatedMAProof, type CalculatedMAProofSummary, type SourceObservationMAInput,
-  type SourceObservationMAContext, type SourceObservationMASelection } from './source-observation-ma.js';
 import { readAdapterBindingRef, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
 
@@ -22,8 +17,6 @@ export interface R1BatchStartInput {
   batchId: string; source: R1SourceDeclaration; datasetId: string; files: R1BatchFile[];
   datePolicy?: 'a_share_calendar_day_asia_shanghai';
   sourceValueColumns?: string[];
-  calculation?: SourceObservationMASelection;
-  algorithmRouting?: R1BatchAlgorithmRouting;
   /** 本批统一使用的已采用端点适配引用；逐件配置不在本批展开。 */
   sourceAdapter?: AdapterBindingRef;
   /** 本批逐件取得回执模板：地址含 {file} 占位，材料摘要逐件绑定。 */
@@ -38,46 +31,23 @@ interface BatchItem extends R1BatchFile {
   custodyTaskId: string | null; materialId: string | null; stage: 'awaiting_upload' | 'custody' | 'ready' | 'blocked';
   duplicateOf: Duplicate | null; error: R1AutoView['error'];
   policyAnswers: Record<string, string>;
-  algorithmInspection?: R1AlgorithmClassification;
 }
 interface BatchRecord {
   selectedKeyReplacement?: true;
-  /** 本批冻结的已采用适配；逐件预检与交接都按同一摘要核对。 */
+  /** 本批冻结的已采用适配；逐件交接都按同一摘要核对。 */
   adapter?: FrozenAdapterBinding;
   input: R1BatchStartInput; inputSha256: string; connection: R1ConnectionIdentity; operator: OperatorContext;
   controlGeneration: number; stopped: boolean; error: R1AutoView['error']; items: BatchItem[];
   createdAt: number; updatedAt: number;
-  calculation?: BatchCalculationRecord;
-  calculations?: BatchCalculationRecord[];
-}
-interface BatchCalculationRecord {
-  calculationId?: string; kind?: R1BarKind; selection?: SourceObservationMASelection; itemIds?: string[];
-  partitioned?: boolean;
-  seriesContinuation?: boolean;
-  frozenSeries?: { inputs: { materialId: string; autoRequestId: string }[]; context: SourceObservationMAContext };
-  state: 'waiting_inputs' | 'calculating' | 'custody' | 'processing' | 'associated' | 'recovering' | 'blocked' | 'stopped';
-  requestId: string; uploadRequestId: string; custodyTaskId: string | null; materialId: string | null;
-  source: R1SourceDeclaration | null; proof: CalculatedMAProof | null; error: R1AutoView['error'];
-  implementation: { version: string; codeDigest: string };
-}
-export interface R1BatchCalculationView {
-  calculationId: string; kind: R1BarKind | null; itemIds: string[];
-  selection: SourceObservationMASelection; state: BatchCalculationRecord['state']; requestId: string;
-  custodyTaskId: string | null; materialId: string | null; productId: string | null; snapshotId: string | null;
-  error: R1AutoView['error']; auto: R1AutoView | null; proof: CalculatedMAProofSummary | null;
 }
 export interface R1BatchItemView extends R1BatchFile {
   itemId: string; requestedUrl: string; autoRequestId: string; custodyTaskId: string | null; materialId: string | null;
   state: ItemState; duplicateOf: Duplicate | null; error: R1AutoView['error']; auto: R1AutoView | null;
   policyAnswers: Record<string, string>;
-  algorithmInspection: R1AlgorithmClassification | null;
 }
 export interface R1BatchView {
   batchId: string; source: R1SourceDeclaration; datasetId: string; datePolicy: R1BatchStartInput['datePolicy'] | null;
   sourceValueColumns: string[] | null;
-  calculation: R1BatchCalculationView | null;
-  calculations: R1BatchCalculationView[];
-  algorithmRouting: R1BatchAlgorithmRouting | null;
   state: 'awaiting_upload' | 'running' | 'awaiting_answers' | 'recovering' | 'completed' | 'conflicts_pending' | 'stopped' | 'blocked';
   items: R1BatchItemView[]; nextUploadItemId: string | null; error: R1AutoView['error']; duplicateBatch: boolean;
   createdAt: number; updatedAt: number;
@@ -98,9 +68,9 @@ export class R1AutoBatchService {
     database: CoreDatabase; tasks(): TaskService; auto: R1AutoService; materials: MaterialService;
     connection(): R1ConnectionIdentity | null;
     custodyRoot?: string;
+    bulk?: ConstructorParameters<typeof R1ChunkedCsvService>[0]['bulk'];
     accept(input: { bytes: Buffer; name: string; category: 'data'; requestId: string }): Promise<string>;
     adapters?: EndpointAdapterRegistry;
-    readCalculationInput?(item: { materialId: string; autoRequestId: string }, selection: SourceObservationMASelection): Promise<SourceObservationMAInput>;
   }) {
     this.chunked = new R1ChunkedCsvService(options);
     options.database.migrate('r1-auto-batches', 1, `CREATE TABLE r1_auto_batches (
@@ -108,24 +78,9 @@ export class R1AutoBatchService {
     ); CREATE TABLE r1_auto_batch_aliases (batch_id TEXT PRIMARY KEY,canonical_id TEXT NOT NULL REFERENCES r1_auto_batches(batch_id));`);
   }
   private get db() { return this.options.database.connection; }
-  algorithmSettings(): R1AlgorithmSettings {
-    const row = this.db.prepare('SELECT value_json FROM app_settings WHERE key=?').get('r1.batch-algorithms');
-    return row ? readR1AlgorithmSettings(JSON.parse(String(row.value_json))) : { revision: 0, dailyPeriod: null, minutePeriod: null };
-  }
-  updateAlgorithmSettings(_value: unknown): R1AlgorithmSettings {
-    fail('R1_BATCH_ALGORITHM_MANUAL_ONLY', '原报批次不再配置自动算法周期；请通过 BD AGENTS 基础算法统一接口人工选择周期。');
-  }
-  classify(bytes: Buffer, binding?: AdapterBindingRef): R1AlgorithmClassification {
-    const adapter = binding ? (this.options.adapters ?? fail('R1_ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记，不能按声明式适配预检。')).resolve(binding) : undefined;
-    return classifyR1AlgorithmInput(bytes, adapter ? { sourceAdapter: adapter } : undefined);
-  }
-  private calculationEntries(record: BatchRecord): BatchCalculationRecord[] {
-    return record.calculations ?? (record.calculation ? [record.calculation] : []);
-  }
   private needsProgress(record: BatchRecord): boolean {
     if (record.stopped || record.error) return false;
     // 已办结的批次依赖原交接事实；重开或迟到的任务事件不能按今天的连接重写其状态。
-    // 原报批次不再自动恢复基础算法；旧派生记录仍可查询。
     return record.items.some(item => (!item.materialId && !item.duplicateOf) || !this.options.auto.isAssociated(item.autoRequestId));
   }
   attach(): void {
@@ -155,11 +110,9 @@ export class R1AutoBatchService {
       this.db.prepare('INSERT INTO r1_auto_batch_aliases VALUES(?,?)').run(batchId, original.input.batchId);
       return { ...this.view(original), duplicateBatch: true };
     }
-    if (input.algorithmRouting && canonicalWfdJson(input.algorithmRouting.settings) !== canonicalWfdJson(this.algorithmSettings()))
-      fail('R1_ALGORITHM_SETTINGS_CONFLICT', '算法周期在本次授权前已变化，请读取当前设置并重新确认本批；原批次恢复继续使用原冻结规则。');
     this.assertDispatch();
     const connection = this.connection(), now = Date.now();
-    // 只接受已采用版本；本批逐件预检、交接都使用同一冻结配置，后续登记变化不改写本批。
+    // 只接受已采用版本；本批逐件交接都使用同一冻结配置，后续登记变化不改写本批。
     const adapter = input.sourceAdapter
       ? (this.options.adapters ?? fail('R1_ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记，不能按声明式适配交接。')).resolve(input.sourceAdapter)
       : undefined;
@@ -189,10 +142,6 @@ export class R1AutoBatchService {
   }
   list(): R1BatchView[] { return this.records(20).map(record => this.view(record)); }
   get(batchId: string): R1BatchView { return this.view(this.require(batchId)); }
-  calculationEvidence(batchId: string, calculationId?: string): CalculatedMAProof | null {
-    const calculations = this.calculationEntries(this.require(batchId));
-    return (calculationId ? calculations.find(calculation => (calculation.calculationId ?? 'legacy') === calculationId) : calculations[0])?.proof ?? null;
-  }
   async upload(batchId: string, itemId: string, bytes: Buffer): Promise<R1BatchView> {
     const record = this.require(batchId), item = record.items.find(entry => entry.itemId === itemId) ?? fail('R1_BATCH_ITEM_NOT_FOUND', '没有该批次清单项。');
     if (!Buffer.isBuffer(bytes) || bytes.length !== item.byteLength || wfdSha256(bytes) !== item.sha256) fail('R1_BATCH_FILE_CHANGED', '上传字节与本批次冻结的文件摘要或长度不符，原清单保留。');
@@ -208,10 +157,6 @@ export class R1AutoBatchService {
     const key = `${batchId}:${itemId}`, existing = this.uploads.get(key);
     if (existing) return existing;
     const work = (async () => {
-      if (record.input.algorithmRouting || record.input.calculation) {
-        const latest = this.require(batchId), current = latest.items.find(entry => entry.itemId === itemId)!;
-        current.algorithmInspection = this.classify(bytes, record.input.sourceAdapter); this.save(latest);
-      }
       const taskId = await this.options.accept({ bytes, name: item.name, category: 'data', requestId: item.uploadRequestId });
       // Re-read after asynchronous custody: another item or a task event may have updated this journal.
       const latest = this.require(batchId), current = latest.items.find(entry => entry.itemId === itemId)!;
@@ -238,7 +183,6 @@ export class R1AutoBatchService {
         }
       }
     }
-    // 手动续办只推进原报；历史派生任务不再自动恢复。
     await this.schedule(batchId); return this.get(batchId);
   }
   async dispose(): Promise<void> {
@@ -281,13 +225,7 @@ export class R1AutoBatchService {
     }
     this.assertCurrent(record);
     for (const item of record.items) {
-      if (item.duplicateOf) {
-        const original = this.itemView(item, record);
-        if ((record.input.algorithmRouting || record.input.calculation) && !original.algorithmInspection && original.materialId) {
-          item.algorithmInspection = this.classify(this.options.materials.readOriginal(original.materialId).bytes, record.input.sourceAdapter); this.save(record);
-        }
-        continue;
-      }
+      if (item.duplicateOf) continue;
       // Cover custody accepted before this journal could bind the task. The material
       // service owns the stable request lookup; no second file or request is created.
       if (item.stage === 'awaiting_upload') {
@@ -299,17 +237,12 @@ export class R1AutoBatchService {
         if (task.status === 'succeeded') {
           const material = this.options.materials.getByTask(task.id) ?? fail('R1_BATCH_MATERIAL_MISSING', '原保管任务成功但没有对应材料，保留原任务核对。');
           if (material.envelope.sha256 !== item.sha256 || material.envelope.byteLength !== item.byteLength) fail('R1_BATCH_FILE_CHANGED', '原保管任务的材料与批清单不一致。');
-          if ((record.input.algorithmRouting || record.input.calculation) && !item.algorithmInspection)
-            item.algorithmInspection = this.classify(this.options.materials.readOriginal(material.envelope.materialId).bytes, record.input.sourceAdapter);
           item.materialId = material.envelope.materialId; item.stage = 'ready'; this.save(record);
         } else if (['failed', 'cancelled', 'blocked', 'needs_review', 'interrupted', 'paused'].includes(task.status)) {
           item.stage = 'blocked'; item.error = { code: task.error?.code ?? 'R1_BATCH_CUSTODY_BLOCKED', message: task.error?.message ?? '原保管任务未完成，请按原任务核对。' }; this.save(record);
         } else return;
       }
       if (item.stage === 'ready' && item.materialId) {
-        if ((record.input.algorithmRouting || record.input.calculation) && !item.algorithmInspection) {
-          item.algorithmInspection = this.classify(this.options.materials.readOriginal(item.materialId).bytes, record.input.sourceAdapter); this.save(record);
-        }
         let auto: R1AutoView;
         try {
           const start = record.selectedKeyReplacement ? this.options.auto.startReplacing.bind(this.options.auto) : this.options.auto.start.bind(this.options.auto);
@@ -333,25 +266,6 @@ export class R1AutoBatchService {
       }
       if (item.stage === 'awaiting_upload') return;
     }
-    // 不再自动计算或发布均线。历史结果留在原批次持久记录。
-  }
-  private calculationView(record: BatchRecord, calculation: BatchCalculationRecord): R1BatchCalculationView | null {
-    const selection = calculation.selection ?? record.input.calculation;
-    if (!calculation || !selection) return null;
-    let auto: R1AutoView | null = null;
-    if (calculation.materialId) {
-      try { auto = this.options.auto.get(calculation.requestId); }
-      catch (error) { if (!(error instanceof TaskError && error.code === 'R1_AUTO_NOT_FOUND')) throw error; }
-    }
-    const associations = auto?.currentRequest?.local.associations;
-    const first = Array.isArray(associations) && isWfdRecord(associations[0]) ? associations[0] : null;
-    const state = auto?.state === 'associated' ? 'associated' : auto?.state === 'recovering' ? 'recovering'
-      : auto?.state === 'stopped' ? 'stopped' : auto?.state === 'blocked' || auto?.state === 'conflicts_pending' ? 'blocked' : calculation.state;
-    return { calculationId: calculation.calculationId ?? 'legacy', kind: calculation.kind ?? null,
-      itemIds: calculation.itemIds ?? record.items.map(item => item.itemId), selection, state, requestId: calculation.requestId, materialId: calculation.materialId,
-      custodyTaskId: calculation.custodyTaskId, productId: typeof first?.product_id === 'string' ? first.product_id : null,
-      snapshotId: typeof first?.snapshot_id === 'string' ? first.snapshot_id : null,
-      error: auto?.error ?? calculation.error, auto, proof: calculation.proof ? summarizeCalculatedMAProof(calculation.proof) : null };
   }
   private itemView(item: BatchItem, record: BatchRecord): R1BatchItemView {
     let original = item, referenceError: R1AutoView['error'] = null;
@@ -371,27 +285,23 @@ export class R1AutoBatchService {
       itemId: item.itemId, requestedUrl: item.requestedUrl, autoRequestId: original.autoRequestId,
       custodyTaskId: original.custodyTaskId, materialId: original.materialId,
       state: referenceError ? 'blocked' : auto?.state ?? (original.stage === 'ready' ? 'inspecting' : original.stage), duplicateOf: item.duplicateOf,
-      error: referenceError ?? auto?.error ?? original.error, auto, policyAnswers: original.policyAnswers,
-      algorithmInspection: original.algorithmInspection ?? item.algorithmInspection ?? null };
+      error: referenceError ?? auto?.error ?? original.error, auto, policyAnswers: original.policyAnswers };
   }
   private view(record: BatchRecord): R1BatchView {
     const items = record.items.map(item => this.itemView(item, record));
     const first = items.find(item => !yielded.has(item.state));
     const error = record.error ?? items.find(item => item.error && duplicateErrors.has(item.error.code))?.error ?? null;
     const nextUploadItemId = !record.stopped && !error && first?.state === 'awaiting_upload' ? first.itemId : null;
-    const calculations = this.calculationEntries(record).map(calculation => this.calculationView(record, calculation)!).filter(Boolean);
-    const calculation = calculations[0] ?? null;
     const state: R1BatchView['state'] = record.stopped ? 'stopped' : error ? 'blocked'
       : items.some(item => item.state === 'recovering') ? 'recovering' : first?.state === 'stopped' ? 'stopped'
       : first?.state === 'awaiting_upload' ? 'awaiting_upload' : first ? 'running'
       : items.some(item => item.state === 'awaiting_answers') ? 'awaiting_answers'
       : items.some(item => item.state === 'conflicts_pending') ? 'conflicts_pending'
       : items.some(item => item.state === 'blocked') ? 'blocked'
-      : 'completed'; // 批次完成只核原报，不再等待派生算法。
+      : 'completed';
     return { batchId: record.input.batchId, source: record.input.source, datasetId: record.input.datasetId,
       datePolicy: record.input.datePolicy ?? null, state, items, nextUploadItemId, error, duplicateBatch: false,
       sourceValueColumns: record.input.sourceValueColumns ?? null,
-      calculation, calculations, algorithmRouting: record.input.algorithmRouting ?? null,
       createdAt: record.createdAt, updatedAt: Math.max(record.updatedAt, ...items.map(item => item.auto?.updatedAt ?? 0)) };
   }
   private assertDispatch(): void { if (this.closed || this.options.tasks().getControl().stopped) fail('BD_STOPPED', '服务已停止，请保留原批次并明确继续。'); }
@@ -408,12 +318,9 @@ export class R1AutoBatchService {
   private save(record: BatchRecord): void { record.updatedAt = Date.now(); this.db.prepare('UPDATE r1_auto_batches SET record_json=?,updated_at=? WHERE batch_id=?').run(canonicalWfdJson(record), record.updatedAt, record.input.batchId); }
   private records(limit?: number): BatchRecord[] { return this.db.prepare(`SELECT record_json FROM r1_auto_batches ORDER BY updated_at DESC,rowid DESC ${limit ? 'LIMIT ?' : ''}`).all(...(limit ? [limit] : [])).map(row => JSON.parse(String(row.record_json)) as BatchRecord); }
   private matching(key: 'autoRequestId' | 'custodyTaskId', value: string): BatchRecord[] {
-    const calculationKey = key === 'autoRequestId' ? 'requestId' : key;
     return this.db.prepare(`SELECT record_json FROM r1_auto_batches
-      WHERE EXISTS (SELECT 1 FROM json_each(record_json,'$.items') WHERE json_extract(value,'$.${key}')=?)
-      OR json_extract(record_json,'$.calculation.${calculationKey}')=?
-      OR EXISTS (SELECT 1 FROM json_each(record_json,'$.calculations') WHERE json_extract(value,'$.${calculationKey}')=?)`)
-      .all(value, value, value).map(row => JSON.parse(String(row.record_json)) as BatchRecord);
+      WHERE EXISTS (SELECT 1 FROM json_each(record_json,'$.items') WHERE json_extract(value,'$.${key}')=?)`)
+      .all(value).map(row => JSON.parse(String(row.record_json)) as BatchRecord);
   }
   private entry(sha256: string): { batchId: string; item: BatchItem; sourceContextTemplate?: R1BatchStartInput['sourceContextTemplate'] } | null {
     const row = this.db.prepare(`SELECT record_json FROM r1_auto_batches WHERE EXISTS (SELECT 1 FROM json_each(record_json,'$.items')
@@ -462,9 +369,7 @@ function readContextTemplate(value: unknown): NonNullable<R1BatchStartInput['sou
   return structuredClone(value) as NonNullable<R1BatchStartInput['sourceContextTemplate']>;
 }
 function readStart(value: unknown): R1BatchStartInput {
-  const body = object(value, ['batchId', 'source', 'datasetId', 'files', 'datePolicy', 'sourceValueColumns', 'calculation', 'algorithmRouting', 'sourceAdapter', 'sourceContextTemplate']); id(body.batchId); id(body.datasetId);
-  if (body.calculation !== undefined || body.algorithmRouting !== undefined)
-    fail('R1_BATCH_ALGORITHM_MANUAL_ONLY', '原报批次不再接受算法参数。请先发布到 WFD，再通过会话基础算法接口明确发起计算。');
+  const body = object(value, ['batchId', 'source', 'datasetId', 'files', 'datePolicy', 'sourceValueColumns', 'sourceAdapter', 'sourceContextTemplate']); id(body.batchId); id(body.datasetId);
   const source = object(body.source, ['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope', 'authorization', 'license']);
   assertKnownR1Source(source as unknown as R1SourceDeclaration);
   const requested = parseR1Utc(String(source.requested_at_utc)), acquired = parseR1Utc(String(source.acquired_at_utc));
@@ -492,17 +397,10 @@ function readStart(value: unknown): R1BatchStartInput {
     positions.set(file.relativePath, file.sha256);
   }
   if (files.reduce((total, file) => total + file.byteLength, 0) > R1_BATCH_MAX_BYTES) fail('R1_BATCH_BYTE_BUDGET', `本批清单总量不能超过 ${R1_BATCH_MAX_BYTES / 1024 / 1024} MiB。`);
-  const algorithmRouting = body.algorithmRouting === undefined ? undefined : readR1BatchAlgorithmRouting(body.algorithmRouting);
-  if (algorithmRouting && body.calculation !== undefined) fail('R1_ALGORITHM_ROUTING', '按类自动路由与旧明确均线参数不能同时提交。');
-  if (algorithmRouting && (algorithmRouting.files.length !== new Set(files.map(file => file.sha256)).size
-    || files.some(file => !algorithmRouting.files.some(inspected => inspected.sha256 === file.sha256 && inspected.byteLength === file.byteLength))))
-    fail('R1_ALGORITHM_FILE_BINDING', '算法预检必须与本批所有原件的完整摘要及长度逐件一致，不能引用别的文件。');
   return structuredClone({ batchId: body.batchId, source: source as unknown as R1SourceDeclaration, datasetId: body.datasetId,
     files, ...(body.datePolicy ? { datePolicy: body.datePolicy } : {}), ...(selected ? { sourceValueColumns: [...selected as string[]].sort() } : {}),
     ...(body.sourceAdapter === undefined ? {} : { sourceAdapter: readAdapterBindingRef(body.sourceAdapter) }),
-    ...(body.sourceContextTemplate === undefined ? {} : { sourceContextTemplate: readContextTemplate(body.sourceContextTemplate) }),
-    ...(algorithmRouting ? { algorithmRouting: { ...algorithmRouting, files: [...algorithmRouting.files].sort((a, b) => a.sha256.localeCompare(b.sha256)) } } : {}),
-    ...(body.calculation === undefined ? {} : { calculation: readSourceObservationMASelection(body.calculation) }) }) as R1BatchStartInput;
+    ...(body.sourceContextTemplate === undefined ? {} : { sourceContextTemplate: readContextTemplate(body.sourceContextTemplate) }) }) as R1BatchStartInput;
 }
 function fileUrl(series: string, path: string): string {
   let base: URL; try { base = new URL(series); } catch { return fail('R1_BATCH_SOURCE_SERIES', '请明确提供来源系列的绝对地址或 file URI（文件资源标识）。'); }

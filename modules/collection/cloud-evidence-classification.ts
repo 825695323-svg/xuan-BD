@@ -1,13 +1,20 @@
+import { canonicalWfdJson } from '../../adapters/database/wfd-transport.js';
 import { CLOUD_EVIDENCE_TOPICS } from '../../plugins/storage/baidu-drive.js';
-import { parseTableSource } from './candidate-pipeline.js';
-import { classifyR1AlgorithmInput } from './r1-algorithm-routing.js';
-import { sourceReportedDate } from './source-reported-table.js';
+import { parseTableSource, type ParsedCandidateTable } from './candidate-pipeline.js';
+import { sourceReportedDate, sourceReportedMinute } from './source-reported-table.js';
 
 export type CloudEvidenceTopic = typeof CLOUD_EVIDENCE_TOPICS[number];
 export interface CloudEvidenceClassification { topic: CloudEvidenceTopic; basis: string }
 
 const identityHeader = /^(?:(?:股票|证券|标的|合约|对象|板块|行业)代码|stock_code|security_code|instrument_id|sector_code|industry_code|symbol|code|ts_code|ts代码)$/u;
 const dateHeader = /^(?:交易日期|统计日期|数据日期|日期|trade_date|date)$/u;
+const minuteHeader = /^(?:分钟时间|分钟标签|minute_time|minute_timestamp)$/iu;
+const barIdentityHeader = /^(?:(?:股票|证券|标的|合约|对象)代码|stock_code|security_code|instrument_id|symbol|code)$/iu;
+const barDateHeader = /^(?:交易日期|日期|trade_date|date)$/iu;
+const closeHeader = /^(?:收盘价?|close)(?:[（(][^()（）]+[）)])?$/iu;
+const reportHeader = /(?:榜单|板单|情绪|热度|恐慌|贪婪|封单|封板|连板|连扳|炸板|涨停时间|跌停时间|资金流|净流入|净流出|主力资金|舆情|sentiment|ranking|rank_type)/iu;
+const barFieldHeader = /^(?:交易日期|日期|trade_date|date|分钟时间|分钟标签|minute_time|minute_timestamp|(?:股票|证券|标的|合约|对象)代码|stock_code|security_code|instrument_id|symbol|code|TS代码|(?:股票|证券|标的|合约|对象)?名称|name|序号|(?:开盘|最高|最低|收盘|昨收)(?:价)?|涨跌额|涨跌幅|成交量|成交额|复权因子|换手率|量比|市盈率|市净率|市销率|股息率|总股本|流通股本|自由流通股本|总市值|流通市值|open|high|low|close|pre_close|volume|amount|adj_factor)(?:[（(][^\r\n]*[）)])?$/iu;
+const reportValue = /涨停池|跌停池|连板池|连扳池|炸板池|涨跌停榜|市场情绪|资金流向/iu;
 const periodHeader = /^(?:报告期|报告期末|报表日期|report_period|fiscal_period|period_end|end_date)$/u;
 const flowHeader = /^(?:今日|当日)?(?:(?:(?:主力|超大单|大单|中单|小单)(?:资金)?|资金)(?:净流入|净流出|流入|流出)\s*(?:额|金额|净额)?|(?:流入|流出)资金|(?:超大单|大单|中单|小单)(?:买入|卖出)(?:额|金额)|(?:(?:main|super_large|large|medium|small)_)?net_(?:inflow|outflow))$/u;
 const sentimentHeader = /^(?:情绪(?:得分|分数|指数)|市场情绪(?:得分|分数|指数)|恐慌贪婪指数|sentiment_score|sentiment_index|market_sentiment|fear_greed_index)$/u;
@@ -39,16 +46,46 @@ function articleUrl(value: unknown): boolean {
   catch { return false; }
 }
 
+function marketBarBasis(table: ParsedCandidateTable): string | null {
+  const { columns, rows } = table;
+  const closes = columns.filter(column => closeHeader.test(column));
+  const dates = columns.filter(column => barDateHeader.test(column));
+  const identities = columns.filter(column => barIdentityHeader.test(column));
+  const minutes = columns.filter(column => minuteHeader.test(column));
+  const values = (column: string) => rows.map(row => row[columns.indexOf(column)]!.original);
+  const report = columns.some(column => reportHeader.test(column)
+    || /(?:类型|类别|type|semantic_code|表题|表名)$/iu.test(column)
+      && values(column).some(value => reportValue.test(String(value ?? ''))));
+  if (report || closes.length !== 1 || dates.length !== 1 || identities.length !== 1 || minutes.length > 1
+    || columns.some(column => !barFieldHeader.test(column))) return null;
+  const rawDates = values(dates[0]!);
+  const encoding = rawDates.every(value => sourceReportedDate(value, 'yyyymmdd')) ? 'yyyymmdd'
+    : rawDates.every(value => sourceReportedDate(value, 'iso-date')) ? 'iso-date' : null;
+  if (!encoding) return null;
+  const symbols = values(identities[0]!);
+  const prices = values(closes[0]!).filter(value => value !== null && value !== '');
+  if (symbols.some(value => value === null || value === '') || !prices.length || prices.some(value => !numeric(value))) return null;
+  if (!minutes.length && columns.some(column => /(?:时间|timestamp|datetime|(?:^|_)time)$/iu.test(column))) return null;
+  const dateLabels = rawDates.map(value => sourceReportedDate(value, encoding));
+  const labels = minutes.length ? values(minutes[0]!).map(value => sourceReportedMinute(value)) : dateLabels;
+  if (labels.some((label, index) => !label || minutes.length && label.slice(0, 10) !== dateLabels[index])
+    || new Set(labels.map((label, index) => canonicalWfdJson([symbols[index], label]))).size !== table.total_rows) return null;
+  return `已核完整原表 ${table.total_rows} 行的对象、${minutes.length ? '日期及分钟' : '日期'}标签和收盘原值，匹配${minutes.length ? '分钟' : '日'}行情保管主题。`;
+}
+
 /** 主题只描述保管位置；复用完整原件预算和原表解析，不签发金融语义或发布资格。 */
 export function classifyCloudEvidenceTopic(bytes: Buffer): CloudEvidenceClassification {
   const pending = (basis: string): CloudEvidenceClassification => ({ topic: '待分类', basis: basis.slice(0, 4096) });
   if (!Buffer.isBuffer(bytes) || !bytes.length) return pending('完整原件为空或不是原始字节，尚无可核对的数据主题。');
   if (bytes.length > 8 * 1024 * 1024) return pending('完整原件超过自动主题分类的 8 MiB 预算；未截取内容判定主题。');
-  const automatic = classifyR1AlgorithmInput(bytes);
-  if (!automatic.complete || !automatic.format) return pending(`完整原件尚未完成主题预检：${automatic.reason}`);
-  if (automatic.kind === 'daily_bar' || automatic.kind === 'minute_bar') return { topic: '行情', basis: automatic.reason };
   try {
-    const table = parseTableSource(bytes, { materialId: 'cloud-evidence-classification', format: automatic.format });
+    const source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    const format = /^\s*[\[{]/u.test(source) ? 'json' : 'csv';
+    const table = parseTableSource(bytes, { materialId: 'cloud-evidence-classification', format });
+    if (table.source_columns.some(column => column.length > 256)) return pending('完整原表的列名超过 256 字符预算。');
+    if (table.total_rows > 5000) return pending('完整原表超过自动主题分类的 5000 行预算。');
+    const market = marketBarBasis(table);
+    if (market) return { topic: '行情', basis: market };
     // 仅规范化列名以核对结构；不读取标题、正文或任意单元格中的关键词决定主题。
     const names = table.columns.map(name => name.trim().toLowerCase().replace(/[（(][^()（）]*[）)]$/u, '').trim());
     const columns = (pattern: RegExp) => names.flatMap((name, index) => pattern.test(name) ? [index] : []);

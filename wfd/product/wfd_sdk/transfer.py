@@ -113,10 +113,10 @@ def object_manifest(store: Path, snapshot_id: str, *, include_ancestor_data: boo
 
 def export_package(store: Path, snapshot_id: str, pkg_dir: Path, *, include_ancestor_data: bool = False) -> dict:
     store, pkg_dir = Path(store), Path(pkg_dir)
+    man = object_manifest(store, snapshot_id, include_ancestor_data=include_ancestor_data)
     if pkg_dir.exists():
         shutil.rmtree(pkg_dir)
     (pkg_dir / "objects").mkdir(parents=True)
-    man = object_manifest(store, snapshot_id, include_ancestor_data=include_ancestor_data)
     snap = json.loads((store / f"catalog/snapshots/{snapshot_id}.json").read_text("utf-8"))
     reject_unsupported(snap, "transfer")
     for obj in man["objects"]:
@@ -205,6 +205,10 @@ def import_package(pkg_dir: Path, store: Path, *, interrupt_after: int | None = 
     if not v["ok"]:
         return {"status": "rejected", "code": "TRANSFER_INTEGRITY_FAILED",
                 "hash_mismatch": v["hash_mismatch"][:5], "missing": v["missing"][:5]}
+    for item in v["inventory"]["metadata"]:
+        if str(item.get("rel_path", "")).startswith("catalog/snapshots/"):
+            snapshot = json.loads((pkg_dir / "objects" / item["sha256"]).read_bytes())
+            reject_unsupported(snapshot, "transfer")
     store.mkdir(parents=True, exist_ok=True)
     for d in ("catalog/manifests", "catalog/snapshots", "catalog/commits", "catalog/lineage", "catalog/forks",
               "observations", "foundation", "events"):
@@ -285,6 +289,13 @@ def check_fast_forward(store: Path, incoming_sid: str) -> dict:
     lin = Lineage(store)
     st = host_state(store)
     local = st.get("active_head")
+    from .indexed_bulk import has_bulk_marker, index_roots
+    for sid in (local, incoming_sid):
+        if not sid:
+            continue
+        path = store / f"catalog/snapshots/{sid}.json"
+        if has_bulk_marker(store, sid) or (path.is_file() and index_roots(json.loads(path.read_bytes()))):
+            return {"ok": False, "reason": "SOURCE_MINUTE_SNAPSHOT_OPERATION_UNSUPPORTED:transfer"}
     incoming_chain = lin.ancestors(incoming_sid)
     if not incoming_chain["ok"]:
         return {"ok": False, "reason": incoming_chain["reason"], "detail": incoming_chain}

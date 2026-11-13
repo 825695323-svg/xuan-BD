@@ -36,7 +36,7 @@ export async function runWeb(args: readonly string[] = process.argv.slice(2)): P
     if (!isAbsolute(workspaceRoot) || workspaceRoot.includes('\0')) throw Object.assign(new Error(), { code: 'INVALID_ARGUMENTS' });
     try { await access(resolve(projectRoot, 'dist/web/index.html'), constants.R_OK); }
     catch { throw Object.assign(new Error(), { code: 'WEB_BUILD_MISSING' }); }
-    boot = startConfiguredApplication({ workspaceRoot, codeRoot: projectRoot, launcherFile, workspaceCompanion: {} });
+    boot = startConfiguredApplication({ workspaceRoot, codeRoot: projectRoot, launcherFile, workspaceCompanion: true });
     process.on('SIGINT', () => { void shutdown(); });
     process.on('SIGTERM', () => { void shutdown(); });
     await boot;

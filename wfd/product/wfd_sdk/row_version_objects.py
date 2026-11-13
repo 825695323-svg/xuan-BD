@@ -233,6 +233,7 @@ def externalize_files(root, files, write_immutable):
             raise RowVersionObjectError("OBJECT_BYTES_LIMIT")
         sha256 = digest(raw)
         value = f"{PREFIX}{sha256}:{len(raw)}"
+        _object_path(root, sha256)
         write_immutable(object_relative(sha256), raw)
         replacement = dict(source)
         replacement[KEY] = value
@@ -247,11 +248,15 @@ def marker_snapshot_file(files, snapshot_id):
     return SNAPSHOT_PREFIX + plain if reference_inventory({"files": files})["references"] else plain
 
 
-def writing_enabled(root, runtime_root):
+def adoption_record(root, runtime_root, *, for_write=False):
     path = Path(root) / ADOPTION_REL
+    if (path.is_symlink()
+            or ((for_write or path.exists())
+                and (path.parent.is_symlink() or path.parent.parent.is_symlink()))):
+        raise RowVersionObjectError("ADOPTION_MARKER_INVALID")
     if not path.exists():
-        return False
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > 4096:
+        return None
+    if not path.is_file() or path.stat().st_size > 4096:
         raise RowVersionObjectError("ADOPTION_MARKER_INVALID")
     try:
         record = json.loads(path.read_text("utf-8"), object_pairs_hook=_pairs)
@@ -267,7 +272,11 @@ def writing_enabled(root, runtime_root):
             or not isinstance(record["identity"], str) or not record["identity"].strip()
             or not isinstance(record["adopted_at_utc"], str) or not record["adopted_at_utc"]):
         raise RowVersionObjectError("ADOPTION_BINDING_INVALID")
-    return True
+    return record
+
+
+def writing_enabled(root, runtime_root):
+    return adoption_record(root, runtime_root) is not None
 
 
 def filesystem_identity(root):
@@ -300,10 +309,8 @@ def adopt_writing(engine, *, identity, expected_snapshot_id, adopted_at_utc):
                   "store_filesystem_identity": filesystem_identity(engine.root),
                   "runtime_filesystem_identity": filesystem_identity(engine.runtime_root),
                   "identity": identity, "adopted_at_utc": adopted_at_utc}
-        path = Path(engine.root) / ADOPTION_REL
-        if path.exists():
-            writing_enabled(engine.root, engine.runtime_root)
-            prior = json.loads(path.read_text("utf-8"))
+        prior = adoption_record(engine.root, engine.runtime_root, for_write=True)
+        if prior is not None:
             if prior["identity"] != identity:
                 raise RowVersionObjectError("ADOPTION_IDENTITY_CONFLICT")
             marker = prior
@@ -315,5 +322,9 @@ def adopt_writing(engine, *, identity, expected_snapshot_id, adopted_at_utc):
 
 
 def reject_unsupported(snapshot, operation):
+    if (snapshot.get("format_version") in {"wfd.source-minute-snapshot/1", "wfd.tabular-snapshot/1"}
+            or snapshot.get("source_minute_root") is not None
+            or snapshot.get("tabular_root") is not None):
+        raise RowVersionObjectError("SOURCE_MINUTE_SNAPSHOT_OPERATION_UNSUPPORTED:" + operation)
     if reference_inventory(snapshot)["references"]:
         raise RowVersionObjectError("ROW_VERSION_OBJECT_OPERATION_UNSUPPORTED:" + operation)

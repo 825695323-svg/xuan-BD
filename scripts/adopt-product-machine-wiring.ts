@@ -2,7 +2,7 @@ import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, un
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
 import { ResourceBindings, locateRuntimeRoot } from '../platform/resources/bindings.js';
-import { parseProductMachineConnectionProfile } from '../modules/financial/product-machine-connection.js';
+import { parseProductMachineConnectionProfile } from '../adapters/database/wfd-product-connection.js';
 
 /**
  * 受控登记 WFD 产品机器连接；正式 R1 选择与新连接在同一登记写入。

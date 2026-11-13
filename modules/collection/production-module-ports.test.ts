@@ -8,7 +8,6 @@ import { SourceFieldProfileStore, readSourceFieldProfile, profileFingerprint, ty
 import { modelActionApprovalMode } from '../agent/model-tools.js';
 import { isModelActionAllowed } from '../agent/model-tools.js';
 import { ConversationProcessingBridge } from './conversation-processing.js';
-import { ConversationAlgorithmBridge } from '../financial/conversation-algorithms.js';
 import { PRODUCTION_MODULES, productionModuleDirectory,
   fixedWfdModuleReference, readWfdModulePage,
   factorLibraryView, semanticDictionaryView, sourceSemanticView, readPublishedWfdSemanticDefinition,
@@ -21,39 +20,54 @@ test('exactly eight distinct on-demand interfaces are registered, discoverable a
     'parse', 'clean', 'structure', 'annotate', 'check', 'calculate', 'factors', 'semantics',
   ]);
   assert.equal(new Set(PRODUCTION_MODULES.map(item => item.action)).size, 8);
-  assert.ok(PRODUCTION_MODULES.every(item => isModelActionAllowed(item.action)));
+  assert.ok(PRODUCTION_MODULES.filter(item => item.id !== 'calculate').every(item => isModelActionAllowed(item.action)));
   const processing = { moduleCapability: (kind: string) => ({
     status: 'ready', engine: kind === 'clean' || kind === 'structure' ? 'polars' : 'fixed_typescript',
   }) };
-  const calculation = { capabilities: () => ({
-    methods: [{ methodId: 'macro_yoy', status: 'ready' }],
-  }) };
-  const found = productionModuleDirectory({ processing: processing as never,
-    calculation: calculation as never, hasWfdReader: true });
+  const found = productionModuleDirectory({ processing: processing as never, hasWfdReader: true });
   assert.equal(found.version, PRODUCTION_MODULE_PORTS_VERSION);
   assert.equal(found.modules.length, 8);
   assert.equal(found.mode, 'eight_parallel_ports');
   assert.equal(found.autoTrigger, false);
-  assert.ok(found.modules.every(item => item.status === 'ready'));
+  assert.ok(found.modules.filter(item => item.id !== 'calculate').every(item => item.status === 'ready'));
+  assert.equal(found.modules.find(item => item.id === 'calculate')?.status, 'blocked');
+  assert.deepEqual(found.modules.find(item => item.id === 'calculate')?.methods, []);
   assert.ok(found.modules.every(item => item.wfdRead));
   assert.deepEqual(found.modules.find(item => item.id === 'calculate')?.dependencies, []);
   assert.ok(found.modules.every(item => item.dependencies.length === 0), '接口目录不得重新引入固定五步依赖');
   assert.equal(isModelActionAllowed('data.wfd.query'), true, 'WFD只读查询不计入八模块加工接口');
   const detached = productionModuleDirectory({ processing: processing as never,
-    calculation: calculation as never, hasWfdReader: true,
+    hasWfdReader: true,
     enabled: { annotate: false, calculate: false, factors: false, semantics: false } });
   for (const id of ['annotate','calculate','factors','semantics'])
     assert.equal(detached.modules.find(item => item.id === id)?.status, 'unplugged');
   assert.equal(detached.modules.find(item => item.id === 'clean')?.status, 'ready');
 });
 
+test('calculation directory reflects only the registered MACD executor and its readiness', () => {
+  const status = (status: 'ready' | 'blocked') => ({
+    algorithms: { catalog: () => ({
+      status: status === 'ready' ? 'available' : 'unavailable',
+      methods: [{ id: 'macd', status }],
+    } as ReturnType<import('../../contracts/workspace-services.js').AlgorithmConversationPort['catalog']>) },
+    hasWfdReader: true,
+  });
+  const ready = productionModuleDirectory(status('ready')).modules.find(item => item.id === 'calculate');
+  assert.equal(ready?.engine, 'python');
+  assert.equal(ready?.status, 'ready');
+  assert.deepEqual(ready?.methods.map(method => (method as { methodId: string }).methodId), ['macd']);
+  const blocked = productionModuleDirectory(status('blocked')).modules.find(item => item.id === 'calculate');
+  assert.equal(blocked?.status, 'blocked');
+});
+
 test('factor library reuses existing registry and definitions without granting execution or publication', () => {
-  const found = factorLibraryView('ma');
+  const found = factorLibraryView('macd');
   assert.equal(found.kind, 'read_only_factor_library');
+  assert.equal(found.total, 1);
   assert.equal(found.items.length, 1);
-  assert.equal(found.items[0]?.id, 'ma');
+  assert.equal(found.items[0]?.id, 'macd');
   assert.equal(found.items[0]?.publication, 'not_granted_by_library');
-  assert.equal(found.items[0]?.execution, 'only_registered_calculation_module_can_execute');
+  assert.equal(found.items[0]?.execution, 'not_granted_by_library');
   assert.ok(found.definitions.counts.definitions >= 1);
   assert.throws(() => factorLibraryView('../etc'), code('PRODUCTION_FACTOR_ID'));
   assert.throws(() => factorLibraryView('not_registered_abc'), code('PRODUCTION_FACTOR_NOT_FOUND'));
@@ -97,7 +111,7 @@ test('parallel source and catalog modules can read fixed WFD page without changi
     ({ ...fixed, snapshotId: 'other_snap' }) as never, signal), code('PRODUCTION_MODULE_WFD_CHANGED'));
 });
 
-test('AGENTS registers all eight endpoints without adding a new runtime; disabled calculation stays unavailable', () => {
+test('AGENTS registers the seven processing and catalog actions with individual switches', () => {
   const database = new CoreDatabase();
   try {
     const processing = { moduleCapability: (kind: string) => ({
@@ -107,21 +121,12 @@ test('AGENTS registers all eight endpoints without adding a new runtime; disable
       database, core: {} as never, origin: () => null,
       companion: { processing, productionModuleSwitches: { calculate: false, semantics: false } } as never,
     });
-    const algorithmBridge = new ConversationAlgorithmBridge({
-      database, core: {} as never, origin: () => null,
-      companion: { productionCalculation: { capabilities: () => ({
-        methods: [{ methodId: 'macro_yoy', status: 'ready' }] }) },
-        productionModuleSwitches: { calculate: false } } as never,
-    });
-    const all = [...processingBridge.registrations, ...algorithmBridge.registrations];
-    for (const module of PRODUCTION_MODULES) {
-      const registration = all.find(item => item.action === module.action);
+    for (const module of PRODUCTION_MODULES.filter(item => item.id !== 'calculate')) {
+      const registration = processingBridge.registrations.find(item => item.action === module.action);
       assert.ok(registration, module.action);
       const availability = registration.available();
-      assert.equal(availability.available, !['calculate','semantics'].includes(module.id), module.id);
+      assert.equal(availability.available, module.id !== 'semantics', module.id);
     }
-    assert.equal(algorithmBridge.registrations.find(item => item.action === 'algorithms.calculate')?.available().available,
-      false, 'Host removal must block old public calculation path too');
   } finally { database.close(); }
 });
 
@@ -240,6 +245,27 @@ test('G5 source query rejects whole configs, arbitrary paths, wildcard/ambiguous
   badSemanticQuery({ left: { sourceId: 'provider-a', series: 'daily' }, fieldCode: '../passwd' });
   badSemanticQuery({ left: { sourceId: 'provider-a', series: 'daily' },
     sourceProfile: syntheticProfile('provider-a', 'a') });
+});
+
+test('G5 lookup reports explicit unknown measurement even with a source unit label', () => {
+  const sourceId = 'synthetic-a';
+  const base = syntheticProfile(sourceId, 'a');
+  const profile = syntheticProfile(sourceId, 'a', {
+    fields: base.fields.map(field => field.fieldCode === 'close'
+      ? { ...field, dataType: 'text', unitCode: 'not_applicable', measurement: '原表标签「元」', measurementStatus: 'unknown' }
+      : field),
+  });
+  const result = sourceSemanticView({ left: syntheticScope(sourceId, 'a') }, {
+    profiles: { match: () => profile },
+    products: { datasetFor: () => 'synthetic_source_reported' },
+  });
+  assert.equal(result.status, 'registered');
+  assert.ok('left' in result && result.left.fields);
+  assert.equal(Object.hasOwn(result.left.fields[0]!, 'measurementStatus'), false);
+  const close = result.left.fields.find(field => field.fieldCode === 'close');
+  assert.equal(close?.measurement, '原表标签「元」');
+  assert.equal(close?.measurementStatus, 'unknown');
+  assert.deepEqual(result.left.gaps, ['计量字段 close 仅保留原报词面，金融计量口径未知。']);
 });
 
 test('G5 is a single read-only AGENTS action, not a new task runtime or adoption capability', async () => {

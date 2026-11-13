@@ -1,7 +1,7 @@
 import { TaskError } from '../../platform/jobs/tasks.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
+import type { AlgorithmConversationPort } from '../../contracts/workspace-services.js';
 import type { ProcessingPlanService, ProcessingStepKind } from './processing-plan.js';
-import type { ProductionCalculation } from './production-calculation.js';
 import type { R1ProductRead, R1ProductDiscovery } from '../../contracts/r1-contracts.js';
 import { readFileSync } from 'node:fs';
 import { ALGORITHM_REGISTRY, ALGORITHM_REGISTRY_VERSION, ALGORITHM_REGISTRY_NOTE,
@@ -13,7 +13,7 @@ import { compareProfileSemantics, profileFingerprint, sourceFieldProfileDigest,
   type SourceProfileAdapterBinding } from './source-field-profile.js';
 
 /**
- * 八个平行的业务模块端口。这里仅复用现有清洗/计算服务，不设新任务状态、数据表或发布器。
+ * 八个平行的业务模块端口复用既有处理服务和配置。
  * WFD 输入经同一只读受信读取器，结果不自动冒充已核对的五步加工对象。
  */
 export const PRODUCTION_MODULE_PORTS_VERSION = 'bd.production-module-ports/2';
@@ -23,7 +23,7 @@ export const PRODUCTION_MODULES = [
   { id: 'structure', action: 'data.modules.structure', title: '结构化', source: 'declared_material_or_fixed_wfd' },
   { id: 'annotate', action: 'data.modules.annotate', title: '标注', source: 'declared_material_or_fixed_wfd' },
   { id: 'check', action: 'data.modules.check', title: '核对', source: 'declared_material_or_fixed_wfd' },
-  { id: 'calculate', action: 'data.modules.calculate', title: '计算公式与因子', source: 'fixed_wfd_only' },
+  { id: 'calculate', action: 'data.modules.calculate', title: '计算', source: 'fixed_wfd_only' },
   { id: 'factors', action: 'data.modules.factors', title: '因子库', source: 'registered_definitions_and_fixed_wfd' },
   { id: 'semantics', action: 'data.modules.semantics', title: '语义词典', source: 'read_only_templates_source_profiles_and_fixed_wfd' },
 ] as const;
@@ -54,7 +54,7 @@ export function processingSessionContract() {
 
 export function productionModuleDirectory(services: {
   processing?: Pick<ProcessingPlanService, 'moduleCapability'>;
-  calculation?: Pick<ProductionCalculation, 'capabilities'>;
+  algorithms?: Pick<AlgorithmConversationPort, 'catalog'>;
   hasWfdReader: boolean;
   hasSourceProfiles?: boolean;
   enabled?: Partial<Record<ProductionModuleId, boolean>>;
@@ -74,10 +74,13 @@ export function productionModuleDirectory(services: {
           sourceSemanticsMode: 'read_only_lookup_or_comparison_not_authority' } : {}) };
     }
     if (id === 'calculate') {
-      const capability = services.calculation?.capabilities();
-      return { id, action, title, source, status: !attached ? 'unplugged'
-          : capability?.methods.some(method => method.status === 'ready') ? 'ready' : 'blocked',
-        engine: 'polars_or_opt_in_pandas', methods: capability?.methods ?? [],
+      const methods = services.algorithms?.catalog().methods.map(method => ({
+        methodId: method.id, status: method.status, reason: method.reason,
+        methodVersion: method.methodVersion, implementationVersion: method.implementationVersion,
+      })) ?? [];
+      return { id, action, title, source, status: !attached ? 'unplugged' as const
+          : methods.some(method => method.status === 'ready') ? 'ready' as const : 'blocked' as const,
+        engine: services.algorithms ? 'python' : 'unavailable', methods,
         execution: 'on_demand', history: 'wfd_fixed_snapshot_only',
         wfdRead: services.hasWfdReader, dependencies: [] as string[] };
     }
@@ -93,7 +96,7 @@ export function productionModuleDirectory(services: {
   });
   return { version: PRODUCTION_MODULE_PORTS_VERSION, owner: 'bd_service', mode: 'eight_parallel_ports',
     modules, sharedWfdReader: 'R1Workspace.readProduct (bounded, fixed snapshot, single page)',
-    sharedVerifier: 'production-verifier + method-specific proof',
+    sharedVerifier: 'production-verifier',
     sharedPublication: 'existing R1/WFD only', autoTrigger: false,
     note: '八端口彼此并列且按需调用。AGENTS先识别、只执行解析并读取实际反馈，再按证据决定下一模块；后续依赖绑定在实际选择的处理步骤，不是固定五步。历史计划与 WFD 发布证明不被改写。' };
 }
@@ -199,7 +202,7 @@ export function factorLibraryView(factorId?: string) {
     items: entries.map(item => ({
       ...item, definition: definitionFor(item.id) ?? null,
       publication: 'not_granted_by_library',
-      execution: 'only_registered_calculation_module_can_execute',
+      execution: 'not_granted_by_library',
     })) };
 }
 
@@ -244,6 +247,7 @@ function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceS
     aliases: (field.aliases ?? []).slice(0, 2).map(alias => alias.slice(0, 128)),
     totalAliases: field.aliases?.length ?? 0, dataType: field.dataType,
     unitCode: field.unitCode, role: field.role, measurement: field.measurement?.slice(0, 192) ?? null,
+    ...(field.measurementStatus === undefined ? {} : { measurementStatus: field.measurementStatus }),
     previewMayTruncate: field.originalHeader.length > 128 || (field.aliases ?? []).length > 2
       || (field.aliases ?? []).some(alias => alias.length > 128) || (field.measurement?.length ?? 0) > 192,
   }));
@@ -251,8 +255,10 @@ function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceS
     ...(profile.adjustment.status === 'unknown' ? ['复权状态未知；不能跨来源认定等价。'] : []),
     ...(profile.timeBucket.labelSemantics === 'unknown' || profile.timeBucket.interval === 'unknown'
       ? ['时间桶起止和区间口径未知；不能跨来源认定等价。'] : []),
-    ...profile.fields.filter(field => field.role === 'value' && !field.measurement)
-      .slice(0, 8).map(field => '计量字段 ' + field.fieldCode + ' 缺金融语义口径。'),
+    ...profile.fields.filter(field => field.measurementStatus === 'unknown' || field.role === 'value' && !field.measurement)
+      .slice(0, 8).map(field => field.measurementStatus === 'unknown'
+        ? '计量字段 ' + field.fieldCode + ' 仅保留原报词面，金融计量口径未知。'
+        : '计量字段 ' + field.fieldCode + ' 缺金融语义口径。'),
     ...(fieldCode && !filtered.length ? ['来源档案没有规范字段 ' + fieldCode + '。'] : []),
     ...(!datasetId ? ['没有该语义指纹对应的本机数据集登记；来源档案不等于 WFD 已发布定义。'] : []),
   ];

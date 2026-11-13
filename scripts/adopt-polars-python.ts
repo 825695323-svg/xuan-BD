@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { ownStateRoot } from '../apps/server/boot.js';
 import { ResourceBindings, launcherPath, locateRuntimeRoot } from '../platform/resources/bindings.js';
 import { acquireRuntimeStartupFence, assertRuntimeStopped, readRuntimeLauncher } from '../platform/runtime/runtime-profile.js';
-import { POLARS_DEPENDENCY_VERSION } from '../modules/collection/data-processing/polars-fixed.js';
+import { POLARS_DEPENDENCY_VERSION } from '../modules/collection/data-processing/polars-cleaning.js';
 
 export interface PolarsPythonAdoptionRequest {
   pythonExecutable: string;

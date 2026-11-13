@@ -29,7 +29,6 @@ try {
     ...(python ? { WFD_PYTHON: python } : {}), ...(process.env.XUAN_TEST_NPM_CLI ? { XUAN_TEST_NPM_CLI: absolute(process.env.XUAN_TEST_NPM_CLI) } : {}),
     ...(process.env.POLARS_PYTHON ? { POLARS_PYTHON: absolute(process.env.POLARS_PYTHON) } : {}),
     ...(process.env.XUAN_FULL_CHAIN_ROOT ? { XUAN_FULL_CHAIN_ROOT: absolute(process.env.XUAN_FULL_CHAIN_ROOT) } : {}),
-    ...(process.env.POLARS_FINANCIAL_FIXTURE ? { POLARS_FINANCIAL_FIXTURE: absolute(process.env.POLARS_FINANCIAL_FIXTURE) } : {}),
     PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1', PYTHONDONTWRITEBYTECODE: '1' };
   function run(executable, args) {
     const result = spawnSync(executable, args, { cwd: codeRoot, env, stdio: 'inherit', windowsHide: true });
@@ -42,7 +41,7 @@ try {
     env.PYTHONPYCACHEPREFIX = join(nodeCacheRoot, 'isolated-pycache');
     env.PYTHONNOUSERSITE = '1';
     // 在 JS 中枚举，避免 Windows shell 不展开通配符或空匹配导致 Node 自动发现其他测试。
-    const files = [...['modules/collection', 'modules/collection/data-processing', 'apps/server', 'platform/resources',
+    const files = [...['modules/collection', 'modules/collection/data-processing', 'apps/server', 'platform/config', 'platform/resources',
       'platform/capabilities/conversion', 'plugins/api-sources', 'plugins/api-sources/providers/werss', 'plugins/api-sources/providers/wechat'].flatMap(directory =>
       readdirSync(join(codeRoot, directory), { withFileTypes: true }).filter(entry => entry.isFile() && entry.name.endsWith('.test.ts'))
         .map(entry => join(directory, entry.name))),

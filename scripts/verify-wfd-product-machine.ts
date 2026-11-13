@@ -17,7 +17,7 @@ import type { AlgorithmSnapshotReference } from '../modules/financial/algorithm-
  *
  * 本版把两类能力分开记录：
  * - 通用 fixed_read：按固定产品读取真实行，逐行核对 definition/contract/声明字段。
- * - 金融算法端口：只有固定合同提供结构化 frequency/adjustment/bar_closed/
+ * - MACD 端口：只有固定合同提供结构化 frequency/adjustment/bar_closed/
  *   availability/currency/时间轴时才可用；当前 P1 合同不具备，必须明确拒绝。
  *   caller 的 dailysemantics 只作预期，不能补成数据库事实。
  */
@@ -455,7 +455,7 @@ async function main(): Promise<void> {
       compact_negative: compactNegative,
       null_state_probe: nullStateProbe,
       verified_scope_returned: null,
-      note: '金融算法入口未通过；通用 fixed_read 已通过。拒绝原因是固定合同缺结构化金融算法语义，不是 mock 失败。',
+      note: 'MACD 入口未通过；通用 fixed_read 已通过。拒绝原因是固定合同缺结构化 MACD 输入语义，不是 mock 失败。',
     },
   };
   write(resolve(evidenceDir, 'algorithm-gate.json'), algorithmGate);
@@ -581,8 +581,8 @@ async function main(): Promise<void> {
       'request-status.json', 'trace.json', 'generic-fixed-read.json', 'algorithm-gate.json',
       'null-state-probe.json', 'negative-boundary.json', 'summary.json'],
     not_claimed: [
-      '整个 P6 未通过；本批只验证公开本地进程边界、通用 fixed_read 与算法入口拒绝。',
-      '金融算法端口当前未通过：固定合同缺结构化 frequency/adjustment/bar_closed/availability/currency/时间轴语义。',
+      '整个 P6 未通过；本批只验证公开本地进程边界、通用 fixed_read 与 MACD 入口拒绝。',
+      'MACD 端口当前未通过：固定合同缺结构化 frequency/adjustment/bar_closed/availability/currency/时间轴语义。',
       'submit/packages/export/company_view/calendar_read 明确未支持。',
       'Windows x64 与拔盘轮未由本批覆盖。',
       '未把 caller 声明的 definitionRevision 或 dailysemantics 当数据库事实。',

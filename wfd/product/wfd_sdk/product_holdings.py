@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from . import row_version_objects
+
 FORMAT = "wfd.product-holdings/1.0"
 STAGES = ("acquired", "custodied", "published_readable")
 TARGET_INSTANCE_FORMAT = "wfd.target-instance-binding/1.0"
@@ -539,6 +541,7 @@ class HoldingLedger:
         if not engine_commit.is_file():
             raise HoldingError("HOLDING_SNAPSHOT_UNKNOWN", snapshot_id)
         snap = json.loads((self.root / f"catalog/snapshots/{snapshot_id}.json").read_text("utf-8"))
+        row_version_objects.project_snapshot(self.root, snap)
         found = set()
         for entry in snap.get("files", []):
             if entry.get("product_id") != product_id:

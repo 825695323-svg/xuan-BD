@@ -7,6 +7,8 @@ export interface ResourceBinding {
   path: string;
   kind: 'directory' | 'file' | 'program';
   owned?: boolean;
+  /** 独立受管能力可缺席；只有固定身份可用时才解析其文件。 */
+  optional?: true;
   /** 受管理目录的稳定身份；非受管理清单文件可使用带版本前缀的执行资源投影身份。 */
   identity?: string;
   device?: string;
@@ -38,16 +40,15 @@ export class ResourceBindings {
     for (const [name, binding] of Object.entries(this.document.resources)) {
       if (!/^[a-z][a-z0-9_]*$/u.test(name) || !record(binding) || typeof binding.path !== 'string'
         || !binding.path || binding.path.includes('\0') || !['directory', 'file', 'program'].includes(binding.kind)
+        || (binding.optional !== undefined && (binding.optional !== true || binding.owned !== true))
         || (binding.sha256 !== undefined && (binding.kind === 'directory' || typeof binding.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(binding.sha256)))) throw new Error('资源登记格式无效。');
       const path = this.path(name);
       if (binding.owned) {
         if (binding.kind !== 'directory' || typeof binding.identity !== 'string' || !binding.identity
           || typeof binding.device !== 'string' || typeof binding.inode !== 'string') throw new Error('受管理目录缺少固定身份。');
-        const stat = lstatSync(path, { bigint: true });
-        if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(path) !== path
-          || String(stat.dev) !== binding.device || String(stat.ino) !== binding.inode) throw new Error(`资源 ${name} 已替换或尚未经过身份核对。`);
         if (owned.some(other => contains(other, path) || contains(path, other))) throw new Error('受管理存储根不能重叠。');
         owned.push(path);
+        if (!binding.optional) this.assertOwnedRoot(name, path, binding);
       }
     }
   }
@@ -65,12 +66,26 @@ export class ResourceBindings {
     return this.path(name);
   }
 
+  private assertOwnedRoot(name: string, path: string, binding: ResourceBinding) {
+    const stat = lstatSync(path, { bigint: true });
+    if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(path) !== path
+      || String(stat.dev) !== binding.device || String(stat.ino) !== binding.inode)
+      throw new Error(`资源 ${name} 已替换或尚未经过身份核对。`);
+  }
+
+  ownedDirectoryAvailable(name: string): boolean {
+    const binding = this.document.resources[name];
+    if (!binding?.owned || binding.kind !== 'directory') return false;
+    try { this.assertOwnedRoot(name, this.path(name), binding); return true; } catch { return false; }
+  }
+
   /** 仅把已有受管理根下的文件登记为逻辑引用；外部用户文件仍由原授权记录管理。 */
   reference(path: string): ResourceReference | undefined {
     for (const [name, binding] of Object.entries(this.document.resources)) {
       if (!binding.owned) continue;
       const base = this.path(name);
       if (!contains(base, path)) continue;
+      if (binding.optional && !this.ownedDirectoryAvailable(name)) return undefined;
       const part = relative(base, path).split(sep).join('/');
       if (!part) continue;
       validateRelative(part);
@@ -85,9 +100,7 @@ export class ResourceBindings {
     if (!binding?.owned || binding.identity !== reference.identity) throw new Error('资源引用与当前存储身份不一致。');
     validateRelative(reference.relative);
     const base = this.path(reference.root), path = resolve(base, ...reference.relative.split('/'));
-    const rootStat = lstatSync(base, { bigint: true });
-    if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || realpathSync(base) !== base
-      || String(rootStat.dev) !== binding.device || String(rootStat.ino) !== binding.inode) throw new Error('受管理资源根的对象身份已变化。');
+    this.assertOwnedRoot(reference.root, base, binding);
     if (!contains(base, path) || path === base) throw new Error('资源引用越界。');
     // 核对已有祖先，拒绝通过链接离开已登记的根；最终文件身份仍由文件引用服务检查。
     let current = base;

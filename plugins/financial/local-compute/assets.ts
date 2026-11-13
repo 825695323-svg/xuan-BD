@@ -7,7 +7,7 @@ import { runDirectProcess } from '../../../platform/runtime/process.js';
 import type { JsonValue } from '../../../contracts/task-contracts.js';
 
 /** 只封闭正式入口的实际依赖；不把其余算法或取数函数暴露为插件。 */
-export const ASSET_FILES = ['_common.py', 'calculate.py', 'indicators.py', 'operators.py', 'patterns.py'] as const;
+export const ASSET_FILES = ['_common.py', 'calculate.py', 'indicators.py', 'operators.py'] as const;
 export const MAX_ASSET_BYTES = 512_000;
 export interface FinancialAssetBundle {
   version: string;
@@ -86,18 +86,17 @@ import base64, importlib.abc, importlib.util, json, math, os, sys, sysconfig
 payload = json.load(sys.stdin)
 files = payload['files']
 request = payload['request']
-if set(files) != {'_common.py', 'calculate.py', 'indicators.py', 'operators.py', 'patterns.py'}:
+if set(files) != {'_common.py', 'calculate.py', 'indicators.py', 'operators.py'}:
     raise ValueError('implementation closure mismatch')
 if set(request) != {'version', 'kind', 'operation', 'params', 'data'}:
     raise ValueError('only explicit in-memory calculation input is permitted')
-if (request['kind'], request['operation']) not in {('indicator', 'MA'), ('indicator', 'MACD'), ('pattern', 'bullish_engulfing')}:
+if (request['kind'], request['operation']) != ('indicator', 'MACD'):
     raise ValueError('operation is not registered')
-if request['operation'] == 'MACD':
-    parameters = request['params']
-    if (not isinstance(parameters, dict) or set(parameters) != {'short_period', 'long_period', 'signal_period', 'init'}
-        or any(type(parameters[name]) is not int or parameters[name] != expected for name, expected in [('short_period', 12), ('long_period', 26), ('signal_period', 9)])
-        or parameters['init'] != 'first_valid'):
-        raise ValueError('MACD requires fixed 12/26/9 and explicit first_valid initialization; continuation is not supported')
+parameters = request['params']
+if (not isinstance(parameters, dict) or set(parameters) != {'short_period', 'long_period', 'signal_period', 'init'}
+    or any(type(parameters[name]) is not int or parameters[name] != expected for name, expected in [('short_period', 12), ('long_period', 26), ('signal_period', 9)])
+    or parameters['init'] != 'first_valid'):
+    raise ValueError('MACD requires fixed 12/26/9 and explicit first_valid initialization; continuation is not supported')
 stdlib = os.path.realpath(sysconfig.get_path('stdlib'))
 def allowed_path(path):
     if isinstance(path, int):
@@ -128,7 +127,7 @@ class FrozenLoader(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 sys.meta_path.insert(0, FrozenLoader())
 try:
     import calculate
-    result = calculate.execute(request, None)
+    result = calculate.execute(request)
     print(json.dumps(result, ensure_ascii=False, allow_nan=False))
 except (OSError, ValueError, TypeError, KeyError, OverflowError, ImportError) as exc:
     print(json.dumps({'ok': False, 'error': str(exc), 'execution_executed': False}, ensure_ascii=False, allow_nan=False))

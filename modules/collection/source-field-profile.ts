@@ -19,8 +19,10 @@ export interface SourceFieldMapping {
   dataType: 'decimal' | 'integer' | 'text' | 'boolean';
   unitCode: string;
   role: SourceFieldRole;
-  /** 明确写下的金融口径（例如「每股价格」「后复权累计因子」）；未知就留空，不补造。 */
+  /** 有依据的金融口径，或原表单位标签和待核范围的说明。 */
   measurement?: string;
+  /** 原报仅保留词面，实际计量口径未确认。 */
+  measurementStatus?: 'unknown';
 }
 /** 分钟桶定义：标签表示起点、区间左闭右开、时长与来源时区都必须写明。 */
 export interface SourceTimeBucket {
@@ -120,6 +122,9 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
     if (!dataTypes.includes(field.dataType as never)) fail(`来源字段档案 ${name} 的类型无效：${originalHeader}`);
     if (!roles.includes(field.role as never)) fail(`来源字段档案 ${name} 的角色无效：${originalHeader}`);
     if (field.measurement !== undefined && (typeof field.measurement !== 'string' || field.measurement.length > 512)) fail(`来源字段档案 ${name} 的口径描述无效：${originalHeader}`);
+    const measurementStatus = field.measurementStatus;
+    if (measurementStatus !== undefined && (measurementStatus !== 'unknown' || field.dataType !== 'text' || unitCode !== 'not_applicable'))
+      fail(`来源字段档案 ${name} 的 measurementStatus 仅允许 text / not_applicable 原报词面声明 unknown：${originalHeader}`);
     if (headers.has(originalHeader)) fail(`来源字段档案 ${name} 重复映射同一原表头：${originalHeader}`);
     if (codes.has(fieldCode)) fail(`来源字段档案 ${name} 把两个原表头映射到同一标准字段：${fieldCode}`);
     headers.add(originalHeader); codes.add(fieldCode);
@@ -135,7 +140,8 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
     }
     return { originalHeader, ...(field.aliases ? { aliases: [...field.aliases as string[]] } : {}),
       fieldCode, dataType: field.dataType as SourceFieldMapping['dataType'], unitCode,
-      role: field.role as SourceFieldRole, ...(field.measurement === undefined ? {} : { measurement: field.measurement }) };
+      role: field.role as SourceFieldRole, ...(field.measurement === undefined ? {} : { measurement: field.measurement }),
+      ...(measurementStatus === undefined ? {} : { measurementStatus }) };
   });
   const supersedes = raw.supersedes === undefined ? undefined : (() => {
     if (!Array.isArray(raw.supersedes) || !raw.supersedes.length) fail(`来源字段档案 ${name} 的 supersedes 无效。`);
@@ -193,12 +199,13 @@ export class SourceFieldProfileStore {
 
 /** 语义签名：决定两份来源档案能否落到同一产品定义的关键事实，不含原表头。 */
 export interface SemanticSignature {
-  fields: { fieldCode: string; dataType: string; unitCode: string; role: string; measurement: string | null }[];
+  fields: (Pick<SourceFieldMapping, 'fieldCode' | 'dataType' | 'unitCode' | 'role' | 'measurementStatus'> & { measurement: string | null })[];
   frequency: string; timeBucket: SourceTimeBucket; adjustment: SourceAdjustment;
 }
 export const profileSignature = (profile: SourceFieldProfile): SemanticSignature => ({
   fields: [...profile.fields].map(field => ({ fieldCode: field.fieldCode, dataType: field.dataType,
-    unitCode: field.unitCode, role: field.role, measurement: field.measurement ?? null }))
+    unitCode: field.unitCode, role: field.role, measurement: field.measurement ?? null,
+    ...(field.measurementStatus === undefined ? {} : { measurementStatus: field.measurementStatus }) }))
     .sort((a, b) => a.fieldCode.localeCompare(b.fieldCode)),
   frequency: profile.frequency, timeBucket: profile.timeBucket, adjustment: profile.adjustment,
 });
@@ -222,6 +229,8 @@ export function compareProfileSemantics(left: SourceFieldProfile, right: SourceF
     if (other.dataType !== field.dataType) reasons.push(`${field.fieldCode} 类型不同：${field.dataType} ≠ ${other.dataType}`);
     if (other.role !== field.role) reasons.push(`${field.fieldCode} 角色不同：${field.role} ≠ ${other.role}`);
     if (field.measurement !== other.measurement) reasons.push(`${field.fieldCode} 口径不同：${field.measurement ?? '未声明'} ≠ ${other.measurement ?? '未声明'}`);
+    if (field.measurementStatus === 'unknown' || other.measurementStatus === 'unknown')
+      reasons.push(`${field.fieldCode} 至少一方计量口径未知，不能认定为同一产品`);
   }
   if (a.frequency !== b.frequency) reasons.push(`频率不同：${a.frequency} ≠ ${b.frequency}`);
   if (a.timeBucket.labelSemantics !== b.timeBucket.labelSemantics

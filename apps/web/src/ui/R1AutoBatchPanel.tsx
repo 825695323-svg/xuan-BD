@@ -5,8 +5,7 @@ import type { R1BatchFile } from '../../../../modules/collection/r1-auto-batch';
 import { R1_BATCH_MAX_FILES, R1_BATCH_MAX_BYTES, MATERIAL_UPLOAD_LIMIT } from '../../../../contracts/upload-limits';
 import { r1SourceGaps, r1SourceReadyForHandoff, type R1SourceAuthorization } from '../../../../modules/collection/r1-source';
 import { RequestError } from '../api';
-import type { AlgorithmEntryFocus } from './algorithm-catalog';
-import { r1AutoApi, type R1AutoView, type R1BatchStartInput, type R1BatchView, type R1AlgorithmClassification } from '../r1-auto-api';
+import { r1AutoApi, type R1AutoView, type R1BatchStartInput, type R1BatchView } from '../r1-auto-api';
 import { ErrorNote, errorDetail, useWords } from './Controls';
 import { R1ChunkedCsvPanel } from './R1ChunkedCsvPanel';
 
@@ -14,7 +13,6 @@ type SourceEditor = R1SourceDeclaration & { authorization: R1SourceAuthorization
 interface Props {
   source: SourceEditor; ready: boolean; disabled: boolean;
   onSourceChange(source: SourceEditor): void; onOpenAuto(view: R1AutoView): void;
-  focus?: Extract<AlgorithmEntryFocus, { kind: 'batch' }> | null;
 }
 const storageKey = 'xuan-bd.r1-auto.batch';
 function remembered(): string { try { return localStorage.getItem(storageKey) ?? ''; } catch { return ''; } }
@@ -27,10 +25,9 @@ const batchLabels: Record<R1BatchView['state'], string> = { awaiting_upload: '�
   awaiting_answers: '其余已逐件办理，尚有事实待补', recovering: '等待核清原提交结果', completed: '本批已逐件办理', conflicts_pending: '其余已逐件办理，冲突保留待确认', stopped: '本批已停止', blocked: '本批受阻' };
 const fields = [['source_id', '来源身份'], ['provider', '提供者'], ['requested_url', '来源系列地址'],
   ['requested_at_utc', '请求时间（UTC，协调世界时）'], ['acquired_at_utc', '取得时间（UTC，协调世界时）'], ['usage_scope', '本批获准用途']] as const;
-type SelectedFile = { file: File; manifest: R1BatchFile; classification: R1AlgorithmClassification | null };
-const kindLabels = { daily_bar: '日K原报观察', minute_bar: '分钟K原报观察', sentiment: '情绪或专项报告', mixed: '混合报告或口径', other: '其他数据', unknown: '证据不足或不支持' };
+type SelectedFile = { file: File; manifest: R1BatchFile };
 
-export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOpenAuto, focus = null }: Props) {
+export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOpenAuto }: Props) {
   const words = useWords();
   const [activeId, setActiveId] = useState(remembered), [current, setCurrent] = useState<R1BatchView | null>(null);
   const [recent, setRecent] = useState<R1BatchView[]>([]), [lookup, setLookup] = useState('');
@@ -39,15 +36,9 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
   const [selectedColumns, setSelectedColumns] = useState('');
   const [consent, setConsent] = useState(false), [datePolicy, setDatePolicy] = useState(false), [duplicateBatch, setDuplicateBatch] = useState(false);
   const [busy, setBusy] = useState(false), [hashing, setHashing] = useState(false), [error, setError] = useState<string | null>(null);
-  const activeRef = useRef(activeId), busyRef = useRef(false), selectionEpoch = useRef(0), mounted = useRef(true), sectionRef = useRef<HTMLElement>(null);
+  const activeRef = useRef(activeId), busyRef = useRef(false), selectionEpoch = useRef(0), mounted = useRef(true);
   const attempted = useRef(new Set<string>());
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; selectionEpoch.current++; }; }, []);
-  useEffect(() => {
-    if (!focus) return;
-    // 原批次不再配置自动计算；定位入口仅用于说明已迁移到 WFD 独立人工算法。
-    const timer = window.setTimeout(() => sectionRef.current?.scrollIntoView({ block: 'start' }), 80);
-    return () => window.clearTimeout(timer);
-  }, [focus?.nonce]);
   useEffect(() => { setConsent(false); }, [source, datasetId, datePolicy, selectedColumns]);
   const selectBatch = useCallback((id: string) => {
     activeRef.current = id; remember(id); setActiveId(id); setCurrent(null); setError(null); setConsent(false); setDuplicateBatch(false); attempted.current.clear();
@@ -106,21 +97,13 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
       const invalid = files.find(file => !file.size || file.size > MATERIAL_UPLOAD_LIMIT);
       if (invalid) throw new Error(`${invalid.name}：${invalid.size ? `单件 ${(invalid.size / 1024 / 1024).toFixed(2)} MiB，保管上限为 ${MATERIAL_UPLOAD_LIMIT / 1024 / 1024} MiB` : '原件为空'}。请移出该件后重新选择，未读取文件字节。`);
       const result: SelectedFile[] = [];
-      const inspected = new Map<string, R1AlgorithmClassification>();
       const root = directory ? files[0]!.webkitRelativePath.split('/')[0] : '';
       for (const file of files) {
         const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
         if (epoch !== selectionEpoch.current) return;
         if (directory && (!root || !file.webkitRelativePath.startsWith(root + '/'))) throw new Error('目录选择没有保留同一根目录的实际相对位置，请按来源系列分别选择原文件。');
         const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
-        let classification: R1AlgorithmClassification | null = null;
-        if (!activeRef.current) {
-          classification = inspected.get(sha256) ?? await r1AutoApi.classify(file);
-          if (classification.sha256 !== sha256 || classification.byteLength !== file.size) throw new Error(`${file.name} 的内容预检与本次原件摘要或长度不同，请重新选择原文件。`);
-          inspected.set(sha256, classification);
-        }
-        if (epoch !== selectionEpoch.current) return;
-        result.push({ file, classification, manifest: { name: file.name, relativePath: directory ? file.webkitRelativePath.slice(root!.length + 1) : file.name,
+        result.push({ file, manifest: { name: file.name, relativePath: directory ? file.webkitRelativePath.slice(root!.length + 1) : file.name,
           byteLength: file.size, sha256 } });
       }
       const positions = new Map<string, string>();
@@ -160,10 +143,9 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
   const missingFile = current?.items.find(item => item.itemId === current.nextUploadItemId && !selected.some(file => file.manifest.sha256 === item.sha256
     && file.manifest.byteLength === item.byteLength && file.manifest.relativePath === item.relativePath));
 
-  return <><R1ChunkedCsvPanel source={source} ready={ready} disabled={disabled} onOpenAuto={onOpenAuto}/><section ref={sectionRef} id="batch-auto-calculation" className="r1-stage"
-    aria-label={words('多文件批量交接', 'Multiple-file batch handoff')} aria-busy={busy || hashing} data-focus-method={focus?.methodId}>
+  return <><R1ChunkedCsvPanel source={source} ready={ready} disabled={disabled} onOpenAuto={onOpenAuto}/><section className="r1-stage"
+    aria-label={words('多文件批量交接', 'Multiple-file batch handoff')} aria-busy={busy || hashing}>
     <h3>{words('多文件批量交接', 'Multiple-file batch handoff')}</h3>
-    {focus && <p className="r1-help" role="status">原报批次不再自动计算。请先完成 WFD 发布，再从统一基础算法接口人工选择观测均线或其他算法。</p>}
     <p className="r1-help">{words('一次选择同一来源系列的多份原文件，统一声明本批用途、数据集与授权。每件保管后沿自动交接办理，核实固定读回再推进下一件；事实待补或明确退回的文件保留原编号，其余文件继续。',
       'Select multiple originals from the same source series and declare this batch’s purpose, dataset and authorization. Each original is stored and handed off in sequence. Missing facts or explicit returns retain their original identities while unrelated files continue.')}</p>
     <p className="r1-help">{words('重复保护仅复用相同来源位置、文件字节、全部来源声明（含请求与取得时间、授权和用途）、数据集、日期口径、选列及目标连接。声明改变时保留为另一次取得，不能仅按相同字节合并。',
@@ -177,9 +159,8 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
       `Selected directory: ${directoryName}. Set the source series address to this directory’s actual URI. Item paths retain its subdirectories.`)
       : words('普通多选只能取得文件名，请仅选择同一实际目录中的原件。跨子目录同名文件请使用目录选择；清单仍受 100 件、128 MiB 限制，不截取目录。',
         'Ordinary file selection exposes filenames only. Select originals from the same actual directory, or use directory selection to preserve subdirectories. The whole manifest remains limited to 100 files and 128 MiB; directories are never truncated.')}</p>
-    {hashing && <p role="status">{words('逐件核对完整原件摘要与内容分类中…', 'Checking full original digests and content classifications…')}</p>}
+    {hashing && <p role="status">{words('逐件计算完整原件摘要中…', 'Computing full digests for each original…')}</p>}
     {selected.length > 0 && <details><summary>{words('本次选定文件', 'Selected files')} · {selected.length}</summary><ul>{selected.map((item, index) => <li key={index}>{item.manifest.relativePath} · {item.manifest.byteLength} {words('字节', 'bytes')}</li>)}</ul></details>}
-    {!activeId && <p className="r1-help">{words('本批仅保管、加工、发布和固定读回原始数据。均线、MACD 与其他基础算法由 BD AGENTS 通过 WFD 固定快照人工计算，不再随批次自动运行。', 'This batch only stores, processes, publishes and reads back original data. Basic algorithms run separately on manually selected WFD fixed snapshots through BD AGENTS.')}</p>}
     {!activeId && <form className="r1-form" onSubmit={event => { event.preventDefault(); void action(start); }}><fieldset disabled={locked}>
       <legend>{words('本批范围与来源授权', 'Batch scope and source authorization')}</legend>
       <label>{words('本批目标数据集编号', 'Batch target dataset ID')}<input required maxLength={128} value={datasetId} onChange={event => { setDatasetId(event.target.value); setConsent(false); }} /></label>
@@ -199,9 +180,8 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
       }} /></label>
       <label className="r1-confirm"><input type="checkbox" checked={datePolicy} onChange={event => { setDatePolicy(event.target.checked); setConsent(false); }} />{words('本批全部文件属于境内 A 股来源，原报交易日期按北京时间日历日解释；历史可得时间仍未知。仅在识别到原报交易日期问题时采用本声明。',
         'All selected files are mainland A-share sources. Reported trade dates mean Beijing calendar days; historical availability remains unknown. Apply this declaration only to a recognized source trade-date question.')}</label>
-      <p className="r1-help">{words('本批只处理原报，不包含自动基础算法。计算必须在 WFD 原报正式发布后由人工另行发起，计算结果也不会自动发布。', 'Only original data is handled in this batch. Calculation requires a separate manual request after WFD publication, and derived results are not published automatically.')}</p>
-      <label className="r1-confirm"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} />{words(`我允许对本批所列 ${selected.length} 份原件按上述来源、用途和数据集登记、加工、发布并固定读回。不自动运行或发布任何基础算法。`,
-        `I authorize custody, processing, publication and fixed readback for these ${selected.length} originals only. No basic algorithm or derived publication is started automatically.`)}</label>
+      <label className="r1-confirm"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} />{words(`我允许对本批所列 ${selected.length} 份原件按上述来源、用途和数据集登记、加工、发布并固定读回。`,
+        `I authorize custody, processing, publication and fixed readback for these ${selected.length} originals only.`)}</label>
       <button type="submit" className="primary-button" disabled={!ready || !selected.length || !datasetId.trim() || !consent || !r1SourceReadyForHandoff(source)}>{words('开始本批自动交接', 'Start this batch handoff')}</button>
     </fieldset></form>}
     {activeId && <div>
@@ -218,7 +198,6 @@ export function R1AutoBatchPanel({ source, ready, disabled, onSourceChange, onOp
         <div className="r1-table-scroll"><table><thead><tr><th>{words('原件与来源位置', 'Original and source location')}</th><th>{words('逐件状态', 'Item status')}</th><th>{words('原记录', 'Original record')}</th></tr></thead><tbody>
           {current.items.map(item => <tr key={item.itemId}><td><strong>{item.relativePath}</strong><p className="r1-help">{item.requestedUrl}</p></td><td>{item.duplicateOf && <p>{words('重复引用原文件', 'Duplicate reference')}</p>}<strong>{labels[item.state]}</strong>
             {item.auto?.currentRequest && <R1DuplicateResult request={item.auto.currentRequest} />}
-            {item.algorithmInspection && <p className="r1-help">{kindLabels[item.algorithmInspection.kind]} · {item.algorithmInspection.reason}</p>}
             {item.duplicateOf && <p className="r1-help">{item.duplicateOf.batchId} / {item.duplicateOf.itemId}</p>}
             {item.auto?.waitingReason && <p className="r1-help">{item.auto.waitingReason} <code>{item.auto.waitingForRequestId}</code></p>}
             {item.error && <p className="r1-help danger-text">{item.error.code}: {item.error.message}</p>}

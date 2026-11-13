@@ -40,7 +40,7 @@ DATA_ONLY_OPERATIONS = {"capabilities", "service_capabilities", "schema",
                         "resolve_write_target", "register_write_target",
                         "resolve_adjustment_anchor", "register_adjustment_anchor",
                         "read_product", "filter_objects", "batch_begin", "batch_put_chunk",
-                        "batch_status", "batch_finalize",
+                        "batch_status", "batch_finalize", "batch_read_page",
                         "usage_status", "usage_audit_read", "usage_suspend",
                         "usage_authorize_repair", "usage_resolve",
                         *CONTEXT_QUERY_OPERATIONS}
@@ -100,6 +100,7 @@ SUPPORTED = {
     "batch_put_chunk": "data_only：结构化行分块；乱序/重传幂等/异内容冲突/行字节预算与旧账本一致。",
     "batch_status": "data_only：只返回阶段、接收/缺失/预算摘要；长块列表有界分页，不重复完整 submit 结果。",
     "batch_finalize": "data_only：按声明顺序组装同原文档并经同一 service.submit 封存；大输出沿 request_status 分页续读。",
+    "batch_read_page": "data_only 卷：按固定原报分钟分区及摘要分页读回。",
     "usage_status": "只读列出 WFD catalog 中持久的用途暂停事项、修复票据与解决说明；每次从磁盘重核，不缓存。",
     "usage_audit_read": "显式指定事项编号的审计/技术固定复现：返回带已知问题诊断的旧固定内容，结果明确不可发布、不可计算。",
     "usage_suspend": "正式登记用途暂停事项（错误类型、原因、证据摘要、精确产品/快照/记录版本范围）；与 submit 共用 writer_lock。",
@@ -1294,7 +1295,7 @@ def _handle(service, config, request):
         service.require_permission("publish")
     elif operation in {"usage_status", "usage_audit_read"}:
         service.require_permission("read")
-    elif operation in {"batch_status", "snapshot_status", "review_definition"}:
+    elif operation in {"batch_status", "batch_read_page", "snapshot_status", "review_definition"}:
         service.require_permission("read")
     if operation in USAGE_OPERATIONS and config.get("profile") != "data_only":
         raise ValueError("USAGE_GOVERNANCE_PROFILE_REQUIRED")
@@ -1575,8 +1576,12 @@ def _handle(service, config, request):
         result = _batches(service, config).finalize(arguments["batch_id"])
         if (any(key in arguments for key in ("output_offset", "output_limit",
                                              "output_detail"))
-                and result.get("request_identity")):
+                and result.get("request_identity") and result.get("protocol_version") != "wfd.source-minute-batch/1"):
             result = _batch_finalize_view(result, offset, limit, detail)
+    elif operation == "batch_read_page":
+        locator = {"snapshot_id", "product_id", "partition", "result_root"}
+        _exact(arguments, locator | {"page_size", "cursor"}, locator)
+        result = _batches(service, config).read_source_minute_page(**arguments)
     else:  # trace
         _exact(arguments, {"product_id", "snapshot_id"}, {"product_id", "snapshot_id"})
         result = service.trace(arguments["product_id"], snapshot_id=arguments["snapshot_id"])
@@ -1681,7 +1686,8 @@ def _capabilities(service, config, identity, service_identity):
         operations = {
             name: {"supported": True, "description": SUPPORTED[name]}
             for name in sorted(DATA_ONLY_OPERATIONS)
-            if name not in FIXED_PAGE_OPERATIONS or name in page_available
+            if (name not in FIXED_PAGE_OPERATIONS or name in page_available)
+            and (name != "batch_read_page" or callable(getattr(type(service), "read_source_minute_page", None)))
         }
         for name in page_available:
             operations[name].update(page_caps[name])
@@ -1695,7 +1701,7 @@ def _capabilities(service, config, identity, service_identity):
     else:
         operations = {
             name: {"supported": True, "description": SUPPORTED[name]}
-            for name in sorted(set(SUPPORTED) - set(CONTEXT_QUERY_OPERATIONS) - FIXED_PAGE_OPERATIONS)
+            for name in sorted(set(SUPPORTED) - set(CONTEXT_QUERY_OPERATIONS) - FIXED_PAGE_OPERATIONS - {"batch_read_page"})
         }
         unsupported = (
             [{"operation": name,
@@ -1717,6 +1723,11 @@ def _capabilities(service, config, identity, service_identity):
         "service_capabilities": service_caps,
         "query_capabilities": query_scope,
         "batch": {
+            **({"source_minute": {"protocol_version": "wfd.source-minute-batch/1",
+                                 "read_operation": "batch_read_page", "write_scope": "one_complete_date",
+                                 "mixed_ordinary_snapshot": True,
+                                 "whole_snapshot_operations": "unsupported"}}
+               if callable(getattr(type(service), "read_source_minute_page", None)) else {}),
             "ledger": ("data_only: ProductBatchLedger in trusted native runtime, isolated by "
                        "instance/actor; official store is untouched until finalize"
                        if data_only else
