@@ -1,20 +1,29 @@
-import { useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
+import { DropdownMenu } from 'radix-ui';
+import { useCanvasContainer } from './canvas';
 
-/** 采集源筛选下拉：沿用自绘触发器与选项列表，不复用系统原生 select。 */
-export function FilterSelect({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
-  const [open, setOpen] = useState(false);
-  return <div className={`filter-select${open ? ' is-open' : ''}`}>
-    <button type="button" className="filter-trigger" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
-      <span className="filter-trigger-label">{label}</span>
-      <span className="filter-trigger-value">{value}</span>
-      <ChevronDown size={14} aria-hidden="true" />
-    </button>
-    {open && <div className="filter-options" role="listbox">
-      {options.map((option) => <button type="button" key={option} className="filter-option" role="option"
-        aria-selected={value === option} onClick={() => { onChange(option); setOpen(false); }}>
-        {value === option && <Check size={13} aria-hidden="true" />}<span>{option}</span>
-      </button>)}
-    </div>}
+/** 采集源筛选复用受控浮层：交给 Radix 处理边界避让、键盘导航及点击外部关闭。 */
+export function FilterSelect({ label, value, options, onChange }: {
+  label: string; value: string; options: string[]; onChange: (value: string) => void;
+}) {
+  const canvas = useCanvasContainer();
+  return <div className="filter-select">
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild><button type="button" className="filter-trigger" aria-label={label}>
+        <span className="filter-trigger-label">{label}</span>
+        <span className="filter-trigger-value">{value}</span>
+        <ChevronDown size={14} aria-hidden="true" />
+      </button></DropdownMenu.Trigger>
+      <DropdownMenu.Portal container={canvas ?? undefined}>
+        <DropdownMenu.Content className="filter-options ui-menu" align="start" sideOffset={6} collisionPadding={12} collisionBoundary={canvas ?? undefined}>
+          <DropdownMenu.RadioGroup value={value} onValueChange={onChange}>
+            {options.map((option) => <DropdownMenu.RadioItem value={option} key={option} className="filter-option">
+              <span className="filter-option-check"><DropdownMenu.ItemIndicator><Check size={13} aria-hidden="true" /></DropdownMenu.ItemIndicator></span>
+              <span>{option}</span>
+            </DropdownMenu.RadioItem>)}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   </div>;
 }
