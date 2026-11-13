@@ -104,6 +104,7 @@
 .workspace-content {
   position: relative;
   display: flex;
+  container-type: inline-size;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -232,9 +233,9 @@
 
   .workspace-agent {
     position: absolute;
-    top: 8px;
-    right: 8px;
-    bottom: 8px;
+    top: var(--ui-space-2);
+    right: var(--ui-space-2);
+    bottom: var(--ui-space-2);
     z-index: 60;
     width: min(440px, calc(100% - 16px)) !important;
     overflow: hidden;
@@ -244,21 +245,24 @@
   }
   .workspace-agent[data-open="false"] { display: none; }
 
+  /* 浮动按钮改为右侧有保留空间的停靠栏，绝不盖住搜索框、表单或卡片。 */
   .workspace-rail--agent {
-    position: absolute;
-    right: 12px;
-    bottom: 88px;
-    z-index: 60;
-    flex: none;
-    width: auto;
-    height: auto;
-    padding: 0;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: var(--surface);
-    box-shadow: var(--float-shadow);
+    position: relative;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    z-index: 1;
+    flex: 0 0 46px;
+    width: 46px;
+    height: 100%;
+    padding: 8px 3px;
+    border: 0;
+    border-left: 1px solid var(--line);
+    border-radius: 0;
+    background: var(--soft-surface);
+    box-shadow: none;
   }
-  .workspace-rail--agent .workspace-rail-button { padding: 8px; }
+  .workspace-rail--agent .workspace-rail-button { width: 38px; height: 38px; justify-content: center; padding: 8px; }
   .workspace-rail--agent .workspace-rail-button span { display: none; }
 
   .workspace-splitter--x { display: none; }
@@ -382,7 +386,6 @@
 }
 
 @media (max-width: 1180px) {
-  .page-panes > .data-nav { display: none; }
   .page-cards { flex: 0 0 240px; width: 240px; }
 }
 
@@ -445,3 +448,46 @@
 .object-card-state[data-ok="true"], .object-card-state[data-state="ready"] { color: var(--status-green); }
 .object-card-state[data-state="blocked"], .object-card-state[data-state="unavailable"] { color: var(--status-warning); }
 .object-card-state[data-state="failed"] { color: var(--danger); }
+
+
+/* 页面宽度以实际内容容器为准，不能只根据窗口宽度猜 Agent 是否展开。 */
+@container (max-width: 810px) {
+  .page-panes { flex-direction: column; }
+  .page-panes > .data-nav {
+    display: block;
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: 158px;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .page-panes > .page-cards {
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: 180px;
+    min-height: 0;
+    overflow-y: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .page-panes > .object-detail {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 180px;
+    border-left: 0;
+  }
+  .page-panes > .data-panel { min-width: 0; width: 100%; }
+}
+@container (max-width: 520px) {
+  .page-panes > .data-nav { max-height: 120px; }
+  .page-panes > .page-cards { max-height: 156px; }
+  .object-detail-title-row { flex-wrap: wrap; }
+  .object-detail-title { white-space: normal; }
+  .object-detail-status { max-width: 100%; overflow-wrap: anywhere; }
+  .object-detail-content { padding: 12px; }
+  .object-detail-facts > div { grid-template-columns: minmax(80px, .35fr) minmax(0, 1fr); }
+}

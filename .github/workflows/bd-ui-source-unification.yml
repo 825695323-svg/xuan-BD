@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'apps/web/src/**'
+      - 'apps/web/visual-audit.html'
+      - 'scripts/visual-ui-audit.mjs'
       - 'apps/server/source-settings-routes.ts'
       - 'apps/server/configured-app.ts'
       - 'apps/server/ui-routes.ts'
@@ -46,3 +48,20 @@ jobs:
             plugins/api-sources/source-routing.test.ts \
             apps/web/src/ui/sourceSettingsClient.test.ts \
             apps/web/src/ui/PageUI.test.tsx
+      - name: Install CJK glyph coverage for readable screenshots
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fonts-noto-cjk
+          fc-cache -f
+          dpkg-query -W -f='${Package} ${Version}\n' fonts-noto-cjk
+          fc-match -f '%{family}\n' :lang=zh-cn
+      - name: Browser geometry and screenshot visual audit
+        run: node scripts/visual-ui-audit.mjs
+      - name: Retain visual screenshots and DOM measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bd-ui-visual-snapshots
+          path: ${{ runner.temp }}/xuan-bd-ui-visual/
+          if-no-files-found: warn
+          retention-days: 7
