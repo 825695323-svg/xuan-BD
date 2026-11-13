@@ -12,7 +12,7 @@ export function useWords() {
 export function ControlTooltip({ label, children, side = 'top' }: { label: string; children: ReactElement; side?: 'top' | 'right' }) {
   const container = useCanvasContainer();
   return <Tooltip.Root><Tooltip.Trigger asChild>{children}</Tooltip.Trigger><Tooltip.Portal container={container ?? undefined}>
-    <Tooltip.Content className="control-tooltip" side={side} sideOffset={7} collisionPadding={10}>{label}</Tooltip.Content>
+    <Tooltip.Content className="control-tooltip" side={side} sideOffset={7} collisionPadding={12} collisionBoundary={container ?? undefined}>{label}</Tooltip.Content>
   </Tooltip.Portal></Tooltip.Root>;
 }
 
@@ -30,7 +30,7 @@ export function SelectMenu<T extends string>({ label, value, options, disabled, 
       <span>{current}</span><ChevronDown size={16} aria-hidden="true" />
     </button>
   </DropdownMenu.Trigger></ControlTooltip><DropdownMenu.Portal container={container ?? undefined}>
-    <DropdownMenu.Content className="ui-menu select-menu" align="end" sideOffset={6} collisionPadding={10}>
+    <DropdownMenu.Content className="ui-menu select-menu" align="end" sideOffset={6} collisionPadding={12} collisionBoundary={container ?? undefined}>
       {options.map((option) => <DropdownMenu.Item key={option.value} className="ui-menu-item select-menu-item" onSelect={() => onChange(option.value)}>
         <span>{option.label}</span>{option.value === value && <Check size={15} aria-hidden="true" />}
       </DropdownMenu.Item>)}
