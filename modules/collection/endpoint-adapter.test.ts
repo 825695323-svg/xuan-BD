@@ -163,7 +163,7 @@ test('坏编码、畸形封装、成功判定不符、额外维度都定向失�
   failCode(() => parseEndpointSource(extra, base()), 'ADAPTER_EXTRA_FIELDS');
 });
 
-test('缺字段进入五步时保留缺键事实并阻断，不自动补 null', () => {
+test('解析器直接阻断缺少已声明字段，明确 null 仍保留原语义', () => {
   const bytes = Buffer.from(JSON.stringify([
     { day: '2026-04-13', open: '1444.000', close: '1443.310', volume: '2521364' },
     { day: '2026-04-14', open: '1444.000', volume: '2521364' },
@@ -171,7 +171,14 @@ test('缺字段进入五步时保留缺键事实并阻断，不自动补 null', 
   const config = base();
   assert.throws(() => parseTableSource(bytes, { materialId: 'm1', format: 'json',
     sourceAdapter: { adapterId: config.adapterId, version: config.version, configDigest: adapterConfigDigest(config), config } }),
-  (error: unknown) => error instanceof TaskError && error.code === 'CANDIDATE_MISSING_KEY');
+  (error: unknown) => error instanceof TaskError && error.code === 'ADAPTER_FIELD_MISSING');
+  const withNull = Buffer.from(JSON.stringify([
+    { day: '2026-04-13', open: '1444', high: null, low: '1433', close: '1443', volume: '2521364' },
+  ]));
+  const decoded = parseEndpointSource(withNull, config);
+  assert.equal(decoded.rows[0]![decoded.columns.indexOf('high')]!.sourceType, 'null');
+  assert.equal(decoded.rows[0]![decoded.columns.indexOf('high')]!.original, null,
+    '显式 null 与未提供字段不能混淆');
 });
 
 test('配置拒绝无依据的单位换算、未知键、重复位置', () => {
@@ -214,12 +221,12 @@ test('单位换算保留载体原值，换算值单独成为 value，并逐格�
     basis: '来源按手报送；1 手 = 100 股为本次声明规则，未与第二来源对齐。' });
 });
 
-test('重放同源校验：缺字段、坏 decimal、无效时间写法都不能成为通过样本', () => {
+test('通用解析同源校验：缺字段、坏 decimal、无效时间写法均被解析关口拒绝', () => {
   const config = base();
   const plan = (bytes: Uint8Array) => ({ materialId: 'm-check', format: 'json' as const,
     sourceAdapter: { adapterId: config.adapterId, version: config.version, configDigest: adapterConfigDigest(config), config } });
-  failCode(() => parseTableSource(Buffer.from(JSON.stringify([{ day: '2026-04-13', open: '1', close: '2' }]), 'utf8'), plan(new Uint8Array())), 'CANDIDATE_MISSING_KEY');
-  // 坏数值在解析阶段就按配置声明的十进制类型拒绝，重放与生产五步使用同一门。
+  failCode(() => parseTableSource(Buffer.from(JSON.stringify([{ day: '2026-04-13', open: '1', close: '2' }]), 'utf8'), plan(new Uint8Array())), 'ADAPTER_FIELD_MISSING');
+  // 坏数值在解析阶段按实际端点配置拒绝，后续金融语义由独立模块处理。
   const badDecimal = Buffer.from(JSON.stringify([{ day: '2026-04-13', open: '1', high: '1', low: '1', close: 'abc', volume: '1' }]), 'utf8');
   failCode(() => parseTableSource(badDecimal, plan(badDecimal)), 'ADAPTER_TYPE');
   const badTime = Buffer.from(JSON.stringify([{ day: '2026-13-40', open: '1', high: '1', low: '1', close: '2', volume: '1' }]), 'utf8');
