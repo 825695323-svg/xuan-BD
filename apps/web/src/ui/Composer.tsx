@@ -98,7 +98,7 @@ function ModelSelector({ chat }: { chat: Chat }) {
     <ControlTooltip label={`${name} · ${level}`}><Popover.Trigger asChild><button type="button" className="model-trigger" disabled={!ready || loading || saving} aria-label={`${words('模型与推理等级', 'Model and reasoning level')} · ${name} ${level}`}>
       <span className="model-trigger-name">{name}</span><span className="model-trigger-level">{level}</span><ChevronDown size={14} aria-hidden="true" />
     </button></Popover.Trigger></ControlTooltip>
-    <Popover.Portal container={canvas ?? undefined}><Popover.Content ref={panel} className="model-popover" side="top" align="end" sideOffset={12} collisionPadding={12} onKeyDown={menuKeys}
+    <Popover.Portal container={canvas ?? undefined}><Popover.Content ref={panel} className="model-popover" side="top" align="end" sideOffset={12} collisionPadding={12} collisionBoundary={canvas ?? undefined} onKeyDown={menuKeys}
       onOpenAutoFocus={(event) => { event.preventDefault(); requestAnimationFrame(() => panel.current?.querySelector<HTMLButtonElement>('[data-menu-item]')?.focus()); }}>
       {section === 'overview' ? <div className="model-overview">
         <button type="button" className="model-overview-row" data-menu-item onClick={() => setSection('models')}><span>{words('模型', 'Model')}</span><span className="model-row-value">{name}</span><ChevronRight size={16} /></button>
@@ -137,7 +137,7 @@ function ContextIndicator({ chat }: { chat: Chat }) {
       <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><circle cx="10" cy="10" r="7.2" fill="none" stroke="currentColor" strokeWidth="3" opacity=".28" />
         {percent !== null && <circle className={percent >= 80 ? 'context-arc is-high' : percent >= 50 ? 'context-arc is-mid' : 'context-arc'} cx="10" cy="10" r="7.2" fill="none" strokeWidth="3" pathLength="100" strokeDasharray="100" strokeDashoffset={100 - Math.max(6, Math.min(100, percent))} transform="rotate(-90 10 10)" />}</svg>
     </button>
-  </Popover.Trigger><Popover.Portal container={canvas ?? undefined}><Popover.Content className="ui-menu context-popover" side="top" align="center" sideOffset={8} collisionPadding={12} onPointerEnter={show} onPointerLeave={hide} onOpenAutoFocus={(event) => event.preventDefault()}>
+  </Popover.Trigger><Popover.Portal container={canvas ?? undefined}><Popover.Content className="ui-menu context-popover" side="top" align="center" sideOffset={8} collisionPadding={12} collisionBoundary={canvas ?? undefined} onPointerEnter={show} onPointerLeave={hide} onOpenAutoFocus={(event) => event.preventDefault()}>
     {percent === null
       ? <p className="context-line subtle">{words('暂无估算', 'No estimate')}</p>
       : <p className="context-line">{`${percent}% / ${context ? k(context.contextWindow) : '—'}`}</p>}
@@ -406,7 +406,7 @@ export default function Composer({ chat, dispatchBlocked, controlUnconfirmed = f
         <div className="composer-trailing"><ContextIndicator chat={chat} /><ModelSelector chat={chat} />
           <div className="composer-send-controls">
             {chat.isRunning && hasInput && !chat.unconfirmedSend && <DropdownMenu.Root><DropdownMenu.Trigger asChild><IconButton className="send-options-trigger" label={words('发送选项', 'Send options')} disabled={!sendReady}><ChevronDown size={14} /></IconButton></DropdownMenu.Trigger>
-              <DropdownMenu.Portal container={canvas ?? undefined}><DropdownMenu.Content className="ui-menu" side="top" align="end" sideOffset={8}>
+              <DropdownMenu.Portal container={canvas ?? undefined}><DropdownMenu.Content className="ui-menu" side="top" align="end" sideOffset={8} collisionPadding={12} collisionBoundary={canvas ?? undefined}>
                 <DropdownMenu.Item className="ui-menu-item" disabled={!chat.canQueue} onSelect={() => void submit('queue')}><ArrowUp size={15} />{words('排队发送', 'Queue message')}</DropdownMenu.Item>
                 <DropdownMenu.Item className="ui-menu-item" disabled={!chat.canInterrupt} onSelect={() => void submit('interrupt')}><Square size={13} />{words('打断后发送', 'Interrupt and send')}</DropdownMenu.Item>
               </DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>}
