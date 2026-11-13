@@ -48,6 +48,13 @@ jobs:
             plugins/api-sources/source-routing.test.ts \
             apps/web/src/ui/sourceSettingsClient.test.ts \
             apps/web/src/ui/PageUI.test.tsx
+      - name: Install CJK glyph coverage for readable screenshots
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fonts-noto-cjk
+          fc-cache -f
+          dpkg-query -W -f='${Package} ${Version}\n' fonts-noto-cjk
+          fc-match -f '%{family}\n' :lang=zh-cn
       - name: Browser geometry and screenshot visual audit
         run: node scripts/visual-ui-audit.mjs
       - name: Retain visual screenshots and DOM measurements
