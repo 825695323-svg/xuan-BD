@@ -1,15 +1,18 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { absolute, assertNodeVersion, checkNodeDependencies, checkPython, isolatedPythonArgs, nativeEnvironment } from '../platform/resources/native-check.mjs';
 
 const codeRoot = fileURLToPath(new URL('..', import.meta.url));
+const ownedTestRoots = [];
+let success = false, keepFixtures = false;
 try {
   let python, systemRoot, all = false, pythonOnly = false;
   for (const arg of process.argv.slice(2)) {
     if (arg === '--all' && !all) all = true;
+    else if (arg === '--keep-fixtures' && !keepFixtures) keepFixtures = true;
     else if (arg === '--python-only' && !pythonOnly) pythonOnly = true;
     else if (arg.startsWith('--python=') && python === undefined) python = absolute(arg.slice('--python='.length));
     else if (arg.startsWith('--system-root=') && systemRoot === undefined) systemRoot = absolute(arg.slice('--system-root='.length));
@@ -24,11 +27,18 @@ try {
     if (!python) throw new Error('Python 测试需要显式 --python=绝对解释器 或 WFD_PYTHON；不会使用系统 python3 或私人 locator。');
     checkPython(codeRoot, python, systemRoot);
   }
-  const testRoot = process.env.XUAN_TEST_ROOT ? absolute(process.env.XUAN_TEST_ROOT) : undefined;
-  const env = { ...nativeEnvironment(systemRoot), ...(testRoot ? { XUAN_TEST_ROOT: testRoot, TMPDIR: testRoot, TEMP: testRoot, TMP: testRoot } : {}),
+  // 每次测试只在用户选定的父目录下创建全新一次性实例。
+  // 绝不复用旧实例的 SQLite、来源绑定、WFD 测试数据或全链回执。
+  const testRootParent = process.env.XUAN_TEST_ROOT ? absolute(process.env.XUAN_TEST_ROOT) : absolute(tmpdir());
+  const testRoot = mkdtempSync(join(testRootParent, 'bd-pipeline-test-'));
+  ownedTestRoots.push(testRoot);
+  const fullChainRoot = process.env.XUAN_FULL_CHAIN_ROOT
+    ? mkdtempSync(join(absolute(process.env.XUAN_FULL_CHAIN_ROOT), 'bd-full-chain-test-')) : undefined;
+  if (fullChainRoot) ownedTestRoots.push(fullChainRoot);
+  const env = { ...nativeEnvironment(systemRoot), XUAN_TEST_ROOT: testRoot, TMPDIR: testRoot, TEMP: testRoot, TMP: testRoot,
     ...(python ? { WFD_PYTHON: python } : {}), ...(process.env.XUAN_TEST_NPM_CLI ? { XUAN_TEST_NPM_CLI: absolute(process.env.XUAN_TEST_NPM_CLI) } : {}),
     ...(process.env.POLARS_PYTHON ? { POLARS_PYTHON: absolute(process.env.POLARS_PYTHON) } : {}),
-    ...(process.env.XUAN_FULL_CHAIN_ROOT ? { XUAN_FULL_CHAIN_ROOT: absolute(process.env.XUAN_FULL_CHAIN_ROOT) } : {}),
+    ...(fullChainRoot ? { XUAN_FULL_CHAIN_ROOT: fullChainRoot } : {}),
     PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1', PYTHONDONTWRITEBYTECODE: '1' };
   function run(executable, args) {
     const result = spawnSync(executable, args, { cwd: codeRoot, env, stdio: 'inherit', windowsHide: true });
@@ -60,7 +70,15 @@ try {
     run(python, isolatedPythonArgs(cacheRoot, ['-m', 'pytest', '-q', '-p', 'no:cacheprovider', '--rootdir', codeRoot,
       '-o', 'pythonpath=wfd/product', 'wfd/product/tests', '-m', 'not integration', '--basetemp', baseTemp]));
   }
+  success = true;
 } catch (error) {
   console.error(`${error.code ?? 'LOCAL_TEST_FAILED'}: ${error.message}`);
   process.exitCode = 1;
+} finally {
+  // 只删除本调用使用 mkdtemp 创建的目录；用户运行根、旧测试记录及正式 WFD 永不清理。
+  if (success && !keepFixtures) {
+    for (const path of ownedTestRoots.reverse()) rmSync(path, { recursive: true, force: true });
+  } else {
+    for (const path of ownedTestRoots) console.error('本轮隔离测试证据保留：' + path);
+  }
 }
