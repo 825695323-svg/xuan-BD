@@ -3,7 +3,7 @@ import test from 'node:test';
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import type { WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { inspectMaterial } from './data-processing/material-inspector/index.js';
-import { parseTableSource, prepareCandidateTable } from './candidate-pipeline.js';
+import { parseTableSource, cleanCandidateTable, structureCandidateTable, checkCandidateTables } from './candidate-pipeline.js';
 import { resolveR1Evidence } from './r1-evidence.js';
 import { readSourceFieldProfile, profileFingerprint, sourceFieldProfileDigest,
   type FrozenSourceFieldProfile } from './source-field-profile.js';
@@ -42,7 +42,11 @@ test('source dates, original units, reversible names and derived cells retain ex
   const definition = (proposal.target.definition.field_definitions as {field_code:string;data_type:string;unit_code:string}[]).find(value=>value.field_code===field.fieldCode)!;
   assert.equal(definition.data_type,'decimal');
   assert.equal(Buffer.from(definition.unit_code.slice(8),'base64url').toString('utf8'),'亿元');
-  const out = prepareCandidateTable(original,{materialId:'source-test',format:'json',sourceProjection:proposal.sourceProjection,types:proposal.types,emptyToNull:proposal.emptyToNull});
+  // 本件有实际空值规则：选择解析、清洗、结构化、核对；没有常量标注，不执行标注模块。
+  const sourceParsed = parseTableSource(original, {materialId:'source-test',format:'json',sourceProjection:proposal.sourceProjection,types:proposal.types});
+  const sourceCleaned = cleanCandidateTable(sourceParsed, {emptyToNull:proposal.emptyToNull});
+  const sourceStructured = structureCandidateTable(sourceCleaned, proposal.types);
+  const out = checkCandidateTables([sourceStructured]);
   assert.equal(out.rows[0]!.__bd_source_start,'2025-12-14T16:00:00Z');
   assert.equal(out.rows[0]!.__bd_source_end,'2025-12-15T16:00:00Z');
   assert.equal(out.rows[0]!.__bd_source_key,'source_row_'+wfdSha256(canonicalWfdJson(['20251215','A01'])));
@@ -107,7 +111,10 @@ test('source minute labels retain their own time axis and key without claiming b
   const context=proposal.target.definition.semantic_context as WfdRecord;
   assert.equal((context.time as WfdRecord).frequency,'source_reported_minute');
   assert.equal(((context.time as WfdRecord).roles as WfdRecord).business_interval,'minute_label_bucket_not_verified_bar_interval');
-  const out=prepareCandidateTable(original,{materialId:'source-test',format:'json',sourceProjection:proposal.sourceProjection,types:proposal.types});
+  // 无清洗或标注要求，直接使用共用的解析→结构化→结构核对三个模块。
+  const minuteParsed = parseTableSource(original, {materialId:'source-test',format:'json',sourceProjection:proposal.sourceProjection,types:proposal.types});
+  const minuteStructured = structureCandidateTable(minuteParsed, proposal.types);
+  const out = checkCandidateTables([minuteStructured]);
   assert.equal(out.rows[0]!.__bd_source_start,'2026-04-07T01:30:00Z');
   assert.equal(out.rows[0]!.__bd_source_end,'2026-04-07T01:31:00Z');
   assert.equal(out.rows[1]!.__bd_source_start,'2026-04-07T01:31:00Z');
@@ -197,7 +204,10 @@ test('source row labels keep leading zeros without becoming business keys, and l
   assert.deepEqual([label.data_type,label.unit_code],['text','not_applicable']);
   for (const [column,unit] of [['流通数量（万股）','万股'],['职员数量（人）','人']])
     assert.equal(definitions.find(field=>field.field_code===sourceReportedCode('src_',column!))!.unit_code,sourceReportedCode('srcunit_',unit!));
-  const out=prepareCandidateTable(original,{materialId:'source-test',format:'json',sourceProjection:result.proposal!.sourceProjection,types:result.proposal!.types});
+  const sourceParsed = parseTableSource(original, {materialId:'source-test',format:'json',
+    sourceProjection:result.proposal!.sourceProjection,types:result.proposal!.types});
+  const sourceStructured = structureCandidateTable(sourceParsed, result.proposal!.types);
+  const out = checkCandidateTables([sourceStructured]);
   assert.equal(out.rows[0]!['序号'],'0003');
   assert.deepEqual(resolve([{...first,'序号':'0003'}],{answers:{source_key_columns:'["序号"]'}}).result.questions.map(question=>question.key),['source_key_columns']);
   assert.deepEqual(resolve([{...first,'序号':'0003'}],{registeredKeyColumns:['交易日期','序号']}).result.questions.map(question=>question.key),['source_key_columns']);
@@ -322,8 +332,11 @@ test('explicit unknown measurement preserves minute source lexemes and their for
   assert.deepEqual(result.evidence.find(fact => fact.key === 'source_measurement_status.' + column),
     { key: 'source_measurement_status.' + column, value: 'unknown', origin: 'contract',
       field: `sourceFieldProfile.fields.${column}.measurementStatus` });
-  const out = prepareCandidateTable(original, { materialId: 'source-test', format: 'json',
-    sourceProjection: proposal.sourceProjection, types: proposal.types, emptyToNull: proposal.emptyToNull });
+  const sourceParsed = parseTableSource(original, { materialId: 'source-test', format: 'json',
+    sourceProjection: proposal.sourceProjection, types: proposal.types });
+  const sourceCleaned = cleanCandidateTable(sourceParsed, { emptyToNull: proposal.emptyToNull });
+  const sourceStructured = structureCandidateTable(sourceCleaned, proposal.types);
+  const out = checkCandidateTables([sourceStructured]);
   const { stateColumn } = proposal.sourceProjection!.fields.find(field => field.column === column)!;
   assert.deepEqual(out.rows.map(row => [row[column], row[stateColumn]]), [
     ['1.0', 'valid_value'], ['0.0', 'valid_value'], [null, 'unknown'],
