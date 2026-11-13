@@ -17,7 +17,8 @@
     "test": "node scripts/test-local.mjs",
     "test:python": "node scripts/test-local.mjs --python-only",
     "repo:check": "node scripts/repository-check.mjs",
-    "test:recipe": "node --test scripts/repository-check.test.mjs"
+    "test:recipe": "node --test scripts/repository-check.test.mjs",
+    "test:pipeline": "node scripts/test-local.mjs --pipeline"
   },
   "dependencies": {
     "@assistant-ui/react": "0.15.23",
