@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Search } from 'lucide-react';
+import { PageSearch, PageActions, PageButton, PageEmpty } from './PageUI';
 import { request } from '../api';
 import { ErrorNote, Modal, errorDetail, useWords } from './Controls';
 import { MorphIcon } from './MorphIcon';
@@ -131,11 +131,8 @@ export function CaptureSourcesPage() {
 
   const nav = <aside className="data-nav" aria-label={words('采集源分类', 'Capture source categories')}>
     <div className="sidebar-search-slot">
-      <div className="data-search data-nav-search">
-        <Search size={15} aria-hidden="true" />
-        <input type="search" value={query} onChange={(event) => setQuery(event.currentTarget.value)}
-          placeholder={words('搜索采集源', 'Search sources')} aria-label={words('搜索采集源', 'Search sources')} />
-      </div>
+      <PageSearch compact value={query} onChange={setQuery}
+        label={words('搜索采集源', 'Search sources')} />
     </div>
     <button type="button" className="data-nav-item" aria-current={topic === '全部' ? 'true' : undefined} onClick={() => setTopic('全部')}>
       <span>{words('全部来源', 'All sources')}</span><span className="data-nav-dot" aria-hidden="true" />
@@ -173,7 +170,7 @@ export function CaptureSourcesPage() {
       {loginError && <ErrorNote detail={loginError}>{words('登录操作未完成。', 'The login action did not complete.')}</ErrorNote>}
       <SourceCheckError error={sourceCheck.error} />
       {error && <ErrorNote detail={error}>{words('采集源状态暂时无法读取。', 'Capture source status could not be read.')}</ErrorNote>}
-      {!error && !sources && <p className="data-empty">{words('读取中…', 'Loading…')}</p>}
+      {!error && !sources && <PageEmpty state="loading">{words('读取中…', 'Loading…')}</PageEmpty>}
       {!!sources?.length && <div className="object-list">{visibleSources.map((source) => {
         const meta = metaOf(source);
         return <button type="button" key={source.sourceId} className="object-card"
@@ -185,7 +182,7 @@ export function CaptureSourcesPage() {
           <span className="object-card-state" data-ok={source.available}>{source.available ? words('可用', 'Available') : words('不可用', 'Unavailable')}</span>
         </button>;
       })}</div>}
-      {!!sources?.length && !visibleSources.length && <p className="data-empty">{words('没有匹配的采集源', 'No matching sources')}</p>}
+      {!!sources?.length && !visibleSources.length && <PageEmpty>{words('没有匹配的采集源', 'No matching sources')}</PageEmpty>}
     </section>
     <ObjectDetailPanel
       label={words('来源详情', 'Source detail')}
@@ -234,8 +231,14 @@ export function CaptureSourcesPage() {
       {!runTarget.source.available && <p className="status-warning">{words('当前采集会话或登录态显示不可用；任务仍按原配置受理并返回具体失败，不会替换为其他账号或站点。', 'The capture session or login state is unavailable; the task is still accepted with the original configuration and reports the concrete failure. No other account or site is substituted.')}</p>}
       {runReceipt && <RunReceipt task={runReceipt} />}
       {runError && <ErrorNote detail={runError}>{words('采集运行未确认；没有自动重试。', 'The collection run is unconfirmed; it was not retried automatically.')}</ErrorNote>}
-      <div className="dialog-actions"><button type="button" className="text-button" disabled={runBusy} onClick={() => { setRunTarget(null); setRunReceipt(null); setRunError(null); }}>{words('关闭', 'Close')}</button>
-        <button type="button" className="primary-button" disabled={runBusy} onClick={() => void runCapture()}>{runBusy ? words('受理中…', 'Starting…') : words('明确采集一次', 'Collect once explicitly')}</button></div>
+      <PageActions className="dialog-actions" align="end">
+        <PageButton disabled={runBusy} onClick={() => { setRunTarget(null); setRunReceipt(null); setRunError(null); }}>
+          {words('关闭', 'Close')}
+        </PageButton>
+        <PageButton variant="primary" disabled={runBusy} onClick={() => void runCapture()}>
+          {runBusy ? words('受理中…', 'Starting…') : words('明确采集一次', 'Collect once explicitly')}
+        </PageButton>
+      </PageActions>
     </Modal>}
   </div>;
 }
