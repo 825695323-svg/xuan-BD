@@ -1,14 +1,9 @@
 {
   "version": "bd.source-field-profile/1",
   "mappingVersion": 1,
-  "profileId": "synthetic.daily.v1",
+  "profileId": "synthetic.daily.current",
   "sourceId": "synthetic-market-a",
   "series": "daily.bars",
-  "adapter": {
-    "adapterId": "synthetic.kline.daily",
-    "version": "1",
-    "configDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  },
   "fields": [
     {
       "originalHeader": "trade_date",
@@ -52,7 +47,7 @@
   },
   "confirmation": {
     "status": "operator_confirmed",
-    "basis": "仅展示JSON格式的合成样本；实际采用时须改为具体接口文档及原始样本证据",
+    "basis": "此文件只是模板；真实语义配置须依据本次原件与供应商口径核对",
     "confirmedAtUtc": "2026-11-13T00:00:00Z"
   }
 }
