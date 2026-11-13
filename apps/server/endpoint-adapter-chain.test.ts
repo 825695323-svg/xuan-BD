@@ -5,7 +5,7 @@ import type { EndpointAdapterConfig } from '../../modules/collection/endpoint-ad
 
 /**
  * 端点适配首批闭环的普通 HTTP 入口验证：上传 → 自动发现 → 候选 → 实际重放 → 受控采用
- * → 处理计划（冻结配置）→ 原五步运行 → 产物读回；并验证未采用/伪造确认/漂移隔离/重开恢复。
+ * → 处理计划（冻结配置）→ 按数据实际需要选择通用模块 → 产物核对；同时回归旧批次恢复。
  * 样本为按格式对照矩阵结构构造、明确标注的合成等价响应，不是供应商真实重放。
  */
 const SINA_LIKE = Buffer.from(JSON.stringify([
