@@ -580,12 +580,8 @@ function ApiRunDialog({ connection, plugin, scopes, onClose, receipt, onReceipt,
     try { parsed = JSON.parse(parameters || '{}'); }
     catch { onError(words('参数需要有效 JSON 对象。', 'Parameters must be a valid JSON object.')); return; }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { onError(words('参数需要 JSON 对象。', 'Parameters must be a JSON object.')); return; }
-    const body: Record<string, unknown> = { requestId: requestId.current, scopeId: scope, parameters: parsed };
-    if (operation === 'index_constituents') body.apiOperation = operation;
-    else if (connection.pluginId === 'ths' && operation === 'daily_bars') body.apiOperation = operation;
-    else if (operation === 'minute_bars' || operation === 'daily_bars') body.klineOperation = operation;
-    else if (['tdx', 'eastmoney', 'official_web'].includes(connection.pluginId)) body.sourceId = connection.pluginId;
-    else { onError(words('此连接没有对应的公开运行动作。', 'This connection has no matching public run action.')); return; }
+    const body = { requestId: requestId.current, connectionId: connection.id,
+      operationId: operation, scopeId: scope, parameters: parsed };
     setBusy(true);
     try {
       const value = await request('/api/ui/source-settings/runs', 'POST', body) as { task?: SourceRunTask };
@@ -595,7 +591,7 @@ function ApiRunDialog({ connection, plugin, scopes, onClose, receipt, onReceipt,
     finally { setBusy(false); }
   };
   return <Modal title={words('运行来源动作', 'Run source action')} onClose={onClose} busy={busy}>
-    <p>{words('这会对明确来源发起一次真实读取；页面不会自动采集，失败也不自动重试。任务回执不代表数据已入库。', 'This makes one real read from the selected source; nothing is collected automatically and failures are not retried. A task receipt is not an ingestion.')}</p>
+    <p>{words('将按当前范围已保存的主备组合运行所选接口操作；实际调用来源以任务回执为准。页面不会自动采集或重试，任务回执不代表已入库。', 'Runs the selected operation through the saved primary/backup route for this scope; the receipt identifies the actual source. No automatic collection or retries, and a task receipt is not ingestion.')}</p>
     <div className="run-form">
       <SelectMenu label={words('范围', 'Scope')} value={scope} disabled={busy} options={(connection.scopes.length ? connection.scopes : scopes.map(item => item.id)).map(id => ({ value: id, label: scopes.find(item => item.id === id)?.label ?? id }))} onChange={setScope} />
       <SelectMenu label={words('操作', 'Operation')} value={operation} disabled={busy}
