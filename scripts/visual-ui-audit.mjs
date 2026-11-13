@@ -46,7 +46,7 @@ function verify(data) {
   const main = requireNode('main'), nav = requireNode('nav'), cards = requireNode('cards'),
     detail = requireNode('detail');
   for (const [key, rect] of [['nav', nav], ['cards', cards], ['detail', detail]]) within(rect, main, key);
-  if (main.width <= 860) {
+  if (main.width <= 810) {
     assert.ok(nav.bottom <= cards.y + 4 && cards.bottom <= detail.y + 4,
       '窄内容区须按目录→列表→详情纵向排布');
   } else {
@@ -72,7 +72,7 @@ function verify(data) {
     assert.ok(dropdown.width >= 150, '来源筛选弹层宽度不足');
   }
   return { theme: data.theme, view, viewport: viewport.width + 'x' + viewport.height,
-    layout: main.width <= 860 ? 'vertical' : 'columns', font: n.metadata.font,
+    layout: main.width <= 810 ? 'vertical' : 'columns', font: n.metadata.font,
     overlay: view === 'modal' ? n.dialog : n.dropdown };
 }
 function capture(width, height, theme, view) {
