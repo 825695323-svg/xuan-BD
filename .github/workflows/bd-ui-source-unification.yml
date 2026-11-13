@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'apps/web/src/**'
+      - 'apps/web/visual-audit.html'
+      - 'scripts/visual-ui-audit.mjs'
       - 'apps/server/source-settings-routes.ts'
       - 'apps/server/configured-app.ts'
       - 'apps/server/ui-routes.ts'
@@ -46,3 +48,13 @@ jobs:
             plugins/api-sources/source-routing.test.ts \
             apps/web/src/ui/sourceSettingsClient.test.ts \
             apps/web/src/ui/PageUI.test.tsx
+      - name: Browser geometry and screenshot visual audit
+        run: node scripts/visual-ui-audit.mjs
+      - name: Retain visual screenshots and DOM measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bd-ui-visual-snapshots
+          path: ${{ runner.temp }}/xuan-bd-ui-visual/
+          if-no-files-found: warn
+          retention-days: 7
