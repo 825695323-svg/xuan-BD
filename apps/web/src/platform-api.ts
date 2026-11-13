@@ -1,4 +1,5 @@
 import { request, RequestError } from './api';
+import { ATTACHMENT_UPLOAD_LIMIT } from '../../../contracts/upload-limits';
 import type { FileReference } from '../../../platform/resources/files';
 import type { ApprovalRequest, PermissionGrant } from '../../../platform/security/permissions';
 import type { SkillDescriptor } from '../../../contracts/skill-contracts';
@@ -60,7 +61,7 @@ export const registerFile = async (id: string, path: string) => await request('/
 export const observeFile = async (id: string) => await request(`/api/files/${encodeURIComponent(id)}/observe`, 'POST', {});
 export async function uploadFile(conversationId: string, file: File): Promise<FileReference> {
   // 本地预检没有发出请求，必须带明确失败身份，不能被当作“可能已受理”。
-  if (file.size > 25 * 1024 * 1024) throw new RequestError('此环境未取得原文件路径，上传最多 25 MiB；请使用应用窗口重新选择文件。', 413, 'UPLOAD_TOO_LARGE');
+  if (file.size > ATTACHMENT_UPLOAD_LIMIT) throw new RequestError('此环境未取得原文件路径，上传最多 25 MiB；请使用应用窗口重新选择文件。', 413, 'UPLOAD_TOO_LARGE');
   if (!file.size) throw new RequestError('请选择一个非空文件。', 400, 'INVALID_UPLOAD');
   let value: unknown;
   try {
