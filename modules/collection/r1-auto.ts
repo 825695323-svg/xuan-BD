@@ -106,8 +106,23 @@ export class R1AutoService {
   }
 
   private startBound(input: R1AutoStartInput, operator: OperatorContext, selectedKeyReplacement = false): R1AutoView {
+    // 原请求先按自身冻结的输入核对，不以现在的来源档案或适配实现重新计算旧请求身份。
+    // 通道升级只影响新任务；原任务仍由其已持久化的输入/档案/适配及 WFD 回执恢复。
+    const existing = this.find(input.requestId);
+    if (existing) {
+      if (canonicalWfdJson(existing.input) !== canonicalWfdJson(input)
+        || (existing.selectedKeyReplacement === true) !== selectedKeyReplacement)
+        fail('R1_AUTO_REQUEST_CONFLICT', '原请求的材料、用途、来源、选区或目标已变化；不能借同一请求号覆盖。');
+      const handoff = existing.revisions.at(-1)?.handoffRequestId;
+      if (handoff && ['recovering','submitting'].includes(existing.state)
+        && ['associated','partially_associated','conflicts_pending'].includes(this.options.workspace.get(handoff).state)) {
+        existing.state = this.options.workspace.get(handoff).state === 'associated' ? 'associated' : 'conflicts_pending';
+        existing.error = null; this.save(existing);
+      }
+      return this.get(input.requestId);
+    }
     const fieldProfile = this.options.fieldProfiles?.match({ sourceId: input.source.source_id,
-      series: declaredSourceSeries(input.source), ...(input.sourceAdapter ? { adapter: input.sourceAdapter } : {}) }) ?? null;
+      series: declaredSourceSeries(input.source) }) ?? null;
     const frozenProfile = fieldProfile
       ? { profile: fieldProfile, digest: sourceFieldProfileDigest(fieldProfile), fingerprint: profileFingerprint(fieldProfile) }
       : undefined;
@@ -118,16 +133,7 @@ export class R1AutoService {
     }
     const payload = { input, ...(frozenProfile ? { sourceFieldProfileSha256: frozenProfile.digest } : {}) };
     const digest = wfdSha256(canonicalWfdJson(selectedKeyReplacement ? { payload, selectedKeyReplacement } : payload));
-    const existing = this.find(input.requestId);
-    if (existing) {
-      if (existing.inputSha256 !== digest) fail('R1_AUTO_REQUEST_CONFLICT', '原自动请求的材料、来源授权、选区和数据集已经冻结，不能覆盖。');
-      const handoff=existing.revisions.at(-1)?.handoffRequestId;
-      if(handoff&&['recovering','submitting'].includes(existing.state)&&['associated','partially_associated','conflicts_pending'].includes(this.options.workspace.get(handoff).state)) {
-        existing.state=this.options.workspace.get(handoff).state==='associated'?'associated':'conflicts_pending';existing.error=null;this.save(existing);
-      }
-      return this.get(input.requestId);
-    }
-    if (input.priorRequestId) {
+     if (input.priorRequestId) {
       const adopted = this.db.prepare("SELECT request_id FROM r1_auto_requests WHERE json_extract(record_json,'$.input.priorRequestId')=? LIMIT 1").get(input.priorRequestId);
       if (adopted) fail('R1_AUTO_PRIOR_ALREADY_CLAIMED', `原明确拒绝已由自动请求 ${adopted.request_id} 承接；请核对原续办，不换新编号重复办理。`);
     }

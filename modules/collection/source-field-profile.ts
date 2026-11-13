@@ -6,7 +6,7 @@ import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transpo
 /**
  * BD 来源字段档案：原表头 → 标准字段、类型、单位与金融口径。
  *
- * 原表头是来源原文，不是正式金融字段身份。档案按「来源系列 + 版本」管理；
+ * 原表头是来源原文，不是正式金融字段身份。档案按当前来源与数据系列管理；
  * 不同供应商可以映射到同一规范字段，但只有这里明确登记的映射才生效，
  * 不按列名相似自动合并，也不据档案改写原件。
  */
@@ -41,13 +41,13 @@ export interface SourceAdjustment {
 export interface SourceProfileAdapterBinding { adapterId: string; version: string; configDigest: string }
 export interface SourceFieldProfile {
   version: 'bd.source-field-profile/1';
-  /** 映射版本：同一系列口径变化必须升版本，旧版本请求按旧版本核对。 */
+  /** 兼容原格式的映射修订号。当前配置可原位更新；已启动请求保存本次冻结内容，无须保留旧配置文件。 */
   mappingVersion: number;
   profileId: string;
   sourceId: string;
   /** 来源系列；空字符串表示该来源的全部系列共用这一份档案。 */
   series: string;
-  /** 使用端点适配器取得的材料，必须显式命中这一完整绑定；旧通用档案不能跨端点套用。 */
+  /** 历史配置的来源适配引用；新任务不再以该实现版本选择业务语义，防止通道升级导致映射失效。 */
   adapter?: SourceProfileAdapterBinding;
   fields: SourceFieldMapping[];
   confirmation: { status: 'operator_confirmed'; basis: string; confirmedAtUtc: string };
@@ -55,7 +55,7 @@ export interface SourceFieldProfile {
   frequency: 'minute' | 'day' | 'tick' | 'other';
   timeBucket: SourceTimeBucket;
   adjustment: SourceAdjustment;
-  /** 显式登记与被取代产品/档案的关系；不靠改名悄悄合并。 */
+  /** 历史配置兼容字段；当前档案选择不依赖旧档案取代链。 */
   supersedes?: { productId?: string; profileId?: string; note: string }[];
 }
 export interface FrozenSourceFieldProfile { profile: SourceFieldProfile; digest: string; fingerprint: string }
@@ -175,25 +175,16 @@ export class SourceFieldProfileStore {
     catch { return []; }
     return names.map(name => readSourceFieldProfile(JSON.parse(readFileSync(resolve(join(this.directory, name)), 'utf8')), name));
   }
-  /** 按来源与系列选择档案；多份同时命中视为冲突，不自行挑一份。 */
+  /** 仅选择当前有效的来源字段映射。来源适配器版本属于实现细节，不参与语义选择。
+   * 兼容旧调用者传来的 adapter 引用，但不要求改接口时复制整份词典。
+   * 同一来源/系列有多份活跃档案时拒绝猜最新：须在运行配置目录只保留当前一份。
+   * 历史任务所需的确切档案已冻结在其自身请求中，不依赖此目录保留每代旧文件。
+   */
   match(input: { sourceId: string; series?: string | null; adapter?: SourceProfileAdapterBinding }): SourceFieldProfile | null {
     const hits = this.list().filter(profile => profile.sourceId === input.sourceId
-      && (!profile.series || !input.series || profile.series === input.series)
-      && (input.adapter
-        ? !!profile.adapter && canonicalWfdJson(profile.adapter) === canonicalWfdJson(input.adapter)
-        : !profile.adapter));
-    // 不存在适用档案时返回空，让原证据补充流程处理；尤其不能让旧通用档案覆盖已选端点。
-    if (!hits.length) return null;
-    if (hits.length === 1) return hits[0]!;
-    // 增补旧档案采用显式、线性的 supersedes 版本关系。旧版仍在目录中供历史身份核对。
-    const ordered = [...hits].sort((a, b) => a.mappingVersion - b.mappingVersion);
-    if (new Set(ordered.map(item => item.mappingVersion)).size !== ordered.length
-      || new Set(ordered.map(item => item.profileId)).size !== ordered.length
-      || ordered.some((item, index) => index > 0 && !item.supersedes?.some(ref =>
-        ref.profileId === ordered[index - 1]!.profileId && ref.note.trim().length >= 8))) {
-      fail(`来源 ${input.sourceId} 系列「${input.series ?? ''}」存在多份口径档案，但缺少按映射版本依次确认的 supersedes（取代依据）；拒绝自动选最新。`);
-    }
-    return ordered.at(-1)!;
+      && (!profile.series || !input.series || profile.series === input.series));
+    if (hits.length > 1) fail(`来源 ${input.sourceId} 系列「${input.series ?? ''}」有 ${hits.length} 份当前档案；请仅保留一份有效映射，旧通道配置不应继续参与新任务。`);
+    return hits[0] ?? null;
   }
 }
 

@@ -94,54 +94,36 @@ test('unknown measurement is a distinct frozen claim allowed only for source lex
   }), 'invalid.json'));
 });
 
-test('profiles only apply to exactly pinned adapter and source series; old generic profiles cannot take over', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'bd-source-profiles-'));
+test('channel upgrades do not change source semantics; new tasks use one current profile', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'bd-current-semantic-'));
   try {
     const write = (name: string, value: SourceFieldProfile) => writeFileSync(join(directory, name), JSON.stringify(value));
-    write('one.json', sample({ adapter: ref('vendor.daily') }));
-    write('two.json', sample({ profileId: 'demo-daily-other', adapter: ref('vendor.minute'),
-      frequency: 'minute', timeBucket: { labelSemantics: 'start', interval: 'closed_open',
-        lengthMinutes: 1, timezone: 'Asia/Shanghai' } }));
-    write('generic.json', sample({ profileId: 'generic-profile', series: 'generic' }));
+    const old = readSourceFieldProfile(sample({ adapter: ref('vendor.daily') }), 'daily.json');
+    write('daily.json', old);
+    write('other.json', sample({ profileId: 'demo-other', series: 'other-series' }));
     const store = new SourceFieldProfileStore(directory);
+    const before = store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv', adapter: ref('vendor.daily') })!;
+    assert.equal(before.profileId, old.profileId);
+    // 升级来源适配器/实现版本，业务字段未变时不新增一份通道词典。
     assert.equal(store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv',
-      adapter: ref('vendor.daily') })?.profileId, 'demo-daily-1');
-    assert.equal(store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv',
-      adapter: ref('vendor.minute') })?.profileId, 'demo-daily-other');
-    assert.equal(store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv',
-      adapter: { ...ref('vendor.daily'), configDigest: 'b'.repeat(64) } }), null);
-    assert.equal(store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv' }), null);
-    assert.equal(store.match({ sourceId: 'synthetic-a', series: 'generic',
-      adapter: ref('vendor.daily') }), null);
-    assert.equal(store.match({ sourceId: 'synthetic-a', series: 'generic' })?.profileId, 'generic-profile');
-    throws(() => readSourceFieldProfile(sample({ adapter: { ...ref('vendor.daily'), configDigest: 'latest' } }), 'invalid.json'));
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
+      adapter: { ...ref('vendor.daily'), version: '89', configDigest: 'b'.repeat(64) } })!.profileId, old.profileId);
+    assert.equal(store.match({ sourceId: 'synthetic-a', series: 'other-series' })?.profileId, 'demo-other');
+    assert.equal(store.match({ sourceId: 'another-vendor', series: 'daily.ohlcv' }), null);
 
-test('new semantics require explicit, linearly versioned supersession; old files stay reconstructible', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'bd-semantic-versions-'));
-  try {
-    const older = sample({ adapter: ref('vendor.daily') });
-    const newer = sample({ adapter: ref('vendor.daily'), profileId: 'demo-daily-2',
-      mappingVersion: 2, adjustment: { status: 'qfq', method: 'official-factor', basis: '2026-11-13' },
-      supersedes: [{ profileId: 'demo-daily-1', note: '供应商公告修订了该数据系列的复权定义' }],
-      confirmation: { status: 'operator_confirmed',
-        basis: '合成测试来源修订公告和独立样本记录', confirmedAtUtc: '2026-11-13T01:00:00Z' } });
-    writeFileSync(join(directory, 'old.json'), JSON.stringify(older));
-    writeFileSync(join(directory, 'new.json'), JSON.stringify(newer));
-    const store = new SourceFieldProfileStore(directory);
-    const selected = store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv',
-      adapter: ref('vendor.daily') });
-    assert.equal(selected?.profileId, 'demo-daily-2');
-    assert.notEqual(profileFingerprint(older), profileFingerprint(selected!));
-    assert.equal(store.list().length, 2, '旧版本仍在，历史任务可以按原摘要恢复');
-    const missing = { ...newer, supersedes: undefined };
-    writeFileSync(join(directory, 'new.json'), JSON.stringify(missing));
-    throws(() => store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv',
-      adapter: ref('vendor.daily') }));
-    const badVersion = { ...newer, mappingVersion: 1 };
-    writeFileSync(join(directory, 'new.json'), JSON.stringify(badVersion));
-    throws(() => store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv',
-      adapter: ref('vendor.daily') }));
+    // 本机只维护当前一份：原位修订映射时旧对象仍被冻结于旧请求，不要求保留 old.json。
+    const changed = readSourceFieldProfile(sample({
+      fields: sample().fields.map(field => field.fieldCode === 'volume'
+        ? { ...field, unitCode: 'lot', measurement: '区间成交手数，非成交股数' } : field),
+    }), 'daily.json');
+    write('daily.json', changed);
+    const current = store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv' })!;
+    assert.equal(current.fields.find(field => field.fieldCode === 'volume')!.unitCode, 'lot');
+    assert.equal(before.fields.find(field => field.fieldCode === 'volume')!.unitCode, 'share');
+    assert.notEqual(sourceFieldProfileDigest(current), sourceFieldProfileDigest(before));
+    assert.notEqual(profileFingerprint(current), profileFingerprint(before));
+    // 两套同时驻留属于需要清理的当前配置冲突，而不是强制每次维护一个 supersedes 历史链。
+    write('stale.json', old);
+    throws(() => store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv' }));
+    throws(() => readSourceFieldProfile(sample({ adapter: { ...ref('vendor.daily'), configDigest: 'latest' } }), 'invalid.json'));
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

@@ -218,7 +218,8 @@ test('G5 shares R1 source profile store, compares canonical semantics, and never
     assert.equal((sourceSemanticView({ left: query.left, fieldCode: 'close' }, { profiles }) as any).left.displayedFields, 1);
     assert.equal(sourceSemanticView({ left: query.left }, {}).status, 'not_configured');
     assert.equal(sourceSemanticView({ left: { ...query.left, adapter: {
-      ...query.left.adapter, configDigest: 'b'.repeat(64) } } }, { profiles }).status, 'needs_evidence');
+      ...query.left.adapter, configDigest: 'b'.repeat(64) } } }, { profiles }).status, 'registered',
+      '来源适配器实现升级不改变同一数据系列的已确认语义映射');
     assert.equal(sourceSemanticView({ ...query, right: syntheticScope('synthetic-missing', 'missing') },
       { profiles }).status, 'needs_evidence');
 
