@@ -55,7 +55,7 @@ export function createSourceSettingsRouter(services: ApplicationServices) {
     res.json(check);
   });
   router.get('/runs', (_req, res) => res.json({ runs: tasks.list({ limit: 300 }).filter(task => belongs(task.action)) }));
-  router.post('/runs', (req, res) => {
+  router.post('/runs', async (req, res) => {
     const body = object(req.body);
     if (typeof body.requestId !== 'string' || !body.requestId) invalid();
     let action: string, args: Record<string, JsonValue>, title: string;
@@ -74,10 +74,26 @@ export function createSourceSettingsRouter(services: ApplicationServices) {
       if (Object.keys(body).some(key => !['requestId', 'wechatUrl'].includes(key)) || typeof body.wechatUrl !== 'string') invalid();
       action = 'source.wechat.extract'; args = { url: body.wechatUrl }; title = '提取微信公众号文章正文';
     } else {
-      if (Object.keys(body).some(key => !['sourceId', 'requestId', 'scopeId', 'parameters', 'apiOperation', 'klineOperation'].includes(key)) || typeof body.scopeId !== 'string' || !body.parameters || typeof body.parameters !== 'object' || Array.isArray(body.parameters)) invalid();
+      if (Object.keys(body).some(key => !['sourceId', 'requestId', 'scopeId', 'parameters', 'apiOperation', 'klineOperation', 'connectionId', 'operationId'].includes(key)) || typeof body.scopeId !== 'string' || !body.parameters || typeof body.parameters !== 'object' || Array.isArray(body.parameters)) invalid();
       const parameters = JSON.stringify(body.parameters);
       if (parameters.length > 16_000) invalid();
-      if (body.klineOperation !== undefined) {
+      if (body.connectionId !== undefined || body.operationId !== undefined) {
+        // 运行描述来自来源目录；页面不再按供应商猜测执行器。旧请求形状仍保留。
+        if (Object.keys(body).some(key => !['requestId', 'scopeId', 'parameters', 'connectionId', 'operationId'].includes(key))
+          || typeof body.connectionId !== 'string' || typeof body.operationId !== 'string') invalid();
+        const current = sourceSettings.get(), connection = current.connections.find(item => item.id === body.connectionId);
+        if (!connection) throw new CoreError('SOURCE_CONNECTION_UNKNOWN', '未找到指定的来源连接。', 404);
+        if (!connection.enabled || !current.plugins.find(item => item.id === connection.pluginId)?.enabled)
+          throw new CoreError('SOURCE_DISABLED', '来源连接或插件已停用。', 409);
+        if (!connection.scopes.includes(body.scopeId) && !connection.scopes.includes('global')) invalid();
+        const plugin = (await sourceSettings.view()).apiPlugins.find(item => item.id === connection.pluginId);
+        const operation = plugin?.operations.find(item => item.id === body.operationId);
+        if (!operation) invalid();
+        action = operation.run.action;
+        args = { scopeId: body.scopeId, parameters,
+          ...(operation.run.action === 'source.fetch' ? { sourceId: operation.run.sourceId } : { operation: operation.id }) };
+        title = `读取接口类型 · ${operation.label} · 已配置组合`;
+      } else if (body.klineOperation !== undefined) {
         if (body.sourceId !== undefined || !['minute_bars', 'daily_bars'].includes(String(body.klineOperation))) invalid();
         action = 'source.kline.read'; args = { operation: String(body.klineOperation), scopeId: body.scopeId, parameters }; title = '读取公开K线 · 已配置组合';
       } else if (body.apiOperation !== undefined) {
