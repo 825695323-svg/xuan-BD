@@ -1,36 +1,91 @@
-name: Temporary isolated logic cleanup workspace
+name: Temporary validated logic cleanup publication
 on:
   push:
     branches: [refactor/logic-cleanup-20261113]
-    paths: ['.github/workflows/logic-cleanup-workspace.yml']
+    paths: ['.github/logic-cleanup.ready']
 permissions:
-  contents: read
+  contents: write
 jobs:
-  prepare:
+  publish:
+    if: github.ref == 'refs/heads/refactor/logic-cleanup-20261113' && github.repository == '825695323-svg/xuan-BD'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.1'
           cache: npm
-      - run: npm ci
-      - name: Export tracked source and isolated toolchain
+      - name: Apply exact source edits with before and after digests
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/logic-workspace"
-          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/logic-workspace/source.tar.gz"
-          cp "$(command -v node)" "$RUNNER_TEMP/logic-workspace/node"
-          tar -czf "$RUNNER_TEMP/logic-workspace/dependencies.tar.gz" node_modules
-          git rev-parse HEAD > "$RUNNER_TEMP/logic-workspace/source-commit.txt"
-          cd "$RUNNER_TEMP/logic-workspace"
-          sha256sum source.tar.gz dependencies.tar.gz node > checksums.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: logic-cleanup-workspace
-          path: ${{ runner.temp }}/logic-workspace/
-          retention-days: 1
-          if-no-files-found: error
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          root=pathlib.Path.cwd()
+          manifests=[root/'.github'/f'logic-cleanup-edits-{i}.json' for i in range(1,5)]
+          seen=set()
+          for path in manifests:
+              data=json.loads(path.read_text())
+              assert data['version']==1 and data['base']=='6b96149e0387c5e4d01e7acc738e5d05f7569e53'
+              subprocess.run(['git','merge-base','--is-ancestor',data['base'],'HEAD'],check=True)
+              for item in data['files']:
+                  name=item['path']; rel=pathlib.PurePosixPath(name)
+                  assert not rel.is_absolute() and '..' not in rel.parts and '.git' not in rel.parts and name not in seen
+                  seen.add(name); dest=root/name
+                  assert dest.resolve().is_relative_to(root)
+                  old=dest.read_bytes() if dest.exists() else None
+                  assert (None if old is None else hashlib.sha256(old).hexdigest())==item['before'], f'changed base: {name}'
+                  lines=(old or b'').decode('utf-8').splitlines(keepends=True)
+                  end=len(lines)
+                  for edit in reversed(item['edits']):
+                      assert 0<=edit['start']<=edit['end']<=end
+                      lines[edit['start']:edit['end']]=[edit['text']]
+                      end=edit['start']
+                  output=''.join(lines).encode('utf-8')
+                  assert hashlib.sha256(output).hexdigest()==item['after'], f'edited digest mismatch: {name}'
+                  dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(output)
+          assert len(seen)==28
+          print('EXACT_LOGIC_EDITS_OK',len(seen))
+          PY
+          git rm .github/workflows/logic-cleanup-workspace.yml .github/logic-cleanup.ready .github/logic-cleanup-edits-{1,2,3,4}.json
+          git add --all
+          git diff --cached --check
+      - name: Verify locked build and regression boundaries
+        shell: bash
+        run: |
+          npm ci
+          npm run repo:check
+          npm run build
+          node --test scripts/logic-maintenance-check.test.mjs
+          node scripts/logic-maintenance-check.mjs
+          node --import tsx --test \
+            apps/server/logic-cleanup.test.ts \
+            apps/web/src/ui/logic-cleanup.test.tsx \
+            apps/web/src/ui/sourceSettingsClient.test.ts \
+            apps/web/src/ui/PageUI.test.tsx \
+            modules/financial/basic-algorithm-tool-contract.test.ts \
+            modules/financial/unified-algorithm-discovery.test.ts \
+            modules/collection/production-module-ports.test.ts \
+            plugins/api-sources/source-routing.test.ts
+          node --import tsx --test --test-name-pattern='fixed calculation HTTP' apps/server/r1-routes.test.ts
+          node --import tsx --test --test-name-pattern='AGENTS iterative parse feedback' modules/collection/r1-conversation-bridge.test.ts
+      - name: Commit verified source without temporary transport files
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          remote="$(git -c http.https://github.com/.extraheader="$auth" ls-remote origin refs/heads/refactor/logic-cleanup-20261113 | cut -f1)"
+          test "$remote" = "$EXPECTED_HEAD"
+          test -z "$(git ls-files '.github/logic-cleanup*' '.github/workflows/logic-cleanup-workspace.yml')"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'refactor(BD): unify current logic and retire obsolete creation paths'
+          git -c http.https://github.com/.extraheader="$auth" push origin HEAD:refs/heads/refactor/logic-cleanup-20261113
+          git rev-parse HEAD
