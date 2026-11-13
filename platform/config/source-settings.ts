@@ -20,7 +20,9 @@ const scopes = [
   { id: 'HK/STOCK', country: 'HK', market: 'STOCK', label: '中国香港 · 股票' },
   { id: 'US/STOCK', country: 'US', market: 'STOCK', label: '美国 · 股票' },
 ];
-const operationIds: SourceOperationId[] = ['minute_bars', 'daily_bars', 'index_constituents'];
+const operationIds: SourceOperationId[] = [...new Set(
+  ['tdx', 'ths', ...publicKlineProviderIds].flatMap(pluginId => sourceOperations(pluginId).map(operation => operation.id)),
+)];
 const providerIds = ['tdx', 'ths', ...publicKlineProviderIds, 'werss'] as const;
 const providerIdSet = new Set<string>(providerIds);
 /** 已由本次明确选择的脚本字节核对；更换脚本版本须受控更新实现。 */
