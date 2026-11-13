@@ -259,6 +259,18 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
           reachable: null, authorized: null, capabilityAvailable: available.available, freshness: 'unknown', reason: !connection.enabled ? '此连接已停用，未读取凭据或发送请求。'
             : available.reason ?? '官方开发包与依赖已就绪；数据服务密钥类型和分钟权限须由明确的真实读取任务核验。' });
       }
+      if (connection.pluginId !== 'ths') {
+        // 没有真实检测器的来源不准误用同花顺私有凭据/端点；未知结果不伪装成检查通过。
+        const enabled = connection.enabled && current.plugins.some(item => item.id === connection.pluginId && item.enabled);
+        const registered = !!publicKlineProvider(connection.pluginId);
+        return settings.saveCheck({ id: connectionId, checkedAt: new Date().toISOString(),
+          configurationRevision: current.revision, configurationDigest,
+          status: enabled ? 'partial' : 'blocked',
+          reachable: null, authorized: null, capabilityAvailable: null, freshness: 'unknown',
+          reason: !enabled ? '此连接或插件已停用，未发送网络请求。'
+            : registered ? '已登记公开行情适配器；尚未发起真实读取，网络可达性和业务数据有效性未验证。'
+              : '此来源尚未登记专用检查方法，未借用其他供应商凭据或协议。' });
+      }
       let reachable: boolean | null = null, authorized: boolean | null = null, capabilityAvailable: boolean | null = null, reason = '';
       const assert = () => assertSourceCheckCurrent(settings, connectionId, configurationDigest);
       try {
