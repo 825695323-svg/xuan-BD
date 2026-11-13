@@ -1,4 +1,6 @@
 import type { R1ConnectionIdentity, R1SourceDeclaration } from '../../contracts/r1-contracts.js';
+import { R1_BATCH_MAX_FILES, R1_BATCH_MAX_BYTES } from '../../contracts/upload-limits.js';
+export { R1_BATCH_MAX_FILES, R1_BATCH_MAX_BYTES } from '../../contracts/upload-limits.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { TaskError, type TaskService } from '../../platform/jobs/tasks.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
@@ -15,8 +17,6 @@ import { readSourceObservationMASelection, summarizeCalculatedMAProof,
 import { readAdapterBindingRef, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
 
-export const R1_BATCH_MAX_FILES = 100;
-export const R1_BATCH_MAX_BYTES = 128 * 1024 * 1024;
 export interface R1BatchFile { name: string; relativePath: string; sha256: string; byteLength: number }
 export interface R1BatchStartInput {
   batchId: string; source: R1SourceDeclaration; datasetId: string; files: R1BatchFile[];
