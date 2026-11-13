@@ -12,7 +12,7 @@ import type { FileReferenceService } from '../../platform/resources/files.js';
 import { ALGORITHM_CONTRACT_VERSION, ALGORITHM_RUNTIME, type AlgorithmCatalogView } from './algorithm-types.js';
 import { basicAlgorithmToolContract, bdSessionToolContract } from './basic-algorithm-tool-contract.js';
 import { UNIFIED_POLARS_RUNTIME } from './unified-polars-execution.js';
-import { productionModuleDirectory } from '../collection/production-module-ports.js';
+import { productionModuleDirectory, processingSessionContract } from '../collection/production-module-ports.js';
 
 const ACTIONS = new Set(['bd.session.capabilities', 'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status', 'data.modules.calculate']);
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
@@ -23,7 +23,7 @@ const view = (value: unknown): Record<string, JsonValue> => ({ kind: 'conversati
 /**
  * 基础算法与当前会话分支的工具桥：固定方法执行并经过一次独立核对写回 WFD。
  *
- * - capabilities 只读目录、采用状态和真实数据库能力，不能采用、启用或授予 Python 执行权限。
+ * - capabilities 只读目录、历史采用诊断和真实数据库能力，不能启用或授予 Python 执行权限。
  * - calculate 调用注册固定算法；没有逐次业务审批，任务身份与错误仍由 TaskService 持有。
  * - publish 仅恢复原 WFD 写入身份；status 只读本分支原任务。
  */
@@ -104,9 +104,8 @@ export class ConversationAlgorithmBridge {
       authority.assert();
       return { summary: '已读取清洗与计算两条独立按需接口；只读发现，不启动自动清洗、因子计算或发布。',
         data: view({ ...contract, parallelModuleDirectory: modules, onDemand: {
-          cleaning: { description: '原报解析与严格清洗；按会话选择材料后显式计划/执行',
-            discovery: 'data.processing.capabilities', plan: 'data.processing.plan',
-            execute: 'data.processing.run', engine: cleaning,
+          cleaning: { description: '原报解析与严格清洗；AGENTS每次执行一个步骤，读取反馈后再决定下一步',
+            ...processingSessionContract(), engine: cleaning,
             source: '受管原件及冻结来源；不读取计算公式注册表' },
           calculation: { description: '读取 WFD 固定数据，按登记方法执行 Polars 或受信 pandas 公式',
             discovery: 'algorithms.contract', execute: 'algorithms.calculate',
@@ -135,7 +134,7 @@ export class ConversationAlgorithmBridge {
             ? json(this.options.companion.productionCalculation.capabilities()) : null,
           database: json(catalog.inputs.fixedSnapshots), guidance: {
           humanInput: '用户说明 WFD 数据和目标算法，由模型读取真实快照与方法契约形成调用，无需人工逐次计算确认。',
-          adoption: '工具不能自 adopt；未启用时不要改用旧 financial/compute_assets 入口。',
+          adoption: '人工采用仅为历史诊断，不决定当前计算资格；执行器或固定快照不可用时不得改走旧入口。',
           managedTables: '已停止受管原件直接计算；必须先经原报管线发布 WFD 固定快照。',
           calculation: '已登记固定实现由 AGENTS 调用计算；没有逐次业务审核，但必须保留原任务、方法版本及 WFD 快照证据。',
           handoff: '独立核对后由专用 WFD 发布者复用 R1 正式写入和固定读回；无派生五步加工。',

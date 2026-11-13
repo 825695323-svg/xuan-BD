@@ -473,14 +473,9 @@ export class SourceSettingsService {
     const value = this.get(), selected = new Set(this.operationCandidates(scopeId, operationId).map(connection => connection.id));
     return value.connections.filter(connection => (connection.scopes.includes(scopeId) || connection.scopes.includes('global')) && !selected.has(connection.id));
   }
+  /** 历史备用调用仍复用相同资格校验，不再复制启停、主备和市场范围规则。 */
   assertOperationFallbackEnabled(connectionId: string, scopeId: string, operationId: SourceOperationId): SourceConnection {
-    const value = this.get(), connection = value.connections.find(item => item.id === connectionId), policy = this.effectivePolicy(scopeId);
-    const explicit = value.operationPolicies.find(item => item.scopeId === scopeId && item.operationId === operationId);
-    const allowed = explicit ? [explicit.primary, ...explicit.backups] : [policy.primary, ...policy.backups];
-    if (!policy.enabled || !connection?.enabled || !value.plugins.find(item => item.id === connection.pluginId)?.enabled) throw new CoreError('SOURCE_DISABLED', '当前来源插件、连接或范围已停用，未发起新的调用。', 409);
-    if (!allowed.includes(connectionId)) throw new CoreError('SOURCE_NOT_CONFIGURED', '连接不在当前接口类型的明确主备组合中。', 409);
-    if (!connection.scopes.includes(scopeId) && !connection.scopes.includes('global')) throw new CoreError('SOURCE_SCOPE_UNSUPPORTED', '连接不覆盖请求的国家市场范围。', 409);
-    return connection;
+    return this.assertOperationConnectionEnabled(connectionId, scopeId, operationId);
   }
   connectionVersion(scopeId: string, pluginId?: string, selection?: { operationId: SourceOperationId; includePool?: boolean }): unknown {
     const value = this.get(), policy = this.effectivePolicy(scopeId);

@@ -41,16 +41,19 @@ export interface ObjectSelection {
  * - 列表未就绪（`ids` 为 null 或 `ready` 为假）时保持 `pending`，不错误回落；
  * - 就绪后仍找不到该 id（被删除、换了市场、跨版本残留）就清掉记录，不留幽灵选择。
  */
-export function useObjectSelection(key: string, ids: readonly string[] | null, ready: boolean): ObjectSelection {
+export function resolveObjectSelection(stored: string | null, ids: readonly string[] | null,
+  ready: boolean, fallback: 'none' | 'first' = 'none'): { id: string | null; pending: boolean } {
+  if (!ready || ids === null) return { id: null, pending: stored !== null };
+  return { id: stored !== null && ids.includes(stored) ? stored : fallback === 'first' ? ids[0] ?? null : null, pending: false };
+}
+
+export function useObjectSelection(key: string, ids: readonly string[] | null, ready: boolean,
+  fallback: 'none' | 'first' = 'none'): ObjectSelection {
   const [stored, setStored] = useStoredSelection(key);
-  const valid = ready && ids !== null && stored !== null && ids.includes(stored);
-  const pending = stored !== null && (!ready || ids === null);
-  // 列表每次渲染都是新数组；用内容签名做依赖，避免无谓地重跑清理。
-  const signature = ids === null ? null : ids.join('\u0000');
+  const resolved = resolveObjectSelection(stored, ids, ready, fallback);
   useEffect(() => {
-    // 只在列表真正读回后清理；读取失败或进行中一律保留原记录。
-    if (!ready || signature === null || stored === null) return;
-    if (!signature.split('\u0000').includes(stored)) setStored(null);
-  }, [ready, signature, stored, setStored]);
-  return { id: valid ? stored : null, pending, select: setStored };
+    // 未读完目录时不清除也不默认选择。回落只由本公共模块处理。
+    if (ready && ids !== null && stored !== resolved.id) setStored(resolved.id);
+  }, [ready, ids !== null, stored, resolved.id, setStored]);
+  return { ...resolved, select: setStored };
 }

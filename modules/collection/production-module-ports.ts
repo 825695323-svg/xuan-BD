@@ -38,6 +38,20 @@ export const stepModuleForAction = (action: string): ProductionStepModuleId | nu
     ? found.id as ProductionStepModuleId : null;
 };
 
+/** 新会话只逐步执行；历史批量入口不属于新任务的推荐路径。 */
+export function processingSessionContract() {
+  return {
+    discovery: 'data.processing.capabilities', route: 'data.processing.route', plan: 'data.processing.plan',
+    execute: 'data.processing.execute', status: 'data.processing.status', recover: 'data.processing.recover',
+    moduleActions: PRODUCTION_MODULES.filter(module => stepModuleForAction(module.action) !== null).map(module => module.action),
+    feedback: '识别材料 → 只计划解析 → 单步执行并读回 → AGENTS按证据决定是否修订原计划或调用下一模块',
+    automaticCrossTrigger: false,
+    recoveryPolicy: 'recover只核对本会话原计划的持久对象，不创建新计划；已完成步骤不重跑',
+    legacyRecovery: { execute: 'data.processing.run',
+      newTasks: false, scope: '仅未选择stages的历史批量计划；新计划必须单步执行并读取反馈' },
+  } as const;
+}
+
 export function productionModuleDirectory(services: {
   processing?: Pick<ProcessingPlanService, 'moduleCapability'>;
   calculation?: Pick<ProductionCalculation, 'capabilities'>;

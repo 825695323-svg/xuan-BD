@@ -1,14 +1,10 @@
 import express, { Router } from 'express';
-import { createHash, randomUUID } from 'node:crypto';
 import { userInfo } from 'node:os';
-import { lstat } from 'node:fs/promises';
-import { basename, extname, join } from 'node:path';
-import { root } from '@openclaw/fs-safe';
+import { basename } from 'node:path';
 import type { ApplicationServices } from './services.js';
 import { acceptWorkspaceMaterial, MATERIAL_UPLOAD_LIMIT } from '../../modules/collection/accept-material.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
 import { CoreError } from '../../platform/runtime/errors.js';
-import { digestOperationArgs } from '../../platform/security/permissions.js';
 import type { OperatorContext } from '../../modules/collection/processing-plan.js';
 import { officeNative } from '../../platform/capabilities/conversion/office.js';
 import { xlsxModelPreview } from '../../platform/capabilities/conversion/index.js';
@@ -19,7 +15,7 @@ import { createFixedCalculationRouter } from './fixed-calculation-routes.js';
 
 /** 上传日志只追踪原件发布与任务绑定；执行、停止、恢复仍由唯一 TaskService 持有。 */
 export function createWorkspaceRouter(services: ApplicationServices): Router {
-  const router = Router(), { bd, materials, financial, database, tasks, files, permissions, processing } = services;
+  const router = Router(), { bd, materials, financial, tasks, files, processing } = services;
   if (!bd) throw new TaskError('SERVICE_ROLE_REQUIRED', '材料入口需要服务身份。');
   router.get('/workspace', (_req, res) => res.json({ mode: 'bd-workspace', version: bd.versions.bd,
     modules: { materials: !!materials, financialTools: !!financial, collection: !!(services.collection || services.candidates || services.materials || processing), processing: processing ? 'step_plans' : 'not_enabled' },
@@ -71,10 +67,10 @@ export function createWorkspaceRouter(services: ApplicationServices): Router {
   if (services.polarsFixed) {
     const polars = services.polarsFixed;
     router.get('/processing/polars/capabilities', (_req, res) => res.json(polars.capabilities()));
-    router.post('/processing/polars/tasks', async (req, res) => {
-      if (!services.fixedCalculations) throw new TaskError('FIXED_CALCULATION_UNAVAILABLE', '固定计算入口尚未装配。');
-      const result = await services.fixedCalculations.create(req.body);
-      res.status(202).json(bd.taskView(result.task.id));
+    // 旧 HTTP 入口不再创建新计算；历史任务查询、保管与候选恢复仍保留原身份。
+    router.post('/processing/polars/tasks', () => {
+      throw new CoreError('ALGORITHM_AGENT_ENTRY_REQUIRED',
+        '人工计算入口已停用；新计算请通过 BD AGENTS 的 algorithms.calculate（固定算法工具）。历史任务仍可按原编号查询和恢复。', 410);
     });
     router.get('/processing/polars/tasks/:id', (req, res) => res.json(polars.get(id(req.params.id))));
     router.post('/processing/polars/tasks/:id/stage', async (req, res) => {

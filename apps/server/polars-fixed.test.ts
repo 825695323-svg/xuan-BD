@@ -54,8 +54,10 @@ async function readRows(host: FullChainHost, snapshotId: string, productId: stri
   return rows;
 }
 async function normalTask(host: FullChainHost, input: unknown, expected = 'succeeded') {
-  const accepted = await host.call('/processing/polars/tasks', input, 202);
-  const task = await host.settled(accepted.jobId);
+  // Historical recovery fixture: construct the old task through the isolated trusted service,
+  // never reopen the retired public HTTP creation route for new callers.
+  const accepted = await host.services.fixedCalculations!.create(input);
+  const task = await host.settled(accepted.task.id);
   assert.equal(task.status, expected, JSON.stringify(task.error));
   const read = await host.call('/processing/polars/tasks/' + task.id);
   assert.equal(read.task.id, task.id);
@@ -211,7 +213,8 @@ test('three explicitly selected Polars tasks use real published fixed inputs and
     const selectedDaily = { requestId: 'normal-daily', method: 'observation_ma20', autoRequestIds: ['polars-daily-1', 'polars-daily-11'], valueColumn: '收盘价（元）' };
     const normalDaily = await normalTask(host, selectedDaily);
     assert.equal((normalDaily.result!.data as any).rows[19].value, '10.50000000');
-    assert.equal((await host.call('/processing/polars/tasks', selectedDaily, 202)).jobId, normalDaily.id);
+    assert.equal((await host.call('/processing/polars/tasks', selectedDaily, 410)).code, 'ALGORITHM_AGENT_ENTRY_REQUIRED');
+    assert.equal((await host.services.fixedCalculations!.create(selectedDaily)).task.id, normalDaily.id);
     const normalMacro = await normalTask(host, { requestId: 'normal-macro', method: 'macro_yoy', calculation: macroInput });
     assert.equal((normalMacro.result!.data as any).rows[0].value, '20.00000000');
     const normalFuture = await normalTask(host, { requestId: 'normal-macro-future', method: 'macro_yoy', calculation: future }, 'failed');
@@ -305,8 +308,9 @@ test('persisted Polars candidates and the original confirmed R1 bridge survive h
     const daily = await host.call('/processing/polars/tasks/' + proof.normalDaily.id);
     assert.deepEqual(daily.task.result, proof.normalDaily.result);
     const repeated = await host.call('/processing/polars/tasks', { requestId: 'normal-daily', method: 'observation_ma20',
-      autoRequestIds: ['polars-daily-1', 'polars-daily-11'], valueColumn: '收盘价（元）' }, 202);
-    assert.equal(repeated.jobId, proof.normalDaily.id, 'A later published head does not silently freeze new inputs for the original request.');
+      autoRequestIds: ['polars-daily-1', 'polars-daily-11'], valueColumn: '收盘价（元）' }, 410);
+    assert.equal(repeated.code, 'ALGORITHM_AGENT_ENTRY_REQUIRED');
+    assert.equal(daily.task.id, proof.normalDaily.id, 'Historical lookup keeps the original task and never refreezes inputs.');
     const macro = await host.call('/processing/polars/tasks/' + proof.normalMacro.id);
     assert.deepEqual(macro.task.result, proof.normalMacro.result);
     assert.ok(macro.candidate.materialId);

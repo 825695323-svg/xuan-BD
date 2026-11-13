@@ -1,5 +1,5 @@
 import type { SourceOperationView } from '../../contracts/source-settings.js';
-import { publicKlineProvider } from './public-kline.js';
+import { publicKlineProvider, publicKlineProviders } from './public-kline.js';
 
 /**
  * 唯一的接口操作目录：页面展示的操作与服务端路由使用同一份声明。
@@ -23,4 +23,12 @@ export function sourceOperations(pluginId: string): SourceOperationView[] {
   return publicProvider ? publicProvider.operations.map(operation => ({
     ...operation, run: { action: 'source.kline.read' as const },
   })) : [];
+}
+
+/** 按执行器投影同一目录，供旧请求适配和工具选项复用；不再另写支持动作名单。 */
+export function sourceOperationsForAction(action: SourceOperationView['run']['action']): SourceOperationView[] {
+  const operations = [...Object.values(providerOperations).flat(),
+    ...publicKlineProviders.flatMap(provider => sourceOperations(provider.id))];
+  return [...new Map(operations.filter(operation => operation.run.action === action)
+    .map(operation => [operation.id, operation])).values()];
 }

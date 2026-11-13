@@ -128,3 +128,20 @@ test('来源设置视图操作清单与唯一目录一致，不遗漏同花顺�
     assert.deepEqual(view.supportedApiOperations.map(operation => operation.id), sourceOperations('ths').map(operation => operation.id));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('主源与历史备用资格共用校验，停用、显式空备用、市场范围规则保持一致', () => {
+  const { root, settings } = isolatedSettings();
+  const outcome = (check: () => SourceConnection) => {
+    try { return { id: check().id }; } catch (error) { return { code: sourceCode(error) }; }
+  };
+  try {
+    for (const [connection, scope] of [['tdx-primary', 'CN/A_STOCK'], ['ths-scope-backup', 'CN/A_STOCK'],
+      ['eastmoney-disabled', 'CN/A_STOCK'], ['tdx-primary', 'US/STOCK'], ['tdx-primary', 'MISSING']] as const) {
+      assert.deepEqual(outcome(() => settings.assertOperationFallbackEnabled(connection, scope, 'minute_bars')),
+        outcome(() => settings.assertOperationConnectionEnabled(connection, scope, 'minute_bars')));
+    }
+    const current = settings.get();
+    settings.update({ ...current, plugins: current.plugins.map(plugin => plugin.id === 'tdx' ? { ...plugin, enabled: false } : plugin) });
+    assert.equal(outcome(() => settings.assertOperationFallbackEnabled('tdx-primary', 'CN/A_STOCK', 'minute_bars')).code, 'SOURCE_DISABLED');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
