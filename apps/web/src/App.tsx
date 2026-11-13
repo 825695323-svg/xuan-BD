@@ -15,7 +15,6 @@ import CaptureSourcesPage from './ui/CaptureSourcesPage';
 import ApiSourcesPage from './ui/ApiSourcesPage';
 import DatabasePage from './ui/DatabasePage';
 import ToolsPage from './ui/ToolsPage';
-import type { AlgorithmEntryFocus, AlgorithmFocusRequest } from './ui/algorithm-catalog';
 import { Modal, errorDetail, useWords } from './ui/Controls';
 import { currentLocalData, type LocalDataRecord } from './local-data-api';
 import { forgetLocalDataSession, localDataRevision, setLocalDataSession, subscribeLocalDataRevoked } from './local-data-context';
@@ -37,11 +36,10 @@ function Application() {
   const tasks = useConversationTasks(chat.conversation?.conversationId);
   const [page, setPage] = useState<Page>(pageFromHash);
   const pageTitle = t(PAGE_TITLE_KEYS[page]);
-  const [algorithmFocus, setAlgorithmFocus] = useState<AlgorithmEntryFocus | null>(null);
   const [runtime, setRuntime] = useState<UiRuntimeView | null>(null), [runtimeError, setRuntimeError] = useState<string | null>(null), [controlBusy, setControlBusy] = useState(false), [feedback, setFeedback] = useState<{ message: string; issues: string[] } | null>(null), [dropNotice, setDropNotice] = useState<string | null>(null);
   const [referenceIntent, setReferenceIntent] = useState<ReferenceIntent | null>(null);
   const chatRef = useRef(chat); chatRef.current = chat;
-  const referenceLock = useRef(false), referenceWorking = useRef(false), runtimeEpoch = useRef(0), algorithmFocusNonce = useRef(0), alive = useRef(true), navigateLatest = useRef<(next: Page) => void>(() => {});
+  const referenceLock = useRef(false), referenceWorking = useRef(false), runtimeEpoch = useRef(0), alive = useRef(true), navigateLatest = useRef<(next: Page) => void>(() => {});
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   // 地址栏只记录当前页面标识，供刷新与重挂载恢复；用 replaceState 不新增历史条目，也不参与任何私有请求。
   useEffect(() => {
@@ -54,23 +52,11 @@ function Application() {
   }, []);
   useEffect(() => { refreshRuntime(); const interval = window.setInterval(refreshRuntime, 15_000); return () => { window.clearInterval(interval); ++runtimeEpoch.current; }; }, [refreshRuntime]);
   useEffect(() => { refreshRuntime(); }, [chat.isRunning, refreshRuntime]);
-  useEffect(() => {
-    if (page !== 'database' || !algorithmFocus) return;
-    // 目标面板完成首次滚动与聚焦后清除一次性提示；页面重新进入时不会再次自动滚动。
-    const timer = window.setTimeout(() => setAlgorithmFocus(null), 2500);
-    return () => window.clearTimeout(timer);
-  }, [page, algorithmFocus]);
   function navigate(next: Page) {
     setDropNotice(null);
-    if (next !== 'database') setAlgorithmFocus(null);
     setPage(next);
   }
   navigateLatest.current = navigate;
-  // 统一算法页只把目标面板/方法带到数据库；不携带表单载荷，也不触发任何计算或写入。
-  const openAlgorithmEntry = (request: AlgorithmFocusRequest) => {
-    setAlgorithmFocus({ ...request, nonce: ++algorithmFocusNonce.current });
-    navigate('database');
-  };
   async function control(kind: 'stop' | 'resume') {
     if (controlBusy) return;
     setControlBusy(true); ++runtimeEpoch.current;
@@ -122,8 +108,8 @@ function Application() {
     {page === 'conversations' && <ConversationView chat={chat} hidden={false} dispatchBlocked={runtime?.control.stopped ?? false} controlUnconfirmed={!runtime || !!runtimeError} tasks={tasks} />}
     {page === 'capture' && <CaptureSourcesPage />}
     {page === 'api-sources' && <ApiSourcesPage />}
-    {page === 'database' && <DatabasePage onBringToConversation={bringToConversation} algorithmFocus={algorithmFocus} />}
-    {page === 'tools' && <ToolsPage onOpenEntry={openAlgorithmEntry} />}
+    {page === 'database' && <DatabasePage onBringToConversation={bringToConversation} />}
+    {page === 'tools' && <ToolsPage />}
     {page === 'settings' && <SettingsPage />}
     </WorkspaceLayout>
     {feedback && <Modal title={words('运行控制', 'Run control')} onClose={() => setFeedback(null)}><p role="status">{feedback.message}</p><p className="subtle-text">{words('控制范围是本 xuan BD；外部已发生的结果仍按原记录核对。', 'This control applies to this xuan BD application. External effects are still checked against their original records.')}</p>{feedback.issues.length > 0 && <ul>{feedback.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul>}<div className="dialog-actions"><button type="button" className="text-button" onClick={refreshRuntime}>{words('核对状态', 'Check status')}</button><button type="button" className="primary-button" onClick={() => setFeedback(null)}>{words('关闭', 'Close')}</button></div></Modal>}

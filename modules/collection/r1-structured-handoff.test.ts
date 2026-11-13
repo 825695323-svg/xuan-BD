@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CoreDatabase } from '../../platform/state/database.js';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
+import type { RestrictionEvidence } from './purpose-eligibility.js';
 import { buildStructuredIngestDocument, R1HandoffService, type R1LocalReferences, type R1SourceRef, type R1StructuredRequest } from './r1-structured-handoff.js';
 
 const raw = Buffer.from('business_key,value\nfixture:1,12.30\n');
@@ -17,15 +18,15 @@ const structured = (requestId = 'test-r1-1'): R1StructuredRequest => ({ datasetI
   inputMode: 'partial_observation', coverage: { scope: { test: true }, basis: 'observed_partial', completeness: 'partial', absence_means: 'unknown' },
   payload: { kind: 'scalar_rows', rows: [{ business_key: 'fixture:1', value_decimal: '12.30', value_state: 'valid_value' }] } });
 // Unit reader contract only. Actual ProcessingPlanService / application assembly is covered by the HTTP integration suite.
-const reader = () => ({ get: (planId: string) => {
+const reader = (withPurpose = true, withRestriction = true) => ({ get: (planId: string) => {
   if (planId !== 'plan:one') throw new Error('plan not found');
   return { planId, version: 'bd-processing-plan/1', materials: [{ materialId: 'material:one', sha256: wfdSha256(raw) }],
     outputs: [{ outputId: 'out', state: 'structured', materialIds: ['material:one'], publishEligible: true, routingState: 'ready_candidate',
-      usage: { purpose: 'current_publish', historyMode: null, cutoff: null, perspective: null,
+      usage: withPurpose ? { purpose: 'current_publish', historyMode: null, cutoff: null, perspective: null,
         purposeEvidence: [{ purpose: 'current_publish', authority: 'operator-http', quote: 'structured action: intendedAction=publish',
           observedAtUtc: '2026-11-07T00:00:00Z', evidenceSha256: 'd'.repeat(64), requestId: 'test-plan' }],
-        restriction: { authority: 'wfd_usage_governance_check', result: 'no_known_issue',
-          checkedAtUtc: '2026-11-07T00:00:00Z', evidenceSha256: 'e'.repeat(64) } } }] };
+        restriction: withRestriction ? { authority: 'wfd_usage_governance_check', result: 'no_known_issue',
+          checkedAtUtc: '2026-11-07T00:00:00Z', evidenceSha256: 'e'.repeat(64) } : null } : null }] };
 }, outputArtifact: (planId: string, outputId: string) => {
   if (planId !== 'plan:one' || outputId !== 'out') throw new Error('output not found');
   return { bytes: Buffer.from(artifact) };
@@ -38,6 +39,47 @@ function refs(originalId: string, input = structured(), src = source()): R1Local
     evidenceRefs: [{ ref_id: 'artifact:' + wfdSha256(artifact), content_sha256: wfdSha256(artifact), kind: 'processing-output' }] };
 }
 const expectCode = (work: () => unknown, code: string) => assert.throws(work, (error: unknown) => (error as { code?: string }).code === code);
+
+test('R1 checks original publication purpose and WFD restriction before prepare and first send', () => {
+  const database = new CoreDatabase();
+  try {
+    let withPurpose = false, withRestriction = true;
+    const processing = {
+      get: (planId: string) => reader(withPurpose, withRestriction).get(planId),
+      outputArtifact: reader().outputArtifact,
+    };
+    const service = new R1HandoffService({ database, processing });
+    const original = service.registerOriginal({ bytes: raw, originalName: 'input.csv', source: source() });
+    const input = structured('original-publication-usage');
+    input.definition = { ...input.definition, measurement_nature: 'mixed_observation',
+      semantic_context: { content_nature: 'source_claim' } };
+    const prepare = () => service.prepare({ structured: input, localRefs: refs(original.originalId, input) });
+    const firstSend = (restriction?: RestrictionEvidence) => service.assertPublicationReadyToSend(input.requestId, restriction);
+    expectCode(prepare, 'R1_USAGE_DECLARATION_MISSING');
+    withPurpose = true;
+    withRestriction = false;
+    expectCode(prepare, 'PURPOSE_ELIGIBILITY_INSUFFICIENT');
+    withRestriction = true;
+    for (const declaration of [
+      { measurement_nature: 'derived' },
+      { semantic_context: { content_nature: 'deterministic_derived' } },
+      { algorithm_definition: { mathematical_definition: 'MACD' } },
+    ]) {
+      const claimed = { ...input, definition: { ...input.definition, ...declaration } };
+      expectCode(() => service.prepare({ structured: claimed, localRefs: refs(original.originalId, claimed) }),
+        'R1_DERIVED_PROOF_REQUIRED');
+    }
+    prepare();
+    withPurpose = false;
+    expectCode(firstSend, 'R1_USAGE_DECLARATION_MISSING');
+    withPurpose = true;
+    withRestriction = false;
+    expectCode(firstSend, 'PURPOSE_ELIGIBILITY_INSUFFICIENT');
+    firstSend({ authority: 'wfd_usage_governance_check', result: 'no_known_issue',
+      checkedAtUtc: '2026-11-07T00:00:00Z', evidenceSha256: 'e'.repeat(64) });
+    assert.equal(service.attempt(input.requestId).state, 'prepared_profile_pending');
+  } finally { database.close(); }
+});
 
 function registeredNotPublished(service: R1HandoffService, requestId: string): WfdRecord {
   const document = JSON.parse(String(service.attempt(requestId).document_json)) as WfdRecord;

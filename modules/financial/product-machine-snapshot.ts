@@ -9,7 +9,7 @@ import { wfdFixedReadEvidence } from '../collection/purpose-eligibility.js';
  * 新 WFD 产品服务的固定快照端口。
  *
  * 通过 `wfd.product-machine/0.1`（产品机器协议）公开薄入口固定读取。调用者声明的
- * definitionRevision / semantics 当事实：
+ * definitionRevision / semantics 必须与真实返回核对：
  *
  * - 定义版本、合同摘要、声明字段和时间轴来自该固定快照的 `contract_discovery`
  *   与 `fixed_read` 实际返回；调用者只能提供预期，必须逐项核对。
@@ -18,12 +18,26 @@ import { wfdFixedReadEvidence } from '../collection/purpose-eligibility.js';
  *   contract_ref 等身份、时间、引用元信息放在独立 envelope，不冒充值字段。
  * - `rowsSha256` 保持 null：产品服务没有暴露 full-resource rows_sha256，本端口
  *   只有本地 value projection 摘要，不能假称服务端完整行摘要。
- * - 当前 P1/P3 合同没有结构化 frequency/adjustment/bar_closed/availability/currency
- *   等金融算法语义。即使值可通用读取，算法端口也会明确抛
- *   `ALGORITHM_SNAPSHOT_SEMANTICS_UNSUPPORTED`，不把年度吞吐量或 0.2 日线误标成
- *   已验证的 MA/日线输入。P4 补合同后再完成 P6 算法联调。
+ * - 通过结构化金融语义检查确认日线、复权口径、价格单位、币种和可得时刻；
+ *   无法核对时返回 `ALGORITHM_SNAPSHOT_SEMANTICS_UNSUPPORTED`。
  */
 export const WFD_PRODUCT_MACHINE_SNAPSHOT_CONTRACT = 'wfd.product-machine/0.1';
+
+export const MACD_SNAPSHOT_SEMANTIC_CONTRACT = Object.freeze({
+  declaration: Object.freeze({
+    version: 'wfd.semantic-context/1.0',
+    frequency: Object.freeze({ day: '1d', '1d': '1d' }),
+    timezone: 'Matches every fixed observation time zone',
+    roles: Object.freeze({ observation: 'Mapped date field', availability: 'Mapped availability text field', bar_closed: 'true' }),
+    priceAdjustmentDirection: 'raw',
+  }),
+  semantics: Object.freeze({
+    frequency: '1d', adjustment: 'unadjusted',
+    adjustmentBasis: 'WFD financial.price_adjustment.direction=raw',
+    barClosed: true, availability: Object.freeze({ kind: 'column' }),
+    currency: 'CNY', priceUnit: 'currency_per_share',
+  }),
+});
 
 export interface WfdProductMachineSnapshotOptions {
   /** 缺省时端口报告 unavailable；装配真实客户端由受信宿主完成。 */
@@ -231,7 +245,7 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
           observed: inspection.observed,
           derived: inspection.derived,
           structured: inspection.structured,
-          action: 'P4 补充结构化 frequency/adjustment/bar_closed/availability/currency/时间轴合同后再启用算法入口；不要用调用者声明或手改配置补成 verified。',
+          action: '核对 WFD 固定定义的 semantic_context（语义声明）、逐字段单位和逐行时间后再提交 MACD。',
         }));
       }
 
@@ -341,8 +355,12 @@ export function inspectProductMachineSemantics(
 ): ProductMachineSemanticsInspection {
   const declaration = asRecord(product.declaration);
   const contracts = asRecord(product.contracts);
-  const semantic = asRecord(contracts.semantic);
-  const read = asRecord(contracts.read);
+  const context = asRecord(declaration.semantic_context);
+  const contract = MACD_SNAPSHOT_SEMANTIC_CONTRACT;
+  const semanticContext = context.version === contract.declaration.version ? context : {};
+  const time = asRecord(semanticContext.time);
+  const roles = asRecord(time.roles);
+  const priceAdjustment = asRecord(asRecord(semanticContext.financial).price_adjustment);
   const declared = fieldDefinitions(product);
   const selected = reference?.fields ?? declared.fields.map(field => field.field_code);
   const selectedDefs = declared.fields.filter(field => selected.includes(field.field_code));
@@ -356,15 +374,23 @@ export function inspectProductMachineSemantics(
   const unitCodes: Record<string, string | null> = {};
   for (const field of selectedDefs) unitCodes[field.field_code] = field.unit_code;
 
+  const timestampField = reference?.fieldMapping.timestamp;
+  const availabilityField = reference?.fieldMapping.available_at;
+  const availabilityDef = selectedDefs.find(field => field.field_code === availabilityField);
+  const rawPrice = priceAdjustment.direction === contract.declaration.priceAdjustmentDirection;
   const structured: ProductMachineSemanticsInspection['structured'] = {
-    frequency: pickStructured(['frequency'], [['contracts.semantic', semantic], ['declaration', declaration], ['contracts.read', read]]),
-    adjustment: pickStructured(['adjustment'], [['contracts.semantic', semantic], ['declaration', declaration]]),
-    adjustment_basis: pickStructured(['adjustment_basis'], [['contracts.semantic', semantic], ['declaration', declaration]]),
-    bar_closed: pickStructured(['bar_closed', 'bar_close'], [['contracts.semantic', semantic], ['declaration', declaration], ['contracts.read', read]]),
-    currency: pickStructured(['currency'], [['contracts.semantic', semantic], ['declaration', declaration]]),
-    timezone: pickStructured(['timezone'], [['contracts.semantic', semantic], ['declaration', declaration]]),
-    availability: pickStructured(['availability'], [['contracts.semantic', semantic], ['declaration', declaration], ['contracts.read', read]]),
-    price_unit: pickStructured(['price_unit'], [['contracts.semantic', semantic], ['declaration', declaration]]),
+    frequency: typeof time.frequency === 'string'
+      ? { value: time.frequency === 'day' || time.frequency === '1d' ? contract.declaration.frequency[time.frequency] : time.frequency, source: 'declaration.semantic_context.time.frequency' } : null,
+    timezone: typeof time.timezone === 'string'
+      ? { value: time.timezone, source: 'declaration.semantic_context.time.timezone' } : null,
+    adjustment: rawPrice
+      ? { value: contract.semantics.adjustment, source: 'declaration.semantic_context.financial.price_adjustment.direction' } : null,
+    adjustment_basis: rawPrice
+      ? { value: contract.semantics.adjustmentBasis, source: 'declaration.semantic_context.financial.price_adjustment.direction' } : null,
+    bar_closed: roles.bar_closed === contract.declaration.roles.bar_closed
+      ? { value: contract.semantics.barClosed, source: 'declaration.semantic_context.time.roles.bar_closed' } : null,
+    availability: availabilityDef?.data_type === 'text' && roles.availability === availabilityField
+      ? { value: contract.semantics.availability, source: 'declaration.semantic_context.time.roles.availability' } : null,
   };
 
   const derived = {
@@ -376,7 +402,7 @@ export function inspectProductMachineSemantics(
   const effective = {
     frequency: effectiveValue(structured.frequency, derived.frequency.value, derived.frequency.basis),
     timezone: effectiveValue(structured.timezone, derived.timezone.value, derived.timezone.basis),
-    currency: effectiveValue(structured.currency, derived.currency.value, derived.currency.basis),
+    currency: effectiveValue(null, derived.currency.value, derived.currency.basis),
     adjustment: effectiveValue(structured.adjustment, null, []),
     adjustment_basis: effectiveValue(structured.adjustment_basis, null, []),
     bar_closed: effectiveRaw(structured.bar_closed),
@@ -390,21 +416,30 @@ export function inspectProductMachineSemantics(
   if (selected.length === 0) missing.push('value_fields.selected');
   const declaredCodes = new Set(declared.fields.map(field => field.field_code));
   for (const field of selected) if (!declaredCodes.has(field)) mismatches.push(`field.not_declared:${field}`);
-  const timestampField = reference?.fieldMapping.timestamp;
   const timestampDef = declared.fields.find(field => field.field_code === timestampField);
   if (!timestampDef || timestampDef.data_type !== 'text' || timestampDef.unit_code !== 'date') {
     missing.push('value_field.timestamp_date');
   }
   const closeField = reference?.fieldMapping.close;
   const closeDef = declared.fields.find(field => field.field_code === closeField);
-  if (!closeDef || closeDef.unit_code !== 'cny_per_share') missing.push('value_field.close_price_unit');
+  if (!closeDef || closeDef.data_type !== 'decimal' || closeDef.unit_code !== 'cny_per_share') missing.push('value_field.close_price_unit');
   if (timeAxis.precisions.length !== 1) missing.push('time_axis.single_precision');
   if (timeAxis.timezones.length !== 1) missing.push('time_axis.single_timezone');
   if (timeAxis.statuses.some(status => status !== 'known')) missing.push('time_axis.known');
-  if (effective.frequency?.value !== '1d') missing.push('frequency.daily');
-  if (!effective.timezone?.value) missing.push('timezone');
+  if (roles.observation !== timestampField || !timestampField)
+    mismatches.push('time.roles.observation: must identify the mapped date field');
+  if (structured.frequency && derived.frequency.value && structured.frequency.value !== derived.frequency.value)
+    mismatches.push('time.frequency: differs from fixed observation precision');
+  if (structured.timezone && derived.timezone.value && structured.timezone.value !== derived.timezone.value)
+    mismatches.push('time.timezone: differs from fixed observation timezone');
+  const closeContext = asRecord(asRecord(declaration.field_semantic_context)[closeField ?? '']);
+  const closeAdjustment = asRecord(closeContext.financial).price_adjustment;
+  if (closeAdjustment !== undefined && asRecord(closeAdjustment).direction !== contract.declaration.priceAdjustmentDirection)
+    mismatches.push('field_semantic_context: the mapped close field does not declare raw prices');
+  if (effective.frequency?.value !== '1d' || derived.frequency.value !== '1d') missing.push('frequency.daily');
+  if (!effective.timezone?.value || !derived.timezone.value) missing.push('timezone');
   if (!effective.currency?.value) missing.push('currency');
-  if (!['unadjusted', 'as_stored'].includes(String(effective.adjustment?.value ?? ''))) missing.push('adjustment');
+  if (effective.adjustment?.value !== contract.semantics.adjustment) missing.push('adjustment');
   const adjustmentBasis = String(effective.adjustment_basis?.value ?? '').trim();
   if (!adjustmentBasis || /^(unknown|undefined|n\/?a|未知|未确定|不明)$/iu.test(adjustmentBasis)) missing.push('adjustment_basis');
   if (effective.bar_closed?.value !== true) missing.push('bar_closed');
@@ -418,6 +453,8 @@ export function inspectProductMachineSemantics(
     compareExpectation(mismatches, 'adjustment', caller.adjustment, effective.adjustment?.value);
     compareExpectation(mismatches, 'adjustmentBasis', caller.adjustmentBasis, effective.adjustment_basis?.value);
     compareExpectation(mismatches, 'priceUnit', caller.priceUnit, derived.price_unit.value);
+    if (effective.availability && caller.availability.kind !== contract.semantics.availability.kind)
+      mismatches.push('availability: fixed definition uses the explicitly mapped availability column');
     if (effective.bar_closed && caller.barClosed !== effective.bar_closed.value) {
       mismatches.push(`barClosed: caller=${String(caller.barClosed)} actual=${String(effective.bar_closed.value)}`);
     }
@@ -676,9 +713,9 @@ function inspectTimeAxis(rows: WfdRecord[]) {
     const precision = text(observation.precision);
     const timezone = text(observation.source_timezone);
     const status = text(observation.status);
-    if (precision) precisions.add(precision);
-    if (timezone) timezones.add(timezone);
-    if (status) statuses.add(status);
+    precisions.add(precision ?? '');
+    timezones.add(timezone ?? '');
+    statuses.add(status ?? 'unknown');
   }
   return { precisions: [...precisions].sort(), timezones: [...timezones].sort(), statuses: [...statuses].sort() };
 }
@@ -735,17 +772,6 @@ function effectiveValue(structured: { value: unknown; source: string } | null | 
 
 function effectiveRaw(structured: { value: unknown; source: string } | null | undefined) {
   return structured ? { value: structured.value, source: structured.source } : null;
-}
-
-function pickStructured(keys: string[], sources: [string, WfdRecord][]): { value: unknown; source: string } | null {
-  for (const [source, record] of sources) {
-    for (const key of keys) {
-      if (Object.hasOwn(record, key) && record[key] !== null && record[key] !== undefined) {
-        return { value: record[key], source: `${source}.${key}` };
-      }
-    }
-  }
-  return null;
 }
 
 function compareExpectation(mismatches: string[], label: string, caller: unknown, actual: unknown): void {

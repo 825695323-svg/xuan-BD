@@ -422,7 +422,6 @@
 }
 .page-nav-list { display: flex; flex-direction: column; gap: 2px; padding: 0 8px 12px; }
 .page-nav-list .data-nav-item { font-size: .9rem; }
-.algo-nav-count { color: var(--weak); font-size: .74rem; font-variant-numeric: tabular-nums; }
 
 
 

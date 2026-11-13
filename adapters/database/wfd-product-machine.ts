@@ -5,6 +5,8 @@ import { appendFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { DataServiceError } from './wfd-error.js';
 import { isWfdRecord, type WfdRecord } from './wfd-transport.js';
+import type { TabularBatchChunk, TabularBatchHeader, TabularCell, TabularReadPage } from '../../contracts/tabular-batch.js';
+import type { SourceMinuteBatchChunk, SourceMinuteBatchHeader, SourceMinuteCell, SourceMinuteReadPage } from '../../contracts/source-minute-batch.js';
 
 /**
  * 公开本地结构化进程边界：WFD `wfd.product-machine/0.1`。
@@ -413,6 +415,37 @@ export class WfdProductMachineClient {
 
   batchFinalize(batchId: string, signal?: AbortSignal): Promise<WfdProductMachineReply> {
     return this.request('batch_finalize', { batch_id: batchId }, signal);
+  }
+
+  tabularBatchBegin(batchId: string, header: TabularBatchHeader, chunks: TabularBatchChunk[],
+    signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('batch_begin', { batch_id: batchId, header, expected_chunks: chunks }, signal);
+  }
+
+  tabularBatchPut(batchId: string, outputKey: string, chunk: TabularBatchChunk, rows: TabularCell[][],
+    signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.batchPutChunk(batchId, outputKey, chunk.chunk_id, rows, chunk.digest, signal);
+  }
+
+  tabularReadPage({ snapshot_id, product_id, partition, result_root, page_size, cursor }: TabularReadPage,
+    signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('batch_read_page', { snapshot_id, product_id, partition, result_root, page_size, cursor }, signal);
+  }
+
+  /** Explicit whole-date source-report mode; it does not change ordinary batch limits. */
+  sourceMinuteBatchBegin(batchId: string, header: SourceMinuteBatchHeader, chunks: SourceMinuteBatchChunk[],
+    signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('batch_begin', { batch_id: batchId, header, expected_chunks: chunks }, signal);
+  }
+
+  sourceMinuteBatchPut(batchId: string, outputKey: string, chunk: SourceMinuteBatchChunk, rows: SourceMinuteCell[][],
+    signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('batch_put_chunk', { batch_id: batchId, output_key: outputKey,
+      chunk_id: chunk.chunk_id, rows, digest: chunk.digest }, signal);
+  }
+
+  sourceMinuteReadPage(input: SourceMinuteReadPage, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    return this.request('batch_read_page', { ...input }, signal);
   }
 
   /** 正式用途治理：暂停状态、显式审计复现、暂停登记、精确修复票据与解决说明。 */

@@ -1,4 +1,3 @@
-import type { PersonalCore } from '../agent/runtime/core.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
 import type { WorkspaceServices } from '../../contracts/workspace-services.js';
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
@@ -8,10 +7,9 @@ import { TaskError, type TaskExecutionContext } from '../../platform/jobs/tasks.
 import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
 import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
-import type { FileReferenceService } from '../../platform/resources/files.js';
 import { ALGORITHM_CONTRACT_VERSION, ALGORITHM_RUNTIME, type AlgorithmCatalogView } from './algorithm-types.js';
-import { basicAlgorithmToolContract, bdSessionToolContract } from './basic-algorithm-tool-contract.js';
-import { UNIFIED_POLARS_RUNTIME } from './unified-polars-execution.js';
+import { basicAlgorithmToolContract, bdSessionToolContract, BD_SESSION_TOOL_CONTRACT_VERSION } from './basic-algorithm-tool-contract.js';
+import { ALGORITHM_REGISTRY_VERSION } from './algorithm-registry.js';
 import { productionModuleDirectory, processingSessionContract } from '../collection/production-module-ports.js';
 
 const ACTIONS = new Set(['bd.session.capabilities', 'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status', 'data.modules.calculate']);
@@ -28,8 +26,9 @@ const view = (value: unknown): Record<string, JsonValue> => ({ kind: 'conversati
  * - publish 仅恢复原 WFD 写入身份；status 只读本分支原任务。
  */
 export class ConversationAlgorithmBridge {
+  readonly versionBinding = { algorithmRegistry: ALGORITHM_REGISTRY_VERSION, sessionTools: BD_SESSION_TOOL_CONTRACT_VERSION };
   readonly registrations: readonly SkillRegistration[];
-  constructor(private readonly options: { database: CoreDatabase; core: PersonalCore; companion: WorkspaceServices; files?: FileReferenceService;
+  constructor(private readonly options: { database: CoreDatabase; companion: WorkspaceServices;
     origin(taskId: string): ModelTaskOrigin | null;
  }) {
     options.database.migrate('conversation_algorithm_links', 1, `CREATE TABLE conversation_algorithm_links(
@@ -41,7 +40,7 @@ export class ConversationAlgorithmBridge {
         '固定算法无逐次业务审批；宿主执行器许可与方法版本仍需核实',
         '结构化计算结果由独立核对器检查，直接复用 R1 与 WFD 固定读回，不回到原报五步'],
       available: () => {
-        const calculationAvailable = !!options.companion.productionCalculation || !!options.companion.algorithms;
+        const calculationAvailable = !!options.companion.algorithms;
         const enabled = options.companion.productionModuleSwitches?.calculate !== false;
         const available = action === 'data.modules.calculate' || action === 'algorithms.calculate'
           ? calculationAvailable && enabled
@@ -55,7 +54,7 @@ export class ConversationAlgorithmBridge {
       registration('bd.session.capabilities', '查看 BD AGENTS 统一会话工具契约',
         '只读展示采集源、接口源、文件与基础算法的现有会话接口、边界和 WFD 输入要求；不启动采集、计算或发布。', []),
       registration('algorithms.contract', '读取基础算法统一接口契约',
-        '返回各算法独立 methodId（算法编号）、参数、输入字段、版本及可调用状态。观测均线是基础算法目录的一个预留独立方法，尚未完成 WFD-only 移植时标记 blocked（不可执行）；不会假称已运行。',
+        '返回各算法独立 methodId（算法编号）、参数、输入字段、版本及可调用状态。目录只保留固定 12/26/9 MACD；实际不可用时会明确报告原因。',
         [text('methodId', '指定算法编号，留空返回全部', 160, false)]),
       registration('algorithms.capabilities', '发现本机基础算法与真实数据能力',
         '只读列出固定基础算法、WFD 固定快照输入和当前执行能力。新计算只走 AGENTS 工具，结果由独立核对器直接提交 WFD，无须沿原报五步加工。', []),
@@ -63,7 +62,7 @@ export class ConversationAlgorithmBridge {
         'calculationJson 由 BD AGENTS 按算法契约和真实 WFD 固定快照组装。固定算法直接计算，独立核对器检查数据身份、方法版本、行值和摘要，复用 R1 正式提交与 WFD 固定读回。无需人工算法执行或派生入库审批，也不走原报五步加工。', [
           text('calculationJson', '算法计算请求（模型从实际元数据组装）', 100_000),
         ]),
-      registration('data.modules.calculate', '并列计算模块（Polars / 按需 pandas）',
+      registration('data.modules.calculate', 'MACD 计算模块',
         '该入口是已有 algorithms.calculate 的受信别名，只接受登记公式和真实 WFD 固定引用，不允许用户指定执行器。结果保留原任务与 R1/WFD 发布身份。',
         [text('calculationJson', '算法计算请求，按固定WFD与方法契约组成', 100_000)]),
       registration('algorithms.publish', '按原算法任务恢复 WFD 派生结果发布',
@@ -82,21 +81,21 @@ export class ConversationAlgorithmBridge {
     const origin = this.options.origin(context.task.id);
     if (!origin) throw new TaskError('ALGORITHM_CONVERSATION_REQUIRED', '算法会话动作必须由本次真实会话代理调用。');
     const service = this.options.companion.algorithms;
-    if (!service && !this.options.companion.productionCalculation
+    if (!service
       && (action !== 'bd.session.capabilities' || !this.options.companion.processing))
       throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '计算模块未装配；不能伪造可执行算法。');
     // 直接模型动作必须先取得当前模型分享回执；否则 saveResultProof 会拒绝返回。
     const authority = await acquireAuthority(context, action, args, []);
     authority.assert(); this.options.companion.bd?.assertDispatch();
     if (action === 'bd.session.capabilities') {
-      const contract = bdSessionToolContract(this.modelCatalog(service, origin), this.options.companion.unifiedPolars?.capabilities());
+      const contract = bdSessionToolContract(this.modelCatalog(service, origin));
       const processing = this.options.companion.processing?.catalog();
       const cleaning = isWfdRecord(processing) && isWfdRecord(processing.cleaningEngine)
         ? processing.cleaningEngine : { status: 'not_configured', reason: '数据清洗服务未装配。' };
-      const calculation = this.options.companion.productionCalculation?.capabilities() ?? null;
+      const calculation = service ? basicAlgorithmToolContract(service.catalog()) : null;
       const modules = productionModuleDirectory({
         processing: this.options.companion.processing,
-        calculation: this.options.companion.productionCalculation,
+        algorithms: this.options.companion.algorithms,
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
         hasSourceProfiles: !!this.options.companion.sourceFieldProfiles,
         enabled: this.options.companion.productionModuleSwitches,
@@ -107,7 +106,7 @@ export class ConversationAlgorithmBridge {
           cleaning: { description: '原报解析与严格清洗；AGENTS每次执行一个步骤，读取反馈后再决定下一步',
             ...processingSessionContract(), engine: cleaning,
             source: '受管原件及冻结来源；不读取计算公式注册表' },
-          calculation: { description: '读取 WFD 固定数据，按登记方法执行 Polars 或受信 pandas 公式',
+          calculation: { description: '读取 WFD 固定数据，执行固定 12/26/9 MACD',
             discovery: 'algorithms.contract', execute: 'algorithms.calculate',
             publish: 'algorithms.publish', engine: calculation,
             source: 'WFD fixed snapshot; not original cleaning candidates' },
@@ -118,20 +117,17 @@ export class ConversationAlgorithmBridge {
     }
     if (action === 'algorithms.contract') {
       const methodId = typeof args.methodId === 'string' && args.methodId.trim() ? args.methodId.trim() : undefined;
-      const contract = basicAlgorithmToolContract(this.modelCatalog(service, origin), methodId, this.options.companion.unifiedPolars?.capabilities());
+      const contract = basicAlgorithmToolContract(this.modelCatalog(service, origin), methodId);
       authority.assert();
       return { summary: '已读取基础算法独立接口及真实可用状态；未采用或执行任何方法。', data: view(contract) };
     }
     if (action === 'algorithms.capabilities') {
-      const catalog = this.modelCatalog(service, origin), unified = this.options.companion.unifiedPolars?.capabilities();
+      const catalog = this.modelCatalog(service, origin);
       authority.assert();
-      return { summary: catalog.enabled || unified?.status === 'ready'
+      return { summary: catalog.enabled
         ? '已读取基础算法目录、固定代码版本与 WFD 快照能力；本动作只读，不创建计算。'
         : `算法运行条件尚未就绪（${catalog.reason ?? '执行器或 WFD 快照端口不可用'}）；本次仅返回目录。`,
-        data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog, undefined, unified).methods,
-          unifiedPolars: unified ? json(unified) : null,
-          productionCalculation: this.options.companion.productionCalculation
-            ? json(this.options.companion.productionCalculation.capabilities()) : null,
+        data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog).methods,
           database: json(catalog.inputs.fixedSnapshots), guidance: {
           humanInput: '用户说明 WFD 数据和目标算法，由模型读取真实快照与方法契约形成调用，无需人工逐次计算确认。',
           adoption: '人工采用仅为历史诊断，不决定当前计算资格；执行器或固定快照不可用时不得改走旧入口。',
@@ -146,11 +142,11 @@ export class ConversationAlgorithmBridge {
       catch { throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求不是有效JSON。'); }
       if (!isWfdRecord(calculation)) throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求必须是对象。');
       this.assertCalculationMaterials(calculation, origin);
-      const production = this.options.companion.productionCalculation;
-      if (!production) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE',
+      const publisher = this.options.companion.derivedPublisher;
+      if (!service || !publisher) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE',
         '计算模块未装配，不能把清洗管线当算法执行器。');
-      // 各方法按受信注册表选择 Polars / pandas；仍由唯一 TaskService 持有原任务。
-      const submitted = production.submit('conversation:algorithms:' + context.task.id, calculation);
+      // MACD 沿原 TaskService 执行，保留原任务与版本身份。
+      const submitted = service.submit('conversation:algorithms:' + context.task.id, calculation);
       const taskId = submitted.taskId;
       this.link(taskId, context.task.id, 'calculate', origin);
       await this.wait(context, taskId);
@@ -161,7 +157,7 @@ export class ConversationAlgorithmBridge {
           data: view(this.statusPayload(taskId)) };
       }
       // 算法与清洗分别执行，结果只共用生产核对门禁和原 R1/WFD 正式交接。
-      const publication = await production.publish(taskId, context.signal);
+      const publication = await publisher.publish(taskId, context.signal);
       authority.assert();
       return { summary: publication.published
         ? '生产管线固定计算、独立来源核对和 WFD 正式发布/固定读回已完成。'
@@ -171,12 +167,12 @@ export class ConversationAlgorithmBridge {
     const taskId = String(args.taskId ?? '');
     this.assertLink(taskId, origin);
     if (action === 'algorithms.publish') {
-      const production = this.options.companion.productionCalculation;
-      if (!production) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '计算结果的原 R1/WFD 发布适配器未装配。');
+      const publisher = this.options.companion.derivedPublisher;
+      if (!service || !publisher) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '计算结果的原 R1/WFD 发布适配器未装配。');
       const task = this.options.companion.tasks.get(taskId);
       if (task.status !== 'succeeded' || task.requiresReview)
         throw new TaskError('DERIVED_RESULT_NOT_READY', '原计算任务未完成，不重新计算或更换任务身份。');
-      const publication = await production.publish(taskId, context.signal);
+      const publication = await publisher.publish(taskId, context.signal);
       authority.assert();
       return { summary: publication.published ? '原生产计算结果已完成 WFD 正式读回。'
         : `原派生请求状态为 ${publication.state}，保留身份继续核对。`,
@@ -192,8 +188,7 @@ export class ConversationAlgorithmBridge {
   /** 代理只读取真实 WFD 固定快照目录；受管原件不再提供计算资格。 */
   private modelCatalog(service: WorkspaceServices['algorithms'], _origin: ModelTaskOrigin): AlgorithmCatalogView {
     if (service) return service.catalog();
-    // Polars 是可独立装配的生产计算引擎，不能被旧 Python 算法采用状态阻断。
-    const reason = '原 Python 算法服务未装配；固定公式以数据生产方法表的实际能力为准。';
+    const reason = 'MACD 计算服务未装配。';
     const fixed = !!this.options.companion.r1Workspace?.capabilities().connection;
     return {
       contractVersion: ALGORITHM_CONTRACT_VERSION, runtime: ALGORITHM_RUNTIME,
@@ -210,7 +205,7 @@ export class ConversationAlgorithmBridge {
         fixedSnapshots: { status: fixed ? 'available' : 'unavailable',
           reason: fixed ? null : '受信 WFD 固定读取尚未装配。',
           contract: { contract: 'wfd.data-service/v1', required: 'snapshotId,productId,recordVersion' } },
-      }, limitations: ['不提供旧 Python 算法服务时，仍可使用已装配的 Polars 固定公式。'],
+      }, limitations: ['MACD 执行器未装配时不提供其他算法或备用执行路径。'],
     };
   }
 
@@ -223,21 +218,7 @@ export class ConversationAlgorithmBridge {
 
   private statusPayload(taskId: string) {
     const task = this.options.companion.tasks.get(taskId);
-    if (task.runtimeId === UNIFIED_POLARS_RUNTIME) {
-      const structured = this.options.companion.unifiedPolars;
-      if (!structured) throw new TaskError('UNIFIED_POLARS_UNAVAILABLE', '原计算执行器已下线；不能伪造结果。');
-      const value = structured.view(taskId), result = value.result;
-      return { taskId: value.taskId, requestId: value.requestId, methodId: value.methodId,
-        status: value.status, taskVersion: value.taskVersion, requiresReview: value.requiresReview,
-        createdAt: value.createdAt, updatedAt: value.updatedAt, error: value.error,
-        publication: value.publication, guidance: value.guidance,
-        result: result ? { taskId: result.taskId, methodId: result.methodId,
-          methodVersion: result.methodVersion, implementationVersion: result.implementationVersion,
-          version: result.version, source: result.source, candidateSha256: result.candidateSha256,
-          inputDigest: result.inputDigest, computedAt: result.computedAt, publication: result.publication,
-          rowCount: result.rows.length, rows: result.rows.slice(0, 8),
-          rowsOmitted: Math.max(0, result.rows.length - 8) } : null };
-    }
+    if (task.runtimeId !== ALGORITHM_RUNTIME) throw new TaskError('ALGORITHM_TASK_ID', '不是当前 MACD 执行器的原任务。');
     const value = this.options.companion.algorithms!.view(taskId);
     const result = value.result;
     return { taskId: value.taskId, requestId: value.requestId, methodId: value.methodId, status: value.status,

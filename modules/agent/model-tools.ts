@@ -26,10 +26,8 @@ import { skillResourceDigest } from './agent-skills.js';
 import { piTaskRequestId } from './runtime/pi-task-runtime.js';
 import type { BdService } from './service.js';
 import { mediaPluginCatalog, type MaterialMediaPluginDescriptor } from '../collection/materials/plugins.js';
-import type { ConversationFinancialBridge } from '../financial/conversation-bridge.js';
 import type { ConversationAlgorithmBridge } from '../financial/conversation-algorithms.js';
 import { BusinessGoalError, type BusinessGoalService } from '../../platform/jobs/business-goals.js';
-import { FINANCIAL_PUBLIC_CALL_SCHEMA } from '../financial/contracts.js';
 import { directImplementationVersion, guardDirectContext } from '../../platform/plugins/direct-versions.js';
 
 const MAX_RESULT_BYTES = 24_000;
@@ -57,7 +55,6 @@ const MODEL_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIO
   'image.ocr', 'audio.transcribe', 'archive.extract', 'spotlight.search', 'web.read_public', 'web.search', 'video.transcribe_url',
   'material.read', 'material.process', 'material.ocr', 'material.transcribe',
   'baidu.drive', 'browser.control',
-  'financial.list', 'financial.describe', 'financial.call', 'financial.result', 'financial.status',
   'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status', 'bd.session.capabilities',
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
   'data.modules.parse', 'data.modules.clean', 'data.modules.structure',
@@ -74,7 +71,6 @@ const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_A
   METADATA_ACTION, EVIDENCE_ACTION, 'file.read', 'file.glob', 'file.grep', 'file.write', 'file.copy', 'file.compare',
   'media.convert', 'pdf.extract', 'image.ocr', 'audio.transcribe', 'archive.extract', 'spotlight.search',
   'web.read_public', 'web.search', 'video.transcribe_url', 'material.read', 'material.process', 'material.ocr', 'material.transcribe',
-  'financial.list', 'financial.describe', 'financial.result', 'financial.status',
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
   'data.modules.parse', 'data.modules.clean', 'data.modules.structure',
   'data.modules.annotate', 'data.modules.check', 'data.modules.calculate',
@@ -187,7 +183,6 @@ export interface CoreModelToolOptions {
   getTaskForRun?: (chatRunId: string) => TaskRecord | null;
   budgetTaskForInput?: (input: Readonly<BackendInput>) => TaskRecord | null;
   service?: BdService;
-  conversationFinancial?: ConversationFinancialBridge;
   conversationAlgorithms?: ConversationAlgorithmBridge;
   businessGoals?: BusinessGoalService;
   now?: () => number;
@@ -563,22 +558,6 @@ export class CoreModelTools {
         executionMode: 'sequential' as const,
         execute: (id: string, args: unknown, signal?: AbortSignal) => this.executeServiceTool(factory, id, 'collection_run', args, signal),
       }] : []),
-      ...(this.options.service?.toolNames.includes('tools_list') ? [
-        { name: 'tools_list', label: '发现金融工具', description: '列出当前启用的金融能力及固定版本；实际计算前应读取方法契约。',
-          parameters: Type.Object({}, { additionalProperties: false }), executionMode: 'sequential' as const,
-          execute: (id: string, args: unknown, signal?: AbortSignal) => this.executeServiceTool(factory, id, 'tools_list', args, signal) },
-        { name: 'tools_describe', label: '读取金融方法契约', description: '按能力编号读取参数、单位、时间、预热和固定版本要求。未知语义不可补猜。',
-          parameters: Type.Object({ capabilityId: Type.String() }, { additionalProperties: false }), executionMode: 'sequential' as const,
-          execute: (id: string, args: unknown, signal?: AbortSignal) => this.executeServiceTool(factory, id, 'tools_describe', args, signal) },
-        { name: 'tools_call', label: '执行已登记金融方法', description: '依已读取的契约和固定版本计算用户明确给定的直接数据或受信宿主固定快照。输入结构以tools_describe为准；不得执行上传代码，不得猜补字段。结果只计算，不正式入库。',
-          parameters: Type.Union([Type.Object({ capabilityId: Type.String(), pluginVersion: Type.String(), methodVersion: Type.String(), implementationVersion: Type.String(),
-            input: Type.Object({}, { additionalProperties: true }), parameters: Type.Object({}, { additionalProperties: true }) }, { additionalProperties: false }),
-            FINANCIAL_PUBLIC_CALL_SCHEMA as never]), executionMode: 'sequential' as const,
-          execute: (id: string, args: unknown, signal?: AbortSignal) => this.executeServiceTool(factory, id, 'tools_call', args, signal) },
-        { name: 'plugins_status', label: '查询金融插件状态', description: '查询当前金融插件启用状态与版本；开关由本机操作者控制。',
-          parameters: Type.Object({}, { additionalProperties: false }), executionMode: 'sequential' as const,
-          execute: (id: string, args: unknown, signal?: AbortSignal) => this.executeServiceTool(factory, id, 'plugins_status', args, signal) },
-      ] : []),
     ];
   }
 
@@ -1147,8 +1126,7 @@ export class CoreModelTools {
       if (!call) return await runtime.execute(context);
       if (call.tool_name !== 'perform_action') throw publicError('MODEL_ACTION_FAILED');
       const controlled = this.controlledContext(context, call);
-      const result = this.options.conversationFinancial?.handles(context.task.action)
-        ? await this.options.conversationFinancial.execute(controlled) : this.options.conversationAlgorithms?.handles(context.task.action)
+      const result = this.options.conversationAlgorithms?.handles(context.task.action)
             ? await this.options.conversationAlgorithms.execute(controlled) : await runtime.execute(controlled);
       this.saveResultProof(context, call, result);
       return result;
@@ -1435,9 +1413,6 @@ export class CoreModelTools {
   private reserve(input: Readonly<BackendInput>, toolCallId: string, name: string, action: string, args: JsonValue, digest: string, model: ModelBinding, modelDigest: string): CallRow {
     return this.options.database.transaction(() => {
       this.assertParent(input);
-      if (action === 'financial.call' && this.options.conversationFinancial?.hasUnresolvedCall(input.conversationId, args)) {
-        throw publicError('MODEL_ACTION_REQUIRES_REVIEW');
-      }
       const previous = this.db.prepare('SELECT * FROM model_tool_calls WHERE parent_run_id=? AND parent_generation=? AND tool_call_id=?')
         .get(input.runId, input.generation, toolCallId) as unknown as CallRow | undefined;
       if (previous) {
@@ -1749,7 +1724,7 @@ export class CoreModelTools {
         : source.status === 'partial' ? '原件转换部分完成，须核对未确认项。' : '原件转换失败，已保留来源和失败原因。';
       return this.pagePreview(call, { ok: true, taskId: task.id, action: call.action, summary, data, artifactIds: task.result.artifactIds ?? [] });
     }
-    if (call.action.startsWith('data.processing.') || call.action.startsWith('data.modules.') || call.action.startsWith('data.adapters.') || call.action.startsWith('data.r1.') || call.action === 'data.wfd.query' || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(call.action) || call.action === 'material.read' || call.action === 'material.process' || call.action === 'material.transcribe' || call.action === 'baidu.drive' || call.action === 'browser.control' || call.action === 'web.read_public' || call.action === 'web.search' || this.options.conversationFinancial?.handles(call.action) || this.options.conversationAlgorithms?.handles(call.action)) {
+    if (call.action.startsWith('data.processing.') || call.action.startsWith('data.modules.') || call.action.startsWith('data.adapters.') || call.action.startsWith('data.r1.') || call.action === 'data.wfd.query' || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(call.action) || call.action === 'material.read' || call.action === 'material.process' || call.action === 'material.transcribe' || call.action === 'baidu.drive' || call.action === 'browser.control' || call.action === 'web.read_public' || call.action === 'web.search' || this.options.conversationAlgorithms?.handles(call.action)) {
       // The closed host bridge constructs this bounded projection; no arbitrary result body is shared.
       if (!isObject(source.modelPreview)) throw publicError('MODEL_ACTION_FAILED');
       const { localPersistence: _untrustedPersistence, ...modelPreview } = source.modelPreview as Record<string, JsonValue>;
@@ -1885,7 +1860,7 @@ export class CoreModelTools {
 
 export function createCoreModelTools(options: CoreModelToolOptions): CoreModelTools { return new CoreModelTools(options); }
 function serviceAction(name: string): string {
-  const action = ({ runtime_status: 'runtime.status', jobs_get: 'jobs.get', test_echo: 'test.echo', collection_run: 'collection.run', tools_list: 'tools.list', tools_describe: 'tools.describe', tools_call: 'tools.call', plugins_status: 'plugins.status' } as Record<string, string>)[name];
+  const action = ({ runtime_status: 'runtime.status', jobs_get: 'jobs.get', test_echo: 'test.echo', collection_run: 'collection.run' } as Record<string, string>)[name];
   if (!action) throw publicError('MODEL_ACTION_NOT_ALLOWED');
   return action;
 }

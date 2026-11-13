@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { TaskExecutionContext } from '../../platform/jobs/tasks.js';
@@ -21,7 +21,7 @@ test('independent Polars cleaner executes strict declared columns and returns id
     try {
       const binding = join(fixture.runtime, 'config/machine.bindings.json');
       const configuration = JSON.parse(readFileSync(binding, 'utf8'));
-      configuration.resources.polars_python = { kind: 'program', path: realpathSync(python!) };
+      configuration.resources.polars_python = { kind: 'program', path: python! };
       configuration.revision++;
       writeFileSync(binding, JSON.stringify(configuration, null, 2));
       const cleaner = new PolarsSourceCleaner(new ProcessRuntime(new ResourceBindings(fixture.runtime)));
@@ -54,7 +54,7 @@ test('strict Polars declared schema conversion preserves exact decimals and reje
     try {
       const binding = join(fixture.runtime, 'config/machine.bindings.json');
       const configuration = JSON.parse(readFileSync(binding, 'utf8'));
-      configuration.resources.polars_python = { kind: 'program', path: realpathSync(python!) };
+      configuration.resources.polars_python = { kind: 'program', path: python! };
       configuration.revision++;
       writeFileSync(binding, JSON.stringify(configuration, null, 2));
       const cleaner = new PolarsSourceCleaner(new ProcessRuntime(new ResourceBindings(fixture.runtime)));

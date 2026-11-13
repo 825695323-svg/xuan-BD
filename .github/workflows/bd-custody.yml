@@ -60,7 +60,6 @@ jobs:
             modules/collection/archify-wiring-regression.test.ts \
             modules/collection/cloud-custody.test.ts \
             modules/collection/baidu-drive-copy.test.ts \
-            modules/collection/cloud-algorithm-evidence.test.ts \
             apps/server/artifact-wiring-full-chain.test.ts \
             apps/server/cloud-custody.test.ts \
             apps/server/cloud-evidence.test.ts

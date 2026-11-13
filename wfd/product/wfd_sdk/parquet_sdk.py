@@ -206,14 +206,19 @@ class WFDParquetPrototype:
             if os.path.exists(tmp):os.unlink(tmp)
 
     def _valid_snapshots(self):
+        from .indexed_bulk import SNAPSHOT_PREFIXES
         result=[]
         for p in (self.root/'catalog/commits').glob('*.json'):
             try:
                 marker=json.loads(p.read_text('utf-8'))
+                if str(marker.get('snapshot_file', '')).startswith(SNAPSHOT_PREFIXES):
+                    raise RuntimeError('SOURCE_MINUTE_SNAPSHOT_OPERATION_UNSUPPORTED')
                 snap=self.root/marker['snapshot_file']
                 sb=snap.read_bytes()
                 if sha(sb)!=marker['snapshot_sha256']:continue
                 d=json.loads(sb)
+                if d.get('source_minute_root') is not None or d.get('tabular_root') is not None:
+                    raise RuntimeError('SOURCE_MINUTE_SNAPSHOT_OPERATION_UNSUPPORTED')
                 manifest_bytes=(self.root/d['manifest_relpath']).read_bytes()
                 if sha(manifest_bytes)!=d['manifest_sha256']:continue
                 manifest=json.loads(manifest_bytes)

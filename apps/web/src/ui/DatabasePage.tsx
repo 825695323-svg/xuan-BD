@@ -8,11 +8,9 @@ import { ErrorNote, Modal, SelectMenu, errorDetail, useWords } from './Controls'
 import { R1Panel } from './R1Panel';
 import { PageButton, PageEmpty, PageHeading, PageSearch } from './PageUI';
 import { taskStateLabels, taskStateText } from './TaskResults';
-import type { AlgorithmEntryFocus } from './algorithm-catalog';
 
 export interface DatabasePageProps {
   onBringToConversation(text: string, attachments?: ConversationAttachmentRef[]): void | Promise<void>;
-  algorithmFocus?: AlgorithmEntryFocus | null;
 }
 type Section = 'r1' | 'files' | 'materials' | 'jobs';
 type JobView = BdJob & { title?: string; progress?: { message: string; fraction: number | null; timestamp: string } | null; blockedReason?: string | null; createdAt?: number; approvalId?: string | null };
@@ -50,10 +48,9 @@ const materialProcessingLabel = (state: string, words: (zh: string, en: string) 
   return item ? words(item[0], item[1]) : words('状态待核', 'Status unconfirmed');
 };
 /** 数据库页只显示既有服务事实；连接核对、候选动作和固定读回都由用户明确触发。 */
-export function DatabasePage({ onBringToConversation, algorithmFocus = null }: DatabasePageProps) {
+export function DatabasePage({ onBringToConversation }: DatabasePageProps) {
   const words = useWords();
   const [section, setSection] = useState<Section>('r1');
-  useEffect(() => { if (algorithmFocus) setSection('r1'); }, [algorithmFocus]);
   const nav: Array<{ id: Section; label: string; icon: ReactNode }> = [
     { id: 'r1', label: words('R1 结构化交接', 'R1 structured handoff'), icon: <GitBranch size={16} /> },
     { id: 'files', label: words('原件与产物', 'Files and outputs'), icon: <FileText size={16} /> },
@@ -66,7 +63,7 @@ export function DatabasePage({ onBringToConversation, algorithmFocus = null }: D
         onClick={() => setSection(item.id)}><span className="database-nav-label">{item.icon}{item.label}</span><span className="data-nav-dot" aria-hidden="true" /></button>)}
     </aside>
     <section className="data-panel database-panel" aria-label={words('数据库', 'Database')}>
-      {section === 'r1' && <R1Panel algorithmFocus={algorithmFocus} />}
+      {section === 'r1' && <R1Panel />}
       {section === 'files' && <FileList />}
       {section === 'materials' && <MaterialList />}
       {section === 'jobs' && <JobList />}

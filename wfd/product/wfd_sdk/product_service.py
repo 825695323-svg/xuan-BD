@@ -45,6 +45,10 @@ _UNPROVIDED_COVERAGE_BASE = object()
 CURRENT_ONLY_BUSINESS = "current_only_business"
 
 
+def append_revision_id(product_id, row, mode, previous_id, fingerprint, output_key):
+    return "r_" + sha(canonical([product_id, row, mode, previous_id, fingerprint, output_key]))[:32]
+
+
 def current_only_business(declaration):
     context = (declaration or {}).get("semantic_context") or {}
     return (context.get("version_axis") or {}).get("revision_mode") == CURRENT_ONLY_BUSINESS
@@ -1247,7 +1251,8 @@ class WFDProductService:
 
         def add_version(row, logical, previous, revision_mode, withdrawn=False, reason=None):
             previous_id = previous["record_ref"]["revision_id"] if previous else None
-            revision_id = "r_" + sha(canonical([product["product_id"], row, revision_mode, previous_id, fingerprint, out["output_key"]]))[:32]
+            revision_id = append_revision_id(product["product_id"], row, revision_mode,
+                                             previous_id, fingerprint, out["output_key"])
             physical_key = "revision_" + revision_id if previous_id or withdrawn else logical
             row[key_field] = physical_key
             versions[physical_key] = {"logical_key": logical, "revision_id": revision_id,

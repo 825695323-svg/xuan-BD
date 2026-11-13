@@ -22,6 +22,7 @@ from .product_data_service import (
     DATA_ONLY_MODES, DATA_ONLY_PROTOCOL, FORBIDDEN_EXTERNAL_KEYS,
 )
 from .writerlock import writer_lock
+from . import indexed_bulk as bulk
 
 
 BATCH_FORMAT = "wfd.product-batch/0.1"
@@ -390,9 +391,174 @@ class ProductBatchLedger:
         record["last_attempt"] = {"at": _now(), "errors": copy.deepcopy(errors)}
         record["updated_at"] = _now()
 
+    def _bulk_record(self, batch_id):
+        record = self._read_json(self._record_path(batch_id))
+        return record if record and record.get("format_version") in bulk.PROTOCOLS else None
+
+    def _bulk_status(self, record, offset=0, limit=None):
+        if not self._owner_ok(record):
+            raise BatchPermission("BATCH_PERMISSION_DENIED:owner")
+        if record["binding"] != self.service.binding.to_dict():
+            raise BatchConflict("BULK_VOLUME_BINDING_CHANGED")
+        declarations = record["expected_chunks"]
+        received = record["received"]
+        limit = 50 if limit is None else limit
+        page = declarations[offset:offset + limit]
+        return {"protocol_version": record["format_version"], "batch_id": record["batch_id"],
+                "phase": record["phase"], "expected_chunks": len(declarations),
+                "received_chunks": len(received), "chunk_offset": offset,
+                "chunks": [{**item, "received": str(item["ordinal"]) in received} for item in page],
+                "next_chunk_offset": offset + len(page) if offset + len(page) < len(declarations) else None,
+                **({"staging_cleanup_required": not record.get("staging_released", False)}
+                   if record["phase"] == "finalized" else {}),
+                **(record.get("result") or {})}
+
+    def _begin_indexed_bulk(self, batch_id, header, expected):
+        if not callable(getattr(type(self.service), "submit_bulk_batch", None)):
+            raise BatchError("BULK_VOLUME_REQUIRED")
+        bulk.validate_header(batch_id, header, expected)
+        self._check_namespace(header)
+        self._scan_forbidden(header)
+        with writer_lock(self.root):
+            prior = self._read_json(self._record_path(batch_id))
+            if prior is not None:
+                if (prior.get("format_version") != header["protocol_version"]
+                        or prior.get("header") != header or prior.get("expected_chunks") != expected):
+                    raise BatchConflict("BATCH_ID_CONFLICT")
+                return self._bulk_status(prior)
+            record = {"format_version": header["protocol_version"], "batch_id": batch_id,
+                      "binding": self.service.binding.to_dict(),
+                      "owner_caller_id": self.owner_id, "header": header, "expected_chunks": expected,
+                      "received": {}, "staged_bytes": 0, "phase": "collecting"}
+            self._atomic_json(self._record_path(batch_id), record)
+            return self._bulk_status(record)
+
+    def _bulk_chunk_path(self, batch_id, ordinal):
+        return self._record_path(batch_id).parent / (self._key(batch_id) + "-chunks") / f"{ordinal}.json"
+
+    def _put_indexed_bulk(self, batch_id, output_key, chunk_id, rows, digest):
+        from .volume_publication import _atomic_write
+
+        with writer_lock(self.root):
+            record = self._bulk_record(batch_id)
+            self._bulk_status(record)
+            self._check_namespace(record["header"])
+            item = next((item for item in record["expected_chunks"] if item["chunk_id"] == chunk_id), None)
+            if item is None or output_key != record["header"]["outputs"][0]["output_key"]:
+                raise BatchError("BATCH_CHUNK_UNEXPECTED")
+            if digest != item["digest"]:
+                raise BatchChunkConflict("BATCH_CHUNK_DIGEST_MISMATCH")
+            raw = bulk.cell_matrix(rows, item, len(record["header"]["field_codes"]))
+            ordinal = str(item["ordinal"])
+            path = self._bulk_chunk_path(batch_id, item["ordinal"])
+            if path.is_symlink() or path.parent.is_symlink():
+                raise BatchError("BULK_PATH_SYMLINK")
+            if ordinal in record["received"]:
+                if record["phase"] == "finalized" and not path.exists() and not path.is_symlink():
+                    return self._bulk_status(record)
+                if not path.is_file() or path.stat().st_size != len(raw) or path.read_bytes() != raw:
+                    raise BatchChunkConflict("BATCH_CHUNK_CONFLICT")
+                return self._bulk_status(record)
+            if record["phase"] not in {"collecting", "ready"}:
+                raise BatchError("BATCH_NOT_COLLECTING")
+            if record["staged_bytes"] + len(raw) > bulk.MAX_STAGED_BYTES:
+                raise BatchLimit("BATCH_LIMIT_EXCEEDED:indexed bulk staged bytes")
+            if path.exists():
+                if not path.is_file() or path.stat().st_size != len(raw) or path.read_bytes() != raw:
+                    raise BatchChunkConflict("BATCH_CHUNK_CONFLICT")
+            else:
+                _atomic_write(path, raw)
+            record["received"][ordinal] = len(raw)
+            record["staged_bytes"] += len(raw)
+            if len(record["received"]) == len(record["expected_chunks"]):
+                record["phase"] = "ready"
+            self._atomic_json(self._record_path(batch_id), record)
+            return self._bulk_status(record)
+
+    def _finalize_indexed_bulk(self, batch_id):
+        with writer_lock(self.root):
+            record = self._bulk_record(batch_id)
+            status = self._bulk_status(record)
+            self._check_namespace(record["header"])
+            self.service.require_permission("publish")
+            if len(record["received"]) != len(record["expected_chunks"]):
+                raise BatchIncomplete(status)
+            if record["phase"] in {"finalized", "rejected"}:
+                if record["phase"] == "finalized":
+                    self._finish_bulk_stage(record)
+                    status = self._bulk_status(record)
+                return {**status, "idempotent_replay": True}
+            if record["phase"] in {"finalizing", "submit_unknown"}:
+                proof = self.service.reconcile_bulk_batch(record["header"], for_finalize=True)
+                if proof.get("phase") in {"finalized", "rejected"}:
+                    record["result"] = {key: value for key, value in proof.items()
+                                        if key not in {"phase", "activation_state", "recovery_required"}}
+                    record["phase"] = proof["phase"]
+                    self._atomic_json(self._record_path(batch_id), record)
+                    if record["phase"] == "finalized":
+                        self._finish_bulk_stage(record)
+                    return {**self._bulk_status(record), "idempotent_replay": True}
+            record["phase"] = "finalizing"
+            self._atomic_json(self._record_path(batch_id), record)
+
+            def chunks():
+                for item in record["expected_chunks"]:
+                    path = self._bulk_chunk_path(batch_id, item["ordinal"])
+                    if path.is_symlink() or path.parent.is_symlink() or not path.is_file():
+                        raise BatchError("BULK_CHUNK_MISSING")
+                    with path.open("rb") as stream:
+                        raw = stream.read(bulk.MAX_CHUNK_BYTES + 1)
+                    if len(raw) > bulk.MAX_CHUNK_BYTES:
+                        raise BatchLimit("BATCH_LIMIT_EXCEEDED:indexed bulk chunk bytes")
+                    rows = json.loads(raw)
+                    if bulk.cell_matrix(rows, item, len(record["header"]["field_codes"])) != raw:
+                        raise BatchError("BULK_CHUNK_DIGEST_MISMATCH")
+                    yield rows
+
+            try:
+                result = self.service.submit_bulk_batch(record["header"], chunks())
+            except (ValueError, BatchError) as exc:
+                result = {"state": "rejected", "errors": [{"code": str(exc).split(":", 1)[0], "message": str(exc)}]}
+            record["result"] = result
+            record["phase"] = {"published_formal": "finalized", "unchanged": "finalized",
+                               "rejected": "rejected", "conflicts_pending": "rejected"}.get(result["state"], "submit_unknown")
+            self._atomic_json(self._record_path(batch_id), record)
+            if record["phase"] == "finalized":
+                self._finish_bulk_stage(record)
+            return self._bulk_status(record)
+
+    def _finish_bulk_stage(self, record):
+        if not record.get("staging_released", False):
+            self._release_bulk_stage(record)
+            record["staging_released"] = True
+            self._atomic_json(self._record_path(record["batch_id"]), record)
+
+    def _release_bulk_stage(self, record):
+        batch_id = record["batch_id"]
+        for item in record["expected_chunks"]:
+            path = self._bulk_chunk_path(batch_id, item["ordinal"])
+            if path.parent.is_symlink():
+                raise BatchError("BULK_PATH_SYMLINK")
+            path.unlink(missing_ok=True)
+        directory = self._bulk_chunk_path(batch_id, 0).parent
+        if directory.is_dir():
+            directory.rmdir()
+        self.service.release_bulk_prep(record["header"]["request_identity"], record["format_version"])
+
+    def read_source_minute_page(self, **arguments):
+        return self.read_bulk_page(**arguments)
+
+    def read_bulk_page(self, **arguments):
+        self._require_read()
+        if not callable(getattr(type(self.service), "read_bulk_page", None)):
+            raise BatchError("BULK_VOLUME_REQUIRED")
+        return self.service.read_bulk_page(**arguments)
+
     # -- public interface ------------------------------------------------
     def begin(self, batch_id, *, header, expected_chunks):
         self._require_write()
+        if isinstance(header, dict) and header.get("protocol_version") in bulk.PROTOCOLS:
+            return self._begin_indexed_bulk(batch_id, header, expected_chunks)
         if not isinstance(batch_id, str) or not batch_id:
             raise BatchError("BATCH_ID_REQUIRED")
         keys, pairs = self._validate_header(batch_id, header, expected_chunks)
@@ -460,6 +626,8 @@ class ProductBatchLedger:
 
     def put_chunk(self, batch_id, *, output_key, chunk_id, rows, digest=None):
         self._require_write()
+        if self._bulk_record(batch_id) is not None:
+            return self._put_indexed_bulk(batch_id, output_key, chunk_id, rows, digest)
         if not isinstance(rows, list) or not rows or any(not isinstance(row, dict) for row in rows):
             raise BatchError("BATCH_CHUNK_ROWS_INVALID")
         if self.data_only:
@@ -514,6 +682,15 @@ class ProductBatchLedger:
 
     def status(self, batch_id, *, chunk_offset=0, chunk_limit=None):
         self._require_read()
+        record = self._bulk_record(batch_id)
+        if record is not None:
+            status = self._bulk_status(record, chunk_offset, chunk_limit)
+            if record["phase"] in {"finalizing", "submit_unknown"}:
+                proof = self.service.reconcile_bulk_batch(record["header"])
+                if proof.get("phase") == "finalized":
+                    proof["staging_cleanup_required"] = True
+                return {**status, **proof}
+            return status
         record = self._read_json(self._record_path(batch_id))
         if record is None:
             return {"format_version": BATCH_FORMAT, "batch_id": batch_id,
@@ -652,6 +829,8 @@ class ProductBatchLedger:
 
     def finalize(self, batch_id):
         self._require_write()
+        if self._bulk_record(batch_id) is not None:
+            return self._finalize_indexed_bulk(batch_id)
         with writer_lock(self.root):
             record = self._read_json(self._record_path(batch_id))
             if record is None:

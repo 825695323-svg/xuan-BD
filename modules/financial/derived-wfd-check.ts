@@ -3,7 +3,6 @@ import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../
 import { ALGORITHM_METHODS, type AlgorithmComputedResult, type AlgorithmData } from './algorithm-types.js';
 import { buildStructuredIngestDocument, type R1StructuredRequest, type R1SourceRef } from '../collection/r1-structured-handoff.js';
 
-export const DERIVED_WFD_CHECK_VERSION = 'bd.derived-wfd-check/1';
 export interface DerivedWfdBinding {
   namespace: string;
   mode: 'production' | 'user_test';
@@ -31,9 +30,9 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     fail('DERIVED_SYNTHETIC_FORBIDDEN', '合成测试算法结果不能进入正式 WFD。');
   if (result.eligibility?.input.status !== 'eligible')
     fail('DERIVED_INPUT_INELIGIBLE', '原 WFD 快照输入尚未通过实际用途资格，不允许把计算结果作为正式派生数据。');
-  if (!Object.hasOwn(ALGORITHM_METHODS, result.methodId))
+  if (result.methodId !== 'macd')
     fail('DERIVED_METHOD_UNKNOWN', '原结果的算法未登记为可执行固定方法。');
-  const method = ALGORITHM_METHODS[result.methodId];
+  const method = ALGORITHM_METHODS.macd;
   if (result.methodVersion !== method.version)
     fail('DERIVED_METHOD_CHANGED', '结果方法版本与当前固定算法定义不一致，不能改用新公式冒充旧结果。');
   const src = isWfdRecord(result.source) ? result.source : null;
@@ -63,7 +62,7 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
   const column = String(mapped.close ?? '');
   const sourceField = (verifiedFields.definitions as unknown[]).find(item => isWfdRecord(item) && item.field_code === column);
   const priceUnit = isWfdRecord(sourceField) && typeof sourceField.unit_code === 'string' ? sourceField.unit_code : '';
-  if (result.methodId !== 'bullish_engulfing' && !priceUnit)
+  if (!priceUnit)
     fail('DERIVED_UNIT_UNKNOWN', 'WFD 原字段没有正式单位定义，不能推定派生数值单位。');
   if (result.metadata.frequency !== '1d' || !result.metadata.timezone)
     fail('DERIVED_TIME_UNSUPPORTED', '当前固定算法派生入库仅接受有明确时区的日频观测。');
@@ -97,18 +96,10 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     const values: WfdRecord = {};
     for (const code of outputFields) {
       if (!Object.hasOwn(data, code)) fail('DERIVED_OUTPUT_FIELD_MISSING', `第 ${i+1} 条缺少算法输出 ${code}。`);
-      const value = data[code], booleanField = code === 'bullish_engulfing';
-      if (value === null) {
-        values[code] = { data_type: booleanField ? 'boolean' : 'decimal',
-          value_state: 'insufficient_warmup', value: null };
-      } else if (booleanField) {
-        if (typeof value !== 'boolean') fail('DERIVED_OUTPUT_TYPE', `第 ${i+1} 条 ${code} 不是布尔结果。`);
-        values[code] = { data_type: 'boolean', value_state: 'valid_value', value };
-      } else {
-        if (typeof value !== 'number' || !Number.isFinite(value) || !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(String(value)))
-          fail('DERIVED_OUTPUT_TYPE', `第 ${i+1} 条 ${code} 不是无损可写入的十进制数。`);
-        values[code] = { data_type: 'decimal', value_state: 'valid_value', value: String(value) };
-      }
+      const value = data[code];
+      if (typeof value !== 'number' || !Number.isFinite(value) || !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(String(value)))
+        fail('DERIVED_OUTPUT_TYPE', `第 ${i+1} 条 ${code} 不是无损可写入的十进制数。`);
+      values[code] = { data_type: 'decimal', value_state: 'valid_value', value: String(value) };
     }
     rows.push({ business_key: 'derived:' + wfdSha256(canonicalWfdJson({
       key: validObserved.business_key, method: result.methodId, parameters: result.parameters })).slice(0, 48),
@@ -125,11 +116,7 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     parameters: result.parameters,
   }));
   const derivedCode = 'bd.derived.' + result.methodId + '.' + scopeIdentity.slice(0, 16);
-  const math = result.methodId === 'ma'
-    ? 'MA[t] = sum(close[t-N+1..t]) / N; full observation window only'
-    : result.methodId === 'macd'
-      ? 'DIFF = EMA12(close) - EMA26(close); DEA = EMA9(DIFF); MACD = 2*(DIFF-DEA)'
-      : 'previous close < previous open; current close > current open; strict body engulfing';
+  const math = 'DIFF = EMA12(close) - EMA26(close); DEA = EMA9(DIFF); MACD = 2*(DIFF-DEA)';
   const constants = Object.fromEntries(Object.entries(
     isWfdRecord(result.parameters) ? result.parameters : {}).filter(([,v]) =>
     typeof v === 'number' || typeof v === 'boolean' || v === null));
@@ -138,8 +125,8 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     measurement_nature: 'derived', unit_code: 'per_field',
     definition_authority: binding.namespace, time_role: 'observation',
     field_definitions: outputFields.map(field => ({ field_code: field,
-      data_type: field === 'bullish_engulfing' ? 'boolean' : 'decimal',
-      unit_code: field === 'bullish_engulfing' ? 'boolean' : priceUnit,
+      data_type: 'decimal',
+      unit_code: priceUnit,
       measurement_nature: 'derived', time_role: 'observation' })),
     semantic_context: { version: 'wfd.semantic-context/1.0',
       content_nature: 'deterministic_derived',
@@ -164,8 +151,6 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
       basis: 'BD 已核实固定算法来源、实际 WFD 读回、原任务结果及本次派生发布边界。' },
     sha256: originalSha256, bytes: original.length,
   };
-  const version = wfdSha256(canonicalWfdJson({ inputDigest: result.inputDigest,
-    sourceProduct: verifiedSrc.productId, sourceSnapshot: verifiedSrc.snapshotId, method: result.methodId }));
   const structured: R1StructuredRequest = {
     datasetId: 'bd.derived.' + wfdSha256(String(verifiedSrc.productId)).slice(0,24),
     namespace: binding.namespace, producerNamespace: binding.namespace,
@@ -175,7 +160,7 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     subject: productSubject as WfdRecord, definition, inputMode: 'partial_observation',
     coverage: { scope: { input_product: verifiedSrc.productId, input_snapshot: verifiedSrc.snapshotId,
       range_start: result.metadata.window_start, range_end: result.metadata.window_end },
-      basis: 'fixed_wfd_derived_check:' + DERIVED_WFD_CHECK_VERSION + ':' + version.slice(0,16),
+      basis: 'observed_partial',
       completeness: 'partial', absence_means: 'unknown' },
     payload: { kind: 'tabular_rows', rows },
     duplicatePolicy: 'skip_identical_append',
@@ -194,58 +179,27 @@ function verifyAlgorithmNumbers(result: AlgorithmComputedResult, input: Algorith
   if (source.length !== rows.length || !source.length || input.metadata.series_id !== result.metadata.series_id
     || input.metadata.window_start !== result.metadata.window_start || input.metadata.window_end !== result.metadata.window_end)
     mismatch('固定输入与原算法持久结果的行数、序列或期间不一致。');
-  const same = (actual: unknown, expected: number | null) => expected === null ? actual === null
-    : typeof actual === 'number' && Number.isFinite(actual)
+  const same = (actual: unknown, expected: number) => typeof actual === 'number' && Number.isFinite(actual)
       && Math.abs(actual - expected) <= 1e-10 * Math.max(1, Math.abs(expected));
   const close = source.map((r, i) => {
     if (r.timestamp !== rows[i]?.timestamp || r.available_at !== rows[i]?.available_at
       || typeof r.close !== 'number' || !Number.isFinite(r.close)) mismatch(`第 ${i+1} 行固定输入、时间或收盘价格不同。`);
     return r.close;
   });
-  if (result.methodId === 'ma') {
-    const n = isWfdRecord(result.parameters) ? Number(result.parameters.period) : NaN;
-    if (!Number.isSafeInteger(n) || n < 1 || n > 10000) mismatch('均线参数不是固定的有效整数。');
-    for (let i = 0; i < rows.length; i++) {
-      let expected: number | null = null;
-      if (i >= n - 1) {
-        // Kahan compensated sum avoids misleading differences caused by naive summation order.
-        let sum = 0, carry = 0;
-        for (let j = i - n + 1; j <= i; j++) {
-          const y = close[j]! - carry, next = sum + y;
-          carry = (next - sum) - y; sum = next;
-        }
-        expected = sum / n;
-      }
-      if (!same(rows[i]!.MA, expected)) mismatch(`第 ${i+1} 行 MA 与独立窗口均值核算不一致。`);
+  const p = isWfdRecord(result.parameters) ? result.parameters : {};
+  if (p.short_period !== 12 || p.long_period !== 26 || p.signal_period !== 9 || p.init !== 'first_valid')
+    mismatch('MACD 参数不是固定 12/26/9 首值初始化。');
+  let short = close[0]!, long = close[0]!, dea = 0;
+  for (let i = 0; i < rows.length; i++) {
+    if (i) {
+      short = short + (close[i]! - short) * (2 / 13);
+      long = long + (close[i]! - long) * (2 / 27);
     }
-  } else if (result.methodId === 'macd') {
-    const p = isWfdRecord(result.parameters) ? result.parameters : {};
-    if (p.short_period !== 12 || p.long_period !== 26 || p.signal_period !== 9 || p.init !== 'first_valid')
-      mismatch('MACD 参数不是固定 12/26/9 首值初始化。');
-    let short = close[0]!, long = close[0]!, dea = 0;
-    for (let i = 0; i < rows.length; i++) {
-      if (i) {
-        short = short + (close[i]! - short) * (2 / 13);
-        long = long + (close[i]! - long) * (2 / 27);
-      }
-      const diff = short - long;
-      dea = i ? dea + (diff - dea) * (2 / 10) : 0;
-      const row = rows[i]!;
-      if (!same(row.DIFF, diff) || !same(row.DEA, dea)
-        || !same(row.MACD, 2 * (diff - dea)) || !same(row.ZERO, 0))
-        mismatch(`第 ${i+1} 行 MACD 的独立递推与原结果不一致。`);
-    }
-  } else if (result.methodId === 'bullish_engulfing') {
-    for (let i = 0; i < rows.length; i++) {
-      const current = source[i]!, previous = source[i-1];
-      const expected = !i ? null : previous!.close < previous!.open!
-        && current.close > current.open! && current.open! < previous!.close
-        && current.close > previous!.open!;
-      if (i && (typeof current.open !== 'number' || !Number.isFinite(current.open)
-        || typeof previous?.open !== 'number' || !Number.isFinite(previous.open)))
-        mismatch('看涨吞没算法缺少有效开盘价格，不能独立核对。');
-      if (rows[i]!.bullish_engulfing !== expected)
-        mismatch(`第 ${i+1} 行看涨吞没结果与独立规则不一致。`);
-    }
+    const diff = short - long;
+    dea = i ? dea + (diff - dea) * (2 / 10) : 0;
+    const row = rows[i]!;
+    if (!same(row.DIFF, diff) || !same(row.DEA, dea)
+      || !same(row.MACD, 2 * (diff - dea)) || !same(row.ZERO, 0))
+      mismatch(`第 ${i+1} 行 MACD 的独立递推与原结果不一致。`);
   }
 }

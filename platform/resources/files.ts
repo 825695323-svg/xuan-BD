@@ -93,6 +93,11 @@ export class FileReferenceService {
 
 
   register(input: { path: string; source: FileReferenceSource; displayName?: string } & FileRelations): FileReference {
+    return this.database.transaction(() => this.registerInTransaction(input));
+  }
+
+  registerInTransaction(input: { path: string; source: FileReferenceSource; displayName?: string } & FileRelations): FileReference {
+    if (!this.database.connection.isTransaction) throw new FileReferenceError('TRANSACTION_REQUIRED', '文件引用须在所属核心事务内登记。');
     if (!['user-selected', 'user-attached', 'generated'].includes(input.source)) throw new FileReferenceError('INVALID_SOURCE', '文件引用需要明确来源。');
     const identity = inspectPath(input.path);
     const relations = relationEntries(input);
@@ -103,11 +108,9 @@ export class FileReferenceService {
     const resource = this.resources?.reference(reference.invocationPath);
     if (resource) reference.resource = resource;
     if (!reference.displayName.trim() || reference.displayName.length > 512) throw new FileReferenceError('INVALID_NAME', '文件展示名称无效。');
-    this.database.transaction(() => {
-      this.database.connection.prepare('INSERT INTO file_references VALUES(?,?,?,?,?,?,?)')
-        .run(reference.id, reference.invocationPath, JSON.stringify(reference), 'available', 1, now, now);
-      this.linkInTransaction(reference.id, relations);
-    });
+    this.database.connection.prepare('INSERT INTO file_references VALUES(?,?,?,?,?,?,?)')
+      .run(reference.id, reference.invocationPath, JSON.stringify(reference), 'available', 1, now, now);
+    this.insertRelations(reference.id, relations);
     return this.getRef(reference.id);
   }
 
@@ -157,7 +160,7 @@ export class FileReferenceService {
   link(id: string, relations: FileRelations): FileReference {
     this.getRef(id);
     const entries = relationEntries(relations);
-    this.database.transaction(() => this.linkInTransaction(id, entries));
+    this.database.transaction(() => this.insertRelations(id, entries));
     return this.getRef(id);
   }
 
@@ -298,7 +301,12 @@ export class FileReferenceService {
     return rows.map((row) => this.getRef(String(row.id)));
   }
 
-  private linkInTransaction(id: string, entries: FileReference['relations']): void {
+  linkInTransaction(id: string, relations: FileRelations): void {
+    if (!this.database.connection.isTransaction) throw new FileReferenceError('TRANSACTION_REQUIRED', '文件引用关系须在所属核心事务内登记。');
+    this.insertRelations(id, relationEntries(relations));
+  }
+
+  private insertRelations(id: string, entries: FileReference['relations']): void {
     const insert = this.database.connection.prepare('INSERT OR IGNORE INTO file_reference_relations VALUES(?,?,?)');
     for (const entry of entries) insert.run(id, entry.kind, entry.id);
   }

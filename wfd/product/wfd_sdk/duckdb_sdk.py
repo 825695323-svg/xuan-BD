@@ -402,14 +402,19 @@ class WFDDuckDBPrototype:
             if os.path.exists(tmp):os.unlink(tmp)
 
     def _valid_snapshots(self):
+        from .indexed_bulk import SNAPSHOT_PREFIXES
         result=[]
         for p in [x for x in (self.root/'catalog/commits').glob('*.json') if not x.name.startswith('._')]:
             try:
                 marker=json.loads(p.read_text('utf-8'))
+                if str(marker.get('snapshot_file', '')).startswith(SNAPSHOT_PREFIXES):
+                    raise RuntimeError('SOURCE_MINUTE_SNAPSHOT_OPERATION_UNSUPPORTED')
                 snap=self.root/row_version_objects.snapshot_relative(marker,marker['snapshot_id'])
                 sb=snap.read_bytes()
                 if sha(sb)!=marker['snapshot_sha256']:continue
                 d=json.loads(sb)
+                if d.get('source_minute_root') is not None or d.get('tabular_root') is not None:
+                    raise RuntimeError('SOURCE_MINUTE_SNAPSHOT_OPERATION_UNSUPPORTED')
                 manifest_bytes=(self.root/d['manifest_relpath']).read_bytes()
                 if sha(manifest_bytes)!=d['manifest_sha256']:continue
                 manifest=json.loads(manifest_bytes)
@@ -524,6 +529,9 @@ class WFDDuckDBPrototype:
                 # Old or inconsistent lookups use the original commit-bound
                 # snapshot and manifest as the identity index. An unrelated
                 # request cannot become a match through payload contents.
+                from .indexed_bulk import SNAPSHOT_PREFIXES
+                if str(marker.get('snapshot_file', '')).startswith(SNAPSHOT_PREFIXES):
+                    continue  # The separate bulk intent/ledger owns this request identity.
                 d = self._valid_snapshot_exact(marker['snapshot_id'], verify_payloads=False)
                 if d.get('request_key') != rid:
                     cache[path.name] = {
@@ -827,6 +835,9 @@ class WFDDuckDBPrototype:
         if doc['expected_parent_snapshot_id']!=parent:
             return {'status':'rejected','errors':[ValidationIssue('PARENT_CHANGED','Expected parent Snapshot differs from current head')], 'actual_parent_snapshot_id':parent}
         accepted=[];rejected=[]
+        from .indexed_bulk import index_roots, indexed_products as load_bulk_products
+        indexed_roots=index_roots(h)
+        indexed_products=load_bulk_products(self.root,h)
         base_metadata=copy.deepcopy(h.get('metadata_versions',[])) if h else []
         metadata_versions=[]
         derived_lineages=(doc.get('source_bundle',{}) or {}).get('_wfd_derived_lineage') or {}
@@ -836,6 +847,8 @@ class WFDDuckDBPrototype:
                 derived_lineage=derived_lineages.get(out['output_key']) if isinstance(derived_lineages,dict) else None,
                 derived_verifier=lambda output,lineage: self._derived_lineage_errors(output,lineage,doc))
             pid=self._resolved_product_id(doc,out)
+            if pid in indexed_products:
+                errors.append(ValidationIssue('BULK_PARTITION_WRITE_REQUIRED','Use the whole-date batch protocol for this product'))
             if out['payload']['kind']=='metadata_revision':
                 if errors: rejected.append({'output_key':out['output_key'],'errors':errors})
                 else: accepted.append(out)
@@ -915,6 +928,7 @@ class WFDDuckDBPrototype:
         if dup:
             return {'status':'rejected','errors':[ValidationIssue('DUPLICATE_ARTIFACT',f'duplicate manifest entries: {dup[:3]}')],'output_results':dup}
         manifest={'parent_snapshot_id':parent,'files':files}
+        manifest.update(indexed_roots)
         mraw=canonical(manifest);mhash=sha(mraw)
         mrel=f'catalog/manifests/manifest_{mhash[:24]}.json'
         self._write_immutable(mrel,mraw)
@@ -926,6 +940,7 @@ class WFDDuckDBPrototype:
         snap={'snapshot_id':sid,'parent_snapshot_id':parent,'manifest_relpath':mrel,'manifest_sha256':mhash,
               'files':files,'metadata_versions':base_metadata+metadata_versions,
               'request_key':key,'request_fingerprint':fingerprint,'receipt':receipt}
+        snap.update(indexed_roots)
         sraw=canonical(snap);srel=f'catalog/snapshots/{sid}.json'
         self._write_immutable(srel,sraw)
         if fail_before_commit:
@@ -1002,7 +1017,7 @@ class WFDDuckDBPrototype:
             return {**receipt,'status':'published_commit_pending_head','head_state':act}
         return receipt
 
-    def _valid_snapshot_exact(self,snapshot_id,*,verify_payloads=True,product_ids=None):
+    def _valid_snapshot_exact(self,snapshot_id,*,verify_payloads=True,product_ids=None,_expected_sha=None):
         """Validate one fixed commit chain without enumerating unrelated snapshots.
 
         The commit marker, snapshot digest, manifest digest and manifest file
@@ -1010,17 +1025,36 @@ class WFDDuckDBPrototype:
         scoped to this snapshot (and optionally a product subset) so a fixed
         product read does not re-hash unrelated newer snapshots or products.
         """
+        from . import indexed_bulk
         try:
-            marker=json.loads((self.root/'catalog/commits'/f'{snapshot_id}.json').read_bytes().decode('utf-8'))
+            marker_path=self.root/'catalog/commits'/f'{snapshot_id}.json'
+            marker_raw=marker_path.read_bytes()
+            marker=json.loads(marker_raw)
+            if str(marker.get('snapshot_file','')).startswith(indexed_bulk.SNAPSHOT_PREFIXES):
+                if marker_path.is_symlink() or _expected_sha is not None:
+                    raise ValueError('BULK_COMMIT_INVALID')
+                snapshot=indexed_bulk.read_snapshot(self.root,snapshot_id,commit_raw=marker_raw)
+                anchor=snapshot['legacy_anchor']
+                ordinary={'files': [], 'metadata_versions': []}
+                if anchor is not None:
+                    anchor_id=anchor['snapshot_id']
+                    indexed_bulk.snapshot_relative(anchor_id)
+                    ordinary=self._valid_snapshot_exact(anchor_id,verify_payloads=verify_payloads,
+                        product_ids=product_ids,_expected_sha=anchor['sha256'])
+                return {**snapshot, 'files': ordinary['files'], 'metadata_versions': ordinary.get('metadata_versions', []),
+                        **indexed_bulk.index_roots(snapshot), 'manifest_sha256': sha(canonical(snapshot))}
             if marker.get('snapshot_id')!=snapshot_id:raise ValueError('SNAPSHOT_ID_MISMATCH')
             sb=(self.root/row_version_objects.snapshot_relative(marker,snapshot_id)).read_bytes()
-            if sha(sb)!=marker['snapshot_sha256']:raise ValueError('SNAPSHOT_DIGEST_MISMATCH')
+            checksum=sha(sb)
+            if checksum!=marker['snapshot_sha256'] or (_expected_sha is not None and 'sha256:'+checksum!=_expected_sha):
+                raise ValueError('SNAPSHOT_DIGEST_MISMATCH')
             d=json.loads(sb)
             if d['snapshot_id']!=snapshot_id:raise ValueError('SNAPSHOT_ID_MISMATCH')
             mb=(self.root/d['manifest_relpath']).read_bytes()
             if sha(mb)!=d['manifest_sha256']:raise ValueError('MANIFEST_DIGEST_MISMATCH')
             manifest=json.loads(mb)
             if manifest['files']!=d['files']:raise ValueError('MANIFEST_FILE_LIST_MISMATCH')
+            indexed_bulk.validate_ordinary_roots(self.root,d,manifest)
             row_version_objects.project_snapshot(self.root,d)
             if verify_payloads:
                 for ent in d['files']:
@@ -1041,6 +1075,10 @@ class WFDDuckDBPrototype:
         # it is actually read below.  Other products in the snapshot are not
         # touched by this product read.
         snap=self.head() if snapshot_id is None else self._valid_snapshot_exact(snapshot_id,verify_payloads=False)
+        from .indexed_bulk import indexed_products
+        indexed=indexed_products(self.root,snap)
+        if indexed and (not product_id or product_id in indexed):
+            raise ValueError('BULK_PARTITION_LOCATOR_REQUIRED')
         result=[]
         for entry in snap['files']:
             if product_id and entry['product_id']!=product_id:continue
@@ -1053,11 +1091,12 @@ class WFDDuckDBPrototype:
 
     def rebuild_sqlite_index(self):
         """Disposable index, never used as authoritative snapshot source."""
+        snapshots=self._valid_snapshots()
         p=self.runtime_root/'local_index.sqlite'
         if p.exists():p.unlink()
         db=sqlite3.connect(p)
         db.executescript('CREATE TABLE entries (snapshot_id TEXT,product_id TEXT,object_kind TEXT,object_id TEXT,relative_path TEXT, row_count INTEGER);CREATE INDEX pidx ON entries(product_id);')
-        for s in self._valid_snapshots():
+        for s in snapshots:
             for f in s['files']:
                 db.execute('INSERT INTO entries VALUES (?,?,?,?,?,?)',(s['snapshot_id'],f['product_id'],f['subject']['kind'],f['subject']['id'],f['file_relpath'],f['row_count']))
         db.commit();db.close()

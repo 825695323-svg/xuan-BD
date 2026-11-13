@@ -40,8 +40,7 @@ export class ConversationProcessingBridge {
       available: () => ({ available: !!options.companion.processing, ...(!options.companion.processing ? { reason: '处理计划服务未装配。' } : {}) }),
     });
     const moduleCatalog = () => productionModuleDirectory({
-      processing: options.companion.processing,
-      calculation: options.companion.productionCalculation,
+      processing: options.companion.processing, algorithms: options.companion.algorithms,
       hasWfdReader: !!options.companion.r1Workspace?.readProduct,
       hasSourceProfiles: !!options.companion.sourceFieldProfiles,
       enabled: options.companion.productionModuleSwitches,
@@ -228,7 +227,7 @@ export class ConversationProcessingBridge {
     }
     if (moduleAction) {
       const directory = productionModuleDirectory({
-        processing: service, calculation: this.options.companion.productionCalculation,
+        processing: service, algorithms: this.options.companion.algorithms,
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
         hasSourceProfiles: !!this.options.companion.sourceFieldProfiles,
         enabled: this.options.companion.productionModuleSwitches,
@@ -549,7 +548,7 @@ export class ConversationProcessingBridge {
           discoverVia: 'list_actions', readiness: 'depends_on_source_session_and_permissions', preservesOriginalReceipt: true },
       },
       parallelModuleDirectory: productionModuleDirectory({
-        processing: service, calculation: this.options.companion.productionCalculation,
+        processing: service, algorithms: this.options.companion.algorithms,
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
         hasSourceProfiles: !!this.options.companion.sourceFieldProfiles,
         enabled: this.options.companion.productionModuleSwitches,

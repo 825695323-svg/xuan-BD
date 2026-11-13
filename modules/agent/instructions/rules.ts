@@ -7,11 +7,11 @@ import type { FrozenRunConfiguration } from '../../../contracts/ui-contracts.js'
 const AGENTS_FILE = new URL('./AGENTS.md', import.meta.url);
 
 /** 与已审核正文绑定；规则改版同步更新版本与可信摘要。 */
-export const INTERNAL_AGENT_RULES = Object.freeze({ id: 'xuan-bd-internal-agent', version: 18,
-  digest: 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c' });
+export const INTERNAL_AGENT_RULES = Object.freeze({ id: 'xuan-bd-internal-agent', version: 19,
+  digest: '38342f494b3a83fc5f0512c1fd42515a49877ea61f70e62c6ce3089b257ff45c' });
 /** 旧任务携带的完整冻结规则仅按原版本/摘要验真，不能被新版 AGENTS 正文替换。 */
-const FROZEN_PRIOR_AGENT_RULES = Object.freeze({ version: 17,
-  digest: '9651321f74451fb58f9dbf07af464aa97107703bf42c23a637c9222b6f8c4d28' });
+const FROZEN_PRIOR_AGENT_RULES = Object.freeze({ version: 18,
+  digest: 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c' });
 
 export function captureInternalAgentRules(): Pick<FrozenRunConfiguration, 'internalAgentRules' | 'internalAgentRulesText'> {
   let body: string;

@@ -72,6 +72,18 @@ export function materialAdapterCatalog(adapters: readonly MaterialParserAdapter[
 
 /** 只读原字节并生成待核对候选；不读写文件、不执行上传代码、不调用模型。 */
 export function inspectMaterial(bytes: Uint8Array, input: MaterialInspectionInput): MaterialPreview {
+  return inspectMaterialBytes(bytes, input, bytes?.byteLength);
+}
+
+/** 超出预览预算时只需要真实原件的魔数前缀，不能把局部内容作为完整预览。 */
+export function inspectOversizedMaterial(prefix: Uint8Array, byteLength: number, input: MaterialInspectionInput): MaterialPreview {
+  if (!Number.isSafeInteger(byteLength) || byteLength <= materialLimits(input.limits).maxBytes || prefix.byteLength < Math.min(12, byteLength)) {
+    throw new MaterialError('INVALID_MATERIAL_INPUT', '超预算材料预览须提供原件的真实长度和魔数前缀。');
+  }
+  return inspectMaterialBytes(prefix, input, byteLength);
+}
+
+function inspectMaterialBytes(bytes: Uint8Array, input: MaterialInspectionInput, byteLength: number): MaterialPreview {
   if (!(bytes instanceof Uint8Array) || !['unclassified', 'data', 'tool'].includes(input.category) || typeof input.filename !== 'string' || !input.filename.trim()
     || input.filename.length > 512 || /[\u0000-\u001f\u007f]/u.test(input.filename) || (input.mediaType !== undefined && (typeof input.mediaType !== 'string' || input.mediaType.length > 256))) {
     throw new MaterialError('INVALID_MATERIAL_INPUT', '材料须提供原始字节、有效接收类别和文件名。');
@@ -91,7 +103,7 @@ export function inspectMaterial(bytes: Uint8Array, input: MaterialInspectionInpu
     pending: [] };
   for (const [declarationIndex, declaration] of declarations.entries()) addSemantic(preview.semantics, declaration.key, declaration.value,
     { source: 'user-declaration', quote: declaration.statement, declarationIndex }, declaration.scope);
-  if (bytes.byteLength > limits.maxBytes) return blocked(preview, 'MATERIAL_BYTE_BUDGET', '原件超过本次字节预算，未进行解析。');
+  if (byteLength > limits.maxBytes) return blocked(preview, 'MATERIAL_BYTE_BUDGET', '原件超过本次字节预算，未进行解析。');
   if (!adapter) return finalize(preview);
   let text: string;
   try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }

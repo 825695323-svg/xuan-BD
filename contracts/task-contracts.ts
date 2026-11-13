@@ -40,6 +40,8 @@ export interface TaskEffectRecord {
 }
 export interface TaskRecoveryResult {
   outcome: 'pending' | 'succeeded' | 'failed' | 'not_applied'; evidence: string; result?: TaskResult;
+  /** A new externally verified milestone, only with actual successful effect reconciliation. */
+  progressEvidenceKey?: string;
   effects: { attemptId: string; effectId: string; outcome: 'succeeded' | 'failed' | 'not_applied'; evidence: string; data?: JsonValue }[];
 }
 export interface TaskProgress { message: string; fraction: number | null; timestamp: string }

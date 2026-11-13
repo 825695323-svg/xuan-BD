@@ -14,7 +14,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import product_calendar
+from . import product_calendar, row_version_objects
 from .duckdb_sdk import WFDDuckDBPrototype, canonical, load_protocol_validator, sha
 from .product_data_service import (
     DATA_ONLY_PROFILE, WFDDataOnlyService, validate_data_only_metadata, fixed_read_page_capabilities,
@@ -23,8 +23,8 @@ from .product_data_service import (
 from .product_holdings import HoldingLedger
 from .volume_publication import (
     PreparationInstance, PrepFile, VolumeBinding, VolumePublisher, VolumeError,
-    _add_product_closure, _atomic_write, _path_within, _read_json,
-    _safe_relpath, _snapshot_fixed_products, sha256_file,
+    _add_product_closure, _add_row_version_closure, _atomic_write, _path_within,
+    _read_json, _reject_symlink_path, _safe_relpath, _snapshot_fixed_products, sha256_file,
 )
 
 
@@ -143,7 +143,16 @@ class WFDVolumeService:
             }
         else:
             caps = dict(self._target_service().capabilities())
+        from . import indexed_bulk as bulk
         caps["profile"] = DATA_ONLY_PROFILE
+        caps["bulk_tabular"] = {
+            "protocol_version": bulk.tabular.PROTOCOL,
+            "read_operation": "batch_read_page",
+            "write_scope": "one_complete_partition",
+            "max_fields": bulk.tabular.MAX_FIELDS,
+            "cell_types": ["text", "null"],
+            "mixed_ordinary_snapshot": True,
+        }
         caps["volume"] = {
             "binding": self.binding.to_dict(),
             "target_read_only": True,
@@ -188,9 +197,46 @@ class WFDVolumeService:
         return self._target_service().read_product_page(product_id, **kwargs)
 
     def discover_products(self, **kwargs):
+        from . import indexed_bulk as bulk
         self._require("read")
         self._verify_volume()
-        return self._target_service().discover_products(**kwargs)
+        service = self._target_service()
+        result = service.discover_products(**kwargs)
+        snapshot = service.engine._valid_snapshot_exact(kwargs.get("snapshot_id"), verify_payloads=False)
+        indexed = bulk.indexed_products(self.root, snapshot)
+        if indexed:
+            for protocol, ref in indexed.values():
+                product = bulk.read_node(self.root, ref, "product", protocol=protocol)["product"]
+                if kwargs.get("subject") is None or kwargs["subject"] == product.get("subject"):
+                    service._verify_binding(product)
+                    result["products"].append(service._public_product(product))
+            result["public_projection"] = service._public_projection_metadata(
+                result["products"], result.get("source_ids", []))
+        return result
+
+    def snapshot_status(self):
+        from . import indexed_bulk as bulk
+        self._require("read")
+        self._verify_volume()
+        state_path = self.root / "catalog/state.json"
+        state = _read_json(state_path) if state_path.is_file() else {}
+        sid = state.get("active_head")
+        if bulk.has_bulk_marker(self.root, sid):
+            from .state import StateStore
+            snapshot = bulk.read_snapshot(self.root, sid, expected_sha=state["head_snapshot_sha256"])
+            resolved = StateStore(self.root).resolve({sid: snapshot})
+            if not resolved["ok"]:
+                raise ValueError(resolved["code"])
+            if _read_json(state_path) != state:
+                raise ValueError("HEAD_CHANGED")
+            units = {code: {"definition": definition,
+                           "digest": "sha256:" + sha(canonical({"code": code, "definition": definition}))}
+                     for code, definition in sorted(self.unit_registry.items())}
+            return {"format_version": "wfd.snapshot-status/1", "profile": DATA_ONLY_PROFILE,
+                    "snapshot_id": sid, "empty": False, "authority": "active_head", "caller_id": self.caller_id,
+                    "caller_roles": sorted(self.caller_roles),
+                    "unit_definitions": self._target_service()._public_unit_definitions(units)}
+        return self._target_service().snapshot_status()
 
     def trace(self, *args, **kwargs):
         raise ValueError("TRACE_NOT_AVAILABLE_IN_DATA_ONLY_PROFILE")
@@ -243,7 +289,7 @@ class WFDVolumeService:
         state = engine.state.read() or {}
         history = {item.get("snapshot_id") for item in state.get("activation_history", [])
                    if isinstance(item, dict)}
-        if state.get("active_head") != sid and sid not in history:
+        if state.get("active_head") != sid and sid not in history and sid not in engine._active_ancestry():
             raise ValueError("FORMAL_SNAPSHOT_NEVER_ACTIVATED")
         entries = {(entry.get("output_key"), entry.get("product_id")): entry
                    for entry in snapshot.get("files", [])}
@@ -316,6 +362,17 @@ class WFDVolumeService:
         if (record.get("request_key") != key
                 or record.get("formal_publication_state") != "published_formal"):
             return None
+        from . import indexed_bulk as bulk
+        if record.get("protocol_version") in bulk.PROTOCOLS:
+            if dict(record.get("request_identity") or {}) != dict(identity) or document is not None:
+                return self._rejected_document({"request_identity": identity}, ValueError("REQUEST_ID_CONFLICT"))
+            locator = bulk.locator(record)
+            snap = bulk.read_snapshot(self.root, locator["snapshot_id"], protocol=record["protocol_version"])
+            leaf = bulk.partition_leaf(self.root, snap, locator["product_id"], locator["partition"], locator["result_root"])
+            if (leaf["header"]["request_identity"] != identity or snap["request_key"] != key
+                    or bulk.locator(snap) != locator):
+                return self._rejected_document({"request_identity": identity}, ValueError("BULK_FORMAL_RECEIPT_MISMATCH"))
+            return self.reconcile_bulk_batch(leaf["header"])
         if dict(record.get("request_identity") or {}) != dict(identity):
             return {
                 "protocol_version": "wfd.structured-ingest/1.0",
@@ -634,13 +691,14 @@ class WFDVolumeService:
             raise ValueError("WRITER_NOT_AUTHORIZED")
         if int(state.get("writer_epoch") or 0) != self.binding.writer_epoch:
             raise ValueError("WRITER_EPOCH_MISMATCH")
-        head_rel = f"catalog/snapshots/{expected_parent}.json"
-        head_path = self.root / head_rel
-        if head_path.is_symlink() or not head_path.is_file():
-            raise ValueError("TARGET_HEAD_MISSING")
-        head_sha = sha256_file(head_path)
-        if state.get("head_snapshot_sha256") not in (None,
-                                                      "sha256:" + head_sha):
+        head_sha = None
+        if expected_parent is not None:
+            head_path = self.root / f"catalog/snapshots/{expected_parent}.json"
+            if head_path.is_symlink() or not head_path.is_file():
+                raise ValueError("TARGET_HEAD_MISSING")
+            head_sha = sha256_file(head_path)
+        recorded_head_sha = state.get("head_snapshot_sha256")
+        if recorded_head_sha is not None and (head_sha is None or recorded_head_sha != "sha256:" + head_sha):
             raise ValueError("TARGET_HEAD_DIGEST_MISMATCH")
         volume_binding = self.root / "catalog/product_service/volume_binding.json"
         if volume_binding.is_file():
@@ -667,9 +725,10 @@ class WFDVolumeService:
                 or state.get("writer_host") != verified["writer_host"]
                 or int(state.get("writer_epoch") or 0) != verified["writer_epoch"]):
             raise ValueError("SOURCE_VOLUME_CHANGED:generation")
-        head_rel = f"catalog/snapshots/{verified['active_head']}.json"
-        if sha256_file(self.root / head_rel) != verified["head_sha256"]:
-            raise ValueError("SOURCE_VOLUME_CHANGED:head")
+        if verified["active_head"] is not None:
+            head_rel = f"catalog/snapshots/{verified['active_head']}.json"
+            if sha256_file(self.root / head_rel) != verified["head_sha256"]:
+                raise ValueError("SOURCE_VOLUME_CHANGED:head")
         volume = self._verify_volume(write=True).as_dict()
         for key in ("mount_point", "volume_uuid", "filesystem", "device"):
             if volume.get(key) != verified["volume"].get(key):
@@ -825,15 +884,26 @@ class WFDVolumeService:
             snapshot = entry["snapshot"]
         full = entry.get("full") or bool(payload_required)
         entry["full"] = full
+        from . import indexed_bulk as bulk
+        bulk_snapshot = snapshot.get("format_version") in bulk.SNAPSHOT_FORMATS
         if not entry.get("ready"):
             commit_rel = f"catalog/commits/{snapshot_id}.json"
             commit = _read_json(self.root / commit_rel)
             add(commit_rel, "commit")
-            add(str(snapshot["manifest_relpath"]), "manifest",
-                snapshot.get("manifest_sha256"))
+            for protocol, ref in bulk.root_nodes(snapshot):
+                add(bulk.node_relative(ref, protocol=protocol), "bulk_index_node", ref[7:])
+            if not bulk_snapshot:
+                add(str(snapshot["manifest_relpath"]), "manifest",
+                    snapshot.get("manifest_sha256"))
             add(f"catalog/snapshots/{snapshot_id}.json", "snapshot",
                 commit.get("snapshot_sha256"))
+            _add_row_version_closure(add, snapshot)
             entry["ready"] = True
+        if bulk_snapshot:
+            anchor = snapshot["legacy_anchor"]
+            if anchor is not None:
+                self._add_snapshot_closure(anchor["snapshot_id"], full, add, seen)
+            return snapshot
         if full and not entry.get("payload_ready"):
             entry["payload_ready"] = True
             for file_entry in snapshot.get("files", []):
@@ -929,6 +999,8 @@ class WFDVolumeService:
 
         def add(rel, kind, expected_sha=None):
             rel = _safe_relpath(rel)
+            if kind == "row_version_object":
+                _reject_symlink_path(self.root, rel)
             source = self.root / rel
             if source.is_symlink():
                 raise ValueError("PREP_SOURCE_SYMLINK:" + rel)
@@ -984,6 +1056,8 @@ class WFDVolumeService:
             for output in outputs
         }
         for entry in list(seen.values()):
+            if not entry["snapshot"]["files"] and entry["snapshot"].get("format_version") in ("wfd.source-minute-snapshot/1", "wfd.tabular-snapshot/1"):
+                continue  # A bulk-only predecessor has no ordinary family definitions.
             for product in _snapshot_fixed_products(entry["snapshot"]):
                 declaration = product.get("declaration") or {}
                 if self._family_key(product.get("dataset_id"), product,
@@ -1051,6 +1125,8 @@ class WFDVolumeService:
         for item in files:
             if hot and item.kind in {"state", "retention"}:
                 continue
+            if item.kind == "row_version_object":
+                _reject_symlink_path(prep_root, item.relpath)
             destination = prep_root / item.relpath
             if destination.exists() or destination.is_symlink():
                 if destination.is_symlink() or not destination.is_file():
@@ -1079,6 +1155,41 @@ class WFDVolumeService:
             "state_and_retention_skipped": bool(hot),
         }
         return self.last_hydration
+
+    def _authorize_prep_row_versions(self, prep_service, document, adoption, verified):
+        from .writerlock import writer_lock
+
+        engine = prep_service.engine
+        expected_parent = document.get("expected_parent_snapshot_id")
+        with writer_lock(self.root):
+            if row_version_objects.adoption_record(self.root, self.runtime_root) != adoption:
+                raise ValueError("ROW_VERSION_ADOPTION_CHANGED:target")
+            if adoption is None:
+                if row_version_objects.writing_enabled(engine.root, engine.runtime_root):
+                    raise ValueError("ROW_VERSION_ADOPTION_CHANGED:prep")
+                return
+            self._assert_source_unchanged(verified)
+            prep_adoption = row_version_objects.adoption_record(engine.root, engine.runtime_root)
+            if prep_adoption is not None and any(prep_adoption[key] != adoption[key]
+                                                for key in ("identity", "adopted_at_utc")):
+                raise ValueError("ROW_VERSION_ADOPTION_CHANGED:prep")
+            if expected_parent is not None and sha256_file(
+                    engine.root / f"catalog/snapshots/{expected_parent}.json") != verified["head_sha256"]:
+                raise ValueError("SOURCE_VOLUME_CHANGED:prep head")
+            if prep_adoption is not None:
+                head = engine.head()
+                if head is not None and head["snapshot_id"] != expected_parent:
+                    # A retry can reuse the exact pending commit created under this adoption.
+                    key = self._request_key(document["request_identity"])
+                    plan = _read_json(engine.root / "catalog/product_service/data_only_submission_plans"
+                                      / f"{key}.json")
+                    if (head.get("request_key") == key and head.get("parent_snapshot_id") == expected_parent
+                            and plan.get("input_fingerprint") == sha(canonical(document))):
+                        return
+            row_version_objects.adopt_writing(
+                engine, identity=adoption["identity"], expected_snapshot_id=expected_parent,
+                adopted_at_utc=adoption["adopted_at_utc"],
+            )
 
     # ---------------------------------------------------------------- target commit recovery
     def _stage_proof_path(self, key):
@@ -1152,6 +1263,7 @@ class WFDVolumeService:
         self._verify_volume(write=True)
         key = self._request_key(identity)
         fingerprint = sha(canonical(document))
+        self._assert_no_bulk_intent(key)
         existing = self._duplicate_plan(identity)
         if existing is not None:
             if existing.get("input_fingerprint") != fingerprint:
@@ -1225,13 +1337,22 @@ class WFDVolumeService:
         except (OSError, ValueError):
             return None
 
-    def _write_target_intent(self, key, identity, fingerprint, parent, results):
+    def _write_target_intent(self, key, identity, fingerprint, parent, results, row_version_context=None):
+        from .writerlock import writer_lock
+        with writer_lock(self.root):
+            return self._write_target_intent_locked(
+                key, identity, fingerprint, parent, results, row_version_context)
+
+    def _write_target_intent_locked(self, key, identity, fingerprint, parent, results, row_version_context):
+        self._assert_no_bulk_intent(key)
         path = self._intent_path(key)
         if path.is_file():
             existing = self._load_target_intent(key)
             if (not existing or existing.get("request_identity") != identity
                     or existing.get("input_fingerprint") != fingerprint):
                 raise ValueError("REQUEST_ID_CONFLICT")
+            if existing.get("row_version_context") != row_version_context:
+                raise ValueError("ROW_VERSION_ADOPTION_CHANGED:publication intent")
             return existing
         payload = {"format_version": "wfd.data-only-publication-intent/1.0",
                    "request_key": key, "request_identity": dict(identity),
@@ -1251,10 +1372,10 @@ class WFDVolumeService:
             raise ValueError("RECOVERY_PLAN_EMPTY")
         if any("row_results" in item for item in results):
             payload["duplicate_policy"] = "skip_identical_append"
+        if row_version_context is not None:
+            payload["row_version_context"] = row_version_context
         self._verify_volume(write=True)
-        from .writerlock import writer_lock
-        with writer_lock(self.root):
-            _atomic_write(path, canonical(payload) + b"\n")
+        _atomic_write(path, canonical(payload) + b"\n")
         return payload
 
     def _recover_target_commit(self, identity, document):
@@ -1280,6 +1401,12 @@ class WFDVolumeService:
         history = {item.get("snapshot_id") for item in state.get("activation_history", [])
                    if isinstance(item, dict)}
         if state.get("active_head") != sid and sid not in history:
+            context = intent.get("row_version_context") or {}
+            parent = document.get("expected_parent_snapshot_id")
+            if (context.get("snapshot_id") == sid and parent == intent.get("parent_snapshot_id")
+                    and state.get("active_head") == parent):
+                # Let the original prep and publisher revalidate the exact committed candidate.
+                return None
             return {"protocol_version": "wfd.structured-ingest/1.0",
                     "profile": DATA_ONLY_PROFILE, "request_key": key,
                     "request_identity": dict(identity), "state": "published_commit_pending_head",
@@ -1379,6 +1506,459 @@ class WFDVolumeService:
             adjustment_anchors_document=self._target_adjustment_anchors(),
             basis_price_catalog=self._target_basis_catalog(),
         )
+
+    def _bulk_parent(self, expected):
+        from . import indexed_bulk as bulk
+        from .state import COMPAT_FORMATS
+        state_path = self.root / "catalog/state.json"
+        if state_path.is_symlink():
+            raise ValueError("HEAD_INVALID_FORMAT")
+        state = _read_json(state_path) if state_path.is_file() else {}
+        if state and (state.get("format_version") not in COMPAT_FORMATS or "active_head" not in state):
+            raise ValueError("HEAD_INVALID_FORMAT")
+        if state.get("active_head") != expected:
+            raise ValueError("PARENT_CHANGED")
+        if state.get("writer_host") not in (None, self.binding.writer_host):
+            raise ValueError("WRITER_NOT_AUTHORIZED")
+        if int(state.get("writer_epoch") or 0) != self.binding.writer_epoch:
+            raise ValueError("WRITER_EPOCH_MISMATCH")
+        if expected is None:
+            if state.get("head_snapshot_sha256") is not None:
+                raise ValueError("TARGET_HEAD_DIGEST_MISMATCH")
+            if any((self.root / "catalog/commits").glob("*.json")):
+                raise ValueError("EMPTY_STORE_UNVERIFIED")
+            return {}, None, None
+        path = bulk.checked_path(self.root, bulk.snapshot_relative(expected))
+        checksum = "sha256:" + sha256_file(path)
+        if state.get("head_snapshot_sha256") not in (None, checksum):
+            raise ValueError("TARGET_HEAD_DIGEST_MISMATCH")
+        if bulk.has_bulk_marker(self.root, expected):
+            from .state import StateStore
+            snap = bulk.read_snapshot(self.root, expected, expected_sha=checksum)
+            resolved = StateStore(self.root).resolve({expected: snap})
+            if not resolved["ok"]:
+                raise ValueError(resolved["code"])
+            return bulk.index_roots(snap), snap["legacy_anchor"], checksum
+        ordinary = self.engine._valid_snapshot_exact(expected, verify_payloads=False)
+        resolved = self.engine.state.resolve({expected: ordinary})
+        if not resolved["ok"]:
+            raise ValueError(resolved["code"])
+        return bulk.index_roots(ordinary), {"snapshot_id": expected, "sha256": checksum}, checksum
+
+    def _hydrate_bulk_product(self, prep, output, existing):
+        from . import indexed_bulk as bulk
+        relatives = {}
+
+        def add(rel, kind, expected=None):
+            path = bulk.checked_path(self.root, rel)
+            if expected is not None and sha256_file(path) != expected:
+                raise ValueError("BULK_CONTRACT_DIGEST_MISMATCH")
+            relatives[rel] = path
+
+        if existing is not None:
+            _add_product_closure(add, existing, self.root)
+        if output.get("definition_mode") == "reuse":
+            digest = (output.get("definition_ref") or {}).get("digest", "")
+            if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+                raise ValueError("DEFINITION_DIGEST_REQUIRED")
+            add(f"catalog/product_service/definitions/{digest[7:]}.json", "definition")
+        for rel, path in relatives.items():
+            prep.engine._write_immutable(rel, path.read_bytes())
+
+    def _existing_bulk_product(self, prep, output, identity, roots, protocol, contract_digest):
+        from . import indexed_bulk as bulk, write_targets
+        self._hydrate_bulk_product(prep, output, None)
+        internal = prep._internal_output(output)
+        declaration, definition_ref = prep._definition(internal, identity["dataset_id"])
+        target = write_targets.target_of(dataset_id=identity["dataset_id"],
+            logical_domain=output["logical_domain"], subject=output["subject"],
+            declaration=declaration, definition_ref=definition_ref)
+        products = bulk.indexed_products(self.root, roots)
+        binding = write_targets.latest(self._target_write_targets(), identity["dataset_id"], target["product_family_id"])
+        # The persisted immutable product for this family is normally reached by its binding.
+        pid = (binding or {}).get("product_id") or "p_" + sha(canonical([target["product_family_id"], "stable_product"]))[:24]
+        entry = products.get(pid)
+        if entry is None:
+            return None, pid
+        owner_protocol, ref = entry
+        if owner_protocol != protocol:
+            raise ValueError("BULK_PRODUCT_PROTOCOL_CONFLICT")
+        product_node = bulk.read_node(self.root, ref, "product", protocol=protocol)
+        if product_node.get("table_contract_digest") != contract_digest:
+            raise ValueError("BULK_TABLE_CONTRACT_MISMATCH")
+        product = product_node["product"]
+        if product.get("product_family_id") != target["product_family_id"] or product.get("product_id") != pid:
+            raise ValueError("BULK_PRODUCT_BINDING_MISMATCH")
+        self._hydrate_bulk_product(prep, output, product)
+        return product, pid
+
+    def _bulk_summary(self, prep, snap, leaf, identity, node_refs):
+        from . import indexed_bulk as bulk
+        from .volume_publication import PreparationSummary
+        root = prep.engine.root
+        files = {}
+
+        def add(rel, kind, expected=None):
+            path = bulk.checked_path(root, rel)
+            checksum = sha256_file(path)
+            if expected is not None and checksum != expected:
+                raise ValueError("BULK_PREP_CLOSURE_DIGEST_MISMATCH:" + rel)
+            files[rel] = PrepFile(rel, checksum, path.stat().st_size, kind)
+
+        sid = snap["snapshot_id"]
+        protocol = bulk.protocol_for_snapshot(snap)
+        key = self._request_key(identity)
+        snap_rel = bulk.snapshot_relative(sid)
+        commit_rel = f"catalog/commits/{sid}.json"
+        formal_rel = f"catalog/product_service/data_only_formal_publications/{key}.json"
+        result = bulk.summary_result(leaf, snap, duplicate=False)
+        record = {**result, "request_key": key, "request_identity": identity,
+                  "input_fingerprint": identity["submission_digest"][7:],
+                  "formal_publication_state": "published_formal"}
+        prep.engine._write_immutable(formal_rel, canonical(record))
+        for part in leaf["parts"]:
+            add(bulk.part_relative(part["sha256"], protocol=protocol), "data", part["sha256"])
+        for ref in node_refs:
+            add(bulk.node_relative(ref, protocol=protocol), "bulk_index_node", ref[7:])
+        _add_product_closure(add, leaf["product"], root)
+        add(snap_rel, "snapshot")
+        add(commit_rel, "commit")
+        add(formal_rel, "formal_receipt")
+        instance = PreparationInstance(root, identity, sid, snap["parent_snapshot_id"], self.protocol_root)
+        return PreparationSummary(instance, key, identity["submission_digest"][7:], sid,
+                                  snap["parent_snapshot_id"], files[snap_rel].sha256, snap_rel,
+                                  files[snap_rel].sha256, commit_rel, files[commit_rel].sha256, formal_rel,
+                                  files[formal_rel].sha256, tuple(files.values()), (), {}, snap)
+
+    def _bulk_intent_rel(self, key):
+        # One global key space preserves existing intent recovery and prevents
+        # request IDs from being reused across bulk formats and ordinary writes.
+        return f"catalog/product_service/source_minute/intents/{key}.json"
+
+    def _assert_no_bulk_intent(self, key):
+        path = self.root / self._bulk_intent_rel(key)
+        if path.exists() or path.is_symlink():
+            raise ValueError("REQUEST_ID_CONFLICT")
+
+    def _write_bulk_intent(self, key, intent):
+        rel = self._bulk_intent_rel(key)
+        _reject_symlink_path(self.root, rel)
+        path = self.root / rel
+        raw = canonical(intent)
+        if path.exists():
+            if path.read_bytes() != raw:
+                raise ValueError("REQUEST_ID_CONFLICT")
+        else:
+            _atomic_write(path, raw)
+
+    def _bulk_terminal(self, header, result):
+        from . import indexed_bulk as bulk
+        identity = header["request_identity"]
+        self._write_bulk_intent(self._request_key(identity), {
+            "protocol_version": header["protocol_version"], "request_identity": identity,
+            "parent_snapshot_id": header["expected_parent_snapshot_id"],
+            "owner_caller_id": self.caller_id, "terminal_result": result,
+        })
+        return result
+
+    def _bulk_holding(self, snap, leaf, formal_sha256):
+        from . import indexed_bulk as bulk
+        return {**bulk.locator(snap), "format_version": ("wfd.tabular-holding/1" if bulk.protocol_for_snapshot(snap) == bulk.tabular.PROTOCOL
+                                                          else "wfd.source-minute-holding/1"),
+                "request_key": snap["request_key"], "instance_id": self.binding.instance_id,
+                "row_count": leaf["header"]["row_count"], "identities_digest": leaf["identities_digest"],
+                "formal_sha256": formal_sha256, "stage": "published_readable"}
+
+    def _bulk_formal_result(self, snap, leaf, *, require_holding):
+        from . import indexed_bulk as bulk
+        identity = leaf["header"]["request_identity"]
+        key = self._request_key(identity)
+        if (key != snap["request_key"] or snap["partition_fingerprint"] != identity["submission_digest"]):
+            raise ValueError("BULK_REQUEST_BINDING_MISMATCH")
+        formal_rel = f"catalog/product_service/data_only_formal_publications/{key}.json"
+        formal_path = self.root / formal_rel
+        if not formal_path.exists() and not formal_path.is_symlink():
+            return None
+        raw = bulk.checked_path(self.root, formal_rel).read_bytes()
+        result = bulk.summary_result(leaf, snap, duplicate=False)
+        expected = {**result, "request_key": key, "request_identity": identity,
+                    "input_fingerprint": identity["submission_digest"][7:],
+                    "formal_publication_state": "published_formal"}
+        if raw != canonical(expected):
+            raise ValueError("BULK_FORMAL_RECEIPT_MISMATCH")
+        if require_holding:
+            holding_rel = f"catalog/product_service/holdings/source_minute/{key}.json"
+            holding_path = self.root / holding_rel
+            if not holding_path.exists() and not holding_path.is_symlink():
+                return None
+            holding = self._bulk_holding(snap, leaf, sha(raw))
+            if bulk.checked_path(self.root, holding_rel).read_bytes() != canonical(holding):
+                raise ValueError("BULK_HOLDING_CONFLICT")
+        return {**result, "request_identity": identity, "formal_publication_ref": formal_rel}
+
+    def reconcile_bulk_batch(self, header, *, for_finalize=False):
+        """Reconcile a previously attempted finalize against the volume without writes."""
+        from . import indexed_bulk as bulk
+        from .state import COMPAT_FORMATS, StateStore
+
+        self._require("publish" if for_finalize else "read")
+        self._verify_volume()
+        identity = header["request_identity"]
+        key = self._request_key(identity)
+        intent_rel = self._bulk_intent_rel(key)
+        intent_path = self.root / intent_rel
+        if not intent_path.exists() and not intent_path.is_symlink():
+            return {"activation_state": "not_activated", "recovery_required": True}
+        intent = _read_json(bulk.checked_path(self.root, intent_rel))
+        if (intent.get("protocol_version") != header["protocol_version"] or intent.get("request_identity") != identity
+                or intent.get("parent_snapshot_id") != header["expected_parent_snapshot_id"]):
+            raise ValueError("BULK_INTENT_MISMATCH")
+        if "terminal_result" in intent:
+            if intent["owner_caller_id"] != self.caller_id:
+                raise ValueError("REQUEST_ID_CONFLICT")
+            result = intent["terminal_result"]
+            if result["state"] == "unchanged":
+                snap = bulk.read_snapshot(self.root, result["snapshot_id"], protocol=header["protocol_version"])
+                leaf = bulk.partition_leaf(self.root, snap, result["product_id"], result["partition"], result["result_root"])
+                if (bulk.locator(snap) != bulk.locator(result)
+                        or not bulk.same_partition_request(leaf["header"], header)
+                        or result != bulk.summary_result(leaf, snap, duplicate=True)
+                        or self._bulk_formal_result(snap, leaf, require_holding=True) is None):
+                    raise ValueError("BULK_FORMAL_RECEIPT_MISMATCH")
+                return {**result, "phase": "finalized", "recovery_required": False}
+            if result["state"] == "conflicts_pending":
+                return {**result, "phase": "rejected", "activation_state": "not_activated", "recovery_required": False}
+            raise ValueError("BULK_INTENT_MISMATCH")
+        sid = intent["snapshot_id"]
+        state_store = StateStore(self.root)
+        if state_store.path.is_symlink():
+            raise ValueError("HEAD_INVALID_FORMAT")
+        state = state_store.read() or {}
+        if state and (state.get("format_version") not in COMPAT_FORMATS or "active_head" not in state):
+            raise ValueError("HEAD_INVALID_FORMAT")
+        active = state.get("active_head")
+        history = state.get("activation_history") or []
+        activated = active == sid or any(item["snapshot_id"] == sid for item in history)
+        if not activated and active is not None:
+            # The head retains old partitions even after the bounded activation history rolls over.
+            active_path = bulk.checked_path(self.root, bulk.snapshot_relative(active))
+            expected_sha = state.get("head_snapshot_sha256")
+            if expected_sha is not None and "sha256:" + sha256_file(active_path) != expected_sha:
+                raise ValueError("BULK_ACTIVATION_DIGEST_MISMATCH")
+            current = self.engine._valid_snapshot_exact(active, verify_payloads=False)
+            protocol = header["protocol_version"]
+            activated = bulk.partition_ref(self.root, current.get(bulk.root_field(protocol)),
+                intent["product_id"], intent["partition"], protocol) == intent["result_root"]
+        if not activated:
+            if active != intent["parent_snapshot_id"]:
+                return {"activation_state": "not_activated", "recovery_required": False,
+                        "snapshot_id": sid, "phase": "rejected", "state": "rejected",
+                        "errors": [{"code": "PARENT_CHANGED"}]}
+            return {"activation_state": "not_activated", "recovery_required": True, "snapshot_id": sid}
+        if active == sid and state["head_snapshot_sha256"] != intent["snapshot_sha256"]:
+            raise ValueError("BULK_ACTIVATION_DIGEST_MISMATCH")
+        snap = bulk.read_snapshot(self.root, sid, expected_sha=intent["snapshot_sha256"], protocol=header["protocol_version"])
+        if bulk.locator(snap) != bulk.locator(intent) or snap["parent_snapshot_id"] != intent["parent_snapshot_id"]:
+            raise ValueError("BULK_INTENT_MISMATCH")
+        leaf = bulk.partition_leaf(self.root, snap, snap["product_id"], snap["partition"], snap["result_root"])
+        if leaf["header"] != header:
+            raise ValueError("BULK_INTENT_MISMATCH")
+        result = self._bulk_formal_result(snap, leaf, require_holding=True)
+        if result is None:
+            return {"activation_state": "activated", "recovery_required": True, **bulk.locator(snap)}
+        self._target_service()._verify_binding(leaf["product"])
+        return {**result, "phase": "finalized", "activation_state": "activated", "recovery_required": False}
+
+    def submit_bulk_batch(self, header, chunks):
+        from . import indexed_bulk as bulk, usage_suspension
+        from .writerlock import writer_lock
+
+        self._require("submit")
+        self._require("publish")
+        self._verify_volume(write=True)
+        identity = header["request_identity"]
+        key = self._request_key(identity)
+        expected = header["expected_parent_snapshot_id"]
+        protocol = header["protocol_version"]
+        indexed_field = bulk.root_field(protocol)
+        namespace = bulk.storage_namespace(protocol)
+        contract_digest = (header.get("table_contract") or {}).get("digest")
+        prep_root = self.prep_root / namespace / key
+        if prep_root.is_symlink() or _path_within(prep_root, self.root):
+            raise ValueError("PREP_ROOT_INVALID")
+        prep = self._open_prep(prep_root)
+        frozen_targets_digest = bulk.digest(prep._write_targets_document)
+        candidate_path = prep_root / f"{namespace}_candidate.json"
+        with writer_lock(self.root):
+            formal_path = self.root / f"catalog/product_service/data_only_formal_publications/{key}.json"
+            if (self._intent_path(key).exists() or self._duplicate_plan_path(key).exists()
+                    or formal_path.exists() and not (self.root / self._bulk_intent_rel(key)).exists()):
+                raise ValueError("REQUEST_ID_CONFLICT")
+            if candidate_path.is_file():
+                candidate = _read_json(candidate_path)
+                if (candidate["fingerprint"] != identity["submission_digest"]
+                        or candidate["owner_caller_id"] != self.caller_id):
+                    raise ValueError("REQUEST_ID_CONFLICT")
+                snap = bulk.read_snapshot(prep_root, candidate["snapshot_id"], protocol=protocol)
+                leaf = bulk.partition_leaf(prep_root, snap, snap["product_id"], snap["partition"], snap["result_root"])
+                node_refs = candidate["node_refs"]
+                frozen_targets_digest = candidate["write_targets_digest"]
+            else:
+                roots, legacy, parent_sha = self._bulk_parent(expected)
+                self._assert_no_bulk_intent(key)
+                output = header["outputs"][0]
+                previous_product, expected_pid = self._existing_bulk_product(
+                    prep, output, identity, roots, protocol, contract_digest)
+                # Validate the existing structured schema with a representative bounded row;
+                # the complete source stream is checked against the same fixed product below.
+                stream = iter(chunks)
+                first = next(stream, None)
+                if not first:
+                    raise ValueError("BULK_CHUNK_MISSING")
+                sample = bulk.structured_document(header, [bulk.semantic_row(header, first[0])[1]])
+                usage_suspension.enforce_submit(self.root, {**sample, "outputs": [
+                    {**sample["outputs"][0], "product_id": expected_pid}]})
+                product, target, first_bind = prep._prepare_bulk_product(
+                    sample, header, previous_product)
+                pid = product["product_id"]
+                if pid != expected_pid:
+                    raise ValueError("BULK_PRODUCT_FAMILY_CHANGED")
+                if previous_product is not None and previous_product["definition_ref"] != product["definition_ref"]:
+                    raise ValueError("BULK_DEFINITION_CHANGED")
+                if legacy is not None and previous_product is None:
+                    baseline = self.engine._valid_snapshot_exact(legacy["snapshot_id"], verify_payloads=False)
+                    if any(entry["product_id"] == pid for entry in baseline["files"]):
+                        raise ValueError("BULK_LEGACY_PRODUCT_CONFLICT")
+                partition = bulk.partition_value(header)
+                branches = bulk.partition_path(self.root, roots.get(indexed_field), pid, partition, protocol=protocol)
+                _, partition_key, _, leaf_kind = bulk.partition_keys(partition, protocol)
+                existing_ref = branches[2].get(partition_key)
+                from itertools import chain
+                leaf = bulk.stage_partition(prep.engine, header, chain((first,), stream), product)
+                if existing_ref is not None:
+                    old = bulk.read_node(self.root, existing_ref, leaf_kind, protocol=protocol)
+                    original = old["header"]
+                    if (not bulk.same_partition_request(original, header)
+                            or old["product"]["contract_refs"] != product["contract_refs"]):
+                        return self._bulk_terminal(header, {
+                            "state": "conflicts_pending", "errors": [{"code": "BULK_PARTITION_CONFLICT"}],
+                            "row_summary": {"inserted": 0, "duplicate_skipped": 0,
+                                            "conflict_pending": header["row_count"], "pending_publication": 0}})
+                    bulk.verify_partition(self.root, old)
+                    original_proof = self.reconcile_bulk_batch(original, for_finalize=True)
+                    if original_proof.get("phase") != "finalized":
+                        return {"state": "publication_unknown", "errors": [{"code": "BULK_PRIOR_RECOVERY_REQUIRED"}]}
+                    old_locator = bulk.locator(original_proof)
+                    if (old_locator["product_id"] != pid or old_locator["partition"] != partition
+                            or old_locator["result_root"] != existing_ref):
+                        raise ValueError("BULK_FORMAL_RECEIPT_MISMATCH")
+                    return self._bulk_terminal(header, bulk.summary_result(old, old_locator, duplicate=True))
+                node_refs = []
+
+                def write(rel, raw):
+                    prep.engine._write_immutable(rel, raw)
+                    node_refs.append("sha256:" + sha(raw))
+
+                result_root = bulk.write_node(leaf, write, protocol=protocol)
+                new_root = bulk.put_partition(write, branches, product, partition, result_root,
+                                              protocol=protocol, contract_digest=contract_digest)
+                inherited = {field: ref for field, ref in roots.items() if field != indexed_field}
+                for other_protocol, ref in bulk.root_nodes(inherited):
+                    rel = bulk.node_relative(ref, protocol=other_protocol)
+                    prep.engine._write_immutable(rel, bulk.checked_path(self.root, rel).read_bytes())
+                snap = bulk.write_candidate(prep.engine, {**inherited,
+                    "format_version": bulk.SNAPSHOT_FORMATS[bulk.PROTOCOLS.index(protocol)],
+                    "parent_snapshot_id": expected, "parent_sha256": parent_sha, "legacy_anchor": legacy,
+                    "root": new_root, "product_id": pid, "partition": partition, "result_root": result_root,
+                    "request_key": key, "partition_fingerprint": identity["submission_digest"]})
+                if first_bind:
+                    prep._record_write_target(identity["dataset_id"], target, product_id=pid,
+                        snapshot_id=snap["snapshot_id"], origin="first_publication", reason="First complete tabular partition" if protocol == bulk.tabular.PROTOCOL else "First complete source-minute date")
+                _atomic_write(candidate_path, canonical({"fingerprint": identity["submission_digest"],
+                    "snapshot_id": snap["snapshot_id"], "node_refs": node_refs,
+                    "owner_caller_id": self.caller_id, "write_targets_digest": frozen_targets_digest}))
+            bulk.verify_partition(prep_root, leaf)
+            summary = self._bulk_summary(prep, snap, leaf, identity, node_refs)
+            intent = {**bulk.locator(snap), "protocol_version": header["protocol_version"], "request_identity": identity,
+                      "parent_snapshot_id": expected, "snapshot_sha256": "sha256:" + summary.snapshot_sha256}
+            self._write_bulk_intent(key, intent)
+
+        def observe(stage, details):
+            if self.fault_injector is not None:
+                self.fault_injector(stage, details)
+            if stage in {"target_verified", "before_activate"}:
+                output = header["outputs"][0]
+                usage_suspension.enforce_submit(self.root, {"expected_parent_snapshot_id": expected,
+                    "outputs": [{**output, "product_id": snap["product_id"]}]})
+                latest_targets = self._target_write_targets()
+                if bulk.digest(latest_targets) != frozen_targets_digest:
+                    raise ValueError("BULK_WRITE_TARGET_DRIFT")
+
+        publisher = VolumePublisher(binding=self.binding, runtime_root=self.runtime_root,
+                                    detector=self.detector, fault_injector=observe,
+                                    prep_writer_host=self.binding.writer_host)
+        published = publisher.publish_prepared(summary)
+        if published.get("status") not in {"activated", "already_activated"}:
+            errors = published.get("errors", [])
+            if any(item.get("code") in {"PARENT_CHANGED", "HEAD_CONFLICT"} for item in errors):
+                proof = self.reconcile_bulk_batch(header, for_finalize=True)
+                if proof.get("phase") == "rejected":
+                    return {"state": "rejected", "errors": errors}
+            return {"state": "publication_unknown", "snapshot_id": snap["snapshot_id"],
+                    "errors": published.get("errors", []), "publisher_status": published.get("status")}
+        with writer_lock(self.root):
+            adoption = self._adopt_prep_write_targets(prep_root)
+            if adoption.get("error"):
+                raise RuntimeError("BULK_WRITE_TARGET_ADOPTION_FAILED:" + adoption["error"])
+            holding = self._bulk_holding(snap, leaf, summary.formal_sha256)
+            holding_path = self.root / f"catalog/product_service/holdings/source_minute/{key}.json"
+            holding_rel = holding_path.relative_to(self.root).as_posix()
+            _reject_symlink_path(self.root, holding_rel)
+            if holding_path.exists():
+                if _read_json(holding_path) != holding:
+                    raise RuntimeError("BULK_HOLDING_CONFLICT")
+            else:
+                _atomic_write(holding_path, canonical(holding))
+        result = bulk.summary_result(leaf, snap, duplicate=False)
+        result["request_identity"] = identity
+        result["formal_publication_ref"] = summary.formal_relpath
+        return result
+
+    def read_bulk_page(self, *, snapshot_id, product_id, partition, result_root, page_size=100, cursor=None,
+                       protocol_version=None):
+        from . import indexed_bulk as bulk
+        self._require("read")
+        self._verify_volume()
+        if protocol_version not in (None, *bulk.PROTOCOLS):
+            raise ValueError("BULK_PROTOCOL_INVALID")
+        snap = bulk.read_snapshot(self.root, snapshot_id, protocol=protocol_version)
+        protocol = bulk.protocol_for_snapshot(snap)
+        leaf = bulk.partition_leaf(self.root, snap, product_id, partition, result_root)
+        from . import usage_suspension
+        if bulk.locator(snap) != {"snapshot_id": snapshot_id, "product_id": product_id,
+                                  "partition": partition, "result_root": result_root}:
+            raise ValueError("BULK_LOCATOR_MISMATCH")
+        if self._bulk_formal_result(snap, leaf, require_holding=True) is None:
+            raise ValueError("BULK_PUBLICATION_NOT_FORMAL")
+        self._target_service()._verify_binding(leaf["product"])
+        locator = bulk.locator(snap)
+        if protocol != bulk.legacy.PROTOCOL:
+            locator["protocol_version"] = protocol
+        result = bulk.read_page(self.root, leaf, locator, page_size=page_size, cursor=cursor)
+        usage_suspension.enforce_read(self.root, {"snapshot_id": snapshot_id, "rows": [
+            {"record_ref": {"product_id": product_id, "revision_id": row["record_version"]}}
+            for row in result["rows"]]})
+        return result
+
+    # The bound machine entry probes this historical method name.
+    read_source_minute_page = read_bulk_page
+
+    def release_bulk_prep(self, identity, protocol):
+        from . import indexed_bulk as bulk
+        key = self._request_key(identity)
+        path = self.prep_root / bulk.storage_namespace(protocol) / key
+        if path.is_dir() and not path.is_symlink() and not _path_within(path, self.root):
+            shutil.rmtree(path)
 
     def _target_adjustment_anchors(self):
         """The target's own registered anchors: a preparation store never decides them."""
@@ -1528,6 +2108,11 @@ class WFDVolumeService:
         self._require("submit")
         self._verify_volume(write=True)
         identity = dict(document.get("request_identity") or {})
+        if all(identity.get(name) for name in ("dataset_id", "trusted_actor_namespace", "request_id")):
+            try:
+                self._assert_no_bulk_intent(self._request_key(identity))
+            except ValueError as exc:
+                return self._rejected_document(document, exc)
         duplicate_plan = self._duplicate_plan(identity)
         if duplicate_plan:
             if (duplicate_plan.get("request_identity") != identity
@@ -1555,18 +2140,29 @@ class WFDVolumeService:
         # Native prep is disposable: hydrate the exact parent closure on every
         # submit (cold or hot), then clean it after a successful publication.
         prep_root = self.prep_root / "workspace"
-        prep_root.mkdir(parents=True, exist_ok=True)
         expected_parent = document.get("expected_parent_snapshot_id")
-        if expected_parent is not None:
-            try:
-                self._seed_prep_from_target(prep_root, expected_parent,
-                                            document=document)
-            except (ValueError, OSError, VolumeError, RuntimeError) as exc:
-                return self._rejected_document(document, exc)
-        prep_service = self._open_prep(prep_root)
+        try:
+            if prep_root.is_symlink() or _path_within(prep_root, self.root):
+                raise ValueError("PREP_ROOT_INVALID")
+            prep_root.mkdir(parents=True, exist_ok=True)
+            adoption = row_version_objects.adoption_record(self.root, self.runtime_root)
+            verified = self._source_state(expected_parent) if adoption is not None else None
+            if expected_parent is not None:
+                hydration = self._seed_prep_from_target(prep_root, expected_parent,
+                                                        document=document)
+                if adoption is None and any(item["kind"] == "row_version_object"
+                                            for item in hydration["collected_files"]):
+                    raise ValueError("ROW_VERSION_ADOPTION_CHANGED:target marker missing")
+            prep_service = self._open_prep(prep_root)
+            self._authorize_prep_row_versions(prep_service, document, adoption, verified)
+        except (ValueError, OSError, VolumeError, RuntimeError) as exc:
+            return self._rejected_document(document, exc)
         result = prep_service.submit(document)
         if document.get("duplicate_policy") == "skip_identical_append":
-            self._save_duplicate_plan(identity, document, result)
+            try:
+                self._save_duplicate_plan(identity, document, result)
+            except ValueError as exc:
+                return self._rejected_document(document, exc)
         if result.get("state") not in {"published_formal", "partially_published_formal"}:
             return result
         instance = PreparationInstance(
@@ -1580,6 +2176,9 @@ class WFDVolumeService:
             caller_roles=tuple(sorted(self.caller_roles)),
             caller_id=self.caller_id,
             request_document=document,
+            row_version_adoption=adoption,
+            target_state_sha256=verified["state_sha256"] if verified is not None else None,
+            target_head_sha256=verified["head_sha256"] if verified is not None else None,
         )
         binding_path = self.root / "catalog/product_service/volume_binding.json"
         if not binding_path.is_file():
@@ -1593,9 +2192,20 @@ class WFDVolumeService:
                 "filesystem": self.binding.filesystem,
             }) + b"\n")
         fingerprint = sha(canonical(document))
-        self._write_target_intent(key, identity, fingerprint,
-                                  document.get("expected_parent_snapshot_id"),
-                                  WFDDataOnlyService._publication_results(result.get("output_results", [])))
+        context = None
+        if adoption is not None:
+            context = {"snapshot_id": instance.snapshot_id,
+                       "adoption_sha256": sha(canonical(adoption)),
+                       "state_sha256": verified["state_sha256"],
+                       "head_sha256": verified["head_sha256"]}
+        try:
+            self._write_target_intent(
+                key, identity, fingerprint, expected_parent,
+                WFDDataOnlyService._publication_results(result.get("output_results", [])),
+                row_version_context=context,
+            )
+        except ValueError as exc:
+            return self._rejected_document(document, exc)
         from datetime import datetime, timezone
         stage_times = {}
         proof_records = [record for output in WFDDataOnlyService._publication_results(result.get("output_results", []))

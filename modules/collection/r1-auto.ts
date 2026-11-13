@@ -11,13 +11,9 @@ import { profileFingerprint, sourceFieldProfileDigest, type FrozenSourceFieldPro
   type SemanticProductRegistryStore } from './source-field-profile.js';
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import type { R1WorkspaceService } from './r1-workspace.js';
-import { readSourceProjection } from './source-reported-table.js';
 import { parseTableSource } from './candidate-pipeline.js';
 import { decodeAdapterSource, readAdapterBindingRef, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
-import { sourceObservationMAAlgorithmDefinition, sourceObservationMACodeDigest, sourceObservationMAMethodVersion,
-  type CalculatedMAProof, type SourceObservationMAContext, type SourceObservationMAInput, type SourceObservationMASelection } from './source-observation-ma.js';
-
 export const R1_AUTO_VERSION = 'bd.r1-auto/2';
 export interface R1AutoStartInput {
   requestId: string; materialId: string; source: R1SourceDeclaration; datasetId: string;
@@ -46,12 +42,12 @@ interface Revision {
 }
 interface AutoRecord {
   selectedKeyReplacement?: true;
+  /** 旧记录中的派生标记只用于阻止自动续办。 */
+  calculation?: unknown;
   /** 冻结的来源字段档案：原表头 → 标准字段/类型/单位；请求摘要已含其 digest。 */
   fieldProfile?: FrozenSourceFieldProfile;
   /** 本请求冻结的已采用适配；后续阶段按同一配置摘要核对，不换版本重放。 */
   adapter?: FrozenAdapterBinding;
-  calculation?: { materialSha256: string; semanticCode: string; unit: string; subject: WfdRecord; timezone: string;
-    proofSha256: string; codeDigest: string; definition: WfdRecord };
   version: typeof R1_AUTO_VERSION; input: R1AutoStartInput; inputSha256: string; materialSha256: string;
   connection: R1ConnectionIdentity; controlGeneration: number; operator: OperatorContext;
   state: R1AutoState; answers: Record<string, string>; questions: R1EvidenceQuestion[]; evidence: R1EvidenceFact[];
@@ -106,16 +102,10 @@ export class R1AutoService {
 
   /** Trusted batch entry: the selected keys form a complete, bounded replacement scope. */
   startReplacing(value: R1AutoStartInput, operator: OperatorContext): R1AutoView {
-    return this.startBound(readStart(value), operator, undefined, true);
+    return this.startBound(readStart(value), operator, true);
   }
 
-  /** The public start route cannot provide a calculation, a proof, or an arbitrary definition. */
-  startCalculated(_value: R1AutoStartInput, _proof: CalculatedMAProof, _operator: OperatorContext): R1AutoView {
-    fail('R1_AUTO_CALCULATION_MANUAL_ONLY',
-      '来源观测均线已移出原报管线；请先完成 WFD 固定读回，再由 BD AGENTS 的基础算法工具人工发起。');
-  }
-
-  private startBound(input: R1AutoStartInput, operator: OperatorContext, calculation?: AutoRecord['calculation'], selectedKeyReplacement = false): R1AutoView {
+  private startBound(input: R1AutoStartInput, operator: OperatorContext, selectedKeyReplacement = false): R1AutoView {
     const fieldProfile = this.options.fieldProfiles?.match({ sourceId: input.source.source_id,
       series: declaredSourceSeries(input.source), ...(input.sourceAdapter ? { adapter: input.sourceAdapter } : {}) }) ?? null;
     const frozenProfile = fieldProfile
@@ -126,7 +116,7 @@ export class R1AutoService {
       if (registered && registered !== input.datasetId) fail('R1_SEMANTIC_PRODUCT_CONFLICT',
         `该来源的语义指纹已登记为数据集 ${registered}；本次请求用 ${input.datasetId}，等于另立家族。请复用已登记数据集，或由操作者显式登记新语义。`);
     }
-    const payload = { ...(calculation ? { input, calculation } : { input }), ...(frozenProfile ? { sourceFieldProfileSha256: frozenProfile.digest } : {}) };
+    const payload = { input, ...(frozenProfile ? { sourceFieldProfileSha256: frozenProfile.digest } : {}) };
     const digest = wfdSha256(canonicalWfdJson(selectedKeyReplacement ? { payload, selectedKeyReplacement } : payload));
     const existing = this.find(input.requestId);
     if (existing) {
@@ -163,10 +153,9 @@ export class R1AutoService {
     if (adapter && !(adapter.match?.verified === true || adapter.match?.consistent === true))
       fail('R1_ADAPTER_CONTEXT_REQUIRED', 'R1 发布用途须提供本材料取得回执或明确标注的合成上下文，并核过地址/协议/字段顺序/频率/复权/市场；未按已采用配置自动取得。');
     if (material.envelope.sha256 !== original.sha256) fail('R1_AUTO_MATERIAL_CHANGED', '原材料与保管摘要不同，未开始自动交接。');
-    if (calculation && calculation.materialSha256 !== original.sha256) fail('R1_MA_RESULT_CHANGED', '受管派生材料与本批实际计算结果摘要不一致。');
     if (input.priorRequestId) this.assertPrior(input, connection, original.sha256, original.bytes.length);
     const now = Date.now();
-    const record: AutoRecord = { ...(frozenProfile ? { fieldProfile: frozenProfile } : {}), ...(calculation ? { calculation } : {}), ...(adapter ? { adapter } : {}), ...(selectedKeyReplacement ? { selectedKeyReplacement: true } : {}), version: R1_AUTO_VERSION, input, inputSha256: digest, materialSha256: original.sha256,
+    const record: AutoRecord = { ...(frozenProfile ? { fieldProfile: frozenProfile } : {}), ...(adapter ? { adapter } : {}), ...(selectedKeyReplacement ? { selectedKeyReplacement: true } : {}), version: R1_AUTO_VERSION, input, inputSha256: digest, materialSha256: original.sha256,
       connection, controlGeneration: this.tasks.getControl().generation, operator: { ...operator, requestId: input.requestId },
       state: 'inspecting', answers: {}, questions: [], evidence: [], snapshot: null, catalog: null, revisions: [], definitionReview: null,
       localReturn: null, wfdRejection: input.priorRequestId ? this.options.workspace.get(input.priorRequestId).error : null,
@@ -174,103 +163,6 @@ export class R1AutoService {
     this.db.prepare('INSERT INTO r1_auto_requests VALUES(?,?,?,?)').run(input.requestId, digest, canonicalWfdJson(record), now);
     this.schedule(input.requestId);
     return this.get(input.requestId);
-  }
-
-  /** Read the source version actually associated with this original. Each call stays in that fixed snapshot. */
-  async readCalculationContext(autoRequestId: string): Promise<SourceObservationMAContext> {
-    const item = this.require(autoRequestId); this.assertBinding(item); this.assertDispatch();
-    const requestId = item.revisions.at(-1)?.handoffRequestId;
-    if (item.state !== 'associated' || !requestId || item.calculation) fail('R1_MA_SOURCE_NOT_ASSOCIATED', '系列续算需要已核实的来源原报。');
-    const request = this.options.workspace.get(requestId), associations = request.local.associations;
-    const first = Array.isArray(associations) && isWfdRecord(associations[0]) ? associations[0] : null;
-    if (typeof first?.product_id !== 'string') fail('R1_MA_SOURCE_ASSOCIATIONS', '原报产品身份尚未固定。');
-    const status = await this.options.workspace.snapshotStatus();
-    if (!status.snapshotId) fail('R1_MA_CONTEXT_BINDING', '系列续算没有可冻结的当前快照。');
-    const parse = this.options.processing.get(request.planId).steps.find(step => step.kind === 'parse');
-    const projection = readSourceProjection(parse?.parameters.sourceProjection);
-    const versions: Record<string, string> = {}, cursors = new Set<string>();
-    let cursor: string | undefined;
-    do {
-      this.assertBinding(item); this.assertDispatch();
-      const { result } = await this.options.workspace.readProduct({ snapshotId: status.snapshotId, productId: first.product_id,
-        fields: [projection.fields[0]!.fieldCode], cursor });
-      if (!Array.isArray(result.rows) || !isWfdRecord(result.page)) fail('R1_MA_CONTEXT_BINDING', '固定系列页无法核对。');
-      for (const row of result.rows) {
-        const ref = isWfdRecord(row) && isWfdRecord(row.record_ref) ? row.record_ref : null;
-        if (typeof ref?.logical_key !== 'string' || typeof ref.revision_id !== 'string' || Object.hasOwn(versions, ref.logical_key))
-          fail('R1_MA_CONTEXT_BINDING', '固定系列记录身份无效或重复。');
-        versions[ref.logical_key] = ref.revision_id;
-      }
-      if (Object.keys(versions).length > 5000) fail('R1_MA_ROW_BUDGET', '系列当前快照超过 5000 行的完整重算预算；没有截断预热。');
-      if (!result.page.has_more) break;
-      const next = result.page.next_cursor;
-      if (typeof next !== 'string' || !next || cursors.has(next)) fail('R1_MA_CONTEXT_BINDING', '系列分页游标未推进。');
-      cursors.add(next); cursor = next;
-    } while (true);
-    return { snapshotId: status.snapshotId, productId: first.product_id, versions };
-  }
-
-  async readCalculationInput(ref: { materialId: string; autoRequestId: string }, selection: SourceObservationMASelection): Promise<SourceObservationMAInput> {
-    const item = this.require(ref.autoRequestId);
-    this.assertBinding(item);
-    const handoffId = item.revisions.at(-1)?.handoffRequestId;
-    if (item.state !== 'associated' || !handoffId || item.input.materialId !== ref.materialId || item.calculation) {
-      fail('R1_MA_SOURCE_NOT_ASSOCIATED', '均线输入须来自本批已固定读回的原始来源表。');
-    }
-    const request = this.options.workspace.get(handoffId);
-    const associations = request.local.associations;
-    if (request.state !== 'associated' || !Array.isArray(associations) || !associations.length
-        || associations.length !== new Set((Array.isArray((request.local.receipt as WfdRecord | undefined)?.rows) ? (request.local.receipt as WfdRecord).rows as WfdRecord[] : []).map(row => row.record_id)).size || !associations.every(isWfdRecord)) {
-      fail('R1_MA_SOURCE_ASSOCIATIONS', '本件来源记录版本尚未完整关联。');
-    }
-    const { product_id: productId, snapshot_id: snapshotId } = associations[0]!;
-    const versions = new Map<string, string>();
-    for (const association of associations) {
-      if (association.product_id !== productId || association.snapshot_id !== snapshotId
-          || typeof association.record_id !== 'string' || typeof association.record_version !== 'string' || versions.has(association.record_id)) {
-        fail('R1_MA_SOURCE_ASSOCIATIONS', '本件来源记录的产品、固定快照或逐行业务键不一致。');
-      }
-      versions.set(association.record_id, association.record_version);
-    }
-    const parse = this.options.processing.get(request.planId).steps.find(step => step.kind === 'parse');
-    if (!parse || parse.parameters.materialId !== ref.materialId || !parse.parameters.sourceProjection) {
-      fail('R1_MA_SOURCE_PROJECTION', '均线需要已冻结的来源原报日期、身份及数值原列映射。');
-    }
-    const projection = readSourceProjection(parse.parameters.sourceProjection);
-    // 均线复核必须沿用原件实际格式与冻结适配；适配 JSON/JSONP 原件不能按 CSV 重读。
-    const parseFormat = parse.parameters.format;
-    if (parseFormat !== 'csv' && parseFormat !== 'json') fail('R1_MA_SOURCE_FORMAT', '均线来源计划缺少明确载体格式。');
-    const frozenAdapter = parse.parameters.sourceAdapter;
-    if (frozenAdapter !== undefined && !isWfdRecord(frozenAdapter)) fail('R1_MA_SOURCE_FORMAT', '均线来源计划的适配绑定无效。');
-    const columns = [...new Set([...projection.keyColumns, selection.valueColumn])];
-    const fieldCodes = columns.map(column => projection.fields.find(field => field.column === column)?.fieldCode
-      ?? fail('R1_MA_SOURCE_COLUMN', `原报发布字段中没有本批均线所需的「${column}」。`));
-    const fixedRows: WfdRecord[] = [], cursors = new Set<string>();
-    let cursor: string | undefined;
-    do {
-      this.assertDispatch(); this.assertBinding(item);
-      const response = await this.options.workspace.readProduct({ snapshotId, productId, fields: fieldCodes, cursor });
-      const result = response.result;
-      if (!Array.isArray(result.rows) || !isWfdRecord(result.page)) fail('R1_MA_READBACK', 'WFD 固定页缺少记录或分页声明。');
-      for (const row of result.rows) {
-        if (!isWfdRecord(row) || !isWfdRecord(row.record_ref)) fail('R1_MA_READBACK', 'WFD 记录缺少固定身份。');
-        const ref = row.record_ref;
-        if (typeof ref.logical_key !== 'string' || !versions.has(ref.logical_key)) continue;
-        if (ref.product_id !== productId || ref.snapshot_id !== snapshotId || ref.revision_id !== versions.get(ref.logical_key)) {
-          fail('R1_MA_SOURCE_REVISION', '固定读取中的记录版本与已关联原件不符。');
-        }
-        fixedRows.push(row); versions.delete(ref.logical_key);
-      }
-      if (!versions.size || !result.page.has_more) break;
-      const next = result.page.next_cursor;
-      if (typeof next !== 'string' || !next || cursors.has(next)) fail('R1_MA_READBACK', '来源固定分页的游标未推进。');
-      cursors.add(next); cursor = next;
-    } while (true);
-    if (versions.size) fail('R1_MA_INCOMPLETE_READBACK', `均线仍有 ${versions.size} 条原件关联缺少对应固定记录。`);
-    const material = this.options.materials.readOriginal(ref.materialId);
-    if (material.sha256 !== item.materialSha256) fail('R1_AUTO_MATERIAL_CHANGED', '均线输入原件已偏离保管身份。');
-    return { materialId: ref.materialId, original: material.bytes, source: item.input.source, projection, request, fixedRows,
-      format: parseFormat, ...(frozenAdapter ? { sourceAdapter: frozenAdapter as unknown as FrozenAdapterBinding } : {}) };
   }
 
   list(): R1AutoView[] { return this.records().map(item => this.view(item)); }
@@ -324,7 +216,7 @@ export class R1AutoService {
   /** Explicit continuation also performs original-identity recovery, never a second submit. */
   async advance(requestId: string): Promise<R1AutoView> {
     this.assertDispatch(); const item = this.require(requestId); this.assertBinding(item);
-    if (item.calculation) fail('R1_AUTO_CALCULATION_MANUAL_ONLY', '旧派生任务不再通过原报自动续办；原结果仍可查阅。');
+    if (item.calculation) fail('R1_RETIRED_DERIVATION', '旧派生请求只可查询原结果。');
     if (item.state === 'associated' || item.state === 'conflicts_pending' || item.state === 'awaiting_answers') return this.view(item);
     if (item.state === 'blocked') return this.view(item);
     item.controlGeneration = this.tasks.getControl().generation;
@@ -368,10 +260,6 @@ export class R1AutoService {
     }
     if (!item.revisions.length) {
       let resolved = this.resolve(item);
-      if (item.calculation) this.bindCalculatedDefinition(item.calculation, resolved);
-      else if (resolved.proposal && String(resolved.proposal.target.definition.semantic_code).startsWith('derived.source_observation_ma.')) {
-        fail('R1_MA_PROOF_REQUIRED', '本地均线产品族只接受从已发布原行计算并核对了证明的派生材料。');
-      }
       const family = resolved.sourceFamilyHint;
       const target = resolved.proposal?.target;
       if (!item.catalog && (family || target)) {
@@ -487,7 +375,7 @@ export class R1AutoService {
     registeredTypes?: Record<string, 'decimal' | 'integer' | 'boolean' | 'text'>, registeredSourceDefinition?: WfdRecord) {
     const material = this.options.materials.get(item.input.materialId), original = this.options.materials.readOriginal(item.input.materialId);
     if (original.sha256 !== item.materialSha256) fail('R1_AUTO_MATERIAL_CHANGED', '原件摘要变化，未重新解释或提交。');
-    const resolved = resolveR1Evidence({ material, original: original.bytes, calculatedMaterial: !!item.calculation, answers: Object.fromEntries(Object.entries(item.answers).filter(([key]) => !key.startsWith('contractRevisionBasis:'))),
+    const resolved = resolveR1Evidence({ material, original: original.bytes, answers: Object.fromEntries(Object.entries(item.answers).filter(([key]) => !key.startsWith('contractRevisionBasis:'))),
       namespace: item.connection.namespace, datasetId: item.input.datasetId, parentSnapshotId: item.snapshot?.snapshotId ?? null, source: item.input.source, sourceValueColumns: item.input.sourceValueColumns, registeredKeyColumns, registeredUnits, registeredTypes, registeredSourceDefinition,
       ...(item.input.xlsxSelection ? { xlsxSelection: item.input.xlsxSelection } : {}),
       ...(item.adapter ? { sourceAdapter: item.adapter } : {}),
@@ -504,27 +392,6 @@ export class R1AutoService {
       proposal.target.coverage = { scope: { business_keys: keys }, basis: 'declared_full', completeness: 'complete', absence_means: 'explicitly_absent' };
     }
     return resolved;
-  }
-
-  private bindCalculatedDefinition(binding: NonNullable<AutoRecord['calculation']>, resolved: ReturnType<typeof resolveR1Evidence>): void {
-    const proposal = resolved.proposal;
-    if (!proposal || resolved.questions.length) fail('R1_MA_RESULT_CONTRACT', '本机均线输出未满足自己的字段合同，不能用操作者补答替代计算结果。');
-    const definition = proposal.target.definition;
-    if (proposal.target.outputKey !== binding.semanticCode || canonicalWfdJson(proposal.target.subject) !== canonicalWfdJson(binding.subject)
-        || proposal.mapping.sourceTimezone !== binding.timezone || fields(definition).get('value')?.unit_code !== binding.unit) {
-      fail('R1_MA_RESULT_CONTRACT', '生成材料的产品、单位、时间或主体与固定计算证明不符。');
-    }
-    const context = definition.semantic_context;
-    if (!isWfdRecord(context)) fail('R1_MA_RESULT_CONTRACT', '生成材料缺少语义合同。');
-    context.content_nature = 'deterministic_derived';
-    definition.measurement_nature = 'derived';
-    definition.algorithm_definition = binding.definition;
-    proposal.dimensions.role = 'calculated_result';
-    proposal.dimensions.informationNature = 'deterministic_derived';
-    const nature = resolved.evidence.find(fact => fact.key === 'content_nature');
-    if (nature) nature.value = 'deterministic_derived';
-    resolved.evidence.push({ key: 'calculation.proof_sha256', value: binding.proofSha256, origin: 'contract' },
-      { key: 'calculation.implementation_sha256', value: binding.codeDigest, origin: 'contract' });
   }
 
   private selectDefinition(item: AutoRecord, proposal: R1EvidenceProposal): void {

@@ -124,7 +124,7 @@ test('explicit native bootstrap starts basic data with no bundled/browser/transc
     const webRoot = join(root, 'static-web'); mkdirSync(webRoot); json(join(webRoot, 'fixture.json'), { staticFixture: true });
     writeFileSync(join(webRoot, 'index.html'), '<!doctype html><title>isolated bootstrap fixture</title>');
     for (let attempt = 0; attempt < 2; attempt++) {
-      const application = await startConfiguredApplication({ workspaceRoot: runtimeRoot, codeRoot, webRoot, launcherFile, port: 0, workspaceCompanion: {} });
+      const application = await startConfiguredApplication({ workspaceRoot: runtimeRoot, codeRoot, webRoot, launcherFile, port: 0, workspaceCompanion: true });
       try {
         assert.equal(application.health.configured, false);
         assert.equal(application.health.model, null);

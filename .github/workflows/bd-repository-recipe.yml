@@ -121,7 +121,8 @@ jobs:
           export PYTHONPYCACHEPREFIX="$RUNNER_TEMP/bd-fresh-bytecode"
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
           env -u WFD_PYTHON -u POLARS_PYTHON "$BD_NODE" "$BD_NPM" test
-          "$BD_NODE" --import tsx --test modules/financial/*.test.ts modules/agent/*.test.ts apps/server/unified-polars-publish-full-chain.test.ts
+          "$BD_NODE" --import tsx --test modules/agent/*.test.ts
+          "$BD_NODE" --import tsx --test modules/financial/*.test.ts apps/server/macd-full-chain.test.ts
           "$BD_NODE" "$BD_NPM" run test:python -- --python="$WFD_PYTHON"
       - name: Rebuild optional bundle and verify existing manifest consumer
         if: runner.os != 'Linux'

@@ -42,6 +42,8 @@ test('source header aliases are retained, but do not change canonical cross-prov
     ],
   }), 'b.json');
   assert.deepEqual(a.fields[1]?.aliases, ['收盘价']);
+  assert.equal(profileFingerprint(a), '837e584af0fe9bfd585ddcba676295671af5aa0324b38aad6b6cfb46259c2cfc');
+  assert.equal(sourceFieldProfileDigest(a), 'fbd55ae66a707f151e34f65097849bb09834234ab1dd531614e7c3c248f4c395');
   assert.equal(compareProfileSemantics(a, b).sameProduct, true);
   assert.equal(profileFingerprint(a), profileFingerprint(b));
   assert.notEqual(sourceFieldProfileDigest(a), sourceFieldProfileDigest(b));
@@ -64,6 +66,32 @@ test('same units and field names do not hide adjustment method, basis, or unreso
       ? { ...field, measurement: undefined } : field),
   }), 'missing.json');
   assert.match(compareProfileSemantics(withoutMeasure, withoutMeasure).reasons.join(';'), /金融计量口径未同时明确/);
+});
+
+test('unknown measurement is a distinct frozen claim allowed only for source lexemes', () => {
+  const [date, close, volume] = sample().fields;
+  const lexeme = { ...close!, dataType: 'text', unitCode: 'not_applicable', measurement: '原表标签「元」' };
+  const ordinary = readSourceFieldProfile(sample({ fields: [date, lexeme] }), 'ordinary.json');
+  const unknown = readSourceFieldProfile(sample({
+    fields: [date, { ...lexeme, measurementStatus: 'unknown' }],
+  }), 'unknown.json');
+  assert.equal(unknown.fields[1]?.measurementStatus, 'unknown');
+  assert.notEqual(profileFingerprint(unknown), profileFingerprint(ordinary));
+  assert.notEqual(sourceFieldProfileDigest(unknown), sourceFieldProfileDigest(ordinary));
+  assert.equal(compareProfileSemantics(ordinary, ordinary).sameProduct, true);
+  for (const [left, right] of [[ordinary, unknown], [unknown, ordinary], [unknown, unknown]] as const) {
+    const result = compareProfileSemantics(left, right);
+    assert.equal(result.sameProduct, false);
+    assert.match(result.reasons.join(';'), /计量口径未知/);
+  }
+  for (const field of [close, volume, { ...lexeme, dataType: 'boolean' }, { ...lexeme, unitCode: 'cny' }]) {
+    throws(() => readSourceFieldProfile(sample({
+      fields: [date, { ...field, measurementStatus: 'unknown' }],
+    }), 'invalid.json'));
+  }
+  throws(() => readSourceFieldProfile(sample({
+    fields: [date, { ...lexeme, measurementStatus: 'known' }],
+  }), 'invalid.json'));
 });
 
 test('profiles only apply to exactly pinned adapter and source series; old generic profiles cannot take over', () => {

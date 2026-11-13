@@ -8,11 +8,10 @@ import { loadAppConfiguration } from '../../platform/config/model.js';
 import { readConnectionRegistry, registeredBaiduDriveConfiguration } from '../../platform/config/connections.js';
 import { startLocalServer } from './boot.js';
 import { createApplicationServices, type ApplicationServices, type ServiceOptions } from './services.js';
+import { localAlgorithmConfiguration } from './financial-configuration.js';
 import { loadToolConfiguration } from '../../platform/config/tools.js';
 import { digestOperationArgs } from '../../platform/security/permissions.js';
 import { BD_VERSION, COLLECTION_BD_VERSION, WORKSPACE_BD_VERSION, SERVICE_SYSTEM_PROMPT, COLLECTION_SYSTEM_PROMPT, WORKSPACE_SYSTEM_PROMPT } from '../../modules/agent/service.js';
-import { localAlgorithmConfiguration, localFinancialConfiguration } from './financial-configuration.js';
-import { createMaterialTableReader } from '../../modules/financial/managed-table.js';
 import { ResourceBindings, launcherPath } from '../../platform/resources/bindings.js';
 import { applicationResources } from '../../platform/resources/local-web.js';
 import { startBrowserHost, type BrowserHost } from '../../platform/capabilities/browser/host.js';
@@ -44,14 +43,12 @@ export interface ConfiguredApplicationOptions {
   serviceStateRoot?: string;
   serviceFilesRoot?: string;
   configureCollection?: ServiceOptions['configureCollection'];
-  configureFinancial?: ServiceOptions['configureFinancial'];
-  configureAlgorithms?: ServiceOptions['configureAlgorithms'];
   materials?: ServiceOptions['materials'];
   /** 同一应用个人宿主已拥有并核验的浏览器；独立服务不另起浏览器或采用全机守护进程。 */
   sharedBrowser?: ServiceOptions['browser'];
   sharedBrowserUnavailableReason?: string;
   /** 可信网页或桌面宿主装配；独立状态与任务，通过同源窄接口供主导航使用。 */
-  workspaceCompanion?: { configureFinancial?: ServiceOptions['configureFinancial']; configureAlgorithms?: ServiceOptions['configureAlgorithms'] };
+  workspaceCompanion?: boolean;
 }
 
 export interface ConfiguredApplication {
@@ -104,11 +101,11 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
   if (options.role !== undefined && !['personal', 'service'].includes(options.role)) throw new Error('角色无效。');
   if (options.serviceStateRoot && options.role !== 'service') throw new Error('独立状态位置仅供服务角色使用。');
   if (options.configureCollection && (options.role !== 'service' || !options.serviceStateRoot)) throw new Error('数据收集验收需要显式服务角色和独立状态目录。');
-  if ((options.configureFinancial || options.materials) && (options.role !== 'service' || !options.serviceStateRoot)) throw new Error('材料与金融工具需要显式服务角色和独立状态目录。');
+  if (options.materials && (options.role !== 'service' || !options.serviceStateRoot)) throw new Error('材料需要显式服务角色和独立状态目录。');
   const service = options.role === 'service';
   if (options.listen === false && !service) throw new Error('不监听模式仅供受信宿主的服务角色附属实例使用。');
   if (service && options.workspaceCompanion) throw new Error('服务角色不能再派生另一个工作台。');
-  const workspace = !!(options.configureFinancial || options.materials);
+  const workspace = !!options.materials;
   const modelRequests = workspace ? 4 : 2;
   const serviceStateRoot = resolve(options.serviceStateRoot ?? resolve(resources.path('state'), 'service'));
   let workspaceExists = false;
@@ -260,9 +257,7 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
         ...(localDataLifecycle ? { sharedLocalData: localDataLifecycle } : {}),
         sharedBrowser: browserHost?.configuration, sharedBrowserUnavailableReason: browserUnavailableReason,
         listen: false, serviceStateRoot: resolve(resources.path('state'), 'workspace'), serviceFilesRoot: resolve(resources.path('task_files'), 'workspace'),
-        materials: { environment: 'local-review' }, configureFinancial: options.workspaceCompanion.configureFinancial ?? localFinancialConfiguration(resources),
-        configureAlgorithms: options.workspaceCompanion.configureAlgorithms ?? localAlgorithmConfiguration({ projectRoot: codeRoot, resources,
-          tables: materialService => createMaterialTableReader(materialService) }),
+        materials: { environment: 'local-review' },
       });
 
     },
@@ -292,7 +287,8 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
       ...(configuration.pi.customModel ? { modelConnection: { endpoint: configuration.pi.customModel.baseUrl, protocol: configuration.pi.customModel.api } } : {}),
       modelInput: configuration.pi.customModel?.input,
       configureCollection: options.configureCollection,
-      configureFinancial: options.configureFinancial, configureAlgorithms: options.configureAlgorithms, materials: options.materials,
+      materials: options.materials,
+      ...(service && workspace ? { configureAlgorithms: localAlgorithmConfiguration(codeRoot, processRuntime) } : {}),
       workspaceServices: companion?.running && 'services' in companion.running ? companion.running.services : undefined,
       browser: browserHost?.configuration ?? options.sharedBrowser, browserUnavailableReason,
       captureSessions, captureUnavailableReason, customSources,

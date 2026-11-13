@@ -110,6 +110,8 @@ test('source minute labels retain their own time axis and key without claiming b
   const out=prepareCandidateTable(original,{materialId:'source-test',format:'json',sourceProjection:proposal.sourceProjection,types:proposal.types});
   assert.equal(out.rows[0]!.__bd_source_start,'2026-04-07T01:30:00Z');
   assert.equal(out.rows[0]!.__bd_source_end,'2026-04-07T01:31:00Z');
+  assert.equal(out.rows[1]!.__bd_source_start,'2026-04-07T01:31:00Z');
+  assert.equal(out.rows[2]!.__bd_source_start,out.rows[0]!.__bd_source_start);
   assert.notEqual(out.rows[0]!.__bd_source_key,out.rows[1]!.__bd_source_key);
   assert.notEqual(out.rows[0]!.__bd_source_key,out.rows[2]!.__bd_source_key);
   const parsed=parseTableSource(original,{materialId:'source-test',format:'json',sourceProjection:proposal.sourceProjection});
@@ -121,7 +123,8 @@ test('invalid, conflicting, missing and ambiguous local minute labels never fall
   for(const minute of ['2026-04-08 09:30:00','2026-04-07 09:30:01','2026-04-07 24:00:00',''])
     assert.throws(()=>resolve([{...row,'分钟时间':minute}]),/分钟/);
   for(const [date,minute] of [['20241103','2024-11-03 01:30:00'],['20240310','2024-03-10 02:30:00']])
-    assert.throws(()=>resolve([{...row,'交易日期':date,'分钟时间':minute}],{answers:{source_trade_date_timezone:'America/New_York'}}),/唯一|明确时间映射/);
+    assert.throws(()=>resolve([{...row,'交易日期':date,'分钟时间':minute.replace(/ (?:01|02):30:/u,' 12:30:')},
+      {...row,'交易日期':date,'分钟时间':minute}],{answers:{source_trade_date_timezone:'America/New_York'}}),/唯一|明确时间映射/);
 });
 test('adjacent reports reuse verified composite keys, with concrete gaps for an inapplicable registered key', () => {
   const early=resolve([{...first,'机构名称':'甲机构'},{...first,'机构名称':'乙机构'}],{answers:{source_key_columns:'["对象代码","机构名称"]'}}).result.proposal!;
@@ -274,7 +277,61 @@ test('an operator-confirmed source profile maps a verified header alias and bloc
   ]);
   assert.equal(result.evidence.find(fact => fact.key === 'unit.当前金额')?.origin, 'contract');
   assert.equal(result.evidence.find(fact => fact.key === 'source_measurement.当前金额')?.value, '报告期金额，单位亿元');
+  assert.equal(result.proposal?.types['当前金额'], 'decimal_string');
+  assert.deepEqual((result.proposal!.target.definition.field_semantic_context as WfdRecord).amount_cny_100million,
+    { content: { assertion_status: 'source_reported_observation' } });
   assert.throws(() => resolve([{ ...incoming, '原报金额（亿元）': '13.9700' }], {
     sourceFieldProfile: frozen, sourceValueColumns: ['当前金额'],
   }), /同义原表头/);
+});
+
+test('explicit unknown measurement preserves minute source lexemes and their formal field assertion', () => {
+  const column = '收盘价（元）';
+  const profile = readSourceFieldProfile({
+    version: 'bd.source-field-profile/1', mappingVersion: 1,
+    profileId: 'synthetic-minute-raw-1', sourceId: 'same-provider-export', series: '1min',
+    fields: [
+      { originalHeader: '证券代码', fieldCode: 'symbol', dataType: 'text', unitCode: 'not_applicable', role: 'identity' },
+      { originalHeader: '交易日期', fieldCode: 'date', dataType: 'text', unitCode: 'date', role: 'date' },
+      { originalHeader: '分钟时间', fieldCode: 'minute', dataType: 'text', unitCode: 'not_applicable', role: 'minute' },
+      { originalHeader: column, fieldCode: 'close', dataType: 'text', unitCode: 'not_applicable', role: 'value',
+        measurement: '保留原表「元」标签，实际单位和复权口径未确认', measurementStatus: 'unknown' },
+      { originalHeader: '证券名称', fieldCode: 'name', dataType: 'text', unitCode: 'not_applicable', role: 'value' },
+    ],
+    frequency: 'minute', timeBucket: { labelSemantics: 'unknown', interval: 'unknown',
+      lengthMinutes: 1, timezone: 'Asia/Shanghai' },
+    adjustment: { status: 'unknown' },
+    confirmation: { status: 'operator_confirmed', basis: '合成样例确认仅保存原报词面',
+      confirmedAtUtc: '2026-11-13T00:00:00Z' },
+  }, 'synthetic-minute-profile.json');
+  const sourceFieldProfile = { profile, digest: sourceFieldProfileDigest(profile), fingerprint: profileFingerprint(profile) };
+  const rows = ['1.0', '0.0', ''].map((value, index) => ({ '证券代码': '000001.SZ', '交易日期': '20260407',
+    '分钟时间': `2026-04-07 09:3${index}:00`, [column]: value, '证券名称': '示例' }));
+  const { original, result } = resolve(rows, { series: '1min', sourceFieldProfile });
+  assert.deepEqual(result.questions, []);
+  const proposal = result.proposal!;
+  assert.equal(proposal.mapping.bar, undefined);
+  const definition = proposal.target.definition;
+  const contexts = definition.field_semantic_context as WfdRecord;
+  const assertion = { content: { assertion_status: 'source_reported_lexeme_unit_unknown' } };
+  assert.deepEqual(contexts.close, assertion);
+  assert.deepEqual(contexts.name, { content: { assertion_status: 'source_reported_observation' } });
+  assert.ok((definition.field_definitions as WfdRecord[]).some(field =>
+    field.field_code === 'close' && field.data_type === 'text' && field.unit_code === 'not_applicable'));
+  assert.equal(result.evidence.find(fact => fact.key === 'source_measurement.' + column)?.value, profile.fields[3]?.measurement);
+  assert.deepEqual(result.evidence.find(fact => fact.key === 'source_measurement_status.' + column),
+    { key: 'source_measurement_status.' + column, value: 'unknown', origin: 'contract',
+      field: `sourceFieldProfile.fields.${column}.measurementStatus` });
+  const out = prepareCandidateTable(original, { materialId: 'source-test', format: 'json',
+    sourceProjection: proposal.sourceProjection, types: proposal.types, emptyToNull: proposal.emptyToNull });
+  const { stateColumn } = proposal.sourceProjection!.fields.find(field => field.column === column)!;
+  assert.deepEqual(out.rows.map(row => [row[column], row[stateColumn]]), [
+    ['1.0', 'valid_value'], ['0.0', 'valid_value'], [null, 'unknown'],
+  ]);
+  const existing = structuredClone(definition);
+  (existing.field_semantic_context as WfdRecord).close = { content: { assertion_status: 'source_reported_price_label' } };
+  const later = resolve([{ ...rows[2]!, [column]: '--' }], { series: '1min', sourceFieldProfile,
+    registeredSourceDefinition: existing }).result;
+  assert.deepEqual(later.questions, []);
+  assert.deepEqual((later.proposal!.target.definition.field_semantic_context as WfdRecord).close, assertion);
 });

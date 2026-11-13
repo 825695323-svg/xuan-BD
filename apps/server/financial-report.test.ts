@@ -4,8 +4,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { DIMENSION_KEYS } from '../../modules/collection/processing-routing.js';
-import { financialAlgorithmDefinition, type FinancialCalculation } from '../../modules/collection/data-processing/financial-fixed.js';
-import { pdfNative } from '../../platform/capabilities/conversion/pdf.js';
+import type { FinancialCalculation } from '../../modules/collection/data-processing/financial-fixed.js';
 import { createFullChainFixture, openFullChainHost } from './full-chain-test-support.js';
 
 const manifestPath = process.env.XUAN_FINANCIAL_MANIFEST;
@@ -190,40 +189,42 @@ test('financial actual fixed consistency independently checks disclosed balance 
     } finally { await host.close(); }
   });
 
-test('financial fixed application entry standardizes actual pinned L2 records and publishes legal quarters/TTM with source-version evidence',
+test('financial fixed application entry standardizes actual pinned L2 records and preserves source-version evidence through publication',
   { skip: !financialFixturePath || !process.env.WFD_PYTHON, timeout: 1_800_000 }, async () => {
     const fixture = JSON.parse(readFileSync(join(financialFixturePath!, 'financial-fixture.json'), 'utf8'));
     const l2 = JSON.parse(readFileSync(join(fixture.root, 'financial-published-ledger.json'), 'utf8')) as any[];
     let host = await openFullChainHost(fixture);
-    const run = Date.now().toString(36), ledger: any[] = [], normalized: any[] = [];
+    const run = Date.now().toString(36), ledger: any[] = [];
     const valueOf = (row: any, key: string) => row.values[key].value;
     const rowKey = (row: any) => row.record_ref.logical_key ?? row.record_ref.record_id;
     const ref = (item: any, rows: any[]) => ({ snapshotId: item.snapshotId, productId: item.productId, businessKeys: rows.map(rowKey) });
     try {
       let parent = (await host.services.r1Workspace!.snapshotStatus()).snapshotId;
-      const publish = async (calculation: FinancialCalculation, materialId: string, source: any) => {
+      const publish = async (calculation: FinancialCalculation, materialId: string, source: any, reportId: string) => {
         const index = ledger.length, requestId = `finance-fixed-${run}-${index}`;
         const targetFields = [...fields, 'original_concept'];
         const mapping = { kind: 'tabular_rows', businessKey: 'business_key', earliestUtc: 'start_utc', latestExclusiveUtc: 'end_utc', precision: 'day', sourceTimezone: 'UTC',
           fields: targetFields.map(fieldCode => ({ fieldCode, value: fieldCode, state: fieldCode === 'value' ? 'value_state' : 'metadata_state' })) };
         const target = { datasetId: 'financial_fixed_' + run, outputKey: 'financial.' + calculation.operation + '.' + run + '.' + index,
           expectedParentSnapshotId: parent, subject: { kind: 'entity', namespace: 'full.chain.test', id: 'longxi_600592' },
-          definition: { semantic_code: 'financial.' + calculation.operation + '.' + run + '.' + index, measurement_nature: 'derived', unit_code: 'per_field',
-            definition_authority: 'full.chain.test', time_role: 'observation', algorithm_definition: financialAlgorithmDefinition(calculation.operation),
+          definition: { semantic_code: 'financial.' + calculation.operation + '.' + run + '.' + index, measurement_nature: 'mixed_observation', unit_code: 'per_field',
+            definition_authority: 'full.chain.test', time_role: 'observation',
             field_definitions: targetFields.map(field_code => ({ field_code, data_type: field_code === 'value' ? 'decimal' : 'text',
-              unit_code: field_code === 'value' ? 'cny' : 'text', measurement_nature: 'derived', time_role: 'observation' })),
-            semantic_context: { version: 'wfd.semantic-context/1.0', content_nature: 'deterministic_derived',
-              time: { period_type: 'natural', frequency: calculation.operation === 'standardize' ? 'source_reported_calendar_period' : calculation.operation,
-                interval: 'half_open', timezone: 'UTC' }, financial: { consolidation_scope: 'consolidated' } } },
+              unit_code: field_code === 'value' ? 'cny' : 'text',
+              measurement_nature: field_code === 'value' ? 'mixed_observation' : 'relation', time_role: 'observation' })),
+            semantic_context: { version: 'wfd.semantic-context/1.0', content_nature: 'source_claim',
+              time: { period_type: 'natural', frequency: 'source_reported_calendar_period', interval: 'half_open', timezone: 'UTC' },
+              content: { assertion_status: 'published', target_period: reportId },
+              financial: { consolidation_scope: 'consolidated' } } },
           inputMode: 'partial_observation', coverage: { scope: { company: '600592', operation: calculation.operation },
             basis: 'observed_partial', completeness: 'partial', absence_means: 'unknown' } };
-        const dimensionValues = { role: 'calculated_result', informationNature: 'deterministic_derived', businessObject: '龙溪股份600592的合并财务报表固定记录',
+        const dimensionValues = { role: 'financial-record', informationNature: 'source_claim', businessObject: '龙溪股份600592的合并财务报表固定记录',
           objectTime: '明确日期期间，固定输入内容视角，不主张历史公开时间资格', purpose: source.usage_scope,
-          structureGranularity: '受信WFD固定记录的CAS主表科目映射或已登记可加流量期间派生' };
+          structureGranularity: '受信WFD固定记录的CAS主表科目映射' };
         const dimensions = Object.fromEntries(DIMENSION_KEYS.map(key => [key, { status: 'known', value: dimensionValues[key],
           evidence: [{ source: 'operator', field: key, quote: dimensionValues[key] }] }]));
         const accepted = await host.call('/processing/plans', { requestId: requestId + '-plan', input: {
-          routing: { materials: [{ materialId, dimensions, intendedAction: 'publish' }] }, outputs: [{ outputId: 'calculated', materialIds: [materialId],
+          routing: { materials: [{ materialId, dimensions, intendedAction: 'publish' }] }, outputs: [{ outputId: 'standardized', materialIds: [materialId],
             intendedAction: 'publish', tables: [{ materialId, format: 'financial-fixed', financialCalculation: calculation,
               types: { value: 'decimal_string' }, annotations: { metadata_state: 'valid_value' } }],
             target: { declaration: { protocol: 'wfd.structured-ingest/1.0', source, target, mapping }, expectedSnapshotId: parent } }] } }, 202);
@@ -238,7 +239,7 @@ test('financial fixed application entry standardizes actual pinned L2 records an
         const proof = parsed.financial_evidence;
         assert.equal(proof.version, 'bd-financial-fixed/1'); assert.equal(proof.inputs.length, calculation.inputs.length);
         assert.ok(proof.inputs.every((input: any) => input.recordVersions.length === input.businessKeys.length));
-        const prepared = await host.call('/r1/prepare', { requestId, planId, outputId: 'calculated', source, target, mapping }, 201);
+        const prepared = await host.call('/r1/prepare', { requestId, planId, outputId: 'standardized', source, target, mapping }, 201);
         const submit = await host.call('/r1/requests/' + requestId + '/submit', { confirmationDigest: prepared.documentSha256 }, 202);
         const committed = await host.settled(submit.jobId, 180_000); assert.equal(committed.status, 'succeeded', JSON.stringify(committed.error));
         const view = await host.call('/r1/requests/' + requestId); assert.equal(view.state, 'associated');
@@ -254,50 +255,20 @@ test('financial fixed application entry standardizes actual pinned L2 records an
         if (valueOf(originalRows[0], 'scope') !== 'consolidated' || valueOf(originalRows[0], 'unit') !== 'cny'
           || !['balance_sheet', 'income_statement', 'cash_flow'].includes(valueOf(originalRows[0], 'statement'))
           || item.report.id === 'longxi-correction-2024') continue;
-        const source = { source_id: 'longxi-fixed-financial-computation', provider: 'BD受控固定财务映射', requested_url: item.source.url,
-          requested_at_utc: item.source.requestedAt, acquired_at_utc: item.source.acquiredAt, usage_scope: '用户授权真实财报的隔离L3标准化及L4确定性期间派生验收',
-          authorization: { status: 'authorized', basis: '用户授权本轮财报样本、受信固定行读取和受控财务映射计算，不扩大为历史回测资格' } };
+        const source = { source_id: 'longxi-fixed-financial-standardization', provider: 'BD受控固定财务映射', requested_url: item.source.url,
+          requested_at_utc: item.source.requestedAt, acquired_at_utc: item.source.acquiredAt, usage_scope: '用户授权真实财报的隔离 L3 标准化验收',
+          authorization: { status: 'authorized', basis: '用户授权本轮财报样本、受信固定行读取和受控财务映射，不扩大为历史回测资格' } };
         const calculation: FinancialCalculation = { version: 'bd-financial-fixed/1', operation: 'standardize', inputs: [ref(item, originalRows)] };
-        const entry = await publish(calculation, item.materialId, source); normalized.push({ ...entry, report: item.report, source });
+        await publish(calculation, item.materialId, source, item.report.id);
       }
-      assert.equal(normalized.length, 15, 'The five selected company reports each contribute the three registered consolidated monetary primary statements.');
-      const find = (report: string, end: string, concept = 'net_profit_total', dimension = 'current') => {
-        const item = normalized.find(item => item.report.id === 'longxi-' + report && item.rows.some((row: any) => valueOf(row, 'concept') === concept)); assert.ok(item, report);
-        const rows = item.rows.filter((row: any) => valueOf(row, 'concept') === concept && valueOf(row, 'end_date') === end && valueOf(row, 'dimension') === dimension);
-        assert.equal(rows.length, 1); return { item, row: rows[0], ref: ref(item, rows) };
-      };
-      const q1 = find('quarter1-2024-corrected', '2024-03-31'), half = find('half-2024-corrected', '2024-06-30'),
-        nine = find('quarter3-2024-corrected', '2024-09-30'), annual = find('annual-2024', '2024-12-31');
-      const q2 = await publish({ version: 'bd-financial-fixed/1', operation: 'quarter_difference', inputs: [half.ref, q1.ref] }, half.item.materialId, half.item.source);
-      assert.equal(valueOf(q2.rows[0], 'value'), '29347286.84');
-      const q3 = await publish({ version: 'bd-financial-fixed/1', operation: 'quarter_difference', inputs: [nine.ref, half.ref] }, nine.item.materialId, nine.item.source);
-      assert.equal(valueOf(q3.rows[0], 'value'), '96446460.11');
-      const sourceRoot = manifestPath!.slice(0, manifestPath!.lastIndexOf('/'));
-      const correctionBytes = readFileSync(join(sourceRoot, '原件/correction-2024.pdf'));
-      const converted = await pdfNative(correctionBytes, new AbortController().signal);
-      const textBytes = Buffer.from(converted.text!);
-      const held = await host.upload('correction-2024-native.txt', 'data', textBytes, 'finance-correction-text-' + run);
-      const heldTask = await host.settled(held.jobId); assert.equal(heldTask.status, 'succeeded');
-      const heldMaterialId = host.services.materials!.getByTask(heldTask.id)!.envelope.materialId;
-      const quote = (converted.content as any).pages[0].text as string;
-      const review = { materialId: heldMaterialId, originalSha256: wfdSha256(textBytes), quote };
-      writeFileSync(join(fixture.root, 'correction-text-provenance-' + run + '.json'), JSON.stringify({ sourcePdfSha256: wfdSha256(correctionBytes),
-        adapter: 'pdfjs-dist/6.4.299', derivedTextSha256: wfdSha256(textBytes), materialId: heldMaterialId, originalPage: 1, quote }, null, 2));
-      const q4 = await publish({ version: 'bd-financial-fixed/1', operation: 'quarter_difference', inputs: [annual.ref, nine.ref], compatibilityReview: review }, heldMaterialId, nine.item.source);
-      assert.equal(valueOf(q4.rows[0], 'value'), '-17259858.12');
-      const priorAnnual = find('annual-2024', '2023-12-31', 'net_profit_total', 'comparison'), priorNine = find('quarter3-2024-corrected', '2023-09-30', 'net_profit_total', 'comparison');
-      const ttm = await publish({ version: 'bd-financial-fixed/1', operation: 'ttm', inputs: [priorAnnual.ref, nine.ref, priorNine.ref], compatibilityReview: review }, heldMaterialId, nine.item.source);
-      assert.equal(valueOf(ttm.rows[0], 'value'), '161679735');
-      const nineRevenue = find('quarter3-2024-corrected', '2024-09-30', 'revenue'), halfRevenue = find('half-2024-corrected', '2024-06-30', 'revenue');
-      const revenueQ3 = await publish({ version: 'bd-financial-fixed/1', operation: 'quarter_difference', inputs: [nineRevenue.ref, halfRevenue.ref] }, nine.item.materialId, nine.item.source);
-      assert.equal(valueOf(revenueQ3.rows[0], 'value'), '456780603.01', 'Matches independently disclosed 2024Q3 single-quarter revenue in official corrected Q3 PDF page 1.');
+      assert.equal(ledger.length, 15, 'The five selected company reports each contribute the three registered consolidated monetary primary statements.');
       await host.close(); host = await openFullChainHost(fixture);
       for (const entry of ledger) {
         assert.equal((await host.call('/r1/requests/' + entry.requestId)).state, 'associated');
         const rows = await fixedRows(host, entry.snapshotId, entry.productId); assert.deepEqual(rows, entry.rows);
       }
-      writeFileSync(join(fixture.root, 'financial-fixed-complete-' + run + '.json'), JSON.stringify({ standardizationOutputs: normalized.length,
-        derivedOutputs: ledger.length - normalized.length, reopenedFixedRows: true, totalRows: ledger.reduce((sum, entry) => sum + entry.rows.length, 0),
-        q2: '29347286.84', q3: '96446460.11', q4: '-17259858.12', netProfitTTM: '161679735', revenueQ3: '456780603.01' }, null, 2));
+      writeFileSync(join(fixture.root, 'financial-fixed-complete-' + run + '.json'), JSON.stringify({
+        standardizationOutputs: ledger.length, reopenedFixedRows: true, totalRows: ledger.reduce((sum, entry) => sum + entry.rows.length, 0),
+      }, null, 2));
     } finally { await host.close(); }
   });

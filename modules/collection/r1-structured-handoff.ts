@@ -11,6 +11,7 @@ import Schema from 'typebox/schema';
 import { frozenR1RowMatches, parseR1Utc, readR1ContractBinding, type R1ContractBinding } from './r1-tabular.js';
 import { r1SourceDenied, r1SourceGaps, validR1Authorization, type R1SourceAuthorization } from './r1-source.js';
 import { PURPOSE_ELIGIBILITY_RULE_VERSION, evaluatePurposeEligibility, type PurposeEligibilityInput, type EligibilityHistoryMode, type EligibilityPurpose, type RestrictionEvidence } from './purpose-eligibility.js';
+import { publishRestrictionTarget } from './wfd-publish-restriction.js';
 export { parseR1Utc } from './r1-tabular.js';
 
 /**
@@ -55,8 +56,8 @@ export interface R1LocalReferences {
   evidenceRefs: R1EvidenceRef[];
   /** New workspace preparations pin four role refs; old scalar task JSON stays unchanged. */
   contractBindingRequired?: true;
-  /** 固定算法独立核验引用：没有五步加工计划；由服务端按原任务计算结果反向核验。 */
-  fixedAlgorithm?: { kind?: 'structured_polars'; taskId: string; requestId: string; resultSha256: string;
+  /** 唯一 MACD 算法的受信独立核验证明；不经过原报加工计划。 */
+  fixedAlgorithm?: { taskId: string; requestId: string; resultSha256: string;
     namespace: string; mode: 'production' | 'user_test'; expectedParentSnapshotId: string | null };
 }
 export interface R1StructuredRequest {
@@ -79,10 +80,6 @@ export interface R1StructuredRequest {
   definitionRef?: WfdRecord | null;
   consistencyGroups?: WfdRecord;
   duplicatePolicy?: 'skip_identical_append';
-}
-export interface R1CalculationCandidateVerification {
-  taskId: string; materialId: string; planId: string; outputId: string;
-  definition: WfdRecord; payload: WfdRecord;
 }
 export interface R1ReceiptRow {
   business_key: string;
@@ -178,11 +175,6 @@ export class R1HandoffService {
   }; processing?: { get(planId: string): unknown; outputArtifact(planId: string, outputId: string): { bytes: Buffer } };
     candidates?: { verifyObject(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): boolean;
       objectBytes(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): Buffer };
-    verifyCalculationCandidate?(input: R1CalculationCandidateVerification): void;
-    /** 外部副作用前重新读取 WFD 固定记录；仅宿主已装配的 Polars 来源核验器可执行。 */
-    verifyCalculationCandidateRemote?(taskId: string, signal: AbortSignal): Promise<void>;
-    verifyFixedDerivedRemote?(taskId: string, signal: AbortSignal): Promise<void>;
-    verifyAlgorithmCandidate?(input: R1CalculationCandidateVerification): void;
     verifyFixedDerived?(refs: R1LocalReferences, documentSha256: string): void }) {
     const version = this.db.prepare('SELECT version FROM schema_versions WHERE module=?').get('r1-structured-handoff');
     if (version && !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='r1_record_associations'").get())
@@ -226,7 +218,7 @@ export class R1HandoffService {
     assertDataOnly(document);
     const documentSha256 = wfdSha256(canonicalWfdJson(document));
     this.assertLocalRefs(input.localRefs, documentSha256);
-    this.assertCalculationCandidates(input.structured, input.localRefs, 'prepare', restriction);
+    this.assertPublicationUsage(input.structured.definition, input.localRefs, 'prepare', restriction, document);
     const localRefsSha256 = wfdSha256(canonicalWfdJson(input.localRefs));
     const now = Date.now();
     const existing = this.db.prepare('SELECT document_sha256,local_refs_sha256,state FROM r1_handoff_attempts WHERE request_id=?').get(input.structured.requestId) as
@@ -385,51 +377,14 @@ export class R1HandoffService {
       .run(Date.now(), requestId);
   }
 
-  /** New first sends recheck known calculation provenance; accepted/unknown external identities keep their recovery path. */
-  assertCalculationReadyToSend(requestId: string, restriction?: RestrictionEvidence | null): void {
+  /** 首次发送前重新核对加工用途；已受理或结果未知的请求仍按原身份恢复。 */
+  assertPublicationReadyToSend(requestId: string, restriction?: RestrictionEvidence | null): void {
     const attempt = this.attempt(requestId);
     if (R1_SETTLED_STATES.has(String(attempt.state)) || ['rejected', 'sending', 'pending_unknown', 'pending_receipt'].includes(String(attempt.state))) return;
     const document = JSON.parse(String(attempt.document_json)) as WfdRecord;
     const output = (document.outputs as WfdRecord[])[0]!;
-    this.assertCalculationCandidates({ definition: output.definition as WfdRecord, payload: output.payload as WfdRecord },
-      JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences, 'first_send', restriction);
-  }
-
-  /**
-   * 原 R1 首次发送前的异步来源再核：对已识别的 Polars 计算候选从 WFD
-   * 冻结快照复读。没有配置的新方法不能由此绕过现有同步候选/用途审核。
-   * 本函数不设置 sending，不调用外部 submit，不更改任何已保存回执。
-   */
-  async assertRemoteCalculationReadyToSend(requestId: string, signal: AbortSignal): Promise<void> {
-    const attempt = this.attempt(requestId);
-    if (R1_SETTLED_STATES.has(String(attempt.state))
-      || ['rejected', 'sending', 'pending_unknown', 'pending_receipt'].includes(String(attempt.state))) return;
-    const refs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
-    if (refs.fixedAlgorithm?.kind === 'structured_polars') {
-      if (!this.options.verifyFixedDerivedRemote)
-        throw new TaskError('DERIVED_REMOTE_UNBOUND', '结构化固定算法发布前 WFD 原始来源复核器未装配。');
-      await this.options.verifyFixedDerivedRemote(refs.fixedAlgorithm.taskId, signal);
-      return;
-    }
-    const callback = this.options.verifyCalculationCandidateRemote;
-    if (!callback) return; // 独立原报测试保留原同步验证；正式宿主装配远端核验。
-    if (refs.fixedAlgorithm || !Array.isArray(refs.materialIds) || !refs.processRefs?.length) return;
-    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='harness_material_uploads'").get()) {
-      // 还没有任何经受管上传形成的计算候选；同步原件核对仍独立执行。
-      return;
-    }
-    const seen = new Set<string>();
-    for (const materialId of refs.materialIds) {
-      signal.throwIfAborted();
-      const staged = this.db.prepare(`SELECT u.request_id FROM material_objects m JOIN harness_material_uploads u
-        ON u.task_id=json_extract(m.envelope_json,'$.taskId')
-        WHERE m.material_id=? AND u.request_id LIKE 'polars-stage:%'`).get(materialId) as { request_id: string } | undefined;
-      if (!staged) continue; // 非 Polars 计算的原报材料由既有 R1 校验。
-      const taskId = staged.request_id.slice('polars-stage:'.length);
-      if (!taskId || seen.has(taskId)) continue;
-      seen.add(taskId);
-      await callback(taskId, signal);
-    }
+    this.assertPublicationUsage(output.definition as WfdRecord,
+      JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences, 'first_send', restriction, document);
   }
 
   /** 实际 submit 结果 → 逐输出 records → 实际 fixed_read → 逐行关联。 */
@@ -438,12 +393,11 @@ export class R1HandoffService {
     if (R1_SETTLED_STATES.has(String(attempt.state))) return this.localExplanation(requestId);
     if (attempt.state === 'rejected') fail('R1_WFD_REJECTED', '原请求已由 WFD 明确拒绝；不重发原身份。');
     const document = JSON.parse(String(attempt.document_json)) as WfdRecord;
-    this.assertLocalRefs(JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences, String(attempt.document_sha256));
     if (['sending', 'pending_unknown', 'pending_receipt'].includes(String(attempt.state))) {
       fail('R1_RECOVERY_REQUIRED', '该原请求结果尚未核清；必须沿原 identity 查询状态，不能重新提交。');
     }
-    this.assertCalculationReadyToSend(requestId, restriction);
-    await this.assertRemoteCalculationReadyToSend(requestId, signal ?? new AbortController().signal);
+    this.assertLocalRefs(JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences, String(attempt.document_sha256));
+    this.assertPublicationReadyToSend(requestId, restriction);
     this.markSending(requestId);
     let reply: WfdProductMachineReply;
     try {
@@ -491,7 +445,7 @@ export class R1HandoffService {
         return (Array.isArray(output.errors) ? output.errors : []).map(value => ({ ...asRecord(value), output_key: output.output_key ?? null }));
       });
       const errors = [...(Array.isArray(result.errors) ? result.errors : []), ...outputErrors];
-      const registration = result.state === 'registered_not_published' ? { registration_preserved: true,
+      const registration = isExplicitRegisteredNotPublished(result, document) ? { registration_preserved: true,
         message: 'WFD 已登记产品定义，但已明确拒绝全部输出且未发布任何记录；原登记事实、回执和错误保留，不重投原身份。' } : {};
       this.db.prepare("UPDATE r1_handoff_attempts SET state='rejected',receipt_json=?,pending_count=0,error_json=?,updated_at=? WHERE request_id=?")
         .run(canonicalWfdJson(result), canonicalWfdJson({ code: 'R1_WFD_REJECTED', wfd_state: state, ...registration, errors }), Date.now(), requestId);
@@ -735,7 +689,7 @@ export class R1HandoffService {
     // The normal workspace preserves an R1 original acquisition, while its
     // exact material identity lives in the already verified processing plan.
     // Follow that explicit plan/output link; never merge materials by hash.
-    if (!materialIds.size && this.options.processing) {
+    if (!materialIds.size && refs.processRefs.length && this.options.processing) {
       this.assertLocalRefs(refs, String(attempt.document_sha256));
       for (const process of refs.processRefs) {
         const plan = asRecord(this.options.processing.get(process.plan_id!));
@@ -815,9 +769,33 @@ export class R1HandoffService {
     return this.consumeResult(requestId, result, client, signal, true);
   }
 
-  private assertCalculationCandidates(structured: Pick<R1StructuredRequest, 'definition' | 'payload'>, refs: R1LocalReferences,
-    boundary: 'prepare' | 'first_send', restrictionOverride?: RestrictionEvidence | null): void {
-    if (refs.fixedAlgorithm) return; // 全部数据由独立固定算法核验器在 assertLocalRefs 中核对。
+  private assertPublicationUsage(definition: WfdRecord, refs: R1LocalReferences,
+    boundary: 'prepare' | 'first_send', restrictionOverride?: RestrictionEvidence | null, document?: WfdRecord): void {
+    if (refs.fixedAlgorithm) {
+      // 数值证明不能替代本次目标的用途限制；每次准备与实际发送都需受信宿主新读取。
+      const output = Array.isArray(document?.outputs) ? document.outputs[0] : null;
+      if (!isWfdRecord(output) || !isWfdRecord(output.subject) || output.definition_mode !== 'create')
+        fail('R1_DERIVED_PROOF_INVALID', 'MACD 目标文档缺少固定发布范围。');
+      const target = publishRestrictionTarget({ purpose: 'current_publish',
+        expectedSnapshotId: refs.fixedAlgorithm.expectedParentSnapshotId,
+        logicalDomain: 'observations', subject: output.subject as WfdRecord, definition, definitionMode: 'create' });
+      const restriction = restrictionOverride;
+      const checked = restriction ? Date.parse(restriction.checkedAtUtc) : NaN;
+      const expires = restriction?.validUntilUtc ? Date.parse(restriction.validUntilUtc) : NaN;
+      const now = Date.now();
+      if (!restriction || !/^[a-f0-9]{64}$/u.test(restriction.evidenceSha256)
+        || !Number.isFinite(checked) || !Number.isFinite(expires) || checked > now + 1000
+        || checked < now - 300_000 || expires < now || expires < checked
+        || canonicalWfdJson(restriction.scope ?? null) !== canonicalWfdJson(target))
+        fail('R1_DERIVED_RESTRICTION_REQUIRED', 'MACD 准备或发送缺少当前目标范围内有效的 WFD 用途限制证明。');
+      if (!(restriction.authority === 'wfd_usage_governance_check' && restriction.result === 'no_known_issue')
+        && !(restriction.authority === 'wfd_usage_governance' && restriction.publishable === true && restriction.auditReproduction === false))
+        fail('R1_DERIVED_USAGE_RESTRICTED', 'WFD 当前用途治理不允许发布该 MACD 派生目标。');
+      return;
+    }
+    if (definition.measurement_nature === 'derived' || definition.algorithm_definition !== undefined
+      || isWfdRecord(definition.semantic_context) && definition.semantic_context.content_nature === 'deterministic_derived')
+      fail('R1_DERIVED_PROOF_REQUIRED', '本地算法派生必须经过当前 MACD 的独立核验，不能按普通原报提交。');
     const hasUploads = !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='harness_material_uploads'").get();
     for (const process of refs.processRefs) {
       const plan = asRecord(this.options.processing!.get(process.plan_id!));
@@ -832,7 +810,6 @@ export class R1HandoffService {
         fail('R1_PUBLISH_PURPOSE_REQUIRED', 'R1准备/首次发送只接受 current_publish 或 historical_publish；当前计算用途不能进入发布边界。');
       }
       const objectSha256 = stripSha(process.output_sha256);
-      const definition = isWfdRecord(structured.definition) ? structured.definition : {};
       const context = isWfdRecord(definition.semantic_context) ? definition.semantic_context : {};
       const derived = isWfdRecord(usage.derived) ? usage.derived as unknown as PurposeEligibilityInput['derived'] : null;
       const result = evaluatePurposeEligibility({
@@ -864,18 +841,10 @@ export class R1HandoffService {
       }
       if (!hasUploads) continue;
       for (const materialId of Array.isArray(output.materialIds) ? output.materialIds : []) {
-        // The durable intake task and original completed calculation are checked again by the verifier.
-        // Filename, content hash alone, and caller-supplied lineage are never provenance authority.
-        const staged = this.db.prepare(`SELECT u.request_id FROM material_objects m JOIN harness_material_uploads u
+        const staged = this.db.prepare(`SELECT 1 FROM material_objects m JOIN harness_material_uploads u
           ON u.task_id=json_extract(m.envelope_json,'$.taskId') WHERE m.material_id=?
-            AND (u.request_id LIKE 'polars-stage:%' OR u.request_id LIKE 'alg-stage:%')`).get(String(materialId)) as { request_id: string } | undefined;
-        if (!staged) continue;
-        const derived = staged.request_id.startsWith('alg-stage:');
-        const verify = derived ? this.options.verifyAlgorithmCandidate : this.options.verifyCalculationCandidate;
-        if (!verify) fail('R1_CALCULATION_VERIFIER_UNBOUND', '派生材料缺少受信原计算验证器，不能按普通原件提交。');
-        verify({ taskId: staged.request_id.slice(derived ? 'alg-stage:'.length : 'polars-stage:'.length),
-          materialId: String(materialId), planId: process.plan_id!, outputId: process.output_id!,
-          definition: structured.definition, payload: structured.payload });
+            AND (u.request_id LIKE 'polars-stage:%' OR u.request_id LIKE 'alg-stage:%')`).get(String(materialId));
+        if (staged) fail('R1_RETIRED_DERIVATION', '已退出的派生结果只可查询原记录。');
       }
     }
   }
@@ -916,11 +885,11 @@ export class R1HandoffService {
       if (canonicalWfdJson(storedSource) !== canonicalWfdJson(source)) fail('R1_SOURCE_CHANGED', '来源引用与 BD 保存来源不同。');
     }
     if (refs.fixedAlgorithm) {
-      if (!this.options.verifyFixedDerived || refs.processRefs.length !== 0
-        || refs.originalIds.length !== 1 || refs.materialIds.length !== 0
+      if (!this.options.verifyFixedDerived || Object.hasOwn(refs.fixedAlgorithm, 'kind')
+        || refs.processRefs.length !== 0 || refs.originalIds.length !== 1 || refs.materialIds.length !== 0
         || refs.evidenceRefs.length !== 1 || refs.evidenceRefs[0]?.content_sha256 !== source.sha256
         || refs.evidenceRefs[0]?.kind !== 'fixed-algorithm-output')
-        fail('R1_DERIVED_PROOF_INVALID', '固定算法派生交接必须只有原任务的独立核验证明，不接受外加加工引用。');
+        fail('R1_DERIVED_PROOF_INVALID', 'MACD 派生交接必须只有原任务的独立核验证明，不接受其他算法或额外加工引用。');
       this.options.verifyFixedDerived(refs, documentSha256);
       return;
     }
@@ -1154,7 +1123,8 @@ export function assertKnownR1Source(source: Pick<R1SourceRef, 'source_id' | 'pro
 
 /** An explicit registration result is not a publication. Compact summaries cannot prove zero records. */
 function isExplicitRegisteredNotPublished(result: WfdRecord, document: WfdRecord): boolean {
-  if (result.state !== 'registered_not_published' || result.snapshot_id !== null || result.formal_publication_verified !== false
+  if (!['registered_not_published', 'rejected'].includes(String(result.state))
+    || result.snapshot_id !== null || result.formal_publication_verified !== false
     || result.formal_publication_ref || result.formal_publication_receipt || result.formal_publication
     || (isWfdRecord(result.persistent_receipt) && result.persistent_receipt.formal_publication_ref)
     || !Array.isArray(result.output_results) || !Array.isArray(document.outputs)) return false;

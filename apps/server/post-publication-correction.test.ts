@@ -4,7 +4,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
-import { meanExactDecimal } from '../../modules/collection/source-observation-ma.js';
 import { createFullChainFixture, openFullChainHost, type FullChainHost } from './full-chain-test-support.js';
 
 /**
@@ -187,13 +186,6 @@ async function publish(host: FullChainHost, caseTag: string) {
   }
   return { doc, receipt };
 }
-
-test('均线复算复用原精确十进制与最终 half_even', () => {
-  // Codex 反例：先截断到 8 位再整除会得到 1.50000001；原方法完整十进制最终 half_even 是 1.50000002。
-  assert.equal(meanExactDecimal(['1', '2.00000003']), '1.50000002');
-  assert.equal(meanExactDecimal(['1', '2']), '1.50000000');
-  assert.equal(meanExactDecimal(['-1', '-2']), '-1.50000000');
-});
 
 test('已发布错误更正：真实新加工产物、审批拒绝后重办、精确前驱与固定读回',
   { skip: !enabled, timeout: 900_000 }, async () => {
@@ -402,141 +394,3 @@ test('错误适配绑定按真实裸 hex 配置摘要匹配计划', { skip: !ena
     await host.close().catch(() => {});
   }
 });
-
-function derivedOutput(key: string, value: string): WfdRecord {
-  return { output_key: key, logical_domain: 'observations',
-    subject: { kind: 'physical_object', namespace: 'correction.test', id: 'series_a' },
-    definition_mode: 'create', definition_ref: null,
-    definition: definition('correction.series.a.moving_average'),
-    input_mode: 'partial_observation',
-    coverage: { scope: { synthetic: true }, basis: 'observed_partial',
-      completeness: 'partial', absence_means: 'unknown' },
-    payload: { kind: 'scalar_rows', rows: [row('row-series_a', value)] } };
-}
-function derivedDocument(requestId: string, parent: string, value: string): WfdRecord {
-  return { ...document(requestId, parent), outputs: [derivedOutput('ma-series_a', value)] };
-}
-
-test('受影响均线派生：正式暂停、精确重算、正式替代与固定读回后才结案',
-  { skip: !enabled, timeout: 900_000 }, async () => {
-    const fixture = createFullChainFixture({ name: 'post-pub-derived', machine: true,
-      units: { count: { dimension: 'quantity' } } });
-    const host = await openFullChainHost(fixture);
-    try {
-      const bytes = Buffer.from('business_key,value_decimal,value_state\nrow-series_a,11,valid_value\n', 'utf8');
-      const upload = await host.upload('derived.csv', 'data', bytes, 'derived-material');
-      const intake = await host.settled(upload.jobId);
-      assert.equal(intake.status, 'succeeded', JSON.stringify(intake.error));
-      const materialId = host.services.materials!.getByTask(intake.id)!.envelope.materialId;
-      const originalSha256 = host.services.materials!.readOriginal(materialId).sha256;
-      const published = await publish(host, 'derived');
-      const seeded = seedAssociations(host, published.doc, published.receipt, 'derived', materialId);
-      const repairPlan = await createRepairPlan(host, materialId, bytes, 'derived-repair');
-      const a = (published.receipt.output_results as WfdRecord[]).find(item => item.output_key === 'series_a')!;
-      const oldSnapshot = String(published.receipt.snapshot_id);
-      const oldAVersion = String((a.records as WfdRecord[])[0]!.record_version);
-      // 真实 WFD 派生输出：合成证明明确标注，但固定快照/版本/回执都是真实引擎产物。
-      const derived = derivedDocument('derived-request', oldSnapshot, '9.5');
-      const derivedReply = await host.services.r1Runtime!.connection.client.request('submit', { document: derived });
-      assert.equal(derivedReply.response.ok, true, JSON.stringify(derivedReply.response.error));
-      const derivedReceipt = derivedReply.result as WfdRecord;
-      assert.equal(derivedReceipt.state, 'published_formal', JSON.stringify(derivedReceipt));
-      const derivedOutputResult = (derivedReceipt.output_results as WfdRecord[])[0]!;
-      const derivedProduct = String(derivedOutputResult.product_id);
-      const derivedSnapshot = String(derivedReceipt.snapshot_id);
-      const derivedVersion = String((derivedOutputResult.records as WfdRecord[])[0]!.record_version);
-      const derivedDefinition = String((derivedOutputResult.definition_ref as WfdRecord).digest);
-      const now = Date.now();
-      host.database.connection.prepare(`INSERT INTO r1_handoff_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        'derived-request', 'correction_dataset', 'full.chain.test', canonicalWfdJson(derived),
-        wfdSha256(canonicalWfdJson(derived)), canonicalWfdJson({ originalIds: [], materialIds: [materialId],
-          sourceRefs: [], processRefs: [], evidenceRefs: [] }), 'refs-digest', 'associated',
-        canonicalWfdJson(derivedReceipt), 0, null, now, now);
-      host.database.connection.prepare(`INSERT INTO r1_record_associations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        'correction_dataset', derivedProduct, derivedDefinition, derivedSnapshot, 'row-series_a',
-        derivedVersion, 'derived-request', 'bd-derived:main', 'correction-source', '[]', '[]', now);
-      const { sourceObservationMACodeDigest } = await import('../../modules/collection/source-observation-ma.js');
-      const proof = { version: 'bd.source-observation-ma-proof/1', method: 'source_observation_ma',
-        methodVersion: '1.0.0', implementationVersion: 'bd.source-observation-ma/1',
-        codeDigest: sourceObservationMACodeDigest(), materialSha256: originalSha256,
-        derivativeSemanticCode: 'derived.source_observation_ma.synthetic',
-        sourceProductId: String(a.product_id), period: 2, valueColumn: 'value_decimal',
-        unitCode: 'count', timeZone: 'UTC',
-        subject: (published.doc.outputs as WfdRecord[]).find(item => item.output_key === 'series_a')!.subject,
-        groupColumns: ['series'],
-        dateColumn: 'date', outputScale: 8, rounding: 'half_even', windowKind: 'observation_rows',
-        inputScope: 'selected_batch_only', historicalAvailability: 'unknown',
-        priceBasis: 'source_reported_unverified',
-        sources: [{ materialId, materialSha256: originalSha256, requestId: seeded.series_a!.requestId,
-          source: { source_id: 'synthetic', provider: '合成', requested_url: 'https://example.test',
-            requested_at_utc: '2026-04-13T00:00:00Z', acquired_at_utc: '2026-04-13T00:00:01Z',
-            usage_scope: 'synthetic' }, productId: String(a.product_id), snapshotId: oldSnapshot,
-          definitionDigest: String((a.definition_ref as WfdRecord).digest) }],
-        lineage: [
-          { businessKey: 'row-series_prev', date: '2026-04-12', groupValues: ['series_a'],
-            sourceIndex: 0, sourceRow: 1, location: {}, recordVersion: 'r_prev', inputValue: '9',
-            inputState: 'valid_value', windowStart: 0, windowCount: 1, status: 'warmup', value: null },
-          { businessKey: 'row-series_a', date: '2026-04-13', groupValues: ['series_a'],
-            sourceIndex: 0, sourceRow: 2, location: {}, recordVersion: oldAVersion, inputValue: '10',
-            inputState: 'valid_value', windowStart: 0, windowCount: 2, status: 'valid', value: '9.5' }],
-        counts: { rows: 2, groups: 1, valid: 1, warmup: 1, windowMissing: 0 } };
-      host.database.connection.prepare('INSERT INTO r1_auto_batches VALUES(?,?,?,?)').run(
-        'derived-batch', 'batch-sha', canonicalWfdJson({ calculations: [{ calculationId: 'calc-1',
-          requestId: 'auto-1', proof }] }), now);
-      host.database.connection.prepare('INSERT INTO r1_auto_requests VALUES(?,?,?,?)').run(
-        'auto-1', 'auto-sha', canonicalWfdJson({ revisions: [{ handoffRequestId: 'derived-request' }] }), now);
-      const capabilities = await host.call('/corrections/capabilities');
-      await host.call('/corrections/cases', { requestId: 'derived-register', input: {
-        caseId: 'case-derived', kind: 'processing_repair', errorType: 'mapping_error',
-        discoveredAt: '2026-11-07T02:00:00Z', evidence: '合成映射错误同时影响原报与均线派生窗口。',
-        binding: { planOutput: { planId: seeded.series_a!.planId, outputId: seeded.series_a!.outputId } },
-        connectionSha256: capabilities.connectionSha256 } }, 201);
-      const impact = await host.call('/corrections/cases/case-derived/impact', { requestId: 'derived-impact' });
-      assert.equal(impact.state, 'impact_frozen', JSON.stringify(impact.gaps));
-      assert.equal(impact.items.some((item: WfdRecord) => item.kind === 'derived'
-        && item.productId === derivedProduct), true, JSON.stringify(impact.items));
-      await host.call('/corrections/cases/case-derived/suspend', { requestId: 'derived-suspend' });
-      await deniedCode(() => host.services.r1Runtime!.connection.client.request('fixed_read',
-        { snapshot_id: derivedSnapshot, product_id: derivedProduct }), /USAGE_SUSPENDED/u);
-      const prepared = await host.call('/corrections/cases/case-derived/prepare', { requestId: 'derived-prepare',
-        input: { planId: repairPlan.planId, outputId: repairPlan.outputId, originalSha256,
-          expectedParentSnapshotId: derivedSnapshot,
-          reason: '按来源字段位置对照矩阵重新映射，第一位置为交易日、第三位置为收盘价；派生窗口按原定义重算。' } });
-      assert.equal(prepared.view.state, 'prepared');
-      assert.equal(prepared.view.items.filter((item: WfdRecord) => item.kind === 'derived').length, 1);
-      // Seed the format of a pending repair prepared by a previous version before authorization.
-      const frozenRow = host.database.connection.prepare('SELECT frozen_json FROM correction_cases WHERE case_id=?')
-        .get('case-derived')!;
-      const legacyFrozen = JSON.parse(String(frozenRow.frozen_json)) as WfdRecord;
-      delete legacyFrozen.verificationFormat;
-      const legacyJson = canonicalWfdJson(legacyFrozen), legacyDigest = wfdSha256(legacyJson);
-      host.database.connection.prepare('UPDATE correction_cases SET frozen_json=?,frozen_sha256=? WHERE case_id=?')
-        .run(legacyJson, legacyDigest, 'case-derived');
-      const task = await host.call('/corrections/cases/case-derived/authorize', { requestId: 'derived-authorize',
-        input: { frozenSha256: legacyDigest, confirmationDigest: prepared.documentSha256 } }, 202);
-      const waiting = await waitTask(host, task.id, ['waiting_approval'], 'derived approve');
-      host.services.tasks.approve(waiting.approvalId!);
-      const done = await waitTask(host, task.id, ['succeeded', 'failed', 'cancelled', 'needs_review'], 'derived done');
-      assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
-      const view = await host.call('/corrections/cases/case-derived');
-      assert.equal(view.result.recomputed[0].itemId, view.items.find((item: WfdRecord) => item.kind === 'derived').itemId);
-      assert.equal(view.result.recomputed[0].itemIds, undefined, 'keep the legacy verification digest input');
-      assert.equal(view.state, 'resolved', JSON.stringify(view));
-      assert.ok(view.items.every((item: WfdRecord) => item.state === 'corrected'), JSON.stringify(view.items));
-      const newSnapshot = String((view.result as WfdRecord).newSnapshotId);
-      const currentDerived = await host.services.r1Runtime!.connection.client.request('fixed_read',
-        { snapshot_id: newSnapshot, product_id: derivedProduct });
-      assert.equal(currentDerived.response.ok, true, JSON.stringify(currentDerived.response.error));
-      const derivedRow = ((currentDerived.result as WfdRecord).rows as WfdRecord[])[0]!;
-      assert.equal((derivedRow.row as WfdRecord).value_decimal, '10.00000000');
-      assert.equal((derivedRow.revision as WfdRecord).supersedes, derivedVersion);
-      const oldDerived = await host.call(`/corrections/cases/case-derived/audit?snapshotId=${derivedSnapshot}&productId=${derivedProduct}`);
-      assert.equal((((oldDerived.rows as WfdRecord[])[0]!.row) as WfdRecord).value_decimal, '9.5');
-      assert.equal(oldDerived.publishable, false);
-      const associations = host.database.connection.prepare(`SELECT * FROM r1_record_associations
-        WHERE request_id='correction:case-derived' ORDER BY product_id`).all() as unknown as WfdRecord[];
-      assert.equal(associations.length, 2);
-    } finally {
-      await host.close().catch(() => {});
-    }
-  });

@@ -1961,6 +1961,25 @@ class WFDDataOnlyService(WFDProductService):
         self.engine._write_immutable(formal_path, canonical(record))
         return formal_path, checks, "published_formal"
 
+    def _prepare_bulk_product(self, document, header, prior_product=None):
+        from . import indexed_bulk as bulk
+
+        self.require_permission("submit")
+        self.require_permission("publish")
+        identity = self._validate_document(document)
+        dataset_id = identity["dataset_id"]
+        internal = self._internal_output(document["outputs"][0])
+        declaration, definition_ref = self._definition(internal, dataset_id)
+        bulk.adapter(header["protocol_version"]).validate_definition(header, declaration)
+        target, first_bind = self._admit_write_target(internal, dataset_id, declaration, definition_ref)
+        issues = validate_units(declaration, self.unit_registry)
+        if issues:
+            raise ValueError(issues[0]["code"] + ":" + issues[0]["message"])
+        extension = {"_wfd_data_only": True, "read_dependencies": []}
+        product, _ = self._register(internal, dataset_id, extension)
+        _reject_unresolved_refs(product.get("declaration") or {})
+        return self._bind_contract(product, extension, prior_product), target, first_bind
+
     def _submit_data(self, doc):
         self.require_permission("submit")
         # A structurally rejected document still has a recoverable request
@@ -2068,6 +2087,8 @@ class WFDDataOnlyService(WFDProductService):
                                "snapshot_id": None, "output_results": [],
                                "formal_publication_ref": None, "errors": result["errors"]})
             return result
+        from .indexed_bulk import indexed_products as load_bulk_products
+        indexed_products = load_bulk_products(self.root, head)
         normalized_outputs = []
         bindings, row_versions, resolved = {}, {}, {}
         results, batch_keys, batch_bar_intervals = [], {}, {}
@@ -2097,6 +2118,13 @@ class WFDDataOnlyService(WFDProductService):
                     "method": write_target.get("method"),
                     "binding": "first_publication" if first_bind else "bound",
                 }
+                if indexed_products:
+                    bound = write_targets.latest(self._write_target_doc(), identity["dataset_id"],
+                                                 write_target["product_family_id"])
+                    candidate_pid = (bound or {}).get("product_id") or "p_" + sha(canonical(
+                        [write_target["product_family_id"], "stable_product"]))[:24]
+                    if candidate_pid in indexed_products:
+                        raise ValueError("BULK_PARTITION_WRITE_REQUIRED")
                 if write_target.get("_admitted_anchor") is not None:
                     # P2: report which registered anchor version admitted the write
                     # and which replay point the history check used.
@@ -2680,6 +2708,9 @@ class WFDDataOnlyService(WFDProductService):
                 or bool(product_calendar.field_calendar_rules(declaration)))
 
     def _page_parts(self, snapshot, product_id, selection=None):
+        from .indexed_bulk import indexed_products
+        if product_id in indexed_products(self.root, snapshot):
+            raise ValueError("BULK_PARTITION_LOCATOR_REQUIRED")
         # None is the private complete-view path, never the public selected-ref
         # validator and never a larger external record_refs allowance.
         wanted = (None if selection is None else

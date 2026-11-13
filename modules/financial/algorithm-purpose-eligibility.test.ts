@@ -5,11 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { localAlgorithmConfiguration } from '../../apps/server/financial-configuration.js';
+import { ProcessRuntime } from '../../platform/runtime/programs.js';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { AlgorithmCallRequest, AlgorithmSnapshotPort, AlgorithmSnapshotRead, AlgorithmSnapshotReference } from './algorithm-types.js';
 import { wfdFixedReadEvidence } from '../collection/purpose-eligibility.js';
-import { captureCodeBinding } from './algorithm-service.js';
+import { LocalAlgorithmService, captureCodeBinding } from './algorithm-service.js';
 import { MaterialService } from '../collection/materials/service.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { FileReferenceService } from '../../platform/resources/files.js';
@@ -113,8 +113,13 @@ function open(root: string, snapshots?: AlgorithmSnapshotPort) {
   tasks = new TaskService({ database, permissions, runtimes });
   const materials = new MaterialService({ database, tasks: () => tasks, files, environment: 'synthetic-test' });
   const resources = new ResourceBindings(join(root, 'runtime'));
-  const algorithms = localAlgorithmConfiguration({ projectRoot: codeRoot, resources, environment: 'synthetic-test', enabled: true, snapshots })({
-    database, tasks: () => tasks, permissions, materials });
+  const pythonExecutable = realpathSync(python!);
+  permissions.grant({ capabilities: [{ action: 'execute', target: { kind: 'file', path: pythonExecutable } }] });
+  const algorithms = new LocalAlgorithmService({
+    database, tasks: () => tasks, permissions, snapshots, processRuntime: new ProcessRuntime(resources),
+    pythonExecutable, computeAssetsRoot: join(codeRoot, 'plugins/financial/local-compute/assets'),
+    environment: 'synthetic-test', enabled: true,
+  });
   runtimes.register(materials.runtime); runtimes.register(algorithms.runtime);
   return { database, tasks, materials, algorithms, files, permissions,
     async material(name: string, bytes: Buffer) {
@@ -129,7 +134,7 @@ function open(root: string, snapshots?: AlgorithmSnapshotPort) {
 }
 
 const csv = Buffer.from('date,close,available_at\n2025-01-01,1.0,2025-01-01T07:00:00Z\n2025-01-02,2.0,2025-01-02T07:00:00Z\n2025-01-03,3.0,2025-01-03T07:00:00Z\n');
-const managed = (materialId: string): AlgorithmCallRequest => ({ methodId: 'ma', parameters: { period: 2 },
+const managed = (materialId: string): AlgorithmCallRequest => ({ methodId: 'macd', parameters: { short_period: 12, long_period: 26, signal_period: 9, init: 'first_valid' },
   source: { kind: 'managed_table', materialId, materialSha256: sha(csv), format: 'csv',
     fieldMapping: { timestamp: 'date', close: 'close', available_at: 'available_at' }, dateFormat: 'YYYY-MM-DD',
     semantics: { subject: 'explicit synthetic series', frequency: '1d', timezone: 'Asia/Shanghai',
@@ -148,6 +153,7 @@ test('WFD-only 计算入口拒绝受管表，即使有真实用户用途授权�
       const call = managed(material.materialId);
       const before = host.database.connection.prepare('SELECT count(*) AS n FROM tasks WHERE runtime_id=?')
         .get('bd.algorithms')?.n;
+      assert.throws(() => host.algorithms.submit('retired-method', { ...call, methodId: 'retired' }), { code: 'INVALID_ALGORITHM_METHOD' });
       assert.throws(() => host.algorithms.submit('historical-no-evidence', call), {
         code: 'ALGORITHM_WFD_ONLY',
       });
@@ -161,11 +167,11 @@ test('WFD-only 计算入口拒绝受管表，即使有真实用户用途授权�
   });
 
 test('本机算法固定快照：4月历史只接受3月版本，5月修订与暂停证据不得放行',
-  { timeout: 90_000 }, async () => {
+  { skip: missing.length ? `未显式选择 ${missing.join('、')}` : false, timeout: 90_000 }, async () => {
     const parent = process.env.XUAN_ALGORITHM_ELIGIBILITY_ROOT ?? process.env.XUAN_TEST_ROOT ?? tmpdir();
     const root = realpathSync(mkdtempSync(join(parent, 'algorithm-snapshot-eligibility-')));
     configure(root);
-    const request = (cutoff: string): AlgorithmCallRequest => ({ methodId: 'ma', parameters: { period: 1 },
+    const request = (cutoff: string): AlgorithmCallRequest => ({ methodId: 'macd', parameters: { short_period: 12, long_period: 26, signal_period: 9, init: 'first_valid' },
       source: { kind: 'fixed_snapshot', reference: { ...reference, at: cutoff } },
       usage: { purpose: 'historical_compute', historyMode: 'market_known_at', cutoff, perspective: 'market_known_at' } });
     let host = open(root, fakePort([marchRow]));
@@ -177,6 +183,7 @@ test('本机算法固定快照：4月历史只接受3月版本，5月修订与�
       const done = review.status === 'waiting_approval' ? await host.tasks.wait(submitted.taskId) : review;
       assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
       const result = host.algorithms.view(submitted.taskId).result!;
+      assert.deepEqual(result.rows.map(({ DIFF, DEA, MACD, ZERO }) => [DIFF, DEA, MACD, ZERO]), [[0, 0, 0, 0]]);
       assert.equal(result.eligibility?.input.status, 'eligible', JSON.stringify(result.eligibility?.input.gaps));
       assert.equal(result.eligibility?.input.checks.find(check => check.id === 'wfd_row_eligibility')?.status, 'pass');
       assert.equal(result.eligibility?.result.historyUse, 'replay');
@@ -194,7 +201,7 @@ test('本机算法固定快照：4月历史只接受3月版本，5月修订与�
     host = open(root, fakePort([marchRow], { publishable: false, compute_eligible: false, audit_reproduction: false,
       known_issues: [{ issue_id: 'CASE-1', reason: 'synthetic suspension' }] }));
     try {
-      const current: AlgorithmCallRequest = { methodId: 'ma', parameters: { period: 1 },
+      const current: AlgorithmCallRequest = { methodId: 'macd', parameters: { short_period: 12, long_period: 26, signal_period: 9, init: 'first_valid' },
         source: { kind: 'fixed_snapshot', reference: { ...reference, perspective: 'snapshot_contents', at: undefined } } };
       const submitted = host.algorithms.submit('snapshot-restricted', current);
       const done = await settle(host.tasks, submitted.taskId);
@@ -213,7 +220,7 @@ test('只有 bar_close（收盘时间声明）的原件，不能绕过 WFD 固�
     try {
       const closeOnly = Buffer.from('date,close\n2025-01-01,1.0\n2025-01-02,2.0\n2025-01-03,3.0\n');
       const material = await host.material('close-only.csv', closeOnly);
-      const call: AlgorithmCallRequest = { methodId: 'ma', parameters: { period: 2 },
+      const call: AlgorithmCallRequest = { methodId: 'macd', parameters: { short_period: 12, long_period: 26, signal_period: 9, init: 'first_valid' },
         source: { kind: 'managed_table', materialId: material.materialId, materialSha256: sha(closeOnly), format: 'csv',
           fieldMapping: { timestamp: 'date', close: 'close' }, dateFormat: 'YYYY-MM-DD',
           semantics: { subject: 'synthetic close-only series', frequency: '1d', timezone: 'Asia/Shanghai',
@@ -240,7 +247,7 @@ test('system_held_at 实际参数与持有证据贯通后可由共用规则判�
     try {
       const heldReference = { ...reference, perspective: 'system_held_at' as const, at: '2026-04-30T00:00:00Z',
         heldScope: 'received_structured', usableStage: 'published_readable' as const };
-      const call: AlgorithmCallRequest = { methodId: 'ma', parameters: { period: 1 },
+      const call: AlgorithmCallRequest = { methodId: 'macd', parameters: { short_period: 12, long_period: 26, signal_period: 9, init: 'first_valid' },
         source: { kind: 'fixed_snapshot', reference: heldReference },
         usage: { purpose: 'historical_compute', historyMode: 'system_held_at', cutoff: '2026-04-30T00:00:00Z', perspective: 'system_held_at' } };
       const submitted = host.algorithms.submit('system-held-wired', call,
@@ -277,7 +284,7 @@ test('system_held_at 缺逐行 held_at 时保持未知，不用查询 cutoff 或
     try {
       const referenceWithoutProof = { ...reference, perspective: 'system_held_at' as const, at: '2026-04-30T00:00:00Z',
         heldScope: 'received_structured', usableStage: 'published_readable' as const };
-      const call: AlgorithmCallRequest = { methodId: 'ma', parameters: { period: 1 },
+      const call: AlgorithmCallRequest = { methodId: 'macd', parameters: { short_period: 12, long_period: 26, signal_period: 9, init: 'first_valid' },
         source: { kind: 'fixed_snapshot', reference: referenceWithoutProof },
         usage: { purpose: 'historical_compute', historyMode: 'system_held_at', cutoff: '2026-04-30T00:00:00Z', perspective: 'system_held_at' } };
       const submitted = host.algorithms.submit('system-held-missing-fact', call,

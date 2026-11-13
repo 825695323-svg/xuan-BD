@@ -40,7 +40,7 @@ export class ConversationR1Bridge {
     });
     this.registrations = [
       registration(ACTIONS[0], '发现本会话R1交接能力', '读取本输入祖先可用的计划/输出及data_only限制；不实时探测WFD、不提交。后续目标与映射只取原加工计划，来源事实须引用真实用户原话。', []),
-      registration(ACTIONS[1], '准备本会话固定R1请求', '只从本分支已明确选件且真实加工的plan/output生成本地冻结文档。sourceJson含六项必需来源原文、可选旧许可文字与authorization的status/basis；sourceEvidenceJson逐字段给{messageId,quote}，授权证据quote须逐字引用本分支真实用户的authorization={"status":"authorized","basis":"具体依据"} JSON声明（可有空白）。必需来源或本次授权缺失、未知不得准备；旧许可文字不决定准入。mapping/target从原计划取得，不接任意行、摘要、权限或连接。相同plan/output复用原请求，改声明须修订计划。准备不是提交；由本机用户另行核摘要确认。', [
+      registration(ACTIONS[1], '准备本会话固定R1请求', '只从本分支已明确选件且真实加工的plan/output核对已登记目标的发布限制并生成冻结文档。sourceJson含六项必需来源原文、可选旧许可文字与authorization的status/basis；sourceEvidenceJson逐字段给{messageId,quote}，授权证据quote须逐字引用本分支真实用户的authorization={"status":"authorized","basis":"具体依据"} JSON声明（可有空白）。必需来源或本次授权缺失、未知不得准备；旧许可文字不决定准入。mapping/target从原计划取得，不接任意行、摘要、权限或连接。相同plan/output复用原请求，改声明须修订计划。准备不是提交；由本机用户另行核摘要确认。', [
         text('planId', '本分支实际计划编号'), text('outputId', '固定输出编号'),
         text('sourceJson', '有真实用户依据的来源声明', true, 32768), text('sourceEvidenceJson', '逐字段用户原文证据', true, 65536),
       ]),
@@ -85,7 +85,10 @@ export class ConversationR1Bridge {
         || !isWfdRecord(declaration.mapping) || !isWfdRecord(declaration.target)) fail('R1_TARGET_CHANGED', '原计划没有固定R1目标与映射声明。');
       const requestId = 'r1c_' + wfdSha256(canonicalWfdJson({ conversation: origin.conversationId, branch: origin.branchId, plan: planId, output: outputId })).slice(0, 48);
       assert();
-      const found = port.prepare({ requestId, planId, outputId, source, mapping: declaration.mapping, target: declaration.target } as unknown as R1PrepareInput);
+      const found = await port.prepareWithRestriction(
+        { requestId, planId, outputId, source, mapping: declaration.mapping, target: declaration.target } as unknown as R1PrepareInput,
+        context.signal);
+      assert();
       this.assertView(found, { request_id: requestId, plan_id: planId, output_id: outputId });
       // Stable host ID permits replay if the companion committed before this separate access-map transaction.
       // This row contains no publication state, authoritative binding, receipt or submit-task copy.

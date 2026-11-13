@@ -6,8 +6,8 @@ import type { ResourceBindings } from '../../platform/resources/bindings.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
 import { readConnectionRegistry } from '../../platform/config/connections.js';
 import type { MaterialService } from './materials/service.js';
-import { resolveProductMachineConnection, type ResolvedProductMachineConnection } from '../financial/product-machine-connection.js';
-import { R1HandoffService, WfdStructuredIngestClient, type R1CalculationCandidateVerification } from './r1-structured-handoff.js';
+import { resolveProductMachineConnection, type ResolvedProductMachineConnection } from '../../adapters/database/wfd-product-connection.js';
+import { R1HandoffService, WfdStructuredIngestClient } from './r1-structured-handoff.js';
 
 /**
  * R1 应用侧受控工厂。
@@ -24,11 +24,7 @@ export interface R1RuntimeOptions {
   candidates?: { verifyObject(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): boolean;
     objectBytes(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): Buffer };
   connectionId?: string;
-  verifyCalculationCandidate?(input: R1CalculationCandidateVerification): void;
-  verifyCalculationCandidateRemote?(taskId: string, signal: AbortSignal): Promise<void>;
-  verifyFixedDerivedRemote?(taskId: string, signal: AbortSignal): Promise<void>;
   verifyFixedDerived?(refs: import('./r1-structured-handoff.js').R1LocalReferences, documentSha256: string): void;
-  verifyAlgorithmCandidate?(input: R1CalculationCandidateVerification): void;
 }
 export interface R1Runtime {
   connection: ResolvedProductMachineConnection;
@@ -46,10 +42,7 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
   const connectionOptions = { allowProduction: options.connectionId !== undefined || manualSelection !== undefined };
   const connection = resolveProductMachineConnection(options.resources, selectedConnectionId, connectionOptions);
   const service = new R1HandoffService({ database: options.database, materials: options.materials,
-    processing: options.processing, candidates: options.candidates, verifyCalculationCandidate: options.verifyCalculationCandidate,
-    verifyCalculationCandidateRemote: options.verifyCalculationCandidateRemote,
-    verifyFixedDerivedRemote: options.verifyFixedDerivedRemote,
-    verifyAlgorithmCandidate: options.verifyAlgorithmCandidate, verifyFixedDerived: options.verifyFixedDerived });
+    processing: options.processing, candidates: options.candidates, verifyFixedDerived: options.verifyFixedDerived });
   const client = new WfdStructuredIngestClient(connection.client, connection.schemaPath);
   const initialConfig = JSON.parse(readFileSync(connection.configPath, 'utf8')) as Record<string, unknown>;
   const currentIdentity = (): R1ConnectionIdentity => {

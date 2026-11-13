@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
+from wfd_sdk import row_version_objects
 from wfd_sdk.state import StateError, StateStore
 from wfd_sdk.writerlock import WriterBusy, writer_lock
 
@@ -65,6 +66,7 @@ _EXCLUDED_PREFIXES = (
     "catalog/product_service/data_only_status/",
     "catalog/product_service/data_only_intents/",
     "catalog/product_service/data_only_submission_plans/",
+    row_version_objects.ADOPTION_REL,
     "catalog/activation_log.jsonl",
     "catalog/.writer.lock",
     "catalog/recovery/",
@@ -75,8 +77,8 @@ _EXCLUDED_PREFIXES = (
 )
 _KIND_ORDER = {
     "data": 0, "contract": 1, "definition": 2, "definition_version": 3,
-    "contract_bundle": 4, "manifest": 5, "snapshot": 6,
-    "commit": 7, "formal_receipt": 8, "retention": 9,
+    "contract_bundle": 4, "row_version_object": 5, "manifest": 6,
+    "snapshot": 7, "commit": 8, "formal_receipt": 9, "retention": 10,
 }
 
 
@@ -212,6 +214,11 @@ def _read_json(path: Path) -> dict:
         return json.loads(path.read_text("utf-8"))
     except (OSError, ValueError) as exc:
         raise PreparationError("JSON_UNREADABLE", f"{path}: {exc}") from exc
+
+
+def _add_row_version_closure(add, snapshot):
+    for digest, _size in row_version_objects.reference_inventory(snapshot)["unique"]:
+        add(row_version_objects.object_relative(digest), "row_version_object", digest)
 
 
 def _fixed_product_identity(product: Mapping[str, Any]) -> str:
@@ -634,6 +641,9 @@ class PreparationInstance:
     caller_roles: tuple[str, ...] = ("read",)
     caller_id: str = "volume-prep"
     request_document: Mapping[str, Any] | None = None
+    row_version_adoption: Mapping[str, Any] | None = None
+    target_state_sha256: str | None = None
+    target_head_sha256: str | None = None
 
     def __post_init__(self) -> None:
         prep = Path(self.prep_root)
@@ -695,6 +705,7 @@ class PreparationSummary:
     files: tuple[PrepFile, ...]
     output_results: tuple[dict, ...]
     status: Mapping[str, Any]
+    bulk_snapshot: Mapping[str, Any] | None = None
 
     def file_map(self) -> dict[str, PrepFile]:
         return {item.relpath: item for item in self.files}
@@ -810,18 +821,31 @@ class VolumePublisher:
         except Exception as exc:
             raise PreparationError("R1_SNAPSHOT_READ_FAILED",
                                    f"{type(exc).__name__}: {exc}") from exc
+        if instance.row_version_adoption is not None:
+            try:
+                prep_adoption = row_version_objects.adoption_record(prep_root, prep_runtime)
+            except row_version_objects.RowVersionObjectError as exc:
+                raise PreparationError(exc.code, str(exc)) from exc
+            if prep_adoption is None or any(
+                    prep_adoption[key] != instance.row_version_adoption[key]
+                    for key in ("identity", "adopted_at_utc")):
+                raise PreparationError("ROW_VERSION_ADOPTION_CHANGED", "prep")
+            for entry in snapshot.get("files", []):
+                source = entry.get("source_bundle") or {}
+                if source.get("_wfd_data_only") is True and isinstance(dict.get(source, row_version_objects.KEY), dict):
+                    raise PreparationError("ROW_VERSION_ADOPTION_CHANGED", "embedded row versions in adopted prep")
         snapshot_rel = f"catalog/snapshots/{instance.snapshot_id}.json"
         snapshot_raw = (prep_root / snapshot_rel).read_bytes()
         snapshot_sha = sha256_bytes(snapshot_raw)
         commit_rel = f"catalog/commits/{instance.snapshot_id}.json"
         commit_raw = (prep_root / commit_rel).read_bytes()
         commit = json.loads(commit_raw.decode("utf-8"))
-        if str(commit.get("snapshot_file", "")).startswith("wfd.snapshot-file/"):
-            raise PreparationError("ROW_VERSION_OBJECT_OPERATION_UNSUPPORTED", "volume publication")
         if commit.get("snapshot_id") != instance.snapshot_id:
             raise PreparationError("COMMIT_SNAPSHOT_ID_MISMATCH", str(commit.get("snapshot_id")))
-        if commit.get("snapshot_file") != snapshot_rel:
-            raise PreparationError("COMMIT_SNAPSHOT_PATH_MISMATCH", str(commit.get("snapshot_file")))
+        try:
+            row_version_objects.snapshot_relative(commit, instance.snapshot_id)
+        except row_version_objects.RowVersionObjectError as exc:
+            raise PreparationError("COMMIT_SNAPSHOT_PATH_MISMATCH", str(commit.get("snapshot_file"))) from exc
         if commit.get("snapshot_sha256") != snapshot_sha:
             raise PreparationError("COMMIT_SNAPSHOT_DIGEST_MISMATCH", str(commit.get("snapshot_sha256")))
         manifest_rel = snapshot.get("manifest_relpath")
@@ -833,6 +857,8 @@ class VolumePublisher:
             raise PreparationError("SNAPSHOT_MANIFEST_DIGEST_MISMATCH", str(manifest_rel))
         if manifest.get("files") != snapshot.get("files"):
             raise PreparationError("MANIFEST_FILE_LIST_MISMATCH", str(manifest_rel))
+        from . import indexed_bulk
+        indexed_bulk.validate_ordinary_roots(prep_root, snapshot, manifest)
         if snapshot.get("snapshot_id") != instance.snapshot_id:
             raise PreparationError("SNAPSHOT_ID_MISMATCH", str(snapshot.get("snapshot_id")))
         if str(snapshot.get("request_key") or "") != key:
@@ -914,6 +940,8 @@ class VolumePublisher:
 
         def add(rel: str, kind: str, expected_sha: str | None = None) -> None:
             rel = _safe_relpath(rel)
+            if kind == "row_version_object":
+                _reject_symlink_path(prep_root, rel)
             source = prep_root / rel
             if source.is_symlink():
                 raise PreparationError("PREP_SYMLINK_NOT_ALLOWED", rel)
@@ -933,6 +961,9 @@ class VolumePublisher:
 
         for entry in snapshot.get("files", []):
             add(str(entry["file_relpath"]), "data", str(entry["file_sha256"]))
+        _add_row_version_closure(add, snapshot)
+        for protocol, ref in indexed_bulk.root_nodes(snapshot):
+            add(indexed_bulk.node_relative(ref, protocol=protocol), "bulk_index_node", ref[7:])
         add(str(manifest_rel), "manifest", snapshot.get("manifest_sha256"))
         add(snapshot_rel, "snapshot", commit.get("snapshot_sha256"))
         add(commit_rel, "commit")
@@ -1022,10 +1053,56 @@ class VolumePublisher:
                 "PARENT_CHANGED", f"target HEAD={head!r}, expected_parent={expected_parent!r}"
             )
 
+    def _check_row_version_adoption(self, summary: PreparationSummary, state: dict | None) -> None:
+        instance = summary.instance
+        try:
+            adoption = row_version_objects.adoption_record(self.root, self.runtime_root)
+        except row_version_objects.RowVersionObjectError as exc:
+            raise PublicationError(exc.code, str(exc)) from exc
+        has_row_objects = any(item.kind == "row_version_object" for item in summary.files)
+        if adoption != instance.row_version_adoption or (has_row_objects and adoption is None):
+            raise PublicationError("ROW_VERSION_ADOPTION_CHANGED", "target")
+        if adoption is not None and (state or {}).get("active_head") == summary.parent_snapshot_id:
+            head_path = self.root / f"catalog/snapshots/{summary.parent_snapshot_id}.json"
+            if (not self.state.path.is_file()
+                    or sha256_file(self.state.path) != instance.target_state_sha256
+                    or (summary.parent_snapshot_id is not None
+                        and (head_path.is_symlink() or not head_path.is_file()
+                             or sha256_file(head_path) != instance.target_head_sha256))):
+                raise PublicationError("SOURCE_VOLUME_CHANGED", "row version adoption generation")
+
+    def _check_bulk_parent(self, summary, state):
+        from . import indexed_bulk
+        if summary.bulk_snapshot is None:
+            return
+        parent = summary.parent_snapshot_id
+        if (state or {}).get("active_head") != parent:
+            return
+        expected = summary.bulk_snapshot["parent_sha256"]
+        if parent is None:
+            if expected is not None:
+                raise PublicationError("BULK_PARENT_DIGEST_MISMATCH")
+            parent_roots = {}
+        else:
+            actual = (state or {}).get("head_snapshot_sha256")
+            path = indexed_bulk.checked_path(self.root, indexed_bulk.snapshot_relative(parent))
+            raw = path.read_bytes()
+            if actual not in (None, expected) or "sha256:" + sha256_bytes(raw) != expected:
+                raise PublicationError("BULK_PARENT_DIGEST_MISMATCH")
+            parent_roots = indexed_bulk.index_roots(json.loads(raw))
+        own_field = indexed_bulk.root_field(indexed_bulk.protocol_for_snapshot(summary.bulk_snapshot))
+        inherited = indexed_bulk.index_roots(summary.bulk_snapshot)
+        if any(inherited.get(field) != parent_roots.get(field)
+               for field in indexed_bulk.ROOT_FIELDS if field != own_field):
+            raise PublicationError("BULK_INHERITED_ROOT_CHANGED")
+
     def _publish_locked(self, summary: PreparationSummary) -> dict:
         det = self._require_volume()
         state = self._read_state()
         self._check_writer(state)
+        if summary.bulk_snapshot is None:
+            self._check_row_version_adoption(summary, state)
+        self._check_bulk_parent(summary, state)
         commit_path = self.root / summary.commit_relpath
         if commit_path.exists() or commit_path.is_symlink():
             return self._resume(summary, state, det)
@@ -1033,7 +1110,7 @@ class VolumePublisher:
         expected_parent = summary.parent_snapshot_id
         self._check_new_head(state, expected_parent)
         parent_paths: set[str] = set()
-        if expected_parent is not None:
+        if expected_parent is not None and summary.bulk_snapshot is None:
             parent = self._load_target_snapshot(expected_parent)
             parent_paths = {str(entry["file_relpath"]) for entry in parent.get("files", [])}
         prep_root = Path(summary.instance.prep_root)
@@ -1056,14 +1133,26 @@ class VolumePublisher:
                 skipped.append(item.relpath)
             self._inject("after_copy", relpath=item.relpath, action=action)
 
+        shared = summary.instance.row_version_adoption is not None
         self._verify_target_precommit(summary)
         self._inject("target_verified", snapshot_id=summary.snapshot_id)
+        current_state = self._read_state()
+        self._check_new_head(current_state, expected_parent)
+        if summary.bulk_snapshot is None:
+            self._check_row_version_adoption(summary, current_state)
+        self._check_bulk_parent(summary, current_state)
+        if shared:
+            self._recheck_target_row_version_bytes(summary)
 
         commit_file = summary.file_map()[summary.commit_relpath]
         self._copy_or_reuse(commit_file, prep_root)
-        self._load_target_snapshot(summary.snapshot_id)
         self._inject("before_activate", snapshot_id=summary.snapshot_id,
                      expected_parent=expected_parent)
+        self._load_published_candidate(summary)
+        latest_state = self._read_state()
+        if summary.bulk_snapshot is None:
+            self._check_row_version_adoption(summary, latest_state)
+        self._check_bulk_parent(summary, latest_state)
         act = self.state.activate(
             summary.snapshot_id, self.root / f"catalog/snapshots/{summary.snapshot_id}.json",
             expected_prev=expected_parent, writer_host=self.binding.writer_host,
@@ -1111,13 +1200,28 @@ class VolumePublisher:
                 det: DetectedVolume) -> dict:
         sid = summary.snapshot_id
         expected_parent = summary.parent_snapshot_id
-        target_snapshot = self._load_target_snapshot(sid)
+        target_snapshot = self._load_published_candidate(summary)
         if target_snapshot.get("snapshot_id") != sid:
             raise PublicationError("TARGET_SNAPSHOT_ID_MISMATCH", str(target_snapshot.get("snapshot_id")))
         self._verify_target_precommit(summary)
         head = (state or {}).get("active_head")
         history = list((state or {}).get("activation_history") or [])
         activated_before = head == sid or any(item.get("snapshot_id") == sid for item in history)
+        if not activated_before and head is not None and summary.bulk_snapshot is not None:
+            from . import indexed_bulk as bulk
+            if bulk.has_bulk_marker(self.root, head):
+                current = bulk.read_snapshot(self.root, head, expected_sha=(state or {}).get("head_snapshot_sha256"))
+            else:
+                from .duckdb_sdk import WFDDuckDBPrototype, load_protocol_validator
+                engine = WFDDuckDBPrototype.open_existing(self.root,
+                    load_protocol_validator(Path(summary.instance.protocol_root)),
+                    runtime_root=self.runtime_root, sandbox=False, read_only=True)
+                current = engine._valid_snapshot_exact(head, verify_payloads=False,
+                    _expected_sha=(state or {}).get("head_snapshot_sha256"))
+            protocol = bulk.protocol_for_snapshot(target_snapshot)
+            current_root = bulk.index_roots(current).get(bulk.root_field(protocol))
+            activated_before = bulk.partition_ref(self.root, current_root,
+                target_snapshot["product_id"], target_snapshot["partition"], protocol) == target_snapshot["result_root"]
 
         if activated_before:
             fixed = self._target_fixed_read(summary)
@@ -1155,6 +1259,12 @@ class VolumePublisher:
             raise PublicationError("FORMAL_RECEIPT_BEFORE_ACTIVATION", summary.formal_relpath)
         self._inject("before_activate", snapshot_id=sid, expected_parent=expected_parent,
                      resume=True)
+        latest_state = self._read_state()
+        if summary.bulk_snapshot is None:
+            self._check_row_version_adoption(summary, latest_state)
+        self._check_bulk_parent(summary, latest_state)
+        if summary.instance.row_version_adoption is not None or summary.bulk_snapshot is not None:
+            self._load_published_candidate(summary)
         act = self.state.activate(
             sid, self.root / f"catalog/snapshots/{sid}.json", expected_prev=expected_parent,
             writer_host=self.binding.writer_host, writer_epoch=self.binding.writer_epoch,
@@ -1207,6 +1317,8 @@ class VolumePublisher:
                 return "skipped"
             raise PublicationError("IMMUTABLE_FILE_COLLISION", str(target))
         prep_source = Path(prep_root) / item.relpath
+        if item.kind == "row_version_object":
+            _reject_symlink_path(Path(prep_root), item.relpath)
         if prep_source.is_symlink() or not prep_source.is_file():
             raise PublicationError("PREP_FILE_MISSING", str(prep_source))
         if prep_source.resolve() == target.resolve():
@@ -1246,9 +1358,36 @@ class VolumePublisher:
         except OSError:
             pass
 
-    def _load_target_snapshot(self, sid: str) -> dict:
+    def _load_published_candidate(self, summary):
+        if summary.bulk_snapshot is None:
+            return self._load_target_snapshot(summary.snapshot_id, expected_commit_sha256=summary.commit_sha256)
+        from . import indexed_bulk
+        try:
+            snapshot = indexed_bulk.read_snapshot(self.root, summary.snapshot_id,
+                                                        expected_commit=summary.commit_sha256)
+            leaf = indexed_bulk.partition_leaf(self.root, snapshot, snapshot["product_id"],
+                                                 snapshot["partition"], snapshot["result_root"])
+            indexed_bulk.verify_part_bytes(self.root, leaf)
+            return snapshot
+        except (ValueError, OSError) as exc:
+            raise PublicationError("BULK_CANDIDATE_INVALID", str(exc)) from exc
+
+    def _load_target_snapshot(self, sid: str, *, expected_commit_sha256=None) -> dict:
         if not _SNAPSHOT_RE.fullmatch(str(sid)):
             raise PublicationError("SNAPSHOT_ID_INVALID", str(sid))
+        from . import indexed_bulk
+        if indexed_bulk.has_bulk_marker(self.root, sid):
+            snapshot = indexed_bulk.read_snapshot(self.root, sid, expected_commit=expected_commit_sha256)
+            anchor = snapshot["legacy_anchor"]
+            files = []
+            if anchor is not None:
+                anchor_id = anchor["snapshot_id"]
+                path = indexed_bulk.checked_path(self.root, indexed_bulk.snapshot_relative(anchor_id))
+                if ("sha256:" + sha256_file(path) != anchor["sha256"]
+                        or indexed_bulk.has_bulk_marker(self.root, anchor_id)):
+                    raise PublicationError("BULK_LEGACY_ANCHOR_INVALID")
+                files = self._load_target_snapshot(anchor_id)["files"]
+            return {**snapshot, "files": files, **indexed_bulk.index_roots(snapshot)}
         commit_rel = f"catalog/commits/{sid}.json"
         _reject_symlink_path(self.root, commit_rel)
         commit_path = self.root / commit_rel
@@ -1259,12 +1398,14 @@ class VolumePublisher:
             commit = json.loads(commit_raw.decode("utf-8"))
         except (OSError, ValueError) as exc:
             raise PublicationError("TARGET_COMMIT_UNREADABLE", str(exc)) from exc
+        if expected_commit_sha256 is not None and sha256_bytes(commit_raw) != expected_commit_sha256:
+            raise PublicationError("TARGET_COMMIT_DIGEST_MISMATCH", str(commit_path))
         if commit.get("snapshot_id") != sid:
             raise PublicationError("TARGET_COMMIT_SNAPSHOT_MISMATCH", str(commit.get("snapshot_id")))
-        snapshot_rel = commit.get("snapshot_file")
-        if str(snapshot_rel).startswith("wfd.snapshot-file/"):
-            raise PublicationError("ROW_VERSION_OBJECT_OPERATION_UNSUPPORTED", "volume publication")
-        _safe_relpath(str(snapshot_rel))
+        try:
+            snapshot_rel = row_version_objects.snapshot_relative(commit, sid)
+        except row_version_objects.RowVersionObjectError as exc:
+            raise PublicationError("TARGET_COMMIT_SNAPSHOT_PATH_MISMATCH", str(exc)) from exc
         _reject_symlink_path(self.root, str(snapshot_rel))
         snapshot_path = self.root / str(snapshot_rel)
         if snapshot_path.is_symlink() or not snapshot_path.is_file():
@@ -1287,6 +1428,8 @@ class VolumePublisher:
         manifest = json.loads(manifest_raw.decode("utf-8"))
         if manifest.get("files") != snapshot.get("files"):
             raise PublicationError("TARGET_MANIFEST_FILE_LIST_MISMATCH", str(manifest_rel))
+        indexed_bulk.validate_ordinary_roots(self.root, snapshot, manifest)
+        self._validate_target_row_versions(snapshot)
         for entry in snapshot.get("files", []):
             rel = _safe_relpath(str(entry["file_relpath"]))
             _reject_symlink_path(self.root, rel)
@@ -1297,7 +1440,44 @@ class VolumePublisher:
                 raise PublicationError("TARGET_DATA_DIGEST_MISMATCH", rel)
         return snapshot
 
+    def _validate_target_row_versions(self, snapshot, closure=None):
+        try:
+            inventory = row_version_objects.reference_inventory(snapshot)
+            for (digest, size), value in inventory["unique"].items():
+                if closure is not None:
+                    relpath = row_version_objects.object_relative(digest)
+                    if closure.get(relpath) != PrepFile(relpath, digest, size, "row_version_object"):
+                        raise PublicationError("TARGET_ROW_VERSION_CLOSURE_MISMATCH", relpath)
+                row_version_objects.load_versions(self.root, value)
+        except row_version_objects.RowVersionObjectError as exc:
+            raise PublicationError(exc.code, str(exc)) from exc
+
+    def _recheck_target_row_version_bytes(self, summary: PreparationSummary) -> None:
+        for item in summary.files:
+            if item.kind != "row_version_object":
+                continue
+            _reject_symlink_path(self.root, item.relpath)
+            path = self.root / item.relpath
+            if not path.is_file() or path.stat().st_size != item.size or sha256_file(path) != item.sha256:
+                raise PublicationError("ROW_VERSION_OBJECT_INVALID", item.relpath)
+
     def _verify_target_precommit(self, summary: PreparationSummary) -> None:
+        if summary.bulk_snapshot is not None:
+            from . import indexed_bulk
+            try:
+                for item in summary.files:
+                    if item.kind in {"commit", "formal_receipt"}:
+                        continue
+                    path = indexed_bulk.checked_path(self.root, item.relpath)
+                    if path.stat().st_size != item.size or sha256_file(path) != item.sha256:
+                        raise ValueError("BULK_TARGET_CLOSURE_DIGEST_MISMATCH:" + item.relpath)
+                snapshot = summary.bulk_snapshot
+                leaf = indexed_bulk.partition_leaf(self.root, snapshot, snapshot["product_id"],
+                                                     snapshot["partition"], snapshot["result_root"])
+                indexed_bulk.verify_part_bytes(self.root, leaf)
+            except (ValueError, OSError) as exc:
+                raise PublicationError("BULK_TARGET_CLOSURE_INVALID", str(exc)) from exc
+            return
         snapshot_path = self.root / f"catalog/snapshots/{summary.snapshot_id}.json"
         manifest_path = self.root / summary.manifest_relpath
         if snapshot_path.is_symlink() or not snapshot_path.is_file():
@@ -1314,9 +1494,33 @@ class VolumePublisher:
             raise PublicationError("TARGET_PARENT_MISMATCH", str(snapshot.get("parent_snapshot_id")))
         if manifest.get("files") != snapshot.get("files"):
             raise PublicationError("TARGET_MANIFEST_FILE_LIST_MISMATCH", summary.manifest_relpath)
+        from . import indexed_bulk
+        try:
+            indexed_roots = indexed_bulk.validate_ordinary_roots(self.root, snapshot, manifest)
+            parent_id = summary.parent_snapshot_id
+            parent_roots = {}
+            if parent_id is not None:
+                # Check against the authenticated parent bytes without traversing its data.
+                path = indexed_bulk.checked_path(self.root, indexed_bulk.snapshot_relative(parent_id))
+                parent_commit = _read_json(indexed_bulk.checked_path(
+                    self.root, f"catalog/commits/{parent_id}.json"))
+                raw_parent = path.read_bytes()
+                checksum = sha256_bytes(raw_parent)
+                if parent_commit.get("snapshot_id") != parent_id or parent_commit.get("snapshot_sha256") != checksum:
+                    raise ValueError("BULK_PARENT_DIGEST_MISMATCH")
+                state = self._read_state() or {}
+                if state.get("active_head") == parent_id and state.get("head_snapshot_sha256") not in (None, "sha256:" + checksum):
+                    raise ValueError("BULK_PARENT_DIGEST_MISMATCH")
+                parent = json.loads(raw_parent)
+                parent_roots = indexed_bulk.index_roots(parent)
+            if indexed_roots != parent_roots:
+                raise ValueError("BULK_ORDINARY_ROOT_CHANGED")
+        except (ValueError, OSError) as exc:
+            raise PublicationError("BULK_ORDINARY_ROOT_INVALID", str(exc)) from exc
+        self._validate_target_row_versions(snapshot, summary.file_map())
         # 只核 fixed read 必需的数据/合同/定义/bundle；product/retention 是可复用 metadata。
         required_kinds = {"data", "contract", "definition", "definition_version",
-                          "contract_bundle", "manifest", "snapshot"}
+                          "contract_bundle", "manifest", "snapshot", "bulk_index_node"}
         for item in summary.files:
             if item.kind not in required_kinds:
                 continue
@@ -1353,6 +1557,13 @@ class VolumePublisher:
 
     def _target_fixed_read(self, summary: PreparationSummary) -> dict:
         try:
+            if summary.bulk_snapshot is not None:
+                from . import indexed_bulk
+                snap = self._load_published_candidate(summary)
+                leaf = indexed_bulk.partition_leaf(self.root, snap, snap["product_id"], snap["partition"], snap["result_root"])
+                count = indexed_bulk.verify_partition(self.root, leaf)
+                return {"ok": True, "snapshot_id": snap["snapshot_id"], "row_count": count,
+                        "result_root": snap["result_root"]}
             from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, load_protocol_validator
             from wfd_sdk.product_data_service import WFDDataOnlyService
 

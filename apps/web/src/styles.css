@@ -678,13 +678,11 @@ button svg, a svg { flex-shrink: 0; }
 :is(.market-state, .market-type-cap, .market-type-asset, .market-type-box-empty, .market-type-chip,
     .market-type-warning, .market-type-legend, .market-types-note, .source-ops, .source-unavailable,
     .source-public, .database-row-main small, .database-scope, .object-card-meta, .object-card-state,
-    .tools-meta dt, .tools-meta-sub, .tools-eyebrow, .tools-nav-entry-meta, .tools-entry-group-title,
-    .tools-source-tag, .tools-group-tag, .tools-result-foot, .tools-field-hint, .tools-tag,
     .task-state, .result-copy small) {
   font-size: var(--ui-meta-size);
   line-height: 1.45;
 }
-:is(.source-card-actions .text-button, .tools-filter-button, .filter-trigger) { font-size: var(--ui-caption-size); }
+:is(.source-card-actions .text-button, .filter-trigger) { font-size: var(--ui-caption-size); }
 @media (max-width: 600px) {
   .ui-dialog { padding: 16px; }
   .dialog-heading { gap: 10px; }

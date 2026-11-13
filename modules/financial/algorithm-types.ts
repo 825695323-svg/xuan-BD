@@ -2,12 +2,12 @@ import type { JsonValue } from '../../contracts/task-contracts.js';
 import type { EligibilityHistoryMode, FixedObjectEvidence, HoldingTimeEvidence, PublicationTimeEvidence, PurposeEligibilityResult,
   PurposeEvidenceClaim, RestrictionEvidence, RevisionEvidence, WfdDecisionEvidence, WfdHistorySupportEvidence } from '../collection/purpose-eligibility.js';
 
-/** 本模块只服务当前已有的 MA、固定 12/26/9 MACD 和严格看涨吞没；不扩成通用工具平台。 */
+/** 本模块登记固定 12/26/9 MACD 与 WFD 输入合同。 */
 export const ALGORITHM_CONTRACT_VERSION = 'bd-local-algorithms/1';
 export const ALGORITHM_RUNTIME = 'bd.algorithms';
 export const ALGORITHM_CALL_ACTION = 'algorithms.calculate';
-export const ALGORITHM_TABLE_ADAPTER_VERSION = 'managed-material-table/1';
-export const ALGORITHM_METHOD_IDS = ['ma', 'macd', 'bullish_engulfing'] as const;
+export const ALGORITHM_INPUT_ADAPTER_VERSION = 'wfd-fixed-snapshot/1';
+export const ALGORITHM_METHOD_IDS = ['macd'] as const;
 export type AlgorithmMethodId = typeof ALGORITHM_METHOD_IDS[number];
 export type AlgorithmEnvironment = 'local-review' | 'synthetic-test';
 export type AlgorithmMethodStatus = 'ready' | 'blocked' | 'unavailable';
@@ -15,13 +15,6 @@ export type AlgorithmDateFormats = 'YYYY-MM-DD' | 'YYYY/MM/DD' | 'YYYYMMDD';
 export type AlgorithmAdjustment = 'unadjusted' | 'as_stored';
 
 export const ALGORITHM_METHODS = Object.freeze({
-  ma: { operation: 'MA', kind: 'indicator', version: 'ma/full-window-v1', field: 'MA',
-    title: 'MA · 算术移动均线',
-    description: '调用既有 MA 实现，按明确提供的有序日线收盘价计算完整窗口算术平均；前置观测不足保留为空。',
-    source: 'plugins/financial/local-compute/assets/indicators.py: MA',
-    reference: '独立算术平均；窗口不足不补零、不前向填充',
-    requiredFields: ['timestamp', 'close'], outputFields: ['MA'],
-    limitations: ['周期按所供有序观测计数；未提供交易所日历时不声称完整交易日覆盖。', '不做复权、不补历史、不自动入库；结果只是本地计算候选。'] },
   macd: { operation: 'MACD', kind: 'indicator', version: 'macd/12-26-9-first-valid-v1', field: 'MACD',
     title: 'MACD · 固定 12/26/9',
     description: '调用既有 12/26/9 MACD 实现，以所供窗口首条收盘价初始化短、长 EMA 与 DEA；返回 DIFF、DEA、MACD 和 ZERO。',
@@ -29,13 +22,6 @@ export const ALGORITHM_METHODS = Object.freeze({
     reference: '独立 EMA/DEA 递推核对；首值初始化，不补窗口前历史',
     requiredFields: ['timestamp', 'close'], outputFields: ['DIFF', 'DEA', 'MACD', 'ZERO'],
     limitations: ['仅按所供连续观测做首值初始化递推；不含窗口之前历史，不能视为完整历史 MACD。', '不接受递推状态续算、不补历史、不自动入库。'] },
-  bullish_engulfing: { operation: 'bullish_engulfing', kind: 'pattern', version: 'bullish-engulfing/strict-v1', field: 'bullish_engulfing',
-    title: '严格看涨吞没',
-    description: '调用既有严格实体吞没规则：前一条为阴线、当前为阳线，且当前实体严格包含前一条实体；缺少前一条观测时为空值。',
-    source: 'plugins/financial/local-compute/assets/patterns.py: bullish_engulfing',
-    reference: '严格开收盘实体包含；不把缺失当未命中',
-    requiredFields: ['timestamp', 'open', 'close'], outputFields: ['bullish_engulfing'],
-    limitations: ['只判断所供相邻日线的开盘价和收盘价；不补历史、不做交易解释。', '形态真假不构成交易建议；不自动入库。'] },
 } as const);
 
 export type AlgorithmMethodDefinition = typeof ALGORITHM_METHODS[AlgorithmMethodId];
@@ -124,10 +110,7 @@ export interface AlgorithmFixedSnapshotSource {
 
 export type AlgorithmSource = AlgorithmManagedTableSource | AlgorithmFixedSnapshotSource;
 
-export type AlgorithmParameters =
-  | { period: number }
-  | { short_period: 12; long_period: 26; signal_period: 9; init: 'first_valid' }
-  | Record<string, never>;
+export type AlgorithmParameters = { short_period: 12; long_period: 26; signal_period: 9; init: 'first_valid' };
 
 export interface AlgorithmUsage {
   /** 只接受本机算法当前内容或历史计算两类；发布资格不属于本算法入口。 */
@@ -186,6 +169,8 @@ export interface AlgorithmBar {
 export interface AlgorithmData { metadata: AlgorithmMetadata; rows: AlgorithmBar[] }
 
 export interface AlgorithmSnapshotRead {
+  /** 受信宿主实际核对的连接身份摘要，不接受调用者声明。 */
+  connectionIdentityDigest?: string;
   /** 必须与请求逐字段相同；不接受 latest 或扩围。 */
   reference: AlgorithmSnapshotReference;
   /** data.read 返回的 JSON 行；由算法服务按显式字段映射与语义转成封闭输入。 */
@@ -218,29 +203,6 @@ export interface AlgorithmSnapshotRowEvidence {
 export interface AlgorithmSnapshotPort {
   status(): { status: 'available' | 'unavailable'; reason: string | null };
   read(reference: AlgorithmSnapshotReference, context: { signal: AbortSignal; taskId?: string }): Promise<AlgorithmSnapshotRead>;
-}
-
-export interface ManagedTableCell { type: 'string' | 'number' | 'boolean' | 'null' | 'missing'; value: string | boolean | null }
-export interface ManagedTableRow { values: ManagedTableCell[] }
-
-export interface ManagedTableSummary {
-  materialId: string;
-  displayName: string;
-  format: 'csv' | 'json';
-  sha256: string;
-  rowCount: number;
-  columns: string[];
-  createdAt: number;
-}
-
-export interface ManagedTableData extends ManagedTableSummary {
-  rows: ManagedTableRow[];
-}
-
-/** 已受管材料只读端口；按材料身份读取，不按任意路径扫描。 */
-export interface ManagedTableReader {
-  list(limit?: number): ManagedTableSummary[];
-  read(materialId: string): ManagedTableData;
 }
 
 export interface AlgorithmInvalidInterval { start: string; end: string; reason: 'insufficient_history' | 'insufficient_warmup'; count: number }
@@ -324,7 +286,7 @@ export interface AlgorithmCatalogView {
   execution: { pythonDigest: string | null; permission: 'granted' | 'approval_required' | 'unavailable'; reason: string | null };
   methods: AlgorithmMethodView[];
   inputs: {
-    managedTables: { status: 'available' | 'unavailable'; reason: string | null; items: ManagedTableSummary[] };
+    managedTables: { status: 'unavailable'; reason: string | null; items: [] };
     fixedSnapshots: { status: 'available' | 'unavailable'; reason: string | null; contract: JsonValue };
   };
   limitations: string[];

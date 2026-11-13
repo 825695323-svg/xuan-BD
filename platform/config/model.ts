@@ -90,8 +90,11 @@ export function parseModelConfiguration(value: unknown): ModelConfiguration {
   let endpoint: URL;
   try { endpoint = new URL(model.baseUrl); }
   catch { throw new ConfigError('模型服务地址无效。'); }
-  if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
-    throw new ConfigError('模型服务地址必须使用 HTTPS，且不能包含凭据、查询参数或片段。');
+  const loopbackHttp = endpoint.protocol === 'http:' && endpoint.hostname === '127.0.0.1'
+    && Boolean(endpoint.port) && model.baseUrl.startsWith('http://127.0.0.1:');
+  if ((endpoint.protocol !== 'https:' && !loopbackHttp)
+    || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+    throw new ConfigError('模型服务地址须使用 HTTPS，或明确的 127.0.0.1 HTTP 端口，且不能包含凭据、查询参数或片段。');
   }
   const reference = value.credential;
   let credential: CredentialReference;

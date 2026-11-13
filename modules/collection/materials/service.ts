@@ -1,21 +1,25 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { ResourceBindings } from '../../../platform/resources/bindings.js';
 import type { CoreDatabase } from '../../../platform/state/database.js';
 import { FileReferenceError, type FileReferenceService } from '../../../platform/resources/files.js';
 import { digestOperationArgs, PermissionError } from '../../../platform/security/permissions.js';
 import { TaskError, type TaskExecutionContext, type TaskRecord, type TaskResult, type TaskRuntime, type TaskService } from '../../../platform/jobs/tasks.js';
 import type { JsonValue } from '../../../contracts/task-contracts.js';
-import type { MaterialEnvelope, MaterialEnvironment, MaterialLimits, MaterialParserAdapter, MaterialPreview, MaterialRecord, MaterialSubmitInput } from './contracts.js';
-import { DEFAULT_MATERIAL_ADAPTERS, inspectMaterial, MATERIAL_INSPECTOR_VERSION, MaterialError, materialAdapterCatalog, materialLimits, validateDeclarations } from '../data-processing/material-inspector/index.js';
-import { SHARED_MATERIAL_OBJECTS_SCHEMA } from '../original-storage.js';
+import type { MaterialCategory, MaterialDeclaration, MaterialEnvelope, MaterialEnvironment, MaterialLimits, MaterialParserAdapter, MaterialPreview, MaterialRecord, MaterialSubmitInput } from './contracts.js';
+import { DEFAULT_MATERIAL_ADAPTERS, inspectMaterial, inspectOversizedMaterial, MATERIAL_INSPECTOR_VERSION, MaterialError, materialAdapterCatalog, materialLimits, validateDeclarations } from '../data-processing/material-inspector/index.js';
+import { MANAGED_MATERIAL_RECORDS_SCHEMA, MANAGED_MATERIAL_VIEW_MIGRATION, SHARED_MATERIAL_OBJECTS_SCHEMA } from '../original-storage.js';
+import { MANAGED_ORIGINAL_MAX_BYTES, readManagedBytes, readManagedRange, streamManagedOriginal,
+  verifyManagedPath, type ManagedOriginalFile } from '../managed-original-file.js';
 
-const MATERIAL_CUSTODY_LIMIT = 256 * 1024 * 1024;
+const MATERIAL_CUSTODY_LIMIT = MANAGED_ORIGINAL_MAX_BYTES;
 export const MATERIAL_RUNTIME = 'bd.materials';
 export const MATERIAL_OPERATION = 'materials.inspect';
-interface InputBinding extends MaterialSubmitInput { materialId: string; filename: string; fileRefVersion: number; mediaType: string }
+interface InputBinding extends MaterialSubmitInput { materialId: string; filename: string; fileRefVersion: number; mediaType: string; managed?: ManagedOriginalFile }
 export interface MaterialServiceOptions {
   database: CoreDatabase;
   tasks(): TaskService;
   files: FileReferenceService;
+  resources?: ResourceBindings;
   environment?: MaterialEnvironment;
   limits?: Partial<MaterialLimits>;
   adapters?: readonly MaterialParserAdapter[];
@@ -43,6 +47,9 @@ export class MaterialService {
     this.versionBinding = Object.freeze({ materials: MATERIAL_INSPECTOR_VERSION, environment: this.environment,
       configuration: digest(JSON.stringify({ limits: this.limits, adapters: materialAdapterCatalog(this.adapters) })) });
     options.database.migrate('materials', 1, SCHEMA);
+    if (this.db.prepare("SELECT type FROM sqlite_schema WHERE name='material_objects'").get()?.type === 'view') {
+      this.enableManagedRecords();
+    }
   }
   private get db() { return this.options.database.connection; }
   private get tasks() { return this.options.tasks(); }
@@ -63,7 +70,7 @@ export class MaterialService {
       const binding = this.input(previous.id);
       const original = { fileRefId: binding.fileRefId, category: binding.category, mediaType: binding.mediaType,
         declaredMetadata: binding.declaredMetadata ?? [], ...binding.expectedSha256 ? { expectedSha256: binding.expectedSha256 } : {} };
-      if (digestOperationArgs(original) !== digestOperationArgs(normalized) || (previous.parentTaskId ?? undefined) !== parentTaskId) {
+      if (binding.managed || digestOperationArgs(original) !== digestOperationArgs(normalized) || (previous.parentTaskId ?? undefined) !== parentTaskId) {
         throw new TaskError('REQUEST_CONFLICT', '同一材料请求标识不能用于不同文件、类别、声明或摘要。');
       }
       return previous;
@@ -85,6 +92,65 @@ export class MaterialService {
     this.options.files.link(reference.id, { taskId: accepted.task.id });
     accepted.publish();
     return this.tasks.start(accepted.task.id, accepted.task.version);
+  }
+
+  /** Trusted host only: adopt the exact durable file sealed by the HTTP receiver. */
+  submitManaged(input: { materialId: string; filename: string; file: ManagedOriginalFile; requestId: string;
+    parentTaskId?: string; category?: MaterialCategory; mediaType?: string; declaredMetadata?: MaterialDeclaration[] }): TaskRecord {
+    const { materialId, filename, file, requestId, parentTaskId } = input;
+    validId(materialId);
+    const fields = { category: input.category ?? 'data', mediaType: input.mediaType ?? 'text/csv',
+      expectedSha256: file.sha256, declaredMetadata: validateDeclarations(input.declaredMetadata) };
+    this.assertManagedSeal(materialId, filename, file);
+    const path = verifyManagedPath(this.options.resources, file);
+    const previous = this.requestTask(requestId);
+    if (previous) {
+      const binding = this.input(previous.id);
+      const expected = { ...binding, ...fields, materialId, filename, managed: file };
+      if (!binding.managed || digestOperationArgs(binding) !== digestOperationArgs(expected) || (previous.parentTaskId ?? undefined) !== parentTaskId) {
+        throw new TaskError('REQUEST_CONFLICT', '同一材料请求不能改绑受管原件、声明或父任务。');
+      }
+      return previous.status === 'ready' ? this.resume(previous.id, previous.version) : previous;
+    }
+    this.assertDispatch();
+    this.enableManagedRecords();
+    const existing = this.db.prepare('SELECT task_id FROM material_inputs WHERE material_id=?').get(materialId);
+    if (existing) throw new TaskError('REQUEST_CONFLICT', '受管原件已绑定原材料请求；请沿用同一请求号。');
+    const { accepted } = this.options.database.transaction(() => {
+      this.assertDispatch();
+      this.assertManagedSeal(materialId, filename, file);
+      verifyManagedPath(this.options.resources, file);
+      const reference = this.options.files.registerInTransaction({ path, source: 'generated', displayName: filename });
+      if (digestOperationArgs(reference.resource) !== digestOperationArgs(file.resource) || reference.size !== file.byteLength
+        || reference.device !== file.device || reference.inode !== file.inode || reference.mtimeNs !== file.mtimeNs) {
+        throw new MaterialError('MATERIAL_ORIGINAL_CHANGED', '原件登记与受管固化身份不一致。');
+      }
+      const binding: InputBinding = { ...validateInput({ fileRefId: reference.id, ...fields }), materialId, filename,
+        fileRefVersion: reference.version, managed: file };
+      const accepted = this.tasks.createInTransaction({ title: `材料预览：${filename}`, ownerRole: 'service', runtimeId: MATERIAL_RUNTIME,
+        action: MATERIAL_OPERATION, args: asJson(binding), requestId: requestKey(requestId), parentTaskId,
+        versions: { ...this.versionBinding, originalSha256: file.sha256, fileRefVersion: String(reference.version), originalStorage: 'managed-file/v1' } });
+      this.db.prepare('INSERT INTO material_inputs VALUES(?,?,?,?,?)')
+        .run(materialId, accepted.task.id, JSON.stringify(binding), digestOperationArgs(binding), Date.now());
+      this.options.files.linkInTransaction(reference.id, { taskId: accepted.task.id, artifactId: materialId });
+      return { accepted };
+    });
+    accepted.publish();
+    return this.tasks.start(accepted.task.id, accepted.task.version);
+  }
+
+  private enableManagedRecords() {
+    if (this.db.prepare("SELECT type FROM sqlite_schema WHERE name='material_objects'").get()?.type !== 'view') {
+      throw new MaterialError('MANAGED_MATERIAL_SCHEMA', '历史材料物理表需先按既有共享迁移入口核对，批量保管不能隐式转换原件。');
+    }
+    this.options.database.migrate('managed-material-records', 1, MANAGED_MATERIAL_RECORDS_SCHEMA + MANAGED_MATERIAL_VIEW_MIGRATION);
+  }
+
+  private assertManagedSeal(materialId: string, filename: string, file: ManagedOriginalFile): void {
+    const row = this.db.prepare('SELECT filename,sealed_json FROM managed_original_receipts WHERE material_id=?').get(materialId);
+    if (!row || row.filename !== filename || row.sealed_json !== JSON.stringify(file)) {
+      throw new MaterialError('MATERIAL_ORIGINAL_CHANGED', '仅可保管与持久接收凭据完全相符的受管原件。');
+    }
   }
 
   list(limit = 50): MaterialEnvelope[] {
@@ -119,7 +185,8 @@ export class MaterialService {
     let envelope: MaterialEnvelope, preview: MaterialPreview;
     try { envelope = JSON.parse(envelopeJson) as MaterialEnvelope; preview = JSON.parse(previewJson) as MaterialPreview; }
     catch { throw new MaterialError('MATERIAL_RECORD_CHANGED', '持久材料记录无法解析。'); }
-    if (envelope.materialId !== materialId || envelope.version !== 1 || envelope.localOnly !== true || !/^[a-f0-9]{64}$/u.test(envelope.sha256)) throw new MaterialError('MATERIAL_RECORD_CHANGED', '持久材料信封身份无效。');
+    if (envelope.materialId !== materialId || envelope.version !== 1 || envelope.localOnly !== true || !/^[a-f0-9]{64}$/u.test(envelope.sha256)
+      || (envelope.originalStorage !== undefined && envelope.originalStorage !== 'managed-file/v1')) throw new MaterialError('MATERIAL_RECORD_CHANGED', '持久材料信封身份无效。');
     return structuredClone({ envelope, preview });
   }
 
@@ -132,11 +199,39 @@ export class MaterialService {
   /** 只允许受信宿主按材料身份取原件；不会解析任意路径或沿原路径重读。 */
   readOriginal(materialId: string): { bytes: Buffer; filename: string; mediaType: string; sha256: string } {
     const { envelope } = this.get(materialId);
+    if (envelope.originalStorage === 'managed-file/v1') {
+      const bytes = readManagedBytes(this.options.resources, this.managedFile(envelope));
+      return { bytes, filename: envelope.filename, mediaType: envelope.mediaType, sha256: envelope.sha256 };
+    }
     const row = this.db.prepare('SELECT original_bytes FROM material_objects WHERE material_id=?').get(materialId)!;
     if (!(row.original_bytes instanceof Uint8Array)) throw new MaterialError('MATERIAL_ORIGINAL_CHANGED', '持久原件不是有效字节。');
     const bytes = Buffer.from(row.original_bytes);
     if (bytes.byteLength !== envelope.byteLength || digest(bytes) !== envelope.sha256) throw new MaterialError('MATERIAL_ORIGINAL_CHANGED', '持久原件与冻结大小或 SHA-256 摘要不一致。');
     return { bytes, filename: envelope.filename, mediaType: envelope.mediaType, sha256: envelope.sha256 };
+  }
+
+  /** Only normal completion of this stream validates the whole managed original. */
+  async *readOriginalStream(materialId: string): AsyncGenerator<Buffer> {
+    const { envelope } = this.get(materialId);
+    if (envelope.originalStorage === 'managed-file/v1') {
+      yield* streamManagedOriginal(this.options.resources, this.managedFile(envelope));
+    } else yield this.readOriginal(materialId).bytes;
+  }
+
+  readOriginalRange(materialId: string, offset: number, length: number): Buffer {
+    const { envelope } = this.get(materialId);
+    return readManagedRange(this.options.resources, this.managedFile(envelope), offset, length);
+  }
+
+  private managedFile(envelope: MaterialEnvelope): ManagedOriginalFile {
+    const binding = this.input(envelope.taskId), file = binding.managed;
+    if (envelope.originalStorage !== 'managed-file/v1' || !file || binding.materialId !== envelope.materialId
+      || binding.fileRefId !== envelope.fileRefId || binding.fileRefVersion !== envelope.fileRefVersion
+      || file.sha256 !== envelope.sha256 || file.byteLength !== envelope.byteLength || binding.filename !== envelope.filename) {
+      throw new MaterialError('MATERIAL_ORIGINAL_CHANGED', '受管保管信封与冻结输入不一致。');
+    }
+    this.assertManagedSeal(envelope.materialId, envelope.filename, file);
+    return file;
   }
 
   resume(taskId: string, expectedVersion: number): TaskRecord {
@@ -155,7 +250,12 @@ export class MaterialService {
     this.assertBinding(context.task); this.assertActive(context);
     if (context.task.action !== MATERIAL_OPERATION) throw new TaskError('MATERIAL_OPERATION_DISABLED', '材料运行时只支持只读预览。');
     const binding = this.input(context.task.id), existing = this.getByTask(context.task.id);
-    if (existing) { this.readOriginal(binding.materialId); return result(existing); }
+    if (existing) {
+      if (binding.managed) for await (const block of this.readOriginalStream(binding.materialId)) { this.assertActive(context); void block; }
+      else this.readOriginal(binding.materialId);
+      return result(existing);
+    }
+    if (binding.managed) return await this.inspectManaged(context, binding, binding.managed);
     const reference = this.options.files.verify(binding.fileRefId);
     if (reference.version !== binding.fileRefVersion || reference.displayName !== binding.filename) throw new MaterialError('MATERIAL_INPUT_CHANGED', '文件引用版本或材料名称已变化，不能作为原受理版本继续。');
     const operation = { operationId: MATERIAL_OPERATION, operationVersion: 1, argsDigest: digestOperationArgs(binding),
@@ -191,6 +291,43 @@ export class MaterialService {
     }
   } };
 
+  private async inspectManaged(context: TaskExecutionContext, binding: InputBinding, file: ManagedOriginalFile): Promise<TaskResult> {
+    this.assertManagedSeal(binding.materialId, binding.filename, file);
+    const reference = this.options.files.verify(binding.fileRefId);
+    if (reference.version !== binding.fileRefVersion || reference.source !== 'generated' || reference.displayName !== binding.filename
+      || digestOperationArgs(reference.resource) !== digestOperationArgs(file.resource)) {
+      throw new MaterialError('MATERIAL_INPUT_CHANGED', '受管原件引用与已冻结文件身份不符。');
+    }
+    // The persisted seal is the authorization boundary for this private HTTP receive copy.
+    // This action never opens a caller-provided path or a user-selected original.
+    const oversized = file.byteLength > this.limits.maxBytes;
+    const bytes = Buffer.alloc(oversized ? Math.min(12, file.byteLength) : file.byteLength);
+    let used = 0;
+    for await (const chunk of streamManagedOriginal(this.options.resources, file)) {
+      this.assertActive(context);
+      const copied = chunk.copy(bytes, used, 0, Math.min(chunk.length, bytes.length - used));
+      used += copied;
+    }
+    this.assertActive(context);
+    const inspection = { category: binding.category, filename: binding.filename, mediaType: binding.mediaType,
+      declaredMetadata: binding.declaredMetadata, limits: this.limits, adapters: this.adapters };
+    const preview = oversized ? inspectOversizedMaterial(bytes, file.byteLength, inspection) : inspectMaterial(bytes, inspection);
+    const envelope: MaterialEnvelope = { materialId: binding.materialId, taskId: context.task.id, category: binding.category, environment: this.environment,
+      filename: binding.filename, mediaType: binding.mediaType, byteLength: file.byteLength, sha256: file.sha256, version: 1, fileRefId: binding.fileRefId,
+      fileRefVersion: binding.fileRefVersion, inspectorVersion: MATERIAL_INSPECTOR_VERSION, adapter: preview.adapter, createdAt: Date.now(),
+      localOnly: true, originalStorage: 'managed-file/v1' };
+    const envelopeJson = JSON.stringify(envelope), previewJson = JSON.stringify(preview);
+    this.options.database.transaction(() => {
+      this.assertActive(context);
+      this.assertManagedSeal(binding.materialId, binding.filename, file);
+      verifyManagedPath(this.options.resources, file);
+      this.db.prepare('INSERT INTO managed_material_object_records VALUES(?,?,?,?,?)')
+        .run(binding.materialId, envelopeJson, digest(envelopeJson), previewJson, digest(previewJson));
+    });
+    await context.emit({ type: 'checkpoint', checkpoint: { materialId: binding.materialId, sha256: file.sha256, version: 1 } });
+    return result({ envelope, preview });
+  }
+
   private input(taskId: string): InputBinding {
     const row = this.db.prepare('SELECT binding_json,binding_digest FROM material_inputs WHERE task_id=?').get(taskId);
     if (!row) throw new MaterialError('MATERIAL_TASK_NOT_FOUND', '没有找到此材料任务输入。');
@@ -207,7 +344,8 @@ export class MaterialService {
     for (const [key, value] of Object.entries(this.versionBinding)) if (task.versions[key] !== value) throw new MaterialError('MATERIAL_VERSION_CONFLICT', '材料任务配置或适配器版本已变化，不能静默用新版继续旧任务。');
     const binding = this.input(task.id);
     if (digestOperationArgs(task.args) !== digestOperationArgs(binding)) throw new MaterialError('MATERIAL_INPUT_CHANGED', '任务参数与冻结材料输入不一致。');
-    if (task.versions.originalSha256 !== (binding.expectedSha256 ?? null) || task.versions.fileRefVersion !== String(binding.fileRefVersion)) {
+    if (task.versions.originalSha256 !== (binding.expectedSha256 ?? null) || task.versions.fileRefVersion !== String(binding.fileRefVersion)
+      || (task.versions.originalStorage ?? null) !== (binding.managed ? 'managed-file/v1' : null)) {
       throw new MaterialError('MATERIAL_VERSION_CONFLICT', '任务冻结原件摘要或文件版本不一致。');
     }
   }

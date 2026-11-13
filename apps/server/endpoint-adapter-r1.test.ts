@@ -10,16 +10,14 @@ import { createFullChainFixture, openFullChainHost, type FullChainHost } from '.
 import type { EndpointAdapterConfig } from '../../modules/collection/endpoint-adapter.js';
 
 /**
- * 适配原件的普通 R1 链：JSONP（无表头，字段别名）→ 预检 → 批次 → associated →
- * 固定行版本读回 → 来源均线（volume 手→股实际换算）→ 派生候选发布 → 固定读回。
+ * 适配原件的普通 R1 链：JSONP（无表头，字段别名）→ 批次 → associated → 固定行版本读回。
  * 样本为合成等价响应，明确标注，不冒充供应商实际下载。
  */
 const enabled = !!process.env.WFD_PYTHON && !!process.env.XUAN_FULL_CHAIN_ROOT;
 const source: R1BatchStartInput['source'] = { source_id: 'adapter-r1-fixture', provider: 'isolated synthetic adapter',
   requested_url: 'file:///explicit-selected-adapter-observations', requested_at_utc: '2026-04-13T00:00:00Z',
-  acquired_at_utc: '2026-04-16T00:00:00Z', usage_scope: 'isolated adapter R1 and source MA verification',
+  acquired_at_utc: '2026-04-16T00:00:00Z', usage_scope: 'isolated adapter R1 verification',
   authorization: { status: 'authorized', basis: 'operator selected isolated synthetic adapter samples for this verification' } };
-const jsonHeaders = { 'Content-Type': 'application/json', 'x-mashiro-client': 'web' };
 const binaryHeaders = { 'Content-Type': 'application/octet-stream', 'x-mashiro-client': 'web' };
 const evidence = { sourceId: 'synthetic', provider: '合成等价样本', coverage: '单标的三个交易日',
   basis: '按 20261106 格式对照矩阵的 JSONP 与分号分行结构构造的合成响应；不是供应商真实重放。' };
@@ -27,7 +25,7 @@ const evidence = { sourceId: 'synthetic', provider: '合成等价样本', covera
 function payload(rows: string[]): Buffer {
   return Buffer.from('quotebridge_v6_line_hs_600519_01_last(' + JSON.stringify({ data: rows.join(';') }) + ')', 'utf8');
 }
-// 收盘价按分报送（整数），适配声明 ×0.01 换算为元：均线必须消费换算后的有效值。
+// 收盘价按分报送（整数），适配声明 ×0.01 换算为元，正式读回复核换算后的有效值。
 const ROWS = ['20260413,600519.SH,贵州茅台,141529,25214', '20260414,600519.SH,贵州茅台,141900,20000',
   '20260415,600519.SH,贵州茅台,142550,30000'];
 const BYTES = payload(ROWS);
@@ -73,7 +71,7 @@ function answersFor(questions: { key: string }[]): Record<string, string> {
   return answers;
 }
 
-test('适配原件经普通 R1 发布、固定读回、来源均线与派生发布', { skip: !enabled, timeout: 900_000 }, async () => {
+test('适配原件经普通 R1 发布及固定读回', { skip: !enabled, timeout: 900_000 }, async () => {
   const fixture = createFullChainFixture({ name: 'adapter-r1', machine: true,
     units: { date: { dimension: 'date' }, share: { dimension: 'quantity' }, CNY: { dimension: 'number' } } });
   let host = await openFullChainHost(fixture);
@@ -101,32 +99,19 @@ test('适配原件经普通 R1 发布、固定读回、来源均线与派生发�
     assert.equal(adopted.status, 'adopted');
     const binding = { adapterId: config.adapterId, version: '1', configDigest: adopted.configDigest };
 
-    // 2) 算法预检消费冻结适配：无表头 JSONP 按位置列得到日线资格，成交量列需实际换算。
-    const classified = await (await fetch(`${host.base}/r1/batches/classify?adapterId=${config.adapterId}&adapterVersion=1&configDigest=${adopted.configDigest}`,
-      { method: 'POST', headers: binaryHeaders, body: new Uint8Array(BYTES) })).json();
-    assert.equal(classified.kind, 'daily_bar', JSON.stringify(classified));
-    assert.equal(classified.valueColumn, 'close');
-    assert.equal(classified.dateColumn, 'date');
-    assert.equal(classified.adapter.adjustment, 'qfq');
-
-    // 3) 批次：来源声明 + 逐件回执模板 + 已采用适配。
-    const settingsResponse = await fetch(host.base + '/r1/batches/algorithm-settings', { method: 'PUT', headers: jsonHeaders,
-      body: JSON.stringify({ revision: 0, dailyPeriod: 3, minutePeriod: null }) });
-    const settings = await settingsResponse.json();
-    assert.equal(settingsResponse.status, 200, JSON.stringify(settings));
+    // 2) 批次：来源声明、逐件回执模板与已采用适配。
     const batchId = 'adapter-series';
     const input: R1BatchStartInput = { batchId, source, datasetId: 'adapter_series', datePolicy: 'a_share_calendar_day_asia_shanghai',
       files: [{ name: 'part-0.js', relativePath: 'part-0.js', byteLength: BYTES.length, sha256: wfdSha256(BYTES) }],
       sourceAdapter: binding,
       sourceContextTemplate: { kind: 'synthetic', urlTemplate: 'https://d.10jqka.example.test/v6/line/hs_600519/01/last.js?file={file}',
         observedAt: '2026-04-16T00:00:00Z', protocol: 'jsonp/v1', frequency: 'day', adjustment: 'qfq', market: 'cn-a-share',
-        basis: '合成等价样本，不是供应商实际下载回执；仅用于适配链验证。' },
-      algorithmRouting: { version: 'bd.r1-algorithm-routing/1', settings, files: [classified] } };
+        basis: '合成等价样本，不是供应商实际下载回执；仅用于适配链验证。' } };
     await host.call('/r1/batches/start', input, 202);
     const uploaded = await fetch(`${host.base}/r1/batches/${batchId}/items/item-1/upload`, { method: 'POST', headers: binaryHeaders, body: new Uint8Array(BYTES) });
     assert.equal(uploaded.status, 202, await uploaded.text());
 
-    // 4) 真实问题补答后收束到 associated。
+    // 3) 真实问题补答后收束到 associated。
     for (let round = 0; round < 40; round++) {
       const view = await host.call('/r1/batches/' + batchId) as R1BatchView;
       assert.equal(view.error, null, JSON.stringify(view.error));
@@ -152,7 +137,7 @@ test('适配原件经普通 R1 发布、固定读回、来源均线与派生发�
     const associations = auto.currentRequest!.local.associations as WfdRecord[];
     assert.equal(associations.length, 3);
 
-    // 5) 原始产品固定读回：有效换算值（元）已发布，来源原值仍在解析产物中。
+    // 4) 原始产品固定读回：有效换算值（元）已发布，来源原值仍在解析产物中。
     const originalRead = await host.call('/r1/products/read', { snapshotId: associations[0]!.snapshot_id, productId: associations[0]!.product_id });
     const valuesOf = (row: WfdRecord) => row.values as WfdRecord;
     const closeField = Object.keys(valuesOf(originalRead.result.rows[0] as WfdRecord))
@@ -162,34 +147,17 @@ test('适配原件经普通 R1 发布、固定读回、来源均线与派生发�
     const closes = (originalRead.result.rows as WfdRecord[]).map(row => (valuesOf(row)[closeField!] as WfdRecord).value);
     assert.deepEqual(closes.sort(), ['1415.29', '1419', '1425.5']);
 
-    // 6) 来源均线：使用同一换算后的有效值，派生候选发布并固定读回。
-    assert.equal(view.calculation!.state, 'associated', JSON.stringify(view.calculation));
-    const proof = host.services.r1Batches!.calculationEvidence(batchId)!;
-    assert.deepEqual(proof.counts, { rows: 3, groups: 1, valid: 1, warmup: 2, windowMissing: 0 });
-    assert.equal(proof.lineage.at(-1)!.value, '1419.93000000');
-    const derived = await host.call('/r1/products/read', { snapshotId: view.calculation!.snapshotId, productId: view.calculation!.productId });
-    const derivedRows = derived.result.rows as WfdRecord[];
-    assert.equal(derivedRows.length, 3);
-    const derivedValues = (row: WfdRecord) => row.values as WfdRecord;
-    const maField = Object.keys(derivedValues(derivedRows[2]!)).find(field => (derivedValues(derivedRows[2]!)[field] as WfdRecord)?.unit
-      && ((derivedValues(derivedRows[2]!)[field] as WfdRecord).unit as WfdRecord).unit_code === 'CNY');
-    assert.ok(maField, JSON.stringify(derivedValues(derivedRows[2]!)));
-    // 前两条为预热空值，第三条为换算后收盘均线 1419.93 元；逐行固定版本与谱系保留。
-    assert.equal((derivedValues(derivedRows[0]!)[maField!] as WfdRecord).value, null);
-    assert.equal((derivedValues(derivedRows[1]!)[maField!] as WfdRecord).value, null);
-    assert.equal((derivedValues(derivedRows[2]!)[maField!] as WfdRecord).value, '1419.93');
-    assert.equal(((derivedValues(derivedRows[2]!)[maField!] as WfdRecord).unit as WfdRecord).unit_code, 'CNY');
-    const revisions = derivedRows.map(row => (row.record_ref as WfdRecord).revision_id);
+    const revisions = (originalRead.result.rows as WfdRecord[]).map(row => (row.record_ref as WfdRecord).revision_id);
     assert.equal(new Set(revisions).size, 3);
     assert.ok(revisions.every(revision => typeof revision === 'string' && revision.length > 0));
-    writeFileSync(join(fixture.root, 'adapter-r1-proof.json'), JSON.stringify({ batchId, binding, classified,
-      associations, originalRead: originalRead.result, derived: derived.result, proof,
+    writeFileSync(join(fixture.root, 'adapter-r1-proof.json'), JSON.stringify({ batchId, binding,
+      associations, originalRead: originalRead.result,
       sample: { source: '合成等价 JSONP 响应', realVendorReplay: false } }, null, 2));
 
     // 与前批交叠、且批内出现两次的同一原件，两条都直接指向最早的实际交接。
     const overlapId = 'adapter-series-reuse';
     const overlapping = await host.call('/r1/batches/start', { ...input, batchId: overlapId,
-      files: [input.files[0], input.files[0]], algorithmRouting: undefined }, 202) as R1BatchView;
+      files: [input.files[0], input.files[0]] }, 202) as R1BatchView;
     const sourceRef = { batchId, itemId: item.itemId };
     assert.equal(overlapping.state, 'completed');
     for (const duplicate of overlapping.items) {
@@ -233,7 +201,7 @@ test('适配原件经普通 R1 发布、固定读回、来源均线与派生发�
       assert.equal((await host.call('/r1/batches/start', { ...changed, batchId: retryId }, 409)).code, 'R1_BATCH_CONTEXT_CONFLICT');
     }
 
-    // 重开时连接身份已变。已关联的原报与派生仍属原批次，调度器不得写坏历史状态。
+    // 重开时连接身份已变。已关联的原报仍属原批次，调度器不得写坏历史状态。
     const batchRecord = (id: string) => host.database.connection.prepare('SELECT record_json FROM r1_auto_batches WHERE batch_id=?').get(id)!.record_json;
     const saved = batchRecord(batchId), savedConflict = batchRecord(changed.batchId);
     const oldConnection = host.services.r1Runtime!.currentIdentity();

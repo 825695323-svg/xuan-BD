@@ -7,11 +7,9 @@ on:
       - 'apps/web/visual-audit.html'
       - 'scripts/visual-ui-audit.mjs'
       - 'apps/server/source-settings-routes.ts'
-      - 'apps/server/algorithm-routes.ts'
       - 'apps/server/workspace-routes.ts'
       - 'apps/server/logic-cleanup.test.ts'
       - 'apps/server/r1-routes.test.ts'
-      - 'apps/server/polars-fixed.test.ts'
       - 'apps/server/configured-app.ts'
       - 'apps/server/ui-routes.ts'
       - 'apps/server/attachment-upload.ts'
@@ -64,12 +62,9 @@ jobs:
             apps/web/src/ui/PageUI.test.tsx \
             apps/web/src/ui/logic-cleanup.test.tsx \
             apps/server/logic-cleanup.test.ts \
-            modules/financial/basic-algorithm-tool-contract.test.ts \
-            modules/financial/unified-algorithm-discovery.test.ts \
             modules/collection/production-module-ports.test.ts
-      - name: Verify retired HTTP creation and stepwise AGENTS feedback
+      - name: Verify stepwise AGENTS feedback
         run: |
-          node --import tsx --test --test-name-pattern='fixed calculation HTTP' apps/server/r1-routes.test.ts
           node --import tsx --test --test-name-pattern='AGENTS iterative parse feedback' modules/collection/r1-conversation-bridge.test.ts
       - name: Install CJK glyph coverage for readable screenshots
         run: |

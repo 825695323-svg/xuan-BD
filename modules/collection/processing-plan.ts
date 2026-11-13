@@ -182,7 +182,7 @@ export class ProcessingPlanService {
     polarsCleaner?: PolarsSourceCleaner;
     /** Host-only module switches; cannot be changed by model tools or an existing plan. */
     modules?: Partial<Record<ProcessingStepKind, boolean>> }) {
-    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
+    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts', './data-processing/wfd-fixed-selection.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
     this.versionBinding = Object.freeze({ processing: PROCESSING_PLAN_VERSION,
       implementation: wfdSha256(Buffer.concat(files)), policy: PROCESSING_POLICY_DIGEST,
       ...(options.modules ? { productionModules: wfdSha256(canonicalWfdJson(options.modules)) } : {}),
@@ -258,13 +258,12 @@ export class ProcessingPlanService {
         scope: 'one declarative operator for all endpoints; securities and dates are call inputs, never configuration keys',
         adoptionAuthority: 'trusted local entry only; model-supplied authorization or READY is not adoption evidence',
         drift: 'success-predicate/container/carrier mismatch fails the step and records an isolated reason; no fallback to another version' },
-      financialFixed: { version: 'bd-financial-fixed/1', operations: ['standardize', 'quarter_difference', 'ttm'],
-        calculation: { version: 'bd-financial-fixed/1', operation: 'one listed operation', inputs: [{ snapshotId: 'exact fixed snapshot ID',
-          productId: 'exact fixed product ID', businessKeys: ['exact logical key from fixed read'] }],
-          compatibilityReview: 'optional {materialId,originalSha256,quote}; required for listed unchanged-net-profit cross-revision cases, using an actual material in this output' },
+      financialFixed: { version: 'bd-financial-fixed/1', operations: ['standardize'],
+        calculation: { version: 'bd-financial-fixed/1', operation: 'standardize', inputs: [{ snapshotId: 'exact fixed snapshot ID',
+          productId: 'exact fixed product ID', businessKeys: ['exact logical key from fixed read'] }] },
         input: 'fixed snapshotId/productId/businessKeys only, read by bound host; no caller-supplied values',
-        scope: 'CAS/CNY registered primary-statement concepts; explicit natural-year adjacent quarters and TTM; additive flows only; reviewed unchanged net profit across revisions',
-        limits: '38 decimal digits, 18 fractional digits; unsupported units, fiscal calendars, concepts and revision compatibility remain blocked' },
+        scope: 'CAS/CNY registered primary-statement concept mapping with original values and dimensions',
+        limits: 'Resolved numeric CNY cells and registered concepts only; unmapped concepts are recorded as evidence' },
       tableInputs: { common: ['materialId', 'format'], optional: ['fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations', 'numericFormats'],
         endpointAdapter: 'optional sourceAdapter:{adapterId,version,configDigest}; only an adopted version is resolved and frozen into this plan; format stays the carrier family (csv|json)',
         dedicated: { xlsx: { required: ['xlsxSelection'], shape: 'sheetName,headerRow,firstDataRow,lastDataRow,firstColumn,lastColumn,columns[{column,header,name,type?}]' },
@@ -640,8 +639,6 @@ export class ProcessingPlanService {
         const binding = this.options.financialReaderIdentity();
         if (!binding) fail('FINANCIAL_FIXED', '财务固定读取连接尚未选定。');
         table.financialReaderBinding = wfdSha256(canonicalWfdJson(binding));
-        const review = table.financialCalculation.compatibilityReview;
-        if (review && !materialIds.includes(review.materialId)) fail('FINANCIAL_FIXED', '跨修订相容性原文必须是本输出明确选择并路由的受管材料。');
       }
       const target = readTarget(record.target);
       if (target && /"text_role":"necessary_condition"/u.test(canonicalWfdJson(target)) && !tables.every(table => table.necessaryTextSelection))
@@ -1199,13 +1196,7 @@ export class ProcessingPlanService {
       if (params.financialCalculation && (!this.options.financialReader || !this.options.financialReaderIdentity
         || wfdSha256(canonicalWfdJson(this.options.financialReaderIdentity())) !== params.financialReaderBinding)) fail('FINANCIAL_FIXED', '固定计划的财务读取连接身份已变化；未改绑或读取其他实例。');
       const projection = params.format === 'pdf' ? await projectFinancialPdf(original.bytes, params.pdfSelection!, context.signal)
-        : params.format === 'financial-fixed' ? await projectFinancialFixed(params.financialCalculation!, this.options.financialReader!, context.signal, review => {
-          const material = this.options.materials.readOriginal(review.materialId);
-          const text = decodeText(material.bytes);
-          if (material.sha256 !== review.originalSha256 || !text?.includes(review.quote)) fail('FINANCIAL_FIXED', '跨修订相容性原文或受管材料摘要不符。');
-          const normalized = review.quote.replace(/\s+/gu, '');
-          if (!/(?:更正|调整)/u.test(normalized) || !/(?:不会对|不影响)/u.test(normalized) || !/净利润/u.test(normalized)) fail('FINANCIAL_FIXED', '更正原文没有明确说明净利润不受影响；本版不推断其他科目相容。');
-        }) : null;
+        : params.format === 'financial-fixed' ? await projectFinancialFixed(params.financialCalculation!, this.options.financialReader!, context.signal) : null;
       const projected = projection ? parseTableSource(projection.jsonBytes, { ...params, format: 'json', pdfSelection: undefined, financialCalculation: undefined }) : null;
       let parsed: ParsedCandidateTable;
       try {

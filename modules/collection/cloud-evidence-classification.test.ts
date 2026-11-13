@@ -68,7 +68,7 @@ test('real industry, market, sector and retail flow structures supply sufficient
   assert.equal(classify('日期,今日主力净流入 净额（元）,今日大单净流入 净额（元）\n2025-12-15,-500,-200\n').topic, '待分类');
 });
 
-test('broad algorithm report signals and single keywords cannot select a topic', () => {
+test('broad report signals and single keywords cannot select a topic', () => {
   for (const input of [
     '交易日期,股票代码,情绪备注\n20260407,000001,看好\n',
     '交易日期,股票代码,类型\n20260407,000001,市场情绪\n',

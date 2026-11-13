@@ -48,7 +48,6 @@ export function resolveR1Evidence(input: {
   /** BD 来源字段档案的冻结版本：原表头 → 标准字段/类型/单位，由宿主按来源系列选定。 */
   sourceFieldProfile?: FrozenSourceFieldProfile;
   /** Set only by the host after binding bytes to its own completed computation. */
-  calculatedMaterial?: boolean;
 }): R1EvidenceResult {
   const { envelope, preview } = input.material;
   if (envelope.category === 'tool') fail('工具原件已保管，不能作为数据自动交接。');
@@ -66,7 +65,7 @@ export function resolveR1Evidence(input: {
     'period_type', 'field_code', 'data_type', 'unit_code', 'measurement_nature'];
   const dictionaryTable = ['semantic_code', 'field_code', 'subject_id', 'business_key', 'start_utc', 'end_utc', 'value']
     .every(name => parsed.columns.includes(name));
-  if (!dictionaryTable && !parsed.columns.some(name => name.startsWith('bd.'))) return resolveSourceReport(input, parsed, format);
+  if (!dictionaryTable && !parsed.columns.some(name => name.startsWith('bd.'))) return resolveSourceReportedEvidence(input, parsed, format);
   if (input.sourceValueColumns !== undefined) fail('显式来源选列只适用于来源原报普通表；不能静默裁去已有字典声明。');
   const dictionaryKeys: Record<string, string> = { field_code: 'code.value', data_type: 'type.value',
     unit_code: 'unit.value', measurement_nature: 'measurement.value' };
@@ -133,7 +132,7 @@ export function resolveR1Evidence(input: {
     const field = fact('code.'+col, `「${col}」的稳定字段编码`, undefined, stable(col) ? col : undefined, stable);
     const type = fact('type.'+col, `「${col}」按什么类型保存？`, types) as ValueType;
     const unit = fact('unit.'+col, `「${col}」的单位编码（无单位文字可填 not_applicable）`, undefined, undefined, stable);
-    const nature = fact('measurement.'+col, `「${col}」的计量性质`, input.calculatedMaterial ? ['derived'] : measurement);
+    const nature = fact('measurement.'+col, `「${col}」的计量性质`, measurement);
     // For a header convention, the field's own state takes precedence over a shared state.
     const state = fact('state.'+col, `「${col}」用哪一列标记有效、报告零或未知？也可明确整列有效`,
       [...columns.filter(c => c !== col && ![key,start,end].includes(c)), '@all_valid'], header(col+'_state') ?? sharedState);
@@ -216,6 +215,7 @@ function headerUnit(column: string): string | undefined {
 }
 
 const SOURCE_SEMANTICS_VERSION = 'bd.source-reported-semantics/1';
+const SOURCE_LEXEME_UNIT_UNKNOWN = 'source_reported_lexeme_unit_unknown';
 /** 只认原列直接写明的类别；类别不是其金融定义、市场资格或来源方法已被证实。 */
 function sourceFieldQualification(column: string, dateColumn: string, identity: boolean, minuteColumn?: string) {
   let assertion = 'source_reported_observation';
@@ -279,7 +279,11 @@ export function declaredSourceSeries(source: R1SourceDeclaration | undefined): s
   } catch { return undefined; }
 }
 
-function resolveSourceReport(input: EvidenceInput, parsed: ParsedCandidateTable, format: R1EvidenceProposal['format']): R1EvidenceResult {
+/** Shared semantic projection of actual parsed source cells. Custody remains the caller's responsibility. */
+export function resolveSourceReportedEvidence(input: Pick<EvidenceInput, 'answers' | 'namespace' | 'datasetId' | 'parentSnapshotId'
+  | 'source' | 'sourceValueColumns' | 'registeredKeyColumns' | 'registeredUnits' | 'registeredTypes' | 'registeredSourceDefinition'
+  | 'sourceAdapter' | 'sourceFieldProfile' | 'xlsxSelection'>,
+  parsed: ParsedCandidateTable, format: R1EvidenceProposal['format']): R1EvidenceResult {
   const questions: R1EvidenceQuestion[] = [], evidence: R1EvidenceFact[] = [], checked = new Set<string>();
   const columns = parsed.columns;
   function answer(key: string, label: string, fallback?: string, fileColumn?: string, valid: (value: string) => boolean = value => !!value.trim(), options?: string[]): string {
@@ -490,8 +494,11 @@ function resolveSourceReport(input: EvidenceInput, parsed: ParsedCandidateTable,
     evidence.push({ key:'state.'+column,value:'nonempty_valid_blank_unknown',origin:'file',column });
     if (mappedField?.measurement) evidence.push({ key:'source_measurement.'+column, value:mappedField.measurement,
       origin:'contract', field:`sourceFieldProfile.fields.${column}.measurement` });
+    const measurementUnknown = mappedField?.measurementStatus === 'unknown';
+    if (measurementUnknown) evidence.push({ key:'source_measurement_status.'+column, value:'unknown',
+      origin:'contract', field:`sourceFieldProfile.fields.${column}.measurementStatus` });
     const qualification = sourceFieldQualification(column, dateColumn, identity, minuteColumn);
-    fieldContexts[fieldCode] = { content: { assertion_status: qualification.assertion_status } };
+    fieldContexts[fieldCode] = { content: { assertion_status: measurementUnknown ? SOURCE_LEXEME_UNIT_UNKNOWN : qualification.assertion_status } };
     evidence.push({ key:'source_semantics.'+column,value:canonicalWfdJson(qualification),origin:'file',column });
   }
   const result: R1EvidenceResult = {questions,columns,evidence,...(sourceFamilyHint ? {sourceFamilyHint} : {})};
@@ -518,13 +525,15 @@ function resolveSourceReport(input: EvidenceInput, parsed: ParsedCandidateTable,
         ...(minuteColumn ? {minute_label_meaning:'unknown',trading_session:'unknown',minute_coverage:'unknown'} : {}),public_time:'unknown'}},
     content:{assertion_status:'source_reported_unverified'},measurement:{value_states:['valid_value','unknown']},
     coverage_quality:{completeness:'partial',absence_means:'unknown'}};
-  // 旧族并不因新解释规则自动升版；新知识留本次BD证据，旧全局及旧字段合同沿用其固定范围。
+  // 旧族并不因新解释规则自动升版；显式档案计量声明参与已有定义的差异核对。
   const registeredDefinition = input.registeredSourceDefinition;
   if (registeredDefinition && isWfdRecord(registeredDefinition.semantic_context)) {
     const oldFields = new Set((Array.isArray(registeredDefinition.field_definitions) ? registeredDefinition.field_definitions : [])
       .filter(isWfdRecord).map(field => String(field.field_code)));
     const oldContexts = isWfdRecord(registeredDefinition.field_semantic_context) ? registeredDefinition.field_semantic_context : {};
     for (const fieldCode of Object.keys(fieldContexts)) if (oldFields.has(fieldCode)) {
+      const content = fieldContexts[fieldCode]?.content;
+      if (isWfdRecord(content) && content.assertion_status === SOURCE_LEXEME_UNIT_UNKNOWN) continue;
       if (isWfdRecord(oldContexts[fieldCode])) fieldContexts[fieldCode] = structuredClone(oldContexts[fieldCode]);
       else delete fieldContexts[fieldCode];
     }

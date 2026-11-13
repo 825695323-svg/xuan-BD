@@ -81,7 +81,7 @@ export interface RoutingDecision {
 /** 固定政策：只签发已列明并实际执行的受控规则；专用适配不授予通用业务核验资格。 */
 export const PROCESSING_POLICY = Object.freeze({
   version: 'bd-processing-policy/2',
-  scope: 'CSV/JSON row tables and explicit XLSX cells; declared exact numeric grammar; namespace-resolved numeric XBRL subset; reviewed whole UTF-8 business paragraphs; frozen native PDF table regions; trusted fixed CAS/CNY standardization and legal natural-year quarter/TTM calculations. Per-output applicability and gaps remain explicit.',
+  scope: 'CSV/JSON row tables and explicit XLSX cells; declared exact numeric grammar; namespace-resolved numeric XBRL subset; reviewed whole UTF-8 business paragraphs; frozen native PDF table regions; trusted fixed CAS/CNY concept mapping with original values. Per-output applicability and gaps remain explicit.',
   ruleCoverage: '仅已列明且本输出实际执行的规则；未适配概念、单位、维度、财年、文字用途或修订相容性保持缺口，其余业务规则不能由结构检查批量签发通过。',
   unknownPolicy: 'unknown/conflict 保持缺口；不按不适用跳过，也不阻断不依赖它的解析、清洗或结构完整性检查。发布/算法具体用途资格单独判断；结构检查成功不等于来源真实性或业务语义已验证。',
   purposePolicy: '使用目的只能由真实操作者请求字段或真实用户消息证据确认；模型建议只作未采用建议。',

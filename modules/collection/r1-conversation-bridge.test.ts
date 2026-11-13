@@ -264,16 +264,33 @@ async function actualPlan(h: Host, input: BackendInput, fileRefId: string, caseI
   const dimensions = Object.fromEntries(DIMENSION_KEYS.map(key => [key, { status: 'known', value: routingFacts[key],
     evidence: [{ source: 'user-message', messageId: input.messageId, quote: `${key}=${routingFacts[key]}` }] }]));
   const planJson = { routing: { materials: [{ materialId, dimensions, intendedAction: 'publish' }] },
-    outputs: [{ outputId: 'scalar', materialIds: [materialId], stages: ['parse', 'clean', 'structure', 'annotate', 'check'], intendedAction: 'publish',
+    outputs: [{ outputId: 'scalar', materialIds: [materialId], stages: ['parse'], intendedAction: 'publish',
       usage: { purpose: 'current_publish', historyMode: null, cutoff: null, perspective: null,
         messageId: input.messageId, quote: 'intendedAction=publish' },
       tables: [{ materialId, format: 'csv', types: { value_decimal: 'decimal_string' } }],
       target: { declaration: { protocol: 'wfd.structured-ingest/1.0', target, mapping }, expectedSnapshotId: null } }] };
-  const prepared = await invoke(h, input, 'data.processing.plan', { planJson: JSON.stringify(planJson) }, caseId + '-processing-plan');
+  const parsedPlan = await invoke(h, input, 'data.processing.plan', { planJson: JSON.stringify(planJson) }, caseId + '-parse-plan');
+  const parsePlanId = String(parsedPlan.preview.data.planId);
+  const parseStep = h.companion.processing!.get(parsePlanId).steps[0]!;
+  assert.equal(parseStep.kind, 'parse');
+  const parsed = await invoke(h, input, 'data.modules.parse', { planId: parsePlanId, stepId: parseStep.stepId }, caseId + '-parse');
+  const feedback = parsed.preview.data.parsedPreview;
+  assert.equal(feedback.kind, 'parsed_feedback_only');
+  assert.equal(feedback.sourceSha256, materialRead.preview.data.originalSha256);
+  assert.deepEqual(feedback.fields, ['business_key', 'value_decimal', 'start_utc', 'end_utc']);
+  assert.equal(feedback.rowCount, 2);
+  const reviewed = structuredClone(planJson);
+  reviewed.outputs[0]!.stages = ['parse', 'structure', 'check'];
+  const prepared = await invoke(h, input, 'data.processing.plan',
+    { planJson: JSON.stringify(reviewed), previousPlanId: parsePlanId }, caseId + '-processing-plan');
   const planId = String(prepared.preview.data.planId);
   assert.ok(planId && planId !== 'undefined', JSON.stringify(prepared.preview));
+  const steps = h.companion.processing!.get(planId).steps;
+  assert.deepEqual(steps.map(step => step.kind), ['parse', 'structure', 'check']);
+  assert.equal(steps[0]!.state, 'succeeded', 'Verified parse output is reused from the previous plan.');
   let executed = prepared;
-  for (const step of h.companion.processing!.get(planId).steps) {
+  for (const step of steps) {
+    if (step.state === 'succeeded') continue;
     executed = await invoke(h, input, 'data.processing.execute', { planId, stepId: step.stepId },
       caseId + '-processing-' + step.stepId.replace(/[^a-z0-9-]/giu, '-'));
   }
@@ -284,7 +301,7 @@ async function actualPlan(h: Host, input: BackendInput, fileRefId: string, caseI
   const rows = JSON.parse(output.bytes.toString('utf8')).rows;
   assert.equal(rows.length, 2); assert.equal(rows[0].value_decimal, '12.3');
   json(join(h.root, caseId + '-actual-plan.json'), { materialId, planId, actualPlan: plan, actualRows: rows,
-    materialReadModelPreview: materialRead.preview, preparedModelPreview: prepared.preview, executedModelPreview: executed.preview,
+    materialReadModelPreview: materialRead.preview, parsedModelPreview: parsed.preview, preparedModelPreview: prepared.preview, executedModelPreview: executed.preview,
     noFabricatedOriginsOrProcessingLinks: true });
   return { materialId, planId, plan, executedModelPreview: executed.preview };
 }
@@ -305,7 +322,7 @@ function assertModelView(value: unknown, f: ReturnType<typeof fixture>): void {
 }
 function assertRequestPreview(value: Record<string, unknown>, f: ReturnType<typeof fixture>): void {
   assertModelView(value, f);
-  const allowed = new Set(['contract', 'protocol', 'profile', 'modelSubmit', 'statusSource', 'sourceEvidenceScope',
+  const allowed = new Set(['contract', 'protocol', 'profile', 'submitByAgent', 'statusSource', 'sourceEvidenceScope',
     'requestId', 'state', 'datasetId', 'outputKey', 'planId', 'outputId', 'rowCount', 'documentSha256',
     'submitTaskId', 'requiresRecovery', 'errorCode', 'recoveryTaskId', 'recoveryTaskStatus']);
   for (const key of Object.keys(value)) assert.ok(allowed.has(key), 'R1 request preview has an unapproved field: ' + key);
@@ -314,7 +331,7 @@ function assertRequestPreview(value: Record<string, unknown>, f: ReturnType<type
 }
 function instrumentPort(h: Host) {
   const workspace = h.companion.r1Workspace!;
-  const counts = { prepare: 0, get: 0, recover: 0, checkProfile: 0, list: 0 };
+  const counts = { prepareWithRestriction: 0, get: 0, recover: 0, checkProfile: 0, list: 0 };
   const original = new Map<string, (...args: any[]) => any>();
   for (const name of Object.keys(counts) as Array<keyof typeof counts>) {
     const method = (workspace as any)[name].bind(workspace); original.set(name, method);
@@ -498,12 +515,13 @@ test('processing financial-fixed selector survives personal tool schema and norm
   { skip: !python, timeout: 60000 }, async () => {
     const f = fixture(true), h = await host(f);
     try {
-      const selected = await selectedInput(h, 'financial-fixed-contract');
+      const selected = await selectedInput(h, 'financial-fixed-contract', rawCsv, 'csv', inspectOnlyUserQuote);
       const read = await invoke(h, selected.input, 'material.read', { fileRefId: selected.reference.id }, 'financial-fixed-contract-read');
       const materialId = String(read.preview.data.materialId), financialCalculation = { version: 'bd-financial-fixed/1', operation: 'standardize',
         inputs: [{ snapshotId: 'explicit-test-snapshot', productId: 'explicit-test-product', businessKeys: ['explicit-test-key'] }] };
       const planJson = { routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'calculation', materialIds: [materialId], stages: ['parse'],
-        intendedAction: 'inspect', tables: [{ materialId, format: 'financial-fixed', financialCalculation }] }] };
+        intendedAction: 'inspect', usage: { purpose: 'current_compute', messageId: selected.input.messageId, quote: inspectOnlyUserQuote },
+        tables: [{ materialId, format: 'financial-fixed', financialCalculation }] }] };
       const accepted = await invoke(h, selected.input, 'data.processing.plan', { planJson: JSON.stringify(planJson) }, 'financial-fixed-contract-plan');
       const planId = String(accepted.preview.data.planId), plan = h.companion.processing!.get(planId);
       assert.deepEqual(plan.steps[0]!.parameters.financialCalculation, financialCalculation);
@@ -533,7 +551,7 @@ test('F05 R1 version manifest covers authority-bearing connection dependencies',
   const source = readFileSync(join(codeRoot, 'platform/plugins/direct-versions.ts'), 'utf8');
   const group = /\br1:\s*\[([\s\S]*?)\],/u.exec(source);
   assert.ok(group, 'R1 explicit implementation group must exist.');
-  for (const path of ['modules/financial/product-machine-connection.ts', 'platform/config/connections.ts',
+  for (const path of ['adapters/database/wfd-product-connection.ts', 'platform/config/connections.ts',
     'platform/resources/bindings.ts', 'modules/collection/r1-paged-readback.ts']) {
     assert.ok(group[1]!.includes("'" + path + "'"), 'R1 version manifest missing ' + path);
   }
@@ -852,7 +870,9 @@ test('F05 actual personal R1 prepare → host-confirmed real Python publish with
       const planned = await actualPlan(h, selected.input, selected.reference.id, 'python-recovery');
       assert.ok(h.companion.r1Runtime, JSON.stringify(h.companion.r1Configuration));
       const client = h.companion.r1Runtime.client, submit = client.submit.bind(client), probeProfile = client.probeProfile.bind(client);
-      let profileChecks = 0;
+      const usageStatus = client.usageStatus.bind(client);
+      let profileChecks = 0, usageChecks = 0;
+      client.usageStatus = async (...args) => { usageChecks++; return usageStatus(...args); };
       client.probeProfile = async (...args) => { profileChecks++; return probeProfile(...args); };
       client.submit = async (...args) => {
         submitCalls++;
@@ -869,7 +889,8 @@ test('F05 actual personal R1 prepare → host-confirmed real Python publish with
       const prepared = await invoke(h, selected.input, 'data.r1.prepare', prepareArgs(selected.input, planned.planId), 'python-r1-prepare');
       assertRequestPreview(prepared.preview.data, f);
       assert.equal(prepared.preview.data.sourceEvidenceScope, 'verified_user_statement_only');
-      assert.equal(profileChecks, 1, 'Prepare must stay local and must not silently probe or submit.');
+      assert.equal(profileChecks, 1, 'Prepare does not implicitly probe the WFD profile.');
+      assert.equal(usageChecks, 1, 'Prepare reads the actual WFD restriction status for the frozen target.');
       preparedRequestId = String(prepared.preview.data.requestId);
       assert.ok(preparedRequestId && preparedRequestId !== 'undefined', JSON.stringify(prepared.preview));
       const fixed = h.companion.r1Workspace!.get(preparedRequestId);
@@ -879,6 +900,7 @@ test('F05 actual personal R1 prepare → host-confirmed real Python publish with
       assert.equal(replay.preview.taskId, prepared.preview.taskId, 'Same toolCall must reuse its actual local task.');
       const repeated = await invoke(h, selected.input, 'data.r1.prepare', prepareArgs(selected.input, planned.planId), 'python-r1-prepare-again');
       assert.equal(repeated.preview.data.requestId, preparedRequestId); assert.equal(submitCalls, 0);
+      assert.equal(usageChecks, 1, 'The prepared document replays without repeating WFD restriction discovery.');
       const firstGet = await invoke(h, selected.input, 'data.r1.get', { requestId: preparedRequestId }, 'python-r1-get-prepared');
       assertRequestPreview(firstGet.preview.data, f); assert.equal(firstGet.preview.data.submitTaskId, null);
       // Existing host-only confirmation path. No model action can reach submit, even knowing the digest.
@@ -889,6 +911,7 @@ test('F05 actual personal R1 prepare → host-confirmed real Python publish with
       originalTaskId = accepted.id;
       const lost = await h.companion.tasks.wait(accepted.id);
       assert.equal(lost.status, 'needs_review', JSON.stringify(lost)); assert.equal(submitCalls, 1);
+      assert.equal(usageChecks, 2, 'The first send rechecks the actual restriction under separate host confirmation.');
       const pending = h.companion.r1Workspace!.get(preparedRequestId);
       assert.equal(pending.state, 'pending_unknown'); assert.equal(pending.submitTaskId, originalTaskId);
       assert.equal(h.companion.r1Workspace!.submit(preparedRequestId, fixed.documentSha256).id, originalTaskId);
@@ -1011,9 +1034,9 @@ test('F05 actual R1 rejects unproven source, cross-scope and non-ancestor plans 
       const prepared = await invoke(h, selected.input, 'data.r1.prepare', validArgs, 'scope-first-r1-prepare');
       assertModelView(prepared.preview.data, f);
       const firstRequestId = String(prepared.preview.data.requestId);
-      const firstCount = port.counts.prepare;
+      const firstCount = port.counts.prepareWithRestriction;
       const replay = await invoke(h, selected.input, 'data.r1.prepare', validArgs, 'scope-first-r1-prepare');
-      assert.equal(port.counts.prepare, firstCount); assert.equal(replay.preview.taskId, prepared.preview.taskId); checks.push('same-tool-call-no-reexecute');
+      assert.equal(port.counts.prepareWithRestriction, firstCount); assert.equal(replay.preview.taskId, prepared.preview.taskId); checks.push('same-tool-call-no-reexecute');
       await rejectBeforePort(selected.input, 'data.r1.prepare', { ...validArgs, outputId: 'changed' }, null,
         'scope-first-r1-prepare', 'MODEL_TOOL_CALL_CONFLICT');
       const changedSource = { ...source, provider: 'synthetic-fixture-alternate' };

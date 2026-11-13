@@ -25,7 +25,6 @@ import { createDataBrowserRouter } from './data-browser-routes.js';
 import { createCaptureSourceRouter } from './capture-source-routes.js';
 import { createSourceSettingsRouter } from './source-settings-routes.js';
 import { createToolLibraryRouter } from './tool-library-routes.js';
-import { createAlgorithmRouter } from './algorithm-routes.js';
 import { createLocalDataLifecycleRouter } from './local-data-routes.js';
 import type { LocalDataLifecycle } from '../../platform/runtime/local-data-lifecycle.js';
 import release from '../../BD_RELEASE.json' with { type: 'json' };
@@ -185,8 +184,6 @@ export function createApp(core: PersonalCore, health: HealthResponse, services?:
   if (services) app.use('/api/capture-sources', createCaptureSourceRouter(services.captureSessions, services.options.captureUnavailableReason));
   if (services) app.use('/api/ui/source-settings', createSourceSettingsRouter(services));
   if (services) app.use('/api/ui/tool-library', createToolLibraryRouter(services));
-  // 个人宿主只读使用已装配工作台 companion 的算法服务；不在这里另建服务或自动采用。
-  if (services) app.use('/api/ui/algorithms', createAlgorithmRouter({ algorithms: services.algorithms ?? services.options.workspaceServices?.algorithms }));
   app.use('/api/conversations', createConversationDisplayMetadataRouter(core));
   if (services) app.use('/api/ui/data-browser', createDataBrowserRouter(services));
   if (services) app.use('/api/ui', createUiRouter(services));
@@ -455,8 +452,7 @@ export function createApp(core: PersonalCore, health: HealthResponse, services?:
 export function createBdApiRouter(services?: ApplicationServices, recheck?: express.RequestHandler) {
   const router = express.Router();
   router.use((req, res, next) => {
-    const algorithmSettingsUpdate = req.method === 'PUT' && req.path === '/r1/batches/algorithm-settings';
-    if (!['GET', 'HEAD', 'POST'].includes(req.method) && !algorithmSettingsUpdate) {
+    if (!['GET', 'HEAD', 'POST'].includes(req.method)) {
       res.status(405).json({ code: 'WORKSPACE_METHOD_UNAVAILABLE', error: '此操作不属于工作台入口。' }); return;
     }
     next();

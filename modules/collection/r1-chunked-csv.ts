@@ -9,9 +9,9 @@ import { TEMPORARY_RETENTION_DAYS } from '../../platform/resources/temporary-ret
 import type { OperatorContext } from './processing-plan.js';
 import type { MaterialService } from './materials/service.js';
 import { candidateCsvRecords } from './candidate-csv-records.js';
-import { classifyR1AlgorithmInput, type R1AlgorithmClassification } from './r1-algorithm-routing.js';
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import type { R1AutoService, R1AutoView } from './r1-auto.js';
+import { isR1BulkMode, type R1BulkMode, type R1TabularBulkService, type R1TabularBulkStatus } from './r1-source-minute-bulk-service.js';
 import { sourceReportedCode } from './source-reported-table.js';
 
 export const R1_CHUNKED_CSV_LIMITS = Object.freeze({ chunkBytes: 2 * 1024 * 1024, originalBytes: 256 * 1024 * 1024,
@@ -32,7 +32,7 @@ interface IntakeRecord {
 export interface R1CsvRowLocation { byteStart: number; byteEnd: number; lineStart: number; lineEnd: number; sourceRow: number }
 export interface R1ChunkedCsvPage {
   ordinal: number; rowStart: number; rowEnd: number; byteStart: number; byteEnd: number; sha256: string; byteLength: number;
-  classification: R1AlgorithmClassification; locations: R1CsvRowLocation[];
+  locations: R1CsvRowLocation[];
   documentBudget?: { maxBytes: number; conservativeRowBytes: number; reservedBytes: number };
   custodyTaskId: string | null; materialId: string | null; autoRequestId: string; auto: R1AutoView | null;
 }
@@ -42,6 +42,7 @@ export interface R1ChunkedCsvView {
   parsed: boolean; totalRows: number; totalPages: number; publishedPages: number; publishedRows: number;
   rowSummary: R1RowSummary | null; processedPages: number; processedRows: number;
   conflictPages: { ordinal: number; rowStart: number; rowEnd: number; autoRequestId: string; conflictCount: number }[];
+  mode?: R1BulkMode; bulk?: R1TabularBulkStatus;
   activePage: R1ChunkedCsvPage | null; error: IntakeRecord['error']; createdAt: number; updatedAt: number;
 }
 function fail(code: string, message: string): never { throw new TaskError(code, message); }
@@ -59,6 +60,7 @@ export class R1ChunkedCsvService {
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService; materials: MaterialService; auto: R1AutoService;
     connection(): R1ConnectionIdentity | null;
     custodyRoot?: string;
+    bulk?: R1TabularBulkService;
     accept(input: { bytes: Buffer; name: string; category: 'data'; requestId: string }): Promise<string> }) {
     options.database.migrate('r1-chunked-csv', 1, `CREATE TABLE r1_csv_intakes (
       intake_id TEXT PRIMARY KEY,input_sha256 TEXT NOT NULL,record_json TEXT NOT NULL,updated_at INTEGER NOT NULL);
@@ -80,6 +82,23 @@ export class R1ChunkedCsvService {
     this.sweepTemporaryChunks();
     this.retentionTimer = setInterval(() => this.sweepTemporaryChunks(), 60 * 60 * 1000); this.retentionTimer.unref();
   }
+  private hasBulk(intakeId: string): boolean {
+    if (this.options.bulk) return this.options.bulk.has(intakeId);
+    const hasTable = this.db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='r1_source_minute_bulk'").get();
+    return !!(hasTable && this.db.prepare('SELECT 1 FROM r1_source_minute_bulk WHERE intake_id=?').get(intakeId));
+  }
+  private requireBulk() {
+    return this.options.bulk ?? fail('R1_BULK_UNAVAILABLE', '批量接收需要已采用的 bulk_csv 受管目录、处理和 WFD 连接。');
+  }
+  async startAny(value: unknown, operator: OperatorContext): Promise<R1ChunkedCsvView> {
+    if (isWfdRecord(value) && isR1BulkMode(value.mode)) return this.requireBulk().start(value, operator);
+    return this.start(value, operator);
+  }
+  commit(intakeId: string, manifestDigest: unknown): Promise<R1ChunkedCsvView> {
+    return this.requireBulk().commit(intakeId, manifestDigest);
+  }
+  readBulkPage(intakeId: string, input: unknown) { return this.requireBulk().readPage(intakeId, input); }
+  reclaim(intakeId: string): Promise<R1ChunkedCsvView> { return this.requireBulk().reclaim(intakeId); }
   start(value: unknown, operator: OperatorContext): R1ChunkedCsvView {
     if (!isWfdRecord(value) || Object.keys(value).some(name => !['intakeId','name','sha256','byteLength','source','datasetId','datePolicy','sourceValueColumns'].includes(name))
       || !key(value.intakeId) || !key(value.datasetId) || typeof value.name !== 'string' || !/\.csv$/iu.test(value.name)
@@ -97,6 +116,7 @@ export class R1ChunkedCsvService {
       || value.sourceValueColumns.length > 64 || value.sourceValueColumns.some(column => typeof column !== 'string' || !column || column.length > 256)
       || new Set(value.sourceValueColumns).size !== value.sourceValueColumns.length)) fail('R1_CSV_COLUMNS', '选列必须是明确且不重复的原列名。');
     const input = structuredClone(value) as unknown as R1ChunkedCsvStart;
+    if (this.hasBulk(input.intakeId) || this.options.bulk?.isStarting(input.intakeId)) fail('R1_CSV_CONFLICT', '该接收编号已用于原报分钟批量模式。');
     const digest = wfdSha256(canonicalWfdJson(input)), previous = this.db.prepare('SELECT input_sha256 FROM r1_csv_intakes WHERE intake_id=?').get(input.intakeId);
     if (previous) { if (previous.input_sha256 !== digest) fail('R1_CSV_CONFLICT', '原分块接收清单和来源已冻结，不能覆盖。'); return this.get(input.intakeId); }
     this.assertDispatch(); const connection = this.options.connection() ?? fail('R1_NOT_CONFIGURED', '分块交接需要已装配的数据库连接。');
@@ -106,8 +126,13 @@ export class R1ChunkedCsvService {
     this.db.prepare('INSERT INTO r1_csv_intakes VALUES(?,?,?,?)').run(input.intakeId, digest, canonicalWfdJson(record), now);
     return this.get(input.intakeId);
   }
-  list(): R1ChunkedCsvView[] { return this.records().slice(0, 20).map(record => this.get(record.input.intakeId)); }
+  list(): R1ChunkedCsvView[] {
+    const legacy = this.records().slice(0, 20).map(record => this.get(record.input.intakeId));
+    if (!this.options.bulk) return legacy;
+    return [...legacy, ...this.options.bulk.list()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 20);
+  }
   get(intakeId: string): R1ChunkedCsvView {
+    if (this.hasBulk(intakeId)) return this.requireBulk().get(intakeId);
     const record = this.require(intakeId);
     return { intakeId, name: record.input.name, sha256: record.input.sha256, byteLength: record.input.byteLength, source: record.input.source,
       datasetId: record.input.datasetId, state: record.state, receivedBytes: record.receivedBytes, chunkBytes: R1_CHUNKED_CSV_LIMITS.chunkBytes,
@@ -122,8 +147,8 @@ export class R1ChunkedCsvService {
       activePage: record.parsed && record.activePage < record.totalPages ? this.page(intakeId, record.activePage) : null,
       error: record.error, createdAt: record.createdAt, updatedAt: record.updatedAt };
   }
-  upload(intakeId: string, offset: number, bytes: Buffer): R1ChunkedCsvView {
-    const record = this.require(intakeId); this.assertCurrent(record);
+  upload(intakeId: string, offset: number, bytes: Buffer, digest?: string): R1ChunkedCsvView {
+    if (this.hasBulk(intakeId)) return this.requireBulk().upload(intakeId, offset, bytes, digest);    const record = this.require(intakeId); this.assertCurrent(record);
     if (!Number.isSafeInteger(offset) || offset < 0 || !Buffer.isBuffer(bytes) || !bytes.length
       || bytes.length > R1_CHUNKED_CSV_LIMITS.chunkBytes || offset + bytes.length > record.input.byteLength)
       fail('R1_CSV_CHUNK', '分块必须提供原字节偏移和不超过 2 MiB 的非空原字节。');
@@ -139,7 +164,7 @@ export class R1ChunkedCsvService {
     }); return this.get(intakeId);
   }
   async advance(intakeId: string): Promise<R1ChunkedCsvView> {
-    const record = this.require(intakeId); this.assertDispatch(); this.assertConnection(record);
+    if (this.hasBulk(intakeId)) return this.requireBulk().advance(intakeId);    const record = this.require(intakeId); this.assertDispatch(); this.assertConnection(record);
     if (record.state === 'completed' || record.state === 'conflicts_pending') return this.get(intakeId);
     if (record.receivedBytes !== record.input.byteLength) fail('R1_CSV_INCOMPLETE', '完整原件尚有字节缺口，未保管、解析或发布。');
     record.generation = this.options.tasks().getControl().generation;
@@ -162,7 +187,7 @@ export class R1ChunkedCsvService {
     record.state='recovering';record.error=null;this.save(record);return this.get(intakeId);
   }
   page(intakeId: string, ordinal: number): R1ChunkedCsvPage {
-    this.require(intakeId);
+    if (this.hasBulk(intakeId)) return fail('R1_BULK_FIXED_ASSOCIATION', '批量接收以整件固定关联根读取。');    this.require(intakeId);
     if (!Number.isSafeInteger(ordinal) || ordinal < 0) fail('R1_CSV_PAGE', '需要已登记的原页号。');
     const row = this.db.prepare('SELECT page_json FROM r1_csv_pages WHERE intake_id=? AND ordinal=?').get(intakeId, ordinal);
     if (!row) fail('R1_CSV_PAGE', '没有该原件解析页。');
@@ -311,7 +336,7 @@ export class R1ChunkedCsvService {
       if (!locations.length) return;
       const bytes = Buffer.concat([header!, ...pageParts]), first = locations[0]!, last = locations.at(-1)!;
       const page: R1ChunkedCsvPage = { ordinal, rowStart: first.sourceRow, rowEnd: last.sourceRow, byteStart: first.byteStart, byteEnd: last.byteEnd,
-        sha256: wfdSha256(bytes), byteLength: bytes.length, locations, classification: classifyR1AlgorithmInput(bytes),
+        sha256: wfdSha256(bytes), byteLength: bytes.length, locations,
         ...(budgetIndexes ? { documentBudget: { maxBytes: R1_CHUNKED_CSV_LIMITS.documentBytes,
           conservativeRowBytes: packedRowBytes, reservedBytes: R1_CHUNKED_CSV_LIMITS.documentReserveBytes } } : {}),
         custodyTaskId: null, materialId: null, autoRequestId: `csv-auto:${record.input.intakeId}:${ordinal}`, auto: null };

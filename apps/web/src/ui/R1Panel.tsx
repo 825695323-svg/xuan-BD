@@ -13,9 +13,7 @@ import { R1AutoPanel } from './R1AutoPanel';
 import { DocumentProcessingPanel } from './DocumentProcessingPanel';
 import { CloudCustodyPanel } from './CloudCustodyPanel';
 import { StructuredQueryPanel } from './StructuredQueryPanel';
-import { ComputationPanel } from './ComputationPanel';
 import { R1ReadPanel } from './R1ReadPanel';
-import type { AlgorithmEntryFocus } from './algorithm-catalog';
 import './R1Panel.css';
 
 const newId = (kind: string) => `web-r1-${kind}-${crypto.randomUUID()}`;
@@ -222,7 +220,7 @@ function readConstants(value: string): Record<string, OperatorConstant> {
 }
 
 /** 所有结构化交接沿原 R1 请求身份核对。 */
-export function R1Panel({ algorithmFocus = null }: { algorithmFocus?: AlgorithmEntryFocus | null }) {
+export function R1Panel() {
   const words = useWords();
   const [caps, setCaps] = useState<R1CapabilitiesView | null>(null), [recent, setRecent] = useState<R1RequestSummary[]>([]);
   const [materials, setMaterials] = useState<MaterialEnvelope[]>([]), [materialId, setMaterialId] = useState('');
@@ -515,9 +513,8 @@ export function R1Panel({ algorithmFocus = null }: { algorithmFocus?: AlgorithmE
       <span>{caps?.configuration.reason ?? words('当前连接来自本机登记；可只读核对数据库能力，每次交接仍需明确确认。', 'The connection comes from local registration. Check its capabilities read-only; each handoff still requires explicit confirmation.')}</span>
       <button type="button" className="text-button" disabled={busy || !ready} onClick={() => void action(async () => { const result = await r1Api.check(); setNotice(result.supported ? words('当前机器入口真实声明支持 data_only。', 'The live machine advertises data_only.') : String(result.reason)); })}>{words('只读核对数据库能力', 'Check database capabilities (read-only)')}</button></div>
     {!ready && !loading && <div className="database-gap"><ShieldAlert size={20} aria-hidden="true" /><p>{words('未绑定可用的 data_only 连接：不能提交、不能在网页填写 store/runtime 或权限绕过配置。仍可查看已保存的本地回链。', 'No usable data_only binding: submission is disabled. The page cannot override store/runtime or permissions. Saved local links remain readable.')}</p></div>}
-    <ComputationPanel focus={algorithmFocus?.kind === 'fixed' ? algorithmFocus : null} />
     <R1AutoPanel materials={materials} materialId={materialId} material={activeMaterial} materialLoading={materialLoading} materialError={materialError}
-      source={source} ready={ready} disabled={busy || fixed || loading} onChooseMaterial={chooseMaterial} onSourceChange={setSource} focus={algorithmFocus?.kind === 'batch' ? algorithmFocus : null}
+      source={source} ready={ready} disabled={busy || fixed || loading} onChooseMaterial={chooseMaterial} onSourceChange={setSource}
       onUpload={async (file, category) => { setBusy(true); try { await uploadOriginal(file, category); } finally { setBusy(false); } }} />
     <CloudCustodyPanel materials={materials} initialId={materialId} />
     <DocumentProcessingPanel key={materialId} materialId={materialId} />

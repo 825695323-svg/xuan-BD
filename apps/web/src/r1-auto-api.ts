@@ -1,12 +1,10 @@
 import type { R1AutoStartInput, R1AutoView } from '../../../modules/collection/r1-auto';
 import type { R1BatchStartInput, R1BatchView } from '../../../modules/collection/r1-auto-batch';
-import type { R1AlgorithmClassification, R1AlgorithmSettings } from '../../../modules/collection/r1-algorithm-routing';
 import { request, RequestError } from './api';
 import type { R1ChunkedCsvStart, R1ChunkedCsvView } from '../../../modules/collection/r1-chunked-csv';
 
 export type { R1AutoStartInput, R1AutoView };
 export type { R1BatchStartInput, R1BatchView };
-export type { R1AlgorithmClassification, R1AlgorithmSettings };
 export type { R1ChunkedCsvStart, R1ChunkedCsvView };
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -35,30 +33,11 @@ function view(value: unknown, requestId?: string): R1AutoView {
 
 const path = (id: string) => `/api/bd/r1/auto/${encodeURIComponent(id)}`;
 const batchPath = (id: string) => `/api/bd/r1/batches/${encodeURIComponent(id)}`;
-function algorithmSettings(value: unknown): R1AlgorithmSettings {
-  if (!object(value) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0
-    || [value.dailyPeriod, value.minutePeriod].some(period => period !== null && (!Number.isSafeInteger(period) || Number(period) < 2 || Number(period) > 1000)))
-    throw new RequestError('日K与分钟K的已保存周期无法核对，请重新读取设置。');
-  return value as unknown as R1AlgorithmSettings;
-}
-function classification(value: unknown): R1AlgorithmClassification {
-  if (!object(value) || value.version !== 'bd.r1-algorithm-routing/1' || typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(value.sha256)
-    || !Number.isSafeInteger(value.byteLength) || typeof value.complete !== 'boolean' || !strings(value.columns)
-    || !Number.isSafeInteger(value.rowCount) || !['daily_bar', 'minute_bar', 'sentiment', 'mixed', 'other', 'unknown'].includes(String(value.kind))
-    || ![null, 'csv', 'json'].includes(value.format as string | null) || typeof value.code !== 'string' || typeof value.reason !== 'string'
-    || ['dateColumn', 'minuteColumn', 'valueColumn'].some(key => value[key] !== null && typeof value[key] !== 'string'))
-    throw new RequestError('原件内容分类证据无法核对，未选择算法。');
-  return value as unknown as R1AlgorithmClassification;
-}
 function batchView(value: unknown): R1BatchView {
   if (!object(value) || typeof value.batchId !== 'string' || !value.batchId || !object(value.source) || typeof value.datasetId !== 'string'
     || !['awaiting_upload', 'running', 'awaiting_answers', 'recovering', 'completed', 'conflicts_pending', 'stopped', 'blocked'].includes(String(value.state))
     || typeof value.duplicateBatch !== 'boolean' || !(value.nextUploadItemId === null || typeof value.nextUploadItemId === 'string')
     || !(value.sourceValueColumns === null || strings(value.sourceValueColumns))
-    || !(value.calculation == null || object(value.calculation) && object(value.calculation.selection)
-      && value.calculation.selection.method === 'source_observation_ma' && typeof value.calculation.selection.valueColumn === 'string'
-      && Number.isInteger(value.calculation.selection.period) && ['waiting_inputs','calculating','custody','processing','associated','blocked','recovering','stopped'].includes(String(value.calculation.state))
-      && (value.calculation.auto === null || !!view(value.calculation.auto)))
     || !Array.isArray(value.items) || value.items.length > 100 || !value.items.every(item => object(item)
       && typeof item.itemId === 'string' && typeof item.name === 'string' && typeof item.relativePath === 'string'
       && typeof item.sha256 === 'string' && Number.isSafeInteger(item.byteLength) && typeof item.requestedUrl === 'string'
@@ -73,15 +52,6 @@ export const r1AutoApi = {
   uploadCsvChunk: async (id: string, offset: number, bytes: Blob) => chunkedView(await request(`/api/bd/r1/batches/chunked/${encodeURIComponent(id)}/chunks/${offset}`, 'POST', bytes)),
   advanceChunkedCsv: async (id: string) => chunkedView(await request(`/api/bd/r1/batches/chunked/${encodeURIComponent(id)}/advance`, 'POST', {})),
   resumeChunkedCsv:async(id:string,confirmationDigest:string)=>chunkedView(await request(`/api/bd/r1/batches/chunked/${encodeURIComponent(id)}/resume-original`,'POST',{confirmationDigest})),
-  algorithmSettings: async () => algorithmSettings(await request('/api/bd/r1/batches/algorithm-settings')),
-  saveAlgorithmSettings: async (input: R1AlgorithmSettings) => algorithmSettings(await request('/api/bd/r1/batches/algorithm-settings', 'PUT', input)),
-  classify: async (file: File) => classification(await request('/api/bd/r1/batches/classify', 'POST', file)),
-  calculationEvidence: async (id: string, calculationId?: string) => {
-    const result = await request(batchPath(id) + '/calculation-evidence' + (calculationId ? `?calculationId=${encodeURIComponent(calculationId)}` : ''));
-    if (!object(result) || result.batchId !== id || !object(result.proof) || result.proof.method !== 'source_observation_ma'
-      || !Array.isArray(result.proof.lineage) || !Array.isArray(result.proof.sources)) throw new RequestError('本批尚无可核对的均线输入及窗口明细。');
-    return result.proof;
-  },
   listBatches: async (): Promise<R1BatchView[]> => {
     const value = await request('/api/bd/r1/batches');
     if (!object(value) || !Array.isArray(value.items)) throw new RequestError('批次列表无法读取。');

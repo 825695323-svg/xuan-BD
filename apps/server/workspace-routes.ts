@@ -10,15 +10,14 @@ import { officeNative } from '../../platform/capabilities/conversion/office.js';
 import { xlsxModelPreview } from '../../platform/capabilities/conversion/index.js';
 import { MAX_SOURCE } from '../../platform/capabilities/conversion/formats.js';
 import { R1_CHUNKED_CSV_LIMITS } from '../../modules/collection/r1-chunked-csv.js';
-import { createFixedCalculationRouter } from './fixed-calculation-routes.js';
 
 
 /** 上传日志只追踪原件发布与任务绑定；执行、停止、恢复仍由唯一 TaskService 持有。 */
 export function createWorkspaceRouter(services: ApplicationServices): Router {
-  const router = Router(), { bd, materials, financial, tasks, files, processing } = services;
+  const router = Router(), { bd, materials, tasks, files, processing } = services;
   if (!bd) throw new TaskError('SERVICE_ROLE_REQUIRED', '材料入口需要服务身份。');
   router.get('/workspace', (_req, res) => res.json({ mode: 'bd-workspace', version: bd.versions.bd,
-    modules: { materials: !!materials, financialTools: !!financial, collection: !!(services.collection || services.candidates || services.materials || processing), processing: processing ? 'step_plans' : 'not_enabled' },
+    modules: { materials: !!materials, collection: !!(services.collection || services.candidates || services.materials || processing), processing: processing ? 'step_plans' : 'not_enabled' },
     status: bd.status(), uploadLimitBytes: MATERIAL_UPLOAD_LIMIT,
     materialCapabilities: materials?.catalog() ?? null }));
   router.get('/workspace/storage-retention', (_req, res) => res.json(files.temporaryRetentionStatus()));
@@ -42,42 +41,6 @@ export function createWorkspaceRouter(services: ApplicationServices): Router {
       const original = custody.readRestored(req.params.id);
       res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(original.filename)}`);
       res.type('application/octet-stream').send(original.bytes);
-    });
-  }
-  if (financial) {
-    router.get('/tools', (_req, res) => res.json(financial.list()));
-    router.get('/tools/:id', (req, res) => res.json(financial.describe(req.params.id)));
-    router.get('/plugins', (_req, res) => res.json(financial.status()));
-    router.post('/plugins/:id/enabled', (req, res) => {
-      const body = req.body;
-      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(k => !['enabled', 'version', 'requestId',
-        'pluginVersion', 'contractVersion', 'implementationVersion', 'permissionVersion'].includes(k))
-        || typeof body.enabled !== 'boolean') throw new TaskError('INVALID_PLUGIN_ARGS', '插件开关参数无效。');
-      const status = financial.status();
-      const binding = ['pluginVersion', 'contractVersion', 'implementationVersion', 'permissionVersion'] as const;
-      if (binding.some(key => Object.hasOwn(body, key)) && binding.some(key => body[key] !== status[key])) {
-        throw new TaskError('FINANCIAL_VERSION_CONFLICT', '插件、实现或权限版本已经变化；请刷新后重新确认此启停请求。');
-      }
-      const requestId = id(body.requestId);
-      res.json({ ...financial.setEnabled(body.enabled, { pluginId: req.params.id,
-        pluginVersion: body.pluginVersion ?? status.pluginVersion, expectedVersion: body.version }, requestId), requestId });
-    });
-  }
-  if (services.fixedCalculations) router.use('/computation', createFixedCalculationRouter(services.fixedCalculations));
-  if (services.polarsFixed) {
-    const polars = services.polarsFixed;
-    router.get('/processing/polars/capabilities', (_req, res) => res.json(polars.capabilities()));
-    // 旧 HTTP 入口不再创建新计算；历史任务查询、保管与候选恢复仍保留原身份。
-    router.post('/processing/polars/tasks', () => {
-      throw new CoreError('ALGORITHM_AGENT_ENTRY_REQUIRED',
-        '人工计算入口已停用；新计算请通过 BD AGENTS 的 algorithms.calculate（固定算法工具）。历史任务仍可按原编号查询和恢复。', 410);
-    });
-    router.get('/processing/polars/tasks/:id', (req, res) => res.json(polars.get(id(req.params.id))));
-    router.post('/processing/polars/tasks/:id/stage', async (req, res) => {
-      r1Body(req.body, []); res.status(202).json(await polars.stage(id(req.params.id)));
-    });
-    router.post('/processing/polars/tasks/:id/prepare', async (req, res) => {
-      res.status(201).json(await polars.prepare(id(req.params.id), req.body));
     });
   }
   if (processing) {
@@ -267,11 +230,21 @@ export function createWorkspaceRouter(services: ApplicationServices): Router {
   if (services.r1Batches) {
     const batches = services.r1Batches;
     router.get('/r1/batches/chunked', (_req, res) => res.json({ items: batches.chunked.list() }));
-    router.post('/r1/batches/chunked/start', (req, res) => res.status(202).json(batches.chunked.start(req.body,
+    router.post('/r1/batches/chunked/start', async (req, res) => res.status(202).json(await batches.chunked.startAny(req.body,
       operatorContext(req, { requestId: id(req.body?.intakeId) }))));
     router.get('/r1/batches/chunked/:intakeId', (req, res) => res.json(batches.chunked.get(id(req.params.intakeId))));
     router.post('/r1/batches/chunked/:intakeId/advance', async (req, res) => {
       r1Body(req.body, []); res.status(202).json(await batches.chunked.advance(id(req.params.intakeId)));
+    });
+    router.post('/r1/batches/chunked/:intakeId/commit', async (req, res) => {
+      const body = r1Body(req.body, ['manifestDigest']);
+      res.status(202).json(await batches.chunked.commit(id(req.params.intakeId), body.manifestDigest));
+    });
+    router.post('/r1/batches/chunked/:intakeId/fixed-read', async (req, res) => {
+      res.json(await batches.chunked.readBulkPage(id(req.params.intakeId), r1Body(req.body, ['pageSize', 'cursor'])));
+    });
+    router.post('/r1/batches/chunked/:intakeId/reclaim', async (req, res) => {
+      r1Body(req.body, []); res.json(await batches.chunked.reclaim(id(req.params.intakeId)));
     });
     router.post('/r1/batches/chunked/:intakeId/resume-original', (req,res)=>{
       const body=r1Body(req.body,['confirmationDigest']);
@@ -285,26 +258,10 @@ export function createWorkspaceRouter(services: ApplicationServices): Router {
       if (Number(req.headers['content-length']) > R1_CHUNKED_CSV_LIMITS.chunkBytes) throw new CoreError('UPLOAD_TOO_LARGE', '每个原字节分块上限为 2 MiB。', 413);
       next();
     }, express.raw({ type: 'application/octet-stream', limit: R1_CHUNKED_CSV_LIMITS.chunkBytes, inflate: false }), (req, res) => {
-      res.status(202).json(batches.chunked.upload(id(req.params.intakeId), Number(req.params.offset), req.body));
+      res.status(202).json(batches.chunked.upload(id(req.params.intakeId), Number(req.params.offset), req.body, req.get('x-bd-chunk-sha256')));
     });
     router.get('/r1/batches', (_req, res) => res.json({ items: batches.list(), limit: 20 }));
-    router.get('/r1/batches/algorithm-settings', (_req, res) => res.json(batches.algorithmSettings()));
-    router.put('/r1/batches/algorithm-settings', (req, res) => res.json(batches.updateAlgorithmSettings(req.body)));
-    router.post('/r1/batches/classify', (req, _res, next) => {
-      if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity') throw new CoreError('INVALID_UPLOAD', '原件预检不接受压缩请求。', 400);
-      if (Number(req.headers['content-length']) > MATERIAL_UPLOAD_LIMIT) throw new CoreError('UPLOAD_TOO_LARGE', '算法预检每份完整原件上限为 25 MiB，超限文件未保管或计算。', 413);
-      next();
-    }, express.raw({ type: 'application/octet-stream', limit: MATERIAL_UPLOAD_LIMIT, inflate: false }), (req, res) => {
-      const { adapterId, adapterVersion, configDigest } = req.query;
-      const supplied = [adapterId, adapterVersion, configDigest].filter(value => value !== undefined).length;
-      if (supplied !== 0 && supplied !== 3) throw new TaskError('ADAPTER_BINDING', '预检适配须同时提供 adapterId、adapterVersion 与 configDigest。');
-      res.json(batches.classify(req.body, supplied === 3 ? { adapterId: id(adapterId), version: id(adapterVersion), configDigest: id(configDigest) } : undefined));
-    });
     router.get('/r1/batches/:id', (req, res) => res.json(batches.get(id(req.params.id))));
-    router.get('/r1/batches/:id/calculation-evidence', (req, res) => {
-      const batchId = id(req.params.id);
-      res.json({ batchId, proof: batches.calculationEvidence(batchId, req.query.calculationId === undefined ? undefined : id(req.query.calculationId)) });
-    });
     router.post('/r1/batches/start', (req, res) => res.status(202).json(batches.start(req.body,
       operatorContext(req, { requestId: id(req.body?.batchId) }))));
     router.post('/r1/batches/:id/advance', async (req, res) => {

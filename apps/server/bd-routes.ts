@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { TaskError } from '../../platform/jobs/tasks.js';
 import type { BdService } from '../../modules/agent/service.js';
-import { financialPublicError } from '../../modules/financial/contracts.js';
 
 export function createBdRouter(service: BdService, onResume?: () => void): Router {
     const router = Router();
@@ -20,14 +19,8 @@ export function createBdRouter(service: BdService, onResume?: () => void): Route
       const body = object(req.body); keys(body, ['operation', 'args', 'requestId', 'parentJobId']);
       identifier(body.operation); identifier(body.requestId);
       if (body.parentJobId !== undefined) identifier(body.parentJobId);
-      try {
-        const task = service.submit(body.operation, body.args, body.requestId, body.parentJobId as string | undefined);
-        res.status(202).json(service.taskView(task.id));
-      } catch (error) {
-        if (body.operation !== 'tools.call' || !body.args || typeof body.args !== 'object' || !('protocol_version' in body.args)) throw error;
-        const rejected = financialPublicError(error, { requestId: body.requestId, stage: 'plan' });
-        res.status(400).json({ protocol_version: '0.1', request_id: body.requestId, status: 'rejected', error: rejected });
-      }
+      const task = service.submit(body.operation, body.args, body.requestId, body.parentJobId as string | undefined);
+      res.status(202).json(service.taskView(task.id));
     });
     router.get('/jobs/:id', (req, res) => res.json(service.taskView(req.params.id)));
     router.get('/jobs', (_req, res) => res.json(service.options.tasks().list({ ownerRole: 'service', limit: 100 }).map(task => service.taskView(task.id))));
@@ -40,15 +33,11 @@ export function createBdRouter(service: BdService, onResume?: () => void): Route
       const task = service.getTask(req.params.id), tasks = service.options.tasks();
       res.json({ task: service.taskView(task.id), runs: tasks.getRuns(task.id),
         attempts: tasks.getRuns(task.id).flatMap((run) => tasks.getAttempts(run.id)), events: tasks.events(task.id),
-        ...(service.options.financial && task.runtimeId === service.options.financial.runtime.id ? { financial: service.options.financial.evidence(task.id) } : {}),
         ...(service.options.collection && task.runtimeId === service.options.collection.runtime.id
           ? { collection: service.options.collection.evidence(task.id) } : {}) });
     });
     router.post('/jobs/:id/resume', (req, res) => {
       const task = service.getTask(req.params.id), body = object(req.body); keys(body, ['version']);
-      if (service.options.financial && task.runtimeId === service.options.financial.runtime.id) {
-        service.options.financial.resume(task.id, integer(body.version)); res.json(service.taskView(task.id)); return;
-      }
       if (service.options.materials && task.runtimeId === service.options.materials.runtime.id) {
         service.options.materials.resume(task.id, integer(body.version)); res.json(service.taskView(task.id)); return;
       }
