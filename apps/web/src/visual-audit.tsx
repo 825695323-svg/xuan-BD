@@ -53,7 +53,13 @@ function VisualAuditFixture() {
   useEffect(() => {
     const open = window.setTimeout(() => {
       if (view === 'modal') document.querySelector<HTMLDialogElement>('#audit-dialog')?.showModal();
-      else document.querySelector<HTMLButtonElement>('.filter-trigger')?.click();
+      else {
+        const trigger = document.querySelector<HTMLButtonElement>('.filter-trigger');
+        // Radix 菜单通过 pointerdown 打开，脚本 click() 不会触发实际的开启手势。
+        trigger?.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true,
+        }));
+      }
     }, 250);
     const report = window.setTimeout(auditMetrics, 1300);
     return () => { window.clearTimeout(open); window.clearTimeout(report); };
