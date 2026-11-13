@@ -116,3 +116,15 @@ test('公开行情检查只核对登记状态，不会使用同花顺凭据或�
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('来源设置视图操作清单与唯一目录一致，不遗漏同花顺指数成分', async () => {
+  const { root, settings } = isolatedSettings();
+  try {
+    const view = await settings.view();
+    for (const plugin of view.apiPlugins) {
+      assert.deepEqual(plugin.operations, sourceOperations(plugin.id), `来源 ${plugin.id} 的页面目录必须与运行目录相同`);
+    }
+    assert.ok(view.apiPlugins.find(plugin => plugin.id === 'ths')?.operations.some(operation => operation.id === 'index_constituents'));
+    assert.deepEqual(view.supportedApiOperations.map(operation => operation.id), sourceOperations('ths').map(operation => operation.id));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
