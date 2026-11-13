@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "base": "6b96149e0387c5e4d01e7acc738e5d05f7569e53",
+  "files": [
+    {
+      "path": "apps/server/workspace-routes.ts",
+      "before": "e57606e7cb234253d472096d74f65e594c2219c914e52fc141155415592e7612",
+      "after": "296e4e9d7fd0c4a45ea7e7e2094754d6fbd01a12e112421e13cab373d039e72c",
+      "edits": [
+        {"start": 1, "end": 2, "text": ""},
+        {"start": 3, "end": 6, "text": "import { basename } from 'node:path';\n"},
+        {"start": 10, "end": 11, "text": ""},
+        {"start": 21, "end": 22, "text": "  const router = Router(), { bd, materials, financial, tasks, files, processing } = services;\n"},
+        {"start": 73, "end": 77, "text": "    // 旧 HTTP 入口不再创建新计算；历史任务查询、保管与候选恢复仍保留原身份。\n    router.post('/processing/polars/tasks', () => {\n      throw new CoreError('ALGORITHM_AGENT_ENTRY_REQUIRED',\n        '人工计算入口已停用；新计算请通过 BD AGENTS 的 algorithms.calculate（固定算法工具）。历史任务仍可按原编号查询和恢复。', 410);\n"}
+      ]
+    },
+    {
+      "path": "apps/web/src/App.tsx",
+      "before": "22fc945481c24d9869469b502cc0485cf3ae1a3634a0f3cce0f872e427c84d8b",
+      "after": "0a0b7cb5a06f2154a48d951e482262b442538809728b1cd02b72d114482abb21",
+      "edits": [
+        {"start": 3, "end": 4, "text": "import type { UiRuntimeView } from './ui-runtime-api';\n"},
+        {"start": 12, "end": 13, "text": "import SettingsPage from './ui/SettingsPage';\n"},
+        {"start": 18, "end": 19, "text": "import { Modal, errorDetail, useWords } from './ui/Controls';\n"},
+        {"start": 37, "end": 38, "text": "  const [page, setPage] = useState<Page>(pageFromHash);\n"},
+        {"start": 40, "end": 41, "text": ""},
+        {"start": 44, "end": 45, "text": "  const referenceLock = useRef(false), referenceWorking = useRef(false), runtimeEpoch = useRef(0), algorithmFocusNonce = useRef(0), alive = useRef(true), navigateLatest = useRef<(next: Page) => void>(() => {});\n"},
+        {"start": 63, "end": 64, "text": "  function navigate(next: Page) {\n"},
+        {"start": 66, "end": 68, "text": ""},
+        {"start": 76, "end": 86, "text": ""},
+        {"start": 139, "end": 140, "text": "    {page === 'settings' && <SettingsPage />}\n"},
+        {"start": 141, "end": 145, "text": ""}
+      ]
+    },
+    {
+      "path": "apps/web/src/algorithm-api.ts",
+      "before": "7507db8c4a92c28bef149ff12d01b18049532d813db33daf68ffaebf37cf7013",
+      "after": "43a0999a1581f9feef629ab54b63ff2c85a73ff26fa5d4f334d7c54d87fbc775",
+      "edits": [
+        {"start": 15, "end": 17, "text": "export async function listAlgorithmCalls(methodId?: string): Promise<AlgorithmTaskView[]> {\n  const query = methodId === undefined ? '' : `?${new URLSearchParams({ methodId })}`;\n  const value = await request(`/api/ui/algorithms/calls${query}`);\n"},
+        {"start": 18, "end": 19, "text": "  const items = value.items.map(asTask);\n  if (methodId !== undefined && items.some(item => item.methodId !== methodId))\n    throw new RequestError('算法任务列表混入其他方法，未用于当前详情。');\n  return items;\n"},
+        {"start": 21, "end": 23, "text": "export async function readAlgorithmCall(taskId: string, methodId?: string): Promise<AlgorithmTaskView> {\n  const task = asTask(await request(`/api/ui/algorithms/calls/${encodeURIComponent(taskId)}`));\n  if (task.taskId !== taskId || methodId !== undefined && task.methodId !== methodId)\n    throw new RequestError('算法结果与所选任务或方法身份不符，未用于当前详情。');\n  return task;\n}\n\nexport async function readLatestAlgorithmCall(methodId: string): Promise<AlgorithmTaskView | null> {\n  return (await listAlgorithmCalls(methodId))[0] ?? null;\n"}
+      ]
+    },
+    {
+      "path": "apps/web/src/ui/ComputationPanel.tsx",
+      "before": "9af48ac2cc5d42ea3095a2ab5ba52e6cc90c45e2243493db375d12fc9b619973",
+      "after": "6a5c0a577954fb981e300a4d8ce320462f8fc4cd3bba29bd867389dcfc604fd7",
+      "edits": [
+        {"start": 0, "end": 1, "text": "import { useEffect, useState } from 'react';\n"},
+        {"start": 3, "end": 4, "text": "import { loadAlgorithmCatalog, listAlgorithmCalls } from '../algorithm-api';\nimport { useAlgorithmResult } from './useAlgorithmResult';\n"},
+        {"start": 14, "end": 15, "text": "  const detail = useAlgorithmResult(focus?.methodId ?? null);\n  const selected = detail.task;\n"},
+        {"start": 17, "end": 18, "text": ""},
+        {"start": 23, "end": 24, "text": "    return () => { active = false; };\n"},
+        {"start": 27, "end": 28, "text": "      description={words('这里只展示算法、运行状态及已有结果。BD AGENTS 从 WFD 固定快照读取，调用独立算法，派生结构化结果经独立核对、R1 正式交接与 WFD 固定读回，不再经过原报五步加工。前端不能发起计算或发布。',\n"},
+        {"start": 30, "end": 31, "text": "    {(error || detail.error) && <ErrorNote detail={error ?? detail.error}>{words('基础算法读取失败。', 'Could not load algorithms.')}</ErrorNote>}\n"},
+        {"start": 45, "end": 52, "text": "      onClick={() => { void detail.loadTask(item.taskId, item.methodId); }}>\n"}
+      ]
+    },
+    {
+      "path": "apps/web/src/ui/SettingsPage.tsx",
+      "before": "c9f3d39afce0f906309698c08feacdf3652de7d8d7040e0dadca201bb285f440",
+      "after": "29f10daf45017dd4e357d8edce157ee581b1edb8575e8c8ce14672db2d0aad7e",
+      "edits": [
+        {"start": 0, "end": 1, "text": ""},
+        {"start": 4, "end": 13, "text": ""},
+        {"start": 20, "end": 21, "text": "export function SettingsPage() {\n"},
+        {"start": 23, "end": 24, "text": ""},
+        {"start": 26, "end": 27, "text": "      <button type=\"button\" aria-current=\"page\" className=\"is-selected\">\n"},
+        {"start": 38, "end": 39, "text": "              onChange={(value) => void updatePreferences({ language: value }).catch(() => undefined)} />\n"},
+        {"start": 46, "end": 47, "text": "            className=\"theme-option\" disabled={saving} onClick={() => void updatePreferences({ theme: id }).catch(() => undefined)}>\n"}
+      ]
+    },
+    {
+      "path": "apps/web/src/ui/ToolsPage.tsx",
+      "before": "25a549c7d87ab9ba768839eab2c4bd77caec382cbdae397eab904e189b1c9a35",
+      "after": "861d7f6822e520d312c43151149d92c8476a0dca467ae5697063973da39124de",
+      "edits": [
+        {"start": 0, "end": 2, "text": "import { useEffect, useMemo, useState } from 'react';\nimport { AlertTriangle, ArrowUpRight, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';\n"},
+        {"start": 6, "end": 7, "text": "import type { AlgorithmCatalogView, AlgorithmTaskView } from '../../../../modules/financial/algorithm-types';\n"},
+        {"start": 8, "end": 9, "text": "import { loadAlgorithmCatalog } from '../algorithm-api';\nimport { useAlgorithmResult } from './useAlgorithmResult';\n"},
+        {"start": 27, "end": 33, "text": ""},
+        {"start": 52, "end": 53, "text": ""},
+        {"start": 204, "end": 205, "text": ""},
+        {"start": 206, "end": 210, "text": ""},
+        {"start": 216, "end": 230, "text": ""},
+        {"start": 231, "end": 232, "text": ""},
+        {"start": 385, "end": 393, "text": ""},
+        {"start": 399, "end": 401, "text": ""},
+        {"start": 409, "end": 414, "text": ""},
+        {"start": 462, "end": 463, "text": "    [tools, fixedMethods, fixedCaps?.configured, view?.catalog, words]);\n"},
+        {"start": 467, "end": 468, "text": "  const selection = useObjectSelection('xuan.tools.object', entries.map((entry) => entry.key), !loading && !fixedLoading, 'first');\n"},
+        {"start": 469, "end": 469, "text": "  const result = useAlgorithmResult(selectedKey);\n  const { task: callView, error: callError, loading: busy } = result;\n"},
+        {"start": 479, "end": 481, "text": ""},
+        {"start": 498, "end": 502, "text": ""},
+        {"start": 504, "end": 554, "text": ""},
+        {"start": 843, "end": 847, "text": "            <button type=\"button\" className=\"text-button\" disabled={!selectedTool || busy}\n              onClick={() => { if (selectedTool) void result.loadLatest(selectedTool.id); }}>\n              {words('读取当前算法最近结果', 'Read latest result for this algorithm')}</button>\n            {result.loaded && !busy && !callView && !callError && <p className=\"tools-muted\">\n              {words('当前算法尚无任务结果。', 'No tasks are recorded for this algorithm.')}</p>}\n"},
+        {"start": 857, "end": 858, "text": "              <div><dt>{words('方法', 'Method')}</dt><dd>{callView.methodId} · {callView.result?.methodVersion ?? '—'}</dd></div>\n"}
+      ]
+    }
+  ]
+}
