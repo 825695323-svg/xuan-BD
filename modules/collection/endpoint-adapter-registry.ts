@@ -8,7 +8,7 @@ import type { OperatorContext } from './processing-plan.js';
 import { adapterConfigDigest, discoverEndpointAdapter, matchAdapterContext, readAdapterBindingRef,
   readAdapterSourceContext, readEndpointAdapterConfig, readAdapterSelection, type AdapterSelection, type AdapterMatchEvidence,
   type EndpointAdapterConfig, type FrozenAdapterBinding } from './endpoint-adapter.js';
-import { candidateImplementationDigest, prepareCandidateTable } from './candidate-pipeline.js';
+import { parseEndpointSource, type AdapterParseResult } from './endpoint-adapter.js';
 
 export const ADAPTER_REGISTRY_VERSION = 'bd.endpoint-adapter-registry/1';
 export const ADAPTER_REGISTRY_LIMITS = Object.freeze({ maxSamples: 16, maxExceptions: 200, maxVersions: 200 });
@@ -91,10 +91,10 @@ export class EndpointAdapterRegistry {
   constructor(private readonly options: { database: CoreDatabase; materials: MaterialService;
     /** 宿主按已有来源任务/回执解析；不存在或不是来源下载任务时返回 null。 */
     sourceReceipt?(taskId: string): AdapterReceiptEvidence | null }) {
-    // 实现证据必须绑定真实执行链：本模块 + 解析算子 + 五步实现（含其实际调用的规则文件）。
+    // 适配重放只核来源载体的真实解析，不把清洗、结构化或 WFD 准入的实现版本绑定进来。
     const files = ['./endpoint-adapter-registry.ts', './endpoint-adapter.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
     this.versionBinding = Object.freeze({ registry: ADAPTER_REGISTRY_VERSION,
-      implementation: wfdSha256(Buffer.concat([...files, Buffer.from(candidateImplementationDigest(), 'utf8')])) });
+      implementation: wfdSha256(Buffer.concat(files)) });
     options.database.migrate('collection_source_adapters', 1, SCHEMA);
   }
   private get db() { return this.options.database.connection; }
@@ -108,7 +108,7 @@ export class EndpointAdapterRegistry {
         createdAt: row.created_at, updatedAt: row.updated_at })),
       driftCount: Number(drift),
       lifecycle: ['candidate', 'adopted', 'retired'],
-      adoptionRule: '候选须对本机受管材料实际重放至少一个正样本与一个反样本，并由受信本机入口确认同一份重放证据摘要；模型自报授权或 READY 不构成采用依据。',
+      adoptionRule: '候选仅重放原件的载体、字段、类型和有据单位转换；受信入口确认正反样本。不等于清洗、金融语义、完整 WFD 管路或正式发布已验收。',
       binding: '计划与请求按 adapterId+version+configDigest 冻结；新采用版本只影响新计划。',
       limits: ADAPTER_REGISTRY_LIMITS };
   }
@@ -152,9 +152,9 @@ export class EndpointAdapterRegistry {
   }
 
   /**
-   * 用本机实际材料重放正反样本，走与生产一致的五步（parse→clean→structure→annotate→check）。
-   * 缺字段、坏 decimal/integer、无效时间写法都会在重放阶段按同一门失败；
-   * 期望值逐项核对，且实现摘要进入证据，解析实现变化后旧重放不能直接采用。
+   * 仅重放与正式解析模块共用的来源载体解码器。
+   * 清洗、结构化、标注与核对由 BD 处理计划按本件数据实际需要独立调用；
+   * 重放结论只授权适配器配置，不代表金融语义已确认或 WFD 可发布。
    */
   replay(value: unknown, operator: OperatorContext): WfdRecord {
     assertOperator(operator);
@@ -178,25 +178,27 @@ export class EndpointAdapterRegistry {
       const original = this.options.materials.readOriginal(materialId), material = this.options.materials.get(materialId);
       if (material.envelope.sha256 !== original.sha256) fail('ADAPTER_MATERIAL_CHANGED', '重放材料原件摘要与登记不符。');
       let outcome: 'accept' | 'reject' = 'accept', code: string | null = null, message: string | null = null;
-      let prepared: ReturnType<typeof prepareCandidateTable> | null = null;
+      let parsed: AdapterParseResult | null = null;
       try {
-        prepared = prepareCandidateTable(original.bytes, { materialId, format: 'json',
-          sourceAdapter: { adapterId, version, configDigest: row.config_digest, config } });
+        parsed = parseEndpointSource(original.bytes, config);
       } catch (error) {
         if (!(error instanceof TaskError)) throw error;
         outcome = 'reject'; code = error.code; message = error.message;
       }
-      // 期望核对独立于执行结论：行/字段不符只影响 passed，不会被记成生产拒绝。
-      let rowCount: number | null = prepared ? prepared.rows.length : null;
+      // 期望值只针对实际解析字段，不由适配器重放触发其他数据处理模块。
+      const rowCount: number | null = parsed ? parsed.rows.length : null;
       let actual: WfdRecord | null = null;
       const mismatch: string[] = [];
-      if (prepared && expected) {
-        const first = prepared.rows[expected.row];
+      if (parsed && expected) {
+        const first = parsed.rows[expected.row];
         if (!first) mismatch.push(`期望第 ${expected.row + 1} 行不存在（实际 ${rowCount} 行）`);
         else {
-          actual = Object.fromEntries(Object.entries(expected.values).map(([field, value]) => [field, first[field] ?? null]));
+          const current: WfdRecord = Object.fromEntries(parsed.columns.map((field, index) =>
+            [field, first[index]?.value ?? null]));
+          actual = Object.fromEntries(Object.keys(expected.values).map(field => [field, current[field] ?? null]));
           for (const [field, value] of Object.entries(expected.values))
-            if (String(first[field]) !== String(value)) mismatch.push(`${field}: 期望 ${JSON.stringify(value)}，实际 ${JSON.stringify(first[field] ?? null)}`);
+            if (!Object.hasOwn(current, field) || String(current[field]) !== value)
+              mismatch.push(`${field}: 期望 ${JSON.stringify(value)}，实际 ${JSON.stringify(current[field] ?? null)}`);
         }
         if (expected.rowCount !== undefined && expected.rowCount !== rowCount)
           mismatch.push(`rowCount: 期望 ${expected.rowCount}，实际 ${rowCount}`);
@@ -204,7 +206,9 @@ export class EndpointAdapterRegistry {
       const passed = outcome === sample.expectation
         && (outcome !== 'reject' || sample.expectedCode === undefined || sample.expectedCode === code)
         && mismatch.length === 0;
-      const evidence = { adapterId, version, configDigest: row.config_digest, implementation, materialId, materialSha256: original.sha256,
+      const evidence = { adapterId, version, configDigest: row.config_digest, implementation,
+        verifiedStage: 'parse_only', semanticApproval: false, wfdPublicationAuthorized: false,
+        materialId, materialSha256: original.sha256,
         expectation: sample.expectation, ...(sample.expectedCode === undefined ? {} : { expectedCode: String(sample.expectedCode) }),
         ...(expected ? { expect: expected } : {}), outcome, code, message, rowCount, actual, mismatch, passed };
       const replayId = randomUUID();
@@ -217,7 +221,7 @@ export class EndpointAdapterRegistry {
   }
 
   /**
-   * 受控采用：同配置摘要下每个重放样本都必须通过（含期望值），
+   * 受控采用解析配置：同配置摘要下每个解析重放样本都必须通过（含期望值），
    * 至少一个正样本与一个反样本，且全部证据来自当前解析实现；确认摘要须等于服务实际证据摘要。
    * 会话模型不能直接采用。
    */
