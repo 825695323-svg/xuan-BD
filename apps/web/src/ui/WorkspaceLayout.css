@@ -449,7 +449,7 @@
 
 
 /* 页面宽度以实际内容容器为准，不能只根据窗口宽度猜 Agent 是否展开。 */
-@container (max-width: 860px) {
+@container (max-width: 810px) {
   .page-panes { flex-direction: column; }
   .page-panes > .data-nav {
     display: block;
