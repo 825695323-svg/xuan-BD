@@ -87,8 +87,8 @@ function capture(width, height, theme, view) {
   const match = /<pre id="visual-report"[^>]*>([^<]+)<\/pre>/u.exec(response.stdout);
   assert.ok(match, 'React 视觉夹具未生成浏览器几何报告：' + response.stdout.slice(-1200));
   const data = JSON.parse(match[1].replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>'));
-  const summary = verify(data);
   writeFileSync(image.replace(/\.png$/u, '.json'), JSON.stringify(data, null, 2));
+  const summary = verify(data);
   console.log('VISUAL_AUDIT_OK', JSON.stringify({ ...summary, screenshot: image }));
   return summary;
 }
