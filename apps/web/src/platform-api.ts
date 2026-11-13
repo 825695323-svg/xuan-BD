@@ -59,9 +59,10 @@ export type FileView = FileReference & { downloadUrl?: string | null };
 export const getFiles = async (id: string) => await request(`/api/files?conversationId=${encodeURIComponent(id)}`) as FileView[];
 export const registerFile = async (id: string, path: string) => await request('/api/files', 'POST', { conversationId: id, path }) as FileReference;
 export const observeFile = async (id: string) => await request(`/api/files/${encodeURIComponent(id)}/observe`, 'POST', {});
+const uploadLimitNotice = () => `此环境未取得原文件路径，上传最多 ${ATTACHMENT_UPLOAD_LIMIT / 1024 / 1024} MiB；请使用应用窗口重新选择文件。`;
 export async function uploadFile(conversationId: string, file: File): Promise<FileReference> {
   // 本地预检没有发出请求，必须带明确失败身份，不能被当作“可能已受理”。
-  if (file.size > ATTACHMENT_UPLOAD_LIMIT) throw new RequestError('此环境未取得原文件路径，上传最多 25 MiB；请使用应用窗口重新选择文件。', 413, 'UPLOAD_TOO_LARGE');
+  if (file.size > ATTACHMENT_UPLOAD_LIMIT) throw new RequestError(uploadLimitNotice(), 413, 'UPLOAD_TOO_LARGE');
   if (!file.size) throw new RequestError('请选择一个非空文件。', 400, 'INVALID_UPLOAD');
   let value: unknown;
   try {
@@ -72,7 +73,7 @@ export async function uploadFile(conversationId: string, file: File): Promise<Fi
         unreadableMessage: '附件保存确认无法读取，请先核对文件列表。' });
   } catch (failure) {
     if (failure instanceof RequestError && failure.code === 'UPLOAD_TOO_LARGE')
-      throw new RequestError('此环境未取得原文件路径，上传最多 25 MiB；请使用应用窗口重新选择文件。', failure.status, failure.code);
+      throw new RequestError(uploadLimitNotice(), failure.status, failure.code);
     throw failure;
   }
   if (!isObject(value) || typeof value.id !== 'string' || value.source !== 'user-attached')
