@@ -1,4 +1,4 @@
 Validated local source base: 6b96149e0387c5e4d01e7acc738e5d05f7569e53
 28 source/test/maintenance files, four exact edit manifests.
-Before/after SHA256 digests are checked before any publication.
-Remove this marker, edit manifests and temporary workflow from the final source commit.
+Before/after SHA256 digests, production build and 41 targeted checks passed in the prior isolated run.
+Publication revision 2: ordinary source only; workflow update and temporary workflow deletion use the authorized connector separately.
