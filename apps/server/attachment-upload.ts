@@ -5,9 +5,10 @@ import { root } from '@openclaw/fs-safe';
 import { CoreError } from '../../platform/runtime/errors.js';
 import { inspectPath, samePathIdentity } from '../../platform/security/permissions.js';
 import type { ApplicationServices } from './services.js';
+import { ATTACHMENT_UPLOAD_LIMIT } from '../../contracts/upload-limits.js';
+export { ATTACHMENT_UPLOAD_LIMIT } from '../../contracts/upload-limits.js';
 
 // 仅约束没有原路径时的上传回退；原路径引用和固定读取各自保留原有边界。
-export const ATTACHMENT_UPLOAD_LIMIT = 25 * 1024 * 1024;
 const uploadTooLarge = () => new CoreError('UPLOAD_TOO_LARGE', '原路径解析不可用时，上传最多 25 MiB（兆字节）；请通过本机选件重新接入或选择较小文件。', 413);
 const uploadChanged = () => new CoreError('UPLOAD_CHANGED', '附件落盘后的大小、身份或字节摘要未能核对，请重新选择文件。');
 
