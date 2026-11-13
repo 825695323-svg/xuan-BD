@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Boxes, CheckCircle2, ChevronRight, ShieldAlert, FileText, GitBranch, ListChecks, RefreshCw, Search } from 'lucide-react';
+import { Boxes, CheckCircle2, ChevronRight, ShieldAlert, FileText, GitBranch, ListChecks, RefreshCw } from 'lucide-react';
 import type { ConversationAttachmentRef } from '../../../../contracts/contracts';
 import type { MaterialEnvelope, MaterialRecord } from '../../../../modules/collection/materials/contracts';
 import type { BdJob } from '../bd-api';
 import { dataBrowserApi, type MaterialProcessingOutput } from '../data-browser-api';
 import { ErrorNote, Modal, SelectMenu, errorDetail, useWords } from './Controls';
 import { R1Panel } from './R1Panel';
+import { PageButton, PageEmpty, PageHeading, PageSearch } from './PageUI';
 import { taskStateLabels, taskStateText } from './TaskResults';
 import type { AlgorithmEntryFocus } from './algorithm-catalog';
 
@@ -73,10 +74,6 @@ export function DatabasePage({ onBringToConversation, algorithmFocus = null }: D
   </div>;
 }
 
-function SearchBar({ value, onChange, placeholder }: { value: string; onChange(value: string): void; placeholder: string }) {
-  return <div className="data-search"><Search size={15} aria-hidden="true" /><input type="search" value={value} onChange={event => onChange(event.currentTarget.value)} placeholder={placeholder} aria-label={placeholder} /></div>;
-}
-
 function usePaged<T>(load: (query: string, cursor: string | null) => Promise<{ items: T[]; nextCursor: string | null; availability: 'available' | 'unavailable'; scope: string }>) {
   const [items, setItems] = useState<T[]>([]), [nextCursor, setNextCursor] = useState<string | null>(null);
   const [query, setQuery] = useState(''), [applied, setApplied] = useState(''), [loading, setLoading] = useState(false);
@@ -102,9 +99,9 @@ function ListState({ loading, error, availability, empty, children }: {
 }) {
   const words = useWords();
   return <>{error && <ErrorNote detail={error}>{words('列表暂时无法读取，未用本地旧数据代替。', 'The list could not be read; stale local data is not used.')}</ErrorNote>}
-    {availability === 'unavailable' && <p className="data-empty" role="status">{words('此工作台能力尚未装配或当前不可达；不是空列表。', 'This workbench capability is not bound or reachable; this is not an empty list.')}</p>}
-    {loading && empty && !error ? <p className="data-empty">{words('读取中…', 'Loading…')}</p> : null}
-    {availability === 'available' && !loading && empty && !error ? <p className="data-empty">{words('没有匹配记录。', 'No matching records.')}</p> : null}
+    {availability === 'unavailable' && <PageEmpty state="unavailable">{words('此工作台能力尚未装配或当前不可达；不是空列表。', 'This workbench capability is not bound or reachable; this is not an empty list.')}</PageEmpty>}
+    {loading && empty && !error ? <PageEmpty state="loading">{words('读取中…', 'Loading…')}</PageEmpty> : null}
+    {availability === 'available' && !loading && empty && !error ? <PageEmpty>{words('没有匹配记录。', 'No matching records.')}</PageEmpty> : null}
     {children}</>;
 }
 
@@ -113,15 +110,16 @@ function FileList() {
   const load = useCallback((query: string, cursor: string | null) => dataBrowserApi.files(group, query, cursor), [group]);
   const page = usePaged(load);
   return <div className="database-list-page">
-    <div className="database-overview-head"><div><h2 className="data-panel-title">{words('原件与产物', 'Files and outputs')}</h2><p className="data-panel-sub">{words('个人文件引用；材料保管另见材料预览。', 'Personal file references; material custody is listed separately.')}</p></div>
+    <div className="database-overview-head"><PageHeading title={words('原件与产物', 'Files and outputs')}
+        description={words('个人文件引用；材料保管另见材料预览。', 'Personal file references; material custody is listed separately.')} />
       <div className="market-chips"><button type="button" className="market-chip" aria-pressed={group === 'materials'} onClick={() => setGroup('materials')}>{words('材料引用', 'Material refs')}</button><button type="button" className="market-chip" aria-pressed={group === 'outputs'} onClick={() => setGroup('outputs')}>{words('任务产物', 'Task outputs')}</button></div></div>
-    <SearchBar value={page.query} onChange={page.setQuery} placeholder={words('搜索文件名或编号', 'Search name or ID')} />
+    <PageSearch value={page.query} onChange={page.setQuery} label={words('搜索文件名或编号', 'Search name or ID')} />
     <ListState loading={page.loading} error={page.error} availability={page.availability} scope={page.scope} empty={!page.items.length}>
       <div className="database-list">{page.items.map(file => <article className="database-row" key={file.id}><FileText size={17} aria-hidden="true" />
         <div className="database-row-main"><strong>{file.displayName}</strong><small>{stateLabel(file.source, words)} · {bytes(file.size)} · v{file.version} · {stateLabel(file.status, words)}</small>
           <details className="result-details"><summary>{words('文件身份与关联', 'File identity and relations')}</summary><dl><dt>{words('编号', 'ID')}</dt><dd>{file.id}</dd><dt>{words('关联', 'Relations')}</dt><dd>{file.relations.map(relation => `${relation.kind}:${relation.id}`).join(' · ') || '—'}</dd></dl></details></div>
         <span className="market-state">{file.kind}</span></article>)}</div>
-      {page.nextCursor && <button type="button" className="text-button database-more" disabled={page.loading} onClick={page.more}>{words('加载更多', 'Load more')}</button>}
+      {page.nextCursor && <PageButton className="database-more" disabled={page.loading} onClick={page.more}>{words('加载更多', 'Load more')}</PageButton>}
     </ListState>
   </div>;
 }
@@ -153,13 +151,14 @@ function MaterialList() {
   };
   const close = () => { requestEpoch.current++; setPreview(null); };
   return <div className="database-list-page">
-    <div className="database-overview-head"><div><h2 className="data-panel-title">{words('材料预览', 'Material previews')}</h2><p className="data-panel-sub">{words('只列已完成保管的原件；点击查看只读预览，不自动解析或入库。', 'Only completed custody is listed; previews are read-only and never trigger parsing or ingestion.')}</p></div></div>
-    <SearchBar value={page.query} onChange={page.setQuery} placeholder={words('搜索材料名称、编号或类别', 'Search material, ID or category')} />
+    <div className="database-overview-head"><PageHeading title={words('材料预览', 'Material previews')}
+        description={words('只列已完成保管的原件；点击查看只读预览，不自动解析或入库。', 'Only completed custody is listed; previews are read-only and never trigger parsing or ingestion.')} /></div>
+    <PageSearch value={page.query} onChange={page.setQuery} label={words('搜索材料名称、编号或类别', 'Search material, ID or category')} />
     {previewError && <ErrorNote detail={previewError}>{words('材料预览未能读取。', 'The material preview could not be read.')}</ErrorNote>}
     <ListState loading={page.loading} error={page.error} availability={page.availability} scope={page.scope} empty={!page.items.length}>
       <div className="database-list">{page.items.map(item => <button type="button" className="database-row database-row--button" key={item.materialId} onClick={() => void open(item)}>
         <Boxes size={17} aria-hidden="true" /><div className="database-row-main"><strong>{item.filename}</strong><small>{item.category} · {bytes(item.byteLength)} · {item.adapter ? `${item.adapter.id}/${item.adapter.version}` : words('无适配器', 'no adapter')} · {time(item.createdAt)}</small></div><ChevronRight size={16} /></button>)}</div>
-      {page.nextCursor && <button type="button" className="text-button database-more" disabled={page.loading} onClick={page.more}>{words('加载更多', 'Load more')}</button>}
+      {page.nextCursor && <PageButton className="database-more" disabled={page.loading} onClick={page.more}>{words('加载更多', 'Load more')}</PageButton>}
     </ListState>
     {preview && <Modal title={words('材料只读预览', 'Read-only material preview')} onClose={close}>
       <MaterialPreview record={preview} />
@@ -199,8 +198,9 @@ function JobList() {
   const load = useCallback((query: string, cursor: string | null) => dataBrowserApi.jobs(query, cursor), []);
   const page = usePaged<JobView>(load);
   return <div className="database-list-page">
-    <div className="database-overview-head"><div><h2 className="data-panel-title">{words('工作台任务', 'Workbench tasks')}</h2><p className="data-panel-sub">{words('含运行中、待审批、结果待核、失败和已保存结果，不只列有结果的记录。', 'Includes running, waiting approval, unconfirmed, failed and saved results, not only completed ones.')}</p></div></div>
-    <SearchBar value={page.query} onChange={page.setQuery} placeholder={words('搜索操作、状态、摘要或编号', 'Search operation, status, summary or ID')} />
+    <div className="database-overview-head"><PageHeading title={words('工作台任务', 'Workbench tasks')}
+        description={words('含运行中、待审批、结果待核、失败和已保存结果，不只列有结果的记录。', 'Includes running, waiting approval, unconfirmed, failed and saved results, not only completed ones.')} /></div>
+    <PageSearch value={page.query} onChange={page.setQuery} label={words('搜索操作、状态、摘要或编号', 'Search operation, status, summary or ID')} />
     <ListState loading={page.loading} error={page.error} availability={page.availability} scope={page.scope} empty={!page.items.length}>
       <div className="database-list">{page.items.map(job => <article className="database-row" key={job.jobId}><ListChecks size={17} aria-hidden="true" /><div className="database-row-main">
         <strong>{job.title ?? job.operation}</strong><small>{jobStateLabel(job.status, words)} · {time(job.createdAt)} {job.progress?.message ? ` · ${job.progress.message}` : ''}</small>
@@ -208,7 +208,7 @@ function JobList() {
         <p>{job.result?.summary ?? job.error?.message ?? job.blockedReason ?? (job.status === 'waiting_approval' ? words('等待授权。', 'Awaiting authorization.') : words('任务已受理，结果尚未确认。', 'Accepted; outcome not yet confirmed.'))}</p>
         <details className="result-details"><summary>{words('任务身份与回执', 'Task identity and receipt')}</summary><dl><dt>{words('任务', 'Task')}</dt><dd>{job.jobId}</dd><dt>{words('操作', 'Operation')}</dt><dd>{job.operation}</dd><dt>{words('请求', 'Request')}</dt><dd>{job.requestId}</dd><dt>{words('状态', 'Status')}</dt><dd>{jobStateLabel(job.status, words)}{job.requiresReview ? words(' · 待核', ' · unconfirmed') : ''}</dd><dt>{words('错误码', 'Error code')}</dt><dd>{job.error?.code ?? '—'}</dd></dl></details>
       </div></article>)}</div>
-      {page.nextCursor && <button type="button" className="text-button database-more" disabled={page.loading} onClick={page.more}>{words('加载更多', 'Load more')}</button>}
+      {page.nextCursor && <PageButton className="database-more" disabled={page.loading} onClick={page.more}>{words('加载更多', 'Load more')}</PageButton>}
     </ListState>
   </div>;
 }
