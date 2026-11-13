@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { DEFAULT_MATERIAL_ADAPTERS } from './data-processing/material-inspector/index.js';
 import type { MaterialCell, MaterialLimits, MaterialLocation, MaterialScalar, MaterialTable } from './materials/contracts.js';
 import { candidateCsvRecords } from './candidate-csv-records.js';
@@ -17,6 +18,17 @@ import { adapterColumnType, adapterConfigDigest, adapterMaterialTable, adapterPa
 export const CANDIDATE_LIMITS = Object.freeze({ maxOutputs: 16, maxOriginals: 32, maxObjectBytes: 268_435_456,
   maxStructuredBytes: 67_108_864, maxRows: 100_000, maxFields: 256, chunkBytes: 1_048_576 });
 export const CANDIDATE_SELECTION_LIMITS = Object.freeze({ maxSelectedRows: 5000, maxScannedRows: 2_000_000 });
+/**
+ * 多文件来源解析与结构化的实际实现摘要，供独立的分钟/批量处理检查其冻结版本。
+ * 这只是原数据正确性证明，不是任何五步自动执行器。
+ */
+export function candidateImplementationDigest(): string {
+  const files = ['./candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts',
+    './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts',
+    './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts',
+    './materials/contracts.ts', '../../adapters/database/wfd-transport.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
+  return wfdSha256(Buffer.concat(files));
+}
 export const CANDIDATE_STAGE_VERSIONS = Object.freeze({ parse: 'bd-source-parsers/3', clean: 'bd-explicit-clean/1',
   structure: 'bd-explicit-types/2', annotate: 'bd-explicit-constants/1', check: 'bd-table-integrity/2' });
 export interface CandidateCsvSelection {
