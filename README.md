@@ -27,6 +27,12 @@ npm test
 
 基础 `native`（原生模式）可在不安装浏览器、转录工具、模型和 WFD 连接的情况下启动数据界面，禁用能力会明确显示不可用。完整 `bundle`（随包资源）由显式命令在 macOS arm64 / Windows x64 重建；不在应用启动时自动下载。
 
+## 本地测试不累积旧通道
+
+`npm test`（BD 本地测试）每轮创建全新隔离运行根，验证结束后仅删除本轮自己的成功测试产物；失败时保留本轮证据供排查。设置 `XUAN_TEST_ROOT`（普通测试父目录）与 `XUAN_FULL_CHAIN_ROOT`（全链测试父目录）也不会重用旧状态库或旧通道绑定。明确使用 `npm test -- --keep-fixtures` 才保留本轮成功测试文件，正式 WFD 数据与生产运行根不受影响。
+
+正式管路定向验收使用 `WFD_PYTHON=/绝对解释器 XUAN_FULL_CHAIN_ROOT=/已存在且获准的测试父目录 npm run test:pipeline`（Windows 改为 PowerShell 环境变量）。这会执行 **来源适配 → 实际解析/清洗/结构化/核对 → R1 正式交接 → 固定 WFD 读回**的隔离全链测试，并验证单位、原值、字段口径、升级后的当前实现和旧任务冻结身份。缺解释器或测试父目录时直接报错，不把跳过的集成测试算成功。一般代码回归仍可运行 `npm test`；它不是每次改动必须额外验证所有旧通道的理由。
+
 ## 工程入口
 
 [工程维护规则](AGENTS.md) · [来源语义与版本补充](docs/SOURCE-SEMANTIC-ADOPTION.md) · [重建与配置](docs/REBUILD.md) · [仓库文件边界](docs/REPOSITORY-POLICY.md) · [WFD 说明](wfd/product/README.md)

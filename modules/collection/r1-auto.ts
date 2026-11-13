@@ -12,14 +12,14 @@ import { profileFingerprint, sourceFieldProfileDigest, type FrozenSourceFieldPro
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import type { R1WorkspaceService } from './r1-workspace.js';
 import { parseTableSource } from './candidate-pipeline.js';
-import { decodeAdapterSource, readAdapterBindingRef, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
+import { decodeAdapterSource, readAdapterSelection, type AdapterSelection, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
 export const R1_AUTO_VERSION = 'bd.r1-auto/2';
 export interface R1AutoStartInput {
   requestId: string; materialId: string; source: R1SourceDeclaration; datasetId: string;
   priorRequestId?: string; xlsxSelection?: XlsxTableSelection; sourceValueColumns?: string[];
   /** 已采用端点适配引用；由宿主解析为冻结配置，请求正文不能携带配置内容。 */
-  sourceAdapter?: AdapterBindingRef;
+  sourceAdapter?: AdapterSelection;
   /** 本材料实际取得回执摘要（url/材料摘要/请求参数）；发布用途必须核过匹配。 */
   sourceContext?: unknown;
   /** 已有来源任务编号；宿主按该任务结果核回执与文件关联。 */
@@ -106,8 +106,23 @@ export class R1AutoService {
   }
 
   private startBound(input: R1AutoStartInput, operator: OperatorContext, selectedKeyReplacement = false): R1AutoView {
+    // 原请求先按自身冻结的输入核对，不以现在的来源档案或适配实现重新计算旧请求身份。
+    // 通道升级只影响新任务；原任务仍由其已持久化的输入/档案/适配及 WFD 回执恢复。
+    const existing = this.find(input.requestId);
+    if (existing) {
+      if (canonicalWfdJson(existing.input) !== canonicalWfdJson(input)
+        || (existing.selectedKeyReplacement === true) !== selectedKeyReplacement)
+        fail('R1_AUTO_REQUEST_CONFLICT', '原请求的材料、用途、来源、选区或目标已变化；不能借同一请求号覆盖。');
+      const handoff = existing.revisions.at(-1)?.handoffRequestId;
+      if (handoff && ['recovering','submitting'].includes(existing.state)
+        && ['associated','partially_associated','conflicts_pending'].includes(this.options.workspace.get(handoff).state)) {
+        existing.state = this.options.workspace.get(handoff).state === 'associated' ? 'associated' : 'conflicts_pending';
+        existing.error = null; this.save(existing);
+      }
+      return this.get(input.requestId);
+    }
     const fieldProfile = this.options.fieldProfiles?.match({ sourceId: input.source.source_id,
-      series: declaredSourceSeries(input.source), ...(input.sourceAdapter ? { adapter: input.sourceAdapter } : {}) }) ?? null;
+      series: declaredSourceSeries(input.source) }) ?? null;
     const frozenProfile = fieldProfile
       ? { profile: fieldProfile, digest: sourceFieldProfileDigest(fieldProfile), fingerprint: profileFingerprint(fieldProfile) }
       : undefined;
@@ -118,16 +133,7 @@ export class R1AutoService {
     }
     const payload = { input, ...(frozenProfile ? { sourceFieldProfileSha256: frozenProfile.digest } : {}) };
     const digest = wfdSha256(canonicalWfdJson(selectedKeyReplacement ? { payload, selectedKeyReplacement } : payload));
-    const existing = this.find(input.requestId);
-    if (existing) {
-      if (existing.inputSha256 !== digest) fail('R1_AUTO_REQUEST_CONFLICT', '原自动请求的材料、来源授权、选区和数据集已经冻结，不能覆盖。');
-      const handoff=existing.revisions.at(-1)?.handoffRequestId;
-      if(handoff&&['recovering','submitting'].includes(existing.state)&&['associated','partially_associated','conflicts_pending'].includes(this.options.workspace.get(handoff).state)) {
-        existing.state=this.options.workspace.get(handoff).state==='associated'?'associated':'conflicts_pending';existing.error=null;this.save(existing);
-      }
-      return this.get(input.requestId);
-    }
-    if (input.priorRequestId) {
+     if (input.priorRequestId) {
       const adopted = this.db.prepare("SELECT request_id FROM r1_auto_requests WHERE json_extract(record_json,'$.input.priorRequestId')=? LIMIT 1").get(input.priorRequestId);
       if (adopted) fail('R1_AUTO_PRIOR_ALREADY_CLAIMED', `原明确拒绝已由自动请求 ${adopted.request_id} 承接；请核对原续办，不换新编号重复办理。`);
     }
@@ -612,7 +618,7 @@ function readStart(value: unknown): R1AutoStartInput {
     || new Set(selected).size !== selected.length)) fail('R1_AUTO_COLUMN_SELECTION', '须指定 1 至 256 个不重复的原表列名。');
   return structuredClone({ ...(selected ? { sourceValueColumns: [...selected as string[]].sort() } : {}), requestId: body.requestId, materialId: body.materialId, datasetId: body.datasetId,
     source: source as unknown as R1SourceDeclaration, ...(body.priorRequestId ? { priorRequestId: body.priorRequestId as string } : {}),
-    ...(body.sourceAdapter ? { sourceAdapter: readAdapterBindingRef(body.sourceAdapter) } : {}),
+    ...(body.sourceAdapter ? { sourceAdapter: readAdapterSelection(body.sourceAdapter) } : {}),
     ...(body.sourceContext === undefined ? {} : { sourceContext: structuredClone(body.sourceContext) }),
     ...(body.sourceReceiptTaskId === undefined ? {} : { sourceReceiptTaskId: String(body.sourceReceiptTaskId) }),
     ...(body.xlsxSelection ? { xlsxSelection: readXlsxTableSelection(body.xlsxSelection) } : {}) });

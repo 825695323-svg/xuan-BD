@@ -9,7 +9,7 @@ import type { MaterialService } from './materials/service.js';
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import type { R1AutoService, R1AutoState, R1AutoView } from './r1-auto.js';
 import { R1ChunkedCsvService } from './r1-chunked-csv.js';
-import { readAdapterBindingRef, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
+import { readAdapterSelection, type AdapterSelection, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
 
 export interface R1BatchFile { name: string; relativePath: string; sha256: string; byteLength: number }
@@ -18,7 +18,7 @@ export interface R1BatchStartInput {
   datePolicy?: 'a_share_calendar_day_asia_shanghai';
   sourceValueColumns?: string[];
   /** 本批统一使用的已采用端点适配引用；逐件配置不在本批展开。 */
-  sourceAdapter?: AdapterBindingRef;
+  sourceAdapter?: AdapterSelection;
   /** 本批逐件取得回执模板：地址含 {file} 占位，材料摘要逐件绑定。 */
   sourceContextTemplate?: { kind: 'receipt' | 'synthetic'; urlTemplate: string; observedAt: string; protocol?: string;
     fields?: string[]; fields2?: string[]; frequency?: 'day' | 'minute' | 'event' | 'other';
@@ -249,7 +249,8 @@ export class R1AutoBatchService {
           auto = start({ requestId: item.autoRequestId, materialId: item.materialId,
             source: { ...record.input.source, requested_url: item.requestedUrl }, datasetId: record.input.datasetId,
             ...(record.input.sourceValueColumns ? { sourceValueColumns: record.input.sourceValueColumns } : {}),
-            ...(record.input.sourceAdapter ? { sourceAdapter: record.input.sourceAdapter } : {}),
+            ...(record.adapter ? { sourceAdapter: { adapterId: record.adapter.adapterId,
+              version: record.adapter.version, configDigest: record.adapter.configDigest } } : {}),
             ...(record.input.sourceContextTemplate ? { sourceContext: this.sourceContextFor(record, item) } : {}) }, record.operator);
           // This opt-in declares the scope of the selected batch. The recognizer must
           // independently identify a source trade-date question; generic dates are never answered here.
@@ -399,7 +400,7 @@ function readStart(value: unknown): R1BatchStartInput {
   if (files.reduce((total, file) => total + file.byteLength, 0) > R1_BATCH_MAX_BYTES) fail('R1_BATCH_BYTE_BUDGET', `本批清单总量不能超过 ${R1_BATCH_MAX_BYTES / 1024 / 1024} MiB。`);
   return structuredClone({ batchId: body.batchId, source: source as unknown as R1SourceDeclaration, datasetId: body.datasetId,
     files, ...(body.datePolicy ? { datePolicy: body.datePolicy } : {}), ...(selected ? { sourceValueColumns: [...selected as string[]].sort() } : {}),
-    ...(body.sourceAdapter === undefined ? {} : { sourceAdapter: readAdapterBindingRef(body.sourceAdapter) }),
+    ...(body.sourceAdapter === undefined ? {} : { sourceAdapter: readAdapterSelection(body.sourceAdapter) }),
     ...(body.sourceContextTemplate === undefined ? {} : { sourceContextTemplate: readContextTemplate(body.sourceContextTemplate) }) }) as R1BatchStartInput;
 }
 function fileUrl(series: string, path: string): string {

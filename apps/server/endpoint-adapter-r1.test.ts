@@ -212,5 +212,13 @@ test('适配原件经普通 R1 发布及固定读回', { skip: !enabled, timeout
     assert.equal((await host.call('/r1/batches/' + batchId)).state, 'completed');
     assert.equal(batchRecord(batchId), saved);
     assert.equal(batchRecord(changed.batchId), savedConflict);
+    // 正式数据按记录/定义/快照独立存在：已完成原报所属适配器退役后，
+    // 不需要加载旧来源插件或旧解析实现才能正确读取 WFD 数据。
+    await host.call('/processing/adapters/ths.kline.daily.adapter/1/retire',
+      { requestId: 'retire-after-wfd-publication' });
+    const afterRetirement = await host.call('/r1/products/read',
+      { snapshotId: associations[0]!.snapshot_id, productId: associations[0]!.product_id });
+    assert.deepEqual(afterRetirement.result.rows, originalRead.result.rows,
+      'WFD 正式旧数据的值和记录版本不应依赖仍保留旧适配器活跃配置');
   } finally { await host.close(); }
 });

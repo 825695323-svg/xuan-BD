@@ -18,7 +18,7 @@ import { readFinancialPdfSelection, projectFinancialPdf } from './data-processin
 import { readFinancialCalculation, projectFinancialFixed, type FinancialReader } from './data-processing/financial-fixed.js';
 import { R1_TABULAR_RULE_VERSION, checkR1TabularRows, compileR1TabularDeclaration, isR1TabularDeclaration, parseR1Utc } from './r1-tabular.js';
 import { r1SourceGaps } from './r1-source.js';
-import { adapterColumnType, adapterTypeCompatible, readAdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
+import { adapterColumnType, adapterTypeCompatible, readAdapterSelection, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import { decodeAdapterSource } from './endpoint-adapter.js';
 import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
 import {
@@ -251,7 +251,7 @@ export class ProcessingPlanService {
       csvSelection: { predicate: 'exact original column/string equality', maxSourceBytes: CANDIDATE_LIMITS.maxObjectBytes,
         ...CANDIDATE_SELECTION_LIMITS, completion: 'full EOF scan with selected/excluded coverage; no truncation' },
       endpointAdapter: { contract: 'bd.endpoint-adapter/1', configured: !!this.options.adapters,
-        binding: '{adapterId, version, configDigest}',
+        binding: 'new requests: {adapterId} selects the currently adopted implementation; pinned {adapterId,version,configDigest} remains compatible',
         lifecycle: 'candidate → actual replay (accept+reject samples) → trusted local adoption → only new plans consume the adopted version',
         carriers: ['json', 'jsonp', 'js-variable-assignment', 'json-embedded-delimited'],
         charsets: ['utf-8', 'gbk', 'gb18030'],
@@ -902,7 +902,7 @@ export class ProcessingPlanService {
       for (const table of output.tables) {
         if (!isWfdRecord(table) || table.sourceAdapter === undefined || typeof table.materialId !== 'string' || texts.has(table.materialId)) continue;
         try {
-          const frozen = this.options.adapters.resolve(readAdapterBindingRef(table.sourceAdapter));
+          const frozen = this.options.adapters.resolve(readAdapterSelection(table.sourceAdapter));
           texts.set(table.materialId, decodeAdapterSource(this.options.materials.readOriginal(table.materialId).bytes, frozen.config.carrier.charset).text);
         } catch { /* 该表会在 readTables/规范化时以明确错误失败；不在预扫描阶段改写结论。 */ }
       }
@@ -1756,7 +1756,9 @@ function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[]
     const materialId = readId(record.materialId, 'PROCESSING_MATERIAL_ID');
     if (!materialIds.includes(materialId)) fail('PROCESSING_TABLES', '表源必须属于本输出的原件。');
     if (!['csv', 'json', 'xlsx', 'xbrl', 'text', 'pdf', 'financial-fixed'].includes(String(record.format))) fail('PROCESSING_TABLES', '表源须明确为受支持格式及其专用选择规则。');
-    const sourceAdapter = record.sourceAdapter === undefined ? undefined : readAdapterBindingRef(record.sourceAdapter);
+    // 这里只解析稳定选择；normalizePlan 会立即把它解析并冻结为完整版本，之后的执行步骤只使用冻结配置。
+    const sourceAdapter = record.sourceAdapter === undefined ? undefined
+      : readAdapterSelection(record.sourceAdapter) as AdapterBindingRef;
     if ((record.sourceContext !== undefined || record.sourceReceiptTaskId !== undefined) && !sourceAdapter)
       fail('PROCESSING_TABLES', '来源回执上下文只适用于已声明端点适配的表源。');
     if (record.sourceContext !== undefined && record.sourceReceiptTaskId !== undefined)

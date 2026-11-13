@@ -154,7 +154,7 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
     const sina = await adopt(host, 'sina.kline.daily', '1', [sinaId], [badId], 'sina');
     const ths = await adopt(host, 'ths.kline.daily', '1', [thsId], [badId], 'ths');
 
-    const planInput = (outputId: string, materialId: string, binding: { adapterId: string; version: string; configDigest: string },
+    const planInput = (outputId: string, materialId: string, binding: { adapterId: string; version?: string; configDigest?: string },
       fieldMapping?: Record<string, string>, sourceContext?: Record<string, unknown>) => ({
       routing: { materials: [{ materialId }] },
       outputs: [{ outputId, materialIds: [materialId], intendedAction: 'inspect',
@@ -169,7 +169,7 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
       'ADAPTER_NOT_ADOPTED');
 
     const run = async (requestId: string, materialId: string,
-      binding: { adapterId: string; version: string; configDigest: string }, fieldMapping?: Record<string, string>,
+      binding: { adapterId: string; version?: string; configDigest?: string }, fieldMapping?: Record<string, string>,
       sourceContext?: Record<string, unknown>) => {
       const prepared = await host.call('/processing/plans', { requestId: `${requestId}-plan`,
         input: planInput('observations', materialId, binding, fieldMapping, sourceContext) }, 202);
@@ -326,8 +326,16 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
     assert.equal(reloaded.planDigest, eastmoneyRun.plan.planDigest);
     assert.equal((reloaded.steps.find((step: { kind: string }) => step.kind === 'parse')!.parameters as any).sourceAdapter.configDigest,
       eastmoney.adopted.configDigest);
-    const v2Run = await run('eastmoney-v2', eastmoneyId, bind(v2.adopted.configDigest, 'eastmoney.kline.daily', '2'));
+    const v2Run = await run('eastmoney-v2', eastmoneyId, { adapterId: 'eastmoney.kline.daily' });
     assert.equal(v2Run.plan.status, 'completed');
+    const currentParse = v2Run.plan.steps.find((step: { kind: string }) => step.kind === 'parse')!;
+    assert.equal((currentParse.parameters as any).sourceAdapter.version, '2',
+      '稳定接口只指定适配器编号，使用当前生效配置');
+    assert.equal((currentParse.parameters as any).sourceAdapter.configDigest, v2.adopted.configDigest);
+    assert.equal(host.services.endpointAdapters!.latestAdopted('eastmoney.kline.daily')?.version, '2',
+      '稳定适配器编号始终指向最新已采用实现；此前已冻结任务无需重新适配');
+    assert.equal((reloaded.steps.find((step: { kind: string }) => step.kind === 'parse')!.parameters as any)
+      .sourceAdapter.version, '1', '旧任务保留冻结解释，升级不回写或重算既有行');
     assert.notEqual(v2Run.plan.steps.find((step: { kind: string }) => step.kind === 'parse')!.specDigest,
       eastmoneyRun.plan.steps.find((step: { kind: string }) => step.kind === 'parse')!.specDigest);
 
