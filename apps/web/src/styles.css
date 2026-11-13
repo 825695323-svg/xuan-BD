@@ -1,5 +1,6 @@
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 15px;
   color: var(--ink, #0f172a);
   background: var(--bg, #edf2f8);
   font-synthesis: none;
@@ -43,8 +44,10 @@
   --ui-control-height: 36px;
   --ui-radius-control: 8px;
   --ui-radius-panel: 12px;
-  --ui-title-size: 1rem;
-  --ui-body-size: .86rem;
+  --ui-title-size: 1.08rem;
+  --ui-body-size: .92rem;
+  --ui-meta-size: .82rem;
+  --ui-caption-size: .86rem;
   --conversation-list-width: 250px;
 }
 :root[data-theme="dark"] {
@@ -103,7 +106,7 @@ button svg, a svg { flex-shrink: 0; }
 .danger-button { background: var(--danger); color: var(--surface); }
 .icon-button { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: var(--muted); text-decoration: none; }
 .icon-button:hover, .icon-button[aria-pressed="true"] { background: var(--hover); color: var(--ink); }
-.control-tooltip { z-index: 150; max-width: 280px; width: max-content; overflow-wrap: anywhere; background: var(--ink); color: var(--surface); border-radius: 6px; padding: 5px 8px; font-size: .78rem; font-weight: 400; line-height: 1.35; pointer-events: none; }
+.control-tooltip { z-index: 150; max-width: min(280px, calc(100dvw - 24px)); width: max-content; overflow-wrap: anywhere; background: var(--ink); color: var(--surface); border-radius: 6px; padding: 6px 9px; font-size: var(--ui-caption-size); font-weight: 400; line-height: 1.45; pointer-events: none; }
 .app-header { grid-column: 1 / -1; height: 26px; background: transparent; -webkit-app-region: drag; }
 .app-shell { display: grid; grid-template-columns: 52px minmax(0, 1fr); grid-template-rows: 26px minmax(0, 1fr); height: 100%; min-height: 0; width: 100%; background-color: var(--bg); background-image: var(--shell-image); overflow: hidden; }
 .global-nav { grid-column: 1; grid-row: 2; display: flex; flex-direction: column; align-items: center; width: 100%; min-width: 0; padding: 20px 0 12px; z-index: 40; }
@@ -380,13 +383,13 @@ button svg, a svg { flex-shrink: 0; }
 .material-evidence ins { color: var(--diff-added, var(--status-green)); }
 .inline-actions { display: flex; gap: 10px; margin-top: 14px; }
 .ui-menu, .model-popover { z-index: 100; background: var(--surface); color: var(--ink); border: 1px solid var(--line); box-shadow: var(--float-shadow); }
-.ui-menu { border-radius: 13px; padding: 5px; min-width: 180px; font-size: .88rem; }
-.ui-menu-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; outline: 0; cursor: pointer; }
+.ui-menu { border-radius: 13px; padding: 5px; min-width: min(180px, calc(100dvw - 24px)); max-width: min(360px, calc(100dvw - 24px)); max-height: min(360px, var(--radix-dropdown-menu-content-available-height, 70dvh)); overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; font-size: .9rem; }
+.ui-menu-item { display: flex; align-items: center; gap: 10px; min-height: 36px; min-width: 0; padding: 9px 10px; border-radius: 6px; outline: 0; cursor: pointer; overflow-wrap: anywhere; }
 .ui-menu-item[data-highlighted] { background: var(--hover); }
 .ui-menu-item[data-disabled] { opacity: .42; cursor: default; }
 .menu-separator { height: 1px; background: var(--line); margin: 5px 3px; }
 .status-warning { color: var(--status-warning); margin: 10px 0; }
-.model-popover { width: min(400px, calc(100vw - 30px)); max-height: 400px; overflow-y: auto; border-radius: 20px; padding: 9px; font-size: .93rem; }
+.model-popover { width: min(400px, calc(100dvw - 24px), var(--radix-popover-content-available-width, 400px)); max-height: min(400px, calc(100dvh - 24px), var(--radix-popover-content-available-height, 400px)); overflow-y: auto; overscroll-behavior: contain; border-radius: 16px; padding: 9px; font-size: .93rem; }
 .model-overview { display: grid; }
 .model-overview-row { display: flex; align-items: center; gap: 13px; min-width: 0; width: 100%; min-height: 51px; text-align: left; padding: 12px 12px; border-radius: 12px; }
 .model-overview-row:hover { background: var(--hover); }
@@ -399,11 +402,12 @@ button svg, a svg { flex-shrink: 0; }
 .model-option[aria-pressed="true"] { background: var(--selected); }
 .model-option span { min-width: 0; overflow-wrap: anywhere; }
 .model-notice, .popover-empty { color: var(--muted); font-size: .8rem; line-height: 1.6; padding: 9px 12px 5px; }
-.ui-dialog { max-width: min(520px, calc(100vw - 40px)); width: 100%; border: 1px solid var(--line); border-radius: 18px; padding: 21px 24px 24px; background: var(--surface); color: var(--ink); box-shadow: 0 18px 75px color-mix(in srgb, var(--ink) 18%, transparent); line-height: 1.7; }
+.ui-dialog { max-width: min(520px, calc(100dvw - 24px)); max-height: calc(100dvh - 24px); width: 100%; min-width: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px 22px; background: var(--surface); color: var(--ink); box-shadow: 0 18px 75px color-mix(in srgb, var(--ink) 18%, transparent); line-height: 1.65; }
 .ui-dialog::backdrop { background: color-mix(in srgb, var(--ink) 25%, transparent); }
 .dialog-heading { display: flex; gap: 20px; align-items: center; margin-bottom: 17px; }
 .dialog-heading h2 { flex: 1; font-size: 1.13rem; }
-.dialog-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex-wrap: wrap; margin-top: 23px; }
+.dialog-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex-wrap: wrap; margin-top: 20px; }
+.dialog-actions > button, .ui-page-actions > button { min-height: var(--ui-control-height); }
 .field-label { display: flex; flex-direction: column; gap: 10px; font-size: .9rem; }
 .field-label input { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
 .brand-asset { display: block; flex-shrink: 0; overflow: visible; }
@@ -499,18 +503,19 @@ button svg, a svg { flex-shrink: 0; }
 .market-chip:focus, .market-chip:focus-visible { outline: none; box-shadow: none; }
 
 
-/* 内联展开筛选（不用系统浮层） */
-.filter-select { position: relative; }
-.filter-trigger { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--ink); font-size: .8rem; line-height: 1; }
+/* 采集源筛选浮层复用 Radix 定位。浮层在画布 Portal，不能被卡片的滚动区裁切。 */
+.filter-select { position: relative; min-width: 0; }
+.filter-trigger { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; max-width: 100%; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--ui-radius-control); background: var(--surface-2); color: var(--ink); font-size: var(--ui-caption-size); line-height: 1.4; }
 .filter-trigger-label { color: var(--muted); }
-.filter-trigger-value { min-width: 2.2em; text-align: left; }
+.filter-trigger-value { min-width: 2.2em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .filter-trigger svg { color: var(--muted); flex: none; }
-.filter-select.is-open .filter-trigger { border-color: var(--accent); }
-.filter-select.is-open .filter-trigger svg { transform: rotate(180deg); }
-.filter-options { position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 12px 28px color-mix(in srgb, var(--ink) 12%, transparent); min-width: 132px; }
-.filter-option { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--ink); font-size: .8rem; text-align: left; }
-.filter-option:hover { background: var(--hover); }
-.filter-option[aria-selected="true"] { color: var(--ink); font-weight: 500; }
+.filter-trigger[data-state="open"] { border-color: var(--accent); }
+.filter-trigger[data-state="open"] svg { transform: rotate(180deg); }
+.filter-options { z-index: 140; display: block; width: max-content; min-width: 150px; max-width: min(320px, calc(100dvw - 24px)); max-height: min(320px, var(--radix-dropdown-menu-content-available-height, 65dvh)); padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--float-shadow); overflow-y: auto; overflow-x: hidden; }
+.filter-option { display: flex; align-items: center; gap: 7px; min-height: 34px; width: 100%; min-width: 0; padding: 6px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--ink); font-size: var(--ui-caption-size); line-height: 1.4; text-align: left; outline: none; overflow-wrap: anywhere; }
+.filter-option-check { display: inline-flex; align-items: center; justify-content: center; width: 14px; flex: 0 0 14px; }
+.filter-option[data-highlighted] { background: var(--hover); }
+.filter-option[data-state="checked"] { font-weight: 500; }
 .filter-option svg { color: var(--accent); }
 
 /* 卡片尾部槽位：公开徽标与加号同一位置同一宽度 */
@@ -659,10 +664,33 @@ button svg, a svg { flex-shrink: 0; }
 .ui-page-actions[data-align="end"] { justify-content: flex-end; }
 .ui-page-field { gap: var(--ui-space-2); min-width: 0; color: var(--ink); font-size: var(--ui-body-size); }
 .ui-page-field-label { font-weight: 500; }
-.ui-page-field-hint { color: var(--muted); font-size: .78rem; line-height: 1.55; }
+.ui-page-field-hint { color: var(--muted); font-size: var(--ui-caption-size); line-height: 1.55; }
 .ui-page-field :is(input:not([type="checkbox"]), textarea, select) { width: 100%; min-width: 0; min-height: var(--ui-control-height); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--ui-radius-control); background: var(--surface-2); color: var(--ink); }
 .ui-page-field textarea { resize: vertical; }
 @media (max-width: 760px) {
   .ui-page-heading { flex-wrap: wrap; }
   .ui-page-heading-actions { flex: 1 1 100%; }
+}
+
+
+/* 高密度标签共用阅读字号，不再散落 9–10px 的细字。图表、公式与代码不强制同号。 */
+:is(.market-state, .market-type-cap, .market-type-asset, .market-type-box-empty, .market-type-chip,
+    .market-type-warning, .market-type-legend, .market-types-note, .source-ops, .source-unavailable,
+    .source-public, .database-row-main small, .database-scope, .object-card-meta, .object-card-state,
+    .tools-meta dt, .tools-meta-sub, .tools-eyebrow, .tools-nav-entry-meta, .tools-entry-group-title,
+    .tools-source-tag, .tools-group-tag, .tools-result-foot, .tools-field-hint, .tools-tag,
+    .task-state, .result-copy small) {
+  font-size: var(--ui-meta-size);
+  line-height: 1.45;
+}
+:is(.source-card-actions .text-button, .tools-filter-button, .filter-trigger) { font-size: var(--ui-caption-size); }
+@media (max-width: 600px) {
+  .ui-dialog { padding: 16px; }
+  .dialog-heading { gap: 10px; }
+  .dialog-actions { gap: 6px; }
+  .composer-toolbar { flex-wrap: wrap; }
+  .composer-leading { flex: 1 1 auto; }
+  .composer-trailing { margin-left: auto; gap: 5px; }
+  .model-trigger { max-width: min(210px, 45dvw); }
+  .page-notice { left: 10px; right: 10px; gap: 8px; flex-wrap: wrap; }
 }
