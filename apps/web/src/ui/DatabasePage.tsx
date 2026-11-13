@@ -6,6 +6,7 @@ import type { BdJob } from '../bd-api';
 import { dataBrowserApi, type MaterialProcessingOutput } from '../data-browser-api';
 import { ErrorNote, Modal, SelectMenu, errorDetail, useWords } from './Controls';
 import { R1Panel } from './R1Panel';
+import { taskStateLabels, taskStateText } from './TaskResults';
 import type { AlgorithmEntryFocus } from './algorithm-catalog';
 
 export interface DatabasePageProps {
@@ -34,6 +35,8 @@ const stateLabel = (state: string, words: (zh: string, en: string) => string) =>
   const item = STATE_LABELS[state];
   return item ? words(item[0], item[1]) : state;
 };
+const jobStateLabel = (state: string, words: (zh: string, en: string) => string) =>
+  taskStateLabels[state] ? taskStateText(state, words) : stateLabel(state, words);
 const materialProcessingLabels: Record<string, [string, string]> = {
   needs_classification: ['待分类', 'Needs classification'], needs_adapter: ['待适配', 'Adapter needed'],
   needs_target: ['待确定目标', 'Target needed'], needs_review: ['待核对', 'Needs review'],
@@ -200,10 +203,10 @@ function JobList() {
     <SearchBar value={page.query} onChange={page.setQuery} placeholder={words('搜索操作、状态、摘要或编号', 'Search operation, status, summary or ID')} />
     <ListState loading={page.loading} error={page.error} availability={page.availability} scope={page.scope} empty={!page.items.length}>
       <div className="database-list">{page.items.map(job => <article className="database-row" key={job.jobId}><ListChecks size={17} aria-hidden="true" /><div className="database-row-main">
-        <strong>{job.title ?? job.operation}</strong><small>{stateLabel(job.status, words)} · {time(job.createdAt)} {job.progress?.message ? ` · ${job.progress.message}` : ''}</small>
+        <strong>{job.title ?? job.operation}</strong><small>{jobStateLabel(job.status, words)} · {time(job.createdAt)} {job.progress?.message ? ` · ${job.progress.message}` : ''}</small>
         {job.approvalId && <p className="result-approval"><ShieldAlert size={14} />{words('等待本机操作者在会话审批条处理。', 'Waiting for the local operator in the existing approval strip.')}</p>}
         <p>{job.result?.summary ?? job.error?.message ?? job.blockedReason ?? (job.status === 'waiting_approval' ? words('等待授权。', 'Awaiting authorization.') : words('任务已受理，结果尚未确认。', 'Accepted; outcome not yet confirmed.'))}</p>
-        <details className="result-details"><summary>{words('任务身份与回执', 'Task identity and receipt')}</summary><dl><dt>{words('任务', 'Task')}</dt><dd>{job.jobId}</dd><dt>{words('操作', 'Operation')}</dt><dd>{job.operation}</dd><dt>{words('请求', 'Request')}</dt><dd>{job.requestId}</dd><dt>{words('状态', 'Status')}</dt><dd>{stateLabel(job.status, words)}{job.requiresReview ? words(' · 待核', ' · unconfirmed') : ''}</dd><dt>{words('错误码', 'Error code')}</dt><dd>{job.error?.code ?? '—'}</dd></dl></details>
+        <details className="result-details"><summary>{words('任务身份与回执', 'Task identity and receipt')}</summary><dl><dt>{words('任务', 'Task')}</dt><dd>{job.jobId}</dd><dt>{words('操作', 'Operation')}</dt><dd>{job.operation}</dd><dt>{words('请求', 'Request')}</dt><dd>{job.requestId}</dd><dt>{words('状态', 'Status')}</dt><dd>{jobStateLabel(job.status, words)}{job.requiresReview ? words(' · 待核', ' · unconfirmed') : ''}</dd><dt>{words('错误码', 'Error code')}</dt><dd>{job.error?.code ?? '—'}</dd></dl></details>
       </div></article>)}</div>
       {page.nextCursor && <button type="button" className="text-button database-more" disabled={page.loading} onClick={page.more}>{words('加载更多', 'Load more')}</button>}
     </ListState>
