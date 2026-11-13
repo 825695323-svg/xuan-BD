@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { canonicalWfdJson, wfdSha256 } from '../../../adapters/database/wfd-transport.js';
-import { prepareCandidateTable, parseTableSource } from '../candidate-pipeline.js';
+import { parseTableSource, structureCandidateTable, checkCandidateTables } from '../candidate-pipeline.js';
 import { normalizeNumericLexeme, type NumericFormat } from './numeric-format.js';
 import { projectXbrlTable, type XbrlSelection } from './xbrl-table.js';
 import { NECESSARY_TEXT_VERSION, type NecessaryTextSelection } from './necessary-text.js';
@@ -16,14 +16,18 @@ const xml = (prefix = 'xbrli', scheme = 'https://id.example/one', code = '000001
 const rows = (source: string) => JSON.parse(projectXbrlTable(Buffer.from(source), selection).jsonBytes.toString());
 
 test('J06 same lexical counterexample is rejected under incompatible grammar and exactly decoded under declared grammar', () => {
-  assert.throws(() => prepareCandidateTable(Buffer.from('[{"value":"1.234,56"}]'), { materialId: 'j06', format: 'json', types: { value: 'decimal_string' } }), /数字字面量/u);
+  const bad = parseTableSource(Buffer.from('[{"value":"1.234,56"}]'), { materialId: 'j06', format: 'json', types: { value: 'decimal_string' } });
+  assert.throws(() => structureCandidateTable(bad, { value: 'decimal_string' }), /数字字面量/u);
   assert.equal(normalizeNumericLexeme('1.234,56', european), '1234.56');
   assert.throws(() => normalizeNumericLexeme('1.234,56', english));
   for (const value of ['12.34,56', '1.23.456,78', '1,2,3', '001', '', 'NaN', 'Infinity', '1 234,56']) assert.throws(() => normalizeNumericLexeme(value, european), value);
   assert.equal(normalizeNumericLexeme('(9.007.199.254.740.993,01)', european), '-9007199254740993.01');
-  const processed = prepareCandidateTable(Buffer.from('[{"code":"000001","value":"1.234,56"}]'), { materialId: 'j06-good', format: 'json', types: { value: 'decimal_string' }, numericFormats: { value: european } });
-  assert.equal(processed.rows[0]!.value, '1234.56');
-  assert.equal(processed.rows[0]!.code, '000001');
+  const parsed = parseTableSource(Buffer.from('[{"code":"000001","value":"1.234,56"}]'), {
+    materialId: 'j06-good', format: 'json', types: { value: 'decimal_string' }, numericFormats: { value: european } });
+  const structured = structureCandidateTable(parsed, { value: 'decimal_string' });
+  const checked = checkCandidateTables([structured]);
+  assert.equal(checked.rows[0]!.value, '1234.56');
+  assert.equal(checked.rows[0]!.code, '000001');
   assert.equal(parseTableSource(Buffer.from('[{"value":"1.234,56"}]'), { materialId: 'j06-original', format: 'json' }).rows[0]![0]!.original, '1.234,56');
 });
 
@@ -69,16 +73,21 @@ test('G02 controlled inline transformation handles namespaces, scale, sign and e
 
 test('D05 self-labelled full article fails, exact reviewed complete condition paragraphs survive without truncation', () => {
   const article = '这是一篇完整合成文章。\n\n分析内容不能靠标签获得必要条件资格。';
-  assert.throws(() => prepareCandidateTable(Buffer.from(canonicalWfdJson([{ text_role: 'necessary_condition', text: article }])), { materialId: 'd05', format: 'json' }), /选择证明/u);
+  const unreviewed = parseTableSource(Buffer.from(canonicalWfdJson([{ text_role: 'necessary_condition', text: article }])),
+    { materialId: 'd05', format: 'json' });
+  assert.throws(() => checkCandidateTables([structureCandidateTable(unreviewed)]), /选择证明/u);
   const paragraph = '本次会计差错更正仅影响营业收入和营业成本，不涉及合并资产负债表、现金流量表；预计不超过披露范围，除非另行审议，尚未生效的事项不得作为实际结果。';
   const source = Buffer.from('报告标题。\n\n' + paragraph + '\n\n其他业务材料。');
   const sourceText = source.toString(), start = sourceText.indexOf(paragraph);
   const spec: NecessaryTextSelection = { version: NECESSARY_TEXT_VERSION, sourceSha256: wfdSha256(source), documentVersion: 'correction-2025-04-30',
     purpose: 'correction_scope' as const, reviewBasis: '操作者核对原更正披露完整影响范围与全部限制条件', paragraphs: [{ start, end: start + paragraph.length, quote: paragraph }] };
-  const result = prepareCandidateTable(source, { materialId: 'd05-good', format: 'text', fieldMapping: {}, necessaryTextSelection: spec });
-  assert.equal(result.rows[0]!.text, paragraph);
+  const parsed = parseTableSource(source, { materialId: 'd05-good', format: 'text', necessaryTextSelection: spec });
+  const structured = structureCandidateTable(parsed);
+  const checked = checkCandidateTables([structured]);
+  assert.equal(checked.rows[0]!.text, paragraph);
   assert.ok(parseTableSource(source, { materialId: 'd05-proof', format: 'text', necessaryTextSelection: spec }).necessary_text_evidence);
-  assert.throws(() => prepareCandidateTable(source, { materialId: 'd05-cut', format: 'text', necessaryTextSelection: { ...spec,
+  assert.throws(() => parseTableSource(source, { materialId: 'd05-cut', format: 'text', necessaryTextSelection: { ...spec,
     paragraphs: [{ start, end: start + 20, quote: paragraph.slice(0, 20) }] } }), /完整原文段/u);
-  assert.throws(() => prepareCandidateTable(source, { materialId: 'd05-wrong-original', format: 'text', necessaryTextSelection: { ...spec, sourceSha256: '0'.repeat(64) } }), /摘要/u);
+  assert.throws(() => parseTableSource(source, { materialId: 'd05-wrong-original', format: 'text',
+    necessaryTextSelection: { ...spec, sourceSha256: '0'.repeat(64) } }), /摘要/u);
 });
