@@ -12,14 +12,14 @@ import { profileFingerprint, sourceFieldProfileDigest, type FrozenSourceFieldPro
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import type { R1WorkspaceService } from './r1-workspace.js';
 import { parseTableSource } from './candidate-pipeline.js';
-import { decodeAdapterSource, readAdapterBindingRef, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
+import { decodeAdapterSource, readAdapterSelection, type AdapterSelection, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
 export const R1_AUTO_VERSION = 'bd.r1-auto/2';
 export interface R1AutoStartInput {
   requestId: string; materialId: string; source: R1SourceDeclaration; datasetId: string;
   priorRequestId?: string; xlsxSelection?: XlsxTableSelection; sourceValueColumns?: string[];
   /** 已采用端点适配引用；由宿主解析为冻结配置，请求正文不能携带配置内容。 */
-  sourceAdapter?: AdapterBindingRef;
+  sourceAdapter?: AdapterSelection;
   /** 本材料实际取得回执摘要（url/材料摘要/请求参数）；发布用途必须核过匹配。 */
   sourceContext?: unknown;
   /** 已有来源任务编号；宿主按该任务结果核回执与文件关联。 */
@@ -618,7 +618,7 @@ function readStart(value: unknown): R1AutoStartInput {
     || new Set(selected).size !== selected.length)) fail('R1_AUTO_COLUMN_SELECTION', '须指定 1 至 256 个不重复的原表列名。');
   return structuredClone({ ...(selected ? { sourceValueColumns: [...selected as string[]].sort() } : {}), requestId: body.requestId, materialId: body.materialId, datasetId: body.datasetId,
     source: source as unknown as R1SourceDeclaration, ...(body.priorRequestId ? { priorRequestId: body.priorRequestId as string } : {}),
-    ...(body.sourceAdapter ? { sourceAdapter: readAdapterBindingRef(body.sourceAdapter) } : {}),
+    ...(body.sourceAdapter ? { sourceAdapter: readAdapterSelection(body.sourceAdapter) } : {}),
     ...(body.sourceContext === undefined ? {} : { sourceContext: structuredClone(body.sourceContext) }),
     ...(body.sourceReceiptTaskId === undefined ? {} : { sourceReceiptTaskId: String(body.sourceReceiptTaskId) }),
     ...(body.xlsxSelection ? { xlsxSelection: readXlsxTableSelection(body.xlsxSelection) } : {}) });

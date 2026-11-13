@@ -72,6 +72,8 @@ export interface EndpointAdapterConfig {
 
 /** 计划与请求只携带引用；完整配置由服务在规范化时按已采用版本冻结。 */
 export interface AdapterBindingRef { adapterId: string; version: string; configDigest: string }
+/** 新请求只指定稳定适配器编号；宿主选择当前已采用配置，随后按真实内容冻结一次。 */
+export type AdapterSelection = AdapterBindingRef | { adapterId: string };
 /**
  * 本材料实际取得回执的受信摘要（来自既有下载回执的 url/sha256/请求参数）。
  * 没有它时结构解析可以继续，但依赖匹配的算法/发布用途不能由已采用配置自动取得。
@@ -405,6 +407,16 @@ export function matchAdapterContext(config: EndpointAdapterConfig, context: Adap
   // 真实回执：任一必要维度缺失或与声明不符都不能升级为已核。
   return { verified: gaps.length === 0, consistent: gaps.length === 0, kind: context.kind,
     url: context.url, observedAt: context.observedAt, gaps };
+}
+
+export function readAdapterSelection(value: unknown): AdapterSelection {
+  const record = exactRecord(value, ['adapterId', 'version', 'configDigest'], 'ADAPTER_BINDING');
+  if (typeof record.adapterId !== 'string' || !adapterIdPattern.test(record.adapterId))
+    fail('ADAPTER_BINDING', '来源适配选择需要合法的稳定 adapterId（适配器编号）。');
+  if (record.version === undefined && record.configDigest === undefined)
+    return { adapterId: record.adapterId };
+  // 历史/显式精确恢复仍接受完整版本绑定，不接受只给一半的版本或摘要。
+  return readAdapterBindingRef(value);
 }
 
 export function readAdapterBindingRef(value: unknown): AdapterBindingRef {

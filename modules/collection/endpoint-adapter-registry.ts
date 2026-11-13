@@ -6,7 +6,7 @@ import { TaskError } from '../../platform/jobs/tasks.js';
 import type { MaterialService } from './materials/service.js';
 import type { OperatorContext } from './processing-plan.js';
 import { adapterConfigDigest, discoverEndpointAdapter, matchAdapterContext, readAdapterBindingRef,
-  readAdapterSourceContext, readEndpointAdapterConfig, type AdapterBindingRef, type AdapterMatchEvidence,
+  readAdapterSourceContext, readEndpointAdapterConfig, readAdapterSelection, type AdapterSelection, type AdapterMatchEvidence,
   type EndpointAdapterConfig, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import { candidateImplementationDigest, prepareCandidateTable } from './candidate-pipeline.js';
 
@@ -250,6 +250,10 @@ export class EndpointAdapterRegistry {
       replays: replays.map(replay => ({ replayId: replay.replay_id, materialId: replay.material_id, expectation: replay.expectation,
         outcome: replay.outcome, passed: replay.passed })) };
     this.options.database.transaction(() => {
+      // 同一稳定接口只能有一个当前生效实现；此前已采用版本不再参与新请求选择。
+      // 仅修改配置采用状态，已冻结任务和正式 WFD 数据不受影响。
+      this.db.prepare("UPDATE source_adapters SET status='retired',revision=revision+1,updated_at=? WHERE adapter_id=? AND version<>? AND status='adopted'")
+        .run(now, adapterId, version);
       this.db.prepare(`UPDATE source_adapters SET status='adopted',revision=revision+1,updated_at=?,adopted_at=?,adopted_by=?,adoption_json=?
         WHERE adapter_id=? AND version=? AND config_digest=?`).run(now, now, operator.operatorId, canonicalWfdJson(adoption), adapterId, version, row.config_digest);
     });
@@ -270,8 +274,11 @@ export class EndpointAdapterRegistry {
    * 计划与请求只按已采用版本冻结；未采用、摘要不符或缺失一律阻断。
    * 提供本材料取得回执时同时核对地址/协议/字段顺序/频率/复权/市场；未提供时匹配结论为未核。
    */
-  resolve(ref: AdapterBindingRef, options?: { materialId?: string; context?: unknown; sourceReceiptTaskId?: string }): FrozenAdapterBinding {
-    const binding = readAdapterBindingRef(ref);
+  resolve(ref: AdapterSelection, options?: { materialId?: string; context?: unknown; sourceReceiptTaskId?: string }): FrozenAdapterBinding {
+    const selected = readAdapterSelection(ref);
+    const binding = 'version' in selected ? selected
+      : this.latestAdopted(selected.adapterId) ?? fail('ADAPTER_NOT_ADOPTED',
+        '此稳定适配器编号没有当前已采用实现；不能使用旧实现或未验证配置兜底。');
     const row = this.row(binding.adapterId, binding.version) ?? fail('ADAPTER_NOT_ADOPTED', '没有该适配版本的登记；未按猜测配置解析。');
     if (row.status !== 'adopted') fail('ADAPTER_NOT_ADOPTED', `适配 ${binding.adapterId}@${binding.version} 当前状态为 ${row.status}；只有已采用版本可用于新计划。`);
     if (row.config_digest !== binding.configDigest) fail('ADAPTER_CONFIG_CHANGED', '适配配置摘要与已采用版本不符；未换用其他版本继续。');
