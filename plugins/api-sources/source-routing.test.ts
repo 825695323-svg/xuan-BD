@@ -91,8 +91,8 @@ test('分钟K线执行只遍历明确选中的主备，不追加未入选连接'
 test('来源操作目录同时确定可见功能与执行器', () => {
   assert.equal(sourceOperations('ths').find(item => item.id === 'index_constituents')?.run.action, 'source.api.read');
   assert.equal(sourceOperations('tdx').find(item => item.id === 'minute_bars')?.run.action, 'source.fetch');
-  assert.equal(sourceOperations('tdx').find(item => item.id === 'minute_bars')?.run.action === 'source.fetch'
-    ? sourceOperations('tdx')[0]!.run.sourceId : null, 'tdx');
+  assert.deepEqual(sourceOperations('tdx').find(item => item.id === 'minute_bars')?.run,
+    { action: 'source.fetch', sourceId: 'tdx' });
   for (const id of ['eastmoney', 'sina', 'tencent']) {
     for (const operation of sourceOperations(id)) assert.equal(operation.run.action, 'source.kline.read');
   }
