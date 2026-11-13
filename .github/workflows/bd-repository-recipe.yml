@@ -112,6 +112,15 @@ jobs:
             wfd/product/tests/test_market_current_only.py::test_current_business_same_interval_cannot_enter_through_two_outputs \
             wfd/product/tests/test_p4b_registration_repair.py::test_registered_only_reuse_hydrates_definition_and_registry \
             wfd/product/tests/test_r1_data_only.py::test_forecast_rating_actual_computed_business_definition_and_templates
+      - name: Verify actual BD pipeline behavior and fixed WFD readback
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          export XUAN_TEST_ROOT="$RUNNER_TEMP/bd-pipeline-tests"
+          export XUAN_FULL_CHAIN_ROOT="$RUNNER_TEMP/bd-pipeline-wfd"
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
+          "$BD_NODE" "$BD_NPM" run test:pipeline
+
       - name: Full Node regression and real WFD source-based tests
         if: runner.os == 'Linux'
         shell: bash
