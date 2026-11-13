@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -80,33 +80,113 @@ function verify(data) {
     layout: main.width <= 810 ? 'vertical' : 'columns', font: n.metadata.font,
     overlay: view === 'modal' ? n.dialog : n.dropdown };
 }
-function capture(width, height, theme, view) {
-  const image = join(out, `${view}-${theme}-${width}.png`);
-  const url = origin + `/visual-audit.html?theme=${theme}&view=${view}`;
-  const args = ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
-    '--hide-scrollbars', '--force-device-scale-factor=1', `--window-size=${width},${height}`,
-    '--virtual-time-budget=4800', '--run-all-compositor-stages-before-draw',
-    `--screenshot=${image}`, '--dump-dom', url];
-  const response = spawnSync(chrome, args, { encoding: 'utf8', timeout: 45_000, maxBuffer: 8 * 1024 * 1024 });
-  assert.equal(response.status, 0, `Chrome 运行失败：${response.error ?? response.stderr?.slice(-1000)}`);
-  const match = /<pre id="visual-report"[^>]*>([^<]+)<\/pre>/u.exec(response.stdout);
-  assert.ok(match, 'React 视觉夹具未生成浏览器几何报告：' + response.stdout.slice(-1200));
-  const data = JSON.parse(match[1].replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>'));
+class DevTools {
+  constructor(socket) {
+    this.socket = socket;
+    this.pending = new Map();
+    this.counter = 0;
+    socket.addEventListener('message', event => {
+      let data;
+      try { data = JSON.parse(String(event.data)); } catch { return; }
+      const waiter = this.pending.get(data.id);
+      if (!waiter) return;
+      this.pending.delete(data.id);
+      if (data.error) waiter.reject(new Error(JSON.stringify(data.error)));
+      else waiter.resolve(data.result);
+    });
+  }
+  async command(method, params = {}) {
+    const id = ++this.counter;
+    return await new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.socket.send(JSON.stringify({ id, method, params }));
+    });
+  }
+  close() { this.socket.close(); }
+}
+async function connectDevTools(url) {
+  const socket = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Chrome DevTools WebSocket connection timed out')), 10_000);
+    socket.addEventListener('open', () => { clearTimeout(timeout); resolve(); }, { once: true });
+    socket.addEventListener('error', () => { clearTimeout(timeout); reject(new Error('Chrome DevTools WebSocket rejected')); }, { once: true });
+  });
+  return new DevTools(socket);
+}
+async function waitChrome(profile, process, diagnostic) {
+  for (let i = 0; i < 80; i++) {
+    if (process.exitCode !== null) throw new Error('Chrome stopped before DevTools started: ' + diagnostic());
+    const portFile = join(profile, 'DevToolsActivePort');
+    if (existsSync(portFile)) {
+      const port = Number(readFileSync(portFile, 'utf8').split('\n')[0]);
+      if (port > 0) return port;
+    }
+    await sleep(250);
+  }
+  throw new Error('DevToolsActivePort not available: ' + diagnostic());
+}
+async function capture(devtools, width, height, theme, view) {
+  const image = join(out, view + '-' + theme + '-' + width + '.png');
+  const url = origin + '/visual-audit.html?theme=' + theme + '&view=' + view;
+  await devtools.command('Emulation.setDeviceMetricsOverride', {
+    width, height, deviceScaleFactor: 1, mobile: width < 600, screenWidth: width, screenHeight: height,
+  });
+  await devtools.command('Page.navigate', { url });
+  await sleep(500);
+  let raw = '';
+  for (let attempt = 0; attempt < 35; attempt++) {
+    try {
+      const response = await devtools.command('Runtime.evaluate', {
+        expression: "document.getElementById('visual-report')?.textContent ?? ''",
+        returnByValue: true,
+      });
+      raw = response?.result?.value ?? '';
+      if (raw.startsWith('{')) break;
+    } catch { /* Page navigation may have replaced the JS execution context. */ }
+    await sleep(200);
+  }
+  assert.ok(raw.startsWith('{'), 'Browser fixture did not report geometry for ' + url);
+  const data = JSON.parse(raw);
+  assert.equal(data.viewport.width, width, 'Requested CSS viewport width was not used');
+  assert.equal(data.viewport.height, height, 'Requested CSS viewport height was not used');
+  const screenshot = await devtools.command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, fromSurface: true });
+  writeFileSync(image, Buffer.from(screenshot.data, 'base64'));
   writeFileSync(image.replace(/\.png$/u, '.json'), JSON.stringify(data, null, 2));
   const summary = verify(data);
   console.log('VISUAL_AUDIT_OK', JSON.stringify({ ...summary, screenshot: image }));
   return summary;
 }
+
+let devtools = null, browserProcess = null, browserProfile = null;
 try {
   await ready();
+  browserProfile = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), 'xuan-chrome-'));
+  let browserLog = '';
+  browserProcess = spawn(chrome, ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
+    '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
+    '--remote-allow-origins=*', '--disable-background-networking', '--no-first-run',
+    '--user-data-dir=' + browserProfile, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  for (const stream of [browserProcess.stdout, browserProcess.stderr])
+    stream.on('data', chunk => { browserLog += String(chunk).slice(-2000); });
+  const port = await waitChrome(browserProfile, browserProcess, () => browserLog.slice(-2000));
+  const browserOrigin = 'http://127.0.0.1:' + port;
+  const targetResponse = await fetch(browserOrigin + '/json/new?about:blank', { method: 'PUT' });
+  assert.ok(targetResponse.ok, 'Cannot create Chrome DevTools page');
+  const target = await targetResponse.json();
+  devtools = await connectDevTools(target.webSocketDebuggerUrl);
+  await devtools.command('Page.enable');
+  await devtools.command('Runtime.enable');
   const results = [];
   for (const theme of ['light', 'dark']) {
     for (const width of [1440, 1280, 1024, 820, 390])
-      results.push(capture(width, width === 390 ? 844 : 900, theme, 'layout'));
-    results.push(capture(390, 844, theme, 'modal'));
+      results.push(await capture(devtools, width, width === 390 ? 844 : 900, theme, 'layout'));
+    results.push(await capture(devtools, 390, 844, theme, 'modal'));
   }
   writeFileSync(join(out, 'summary.json'), JSON.stringify(results, null, 2));
-  console.log('VISUAL_AUDIT_COMPLETE', results.length, 'screenshots and reports');
+  console.log('VISUAL_AUDIT_COMPLETE', results.length, 'real viewport screenshots and reports');
 } finally {
+  devtools?.close();
+  browserProcess?.kill('SIGTERM');
   vite.kill('SIGTERM');
+  if (browserProfile) try { rmSync(browserProfile, { recursive: true, force: true }); } catch { /* Chrome resources release on exit. */ }
 }
