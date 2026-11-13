@@ -8,7 +8,8 @@ import { TaskError } from '../../platform/jobs/tasks.js';
 import { CoreError } from '../../platform/runtime/errors.js';
 import { digestOperationArgs } from '../../platform/security/permissions.js';
 
-export const MATERIAL_UPLOAD_LIMIT = 25 * 1024 * 1024;
+import { MATERIAL_UPLOAD_LIMIT } from '../../contracts/upload-limits.js';
+export { MATERIAL_UPLOAD_LIMIT } from '../../contracts/upload-limits.js';
 export const MATERIAL_CUSTODY_LIMIT = 256 * 1024 * 1024;
 type UploadRow = { request_id: string; args_digest: string; local_name: string; file_ref_id: string | null; task_id: string | null };
 const pendingUploads = new WeakMap<WorkspaceServices, Map<string, Promise<string>>>();
