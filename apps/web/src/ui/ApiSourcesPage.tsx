@@ -5,6 +5,7 @@ import type { DragEvent } from 'react';
 import { Search } from 'lucide-react';
 import type { SourceConnection, SourceOperationId, SourceOperationPolicy, SourceSettingsView } from '../../../../contracts/source-settings';
 import { request } from '../api';
+import { usePreferences } from './Preferences';
 import {
   SourceSettingsRequestError, loadSourceSettings, newSourceSettingsRequestId, saveSourceSettings,
   sourceSettingsOperation, type SourceSettingsOperation,
@@ -60,6 +61,7 @@ function effectivePolicy(view: SourceSettingsView, scopeId: string, operationId:
 /** 接口源页：地区分类只决定范围；右侧按接口类型编排主源、备用源与可选池。 */
 export function ApiSourcesPage() {
   const words = useWords();
+  const { preferences, ready: preferencesReady, updatePreferences } = usePreferences();
   const [layout, setLayout] = useState<Layout>(defaultLayout);
   const [selected, setSelected] = useState<string>(DEFAULT_MARKET);
   const [open, setOpen] = useState<Set<string>>(() => new Set(['region', 'other']));
@@ -76,56 +78,37 @@ export function ApiSourcesPage() {
   const settingsRef = useRef<SourceSettingsView | null>(null);
   const noticesRef = useRef<SaveNotice[]>([]);
   const editSeqRef = useRef(0);
-  const revisionRef = useRef<number | null>(null);
   const savedSnapshot = useRef('');
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const [prefsLoaded, setPrefsLoaded] = useState(false);
   useEffect(() => {
-    let alive = true;
-    void request('/api/ui/preferences').then((value) => {
-      if (!alive) return;
-      const prefs = value as { revision?: number; marketLayout?: Layout; marketSelection?: { selected?: string; country?: string; assetScope?: string; dataCap?: string } };
-      revisionRef.current = typeof prefs.revision === 'number' ? prefs.revision : null;
-      const nextLayout = prefs.marketLayout && Array.isArray(prefs.marketLayout.root) && Array.isArray(prefs.marketLayout.other) ? prefs.marketLayout : defaultLayout;
-      const selection = prefs.marketSelection;
-      // 旧偏好可能停在采集源或数据库入口，那些已不是本页范围，回到默认市场。
-      const nextSelected = selection?.selected && marketOf(selection.selected) ? selection.selected : DEFAULT_MARKET;
-      const nextCountry = selection?.country ?? '全部', nextAssetScope = selection?.assetScope ?? '全部', nextDataCap = selection?.dataCap ?? '全部';
-      setLayout(nextLayout); setSelected(nextSelected);
-      setCountry(nextCountry); setAssetScope(nextAssetScope); setDataCap(nextDataCap);
-      savedSnapshot.current = preferenceSnapshot(nextLayout, nextSelected, nextCountry, nextAssetScope, nextDataCap);
-      setPrefsLoaded(revisionRef.current !== null);
-    }).catch(() => { /* 读取失败时保留本地缓存。 */ });
-    return () => { alive = false; };
-  }, []);
+    if (!preferencesReady || prefsLoaded) return;
+    const nextLayout = preferences.marketLayout && Array.isArray(preferences.marketLayout.root) && Array.isArray(preferences.marketLayout.other)
+      ? preferences.marketLayout : defaultLayout;
+    const selection = preferences.marketSelection;
+    // 旧偏好可能停在采集源或数据库入口，那些已不是本页范围，回到默认市场。
+    const nextSelected = selection?.selected && marketOf(selection.selected) ? selection.selected : DEFAULT_MARKET;
+    const nextCountry = selection?.country ?? '全部', nextAssetScope = selection?.assetScope ?? '全部', nextDataCap = selection?.dataCap ?? '全部';
+    setLayout(nextLayout); setSelected(nextSelected);
+    setCountry(nextCountry); setAssetScope(nextAssetScope); setDataCap(nextDataCap);
+    savedSnapshot.current = preferenceSnapshot(nextLayout, nextSelected, nextCountry, nextAssetScope, nextDataCap);
+    setPrefsLoaded(true);
+  }, [preferencesReady, preferences, prefsLoaded]);
 
   useEffect(() => {
     if (!prefsLoaded) return;
     const snapshot = preferenceSnapshot(layout, selected, country, assetScope, dataCap);
-    // 只保存实际变化；修订号写回引用，不触发下一轮保存。
     if (snapshot === savedSnapshot.current) return;
     const timer = window.setTimeout(() => {
-      const save = (attempt: number) => {
-        const revision = revisionRef.current;
-        if (revision === null) return;
-        void request('/api/ui/preferences', 'PUT', { revision, marketLayout: layout, marketSelection: { selected, country, assetScope, dataCap } })
-          .then((value) => {
-            const next = value as { revision?: number };
-            if (typeof next.revision === 'number') revisionRef.current = next.revision;
-            savedSnapshot.current = snapshot;
-          })
-          .catch(() => {
-            // 修订冲突时按服务端最新修订重试一次；仍失败就留给下一次改动。
-            void request('/api/ui/preferences').then((value) => {
-              const next = value as { revision?: number };
-              if (typeof next.revision === 'number') revisionRef.current = next.revision;
-              if (attempt < 1) save(attempt + 1);
-            }).catch(() => {});
-          });
-      };
-      save(0);
+      // 页面只负责去抖与选择；偏好修订号和串行写入始终由全局 Provider 管理。
+      saveQueue.current = saveQueue.current.catch(() => undefined).then(async () => {
+        if (snapshot === savedSnapshot.current) return;
+        await updatePreferences({ marketLayout: layout, marketSelection: { selected, country, assetScope, dataCap } });
+        savedSnapshot.current = snapshot;
+      }).catch(() => undefined);
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [prefsLoaded, layout, selected, country, assetScope, dataCap]);
+  }, [prefsLoaded, layout, selected, country, assetScope, dataCap, updatePreferences]);
 
   const authoritativeRef = useRef<SourceSettingsView | null>(null);
   const applyView = useCallback((next: SourceSettingsView) => {
