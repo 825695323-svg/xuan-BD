@@ -184,6 +184,33 @@
   .ui-key-values > div { flex-wrap: wrap; gap: 4px; }
   .ui-key-values dt { flex-basis: 100%; }
 }
+/* 狭窄窗口的设置页改上下排列，不强迫 175px 左栏挤压控件。 */
+@media (max-width: 620px) {
+  .ui-settings-page, .ui-resource-page { flex-direction: column; }
+  .settings-categories {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    width: 100%;
+    max-height: 74px;
+    min-height: 0;
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--ui-line);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .settings-categories button { flex: 0 0 auto; width: auto; min-height: 38px; margin: 0; }
+  .settings-panel { padding: 18px 16px 28px; }
+  .settings-inner { max-width: 100%; }
+  .settings-row { gap: 10px; padding: 12px 0; }
+  .settings-row-control { flex: 1 1 auto; max-width: 100%; }
+  .theme-options { gap: 8px; }
+  .theme-option { min-height: 88px; height: auto; padding: 12px 6px; gap: 8px; font-size: .87rem; }
+  .select-trigger { max-width: 100%; min-width: min(132px, 100%); }
+  .ui-resource-list { flex: 0 0 auto; width: 100%; max-height: 34dvh; border-right: 0; border-bottom: 1px solid var(--ui-line); }
+  .ui-resource-details { padding: 18px 16px 28px; }
+}
 @media (prefers-reduced-motion: reduce) {
   .ui-settings-page *, .ui-resource-page * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
