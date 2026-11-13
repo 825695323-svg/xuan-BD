@@ -3,13 +3,14 @@ import { ALGORITHM_REGISTRY } from './algorithm-registry.js';
 import { FIXED_CALCULATION_METHODS } from '../../contracts/fixed-calculation-contracts.js';
 import { FINANCIAL_FIXED_VERSION, FINANCIAL_LINEAR_ADMISSION_VERSION } from '../collection/data-processing/financial-fixed.js';
 import { WFD_SOURCE_MA_VERSION } from './wfd-source-ma.js';
+import { processingSessionContract } from '../collection/production-module-ports.js';
 
 /**
  * BD AGENTS 只读统一入口契约（Unified Agent Tool Contract）。
  * 列出会话能读取/调用的既有工具，不创建第二套调度器、授权或计算运行时。
  * 可调用状态来自实际算法服务目录；尚未接入的算法只能声明为 blocked。
  */
-export const BD_SESSION_TOOL_CONTRACT_VERSION = 'bd.session-tools/1';
+export const BD_SESSION_TOOL_CONTRACT_VERSION = 'bd.session-tools/2';
 
 /** 旧 Polars 方法 ID 只作为历史身份。迁移到 WFD 后使用统一算法方法 ID。 */
 export const LEGACY_FIXED_METHOD_ALIASES = Object.freeze({
@@ -123,19 +124,20 @@ export function basicAlgorithmToolContract(
 
 /** 会话是唯一任务入口；采集/文件工具与算法不建立自动调用链。 */
 export function bdSessionToolContract(catalog: AlgorithmCatalogView, unified?: UnifiedBackendCapability) {
+  const processing = processingSessionContract();
   return { version: BD_SESSION_TOOL_CONTRACT_VERSION, entry: 'bd_agents.conversation',
     owner: 'bd_agents', agentTriggeredCalculation: true, uiCalculation: false, backgroundCalculation: false,
     toolGroups: [
       { id: 'collection_sources', title: '采集源 / Collection Sources',
         tools: ['capture.*.read', 'web.read_public', 'web.search'],
-        next: '材料先进入本会话明确选择的保管与五步加工，不自动运行算法' },
+        next: '材料先保管并识别，逐步处理后返回AGENTS判断，不自动运行算法' },
       { id: 'api_sources', title: '接口源 / API Sources',
         tools: ['source.fetch', 'source.api.read', 'source.kline.read', 'source.werss.read', 'source.wechat.extract'],
         next: '取得原件与来源回执；不自动计算' },
       { id: 'files', title: '文件 / Files',
-        tools: ['file.read', 'material.read', 'material.process', 'data.processing.capabilities',
-          'data.processing.route', 'data.processing.plan', 'data.processing.run'],
-        next: '受控保管、识别、五步加工；原报通过 R1 单独交接' },
+        tools: ['file.read', 'material.read', 'material.process', processing.discovery,
+          processing.route, processing.plan, processing.execute, processing.status, processing.recover, ...processing.moduleActions],
+        next: processing.feedback, legacyRecovery: processing.legacyRecovery },
       { id: 'wfd', title: 'WFD 正式数据 / WFD Published Data',
         tools: ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.recover'],
         next: '正式发布、固定读回和历史资格仍归 WFD；本契约不授予数据库写权' },

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Tooltip } from 'radix-ui';
 import type { ConversationAttachmentRef } from '../../../contracts/contracts';
-import type { UiIndicator, UiRuntimeView } from './ui-runtime-api';
+import type { UiRuntimeView } from './ui-runtime-api';
 import { uiApi } from './ui-runtime-api';
 import { useConversation } from './useConversation';
 import { useConversationTasks } from './useConversationTasks';
@@ -10,13 +10,13 @@ import { CanvasContext } from './ui/canvas';
 import { Shell, type Page } from './ui/Shell';
 import { WorkspaceLayout } from './ui/WorkspaceLayout';
 import ConversationView from './ui/ConversationView';
-import SettingsPage, { type SettingsSection } from './ui/SettingsPage';
+import SettingsPage from './ui/SettingsPage';
 import CaptureSourcesPage from './ui/CaptureSourcesPage';
 import ApiSourcesPage from './ui/ApiSourcesPage';
 import DatabasePage from './ui/DatabasePage';
 import ToolsPage from './ui/ToolsPage';
 import type { AlgorithmEntryFocus, AlgorithmFocusRequest } from './ui/algorithm-catalog';
-import { ErrorNote, Modal, errorDetail, useWords } from './ui/Controls';
+import { Modal, errorDetail, useWords } from './ui/Controls';
 import { currentLocalData, type LocalDataRecord } from './local-data-api';
 import { forgetLocalDataSession, localDataRevision, setLocalDataSession, subscribeLocalDataRevoked } from './local-data-context';
 
@@ -35,14 +35,13 @@ function Application() {
   const words = useWords(), chat = useConversation('pi'), { t } = usePreferences();
   // 真实任务流只在这里订阅一次，会话视图与任务中心共用。
   const tasks = useConversationTasks(chat.conversation?.conversationId);
-  const [page, setPage] = useState<Page>(pageFromHash), [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
+  const [page, setPage] = useState<Page>(pageFromHash);
   const pageTitle = t(PAGE_TITLE_KEYS[page]);
   const [algorithmFocus, setAlgorithmFocus] = useState<AlgorithmEntryFocus | null>(null);
-  const [settingsDirty, setSettingsDirty] = useState(false), [leaving, setLeaving] = useState<{ page: Page; section?: SettingsSection } | null>(null), [leaveBusy, setLeaveBusy] = useState(false), [leaveError, setLeaveError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<UiRuntimeView | null>(null), [runtimeError, setRuntimeError] = useState<string | null>(null), [controlBusy, setControlBusy] = useState(false), [feedback, setFeedback] = useState<{ message: string; issues: string[] } | null>(null), [dropNotice, setDropNotice] = useState<string | null>(null);
   const [referenceIntent, setReferenceIntent] = useState<ReferenceIntent | null>(null);
   const chatRef = useRef(chat); chatRef.current = chat;
-  const settingsSave = useRef<(() => Promise<void>) | null>(null), referenceLock = useRef(false), referenceWorking = useRef(false), runtimeEpoch = useRef(0), algorithmFocusNonce = useRef(0), alive = useRef(true), navigateLatest = useRef<(next: Page, section?: SettingsSection) => void>(() => {});
+  const referenceLock = useRef(false), referenceWorking = useRef(false), runtimeEpoch = useRef(0), algorithmFocusNonce = useRef(0), alive = useRef(true), navigateLatest = useRef<(next: Page) => void>(() => {});
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   // 地址栏只记录当前页面标识，供刷新与重挂载恢复；用 replaceState 不新增历史条目，也不参与任何私有请求。
   useEffect(() => {
@@ -61,11 +60,9 @@ function Application() {
     const timer = window.setTimeout(() => setAlgorithmFocus(null), 2500);
     return () => window.clearTimeout(timer);
   }, [page, algorithmFocus]);
-  function navigate(next: Page, section?: SettingsSection) {
+  function navigate(next: Page) {
     setDropNotice(null);
     if (next !== 'database') setAlgorithmFocus(null);
-    if (page === 'settings' && settingsDirty && next !== 'settings') { setLeaving({ page: next, section }); setLeaveError(null); return; }
-    if (section) setSettingsSection(section);
     setPage(next);
   }
   navigateLatest.current = navigate;
@@ -74,16 +71,6 @@ function Application() {
     setAlgorithmFocus({ ...request, nonce: ++algorithmFocusNonce.current });
     navigate('database');
   };
-  function completeNavigation(destination: { page: Page; section?: SettingsSection }) {
-    setSettingsDirty(false); if (destination.section) setSettingsSection(destination.section); setPage(destination.page); setLeaving(null);
-  }
-  async function saveAndLeave() {
-    if (!leaving || leaveBusy || !settingsSave.current) return;
-    setLeaveBusy(true); setLeaveError(null);
-    try { await settingsSave.current(); completeNavigation(leaving); }
-    catch (failure) { setLeaveError(errorDetail(failure)); }
-    finally { setLeaveBusy(false); }
-  }
   async function control(kind: 'stop' | 'resume') {
     if (controlBusy) return;
     setControlBusy(true); ++runtimeEpoch.current;
@@ -137,12 +124,8 @@ function Application() {
     {page === 'api-sources' && <ApiSourcesPage />}
     {page === 'database' && <DatabasePage onBringToConversation={bringToConversation} algorithmFocus={algorithmFocus} />}
     {page === 'tools' && <ToolsPage onOpenEntry={openAlgorithmEntry} />}
-    {page === 'settings' && <SettingsPage initialSection={settingsSection} onSectionChange={setSettingsSection} onDirtyChange={setSettingsDirty} onSaveAction={(action) => { settingsSave.current = action; }} />}
+    {page === 'settings' && <SettingsPage />}
     </WorkspaceLayout>
-    {leaving && <Modal title={words('保存设置改动？', 'Save settings changes?')} onClose={() => setLeaving(null)} busy={leaveBusy}><p>{words('此页有尚未保存的改动。', 'This page has unsaved changes.')}</p>
-      {leaveError && <ErrorNote detail={leaveError}>{words('保存失败，编辑内容已保留。', 'Save failed. Your edits are preserved.')}</ErrorNote>}
-      <div className="dialog-actions"><button type="button" className="text-button" disabled={leaveBusy} onClick={() => setLeaving(null)}>{words('继续编辑', 'Keep editing')}</button><button type="button" className="text-button" disabled={leaveBusy} onClick={() => completeNavigation(leaving)}>{words('放弃修改', 'Discard changes')}</button><button type="button" className="primary-button" disabled={leaveBusy || !settingsSave.current} onClick={() => void saveAndLeave()}>{words('保存并离开', 'Save and leave')}</button></div>
-    </Modal>}
     {feedback && <Modal title={words('运行控制', 'Run control')} onClose={() => setFeedback(null)}><p role="status">{feedback.message}</p><p className="subtle-text">{words('控制范围是本 xuan BD；外部已发生的结果仍按原记录核对。', 'This control applies to this xuan BD application. External effects are still checked against their original records.')}</p>{feedback.issues.length > 0 && <ul>{feedback.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul>}<div className="dialog-actions"><button type="button" className="text-button" onClick={refreshRuntime}>{words('核对状态', 'Check status')}</button><button type="button" className="primary-button" onClick={() => setFeedback(null)}>{words('关闭', 'Close')}</button></div></Modal>}
   </Shell>;
 }

@@ -25,7 +25,14 @@ export function createAlgorithmRouter(services: AlgorithmRouteServices) {
     if (Object.keys(req.query).length) throw new CoreError('INVALID_ALGORITHM_QUERY', '采用状态不接受检索参数。', 400);
     res.json(services.algorithms ? services.algorithms.adoptionStatus() : unavailableAdoption('算法计算入口尚未装配；不能记录采用。'));
   });
-  router.get('/calls', (_req, res) => res.json({ items: services.algorithms ? services.algorithms.list() : [] }));
+  router.get('/calls', (req, res) => {
+    const methodId = req.query.methodId;
+    // 按持久方法身份查询，允许历史方法；不按当前登记列表否定旧任务。
+    if (Object.keys(req.query).some(key => key !== 'methodId')
+      || methodId !== undefined && (typeof methodId !== 'string' || !/^[a-z][a-z0-9_]{0,159}$/u.test(methodId)))
+      throw new CoreError('INVALID_ALGORITHM_QUERY', '算法任务查询只接受明确的 methodId（方法编号）。', 400);
+    res.json({ items: services.algorithms ? services.algorithms.list(methodId as string | undefined) : [] });
+  });
   router.get('/calls/:taskId', (req, res) => {
     if (typeof req.params.taskId !== 'string' || !req.params.taskId) throw new CoreError('INVALID_ALGORITHM_TASK', '缺少任务编号。', 400);
     res.json(service().view(req.params.taskId));
@@ -62,11 +69,4 @@ function unavailableAdoption(reason: string) {
     current: { environment: 'local-review' as const, assetsVersion: '', codeVersion: '', pythonDigest: '' },
     record: null, required: { environment: 'local-review' as const, expectedAssetsVersion: '', expectedCodeVersion: '',
       confirmation: 'adopt-local-review' as const } };
-}
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
-}
-function objectBody(value: unknown): Record<string, unknown> {
-  if (!isRecord(value)) throw new CoreError('INVALID_ALGORITHM_BODY', '请求正文须为 JSON 对象。', 400);
-  return value;
 }

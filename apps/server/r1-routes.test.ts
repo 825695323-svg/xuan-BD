@@ -1604,7 +1604,7 @@ test('retired handoff routes and schemas stay absent while material processing a
 });
 
 
-test('fixed calculation HTTP mounts expose catalog task list and current Polars aliases', async () => {
+test('fixed calculation HTTP is read-only for new work and retains historical Polars lookup/recovery', async () => {
   const f = fixture(), h = await host(f);
   try {
     const countBefore = h.database.connection.prepare('SELECT count(*) AS count FROM tasks').get()?.count;
@@ -1616,12 +1616,14 @@ test('fixed calculation HTTP mounts expose catalog task list and current Polars 
     const polars = await h.call('/processing/polars/capabilities');
     assert.equal(polars.runtime, 'bd.polars-fixed');
     assert.equal(typeof polars.configured, 'boolean');
-    // New calculations belong only to BD AGENTS: the display-only /computation router
-    // has no POST actions, while the legacy Polars service retains its old, strict route.
+    // New calculations belong only to BD AGENTS. Retired creation cannot allocate tasks,
+    // even with a formerly valid payload; original task lookup and recovery stay available.
     const disabled = await h.call('/computation/tasks', {}, 404);
     assert.equal(disabled.code, 'SERVICE_ROUTE_UNAVAILABLE');
-    const legacyInvalid = await h.call('/processing/polars/tasks', {}, 409);
-    assert.equal(legacyInvalid.code, 'POLARS_INPUT');
+    for (const input of [{}, { requestId: 'retired-create', method: 'macro_yoy', calculation: {} }]) {
+      const rejected = await h.call('/processing/polars/tasks', input, 410);
+      assert.equal(rejected.code, 'ALGORITHM_AGENT_ENTRY_REQUIRED');
+    }
     for (const prefix of ['/computation/tasks', '/processing/polars/tasks']) {
       const missing = await h.call(prefix + '/missing-calculation', undefined, 404);
       assert.equal(missing.code, 'TASK_NOT_FOUND');

@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowUpRight, CheckCircle2, Loader2, Play, RefreshCw } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, ArrowUpRight, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
 import type { ToolLibraryDesignSummary, ToolLibraryParameter, ToolLibraryTool, ToolLibraryView } from '../../../../contracts/tool-library';
 import type { AlgorithmDefinition } from '../../../../contracts/algorithm-definition';
 import type { AlgorithmDesignCatalog } from '../../../../contracts/algorithm-design-catalog';
 import type { FixedCalculationCapabilities } from '../../../../contracts/fixed-calculation-contracts';
-import type { AlgorithmCallRequest, AlgorithmCatalogView, AlgorithmFieldMapping, AlgorithmMethodId, AlgorithmTaskView, ManagedTableSummary } from '../../../../modules/financial/algorithm-types';
+import type { AlgorithmCatalogView, AlgorithmTaskView } from '../../../../modules/financial/algorithm-types';
 import { RequestError, request } from '../api';
-import { loadAlgorithmCatalog, listAlgorithmCalls, readAlgorithmCall } from '../algorithm-api';
+import { loadAlgorithmCatalog } from '../algorithm-api';
+import { useAlgorithmResult } from './useAlgorithmResult';
 import { fixedCalculationApi } from '../fixed-calculation-api';
 import { ALGORITHM_GROUPS, BATCH_ALGORITHMS, OTHER_GROUP, algorithmGroup, batchAlgorithm,
   appendixGroup, DESIGN_RELATED, designGroup, fixedGroup, libraryGroup, type AlgorithmFocusRequest, type AlgorithmGroup, type AlgorithmGroupId,
@@ -25,12 +26,6 @@ type EntryKind = 'library' | 'fixed' | 'batch' | 'design';
 /** 目录条目分两类：独立算法定义与数据产品/执行配置。只有前者计入算法数量。 */
 type EntryClass = 'definition' | 'product' | 'design';
 type EntryStatus = 'ready' | 'blocked' | 'unavailable' | null;
-type FormState = {
-  tableId: string; timestamp: string; close: string; open: string; high: string; low: string; availableAt: string;
-  availability: 'column' | 'bar_close'; closeTime: string; period: string;
-  subject: string; currency: string; timezone: string; adjustment: 'unadjusted' | 'as_stored'; basis: string;
-  calendar: 'not_verified' | 'dense'; synthetic: boolean;
-};
 /** 设计登记条目归一化后的展示形状；产品、制度与情绪方法共用一套详情结构。 */
 interface DesignEntry {
   id: string; name: string; kind: 'product' | 'institutional' | 'sentiment' | 'appendix';
@@ -50,7 +45,6 @@ interface CatalogEntry {
 const NO_TOOLS: ToolLibraryTool[] = [];
 /** 左侧数据产品分组的固定键；与分类 id 分开，避免与用途分类混用。 */
 const PRODUCT_NAV = '__products';
-const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'needs_review', 'interrupted', 'blocked', 'awaiting_review']);
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const sourceLabels: Record<EntryKind, [string, string]> = {
@@ -202,34 +196,14 @@ function statusCells(tool: ToolLibraryTool, method: AlgorithmCatalogView['method
 /** 一句总体结论：把“实现已放行”和“入口不可用”解释成同一件事的不同维度。 */
 function overallStatus(cells: StatusCell[], words: Words): { title: string; tone: StatusTone } {
   const runtime = cells.find((cell) => cell.key === 'runtime');
-  const release = cells.find((cell) => cell.key === 'release');
   if (runtime?.state === 'available') return { title: words('当前可以执行正式计算', 'Formal computation is available'), tone: 'ok' };
-  if (release?.state === 'stale') {
-    return { title: words('实现已就位，采用记录与当前源码不一致，运行入口未启用',
-      'Implementation present, adoption no longer matches the current source, runtime not enabled'), tone: 'bad' };
-  }
   if (runtime?.state === 'not_released') {
     return { title: words('受控入口未放行，当前不能执行', 'Not released on the controlled entry; cannot run'), tone: 'idle' };
   }
   return { title: words('当前不能执行正式计算', 'Formal computation is not available now'), tone: runtime?.tone ?? 'warn' };
 }
 
-function initialForm(): FormState {
-  let timezone = '';
-  try { timezone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? ''; } catch { /* 保留空值，由服务端核验。 */ }
-  return { tableId: '', timestamp: '', close: '', open: '', high: '', low: '', availableAt: '',
-    availability: 'bar_close', closeTime: '', period: '5', subject: '', currency: '', timezone, adjustment: 'unadjusted',
-    basis: '', calendar: 'not_verified', synthetic: false };
-}
-function guessMapping(table: ManagedTableSummary) {
-  const find = (names: string[]) => table.columns.find(column => names.some(name => column.toLowerCase() === name.toLowerCase())) ?? '';
-  return { timestamp: find(['timestamp', 'date', 'time', 'datetime', 'trade_date', '日期', '时间']),
-    close: find(['close', '收盘', '收盘价']), open: find(['open', '开盘', '开盘价']),
-    high: find(['high', '最高', '最高价']), low: find(['low', '最低', '最低价']),
-    availableAt: find(['available_at', 'availableat', 'available_time', '可得时间']) };
-}
 function shortDigest(value: string): string { return value.length > 20 ? `${value.slice(0, 12)}…${value.slice(-6)}` : value; }
-function isTerminal(status: string): boolean { return TERMINAL.has(status); }
 function displayCell(value: unknown, words: Words): string {
   if (value === null) return '—';
   if (typeof value === 'boolean') return value ? words('是', 'Yes') : words('否', 'No');
@@ -383,22 +357,12 @@ const fixedInputText = (input: string, words: Words) => {
   return label ? words(label[0], label[1]) : input;
 };
 
-function FieldSelect({ label, value, options, onChange, empty }: {
-  label: string; value: string; options: string[]; onChange(value: string): void; empty: string;
-}) {
-  return <label className="tools-field"><span>{label}</span><select value={value} onChange={(event) => onChange(event.currentTarget.value)}>
-    <option value="">{empty}</option>{options.map((option) => <option key={option} value={option}>{option}</option>)}
-  </select></label>;
-}
-
 export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocusRequest): void }) {
   const words = useWords(), { t } = usePreferences();
   const [view, setView] = useState<ToolLibraryView | null>(null);
   const [loading, setLoading] = useState(true), [loadError, setLoadError] = useState<string | null>(null);
   const [loadStatus, setLoadStatus] = useState<number | null>(null), [reloadNonce, setReloadNonce] = useState(0);
   const [catalogQuery, setCatalogQuery] = useState('');
-  /** 左侧按分类类型建手风琴目录：同一时间只展开一个分类，默认跟随当前打开的算法。 */
-  /** 左侧目录可同时展开多个分类；默认只展开当前条目所属分类。 */
   /** 第一栏只选分类；具体条目在第二栏。 */
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [algorithms, setAlgorithms] = useState<AlgorithmCatalogView | null>(null);
@@ -407,11 +371,6 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
   const [fixedCaps, setFixedCaps] = useState<FixedCalculationCapabilities | null>(null);
   const [fixedLoading, setFixedLoading] = useState(true), [fixedError, setFixedError] = useState<string | null>(null);
   const [fixedStatus, setFixedStatus] = useState<number | null>(null);
-  const [form, setForm] = useState<FormState>(initialForm);
-  const [busy, setBusy] = useState(false), [callError, setCallError] = useState<string | null>(null), [callView, setCallView] = useState<AlgorithmTaskView | null>(null);
-  const alive = useRef(true);
-
-  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
     let cancelled = false;
     setLoading(true); setLoadError(null); setLoadStatus(null);
@@ -460,13 +419,17 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
   const tools = view?.tools ?? NO_TOOLS;
   const fixedMethods = useMemo(() => fixedCaps?.methods ?? [], [fixedCaps]);
   const entries = useMemo(() => buildEntries(tools, fixedMethods, fixedCaps?.configured === true, view?.catalog, words),
-    [tools, fixedMethods, fixedCaps?.configured, words]);
+    [tools, fixedMethods, fixedCaps?.configured, view?.catalog, words]);
   /**
    * 三栏布局里当前选中的条目。只认目录里真实存在的 key：
    * 目录未读回前保持 pending，不先回落到"没有条目"。
    */
-  const selection = useObjectSelection('xuan.tools.object', entries.map((entry) => entry.key), !loading && !fixedLoading);
+  const catalogsComplete = loadError === null && fixedError === null;
+  const selection = useObjectSelection('xuan.tools.object', entries.map((entry) => entry.key),
+    !loading && !fixedLoading, 'first', catalogsComplete);
   const selectedKey = selection.id;
+  const result = useAlgorithmResult(selectedKey);
+  const { task: callView, error: callError, loading: busy } = result;
   const setSelectedKey = selection.select;
   const selectedEntry = entries.find((entry) => entry.key === selectedKey) ?? null;
   const selectedTool = selectedEntry?.kind === 'library' ? tools.find((tool) => tool.id === selectedEntry.id) ?? null : null;
@@ -477,8 +440,6 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
   const relatedDesign = selectedTool
     ? entries.filter((entry) => entry.entryClass === 'design' && entry.design?.related?.includes(selectedTool.id))
     : [];
-  const managedTables = algorithms?.inputs.managedTables.items ?? [];
-  const selectedTable = managedTables.find((table) => table.materialId === form.tableId) ?? null;
   const query = catalogQuery.trim().toLowerCase();
   const definitionEntries = entries.filter((entry) => entry.entryClass === 'definition');
   const productEntries = entries.filter((entry) => entry.entryClass === 'product');
@@ -496,62 +457,8 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
   const filteredEntries = [...filteredDefinitions, ...filteredProducts, ...filteredDesign];
   const visibleEntries = filteredEntries.filter((entry) => !activeGroup || !!query
     || (activeGroup === PRODUCT_NAV ? entry.entryClass === 'product' : entry.group === activeGroup && entry.entryClass !== 'product'));
-  const groupedEntries = visibleGroups
-    .map((group) => ({ group, items: filteredDefinitions.filter((entry) => entry.group === group.id),
-      design: filteredDesign.filter((entry) => entry.group === group.id) }))
-    .filter((group) => group.items.length > 0 || group.design.length > 0);
   const definitionCount = definitionEntries.length, productCount = productEntries.length, designCount = designEntries.length;
   const refresh = () => setReloadNonce((value) => value + 1);
-  const setField = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((current) => ({ ...current, [key]: value }));
-
-  useEffect(() => {
-    // 基础库先读完再自动选中，避免加载中间态把初始详情落到批量条目。
-    if (loading) return;
-    if (selectedKey && entries.some((entry) => entry.key === selectedKey)) return;
-    setSelectedKey(entries[0]?.key ?? null);
-  }, [entries, selectedKey, loading]);
-  useEffect(() => { setCallView(null); setCallError(null); }, [selectedKey]);
-
-  const selectTable = (materialId: string) => {
-    const table = managedTables.find((item) => item.materialId === materialId);
-    if (!table) { setForm((current) => ({ ...current, tableId: '' })); return; }
-    const mapping = guessMapping(table);
-    setForm((current) => ({ ...current, tableId: materialId, timestamp: mapping.timestamp, close: mapping.close, open: mapping.open,
-      high: mapping.high, low: mapping.low, availableAt: mapping.availableAt, availability: mapping.availableAt ? 'column' : 'bar_close' }));
-  };
-
-  const buildCall = (): AlgorithmCallRequest | string => {
-    if (!selectedMethod) return '当前目录项没有可调用的算法实现。';
-    if (!selectedTable) return '请选择已受管表。';
-    if (!form.timestamp || !form.close) return '请映射时间列和收盘价列。';
-    if (selectedMethod.id === 'bullish_engulfing' && !form.open) return '严格看涨吞没需要映射开盘价列。';
-    if (!form.subject.trim()) return '请填写标的或序列名称。';
-    if (!/^[A-Z]{3}$/u.test(form.currency.trim()) || form.currency.trim() === 'XXX') return '请填写已识别的三位大写币种码，例如 CNY。';
-    if (!form.timezone.trim()) return '请填写 IANA 时区，例如 Asia/Shanghai。';
-    if (!form.basis.trim()) return '请填写明确的复权依据。';
-    if (form.availability === 'column' && !form.availableAt) return '逐行可得时刻需要选择 available_at 列。';
-    if (form.availability === 'bar_close' && !/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/u.test(form.closeTime)) return '收盘后可得时刻须为 HH:MM:SS。';
-    let parameters: AlgorithmCallRequest['parameters'];
-    if (selectedMethod.id === 'ma') {
-      const period = Number(form.period);
-      if (!Number.isSafeInteger(period) || period < 1 || period > 10000) return 'MA 周期须为 1 至 10000 的整数。';
-      parameters = { period };
-    } else if (selectedMethod.id === 'macd') parameters = { short_period: 12, long_period: 26, signal_period: 9, init: 'first_valid' };
-    else parameters = {};
-    const fieldMapping: AlgorithmFieldMapping = { timestamp: form.timestamp, close: form.close };
-    if (form.open) fieldMapping.open = form.open;
-    if (form.high) fieldMapping.high = form.high;
-    if (form.low) fieldMapping.low = form.low;
-    if (form.availableAt) fieldMapping.available_at = form.availableAt;
-    return { methodId: selectedMethod.id as AlgorithmMethodId, parameters,
-      source: { kind: 'managed_table', materialId: selectedTable.materialId, materialSha256: selectedTable.sha256, format: selectedTable.format,
-        fieldMapping,
-        semantics: { subject: form.subject.trim(), frequency: '1d', timezone: form.timezone.trim(), priceUnit: 'currency_per_share',
-          currency: form.currency.trim(), adjustment: form.adjustment, adjustmentBasis: form.basis.trim(), barClosed: true, synthetic: form.synthetic,
-          availability: form.availability === 'column' ? { kind: 'column' } : { kind: 'bar_close', closeTime: form.closeTime } },
-        calendar: form.calendar === 'dense' ? { mode: 'dense' } : { mode: 'not_verified', note: '用户未提供交易日历；只按所供行计算。' } } };
-  };
-
   const libraryStatus = loading ? 'loading' : loadError ? 'error' : view?.status === 'ready' ? 'ready' : 'unavailable';
   const fixedStatusView = fixedLoading ? 'loading' : fixedError ? 'error' : fixedCaps?.configured ? 'ready' : 'blocked';
   // 只发布"当前在看哪个算法"，不写会话、不触发计算。
@@ -737,6 +644,7 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
         {selectedOutsideFilter && <p className="tools-scope-note" role="status">{words('当前详情仍保留显示，但不在当前筛选结果中。', 'The current detail remains visible but is outside the filter results.')}</p>}
 
         {!selectedEntry && (loading || fixedLoading || selection.pending ? <p className="tools-loading" role="status"><Loader2 className="tools-spin" size={16} aria-hidden="true" />{words('正在读取算法目录…', 'Loading the algorithm catalog…')}</p>
+          : !catalogsComplete && entries.length > 0 ? <p className="tools-muted">{words('请选择已读取的条目，或重新读取目录。', 'Select an available entry or refresh the catalog.')}</p>
           : <div className="tools-state-block"><p className="tools-empty-title">{words('当前没有可显示的算法条目。', 'No algorithm entries are available to show.')}</p>
             <p className="tools-muted">{words('基础库、固定计算与批量入口各自保留读取状态；未用本地旧数据补造条目。', 'Base-library, fixed and batch entries keep their own load states; no stale local entries are invented.')}</p></div>)}
 
@@ -841,10 +749,11 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
             {algorithmError && <p className="tools-muted">{algorithmError}</p>}
             {selectedMethod && <p className="tools-muted">{words('方法编号', 'Method ID')}: <code>{selectedMethod.id}</code> · {selectedMethod.status}
               {selectedMethod.reason && <span> · {selectedMethod.reason}</span>}</p>}
-            <button type="button" className="text-button" onClick={() => {
-              void listAlgorithmCalls().then(calls => { setCallView(calls[0] ?? null); })
-                .catch(reason => setCallError(errorDetail(reason)));
-            }}>{words('读取最近一次算法结果', 'Read latest algorithm result')}</button>
+            <button type="button" className="text-button" disabled={!selectedTool || busy}
+              onClick={() => { if (selectedTool) void result.loadLatest(selectedTool.id); }}>
+              {words('读取当前算法最近结果', 'Read latest result for this algorithm')}</button>
+            {result.loaded && !busy && !callView && !callError && <p className="tools-muted">
+              {words('当前算法尚无任务结果。', 'No tasks are recorded for this algorithm.')}</p>}
             {callError && <ErrorNote detail={callError}>{words('算法结果读取失败。', 'Unable to read calculation result.')}</ErrorNote>}
           </section>
 
@@ -855,7 +764,7 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
             <dl className="tools-meta">
               <div><dt>{words('任务编号', 'Task ID')}</dt><dd className="tools-mono">{callView.taskId}</dd></div>
               <div><dt>{words('请求编号', 'Request ID')}</dt><dd className="tools-mono">{callView.requestId}</dd></div>
-              <div><dt>{words('方法', 'Method')}</dt><dd>{callView.methodId} · {callView.result?.methodVersion ?? selectedMethod?.methodVersion ?? '—'}</dd></div>
+              <div><dt>{words('方法', 'Method')}</dt><dd>{callView.methodId} · {callView.result?.methodVersion ?? '—'}</dd></div>
               <div><dt>{words('状态说明', 'Guidance')}</dt><dd>{callView.guidance ?? (callView.status === 'succeeded' ? words('结果已保管，可按原任务读回。', 'Result is stored and can be read back by the original task.') : '—')}</dd></div>
             </dl>
             {callView.error && <div className="tools-block" role="alert"><AlertTriangle size={18} aria-hidden="true" />

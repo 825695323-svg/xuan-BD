@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { AlgorithmEntryFocus } from './algorithm-catalog';
 import type { AlgorithmCatalogView, AlgorithmTaskView } from '../../../../modules/financial/algorithm-types';
-import { loadAlgorithmCatalog, listAlgorithmCalls, readAlgorithmCall } from '../algorithm-api';
+import { loadAlgorithmCatalog, listAlgorithmCalls } from '../algorithm-api';
+import { useAlgorithmResult } from './useAlgorithmResult';
 import { ErrorNote, errorDetail, useWords } from './Controls';
 import { PageActions, PageButton, PageEmpty, PageHeading } from './PageUI';
 
@@ -12,23 +13,24 @@ export function ComputationPanel({ focus = null }: {
   const words = useWords();
   const [catalog, setCatalog] = useState<AlgorithmCatalogView | null>(null);
   const [tasks, setTasks] = useState<AlgorithmTaskView[]>([]);
-  const [selected, setSelected] = useState<AlgorithmTaskView | null>(null);
+  // 跨页定位提示会自动清除，已选任务仍属于当前面板。
+  const detail = useAlgorithmResult('database:computation');
+  const selected = detail.task;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const selectedRequest = useRef(0);
   useEffect(() => { let active = true;
     void Promise.all([loadAlgorithmCatalog(), listAlgorithmCalls()])
       .then(([methods, calls]) => { if (active) { setCatalog(methods); setTasks(calls); } })
       .catch(reason => { if (active) setError(errorDetail(reason)); })
       .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; selectedRequest.current += 1; };
+    return () => { active = false; };
   }, []);
   return <section id="fixed-calculation" className="r1-stage" aria-label={words('基础算法只读展示', 'Basic algorithms (read-only)')}>
     <PageHeading level="h3" title={words('基础算法', 'Basic algorithms')}
-      description={words('这里只展示算法、运行状态及已有结果。BD AGENTS 从 WFD 固定快照读取，调用独立算法，再把派生新数据经五步加工、R1 受控发布和 WFD 固定读回。前端不能发起计算或发布。',
+      description={words('这里只展示算法、运行状态及已有结果。BD AGENTS 从 WFD 固定快照读取，调用独立算法，派生结构化结果经独立核对、R1 正式交接与 WFD 固定读回，不再经过原报五步加工。前端不能发起计算或发布。',
         'Read-only algorithms, task status and saved results. BD AGENTS reads fixed WFD snapshots, runs independent methods and publishes verified derivatives through R1. The UI cannot run calculations or publish data.')} />
     {focus && <p className="r1-help">{words('当前定位', 'Selected method')}：{focus.methodId}。{words('执行请走 BD AGENTS 工具接口。', 'Run through BD AGENTS tools.')}</p>}
-    {error && <ErrorNote detail={error}>{words('基础算法读取失败。', 'Could not load algorithms.')}</ErrorNote>}
+    {(error || detail.error) && <ErrorNote detail={error ?? detail.error}>{words('基础算法读取失败。', 'Could not load algorithms.')}</ErrorNote>}
     {loading && !catalog && !error && <PageEmpty state="loading">{words('正在读取算法目录…', 'Loading algorithm catalog…')}</PageEmpty>}
     {catalog && <div className="r1-table-scroll"><table><thead><tr><th>{words('独立算法', 'Algorithm')}</th><th>{words('执行状态', 'Status')}</th><th>{words('输入', 'Inputs')}</th><th>{words('输出', 'Outputs')}</th></tr></thead>
       <tbody>{catalog.methods.map(method => <tr key={method.id}>
@@ -43,13 +45,7 @@ export function ComputationPanel({ focus = null }: {
     {!tasks.length && !loading && !error && <PageEmpty>{words('尚无已登记算法任务。', 'No recorded algorithm tasks.')}</PageEmpty>}
     {tasks.map(item => <button key={item.taskId} type="button" className="database-row database-row--button"
       aria-current={selected?.taskId === item.taskId ? 'true' : undefined}
-      onClick={() => {
-        const token = ++selectedRequest.current;
-        setSelected(null); setError(null);
-        void readAlgorithmCall(item.taskId)
-          .then(detail => { if (token === selectedRequest.current) setSelected(detail); })
-          .catch(reason => { if (token === selectedRequest.current) setError(errorDetail(reason)); });
-      }}>
+      onClick={() => { void detail.loadTask(item.taskId, item.methodId); }}>
       <span>{item.methodId} · <code>{item.taskId}</code></span><span>{item.status}</span>
     </button>)}
     {selected && <details open><summary>{words('原算法结果和输入', 'Original result and input')}：{selected.taskId}</summary>

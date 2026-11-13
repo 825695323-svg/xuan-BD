@@ -7,6 +7,11 @@ on:
       - 'apps/web/visual-audit.html'
       - 'scripts/visual-ui-audit.mjs'
       - 'apps/server/source-settings-routes.ts'
+      - 'apps/server/algorithm-routes.ts'
+      - 'apps/server/workspace-routes.ts'
+      - 'apps/server/logic-cleanup.test.ts'
+      - 'apps/server/r1-routes.test.ts'
+      - 'apps/server/polars-fixed.test.ts'
       - 'apps/server/configured-app.ts'
       - 'apps/server/ui-routes.ts'
       - 'apps/server/attachment-upload.ts'
@@ -14,6 +19,11 @@ on:
       - 'contracts/contracts.ts'
       - 'contracts/upload-limits.ts'
       - 'modules/collection/accept-material.ts'
+      - 'modules/collection/production-module-ports.ts'
+      - 'modules/financial/**'
+      - 'scripts/logic-maintenance-check.mjs'
+      - 'scripts/logic-maintenance-check.test.mjs'
+      - 'docs/逻辑维护与历史兼容边界.md'
       - 'modules/collection/r1-auto-batch.ts'
       - 'platform/config/source-settings.ts'
       - 'plugins/api-sources/**'
@@ -42,12 +52,25 @@ jobs:
         run: |
           npm run repo:check
           npm run build
+      - name: Check cleaned modules for unused declarations
+        run: |
+          node --test scripts/logic-maintenance-check.test.mjs
+          node scripts/logic-maintenance-check.mjs
       - name: Verify source routing, request safety and reusable UI contracts
         run: |
           node --import tsx --test \
             plugins/api-sources/source-routing.test.ts \
             apps/web/src/ui/sourceSettingsClient.test.ts \
-            apps/web/src/ui/PageUI.test.tsx
+            apps/web/src/ui/PageUI.test.tsx \
+            apps/web/src/ui/logic-cleanup.test.tsx \
+            apps/server/logic-cleanup.test.ts \
+            modules/financial/basic-algorithm-tool-contract.test.ts \
+            modules/financial/unified-algorithm-discovery.test.ts \
+            modules/collection/production-module-ports.test.ts
+      - name: Verify retired HTTP creation and stepwise AGENTS feedback
+        run: |
+          node --import tsx --test --test-name-pattern='fixed calculation HTTP' apps/server/r1-routes.test.ts
+          node --import tsx --test --test-name-pattern='AGENTS iterative parse feedback' modules/collection/r1-conversation-bridge.test.ts
       - name: Install CJK glyph coverage for readable screenshots
         run: |
           sudo apt-get update -qq

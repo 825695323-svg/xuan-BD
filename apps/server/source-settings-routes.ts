@@ -7,6 +7,8 @@ import { CoreError } from '../../platform/runtime/errors.js';
 import { CAPTURE_SOURCE_ACTIONS } from '../../plugins/capture-sources/index.js';
 import { CAPTURE_SOURCE_IDS, type CaptureSourceId } from '../../plugins/capture-sources/contracts.js';
 import { SOURCE_ACTIONS } from '../../plugins/api-sources/runtime.js';
+import { sourceOperations, sourceOperationsForAction } from '../../plugins/api-sources/operations.js';
+import type { SourceOperationView } from '../../contracts/source-settings.js';
 
 /** 设置、手动来源获取共用已保存配置和原TaskService，不另建运行记录。 */
 export function createSourceSettingsRouter(services: ApplicationServices) {
@@ -77,6 +79,7 @@ export function createSourceSettingsRouter(services: ApplicationServices) {
       if (Object.keys(body).some(key => !['sourceId', 'requestId', 'scopeId', 'parameters', 'apiOperation', 'klineOperation', 'connectionId', 'operationId'].includes(key)) || typeof body.scopeId !== 'string' || !body.parameters || typeof body.parameters !== 'object' || Array.isArray(body.parameters)) invalid();
       const parameters = JSON.stringify(body.parameters);
       if (parameters.length > 16_000) invalid();
+      let operation: SourceOperationView | undefined, legacyTitle: string | undefined;
       if (body.connectionId !== undefined || body.operationId !== undefined) {
         // 运行描述来自来源目录；页面不再按供应商猜测执行器。旧请求形状仍保留。
         if (Object.keys(body).some(key => !['requestId', 'scopeId', 'parameters', 'connectionId', 'operationId'].includes(key))
@@ -86,21 +89,28 @@ export function createSourceSettingsRouter(services: ApplicationServices) {
         if (!connection.enabled || !current.plugins.find(item => item.id === connection.pluginId)?.enabled)
           throw new CoreError('SOURCE_DISABLED', '来源连接或插件已停用。', 409);
         if (!connection.scopes.includes(body.scopeId) && !connection.scopes.includes('global')) invalid();
-        const plugin = (await sourceSettings.view()).apiPlugins.find(item => item.id === connection.pluginId);
-        const operation = plugin?.operations.find(item => item.id === body.operationId);
+        operation = sourceOperations(connection.pluginId).find(item => item.id === body.operationId);
         if (!operation) invalid();
+      } else if (body.klineOperation !== undefined || body.apiOperation !== undefined) {
+        // 兼容入口只转换字段，不继续维护另一份动作支持与分派规则。
+        const field = body.klineOperation !== undefined ? 'klineOperation' : 'apiOperation';
+        if (Object.keys(body).some(key => !['requestId', 'scopeId', 'parameters', field].includes(key))
+          || typeof body[field] !== 'string') invalid();
+        operation = sourceOperationsForAction(field === 'klineOperation' ? 'source.kline.read' : 'source.api.read')
+          .find(item => item.id === body[field]);
+        if (!operation) invalid();
+        // 标题参与 TaskService 的原请求摘要；旧请求重放必须保留原标题，不制造幂等冲突。
+        legacyTitle = field === 'klineOperation' ? '读取公开K线 · 已配置组合' : '读取接口源 · 已配置组合';
+      }
+      if (operation) {
         action = operation.run.action;
         args = { scopeId: body.scopeId, parameters,
           ...(operation.run.action === 'source.fetch' ? { sourceId: operation.run.sourceId } : { operation: operation.id }) };
-        title = `读取接口类型 · ${operation.label} · 已配置组合`;
-      } else if (body.klineOperation !== undefined) {
-        if (body.sourceId !== undefined || !['minute_bars', 'daily_bars'].includes(String(body.klineOperation))) invalid();
-        action = 'source.kline.read'; args = { operation: String(body.klineOperation), scopeId: body.scopeId, parameters }; title = '读取公开K线 · 已配置组合';
-      } else if (body.apiOperation !== undefined) {
-        if (body.sourceId !== undefined || !['index_constituents', 'daily_bars'].includes(String(body.apiOperation))) invalid();
-        action = 'source.api.read'; args = { operation: String(body.apiOperation), scopeId: body.scopeId, parameters }; title = '读取接口源 · 已配置组合';
+        title = legacyTitle ?? `读取接口类型 · ${operation.label} · 已配置组合`;
       } else {
-        if (!['tdx', 'eastmoney', 'official_web'].includes(String(body.sourceId))) invalid();
+        // 既有原件下载有不同契约，不把官方网页与采集端点冒充为行情操作。
+        if (Object.keys(body).some(key => !['sourceId', 'requestId', 'scopeId', 'parameters'].includes(key))
+          || !['tdx', 'eastmoney', 'official_web'].includes(String(body.sourceId))) invalid();
         action = 'source.fetch'; args = { sourceId: String(body.sourceId), scopeId: body.scopeId, parameters }; title = `下载来源原件 · ${body.sourceId}`;
       }
     }

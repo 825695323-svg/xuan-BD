@@ -18,7 +18,7 @@ import {
   type AlgorithmFixedSnapshotSource, type AlgorithmGap, type AlgorithmInvalidInterval, type AlgorithmManagedTableSource, type AlgorithmMetadata, type AlgorithmMethodId,
   type AlgorithmResultRow, type AlgorithmSemantics, type AlgorithmSnapshotPort, type AlgorithmSnapshotReference, type AlgorithmSource,
   type AlgorithmAdoptionRecord, type AlgorithmAdoptionView,
-  type AlgorithmSubmissionContext, type AlgorithmUsage, type AlgorithmTaskView, type ManagedTableData, type ManagedTableCell, type ManagedTableReader,
+  type AlgorithmSubmissionContext, type AlgorithmUsage, type AlgorithmTaskView, type ManagedTableData, type ManagedTableReader,
 } from './algorithm-types.js';
 import {
   ELIGIBILITY_HISTORY_MODES, PURPOSE_ELIGIBILITY_RULE_VERSION, combinePurposeEligibilityResults,
@@ -129,8 +129,8 @@ export interface LocalAlgorithmServiceOptions {
 /**
  * 已有基础算法的本机受控入口。
  *
- * 只做三件事：从已受管表/固定快照形成显式输入，经 TaskService 与 ProcessRuntime 调用既有第一方
- * Python 实现，保管并读回结果。计算与数据库发布分离；本类没有发布写者。
+ * 新计算只从 WFD 固定快照形成显式输入，经 TaskService 与 ProcessRuntime 调用第一方 Python 实现，
+ * 保管并读回结果。旧受管表身份仅用于历史解码。计算与数据库发布分离；本类没有发布写者。
  */
 export class LocalAlgorithmService {
   readonly versionBinding: Record<string, string | null>;
@@ -148,7 +148,7 @@ export class LocalAlgorithmService {
   constructor(private readonly options: LocalAlgorithmServiceOptions) {
     this.environment = options.environment ?? 'local-review';
     if (!['local-review', 'synthetic-test'].includes(this.environment)) throw new TaskError('ALGORITHM_NOT_ENABLED', '算法入口只允许本机预览或隔离合成环境。');
-    // 静态 enabled 只在隔离合成测试使用；本机预览必须由持久受控采用记录驱动。
+    // 本机固定实现按真实执行条件使用；静态 enabled 仅控制隔离合成测试，历史采用记录不再是运行开关。
     this.staticEnabled = options.enabled === true && this.environment === 'synthetic-test';
     this.assetsRoot = realpathSync(options.computeAssetsRoot);
     this.bundle = captureAssets(this.assetsRoot);
@@ -176,7 +176,7 @@ export class LocalAlgorithmService {
   private get db() { return this.options.database.connection; }
   private get tasks() { return this.options.tasks(); }
 
-  /** 只读采用状态：记录存在且当前实现、代码与 Python 摘要一致才算已采用；不读取目录不代表采用。 */
+  /** 只读历史采用诊断，不是当前计算资格或启停依据；原记录不被迁移覆盖。 */
   adoptionStatus(): AlgorithmAdoptionView {
     const current = { environment: this.environment, assetsVersion: this.bundle.version,
       codeVersion: this.codeBinding.version, pythonDigest: this.runtimeDigest };
@@ -191,7 +191,7 @@ export class LocalAlgorithmService {
         || adoption.environment !== current.environment) throw new TaskError('ALGORITHM_ADOPTION_CHANGED', '采用记录摘要、版本或环境不符。');
       if (adoption.assetsVersion !== current.assetsVersion || adoption.codeVersion !== current.codeVersion
         || adoption.pythonDigest !== current.pythonDigest) {
-        return { state: 'stale', reason: '当前算法源码、TS 输入转换/结果校验代码或 Python 运行身份与采用记录不同；需重新核对后采用。',
+        return { state: 'stale', reason: '当前实现与历史采用记录不同；仅保留诊断，当前计算资格由真实执行器、输入及权限核对决定。',
           current, record: adoption, required };
       }
       return { state: 'adopted', reason: null, current, record: adoption, required };
@@ -201,7 +201,7 @@ export class LocalAlgorithmService {
   }
 
   /**
-   * 受控采用的最小写入口。只允许本机预览环境，且必须逐字提供当前两个摘要和确认短语；
+   * 历史采用记录写入兼容。只允许本机预览环境，且必须逐字提供当前两个摘要和确认短语；
    * 不授予权限、不写 machine.bindings、不触发计算，也不改变真实数据库绑定。
    */
   adopt(value: unknown): AlgorithmAdoptionView {
@@ -305,9 +305,11 @@ export class LocalAlgorithmService {
   }
 
   /** 给前端的只读任务索引；不得因页面读取启动计算或 WFD 提交。 */
-  list(): AlgorithmTaskView[] {
-    return this.db.prepare('SELECT task_id FROM algorithm_calls ORDER BY created_at DESC,task_id LIMIT 20')
-      .all().map(row => this.view(String(row.task_id)));
+  list(methodId?: string): AlgorithmTaskView[] {
+    const rows = methodId === undefined
+      ? this.db.prepare('SELECT task_id FROM algorithm_calls ORDER BY created_at DESC,task_id LIMIT 20').all()
+      : this.db.prepare('SELECT task_id FROM algorithm_calls WHERE method_id=? ORDER BY created_at DESC,task_id LIMIT 20').all(methodId);
+    return rows.map(row => this.view(String(row.task_id)));
   }
 
   view(taskId: string): AlgorithmTaskView {
@@ -770,13 +772,9 @@ export class LocalAlgorithmService {
     verifyAssets(bundle);
     return bundle;
   }
-  private tableCatalog(): AlgorithmCatalogView['inputs']['managedTables'] {
-    if (!this.tables) return { status: 'unavailable', reason: '已受管表读取端口尚未装配。', items: [] };
-    try { return { status: 'available', reason: null, items: this.tables.list(25) }; }
-    catch (error) { return { status: 'unavailable', reason: error instanceof Error ? error.message : '受管表目录读取失败。', items: [] }; }
-  }
+
   private snapshotCatalog(): AlgorithmCatalogView['inputs']['fixedSnapshots'] {
-    if (!this.snapshots) return { status: 'unavailable', reason: '固定快照端口尚未装配；当前应用只提供本地已受管表输入。', contract: SNAPSHOT_CONTRACT };
+    if (!this.snapshots) return { status: 'unavailable', reason: '固定快照端口尚未装配；新计算不可用，旧任务结果仍可按原编号只读查询。', contract: SNAPSHOT_CONTRACT };
     const state = this.snapshots.status();
     return { status: state.status, reason: state.reason, contract: SNAPSHOT_CONTRACT };
   }

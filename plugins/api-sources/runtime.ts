@@ -17,6 +17,7 @@ import { readTdxMinutes, tdxAvailability, tdxVersions, type TdxPackageBinding } 
 import { decodePublicDailyBars, normalizePublicDailyRequest, publicKlineProvider, publicKlineProviders, type PublicDailyProviderId, type PublicKlineOperationId } from './public-kline.js';
 import { cacheUrl, parseWerssFeed, readWerssCache, WERSS_CACHE_LIMIT, WERSS_PROJECTION_VERSION } from './providers/werss/cache.js';
 import { runWechatScript, wechatArticleUrl } from './providers/wechat/script.js';
+import { sourceOperationsForAction } from './operations.js';
 
 const MAX = 2 * 1024 * 1024;
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
@@ -168,7 +169,7 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
     { action: 'source.api.read', runtimeId: 'direct', kind: 'direct', modelCalls: 0, title: '读取已配置接口源',
       description: '按已配置组合下载同花顺公开GET端点的原始响应。',
       fields: [{ key: 'scopeId', label: '国家市场范围', type: 'text', required: true, maxLength: 100 },
-        { key: 'operation', label: '公开接口动作', type: 'select', required: true, options: [{ value: 'index_constituents', label: '当前指数成分' }, { value: 'daily_bars', label: '日线行情' }] },
+        { key: 'operation', label: '公开接口动作', type: 'select', required: true, options: sourceOperationsForAction('source.api.read').map(item => ({ value: item.id, label: item.label })) },
         { key: 'parameters', label: '明确接口参数JSON', type: 'text', required: true, maxLength: 16_000 }],
       permissionSummary: [...downloadBoundary, '只解析原连接的安全凭据引用', '按已配置顺序选择，未配置账号不调用', '同一账号串行读取，额度与时效未知保持未知'],
       available: () => ({ available: settings.get().plugins.some(item => item.id === 'ths' && item.enabled), reason: '接口源插件已停用。' }),
@@ -176,7 +177,7 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
     { action: 'source.kline.read', runtimeId: 'direct', kind: 'direct', modelCalls: 0, title: '读取公开K线',
       description: '按当前接口类型的来源编排，从公开行情接口读取分钟或日线原始响应。',
       fields: [{ key: 'scopeId', label: '国家市场范围', type: 'text', required: true, maxLength: 100 },
-        { key: 'operation', label: 'K线类型', type: 'select', required: true, options: [{ value: 'minute_bars', label: '分钟K线' }, { value: 'daily_bars', label: '日线行情' }] },
+        { key: 'operation', label: 'K线类型', type: 'select', required: true, options: sourceOperationsForAction('source.kline.read').map(item => ({ value: item.id, label: item.label })) },
         { key: 'parameters', label: 'K线参数JSON', type: 'text', required: true, maxLength: 16_000 }],
       permissionSummary: [...downloadBoundary, '只读取已启用的公开行情接口并保存原始响应', '按接口类型的主备顺序选择，未入选连接不调用', '同一账号串行读取，额度和时效未知保持未知'],
       available: () => {
