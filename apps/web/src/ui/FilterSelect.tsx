@@ -15,7 +15,7 @@ export function FilterSelect({ label, value, options, onChange }: {
         <ChevronDown size={14} aria-hidden="true" />
       </button></DropdownMenu.Trigger>
       <DropdownMenu.Portal container={canvas ?? undefined}>
-        <DropdownMenu.Content className="filter-options ui-menu" align="start" sideOffset={6} collisionPadding={12}>
+        <DropdownMenu.Content className="filter-options ui-menu" align="start" sideOffset={6} collisionPadding={12} collisionBoundary={canvas ?? undefined}>
           <DropdownMenu.RadioGroup value={value} onValueChange={onChange}>
             {options.map((option) => <DropdownMenu.RadioItem value={option} key={option} className="filter-option">
               <span className="filter-option-check"><DropdownMenu.ItemIndicator><Check size={13} aria-hidden="true" /></DropdownMenu.ItemIndicator></span>
