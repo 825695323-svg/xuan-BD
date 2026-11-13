@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowUpRight, CheckCircle2, Loader2, Play, RefreshCw, Search } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, CheckCircle2, Loader2, Play, RefreshCw } from 'lucide-react';
 import type { ToolLibraryDesignSummary, ToolLibraryParameter, ToolLibraryTool, ToolLibraryView } from '../../../../contracts/tool-library';
 import type { AlgorithmDefinition } from '../../../../contracts/algorithm-definition';
 import type { AlgorithmDesignCatalog } from '../../../../contracts/algorithm-design-catalog';
@@ -13,6 +13,7 @@ import { ALGORITHM_GROUPS, BATCH_ALGORITHMS, OTHER_GROUP, algorithmGroup, batchA
   type BatchAlgorithmEntry } from './algorithm-catalog';
 import { ErrorNote, errorDetail, useWords } from './Controls';
 import { taskStateText } from './TaskResults';
+import { PageSearch } from './PageUI';
 import { usePreferences } from './Preferences';
 import { useObjectSelection } from './useStoredSelection';
 import { DetailDiagnostics, DetailFacts, DetailHeader, ObjectDetailPanel } from './ObjectDetailPanel';
@@ -670,11 +671,8 @@ export function ToolsPage({ onOpenEntry }: { onOpenEntry(request: AlgorithmFocus
   return <div className="data-page tools-page page-panes">
     <aside className="data-nav tools-nav algo-nav" aria-label={words('算法分类', 'Algorithm categories')}>
       <div className="sidebar-search-slot">
-        <div className="data-search data-nav-search">
-          <Search size={15} aria-hidden="true" />
-          <input type="search" value={catalogQuery} onChange={(event) => setCatalogQuery(event.currentTarget.value)}
-            placeholder={words('搜索算法、编号或用途', 'Search algorithm, ID or usage')} aria-label={words('搜索算法、编号或用途', 'Search algorithm, ID or usage')} />
-        </div>
+        <PageSearch compact value={catalogQuery} onChange={setCatalogQuery}
+          label={words('搜索算法、编号或用途', 'Search algorithm, ID or usage')} />
       </div>
       <header className="page-nav-head"><span>{words('分类', 'Categories')}</span></header>
       <div className="page-nav-list">
