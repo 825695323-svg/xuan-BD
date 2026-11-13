@@ -1,12 +1,9 @@
 import { request, RequestError } from './api';
-import { localDataGeneration, localDataRevision, notifyLocalDataRevoked } from './local-data-context';
 import type { FileReference } from '../../../platform/resources/files';
 import type { ApprovalRequest, PermissionGrant } from '../../../platform/security/permissions';
 import type { SkillDescriptor } from '../../../contracts/skill-contracts';
 import type { JsonValue, TaskAttempt, TaskEvent, TaskRecord, TaskRun } from '../../../contracts/task-contracts';
 import type { MemoryForgetPreview, MemoryInput, MemoryRecord, MemoryScope, MemorySource } from '../../../contracts/memory-contracts';
-
-interface PrivateContext { generation: number; revision: number }
 
 /** 本机受信启动器注入的只读路径桥；普通网页没有这个对象。 */
 interface NativeFileBridge {
@@ -56,24 +53,6 @@ export async function resolveNativeFilePaths(files: readonly File[]): Promise<re
   return paths as (string | null)[];
 }
 
-/** 私有写请求只使用本页已核实的代次；尚未核实时不发送，也不猜代次。 */
-function privateContext(action: string): PrivateContext {
-  const generation = localDataGeneration();
-  if (generation === null) throw new RequestError(`本地资料资格尚未确认，请重新核对后再${action}。`, 409, 'LOCAL_DATA_CONTEXT_MISSING');
-  return { generation, revision: localDataRevision() };
-}
-
-/** 迟到回执所属代次已被替换或停用时，不把它登记进当前界面。 */
-function assertCurrent(context: PrivateContext, action: string): void {
-  if (localDataRevision() !== context.revision || localDataGeneration() !== context.generation)
-    throw new RequestError(`${action}的回执属于旧代次，未用于当前界面。`, 409, 'STALE_LOCAL_DATA_GENERATION');
-}
-
-function revocationCode(body: unknown): string | null {
-  const code = isObject(body) && typeof body.code === 'string' ? body.code : null;
-  return code && (code.startsWith('LOCAL_DATA_') || code === 'STALE_LOCAL_DATA_GENERATION') ? code : null;
-}
-
 export const getSkills = async () => await request('/api/skills') as SkillDescriptor[];
 export type FileView = FileReference & { downloadUrl?: string | null };
 export const getFiles = async (id: string) => await request(`/api/files?conversationId=${encodeURIComponent(id)}`) as FileView[];
@@ -83,28 +62,21 @@ export async function uploadFile(conversationId: string, file: File): Promise<Fi
   // 本地预检没有发出请求，必须带明确失败身份，不能被当作“可能已受理”。
   if (file.size > 25 * 1024 * 1024) throw new RequestError('此环境未取得原文件路径，上传最多 25 MiB；请使用应用窗口重新选择文件。', 413, 'UPLOAD_TOO_LARGE');
   if (!file.size) throw new RequestError('请选择一个非空文件。', 400, 'INVALID_UPLOAD');
-  const context = privateContext('上传附件');
-  let response: Response;
+  let value: unknown;
   try {
-    response = await fetch(`/api/files/upload?conversationId=${encodeURIComponent(conversationId)}&name=${encodeURIComponent(file.name)}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'x-mashiro-client': 'web', 'x-local-data-generation': String(context.generation) },
-      body: file, credentials: 'same-origin', signal: AbortSignal.timeout(60_000),
-    });
-  } catch { throw new RequestError('未收到附件保存确认。请先核对当前会话的文件列表，再决定是否重新上传。'); }
-  let body: unknown;
-  try { body = await response.json(); }
-  catch { throw new RequestError('附件保存确认无法读取，请先核对文件列表。', response.status); }
-  if (!response.ok) {
-    const code = revocationCode(body);
-    if (code) notifyLocalDataRevoked(code);
-    const backendCode = isObject(body) && typeof body.code === 'string' ? body.code : null;
-    throw new RequestError(backendCode === 'UPLOAD_TOO_LARGE'
-      ? '此环境未取得原文件路径，上传最多 25 MiB；请使用应用窗口重新选择文件。'
-      : isObject(body) && typeof body.error === 'string' ? body.error : '附件保存失败。', response.status, backendCode);
+    value = await request(`/api/files/upload?conversationId=${encodeURIComponent(conversationId)}&name=${encodeURIComponent(file.name)}`,
+      'POST', file, { requireLocalData: true, timeoutMs: 60_000,
+        missingContextMessage: '本地资料资格尚未确认，请重新核对后再上传附件。',
+        networkErrorMessage: '未收到附件保存确认。请先核对当前会话的文件列表，再决定是否重新上传。',
+        unreadableMessage: '附件保存确认无法读取，请先核对文件列表。' });
+  } catch (failure) {
+    if (failure instanceof RequestError && failure.code === 'UPLOAD_TOO_LARGE')
+      throw new RequestError('此环境未取得原文件路径，上传最多 25 MiB；请使用应用窗口重新选择文件。', failure.status, failure.code);
+    throw failure;
   }
-  assertCurrent(context, '附件上传');
-  if (!isObject(body) || typeof body.id !== 'string' || body.source !== 'user-attached') throw new RequestError('附件保存确认无效，请先核对文件列表。');
-  return body as unknown as FileReference;
+  if (!isObject(value) || typeof value.id !== 'string' || value.source !== 'user-attached')
+    throw new RequestError('附件保存确认无效，请先核对文件列表。');
+  return value as unknown as FileReference;
 }
 export const getTasks = async (id: string) => await request(`/api/tasks?conversationId=${encodeURIComponent(id)}`) as TaskRecord[];
 export const createTask = async (input: { title: string; action: string; args: JsonValue; conversationId: string; requestId: string; dependencies?: string[]; reviewRequired?: boolean }) => await request('/api/tasks', 'POST', input) as TaskRecord;
@@ -188,20 +160,11 @@ export async function memoryInputFromForm(input: Omit<MemoryInput, 'sources'>, s
   return { ...input, sources: [manual] };
 }
 export async function setConversationProject(id: string, projectId: string | null): Promise<void> {
-  const context = privateContext('保存项目设置');
-  let response: Response;
-  try { response = await fetch(`/api/conversations/${encodeURIComponent(id)}/project`, { method: 'PATCH', credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', 'x-mashiro-client': 'web', 'x-local-data-generation': String(context.generation) },
-    body: JSON.stringify({ projectId }), signal: AbortSignal.timeout(30_000) }); }
-  catch { throw new RequestError('未收到项目设置的保存确认，请核对会话详情。'); }
-  let value: unknown;
-  try { value = await response.json(); } catch { throw new RequestError('项目设置的保存确认无法读取，请核对会话详情。', response.status); }
-  if (!response.ok) {
-    const code = revocationCode(value);
-    if (code) notifyLocalDataRevoked(code);
-    throw new RequestError(isObject(value) && typeof value.error === 'string' ? value.error : '项目设置暂未保存。', response.status,
-      isObject(value) && typeof value.code === 'string' ? value.code : null);
-  }
-  assertCurrent(context, '项目设置');
+  await request(`/api/conversations/${encodeURIComponent(id)}/project`, 'PATCH', { projectId }, {
+    requireLocalData: true,
+    missingContextMessage: '本地资料资格尚未确认，请重新核对后再保存项目设置。',
+    networkErrorMessage: '未收到项目设置的保存确认，请核对会话详情。',
+    unreadableMessage: '项目设置的保存确认无法读取，请核对会话详情。',
+  });
 }
 function isObject(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
