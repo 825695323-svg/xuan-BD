@@ -95,7 +95,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     root.style.setProperty('--diff-removed', definition.theme.semanticColors.diffRemoved);
     root.style.setProperty('--skill-color', definition.theme.semanticColors.skill);
     root.style.setProperty('--font-scale', String(preferences.fontScale));
-    root.style.fontSize = `${14 * preferences.fontScale}px`;
+    root.style.fontSize = `${15 * preferences.fontScale}px`;
   }, [preferences.theme, preferences.language, preferences.fontScale, resolvedTheme]);
 
   const updatePreferences = useCallback((patch: PreferencePatch) => {
