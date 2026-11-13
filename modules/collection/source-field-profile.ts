@@ -181,8 +181,10 @@ export class SourceFieldProfileStore {
    * 历史任务所需的确切档案已冻结在其自身请求中，不依赖此目录保留每代旧文件。
    */
   match(input: { sourceId: string; series?: string | null; adapter?: SourceProfileAdapterBinding }): SourceFieldProfile | null {
-    const hits = this.list().filter(profile => profile.sourceId === input.sourceId
-      && (!profile.series || !input.series || profile.series === input.series));
+    const candidates = this.list().filter(profile => profile.sourceId === input.sourceId);
+    const scoped = input.series ? candidates.filter(profile => profile.series === input.series) : [];
+    // 没有明确系列时只允许显式通用档案；不得因只找到一家/一个端点就猜系列。
+    const hits = scoped.length ? scoped : candidates.filter(profile => profile.series === '');
     if (hits.length > 1) fail(`来源 ${input.sourceId} 系列「${input.series ?? ''}」有 ${hits.length} 份当前档案；请仅保留一份有效映射，旧通道配置不应继续参与新任务。`);
     return hits[0] ?? null;
   }

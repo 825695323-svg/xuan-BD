@@ -108,6 +108,8 @@ test('channel upgrades do not change source semantics; new tasks use one current
     assert.equal(store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv',
       adapter: { ...ref('vendor.daily'), version: '89', configDigest: 'b'.repeat(64) } })!.profileId, old.profileId);
     assert.equal(store.match({ sourceId: 'synthetic-a', series: 'other-series' })?.profileId, 'demo-other');
+    assert.equal(store.match({ sourceId: 'synthetic-a' }), null,
+      '缺少确切数据系列不能猜测要用哪个来源字段档案');
     assert.equal(store.match({ sourceId: 'another-vendor', series: 'daily.ohlcv' }), null);
 
     // 本机只维护当前一份：原位修订映射时旧对象仍被冻结于旧请求，不要求保留 old.json。
