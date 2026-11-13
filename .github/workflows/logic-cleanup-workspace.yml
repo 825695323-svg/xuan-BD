@@ -1,0 +1,36 @@
+name: Temporary isolated logic cleanup workspace
+on:
+  push:
+    branches: [refactor/logic-cleanup-20261113]
+    paths: ['.github/workflows/logic-cleanup-workspace.yml']
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - run: npm ci
+      - name: Export tracked source and isolated toolchain
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/logic-workspace"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/logic-workspace/source.tar.gz"
+          cp "$(command -v node)" "$RUNNER_TEMP/logic-workspace/node"
+          tar -czf "$RUNNER_TEMP/logic-workspace/dependencies.tar.gz" node_modules
+          git rev-parse HEAD > "$RUNNER_TEMP/logic-workspace/source-commit.txt"
+          cd "$RUNNER_TEMP/logic-workspace"
+          sha256sum source.tar.gz dependencies.tar.gz node > checksums.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logic-cleanup-workspace
+          path: ${{ runner.temp }}/logic-workspace/
+          retention-days: 1
+          if-no-files-found: error
