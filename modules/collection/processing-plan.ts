@@ -603,6 +603,9 @@ export class ProcessingPlanService {
         routingState: decision.routingState, gaps: decision.gaps, intendedAction });
     }
     const outputInputs = readArray(raw.outputs, 1, PROCESSING_LIMITS.maxOutputs, 'PROCESSING_OUTPUTS');
+    const previousPlanId = raw.previousPlanId === undefined ? null : readId(raw.previousPlanId, 'PROCESSING_PLAN_ID');
+    const previousDocument = previousPlanId
+      ? this.document(this.planRow(previousPlanId) ?? fail('PROCESSING_PLAN_NOT_FOUND', '没有待修订的处理计划。')) : null;
     const outputs: NormalizedOutput[] = [], seenOutputs = new Set<string>(), allSteps: StepSpec[] = [];
     for (const item of outputInputs) {
       const record = readRecord(item, ['outputId', 'materialIds', 'tables', 'target', 'dimensions', 'suggestions', 'rejectReason', 'coverage', 'intendedAction', 'usage', 'stages'], 'PROCESSING_OUTPUT');
@@ -614,6 +617,17 @@ export class ProcessingPlanService {
       const tables = readTables(record.tables, materialIds);
       // 新计划只编译明确选中的模块；数据/文件类型只能选择解析器，不能决定处理链。
       const stages = readProcessingStages(record.stages, tables.length > 0);
+      if (operator.source === 'conversation') {
+        const priorOutput = previousDocument?.outputs.find(output => output.outputId === outputId);
+        const priorStages = priorOutput?.stages;
+        if (!previousDocument && (stages.length > 1 || stages.some(kind => kind !== 'parse')))
+          fail('PROCESSING_AGENT_STEPWISE_REQUIRED', 'AGENTS新计划一次只能选择一个起始模块；原件表源先选择 parse，完成后再决定是否需要其他模块。');
+        if (previousDocument && (!priorOutput || !Array.isArray(priorStages)
+          || priorStages.some(kind => !stages.includes(kind))
+          || stages.filter(kind => !priorStages.includes(kind)).length > 1))
+          fail('PROCESSING_AGENT_STEPWISE_REQUIRED',
+            'AGENTS只能沿原计划累加最多一个新模块；须先检查上一模块的真实结果，不得一次预排多步或删除已有证明。');
+      }
       if (stages && !stages.includes('clean') && tables.some(table => (table.trim?.length ?? 0) > 0 || (table.emptyToNull?.length ?? 0) > 0))
         fail('PROCESSING_STAGE_RULES', '本轮未选择清洗模块，不能暗中应用已声明清洗规则。');
       if (stages && !stages.includes('annotate') && tables.some(table => Object.keys(table.annotations ?? {}).length > 0))
@@ -676,7 +690,6 @@ export class ProcessingPlanService {
         stages: item.stages, intendedAction: item.intendedAction, usage: item.usage,
         dimensions: item.dimensions.map(dimension => ({ key: dimension.key, status: dimension.status, value: dimension.value })) })),
       steps: allSteps.map(step => ({ stepId: step.stepId, specDigest: step.specDigest })) }));
-    const previousPlanId = raw.previousPlanId === undefined ? null : readId(raw.previousPlanId, 'PROCESSING_PLAN_ID');
     const contentDigest = digestOperationArgs(withoutVolatile({ previousPlanId, operatorId: operator.operatorId,
       policy: PROCESSING_POLICY.version,
       materials: materials.map(material => ({ materialId: material.materialId, sha256: material.facts.sha256,
@@ -1747,6 +1760,8 @@ function readProcessingStages(value: unknown, hasTables: boolean): ProcessingSte
     || new Set(selected).size !== selected.length) {
     fail('PROCESSING_STAGE_SELECTION', '模块选择必须是已登记的无重复模块集合。');
   }
+  if (!hasTables && selected.length)
+    fail('PROCESSING_STAGE_SELECTION', '没有已声明的原件表源，本计划不能编排原件加工步骤；固定 WFD 产品请使用独立只读端口。');
   // 这里只约束真实产物的输入类型，而不是按材料业务分类自动绑定模块。
   // 处理原件生成新表时，需要明确选择解析；核对只能使用已经结构化的输入。
   if (selected.some(kind => kind !== 'parse') && !selected.includes('parse'))
