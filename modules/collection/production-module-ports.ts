@@ -8,14 +8,11 @@ import { ALGORITHM_REGISTRY, ALGORITHM_REGISTRY_VERSION, ALGORITHM_REGISTRY_NOTE
   registryCounts } from '../financial/algorithm-registry.js';
 import { ALGORITHM_DEFINITION_SUMMARY, definitionFor } from '../financial/algorithm-definitions.js';
 import { MATERIAL_CLEANING_RULES_VERSION, MATERIAL_SEMANTIC_PROPOSAL_VERSION } from './materials/semantic-contracts.js';
-import { compareProfileSemantics, profileFingerprint, sourceFieldProfileDigest,
+import { compareProfileSemantics, profileFingerprint, profileSemanticGaps, sourceFieldProfileDigest,
   type SourceFieldProfile, type SourceFieldProfileStore, type SemanticProductRegistryStore,
   type SourceProfileAdapterBinding } from './source-field-profile.js';
 
-/**
- * 八个平行的业务模块端口复用既有处理服务和配置。
- * WFD 输入经同一只读受信读取器，结果不自动冒充已核对的五步加工对象。
- */
+/** 八个平行模块复用现有服务；读取、处理、语义核对和正式发布各守自己的边界。 */
 export const PRODUCTION_MODULE_PORTS_VERSION = 'bd.production-module-ports/2';
 export const PRODUCTION_MODULES = [
   { id: 'parse', action: 'data.modules.parse', title: '解析', source: 'declared_material_or_fixed_wfd' },
@@ -31,6 +28,11 @@ export type ProductionModuleId = typeof PRODUCTION_MODULES[number]['id'];
 export type ProductionStepModuleId = Exclude<ProductionModuleId, 'calculate' | 'factors' | 'semantics'>;
 export type ProductionCatalogModuleId = Extract<ProductionModuleId, 'factors' | 'semantics'>;
 export type ProductionWfdModuleId = Exclude<ProductionModuleId, 'calculate'>;
+
+const dictionaryBoundary = {
+  module: 'semantics', displayName: '语义词典', returnTo: 'agents',
+  execution: 'not_requested', publication: 'not_requested', adoption: 'not_granted', dataWrite: 'forbidden',
+} as const;
 
 export const stepModuleForAction = (action: string): ProductionStepModuleId | null => {
   const found = PRODUCTION_MODULES.find(value => value.action === action);
@@ -62,7 +64,14 @@ export function productionModuleDirectory(services: {
   const modules = PRODUCTION_MODULES.map(({ id, action, title, source }) => {
     const attached = services.enabled?.[id] !== false;
     if (id === 'factors' || id === 'semantics') {
-      const available = id === 'factors' || semanticTemplatesAvailable();
+      const templatesAvailable = id === 'semantics' && semanticTemplatesAvailable();
+      const operations = id === 'semantics' ? [
+        { id: 'templates', argument: 'groupId', available: attached && templatesAvailable },
+        { id: 'source_lookup', argument: 'sourceQueryJson', available: attached && services.hasSourceProfiles === true },
+        { id: 'source_compare', argument: 'sourceQueryJson', available: attached && services.hasSourceProfiles === true },
+        { id: 'published_definition', argument: 'wfdRefJson', available: attached && services.hasWfdReader },
+      ] : [];
+      const available = id === 'factors' || operations.some(operation => operation.available);
       return { id, action, title, source,
         status: !attached ? 'unplugged' as const : available ? 'ready' as const : 'blocked' as const,
         engine: 'read_only_catalog', methods: [] as unknown[], execution: 'on_demand',
@@ -71,7 +80,9 @@ export function productionModuleDirectory(services: {
         dependencies: [] as string[], readOnly: true,
         sourceVersion: id === 'factors' ? ALGORITHM_REGISTRY_VERSION : SEMANTIC_TEMPLATES_VERSION,
         ...(id === 'semantics' ? { sourceProfilesAvailable: services.hasSourceProfiles === true,
-          sourceSemanticsMode: 'read_only_lookup_or_comparison_not_authority' } : {}) };
+          sourceSemanticsMode: 'read_only_lookup_or_comparison_not_authority', operations,
+          requestConditions: ['frequency', 'adjustment', 'adjustmentMethod', 'adjustmentBasis', 'timezone', 'fieldUnits'],
+          feedback: dictionaryBoundary } : {}) };
     }
     if (id === 'calculate') {
       const methods = services.algorithms?.catalog().methods.map(method => ({
@@ -91,7 +102,6 @@ export function productionModuleDirectory(services: {
       methods: [] as unknown[], execution: 'on_demand',
       history: 'original_plan_immutable_or_read_only_wfd_page',
       wfdRead: services.hasWfdReader,
-      // 模块接口无固定前后顺序；实际处理依赖只由AGENTS当前冻结计划中的已选步骤确定。
       dependencies: [] as string[], inputBinding: 'selected_plan_step_artifact' };
   });
   return { version: PRODUCTION_MODULE_PORTS_VERSION, owner: 'bd_service', mode: 'eight_parallel_ports',
@@ -148,12 +158,7 @@ export async function readWfdModulePage(module: ProductionWfdModuleId, raw: unkn
     note: '这是只读的正式 WFD 数据页，不授权跳过既有原报计划的解析/清洗/核对，不自动入库。' };
 }
 
-
-/**
- * Semantic dictionary's authoritative view: published product declarations inside an
- * explicitly pinned WFD snapshot. Templates (semanticDictionaryView) stay separately
- * marked as unadopted reference material and never replace this fixed read.
- */
+/** 正式语义只从指定 WFD 固定快照读取；本地模板不能替代已经采用的产品定义。 */
 export async function readPublishedWfdSemanticDefinition(raw: unknown,
   discover: (input: { snapshotId: string }, signal?: AbortSignal) => Promise<R1ProductDiscovery>,
   signal: AbortSignal) {
@@ -178,17 +183,15 @@ export async function readPublishedWfdSemanticDefinition(raw: unknown,
     return fail('PRODUCTION_SEMANTIC_WFD_INVALID',
       '已发布产品的语义编号、单位或测量属性不完整；不伪造词典定义。');
   }
-  return { version: PRODUCTION_MODULE_PORTS_VERSION,
+  return { ...dictionaryBoundary, version: PRODUCTION_MODULE_PORTS_VERSION,
     kind: 'wfd_published_semantic_definition', authority: 'actual_fixed_snapshot',
     snapshotId: selection.snapshotId, productId: selection.productId,
     datasetId: entry.dataset_id, subject: entry.subject, declaration,
     declarationSha256: wfdSha256(canonicalWfdJson(declaration)),
     source: { historyMode: 'snapshot_contents', connectionSha256: wfdSha256(canonicalWfdJson(reply.connection)) },
-    execution: 'not_requested', publication: 'not_requested',
     note: '正式定义只按原 WFD Snapshot 读取；仅查询，不采用/修订口径，也不触发自动标注或计算。' };
 }
 
-/** 因子库直接读取当前已有登记/公式谱系；登记不能直接赋予计算或 WFD 发布资格。 */
 export function factorLibraryView(factorId?: string) {
   if (factorId !== undefined && (!identifier(factorId) || factorId.length > 128))
     return fail('PRODUCTION_FACTOR_ID', '因子编号格式无效；不能作为动态程序、脚本或表达式。');
@@ -199,21 +202,26 @@ export function factorLibraryView(factorId?: string) {
     designOnly: true, note: ALGORITHM_REGISTRY_NOTE,
     definitions: ALGORITHM_DEFINITION_SUMMARY, counts: registryCounts(),
     total: ALGORITHM_REGISTRY.length, selected: entries.length,
-    items: entries.map(item => ({
-      ...item, definition: definitionFor(item.id) ?? null,
-      publication: 'not_granted_by_library',
-      execution: 'not_granted_by_library',
-    })) };
+    items: entries.map(item => ({ ...item, definition: definitionFor(item.id) ?? null,
+      publication: 'not_granted_by_library', execution: 'not_granted_by_library' })) };
 }
 
-
-/** G5 复用 R1 已有来源档案与产品登记：只读查询和比较，既不修改配置也不授予 WFD 采用权。 */
-export const G5_SOURCE_SEMANTICS_VERSION = 'bd.g5.source-semantics/1';
+/** 语义词典复用 R1 的来源档案和产品登记；机器协议标识保持原值，不因显示名变更迁移历史。 */
+export const SOURCE_SEMANTICS_VERSION = 'bd.g5.source-semantics/1';
 export interface SourceSemanticPorts {
   profiles?: Pick<SourceFieldProfileStore, 'match'>;
   products?: Pick<SemanticProductRegistryStore, 'datasetFor'>;
 }
 type SourceScope = { sourceId: string; series: string; adapter?: SourceProfileAdapterBinding };
+/** 调用方声明所需口径，不是模型提供的新档案、授权或发布定义。 */
+export interface SourceSemanticConditions {
+  frequency?: SourceFieldProfile['frequency'];
+  adjustment?: 'raw' | 'qfq' | 'hfq';
+  adjustmentMethod?: string;
+  adjustmentBasis?: string;
+  timezone?: string;
+  fieldUnits?: Record<string, string>;
+}
 const scopeCode = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/u;
 const badSourceQuery = (message: string): never => { throw new TaskError('PRODUCTION_SEMANTIC_SOURCE_QUERY', message); };
 function sourceScope(value: unknown, name: string): SourceScope {
@@ -237,8 +245,52 @@ function sourceScope(value: unknown, name: string): SourceScope {
   }
   return { sourceId: record.sourceId as string, series: record.series as string, ...(adapter ? { adapter } : {}) };
 }
+function readSemanticConditions(value: unknown): SourceSemanticConditions | undefined {
+  if (value === undefined) return undefined;
+  if (!isWfdRecord(value) || !Object.keys(value).length
+    || Object.keys(value).some(key => !['frequency','adjustment','adjustmentMethod','adjustmentBasis','timezone','fieldUnits'].includes(key)))
+    return badSourceQuery('conditions 只接受频率、复权、时区和规范字段单位要求，不能注入程序、档案或精度配置。');
+  if (value.frequency !== undefined && !['day','minute','tick','other'].includes(String(value.frequency)))
+    badSourceQuery('conditions.frequency 无效。');
+  if (value.adjustment !== undefined && !['raw','qfq','hfq'].includes(String(value.adjustment)))
+    badSourceQuery('conditions.adjustment 需要明确口径，不能把 unknown 当匹配条件。');
+  for (const key of ['adjustmentMethod','adjustmentBasis','timezone']) {
+    const entry = value[key];
+    if (entry !== undefined && (typeof entry !== 'string' || !entry.trim() || entry.length > 512 || /[\u0000-\u001f]/u.test(entry)))
+      badSourceQuery('conditions.' + key + ' 必须是明确、有界的文本。');
+  }
+  if (value.timezone !== undefined) {
+    try { new Intl.DateTimeFormat('en', { timeZone: value.timezone as string }).format(0); }
+    catch { badSourceQuery('conditions.timezone 不是有效时区。'); }
+  }
+  if (value.fieldUnits !== undefined && (!isWfdRecord(value.fieldUnits) || !Object.keys(value.fieldUnits).length
+    || Object.keys(value.fieldUnits).length > 64
+    || Object.entries(value.fieldUnits).some(([field, unit]) => !identifier(field) || !identifier(unit))))
+    badSourceQuery('conditions.fieldUnits 需要最多64个规范字段与单位编号。');
+  return structuredClone(value) as unknown as SourceSemanticConditions;
+}
+function sourceApplicability(profile: SourceFieldProfile | null, conditions?: SourceSemanticConditions) {
+  const differences: string[] = [], gaps: string[] = [];
+  if (!conditions) return { status: 'not_requested' as const, differences, gaps };
+  if (!profile) return { status: 'needs_evidence' as const, differences, gaps: ['请求来源没有已登记档案，不能判断适用性。'] };
+  gaps.push(...profileSemanticGaps(profile));
+  const check = (label: string, actual: string | undefined, expected: string | undefined) => {
+    if (expected === undefined) return;
+    if (!actual?.trim() || actual === 'unknown') gaps.push(label + ' 缺少可核的来源条件。');
+    else if (actual !== expected) differences.push(label + ' 不符合请求：' + actual + ' ≠ ' + expected);
+  };
+  check('频率', profile.frequency, conditions.frequency);
+  check('复权状态', profile.adjustment.status, conditions.adjustment);
+  check('复权方法', profile.adjustment.method, conditions.adjustmentMethod);
+  check('复权基准', profile.adjustment.basis, conditions.adjustmentBasis);
+  check('时区', profile.timeBucket.timezone, conditions.timezone);
+  for (const [field, unit] of Object.entries(conditions.fieldUnits ?? {}))
+    check('字段 ' + field + ' 单位', profile.fields.find(item => item.fieldCode === field)?.unitCode, unit);
+  return { status: differences.length ? 'incompatible' as const : gaps.length ? 'needs_evidence' as const : 'applicable' as const,
+    differences, gaps: [...new Set(gaps)] };
+}
 function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceScope, ports: SourceSemanticPorts, fieldCode?: string) {
-  if (!profile) return { status: 'not_registered', scope, gaps: ['指定来源、系列与适配器身份无已确认字段档案；不能使用其他接口的映射。'],
+  if (!profile) return { status: 'not_registered', scope, gaps: ['指定来源和数据系列无已确认字段档案；不借用其他系列的映射。'],
     candidate: '需由受信操作者根据接口文档和保管原件补充来源字段档案；本工具不登记或采用。' };
   const fingerprint = profileFingerprint(profile), datasetId = ports.products?.datasetFor(fingerprint) ?? null;
   const filtered = fieldCode ? profile.fields.filter(field => field.fieldCode === fieldCode) : profile.fields;
@@ -251,18 +303,12 @@ function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceS
     previewMayTruncate: field.originalHeader.length > 128 || (field.aliases ?? []).length > 2
       || (field.aliases ?? []).some(alias => alias.length > 128) || (field.measurement?.length ?? 0) > 192,
   }));
-  const gaps = [
-    ...(profile.adjustment.status === 'unknown' ? ['复权状态未知；不能跨来源认定等价。'] : []),
-    ...(profile.timeBucket.labelSemantics === 'unknown' || profile.timeBucket.interval === 'unknown'
-      ? ['时间桶起止和区间口径未知；不能跨来源认定等价。'] : []),
-    ...profile.fields.filter(field => field.measurementStatus === 'unknown' || field.role === 'value' && !field.measurement)
-      .slice(0, 8).map(field => field.measurementStatus === 'unknown'
-        ? '计量字段 ' + field.fieldCode + ' 仅保留原报词面，金融计量口径未知。'
-        : '计量字段 ' + field.fieldCode + ' 缺金融语义口径。'),
+  const semanticGaps = profileSemanticGaps(profile);
+  const gaps = [...semanticGaps,
     ...(fieldCode && !filtered.length ? ['来源档案没有规范字段 ' + fieldCode + '。'] : []),
-    ...(!datasetId ? ['没有该语义指纹对应的本机数据集登记；来源档案不等于 WFD 已发布定义。'] : []),
-  ];
+    ...(!datasetId ? ['没有该语义指纹对应的本机数据集登记；来源档案不等于 WFD 已发布定义。'] : [])];
   return { status: 'registered_source_profile', scope, profileId: profile.profileId,
+    semanticStatus: semanticGaps.length ? 'needs_evidence' : 'profile_complete',
     mappingVersion: profile.mappingVersion, digest: sourceFieldProfileDigest(profile),
     fingerprint, registeredDatasetId: datasetId, fieldCount: profile.fields.length,
     displayedFields: displayFields.length, fieldPreviewComplete: filtered.length <= 8
@@ -278,45 +324,62 @@ function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceS
     supersedesPreviewComplete: (profile.supersedes ?? []).length <= 8
       && (profile.supersedes ?? []).every(item => item.note.length <= 192),
     confirmation: { status: profile.confirmation.status, confirmedAtUtc: profile.confirmation.confirmedAtUtc },
-    gaps, authority: 'local_operator_confirmed_source_profile_not_formal_wfd_definition',
-    adoption: 'not_granted' };
+    gaps, authority: 'local_operator_confirmed_source_profile_not_formal_wfd_definition', adoption: 'not_granted' };
 }
 
-/** 仅按明确两份来源档案比较完整语义签名；模型不能提交自造档案、修订、路径或产品身份。 */
 export function sourceSemanticView(query: unknown, ports: SourceSemanticPorts = {}) {
-  if (!isWfdRecord(query) || Object.keys(query).some(key => !['left','right','fieldCode'].includes(key))
+  if (!isWfdRecord(query) || Object.keys(query).some(key => !['left','right','fieldCode','conditions'].includes(key))
     || !Object.hasOwn(query, 'left') || JSON.stringify(query).length > 4096)
-    badSourceQuery('G5 来源语义查询只接受 left（来源身份）、可选 right（对照来源身份）和 fieldCode（规范字段筛选）。');
+    badSourceQuery('语义词典查询只接受 left、可选 right、fieldCode 与 conditions；不能提供新定义或权限。');
   const record = query as WfdRecord;
   const leftScope = sourceScope(record.left, 'left'), rightScope = record.right === undefined ? null : sourceScope(record.right, 'right');
+  const conditions = readSemanticConditions(record.conditions);
   const fieldCode = record.fieldCode === undefined ? undefined : record.fieldCode;
   if (fieldCode !== undefined && (typeof fieldCode !== 'string' || !scopeCode.test(fieldCode)))
     badSourceQuery('fieldCode 必须是已登记的规范字段编号，不能使用通配符或路径。');
-  if (!ports.profiles) return { version: G5_SOURCE_SEMANTICS_VERSION, kind: 'read_only_source_semantics',
+  if (!ports.profiles) return { ...dictionaryBoundary, version: SOURCE_SEMANTICS_VERSION, kind: 'read_only_source_semantics',
     status: 'not_configured', scope: leftScope, compareWith: rightScope,
-    gaps: ['本宿主没有装配受信来源字段档案目录。'], adoption: 'not_granted', publication: 'not_requested' };
+    conditions: conditions ?? null, gaps: ['本宿主没有装配受信来源字段档案目录。'] };
   const left = ports.profiles.match(leftScope), right = rightScope ? ports.profiles.match(rightScope) : null;
-  const result = { version: G5_SOURCE_SEMANTICS_VERSION, kind: 'read_only_source_semantics',
+  const leftUse = sourceApplicability(left, conditions), rightUse = rightScope ? sourceApplicability(right, conditions) : null;
+  const summarize = (value: ReturnType<typeof sourceApplicability>) => ({ status: value.status,
+    differences: value.differences.slice(0, 24).map(reason => reason.slice(0, 240)), differenceCount: value.differences.length,
+    gaps: value.gaps.slice(0, 24).map(reason => reason.slice(0, 240)), gapCount: value.gaps.length,
+    previewComplete: value.differences.length <= 24 && value.gaps.length <= 24
+      && [...value.differences, ...value.gaps].every(reason => reason.length <= 240) });
+  const result = { ...dictionaryBoundary, version: SOURCE_SEMANTICS_VERSION, kind: 'read_only_source_semantics',
     operation: rightScope ? 'compare' : 'lookup', left: sourceProfilePreview(left, leftScope, ports, fieldCode as string | undefined),
     ...(rightScope ? { right: sourceProfilePreview(right, rightScope, ports, fieldCode as string | undefined) } : {}),
-    adoption: 'not_granted', publication: 'not_requested', dataWrite: 'forbidden' };
-  if (!rightScope) return { ...result, status: left ? 'registered' : 'needs_evidence' };
+    conditions: conditions ?? null,
+    applicability: { scope: 'registered_profile_conditions_only', left: summarize(leftUse),
+      ...(rightUse ? { right: summarize(rightUse) } : {}) } };
+  if (!rightScope) return { ...result, status: leftUse.status === 'incompatible' ? 'different_semantics'
+    : !left || leftUse.status === 'needs_evidence' ? 'needs_evidence' : 'registered' };
   if (!left || !right) return { ...result, status: 'needs_evidence', comparison: null,
-    gaps: ['至少一个来源没有匹配完整端点身份的已确认字段档案，不能认定同一金融语义。'] };
+    gaps: ['至少一个来源没有匹配来源/系列的已确认字段档案，不能认定同一金融语义。'] };
   const compared = compareProfileSemantics(left, right);
-  const leftDataset = ports.products?.datasetFor(profileFingerprint(left)) ?? null;
-  const rightDataset = ports.products?.datasetFor(profileFingerprint(right)) ?? null;
-  return { ...result, status: compared.sameProduct ? 'candidate_equivalent' : 'different_semantics',
-    comparison: { sameSignature: compared.sameProduct, reasons: compared.reasons.slice(0, 24).map(reason => reason.slice(0, 240)),
-      reasonCount: compared.reasons.length,
-      reasonsPreviewComplete: compared.reasons.length <= 24 && compared.reasons.every(reason => reason.length <= 240),
+  const differences = [...new Set([...compared.differences, ...leftUse.differences, ...(rightUse?.differences ?? [])])];
+  const gaps = [...new Set([...compared.gaps, ...leftUse.gaps, ...(rightUse?.gaps ?? [])])];
+  const status = differences.length ? 'different_semantics' : gaps.length ? 'needs_evidence' : 'candidate_equivalent';
+  const reasons = [...differences, ...gaps];
+  const leftFingerprint = profileFingerprint(left), rightFingerprint = profileFingerprint(right);
+  const leftDataset = ports.products?.datasetFor(leftFingerprint) ?? null;
+  const rightDataset = ports.products?.datasetFor(rightFingerprint) ?? null;
+  const bounded = (items: string[]) => items.slice(0, 24).map(item => item.slice(0, 240));
+  return { ...result, status,
+    comparison: { sameSignature: status === 'candidate_equivalent', identicalSignature: leftFingerprint === rightFingerprint,
+      status, reasons: bounded(reasons), reasonCount: reasons.length,
+      reasonsPreviewComplete: reasons.length <= 24 && reasons.every(reason => reason.length <= 240),
+      differences: bounded(differences), differenceCount: differences.length,
+      gaps: bounded(gaps), gapCount: gaps.length,
       registeredSameDataset: !!leftDataset && leftDataset === rightDataset,
-      implication: compared.sameProduct
-        ? '仅来源档案口径候选相同；仍需按 WFD 固定产品定义与来源权限独立核对，不自动合并或发布。'
-        : '来源语义不同或未知；不得自动映射为同一个正式金融产品。' } };
+      implication: status === 'candidate_equivalent'
+        ? '仅来源档案及已请求条件候选相同；仍需 WFD 固定产品定义与来源权限核对，不自动合并或发布。'
+        : status === 'needs_evidence'
+          ? '缺少足够语义证据；相同字段、标签或指纹不代表等价，不能自动映射为同一个正式产品。'
+          : '存在金融语义差异或不符合本次请求条件；差异与未核证据分别保留，不自动合并或发布。' } };
 }
 
-/** WFD 语义模板并非权威已采用产品词典；按需公开真实模板和当前材料语义合同。 */
 export const SEMANTIC_TEMPLATES_VERSION = 'wfd.semantic-templates/1.0';
 const semanticTemplatePath = new URL('../../wfd/product/protocol/templates/wfd-semantic-templates.json', import.meta.url);
 function loadSemanticTemplates(): WfdRecord | null {
@@ -336,12 +399,10 @@ export function semanticDictionaryView(groupId?: string) {
     '本机构建没有完整受信语义模板；不能伪造已经采用的 WFD 词典。');
   if (groupId !== undefined && (!identifier(groupId) || groupId.length > 128))
     return fail('PRODUCTION_SEMANTIC_GROUP', '语义词典分组编号无效。');
-  const groups = (document.business_groups as WfdRecord[])
-    .filter(value => isWfdRecord(value));
+  const groups = (document.business_groups as WfdRecord[]).filter(value => isWfdRecord(value));
   const selected = groupId ? groups.filter(item => item.group_id === groupId) : groups;
-  if (groupId && !selected.length)
-    return fail('PRODUCTION_SEMANTIC_GROUP', '没有该语义模板分组，不能补造未知概念。');
-  return { version: SEMANTIC_TEMPLATES_VERSION, kind: 'read_only_semantic_dictionary',
+  if (groupId && !selected.length) return fail('PRODUCTION_SEMANTIC_GROUP', '没有该语义模板分组，不能补造未知概念。');
+  return { ...dictionaryBoundary, version: SEMANTIC_TEMPLATES_VERSION, kind: 'read_only_semantic_dictionary',
     status: 'templates_only_not_products', authority: 'no_adoption_or_decision_granted',
     commonAxes: document.common_axes, businessGroups: selected,
     financeSubdomains: groupId ? [] : document.finance_subdomains,

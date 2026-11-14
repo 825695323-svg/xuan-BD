@@ -54,17 +54,19 @@ export class ConversationProcessingBridge {
           : module.id === 'semantics'
             ? [text('groupId', '可选：语义词典模板分组'),
               text('wfdRefJson', '可选：WFD固定产品只读引用', false, 16000),
-              text('sourceQueryJson', '可选：G5来源字段档案查询/跨来源语义比较（只读JSON身份）', false, 4096)]
+              text('sourceQueryJson', '可选：语义词典来源查询/比较；conditions声明请求口径，不提供新档案', false, 4096)]
             : [text('planId', '当前分支已冻结的处理计划'),
               text('stepId', '该计划中同类步骤编号'),
               text('wfdRefJson', '可选：WFD固定产品只读引用', false, 16000)];
         const standard = registration(module.action, module.title + '（按需独立接口）',
-          '与其他模块并列；材料先识别，解析单步完成后回到AGENTS，再选择必要的后续模块。步骤仅依赖真实冻结产物，不存在自动五步。WFD固定来源只读，不替代独立核验或发布。',
+          module.id === 'semantics'
+            ? '只选择一种只读模式：模板分组、来源档案查询/比较、或WFD固定正式定义。来源查询可用conditions核对频率、复权、时区和字段单位；不加载无关模板、不读取未请求数据、不采用定义。结果返回AGENTS决定后续动作。'
+            : '与其他模块并列；材料先识别，解析单步完成后回到AGENTS，再选择必要的后续模块。步骤仅依赖真实冻结产物，不存在自动五步。WFD固定来源只读，不替代独立核验或发布。',
           fields);
         return { ...standard,
           permissionSummary: ['受信宿主独立拔插；同一TaskService保留真实任务身份',
             '只运行AGENTS选择的单步；完成后返回AGENTS重新判断。WFD固定快照只读，不能冒充发布证明',
-            '因子库登记不启用计算；G5 可只读来源档案及跨来源比较，模板/本机登记均不等于 WFD 正式采用'],
+            '因子库登记不启用计算；语义词典可只读来源档案及跨来源比较，模板/本机登记均不等于 WFD 正式采用'],
           available: () => {
             const capability = moduleCatalog().modules.find(item => item.id === module.id);
             const available = capability?.status === 'ready';
@@ -115,7 +117,7 @@ export class ConversationProcessingBridge {
       registration('data.adapters.propose', '提交端点适配候选配置', '只登记候选配置及其摘要，不采用、不解析、不影响新计划；配置须为受控字段/位置/单位声明，不能包含脚本或任意表达式。候选采用须另经本机受信入口确认。', [
         text('configJson', '完整适配配置对象', true, 131072),
       ]),
-      registration('data.adapters.replay', '用本分支材料重放适配候选', '对候选配置在本分支保管原件上执行必要的解析、类型转换与独立核对，逐项核对期望值；只写重放证据，不采用配置。缺字段、坏数值、无效时间与不符期望都记为失败。', [
+      registration('data.adapters.replay', '用本分支材料重放适配候选', '对候选配置只验证来源解析、声明类型和有依据的单位换算，并核对期望值；不自动调用清洗、结构化或发布模块。只写重放证据，不采用配置。缺字段、坏数值、无效时间与不符期望都记为失败。', [
         text('adapterId', '适配编号', true), text('version', '适配版本', true),
         text('samplesJson', '样本数组：materialId/expectation/expectedCode/expect', true, 32000),
       ]),
@@ -127,7 +129,6 @@ export class ConversationProcessingBridge {
     ];
   }
   handles(action: string): boolean { return ACTIONS.has(action); }
-
   async execute(context: TaskExecutionContext, action: string, args: Record<string, JsonValue>): Promise<TaskResult> {
     if (!this.handles(action)) throw new TaskError('PROCESSING_ACTION', '未登记的处理会话动作。');
     const origin = this.options.origin(context.task.id);
@@ -139,9 +140,7 @@ export class ConversationProcessingBridge {
       throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
     this.options.companion.bd!.assertDispatch();
     context.signal.throwIfAborted();
-    // 处理计划桥不向模型发送完整行，但仍须由受控上下文确认本次结果可发送给当前模型。
-    // 这一步只建立模型分享回执，不替处理步骤或数据库提交授权，也不扩大文件权限。
-    // 适配写入/权限动作保留审核；只读查看仍为自动，沿用同一受信上下文。
+    // 模型分享回执不替代处理步骤或数据库提交授权，也不扩大文件权限。
     const authority = await acquireAuthority(context, action, args, [],
       action.startsWith('data.adapters.') && action !== 'data.adapters.capabilities' ? { approvalMode: 'review' } : {});
     authority.assert();
@@ -235,36 +234,44 @@ export class ConversationProcessingBridge {
         ? args.wfdRefJson : null;
       const rawSourceQuery = moduleAction.id === 'semantics' && typeof args.sourceQueryJson === 'string' && args.sourceQueryJson.trim()
         ? args.sourceQueryJson.trim() : null;
-      if (rawSourceQuery && (rawReference || args.groupId || args.planId || args.stepId))
-        throw new TaskError('PRODUCTION_SEMANTIC_SOURCE_QUERY', 'G5 来源语义读取不能与模板分组、WFD 产品读取或加工步骤同时提交；逐项核对后由 AGENTS 决定下一步。');
+      const hasTemplateSelection = typeof args.groupId === 'string' && !!args.groupId.trim();
+      if (moduleAction.id === 'semantics'
+        && [!!rawSourceQuery, !!rawReference, hasTemplateSelection].filter(Boolean).length > 1)
+        throw new TaskError('PRODUCTION_SEMANTIC_SOURCE_QUERY', '语义词典每次只选择模板、来源档案或固定正式定义中的一种；结果返回AGENTS后再决定下一步。');
+      if (rawSourceQuery && (args.planId || args.stepId))
+        throw new TaskError('PRODUCTION_SEMANTIC_SOURCE_QUERY', '语义词典来源读取不能与加工步骤同时提交。');
       let wfdPage: unknown = null, selection: unknown = null;
       if (rawReference) {
         if (args.planId || args.stepId) throw new TaskError('PRODUCTION_MODULE_MODE',
           'WFD只读分页不能与原处理步骤执行同时提交；先分别核验来源与加工计划。');
-        const read = this.options.companion.r1Workspace?.readProduct;
-        if (!read) throw new TaskError('PRODUCTION_MODULE_WFD_UNAVAILABLE', '真实WFD只读端口尚未装配。');
         let wfdRef: unknown;
         try { wfdRef = JSON.parse(rawReference); }
         catch { throw new TaskError('PRODUCTION_MODULE_WFD_REFERENCE', '固定WFD来源引用必须为合法JSON。'); }
         selection = wfdRef;
-        wfdPage = await readWfdModulePage(
-          moduleAction.id as Exclude<typeof moduleAction.id, 'calculate'>, wfdRef,
-          read.bind(this.options.companion.r1Workspace), context.signal);
-        authority.assert();
+        // 词典请求只需要正式定义；不顺带读取值数据页，也不要求模板先加载成功。
+        if (moduleAction.id !== 'semantics') {
+          const read = this.options.companion.r1Workspace?.readProduct;
+          if (!read) throw new TaskError('PRODUCTION_MODULE_WFD_UNAVAILABLE', '真实WFD只读端口尚未装配。');
+          wfdPage = await readWfdModulePage(
+            moduleAction.id as Exclude<typeof moduleAction.id, 'calculate'>, wfdRef,
+            read.bind(this.options.companion.r1Workspace), context.signal);
+          authority.assert();
+        }
       }
       if (moduleAction.id === 'factors' || moduleAction.id === 'semantics') {
         if (args.planId || args.stepId) throw new TaskError('PRODUCTION_MODULE_MODE',
-          '因子库与语义词典只读，不执行原报五步计划。');
+          '因子库与语义词典只读，不执行原报加工计划。');
         const catalog = moduleAction.id === 'factors'
           ? factorLibraryView(typeof args.factorId === 'string' && args.factorId.trim()
             ? args.factorId.trim() : undefined)
-          : semanticDictionaryView(typeof args.groupId === 'string' && args.groupId.trim()
-            ? args.groupId.trim() : undefined);
+          : rawSourceQuery || selection ? null
+            : semanticDictionaryView(typeof args.groupId === 'string' && args.groupId.trim()
+              ? args.groupId.trim() : undefined);
         let sourceSemantics: unknown = null;
         if (rawSourceQuery) {
           let query: unknown;
           try { query = JSON.parse(rawSourceQuery); }
-          catch { throw new TaskError('PRODUCTION_SEMANTIC_SOURCE_QUERY', 'G5 来源字段查询必须为合法 JSON；不接受直接配置正文或路径。'); }
+          catch { throw new TaskError('PRODUCTION_SEMANTIC_SOURCE_QUERY', '语义词典来源查询必须为合法 JSON；不接受直接配置正文或路径。'); }
           sourceSemantics = sourceSemanticView(query, { profiles: this.options.companion.sourceFieldProfiles,
             products: this.options.companion.semanticProducts });
         }
@@ -279,12 +286,12 @@ export class ConversationProcessingBridge {
         }
         authority.assert();
         return { summary: sourceSemantics
-          ? 'G5 已按指定来源身份只读核对字段档案与跨来源语义；缺口保留，不采用定义、不合并数据或写入 WFD。'
+          ? '语义词典已只读核对指定来源档案、请求适用条件与跨来源差异；缺口保留，不采用定义、不合并数据或写入WFD。'
           : publishedDefinition
-            ? '语义模板与 WFD 固定快照正式定义已分开读取；没有计算、自动标注或变更 WFD。'
+            ? '语义词典已读取WFD固定快照正式定义；没有附带查询模板或读取值数据，没有计算、标注或发布。'
             : moduleAction.title + '已按需读取受信登记或仅供参考的模板；没有计算或变更WFD。',
-          data: view({ module: moduleAction.id, catalog, wfdPage, publishedDefinition, sourceSemantics,
-            publication: 'not_requested' }) };
+          data: view({ module: moduleAction.id, displayName: moduleAction.title, catalog, wfdPage, publishedDefinition, sourceSemantics,
+            returnTo: 'agents', execution: 'not_requested', adoption: 'not_granted', publication: 'not_requested' }) };
       }
       const stage = stepModuleForAction(action);
       if (!stage) throw new TaskError('PRODUCTION_MODULE_KIND', '此动作不是受信加工模块。');
@@ -396,7 +403,6 @@ export class ConversationProcessingBridge {
       const done = await this.wait(context, task.id);
       return this.taskResult('已核对原计划持久产物；没有重跑已完成步骤。', done, this.safePlan(planId));
     }
-    // 查询：优先 planId；其次 taskId；再次该分支最近一次材料路由决定。
     const taskId = typeof args.taskId === 'string' && args.taskId ? args.taskId : null;
     const materialId = typeof args.materialId === 'string' && args.materialId ? args.materialId : null;
     if (taskId) this.assertTaskLink(taskId, origin);
@@ -409,17 +415,13 @@ export class ConversationProcessingBridge {
     return { summary: '已读取原处理计划与步骤事实；查询未触发重算。', data: view(this.planPreview(found, { query: true })) };
   }
 
-  /**
-   * 端点适配受控工具：查看、候选、重放只走会话分支材料；采用必须持有真实审批回执，
-   * 并在批准后再次核对同一适配编号、版本、配置摘要与重放证据摘要。
-   */
+  /** 端点采用必须持有真实审批回执，并在批准后核对相同配置与证据摘要。 */
   private async executeAdapter(context: TaskExecutionContext, action: string, args: Record<string, JsonValue>,
     origin: ModelTaskOrigin, authority: Awaited<ReturnType<typeof acquireAuthority>>): Promise<TaskResult> {
     const registry = this.options.companion.endpointAdapters;
     if (!registry) throw new TaskError('ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记。');
     const operator = this.operator(origin, context.task.id);
     if (action === 'data.adapters.capabilities') {
-      // 异常查看守会话分支边界：只返回本分支已保管材料的异常，其他材料只给计数，不含编号或错误内容。
       const linked = new Set(this.linkedMaterialIds(origin));
       const all = registry.exceptions(100) as unknown as { items: { materialId: string | null; message: string; code: string }[]; limit: number };
       const visible = all.items.filter(item => item.materialId !== null && linked.has(item.materialId));
@@ -440,7 +442,6 @@ export class ConversationProcessingBridge {
       let samples: unknown;
       try { samples = JSON.parse(String(args.samplesJson)); } catch { throw new TaskError('ADAPTER_REPLAY', '样本数组不是有效 JSON。'); }
       if (!Array.isArray(samples) || !samples.length) throw new TaskError('ADAPTER_REPLAY', '重放须提供明确样本数组。');
-      // 每个样本的原件必须属于本会话分支；不能借其他会话或任意材料编号重放。
       for (const sample of samples) {
         if (!isWfdRecord(sample) || typeof sample.materialId !== 'string') throw new TaskError('ADAPTER_REPLAY', '样本须明确引用本分支材料编号。');
         this.assertMaterial(sample.materialId, origin);
@@ -450,7 +451,6 @@ export class ConversationProcessingBridge {
         data: view(result) };
     }
     if (action === 'data.adapters.adopt') {
-      // 复用外层同一授权：未批准时已在 requestApproval 处等待或拒绝，不会落到采用写入。
       authority.assert();
       if (!authority.approvalId) throw new TaskError('ADAPTER_ADOPTION_AUTHORITY', '适配采用须有本机真实审批回执；模型不能自授权。');
       const adapterId = String(args.adapterId ?? ''), version = String(args.version ?? ''), configDigest = String(args.configDigest ?? '');
@@ -461,7 +461,6 @@ export class ConversationProcessingBridge {
       const adopted = registry.adopt({ adapterId, version, configDigest, evidenceDigest: String(args.evidenceDigest ?? ''),
         confirmationDigest: String(args.confirmationDigest ?? '') }, { operatorId: 'approval.' + authority.approvalId,
         requestId: 'approval:' + authority.approvalId, method: 'POST', path: '/model/approval', remoteAddress: null, observedAt: Date.now() });
-      // 批准与采用之间登记被改写时，本次采用无效。
       authority.assert();
       const after = (registry.list(adapterId) as unknown as AdapterRow[]).find(row => row.version === version);
       if (!after || after.status !== 'adopted' || after.configDigest !== configDigest)
@@ -506,7 +505,6 @@ export class ConversationProcessingBridge {
     }
     return result.reverse();
   }
-  /** 本分支已保管材料编号；用于异常与重放的分支边界。 */
   private linkedMaterialIds(origin: ModelTaskOrigin): string[] {
     const rows = this.options.database.connection.prepare(`SELECT material_id FROM conversation_material_links
       WHERE origin_json LIKE ? AND material_id IS NOT NULL`).all(`%"conversationId":"${origin.conversationId}"%"branchId":"${origin.branchId}"%`) as { material_id: string }[];
@@ -564,7 +562,6 @@ export class ConversationProcessingBridge {
       }),
       guidance: '先依据真实材料和用户目的选择模块，数据类型或格式只影响解析器，不触发固定五步。无须处理可用stages:[]；若要解析原件，首次只选stages:["parse"]；每个模块执行后读取stepFeedback并回到AGENTS，再按真实产物修订计划，每轮至多增加一个模块，或选择停止。新计划不得使用data.processing.run。六维未知保留缺口，用户目的必须引用真实用户原话；结构核对不等于业务语义、来源或发布资格已获确认。' };
   }
-  /** 从已持久的解析步骤读取有界真实反馈；不把原值样本当成已清洗或语义确认。 */
   private parsedPreview(planId: string, stepId: string): JsonValue {
     const artifact = this.options.companion.processing!.artifact(planId, stepId);
     let raw: unknown;
@@ -589,7 +586,6 @@ export class ConversationProcessingBridge {
       nextDecision: 'AGENTS must inspect this evidence, decide required modules, revise the original plan, and execute only one selected step.' });
   }
 
-  /** 每个模块完成后的有界反馈；只读取当前步骤已冻结的产物，不预测下个步骤。 */
   private stageFeedback(planId: string, stepId: string): JsonValue {
     const service = this.options.companion.processing!;
     const step = service.get(planId).steps.find(item => item.stepId === stepId);
@@ -597,13 +593,11 @@ export class ConversationProcessingBridge {
     if (step.state !== 'succeeded') return json({ kind: 'module_feedback', planId, stepId, state: step.state,
       gaps: step.gaps, nextDecision: 'AGENTS must first inspect the actual pending, blocked or failed step status.' });
     if (step.kind === 'parse') return this.parsedPreview(planId, stepId);
-
     let artifact: unknown;
     try { artifact = JSON.parse(service.artifact(planId, stepId).bytes.toString('utf8')); }
     catch { throw new TaskError('PROCESSING_STEP_EVIDENCE', '完成步骤的持久产物不是有效 JSON，禁止据此继续流程。'); }
     if (!isWfdRecord(artifact)) throw new TaskError('PROCESSING_STEP_EVIDENCE',
       '完成步骤的产物结构无效，禁止以完成状态代替真实产物核对。');
-
     const rows = Array.isArray(artifact.rows) ? artifact.rows : [];
     const columns = Array.isArray(artifact.columns)
       ? artifact.columns.filter((value): value is string => typeof value === 'string')
@@ -627,7 +621,6 @@ export class ConversationProcessingBridge {
       dataQuality: 'requires_contextual_review', publication: 'not_requested',
       nextDecision: 'AGENTS must inspect this module result, then choose the next necessary module or stop; no automatic five-stage chain.' });
   }
-
   private taskResult(summary: string, task: TaskRecord, found: unknown): TaskResult {
     if (task.status !== 'succeeded') return { summary: `${summary} 原任务状态：${task.status}。`,
       data: view({ taskId: task.id, status: task.status, error: task.error ?? null, plan: found ?? null }) };

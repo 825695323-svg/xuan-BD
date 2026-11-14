@@ -59,6 +59,7 @@ try {
     const files = pipelineOnly
       ? ['modules/collection/source-field-profile.test.ts',
         'modules/collection/source-reported-table.test.ts',
+        'modules/collection/semantic-dictionary-framework.test.ts',
         'apps/server/endpoint-adapter-chain.test.ts',
         'apps/server/endpoint-adapter-r1.test.ts']
       : [...['modules/collection', 'modules/collection/data-processing', 'apps/server', 'platform/config', 'platform/resources',
