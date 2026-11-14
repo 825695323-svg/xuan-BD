@@ -158,6 +158,7 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
       fieldMapping?: Record<string, string>, sourceContext?: Record<string, unknown>) => ({
       routing: { materials: [{ materialId }] },
       outputs: [{ outputId, materialIds: [materialId], intendedAction: 'inspect',
+        stages: ['parse', 'structure', 'check'],
         tables: [{ materialId, format: 'json', sourceAdapter: binding, ...(fieldMapping ? { fieldMapping } : {}),
           ...(sourceContext ? { sourceContext } : {}) }] }],
     });
@@ -176,8 +177,19 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
       const planned = await host.settled(prepared.jobId);
       assert.equal(planned.status, 'succeeded', JSON.stringify(planned.error));
       const planId = host.services.processing!.getByTask(planned.id)!.plan!.planId;
-      const started = await host.call(`/processing/plans/${planId}/run`, { requestId: `${requestId}-run` }, 202);
-      const done = await host.settled(started.jobId);
+      // 一个模块一个真实 TaskService 任务，逐步读回；不调用历史批量执行入口。
+      const declared = host.services.processing!.get(planId).steps;
+      let done = planned;
+      for (const kind of ['parse', 'structure', 'check']) {
+        const step = declared.find(item => item.kind === kind)!;
+        const started = await host.call(`/processing/plans/${planId}/steps/${step.stepId}/execute`,
+          { requestId: `${requestId}-${kind}` }, 202);
+        done = await host.settled(started.jobId);
+        const current = host.services.processing!.get(planId).steps.find(item => item.stepId === step.stepId)!;
+        if (done.status !== 'succeeded') break;
+        assert.equal(current.state, 'succeeded', `模块 ${kind} 未完成，不得推进下一模块`);
+        assert.equal(current.outputDigest?.length, 64, `模块 ${kind} 未持久化实际产物`);
+      }
       return { planId, done, plan: host.services.processing!.get(planId) };
     };
 
