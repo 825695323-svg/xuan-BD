@@ -12,7 +12,7 @@ import type { AuthorizationReceipt } from '../../platform/security/permissions.j
 import { CoreDatabase } from '../../platform/state/database.js';
 import { publicKlineProviders } from './public-kline.js';
 import { createSourceRuntime } from './runtime.js';
-import { sourceOperations } from './operations.js';
+import { sourceCandidateFeedback, sourceOperations } from './operations.js';
 import { thsSource } from './providers/ths/api.js';
 
 const providerBase = (id: 'eastmoney' | 'sina' | 'tencent'): string => publicKlineProviders.find(item => item.id === id)!.baseUrl;
@@ -144,4 +144,52 @@ test('主源与历史备用资格共用校验，停用、显式空备用、市�
     settings.update({ ...current, plugins: current.plugins.map(plugin => plugin.id === 'tdx' ? { ...plugin, enabled: false } : plugin) });
     assert.equal(outcome(() => settings.assertOperationFallbackEnabled('tdx-primary', 'CN/A_STOCK', 'minute_bars')).code, 'SOURCE_DISABLED');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test('one logical source request retains actual provider evidence without asserting completeness or WFD adoption', () => {
+  const base = {
+    scopeId: 'CN/A_STOCK', operationId: 'daily_bars' as const,
+    acquiredAtUtc: '2026-11-14T00:00:00Z', subjectId: '600519.SH',
+    start: '2026-01-01', end: '2026-01-31', adjustment: 'none',
+    rowCount: 3, actualStart: '2026-01-05', actualEnd: '2026-01-07',
+    originals: [{ fileRefId: 'current-source-file', sha256: 'a'.repeat(64) }],
+  };
+  const eastmoney = sourceCandidateFeedback({ ...base, providerId: 'eastmoney', connectionId: 'primary' });
+  const tencent = sourceCandidateFeedback({ ...base, providerId: 'tencent', connectionId: 'secondary' });
+  assert.deepEqual(eastmoney.logicalRequest, tencent.logicalRequest,
+    'Logical request is not provider ID or transport version');
+  assert.notDeepEqual(eastmoney.actualSource, tencent.actualSource,
+    'Independent acquisition and provider evidence must not be collapsed');
+  assert.equal(eastmoney.contract, 'bd.source-candidate-feedback/1');
+  assert.equal(eastmoney.observation.state, 'rows_observed');
+  assert.equal(eastmoney.coverage.completeness, 'not_established',
+    'Three observed rows are not proof of all expected trading days');
+  assert.equal(eastmoney.semanticStatus, 'not_verified');
+  assert.equal(eastmoney.publication, 'not_requested');
+  assert.equal(eastmoney.next, 'return_to_agents');
+  assert.equal(eastmoney.evidence.originalRefs[0]!.sha256, 'a'.repeat(64));
+});
+
+test('empty response, raw-only source, and missing evidence are never reported as success with complete data', () => {
+  const base = { scopeId: 'CN/A_STOCK', operationId: 'daily_bars' as const,
+    providerId: 'eastmoney', connectionId: 'daily-source',
+    acquiredAtUtc: '2026-11-14T00:00:00Z',
+    originals: [{ fileRefId: 'real-original-ref', sha256: 'b'.repeat(64) }],
+  };
+  const empty = sourceCandidateFeedback({ ...base, rowCount: 0 });
+  assert.equal(empty.observation.state, 'empty_unconfirmed');
+  assert.equal(empty.observation.rowCount, 0);
+  assert.equal(empty.coverage.completeness, 'not_established');
+  assert.ok(empty.gaps.some(gap => gap.includes('不能补零')));
+  const raw = sourceCandidateFeedback({ ...base, operationId: 'minute_bars' });
+  assert.equal(raw.observation.state, 'raw_only');
+  assert.equal(raw.observation.rowCount, null);
+  assert.equal(raw.coverage.actualStart, null);
+  assert.throws(() => sourceCandidateFeedback({ ...base, originals: [] }),
+    /SOURCE_CANDIDATE_EVIDENCE/u);
+  assert.throws(() => sourceCandidateFeedback({ ...base, rowCount: -1 }),
+    /SOURCE_CANDIDATE_ROWS/u);
+  assert.throws(() => sourceCandidateFeedback({ ...base, providerId: 'ths', operationId: 'minute_bars' }),
+    /SOURCE_OPERATION_NOT_REGISTERED/u);
 });
