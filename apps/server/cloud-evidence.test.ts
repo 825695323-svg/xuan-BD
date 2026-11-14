@@ -30,12 +30,18 @@ test('HTTP processing evidence freezes full lineage, reuses content and restores
     const materialId = host.services.materials!.getByTask(upload.jobId)!.envelope.materialId;
     const prepared = await host.call('/processing/plans', { requestId: 'evidence-plan', input: {
       routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'evidence', materialIds: [materialId],
-        intendedAction: 'inspect', tables: [{ materialId, format: 'csv', types: { value: 'decimal_string' } }] }],
+        intendedAction: 'inspect', stages: ['parse','structure','check'], tables: [{ materialId, format: 'csv', types: { value: 'decimal_string' } }] }],
     } }, 202);
     assert.equal((await host.settled(prepared.jobId)).status, 'succeeded');
     const planId = host.services.processing!.getByTask(prepared.jobId)!.plan!.planId;
-    const run = await host.call(`/processing/plans/${planId}/run`, { requestId: 'evidence-run' }, 202);
-    const done = await host.settled(run.jobId); assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
+    for (const kind of ['parse','structure','check']) {
+      const step = host.services.processing!.get(planId).steps.find(item => item.kind === kind)!;
+      const execution = await host.call(`/processing/plans/${planId}/steps/${step.stepId}/execute`,
+        { requestId: 'evidence-' + kind }, 202);
+      const done = await host.settled(execution.jobId);
+      assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
+      assert.equal(host.services.processing!.get(planId).steps.find(item => item.stepId === step.stepId)?.state, 'succeeded');
+    }
     const available = await host.call('/cloud-custody/materials/' + materialId);
     const evidence = available.evidenceSources.find((x: any) => x.source.kind === 'processing');
     assert.equal(evidence.available, true, JSON.stringify(available));
