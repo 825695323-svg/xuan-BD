@@ -17,7 +17,7 @@ import { readTdxMinutes, tdxAvailability, tdxVersions, type TdxPackageBinding } 
 import { decodePublicDailyBars, normalizePublicDailyRequest, publicKlineProvider, publicKlineProviders, type PublicDailyProviderId, type PublicKlineOperationId } from './public-kline.js';
 import { cacheUrl, parseWerssFeed, readWerssCache, WERSS_CACHE_LIMIT, WERSS_PROJECTION_VERSION } from './providers/werss/cache.js';
 import { runWechatScript, wechatArticleUrl } from './providers/wechat/script.js';
-import { sourceOperationsForAction } from './operations.js';
+import { sourceCandidateFeedback, sourceOperationsForAction } from './operations.js';
 
 const MAX = 2 * 1024 * 1024;
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
@@ -355,15 +355,25 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
                 requestedStart: decoded.requestedStart, requestedEnd: decoded.requestedEnd, actualStart: decoded.actualStart, actualEnd: decoded.actualEnd,
                 recordCount: decoded.recordCount, rawSha256: decoded.rawSha256, database: 'not_submitted', historicalAvailability: 'not_established' } : undefined;
               attempts.push({ connectionId: candidate.id, outcome: 'used' });
+              const candidateFeedback = sourceCandidateFeedback({
+                scopeId, operationId: operation, providerId: candidate.pluginId, connectionId: candidate.id,
+                acquiredAtUtc: result.observedAt, ...(typeof p.symbol === 'string' ? { subjectId: p.symbol } : {}),
+                ...(dailyRequest ? { start: dailyRequest.start, end: dailyRequest.end,
+                  adjustment: dailyRequest.adjustment } : {}),
+                ...(decoded ? { rowCount: decoded.recordCount, actualStart: decoded.actualStart,
+                  actualEnd: decoded.actualEnd } : {}),
+                originals: receipts.map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })),
+              });
               const receipt = { status: 'downloaded', sourceId: candidate.pluginId, connectionId: candidate.id, scopeId, operation, requested: p, observedAt: result.observedAt,
                 actualSource: candidate.id, attempts, sourceReceipts: receipts, sourceConfigurationDigest: context.task.versions.directConfiguration,
-                ...(dailyValidation ? { dailyValidation } : {}) };
+                candidateFeedback, ...(dailyValidation ? { dailyValidation } : {}) };
               await publish('receipt.json', JSON.stringify(receipt, null, 2)); await workspace.cleanup();
               saveDownload(candidate.id, true, dailyValidation ? '不复权日线原件与业务字段已核对；历史可得性、完整覆盖及数据库准入须由后续契约核对。'
                 : `已下载${operation === 'minute_bars' ? '分钟K线' : '日线'}原始响应。`, downloadIdentity);
               return { summary: '公开K线原始响应下载完成。', artifactIds: artifacts,
                 data: { ...receipt, modelPreview: { status: 'downloaded', sourceId: candidate.pluginId, connectionId: candidate.id, operation,
-                  observedAt: result.observedAt, sourceReceipts: receipts, artifactIds: artifacts, ...(dailyValidation ? { dailyValidation } : {}) } } as unknown as JsonValue };
+                  observedAt: result.observedAt, sourceReceipts: receipts, artifactIds: artifacts,
+                  candidateFeedback, ...(dailyValidation ? { dailyValidation } : {}) } } as unknown as JsonValue };
             } catch (error) {
               if (context.signal.aborted || error instanceof DirectError && (error.unknown || error.code === 'SOURCE_RATE_LIMITED')) throw error;
               saveDownload(candidate.id, false, safeFailure(error), downloadIdentity);
@@ -396,13 +406,20 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
               if (value.code === 4001) throw new DirectError('SOURCE_RATE_LIMITED', '来源触发code 4001限流；本任务停止，不立即重试或切换同账号别名。');
               if (value.code !== 0) throw new DirectError('SOURCE_BUSINESS_ERROR', `来源业务状态code ${String(value.code ?? 'unknown')}，未将响应当作成功数据。`);
               attempts.push({ connectionId: candidate.id, outcome: 'used' });
+              const candidateFeedback = sourceCandidateFeedback({
+                scopeId, operationId: operation, providerId: candidate.pluginId, connectionId: candidate.id,
+                acquiredAtUtc: result.observedAt, ...(typeof p.symbol === 'string' ? { subjectId: p.symbol } : {}),
+                originals: receipts.map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })),
+              });
               const receipt = { status: 'downloaded', sourceId: candidate.pluginId, connectionId: candidate.id, scopeId, operation: args.operation, requested: p, observedAt: result.observedAt,
-                actualSource: candidate.id, attempts, sourceReceipts: receipts, sourceConfigurationDigest: context.task.versions.directConfiguration };
+                actualSource: candidate.id, attempts, sourceReceipts: receipts, sourceConfigurationDigest: context.task.versions.directConfiguration,
+                candidateFeedback };
               await publish('receipt.json', JSON.stringify(receipt, null, 2)); await workspace.cleanup();
               saveDownload(candidate.id, true, `已下载${String(args.operation)}原始响应。`, downloadIdentity);
               return { summary: '接口原始响应下载完成。', artifactIds: artifacts,
                 data: { ...receipt, modelPreview: { status: 'downloaded', sourceId: candidate.pluginId, connectionId: candidate.id, operation: args.operation,
-                  observedAt: result.observedAt, sourceReceipts: receipts, artifactIds: artifacts } } as unknown as JsonValue };
+                  observedAt: result.observedAt, sourceReceipts: receipts, artifactIds: artifacts,
+                  candidateFeedback } } as unknown as JsonValue };
             } catch (error) {
               if (context.signal.aborted || error instanceof DirectError && (error.unknown || error.code === 'SOURCE_RATE_LIMITED')) throw error;
               saveDownload(candidate.id, false, safeFailure(error), downloadIdentity);
