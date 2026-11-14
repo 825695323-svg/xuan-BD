@@ -156,3 +156,27 @@ test('semantic product registry distinguishes absent config from corrupt config'
     assert.equal(store.datasetFor('0'.repeat(64)), null, '合法登记中未命中的指纹仍是 null');
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+
+test('new source-field profiles do not require adapter version, supersedes chain or mapping revision', () => {
+  const current = { ...sample() } as Partial<SourceFieldProfile>;
+  delete current.mappingVersion;
+  const accepted = readSourceFieldProfile(current, 'current.json');
+  assert.equal(Object.hasOwn(accepted, 'mappingVersion'), false);
+  assert.equal(accepted.adapter, undefined);
+  assert.equal(accepted.supersedes, undefined);
+  assert.equal(profileFingerprint(accepted), profileFingerprint(sample()),
+    'Business semantics remain identical across a removed historical mapping revision');
+});
+
+test('profile directory permission/shape errors must not be mistaken for missing profiles', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bd-profile-readable-'));
+  const file = join(root, 'not-a-directory');
+  try {
+    writeFileSync(file, 'ordinary file');
+    assert.throws(() => new SourceFieldProfileStore(file).list(), (error: unknown) =>
+      typeof error === 'object' && error !== null && 'code' in error
+      && error.code === 'SOURCE_FIELD_PROFILE_READ');
+    assert.deepEqual(new SourceFieldProfileStore(join(root, 'absent')).list(), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

@@ -1,6 +1,5 @@
 {
   "version": "bd.source-field-profile/1",
-  "mappingVersion": 1,
   "profileId": "synthetic.daily.current",
   "sourceId": "synthetic-market-a",
   "series": "daily.bars",
