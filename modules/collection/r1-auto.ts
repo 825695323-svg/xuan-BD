@@ -5,7 +5,7 @@ import type { CoreDatabase } from '../../platform/state/database.js';
 import type { MaterialService } from './materials/service.js';
 import { readXlsxTableSelection, type XlsxTableSelection } from './data-processing/xlsx-table.js';
 import { DIMENSION_KEYS } from './processing-routing.js';
-import type { OperatorContext, ProcessingDimensionInput, ProcessingPlanInput, ProcessingPlanService } from './processing-plan.js';
+import type { OperatorContext, ProcessingDimensionInput, ProcessingPlanInput, ProcessingPlanService, ProcessingStepKind } from './processing-plan.js';
 import { declaredSourceSeries, resolveR1Evidence, type R1EvidenceFact, type R1EvidenceProposal, type R1EvidenceQuestion } from './r1-evidence.js';
 import { profileFingerprint, sourceFieldProfileDigest, type FrozenSourceFieldProfile, type SourceFieldProfileStore,
   type SemanticProductRegistryStore } from './source-field-profile.js';
@@ -38,7 +38,8 @@ export interface R1AutoView {
 }
 interface Revision {
   proposal: R1EvidenceProposal; evidenceSha256: string; planTaskId: string | null; planId: string | null;
-  runTaskId: string | null; handoffRequestId: string | null;
+  /** New requests track each selected module task; runTaskId is read-only historic batch recovery. */
+  runTaskId: string | null; moduleTaskIds?: Record<string, string>; handoffRequestId: string | null;
 }
 interface AutoRecord {
   selectedKeyReplacement?: true;
@@ -328,14 +329,35 @@ export class R1AutoService {
     }
     if (!await this.localTask(item, revision.planTaskId, explicit)) return;
     revision.planId = this.options.processing.getByTask(revision.planTaskId)?.plan?.planId ?? fail('R1_AUTO_PLAN_MISSING', '原计划任务完成但没有持久计划。');
-    if (!revision.runTaskId) {
-      this.assertActive(item);
-      revision.runTaskId = this.options.processing.runPlan(revision.planId, this.operator(item, 'run')).id; this.save(item);
+    const selectedPlan = this.options.processing.get(revision.planId);
+    if (revision.runTaskId || selectedPlan.outputs.some(output => output.stages === null)) {
+      // 历史冻结计划的恢复入口：只能继续当年真实存在的未分阶段任务，不再生成新批量计划。
+      if (!revision.runTaskId) {
+        this.assertActive(item);
+        revision.runTaskId = this.options.processing.runPlan(revision.planId, this.operator(item, 'run')).id; this.save(item);
+      }
+      if (!await this.localTask(item, revision.runTaskId, explicit)) return;
+    } else {
+      // 新 R1 交接按正式输出合同声明必要模块；每一个都走独立 TaskService 任务和持久步骤读回。
+      const moduleTasks = revision.moduleTaskIds ??= {};
+      for (const step of selectedPlan.steps) {
+        if (step.state === 'succeeded') continue;
+        let taskId = moduleTasks[step.stepId];
+        if (!taskId) {
+          this.assertActive(item);
+          const task = this.options.processing.executeStep(revision.planId, step.stepId,
+            this.operator(item, 'module-' + step.stepId));
+          moduleTasks[step.stepId] = task.id; this.save(item); return;
+        }
+        if (!await this.localTask(item, taskId, explicit)) return;
+        const persisted = this.options.processing.get(revision.planId).steps.find(saved => saved.stepId === step.stepId);
+        if (persisted?.state !== 'succeeded')
+          fail('R1_AUTO_STEP_INCOMPLETE', '独立模块没有保存可核的完成产物，禁止继续交接。');
+      }
     }
-    if (!await this.localTask(item, revision.runTaskId, explicit)) return;
     const output = this.options.processing.get(revision.planId).outputs[0];
     if (!output?.publishEligible) {
-      item.localReturn = { code: 'R1_AUTO_PROCESSING_RETURN', message: output?.gaps.join('；') || '实际五步产物尚未具备发布资格。',
+      item.localReturn = { code: 'R1_AUTO_PROCESSING_RETURN', message: output?.gaps.join('；') || '已选择的处理模块尚未形成符合发布合同的候选产物。',
         scope: 'processing', snapshotId: item.snapshot.snapshotId };
       this.save(item);
       fail('R1_AUTO_PROCESSING_RETURN', item.localReturn.message);
@@ -486,8 +508,13 @@ export class R1AutoService {
         : fail('R1_AUTO_DIMENSION_EVIDENCE', `原件中的 ${fact.key} 证据没有可核定位，未改写为操作者声明。`);
       return [key, { status: 'known', value: proposal.dimensions[key], evidence }];
     })) as Record<typeof DIMENSION_KEYS[number], ProcessingDimensionInput>;
+    // R1 正式交接需要可核结构产物：parse/structure/check 是本输出合同的必要能力，
+    // 清洗与标注只在本件确有明确规则时加入，不依据行情、事件、财报等数据类型指定固定五步。
+    const stages: ProcessingStepKind[] = ['parse',
+      ...(proposal.emptyToNull?.length ? ['clean' as const] : []),
+      'structure', ...(Object.keys(proposal.annotations ?? {}).length ? ['annotate' as const] : []), 'check'];
     return { routing: { materials: [{ materialId: item.input.materialId, dimensions, intendedAction: 'publish' }] },
-      outputs: [{ outputId: 'observations', materialIds: [item.input.materialId], intendedAction: 'publish',
+      outputs: [{ outputId: 'observations', materialIds: [item.input.materialId], intendedAction: 'publish', stages,
         tables: [{ materialId: item.input.materialId, format: proposal.format, types: proposal.types,
           ...(item.adapter ? { sourceAdapter: { adapterId: item.adapter.adapterId, version: item.adapter.version,
             configDigest: item.adapter.configDigest }, ...(item.input.sourceContext === undefined ? {} : { sourceContext: item.input.sourceContext }),
@@ -569,6 +596,7 @@ export class R1AutoService {
     if (this.tasks.getControl().generation !== item.controlGeneration) fail('BD_STOPPED', '原自动请求接受后停止代次已变化，请明确继续原请求。');
   }
   private taskIds(item: AutoRecord): string[] { return item.revisions.flatMap(revision => [revision.planTaskId, revision.runTaskId,
+    ...Object.values(revision.moduleTaskIds ?? {}),
     revision.handoffRequestId ? this.options.workspace.get(revision.handoffRequestId).submitTaskId : null]).filter((value): value is string => value !== null); }
   private records(activeOnly = false): AutoRecord[] { return this.db.prepare(`SELECT record_json FROM r1_auto_requests
     ${activeOnly ? "WHERE json_extract(record_json,'$.state') IN ('inspecting','processing','submitting','recovering')" : ''}
