@@ -127,6 +127,20 @@ function input(requestId: string, planId: string, parent: string | null = null):
           time: { period_type: 'natural', frequency: 'day', interval: 'closed' }, statistical: { price_basis: 'nominal', period_aggregation: 'period' } } },
       inputMode: 'partial_observation', coverage: { scope: { sample_only: true }, basis: 'observed_partial', completeness: 'partial', absence_means: 'unknown' } } };
 }
+/** Test-only driver: explicit module selection, one real task and persisted readback per module. */
+async function executeSelectedPlan(h: Awaited<ReturnType<typeof host>>, planId: string, requestId: string) {
+  for (const kind of ['parse','structure','check']) {
+    const step = h.services.processing!.get(planId).steps.find(item => item.kind === kind)!;
+    assert.ok(step, 'Declared module absent: ' + kind);
+    const execution = await h.call(`/processing/plans/${planId}/steps/${step.stepId}/execute`,
+      { requestId: requestId + '-' + kind }, 202);
+    const done = await settled(h, execution.jobId);
+    assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
+    const persisted = h.services.processing!.get(planId).steps.find(item => item.stepId === step.stepId)!;
+    assert.equal(persisted.state, 'succeeded');
+    assert.ok(persisted.outputDigest, 'Module output must be persisted before next selection');
+  }
+}
 async function actualPlan(h: Awaited<ReturnType<typeof host>>, requestId: string, parent: string | null = null, purposeKnown = true, csv = raw) {
   const upload = await fetch(h.base + `/materials/upload?requestId=${requestId}-upload&name=fixture.csv&category=data`, {
     method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'x-mashiro-client': 'web' }, body: Buffer.from(csv.toString('utf8').replaceAll('row-', `${requestId}-row-`)) });
@@ -141,13 +155,13 @@ async function actualPlan(h: Awaited<ReturnType<typeof host>>, requestId: string
   const planned = await h.call('/processing/plans', { requestId: requestId + '-plan', input: {
     routing: { materials: [{ materialId: material.envelope.materialId, dimensions, intendedAction: 'publish' }] },
     outputs: [{ outputId: 'scalar', materialIds: [material.envelope.materialId], intendedAction: 'publish',
+      stages: ['parse','structure','check'],
       tables: [{ materialId: material.envelope.materialId, format: 'csv', types: { value_decimal: 'decimal_string' } }],
       target: { declaration: { protocol: 'wfd.structured-ingest/1.0', target: draft.target, mapping: draft.mapping }, expectedSnapshotId: parent } }],
   } }, 202);
   const planTask = await settled(h, planned.jobId); assert.equal(planTask.status, 'succeeded', JSON.stringify(planTask.error));
   const planId = h.services.processing!.getByTask(planTask.id)!.plan!.planId;
-  const run = await h.call(`/processing/plans/${planId}/run`, { requestId: requestId + '-run' }, 202);
-  const runTask = await settled(h, run.jobId); assert.equal(runTask.status, 'succeeded', JSON.stringify(runTask.error));
+  await executeSelectedPlan(h, planId, requestId);
   const plan = h.services.processing!.get(planId);
   assert.equal(plan.version, 'bd-processing-plan/1', 'Processing version must come from the persisted frozen document');
   assert.equal(plan.outputs[0]!.publishEligible, purposeKnown, JSON.stringify(plan.outputs[0]));
@@ -636,13 +650,13 @@ async function barPlan(h: Awaited<ReturnType<typeof host>>, draft: R1PrepareInpu
   const task = await h.call('/processing/plans', { requestId: draft.requestId + '-plan', input: {
     routing: { materials: [{ materialId: material.envelope.materialId, dimensions, intendedAction: 'publish' }] },
     outputs: [{ outputId: draft.outputId, materialIds: [material.envelope.materialId], intendedAction: 'publish',
+      stages: ['parse','structure','check'],
       tables: [{ materialId: material.envelope.materialId, format: 'csv', types: Object.fromEntries(['open','high','low','close','volume','amount'].map(key => [key, 'decimal_string'])) }],
       target: { declaration: { protocol: 'wfd.structured-ingest/1.0', target: draft.target, mapping: draft.mapping, source: draft.source }, expectedSnapshotId: draft.target.expectedParentSnapshotId } }],
   } }, 202);
   const planned = await settled(h, task.jobId); assert.equal(planned.status, 'succeeded', JSON.stringify(planned.error));
   const planId = h.services.processing!.getByTask(planned.id)!.plan!.planId;
-  const run = await h.call(`/processing/plans/${planId}/run`, { requestId: draft.requestId + '-run' }, 202);
-  const completed = await settled(h, run.jobId); assert.equal(completed.status, 'succeeded', JSON.stringify(completed.error));
+  await executeSelectedPlan(h, planId, draft.requestId);
   return { input: { ...draft, planId }, plan: h.services.processing!.get(planId) };
 }
 
@@ -665,14 +679,14 @@ async function explicitTablePlan(h: Awaited<ReturnType<typeof host>>, draft: R1P
   const created = await h.call('/processing/plans', { requestId: draft.requestId + '-plan', input: {
     routing: { materials: [{ materialId: material.envelope.materialId, dimensions, intendedAction: 'publish' }] },
     outputs: [{ outputId: draft.outputId, materialIds: [material.envelope.materialId], intendedAction: 'publish',
+      stages: ['parse','structure','check'],
       tables: [{ materialId: material.envelope.materialId, format: 'csv', types }],
       target: { declaration: { protocol: 'wfd.structured-ingest/1.0', target: draft.target, mapping: draft.mapping,
         source: draft.source }, expectedSnapshotId: draft.target.expectedParentSnapshotId } }],
   } }, 202);
   const planned = await settled(h, created.jobId); assert.equal(planned.status, 'succeeded', JSON.stringify(planned.error));
   const planId = h.services.processing!.getByTask(planned.id)!.plan!.planId;
-  const run = await h.call(`/processing/plans/${planId}/run`, { requestId: draft.requestId + '-run' }, 202);
-  const completed = await settled(h, run.jobId); assert.equal(completed.status, 'succeeded', JSON.stringify(completed.error));
+  await executeSelectedPlan(h, planId, draft.requestId);
   return { input: { ...draft, planId }, plan: h.services.processing!.get(planId) };
 }
 
@@ -1320,13 +1334,13 @@ test('data originals preserve full daily/minute custody and every selected raw f
         const planned = await h.call('/processing/plans', { requestId: source.id + '-plan', input: {
           routing: { materials: [{ materialId: material.envelope.materialId, dimensions, intendedAction: 'inspect' }] },
           outputs: [{ outputId: 'selected', materialIds: [material.envelope.materialId], intendedAction: 'inspect',
+      stages: ['parse','structure','check'],
             tables: [{ materialId: material.envelope.materialId, format: 'csv', selection: {
               predicate: { column: source.column, equals: source.equals }, maxSelectedRows: 5000, maxScannedRows: 2_000_000 } }] }],
         } }, 202);
         const accepted = await settled(h, planned.jobId); assert.equal(accepted.status, 'succeeded', JSON.stringify(accepted.error));
         const planId = h.services.processing!.getByTask(accepted.id)!.plan!.planId;
-        const run = await h.call(`/processing/plans/${planId}/run`, { requestId: source.id + '-run' }, 202);
-        const finished = await settled(h, run.jobId); assert.equal(finished.status, 'succeeded', JSON.stringify(finished.error));
+        await executeSelectedPlan(h, planId, source.id);
         const plan = h.services.processing!.get(planId), output = plan.outputs[0]!;
         assert.equal(output.state, 'structured'); assert.equal(output.publishEligible, false); assert.equal(output.routingState, 'needs_review');
         const parseStep = plan.steps.find(step => step.kind === 'parse')!;
@@ -1491,12 +1505,12 @@ test('data financial observed slots preserve original precision through isolated
       const task = await h.call('/processing/plans', { requestId: 'financial-observations-plan', input: {
         routing: { materials: [{ materialId: material.envelope.materialId, dimensions, intendedAction: 'inspect' }] },
         outputs: [{ outputId: 'observed-slots', materialIds: [material.envelope.materialId], intendedAction: 'inspect',
+      stages: ['parse','structure','check'],
           tables: [{ materialId: material.envelope.materialId, format: 'csv', types: { decoded_exact_decimal: 'decimal_string' } }] }],
       } }, 202);
       const created = await settled(h, task.jobId); assert.equal(created.status, 'succeeded');
       const planId = h.services.processing!.getByTask(created.id)!.plan!.planId;
-      const run = await h.call(`/processing/plans/${planId}/run`, { requestId: 'financial-observations-run' }, 202);
-      assert.equal((await settled(h, run.jobId)).status, 'succeeded');
+      await executeSelectedPlan(h, planId, 'financial-observations');
       const plan = h.services.processing!.get(planId), output = plan.outputs[0]!;
       assert.equal(output.state, 'structured'); assert.equal(output.publishEligible, false); assert.equal(output.routingState, 'needs_review');
       const actual = JSON.parse(h.services.processing!.outputArtifact(planId, 'observed-slots').bytes.toString('utf8'));
