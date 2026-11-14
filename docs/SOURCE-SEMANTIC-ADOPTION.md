@@ -44,6 +44,18 @@ flowchart TB
 
 `semantic-products.json` 只登记规范语义指纹到数据集的映射约束，不授予 WFD 产品权限，也不自动合并历史产品。程序不自动删除用户来源配置或正式数据。
 
+### 统一来源候选结果（已接入当前接口源）
+
+继续使用 `sourceOperations`（唯一操作目录）和 `SourceSettingsService.operationCandidates`（现有主备选择）；不复制供应商路由，也不新增独立任务入口。实际 `source.kline.read` 与 `source.api.read` 成功取得原件后，在既有下载回执及 AGENTS 有界预览里补充 `candidateFeedback`：
+
+- `logicalRequest`：市场范围、操作类型及在受控日线确实声明过的证券、时间和复权条件；不含供应商实现版本。
+- `actualSource` 与 `evidence.originalRefs`：实际使用的供应商/连接以及已保管原件引用与 SHA-256；不把两个来源的证据合并。
+- `observation`：`rows_observed`（实际解码到记录）、`empty_unconfirmed`（解析为零行但未证明真空）、`raw_only`（仅有原响应）。后两者不能冒充“确认无数据”或“已支持完整历史”。
+- `coverage`：仅保留实际解码的起止区间，`completeness: not_established`；交易日覆盖、停牌、供应商历史可用范围仍待独立核实。
+- `semanticStatus: not_verified`、`gaps`、`next: return_to_agents` 与 `publication: not_requested`：每次结果交回 AGENTS，按需查语义词典或处理模块；来源下载不会自动发起 WFD 发布。
+
+限流、无权限、失败及不支持历史范围仍依靠原动作的受控错误返回；暂未在所有来源统一为六态结果信封，不能因本次新增字段宣称完整来源覆盖治理已经完成。
+
 ## 语义词典的独立查询模式
 
 稳定入口仍为 `data.modules.semantics`，每次只选择一种模式：
