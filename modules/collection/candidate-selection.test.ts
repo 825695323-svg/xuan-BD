@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CANDIDATE_LIMITS, parseTableSource, cleanCandidateTable, structureCandidateTable, checkCandidateTables, type CandidateTablePlan } from './candidate-pipeline.js';
+import { CANDIDATE_LIMITS, parseTableSource, cleanCandidateTable, structureCandidateTable, annotateCandidateTable, checkCandidateTables, type CandidateTablePlan } from './candidate-pipeline.js';
 import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 
 // 小型合成夹具只核 CSV 结构和选件，不代表真实行情或金融语义验收。
@@ -155,4 +155,23 @@ test('显式表格保留继承属性同名列，不静默改名或遗漏', () =>
     assert.deepEqual(result.rows, [Object.fromEntries(keys.map(key => [key, declared ? '1.23' : '1.2300']))]);
     assert.deepEqual(result.evidence.fields, keys);
   }
+});
+
+test('declared but unselected cleaning and annotations never change checked source values', () => {
+  const options: CandidateTablePlan = { materialId: 'independent-stages', format: 'json',
+    trim: ['value'], emptyToNull: ['empty'], annotations: { constant: 'not-yet-selected' } };
+  const bytes = Buffer.from(JSON.stringify([{ value: '  raw  ', empty: '' }]));
+  const parsed = parseTableSource(bytes, options);
+  const direct = checkCandidateTables([structureCandidateTable(parsed)]);
+  assert.deepEqual(direct.rows, [{ value: '  raw  ', empty: '' }],
+    'A declared rule is not an executed module');
+  const cleaned = cleanCandidateTable(parsed, { trim: options.trim, emptyToNull: options.emptyToNull });
+  const structured = structureCandidateTable(cleaned);
+  const cleanedOnly = checkCandidateTables([structured]);
+  assert.deepEqual(cleanedOnly.rows, [{ value: 'raw', empty: null }],
+    'Cleaning effects appear only when explicitly selected');
+  const annotated = annotateCandidateTable(structured, options.annotations);
+  const withAnnotation = checkCandidateTables([annotated]);
+  assert.deepEqual(withAnnotation.rows, [{ value: 'raw', empty: null, constant: 'not-yet-selected' }],
+    'Annotation appears only after its actual module was selected');
 });
