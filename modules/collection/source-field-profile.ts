@@ -276,9 +276,19 @@ export function readSemanticProductRegistry(value: unknown, name: string): Seman
 }
 export class SemanticProductRegistryStore {
   constructor(private readonly path: string) {}
+  /** 仅当登记文件不存在时才表示未配置；损坏的登记不能被当作空白数据集。 */
   read(): SemanticProductRegistry | null {
-    try { return readSemanticProductRegistry(JSON.parse(readFileSync(this.path, 'utf8')), this.path); }
-    catch { return null; }
+    let content: string;
+    try { content = readFileSync(this.path, 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw new TaskError('SEMANTIC_PRODUCT_REGISTRY_READ',
+        `无法读取语义产品登记 ${this.path}：${error instanceof Error ? error.message : String(error)}`);
+    }
+    let raw: unknown;
+    try { raw = JSON.parse(content); }
+    catch { throw new TaskError('SEMANTIC_PRODUCT_REGISTRY_INVALID', `语义产品登记 ${this.path} 不是有效 JSON。`); }
+    return readSemanticProductRegistry(raw, this.path);
   }
   /** 已登记的正式数据集；未登记返回 null（首次登记由操作者完成，不自动写入）。 */
   datasetFor(fingerprint: string): string | null {
