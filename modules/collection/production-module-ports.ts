@@ -8,14 +8,11 @@ import { ALGORITHM_REGISTRY, ALGORITHM_REGISTRY_VERSION, ALGORITHM_REGISTRY_NOTE
   registryCounts } from '../financial/algorithm-registry.js';
 import { ALGORITHM_DEFINITION_SUMMARY, definitionFor } from '../financial/algorithm-definitions.js';
 import { MATERIAL_CLEANING_RULES_VERSION, MATERIAL_SEMANTIC_PROPOSAL_VERSION } from './materials/semantic-contracts.js';
-import { compareProfileSemantics, profileFingerprint, sourceFieldProfileDigest,
+import { compareProfileSemantics, profileFingerprint, profileSemanticGaps, sourceFieldProfileDigest,
   type SourceFieldProfile, type SourceFieldProfileStore, type SemanticProductRegistryStore,
   type SourceProfileAdapterBinding } from './source-field-profile.js';
 
-/**
- * 八个平行的业务模块端口复用既有处理服务和配置。
- * WFD 输入经同一只读受信读取器，结果不自动冒充已核对的五步加工对象。
- */
+/** 八个平行模块复用现有服务；读取、处理、语义核对和正式发布各守自己的边界。 */
 export const PRODUCTION_MODULE_PORTS_VERSION = 'bd.production-module-ports/2';
 export const PRODUCTION_MODULES = [
   { id: 'parse', action: 'data.modules.parse', title: '解析', source: 'declared_material_or_fixed_wfd' },
@@ -91,7 +88,6 @@ export function productionModuleDirectory(services: {
       methods: [] as unknown[], execution: 'on_demand',
       history: 'original_plan_immutable_or_read_only_wfd_page',
       wfdRead: services.hasWfdReader,
-      // 模块接口无固定前后顺序；实际处理依赖只由AGENTS当前冻结计划中的已选步骤确定。
       dependencies: [] as string[], inputBinding: 'selected_plan_step_artifact' };
   });
   return { version: PRODUCTION_MODULE_PORTS_VERSION, owner: 'bd_service', mode: 'eight_parallel_ports',
@@ -148,12 +144,7 @@ export async function readWfdModulePage(module: ProductionWfdModuleId, raw: unkn
     note: '这是只读的正式 WFD 数据页，不授权跳过既有原报计划的解析/清洗/核对，不自动入库。' };
 }
 
-
-/**
- * Semantic dictionary's authoritative view: published product declarations inside an
- * explicitly pinned WFD snapshot. Templates (semanticDictionaryView) stay separately
- * marked as unadopted reference material and never replace this fixed read.
- */
+/** 正式语义只从指定 WFD 固定快照读取；本地模板不能替代已经采用的产品定义。 */
 export async function readPublishedWfdSemanticDefinition(raw: unknown,
   discover: (input: { snapshotId: string }, signal?: AbortSignal) => Promise<R1ProductDiscovery>,
   signal: AbortSignal) {
@@ -188,7 +179,6 @@ export async function readPublishedWfdSemanticDefinition(raw: unknown,
     note: '正式定义只按原 WFD Snapshot 读取；仅查询，不采用/修订口径，也不触发自动标注或计算。' };
 }
 
-/** 因子库直接读取当前已有登记/公式谱系；登记不能直接赋予计算或 WFD 发布资格。 */
 export function factorLibraryView(factorId?: string) {
   if (factorId !== undefined && (!identifier(factorId) || factorId.length > 128))
     return fail('PRODUCTION_FACTOR_ID', '因子编号格式无效；不能作为动态程序、脚本或表达式。');
@@ -199,15 +189,11 @@ export function factorLibraryView(factorId?: string) {
     designOnly: true, note: ALGORITHM_REGISTRY_NOTE,
     definitions: ALGORITHM_DEFINITION_SUMMARY, counts: registryCounts(),
     total: ALGORITHM_REGISTRY.length, selected: entries.length,
-    items: entries.map(item => ({
-      ...item, definition: definitionFor(item.id) ?? null,
-      publication: 'not_granted_by_library',
-      execution: 'not_granted_by_library',
-    })) };
+    items: entries.map(item => ({ ...item, definition: definitionFor(item.id) ?? null,
+      publication: 'not_granted_by_library', execution: 'not_granted_by_library' })) };
 }
 
-
-/** G5 复用 R1 已有来源档案与产品登记：只读查询和比较，既不修改配置也不授予 WFD 采用权。 */
+/** G5 复用 R1 的来源档案和产品登记；只读比较不授予正式采用权限。 */
 export const G5_SOURCE_SEMANTICS_VERSION = 'bd.g5.source-semantics/1';
 export interface SourceSemanticPorts {
   profiles?: Pick<SourceFieldProfileStore, 'match'>;
@@ -238,7 +224,7 @@ function sourceScope(value: unknown, name: string): SourceScope {
   return { sourceId: record.sourceId as string, series: record.series as string, ...(adapter ? { adapter } : {}) };
 }
 function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceScope, ports: SourceSemanticPorts, fieldCode?: string) {
-  if (!profile) return { status: 'not_registered', scope, gaps: ['指定来源、系列与适配器身份无已确认字段档案；不能使用其他接口的映射。'],
+  if (!profile) return { status: 'not_registered', scope, gaps: ['指定来源和数据系列无已确认字段档案；不借用其他系列的映射。'],
     candidate: '需由受信操作者根据接口文档和保管原件补充来源字段档案；本工具不登记或采用。' };
   const fingerprint = profileFingerprint(profile), datasetId = ports.products?.datasetFor(fingerprint) ?? null;
   const filtered = fieldCode ? profile.fields.filter(field => field.fieldCode === fieldCode) : profile.fields;
@@ -251,18 +237,12 @@ function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceS
     previewMayTruncate: field.originalHeader.length > 128 || (field.aliases ?? []).length > 2
       || (field.aliases ?? []).some(alias => alias.length > 128) || (field.measurement?.length ?? 0) > 192,
   }));
-  const gaps = [
-    ...(profile.adjustment.status === 'unknown' ? ['复权状态未知；不能跨来源认定等价。'] : []),
-    ...(profile.timeBucket.labelSemantics === 'unknown' || profile.timeBucket.interval === 'unknown'
-      ? ['时间桶起止和区间口径未知；不能跨来源认定等价。'] : []),
-    ...profile.fields.filter(field => field.measurementStatus === 'unknown' || field.role === 'value' && !field.measurement)
-      .slice(0, 8).map(field => field.measurementStatus === 'unknown'
-        ? '计量字段 ' + field.fieldCode + ' 仅保留原报词面，金融计量口径未知。'
-        : '计量字段 ' + field.fieldCode + ' 缺金融语义口径。'),
+  const semanticGaps = profileSemanticGaps(profile);
+  const gaps = [...semanticGaps,
     ...(fieldCode && !filtered.length ? ['来源档案没有规范字段 ' + fieldCode + '。'] : []),
-    ...(!datasetId ? ['没有该语义指纹对应的本机数据集登记；来源档案不等于 WFD 已发布定义。'] : []),
-  ];
+    ...(!datasetId ? ['没有该语义指纹对应的本机数据集登记；来源档案不等于 WFD 已发布定义。'] : [])];
   return { status: 'registered_source_profile', scope, profileId: profile.profileId,
+    semanticStatus: semanticGaps.length ? 'needs_evidence' : 'profile_complete',
     mappingVersion: profile.mappingVersion, digest: sourceFieldProfileDigest(profile),
     fingerprint, registeredDatasetId: datasetId, fieldCount: profile.fields.length,
     displayedFields: displayFields.length, fieldPreviewComplete: filtered.length <= 8
@@ -278,11 +258,9 @@ function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceS
     supersedesPreviewComplete: (profile.supersedes ?? []).length <= 8
       && (profile.supersedes ?? []).every(item => item.note.length <= 192),
     confirmation: { status: profile.confirmation.status, confirmedAtUtc: profile.confirmation.confirmedAtUtc },
-    gaps, authority: 'local_operator_confirmed_source_profile_not_formal_wfd_definition',
-    adoption: 'not_granted' };
+    gaps, authority: 'local_operator_confirmed_source_profile_not_formal_wfd_definition', adoption: 'not_granted' };
 }
 
-/** 仅按明确两份来源档案比较完整语义签名；模型不能提交自造档案、修订、路径或产品身份。 */
 export function sourceSemanticView(query: unknown, ports: SourceSemanticPorts = {}) {
   if (!isWfdRecord(query) || Object.keys(query).some(key => !['left','right','fieldCode'].includes(key))
     || !Object.hasOwn(query, 'left') || JSON.stringify(query).length > 4096)
@@ -302,21 +280,27 @@ export function sourceSemanticView(query: unknown, ports: SourceSemanticPorts = 
     adoption: 'not_granted', publication: 'not_requested', dataWrite: 'forbidden' };
   if (!rightScope) return { ...result, status: left ? 'registered' : 'needs_evidence' };
   if (!left || !right) return { ...result, status: 'needs_evidence', comparison: null,
-    gaps: ['至少一个来源没有匹配完整端点身份的已确认字段档案，不能认定同一金融语义。'] };
+    gaps: ['至少一个来源没有匹配来源/系列的已确认字段档案，不能认定同一金融语义。'] };
   const compared = compareProfileSemantics(left, right);
-  const leftDataset = ports.products?.datasetFor(profileFingerprint(left)) ?? null;
-  const rightDataset = ports.products?.datasetFor(profileFingerprint(right)) ?? null;
-  return { ...result, status: compared.sameProduct ? 'candidate_equivalent' : 'different_semantics',
-    comparison: { sameSignature: compared.sameProduct, reasons: compared.reasons.slice(0, 24).map(reason => reason.slice(0, 240)),
+  const leftFingerprint = profileFingerprint(left), rightFingerprint = profileFingerprint(right);
+  const leftDataset = ports.products?.datasetFor(leftFingerprint) ?? null;
+  const rightDataset = ports.products?.datasetFor(rightFingerprint) ?? null;
+  const bounded = (items: string[]) => items.slice(0, 24).map(item => item.slice(0, 240));
+  return { ...result, status: compared.status,
+    comparison: { sameSignature: compared.sameProduct, identicalSignature: leftFingerprint === rightFingerprint,
+      status: compared.status, reasons: bounded(compared.reasons),
       reasonCount: compared.reasons.length,
       reasonsPreviewComplete: compared.reasons.length <= 24 && compared.reasons.every(reason => reason.length <= 240),
+      differences: bounded(compared.differences), differenceCount: compared.differences.length,
+      gaps: bounded(compared.gaps), gapCount: compared.gaps.length,
       registeredSameDataset: !!leftDataset && leftDataset === rightDataset,
       implication: compared.sameProduct
         ? '仅来源档案口径候选相同；仍需按 WFD 固定产品定义与来源权限独立核对，不自动合并或发布。'
-        : '来源语义不同或未知；不得自动映射为同一个正式金融产品。' } };
+        : compared.status === 'needs_evidence'
+          ? '缺少足够语义证据；相同字段、标签或指纹不代表等价，不能自动映射为同一个正式产品。'
+          : '存在已明确的金融语义差异；差异与未核证据分别保留，不自动合并或发布。' } };
 }
 
-/** WFD 语义模板并非权威已采用产品词典；按需公开真实模板和当前材料语义合同。 */
 export const SEMANTIC_TEMPLATES_VERSION = 'wfd.semantic-templates/1.0';
 const semanticTemplatePath = new URL('../../wfd/product/protocol/templates/wfd-semantic-templates.json', import.meta.url);
 function loadSemanticTemplates(): WfdRecord | null {
@@ -336,11 +320,9 @@ export function semanticDictionaryView(groupId?: string) {
     '本机构建没有完整受信语义模板；不能伪造已经采用的 WFD 词典。');
   if (groupId !== undefined && (!identifier(groupId) || groupId.length > 128))
     return fail('PRODUCTION_SEMANTIC_GROUP', '语义词典分组编号无效。');
-  const groups = (document.business_groups as WfdRecord[])
-    .filter(value => isWfdRecord(value));
+  const groups = (document.business_groups as WfdRecord[]).filter(value => isWfdRecord(value));
   const selected = groupId ? groups.filter(item => item.group_id === groupId) : groups;
-  if (groupId && !selected.length)
-    return fail('PRODUCTION_SEMANTIC_GROUP', '没有该语义模板分组，不能补造未知概念。');
+  if (groupId && !selected.length) return fail('PRODUCTION_SEMANTIC_GROUP', '没有该语义模板分组，不能补造未知概念。');
   return { version: SEMANTIC_TEMPLATES_VERSION, kind: 'read_only_semantic_dictionary',
     status: 'templates_only_not_products', authority: 'no_adoption_or_decision_granted',
     commonAxes: document.common_axes, businessGroups: selected,
