@@ -8,7 +8,7 @@ import type { OperatorContext } from './processing-plan.js';
 import { adapterConfigDigest, discoverEndpointAdapter, matchAdapterContext, readAdapterBindingRef,
   readAdapterSourceContext, readEndpointAdapterConfig, readAdapterSelection, type AdapterSelection, type AdapterMatchEvidence,
   type EndpointAdapterConfig, type FrozenAdapterBinding } from './endpoint-adapter.js';
-import { candidateImplementationDigest, prepareCandidateTable } from './candidate-pipeline.js';
+import { candidateImplementationDigest, parseTableSource, structureCandidateTable, checkCandidateTables } from './candidate-pipeline.js';
 
 export const ADAPTER_REGISTRY_VERSION = 'bd.endpoint-adapter-registry/1';
 export const ADAPTER_REGISTRY_LIMITS = Object.freeze({ maxSamples: 16, maxExceptions: 200, maxVersions: 200 });
@@ -152,7 +152,7 @@ export class EndpointAdapterRegistry {
   }
 
   /**
-   * 用本机实际材料重放正反样本，走与生产一致的五步（parse→clean→structure→annotate→check）。
+   * 用本机实际材料重放正反样本，只执行此配置所需的解析、类型转换与独立核对。
    * 缺字段、坏 decimal/integer、无效时间写法都会在重放阶段按同一门失败；
    * 期望值逐项核对，且实现摘要进入证据，解析实现变化后旧重放不能直接采用。
    */
@@ -178,20 +178,22 @@ export class EndpointAdapterRegistry {
       const original = this.options.materials.readOriginal(materialId), material = this.options.materials.get(materialId);
       if (material.envelope.sha256 !== original.sha256) fail('ADAPTER_MATERIAL_CHANGED', '重放材料原件摘要与登记不符。');
       let outcome: 'accept' | 'reject' = 'accept', code: string | null = null, message: string | null = null;
-      let prepared: ReturnType<typeof prepareCandidateTable> | null = null;
+      let checked: ReturnType<typeof checkCandidateTables> | null = null;
       try {
-        prepared = prepareCandidateTable(original.bytes, { materialId, format: 'json',
+        const parsed = parseTableSource(original.bytes, { materialId, format: 'json',
           sourceAdapter: { adapterId, version, configDigest: row.config_digest, config } });
+        const structured = structureCandidateTable(parsed, parsed.types);
+        checked = checkCandidateTables([structured]);
       } catch (error) {
         if (!(error instanceof TaskError)) throw error;
         outcome = 'reject'; code = error.code; message = error.message;
       }
       // 期望核对独立于执行结论：行/字段不符只影响 passed，不会被记成生产拒绝。
-      let rowCount: number | null = prepared ? prepared.rows.length : null;
+      const rowCount: number | null = checked ? checked.rows.length : null;
       let actual: WfdRecord | null = null;
       const mismatch: string[] = [];
-      if (prepared && expected) {
-        const first = prepared.rows[expected.row];
+      if (checked && expected) {
+        const first = checked.rows[expected.row];
         if (!first) mismatch.push(`期望第 ${expected.row + 1} 行不存在（实际 ${rowCount} 行）`);
         else {
           actual = Object.fromEntries(Object.entries(expected.values).map(([field, value]) => [field, first[field] ?? null]));
@@ -250,8 +252,9 @@ export class EndpointAdapterRegistry {
       replays: replays.map(replay => ({ replayId: replay.replay_id, materialId: replay.material_id, expectation: replay.expectation,
         outcome: replay.outcome, passed: replay.passed })) };
     this.options.database.transaction(() => {
-      // 历史未完成批次可能仍需要其已冻结的旧适配配置。当前版本由稳定 adapterId
-      // 的 latestAdopted 选择，旧版本仅按明确的历史引用核对，不因采用新版就破坏旧任务。
+      // 每个 adapterId 仅一个当前已采用配置；旧配置保留给已有冻结任务，不再用于新请求。
+      this.db.prepare("UPDATE source_adapters SET status='retired',revision=revision+1,updated_at=? WHERE adapter_id=? AND status='adopted' AND version<>?")
+        .run(now, adapterId, version);
       this.db.prepare(`UPDATE source_adapters SET status='adopted',revision=revision+1,updated_at=?,adopted_at=?,adopted_by=?,adoption_json=?
         WHERE adapter_id=? AND version=? AND config_digest=?`).run(now, now, operator.operatorId, canonicalWfdJson(adoption), adapterId, version, row.config_digest);
     });
