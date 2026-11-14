@@ -628,10 +628,8 @@ export class ProcessingPlanService {
           fail('PROCESSING_AGENT_STEPWISE_REQUIRED',
             'AGENTS只能沿原计划累加最多一个新模块；须先检查上一模块的真实结果，不得一次预排多步或删除已有证明。');
       }
-      if (stages && !stages.includes('clean') && tables.some(table => (table.trim?.length ?? 0) > 0 || (table.emptyToNull?.length ?? 0) > 0))
-        fail('PROCESSING_STAGE_RULES', '本轮未选择清洗模块，不能暗中应用已声明清洗规则。');
-      if (stages && !stages.includes('annotate') && tables.some(table => Object.keys(table.annotations ?? {}).length > 0))
-        fail('PROCESSING_STAGE_RULES', '本轮未选择标注模块，不能暗中应用已声明的标注常量。');
+      // 计划可先声明候选规则，之后由AGENTS逐步选择模块。
+      // 本轮未选择的清洗/标注规则不得由解析或核对阶段隐式执行。
       for (const table of tables) {
         if (!table.sourceAdapter) continue;
         if (!this.options.adapters) fail('PROCESSING_ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记，不能使用声明式适配表源。');
