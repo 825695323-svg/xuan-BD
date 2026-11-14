@@ -153,6 +153,11 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
     const eastmoney = await adopt(host, 'eastmoney.kline.daily', '1', [eastmoneyId], [badId], 'eastmoney');
     const sina = await adopt(host, 'sina.kline.daily', '1', [sinaId], [badId], 'sina');
     const ths = await adopt(host, 'ths.kline.daily', '1', [thsId], [badId], 'ths');
+    const replayRows = host.database.connection.prepare(
+      'SELECT count(*) AS n FROM source_adapter_replays WHERE adapter_id=? AND version=?')
+      .get('eastmoney.kline.daily', '1') as { n: number };
+    assert.equal(replayRows.n, 2,
+      'Candidate replay replaces earlier incomplete evidence rather than accumulating old failed attempts');
 
     const planInput = (outputId: string, materialId: string, binding: { adapterId: string; version?: string; configDigest?: string },
       fieldMapping?: Record<string, string>, sourceContext?: Record<string, unknown>) => ({
@@ -341,6 +346,14 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
       item.adapterId === 'eastmoney.kline.daily' && item.materialId === thsId
       && ['ADAPTER_SUCCESS_MISSING', 'ADAPTER_CONTAINER', 'ADAPTER_CARRIER', 'ADAPTER_JSON'].includes(item.code)),
     JSON.stringify(exceptions.items));
+
+    // 长期漂移历史只留有界诊断，已失败的真实处理步骤仍持久保留错误与摘要。
+    for (let i = 0; i < 205; i++) host.services.endpointAdapters!.recordDrift({
+      adapterId: 'test.diagnostic', version: '1', configDigest: 'c'.repeat(64), materialId: null,
+      code: 'BOUNDED_DIAG_' + i, message: 'isolation-only synthetic failure' });
+    const diagnosticCount = host.database.connection.prepare('SELECT COUNT(*) AS n FROM source_adapter_drift')
+      .get() as { n: number };
+    assert.equal(diagnosticCount.n, 200, 'Historical diagnostic rows must not grow without limit');
 
     // 新版本只影响新计划：v2 采用后，v1 计划仍按冻结配置与摘要读回。
     await host.call('/processing/adapters/candidates', { requestId: 'candidate-eastmoney-v2',

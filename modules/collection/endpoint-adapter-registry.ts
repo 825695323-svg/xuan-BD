@@ -162,11 +162,14 @@ export class EndpointAdapterRegistry {
     const adapterId = text(body.adapterId, 'ADAPTER_REPLAY'), version = text(body.version, 'ADAPTER_REPLAY');
     const row = this.row(adapterId, version) ?? fail('ADAPTER_NOT_FOUND', '没有该适配版本的登记。');
     if (row.status === 'retired') fail('ADAPTER_RETIRED', '已退役版本不能用于新的重放证据。');
+    if (row.status !== 'candidate') fail('ADAPTER_STATUS', '已采用配置的通过证据已冻结；只有候选配置允许重新重放。');
     const config = JSON.parse(row.config_json) as EndpointAdapterConfig;
     if (!Array.isArray(body.samples) || !body.samples.length || body.samples.length > ADAPTER_REGISTRY_LIMITS.maxSamples)
       fail('ADAPTER_REPLAY', `重放须提供 1 至 ${ADAPTER_REGISTRY_LIMITS.maxSamples} 个明确样本。`);
     const implementation = this.versionBinding.implementation;
     const results: WfdRecord[] = [];
+    const evidenceRows: { replayId: string; sourceSha256: string; materialId: string; expectation: string;
+      outcome: string; evidence: WfdRecord }[] = [];
     for (const item of body.samples) {
       const sample = exactRecord(item, ['materialId', 'expectation', 'expectedCode', 'expect'], 'ADAPTER_REPLAY');
       const materialId = text(sample.materialId, 'ADAPTER_REPLAY');
@@ -212,10 +215,20 @@ export class EndpointAdapterRegistry {
         expectation: sample.expectation, ...(sample.expectedCode === undefined ? {} : { expectedCode: String(sample.expectedCode) }),
         ...(expected ? { expect: expected } : {}), outcome, code, message, rowCount, actual, mismatch, passed };
       const replayId = randomUUID();
-      this.db.prepare('INSERT INTO source_adapter_replays VALUES(?,?,?,?,?,?,?,?,?,?)').run(replayId, adapterId, version,
-        row.config_digest, original.sha256, materialId, sample.expectation, outcome, canonicalWfdJson(evidence), Date.now());
+      evidenceRows.push({ replayId, sourceSha256: original.sha256, materialId,
+        expectation: sample.expectation, outcome, evidence });
       results.push({ replayId, ...evidence });
     }
+    // 重放是本次候选测试，不是累加历史运行日志。更新候选证据须全部核对完后原子替换；
+    // 受控采用时另把已确认的证据摘要和样本身份冻结在采用记录中。
+    this.options.database.transaction(() => {
+      this.db.prepare('DELETE FROM source_adapter_replays WHERE adapter_id=? AND version=?')
+        .run(adapterId, version);
+      const save = this.db.prepare('INSERT INTO source_adapter_replays VALUES(?,?,?,?,?,?,?,?,?,?)');
+      for (const item of evidenceRows) save.run(item.replayId, adapterId, version, row.config_digest,
+        item.sourceSha256, item.materialId, item.expectation, item.outcome,
+        canonicalWfdJson(item.evidence), Date.now());
+    });
     return { adapterId, version, configDigest: row.config_digest, implementation, results,
       passed: results.every(result => result.passed === true), evidenceDigest: this.replayDigest(adapterId, version, row.config_digest) };
   }
@@ -349,6 +362,11 @@ export class EndpointAdapterRegistry {
     this.db.prepare('INSERT INTO source_adapter_drift VALUES(?,?,?,?,?,?,?,?,?)').run(randomUUID(), input.adapterId, input.version,
       input.configDigest, input.materialId, input.code.slice(0, 128), input.message.slice(0, 2000),
       canonicalWfdJson(input.detail ?? {}), Date.now());
+    // 漂移只是任务错误的有界诊断视图；完整任务错误仍在冻结步骤记录中。
+    // 旧失败不会为每代来源适配永久累加独立的漂移日志。
+    this.db.prepare(`DELETE FROM source_adapter_drift WHERE drift_id IN (
+      SELECT drift_id FROM source_adapter_drift ORDER BY created_at DESC,rowid DESC LIMIT -1 OFFSET ?)`)
+      .run(ADAPTER_REGISTRY_LIMITS.maxExceptions);
   }
 
   exceptions(limit = 50): WfdRecord {
