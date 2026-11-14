@@ -30,7 +30,7 @@ test('根对象转换信封保持 needs_adapter；带 BOM 的根行数组仍可�
         assert.equal(decision.routingState, sample.routing);
         const planned = await host.call('/processing/plans', { requestId: sample.request + '-plan', input: {
           routing: { materials: [{ materialId, intendedAction: 'inspect' }] },
-          outputs: [{ outputId: sample.request, materialIds: [materialId], intendedAction: 'inspect',
+          outputs: [{ outputId: sample.request, materialIds: [materialId], intendedAction: 'inspect', stages: ['parse'],
             tables: [{ materialId, format: 'json' }] }],
         } }, 202);
         const planTask = await host.settled(planned.jobId);
