@@ -105,9 +105,6 @@ export class ConversationProcessingBridge {
       registration('data.processing.execute', '执行已计划的一个处理步骤', '只执行本会话分支已准备计划中的单个步骤；按原计划身份、依赖和预算执行，不越过未完成前置，不重算其他步骤。已完成步骤只查询，不重复执行。', [
         text('planId', '本分支处理计划', true), text('stepId', '计划内步骤编号', true),
       ]),
-      registration('data.processing.run', '仅恢复历史批量计划（新AGENTS循环禁用）', '仅旧版未选择stages的历史计划可沿原流程批量运行；AGENTS新计划必须每次执行单步并阅读结果后重新决定。每阶段持久后检查停止与预算。已成功步骤按原证明查询/复用，不重复计算；失败或阻塞保留原件与上游产物。', [
-        text('planId', '本分支处理计划', true),
-      ]),
       registration('data.processing.status', '查询原处理计划与产物', '只读取本会话分支已链接的计划、步骤和路由事实；查询不重算、不重发、不推进。可给planId、taskId或materialId之一。缺项回原计划；对象损坏另行明确恢复，不在查询中静默修复。', [
         text('planId', '原处理计划', false), text('taskId', '原处理任务', false), text('materialId', '原材料编号', false),
       ]),
