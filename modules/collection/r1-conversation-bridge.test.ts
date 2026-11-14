@@ -279,21 +279,32 @@ async function actualPlan(h: Host, input: BackendInput, fileRefId: string, caseI
   assert.equal(feedback.sourceSha256, materialRead.preview.data.originalSha256);
   assert.deepEqual(feedback.fields, ['business_key', 'value_decimal', 'start_utc', 'end_utc']);
   assert.equal(feedback.rowCount, 2);
+  // Each independent module is selected only after reading the previous step's genuine feedback.
   const reviewed = structuredClone(planJson);
+  reviewed.outputs[0]!.stages = ['parse', 'structure'];
+  const structurePrepared = await invoke(h, input, 'data.processing.plan',
+    { planJson: JSON.stringify(reviewed), previousPlanId: parsePlanId }, caseId + '-structure-plan');
+  const structurePlanId = String(structurePrepared.preview.data.planId);
+  const first = h.companion.processing!.get(structurePlanId).steps;
+  assert.deepEqual(first.map(step => step.kind), ['parse', 'structure']);
+  assert.equal(first[0]!.state, 'succeeded', 'Verified parse output is reused.');
+  const structureFeedback = await invoke(h, input, 'data.processing.execute',
+    { planId: structurePlanId, stepId: first[1]!.stepId }, caseId + '-structure-step');
+  assert.equal(structureFeedback.preview.data.stepFeedback.module, 'structure');
+  assert.equal(h.companion.processing!.get(structurePlanId).steps[1]!.state, 'succeeded');
+
   reviewed.outputs[0]!.stages = ['parse', 'structure', 'check'];
   const prepared = await invoke(h, input, 'data.processing.plan',
-    { planJson: JSON.stringify(reviewed), previousPlanId: parsePlanId }, caseId + '-processing-plan');
+    { planJson: JSON.stringify(reviewed), previousPlanId: structurePlanId }, caseId + '-processing-plan');
   const planId = String(prepared.preview.data.planId);
   assert.ok(planId && planId !== 'undefined', JSON.stringify(prepared.preview));
   const steps = h.companion.processing!.get(planId).steps;
   assert.deepEqual(steps.map(step => step.kind), ['parse', 'structure', 'check']);
-  assert.equal(steps[0]!.state, 'succeeded', 'Verified parse output is reused from the previous plan.');
-  let executed = prepared;
-  for (const step of steps) {
-    if (step.state === 'succeeded') continue;
-    executed = await invoke(h, input, 'data.processing.execute', { planId, stepId: step.stepId },
-      caseId + '-processing-' + step.stepId.replace(/[^a-z0-9-]/giu, '-'));
-  }
+  assert.equal(steps[0]!.state, 'succeeded');
+  assert.equal(steps[1]!.state, 'succeeded');
+  const executed = await invoke(h, input, 'data.processing.execute',
+    { planId, stepId: steps[2]!.stepId }, caseId + '-processing-' + steps[2]!.stepId.replace(/[^a-z0-9-]/giu, '-'));
+  assert.equal(executed.preview.data.stepFeedback.module, 'check');
   const plan = h.companion.processing!.get(planId);
   assert.equal(plan.version, 'bd-processing-plan/1'); assert.equal(plan.outputs[0]!.publishEligible, true, JSON.stringify(plan));
   assert.ok(plan.steps.every(step => step.state === 'succeeded' || step.applicability === 'not_applicable'));
