@@ -12,7 +12,7 @@ import { profileFingerprint, sourceFieldProfileDigest, type FrozenSourceFieldPro
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import type { R1WorkspaceService } from './r1-workspace.js';
 import { parseTableSource } from './candidate-pipeline.js';
-import { decodeAdapterSource, readAdapterSelection, type AdapterSelection, type FrozenAdapterBinding } from './endpoint-adapter.js';
+import { adapterConfigDigest, decodeAdapterSource, readAdapterSelection, type AdapterSelection, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
 export const R1_AUTO_VERSION = 'bd.r1-auto/2';
 export interface R1AutoStartInput {
@@ -583,13 +583,13 @@ export class R1AutoService {
   private assertBinding(item: AutoRecord): void {
     if (item.version !== R1_AUTO_VERSION || canonicalWfdJson(this.currentConnection()) !== canonicalWfdJson(item.connection)) fail('R1_AUTO_CONNECTION_CHANGED', '当前连接、配置或实现版本与原自动请求不同，未换连接重放。');
     if (!item.adapter) return;
-    const current = (this.options.adapters ?? fail('R1_ADAPTER_UNAVAILABLE', '本实例未装配端点适配登记。'))
-      .resolve({ adapterId: item.adapter.adapterId, version: item.adapter.version, configDigest: item.adapter.configDigest });
-    // 匹配结论取决于本材料回执，由 start 时冻结；这里只核配置身份，不用无上下文的解析结果覆盖已核结论。
-    const identity = (binding: typeof item.adapter) => ({ adapterId: binding.adapterId, version: binding.version,
-      configDigest: binding.configDigest, config: binding.config });
-    if (canonicalWfdJson(identity(current)) !== canonicalWfdJson(identity(item.adapter)))
-      fail('R1_ADAPTER_CHANGED', '原自动请求冻结的适配配置已变化；未换配置继续。');
+    // 首次采用资格已在 startBound 核实；后续只核本请求冻结配置的真实摘要。
+    // 新版配置退役旧的 adopted 状态不应反向终止已在执行的旧请求。
+    const current = item.adapter;
+    if (current.adapterId !== current.config.adapterId || current.version !== current.config.version
+      || current.configDigest !== adapterConfigDigest(current.config)
+      || (item.input.sourceAdapter && readAdapterSelection(item.input.sourceAdapter).adapterId !== current.adapterId))
+      fail('R1_ADAPTER_CHANGED', '已冻结的来源适配身份或配置摘要不一致；未更换实现继续。');
   }
   private assertActive(item: AutoRecord): void {
     this.assertDispatch(); this.assertBinding(item);
