@@ -94,7 +94,9 @@ test('batch intake preserves sequential custody, duplicate identities, per-file 
     assert.equal(repeated.batchId, input.batchId); assert.equal(repeated.duplicateBatch, true);
     const alias = await host.call('/r1/batches/start', { ...input, batchId: 'batch-identical-alias' }, 202) as R1BatchView;
     assert.equal(alias.batchId, input.batchId); assert.equal(alias.duplicateBatch, true);
-    assert.equal((await host.call('/r1/batches/batch-identical-alias')).batchId, input.batchId, 'A lost duplicate response remains readable by the attempted batch identity');
+    // 规范批次身份随响应返回；重试不会为了被忽略的请求编号无限写入别名。
+    const aliases = host.database.connection.prepare('SELECT COUNT(*) AS count FROM r1_auto_batch_aliases').get() as { count: number };
+    assert.equal(aliases.count, 0, '新批次重复请求不产生永久别名记录');
     await upload(host, input.batchId, 'item-2', good);
     await host.call(`/r1/batches/${input.batchId}/advance`, {});
     assert.equal(host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get()!.n, tasksAfter);

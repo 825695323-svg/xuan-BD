@@ -655,6 +655,10 @@ export function parseEndpointSource(bytes: Uint8Array, config: EndpointAdapterCo
   for (const [rowIndex, record] of records.entries()) {
     const row = config.fields.map(field => {
       const cell = readFieldCell(record, field, body);
+      // 字段已声明却在该行中不存在，属于载体解析不完整，不能依赖后续五步偶然拦住。
+      // 明确存在的 JSON null 与空字符串仍保留原值，交给语义判定处理。
+      if (cell.sourceType === 'missing')
+        fail('ADAPTER_FIELD_MISSING', `第 ${rowIndex + 1} 行缺少已声明字段「${field.name}」；不得将缺列当作空值或默认补齐。`);
       if (cell.original === null || cell.original === '') return cell;
       if (field.timeFormat && !validTimeValue(String(cell.original), field.timeFormat))
         fail('ADAPTER_TIME', `第 ${rowIndex + 1} 行「${field.name}」不是声明的 ${field.timeFormat} 写法；未猜测时区或格式。`);
@@ -792,7 +796,7 @@ function locationAt(text: string, start: number, end: number): MaterialLocation 
   return { start, end, line, column: start - lineStart + 1 };
 }
 
-/** 把解析结果映射为材料表形态，供既有五步共用同一行结构。 */
+/** 把来源解析结果映射为通用行结构，供按需选择的独立处理模块复用。 */
 export function adapterMaterialTable(result: AdapterParseResult): MaterialTable {
   const columns: MaterialColumn[] = result.columns.map((name, index) => ({ name, proposedName: name,
     quote: name, location: { start: 0, end: 0, line: 1, column: index + 1, field: index + 1 } }));

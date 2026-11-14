@@ -41,8 +41,8 @@ export interface SourceAdjustment {
 export interface SourceProfileAdapterBinding { adapterId: string; version: string; configDigest: string }
 export interface SourceFieldProfile {
   version: 'bd.source-field-profile/1';
-  /** 兼容原格式的映射修订号。当前配置可原位更新；已启动请求保存本次冻结内容，无须保留旧配置文件。 */
-  mappingVersion: number;
+  /** 仅供读取旧档案；新配置直接替换当前映射，不要求维护递增修订号。 */
+  mappingVersion?: number;
   profileId: string;
   sourceId: string;
   /** 来源系列；空字符串表示该来源的全部系列共用这一份档案。 */
@@ -98,7 +98,8 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
     || typeof confirmation.basis !== 'string' || !confirmation.basis.trim() || unknownBasis.test(confirmation.basis.trim())) {
     fail(`来源字段档案 ${name} 缺少操作者确认依据；列名相似不能代替确认。`);
   }
-  if (!Number.isSafeInteger(raw.mappingVersion) || (raw.mappingVersion as number) < 1) fail(`来源字段档案 ${name} 的 mappingVersion 无效。`);
+  if (raw.mappingVersion !== undefined && (!Number.isSafeInteger(raw.mappingVersion) || (raw.mappingVersion as number) < 1))
+    fail(`来源字段档案 ${name} 的旧 mappingVersion 无效。`);
   if (!['minute', 'day', 'tick', 'other'].includes(String(raw.frequency))) fail(`来源字段档案 ${name} 的 frequency 无效。`);
   const bucket = raw.timeBucket as Record<string, unknown> | undefined;
   if (!bucket || !['start', 'end', 'unknown'].includes(String(bucket.labelSemantics))
@@ -152,7 +153,8 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
         ...(typeof item.profileId === 'string' ? { profileId: item.profileId } : {}), note: text(item.note, `supersedes[${index}].note`) };
     });
   })();
-  return { version: 'bd.source-field-profile/1', mappingVersion: raw.mappingVersion as number, profileId, sourceId,
+  return { version: 'bd.source-field-profile/1',
+    ...(raw.mappingVersion === undefined ? {} : { mappingVersion: raw.mappingVersion as number }), profileId, sourceId,
     series: raw.series, ...(adapter ? { adapter } : {}), fields, frequency: raw.frequency as SourceFieldProfile['frequency'],
     timeBucket: { labelSemantics: bucket.labelSemantics as SourceTimeBucket['labelSemantics'],
       interval: bucket.interval as SourceTimeBucket['interval'], lengthMinutes: Number(bucket.lengthMinutes),
@@ -172,7 +174,11 @@ export class SourceFieldProfileStore {
   list(): SourceFieldProfile[] {
     let names: string[];
     try { names = readdirSync(this.directory).filter(name => name.endsWith('.json')).sort(); }
-    catch { return []; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw new TaskError('SOURCE_FIELD_PROFILE_READ',
+        `来源字段档案目录不可读取：${error instanceof Error ? error.message : String(error)}`);
+    }
     return names.map(name => readSourceFieldProfile(JSON.parse(readFileSync(resolve(join(this.directory, name)), 'utf8')), name));
   }
   /** 仅选择当前有效的来源字段映射。来源适配器版本属于实现细节，不参与语义选择。
@@ -276,9 +282,19 @@ export function readSemanticProductRegistry(value: unknown, name: string): Seman
 }
 export class SemanticProductRegistryStore {
   constructor(private readonly path: string) {}
+  /** 仅当登记文件不存在时才表示未配置；损坏的登记不能被当作空白数据集。 */
   read(): SemanticProductRegistry | null {
-    try { return readSemanticProductRegistry(JSON.parse(readFileSync(this.path, 'utf8')), this.path); }
-    catch { return null; }
+    let content: string;
+    try { content = readFileSync(this.path, 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw new TaskError('SEMANTIC_PRODUCT_REGISTRY_READ',
+        `无法读取语义产品登记 ${this.path}：${error instanceof Error ? error.message : String(error)}`);
+    }
+    let raw: unknown;
+    try { raw = JSON.parse(content); }
+    catch { throw new TaskError('SEMANTIC_PRODUCT_REGISTRY_INVALID', `语义产品登记 ${this.path} 不是有效 JSON。`); }
+    return readSemanticProductRegistry(raw, this.path);
   }
   /** 已登记的正式数据集；未登记返回 null（首次登记由操作者完成，不自动写入）。 */
   datasetFor(fingerprint: string): string | null {

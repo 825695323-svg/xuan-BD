@@ -153,15 +153,33 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
     const eastmoney = await adopt(host, 'eastmoney.kline.daily', '1', [eastmoneyId], [badId], 'eastmoney');
     const sina = await adopt(host, 'sina.kline.daily', '1', [sinaId], [badId], 'sina');
     const ths = await adopt(host, 'ths.kline.daily', '1', [thsId], [badId], 'ths');
+    const replayRows = host.database.connection.prepare(
+      'SELECT count(*) AS n FROM source_adapter_replays WHERE adapter_id=? AND version=?')
+      .get('eastmoney.kline.daily', '1') as { n: number };
+    assert.equal(replayRows.n, 2,
+      'Candidate replay replaces earlier incomplete evidence rather than accumulating old failed attempts');
 
     const planInput = (outputId: string, materialId: string, binding: { adapterId: string; version?: string; configDigest?: string },
       fieldMapping?: Record<string, string>, sourceContext?: Record<string, unknown>) => ({
       routing: { materials: [{ materialId }] },
       outputs: [{ outputId, materialIds: [materialId], intendedAction: 'inspect',
+        stages: ['parse', 'structure', 'check'],
         tables: [{ materialId, format: 'json', sourceAdapter: binding, ...(fieldMapping ? { fieldMapping } : {}),
           ...(sourceContext ? { sourceContext } : {}) }] }],
     });
     const bind = (configDigest: string, adapterId: string, version = '1') => ({ adapterId, version, configDigest });
+
+    // 明确 [] 只保管来源原件；即使已经提供表格与适配器，也不自动创建解析或固定五步。
+    const custodyOnly = planInput('no-processing', eastmoneyId, { adapterId: 'eastmoney.kline.daily' });
+    custodyOnly.outputs[0]!.stages = [];
+    const custodyTask = await host.call('/processing/plans',
+      { requestId: 'explicit-no-processing', input: custodyOnly }, 202);
+    const custodyDone = await host.settled(custodyTask.jobId);
+    assert.equal(custodyDone.status, 'succeeded', JSON.stringify(custodyDone.error));
+    const custodyId = host.services.processing!.getByTask(custodyDone.id)!.plan!.planId;
+    const custodyPlan = host.services.processing!.get(custodyId);
+    assert.deepEqual(custodyPlan.steps, [], 'Only the selected module set may generate execution steps');
+    assert.equal(custodyPlan.outputs[0]!.state, 'custody_only');
 
     // 未采用版本不能进入计划。
     await rejected(host, '/processing/plans', { requestId: 'plan-unadopted',
@@ -176,8 +194,19 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
       const planned = await host.settled(prepared.jobId);
       assert.equal(planned.status, 'succeeded', JSON.stringify(planned.error));
       const planId = host.services.processing!.getByTask(planned.id)!.plan!.planId;
-      const started = await host.call(`/processing/plans/${planId}/run`, { requestId: `${requestId}-run` }, 202);
-      const done = await host.settled(started.jobId);
+      // 一个模块一个真实 TaskService 任务，逐步读回；不调用历史批量执行入口。
+      const declared = host.services.processing!.get(planId).steps;
+      let done = planned;
+      for (const kind of ['parse', 'structure', 'check']) {
+        const step = declared.find(item => item.kind === kind)!;
+        const started = await host.call(`/processing/plans/${planId}/steps/${step.stepId}/execute`,
+          { requestId: `${requestId}-${kind}` }, 202);
+        done = await host.settled(started.jobId);
+        const current = host.services.processing!.get(planId).steps.find(item => item.stepId === step.stepId)!;
+        if (done.status !== 'succeeded') break;
+        assert.equal(current.state, 'succeeded', `模块 ${kind} 未完成，不得推进下一模块`);
+        assert.equal(current.outputDigest?.length, 64, `模块 ${kind} 未持久化实际产物`);
+      }
       return { planId, done, plan: host.services.processing!.get(planId) };
     };
 
@@ -318,6 +347,14 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
       && ['ADAPTER_SUCCESS_MISSING', 'ADAPTER_CONTAINER', 'ADAPTER_CARRIER', 'ADAPTER_JSON'].includes(item.code)),
     JSON.stringify(exceptions.items));
 
+    // 长期漂移历史只留有界诊断，已失败的真实处理步骤仍持久保留错误与摘要。
+    for (let i = 0; i < 205; i++) host.services.endpointAdapters!.recordDrift({
+      adapterId: 'test.diagnostic', version: '1', configDigest: 'c'.repeat(64), materialId: null,
+      code: 'BOUNDED_DIAG_' + i, message: 'isolation-only synthetic failure' });
+    const diagnosticCount = host.database.connection.prepare('SELECT COUNT(*) AS n FROM source_adapter_drift')
+      .get() as { n: number };
+    assert.equal(diagnosticCount.n, 200, 'Historical diagnostic rows must not grow without limit');
+
     // 新版本只影响新计划：v2 采用后，v1 计划仍按冻结配置与摘要读回。
     await host.call('/processing/adapters/candidates', { requestId: 'candidate-eastmoney-v2',
       input: { config: eastmoneyConfig('2', ['f51', 'f52', 'f53', 'f54', 'f55', 'f56', 'f57', 'f58']) } }, 201);
@@ -334,6 +371,9 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
     assert.equal((currentParse.parameters as any).sourceAdapter.configDigest, v2.adopted.configDigest);
     assert.equal(host.services.endpointAdapters!.latestAdopted('eastmoney.kline.daily')?.version, '2',
       '稳定适配器编号始终指向最新已采用实现；此前已冻结任务无需重新适配');
+    const retired = host.services.endpointAdapters!.list('eastmoney.kline.daily')
+      .find(item => item.version === '1');
+    assert.equal(retired?.status, 'retired', 'Old adopted configurations must stop being active for new requests');
     assert.equal((reloaded.steps.find((step: { kind: string }) => step.kind === 'parse')!.parameters as any)
       .sourceAdapter.version, '1', '旧任务保留冻结解释，升级不回写或重算既有行');
     assert.notEqual(v2Run.plan.steps.find((step: { kind: string }) => step.kind === 'parse')!.specDigest,

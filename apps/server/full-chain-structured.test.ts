@@ -22,7 +22,7 @@ interface StructuredManifest {
 const manifestPath = process.env.XUAN_STRUCTURED_ASSETS_JSON;
 const outputRoot = process.env.XUAN_FULL_CHAIN_ROOT;
 
-test('three real structured originals pass isolated HTTP custody and five-stage structural processing with unknown semantics retained',
+test('three real structured originals are processed by individually selected modules with semantic gaps retained',
   { skip: !manifestPath || !outputRoot ? 'Requires selected real-original manifest and dedicated isolated output root.' : false,
     timeout: 300_000 }, async () => {
     assert.ok(manifestPath && outputRoot);
@@ -66,6 +66,7 @@ test('three real structured originals pass isolated HTTP custody and five-stage 
         };
         const input = { routing: { materials: [{ materialId, dimensions, intendedAction: 'inspect' }] },
           outputs: [{ outputId: 'raw-table', materialIds: [materialId], intendedAction: 'inspect',
+            stages: ['parse', 'clean', 'structure', 'annotate', 'check'],
             tables: [{ materialId, format: 'csv', trim: [sample.fields[0]],
               annotations: { source_original_sha256: originalSha256 } }],
             coverage: { complete: false, scope: '本次只执行结构检查；未认定金融业务语义或发布资格。',
@@ -81,9 +82,18 @@ test('three real structured originals pass isolated HTTP custody and five-stage 
         const planTask = await host.settled(planned.jobId);
         assert.equal(planTask.status, 'succeeded', JSON.stringify(planTask.error));
         const planId = host.services.processing!.getByTask(planTask.id)!.plan!.planId;
-        const run = await host.call(`/processing/plans/${planId}/run`, { requestId: `${sample.domain}-run` }, 202);
-        const runTask = await host.settled(run.jobId, 180_000);
-        assert.equal(runTask.status, 'succeeded', JSON.stringify(runTask.error));
+        // 五种能力仅因本样本逐项显式选择才运行；每一步完成后读取真实结果再推进。
+        const declared = host.services.processing!.get(planId).steps;
+        for (const kind of ['parse', 'clean', 'structure', 'annotate', 'check']) {
+          const step = declared.find(item => item.kind === kind)!;
+          const execution = await host.call(`/processing/plans/${planId}/steps/${step.stepId}/execute`,
+            { requestId: `${sample.domain}-${kind}` }, 202);
+          const result = await host.settled(execution.jobId, 180_000);
+          assert.equal(result.status, 'succeeded', JSON.stringify(result.error));
+          const readback = host.services.processing!.get(planId).steps.find(item => item.stepId === step.stepId)!;
+          assert.equal(readback.state, 'succeeded', `处理模块 ${kind} 没有完成`);
+          assert.equal(readback.outputDigest?.length, 64, `处理模块 ${kind} 缺少持久化摘要`);
+        }
 
         const plan = await host.call(`/processing/plans/${planId}`);
         const output = plan.outputs[0];

@@ -121,6 +121,10 @@ test('AGENTS registers the seven processing and catalog actions with individual 
       database, core: {} as never, origin: () => null,
       companion: { processing, productionModuleSwitches: { calculate: false, semantics: false } } as never,
     });
+    assert.equal(processingBridge.registrations.some(item => item.action === 'data.processing.run'), false,
+      '旧批量入口不可再次出现在新AGENTS工具目录中');
+    assert.equal(processingBridge.handles('data.processing.run'), true,
+      '历史会话请求所需的内部兼容分发可暂时保留');
     for (const module of PRODUCTION_MODULES.filter(item => item.id !== 'calculate')) {
       const registration = processingBridge.registrations.find(item => item.action === module.action);
       assert.ok(registration, module.action);

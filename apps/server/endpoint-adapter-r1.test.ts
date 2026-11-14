@@ -82,7 +82,7 @@ test('适配原件经普通 R1 发布及固定读回', { skip: !enabled, timeout
     const intake = await host.settled(upload.jobId);
     assert.equal(intake.status, 'succeeded', JSON.stringify(intake.error));
     const materialId = host.services.materials!.getByTask(intake.id)!.envelope.materialId;
-    // 反样本：缺列记录必须被生产五步真实拒绝，不能作为正样本采用依据。
+    // 反样本：缺列由真实来源解析器拒绝；后续金融数据由独立模块与 WFD 读回核对。
     const badUpload = await host.upload('ths-adapter-bad.js', 'data',
       Buffer.from('quotebridge_v6_line_hs_600519_01_last({"data":"20260413,600519.SH"})', 'utf8'), 'r1-adapter-bad-upload');
     const badIntake = await host.settled(badUpload.jobId);
@@ -134,6 +134,14 @@ test('适配原件经普通 R1 发布及固定读回', { skip: !enabled, timeout
     const item = view.items[0]!;
     assert.equal(item.state, 'associated', JSON.stringify(item));
     const auto = item.auto as R1AutoView;
+    const selectedPlan = host.services.processing!.get(auto.planIds.at(-1)!);
+    assert.deepEqual(selectedPlan.steps.map(step => step.kind),
+      selectedPlan.outputs[0]!.stages, 'R1 only creates modules explicitly required by its publication contract');
+    assert.ok(['parse', 'structure', 'check'].every(kind => selectedPlan.steps.some(step => step.kind === kind)));
+    assert.equal(auto.taskIds.some(taskId => host.services.tasks.get(taskId).action === 'data.processing.run'), false,
+      'new R1 auto handoff must never use the legacy bulk entry');
+    assert.ok(auto.taskIds.some(taskId => host.services.tasks.get(taskId).action === 'data.processing.execute'),
+      'new R1 auto handoff must use individual persisted module tasks');
     const associations = auto.currentRequest!.local.associations as WfdRecord[];
     assert.equal(associations.length, 3);
 

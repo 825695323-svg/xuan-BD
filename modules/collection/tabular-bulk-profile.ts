@@ -16,7 +16,8 @@ export type TabularBulkTargetTemplate = Omit<R1PrepareInput['target'], 'datasetI
 interface ProfileBase {
   version: typeof TABULAR_BULK_PROFILE_VERSION;
   profileId: string;
-  mappingVersion: number;
+  /** 仅兼容旧版已冻结登记；当前来源字段语义无需映射修订序号。 */
+  mappingVersion?: number;
   sourceId: string;
   series: string;
   confirmation: { basis: string; confirmedBy: string; confirmedAtUtc: string };
@@ -66,7 +67,7 @@ function validateDefinition(definition: WfdRecord, table: TabularTableContract) 
 export function readTabularBulkProfile(value: unknown): RegisteredTabularBulkProfile {
   if (!isWfdRecord(value) || !allowed(value, ['version','profileId','mappingVersion','sourceId','series','confirmation','columns','tableContract','targetTemplate'])
     || value.version !== TABULAR_BULK_PROFILE_VERSION || !text(value.profileId) || !text(value.sourceId) || !text(value.series)
-    || !Number.isSafeInteger(value.mappingVersion) || Number(value.mappingVersion) < 1)
+    || (value.mappingVersion !== undefined && (!Number.isSafeInteger(value.mappingVersion) || Number(value.mappingVersion) < 1)))
     return fail('宿主登记档案版本、编号、来源或系列不完整。');
   const confirmation = value.confirmation;
   if (!isWfdRecord(confirmation) || !allowed(confirmation, ['basis','confirmedBy','confirmedAtUtc'])
@@ -122,7 +123,8 @@ export function adaptSourceMinuteBulkProfile(input: FrozenSourceFieldProfile): F
   const tableContract = readTabularTableContract({ ...contract, digest: tabularDigest(contract) });
   const columns = profile.fields.map(({ originalHeader, aliases, fieldCode }) =>
     ({ originalHeader, ...(aliases === undefined ? {} : { aliases }), fieldCode }));
-  return freeze({ version: TABULAR_BULK_PROFILE_VERSION, profileId: profile.profileId, mappingVersion: profile.mappingVersion,
+  return freeze({ version: TABULAR_BULK_PROFILE_VERSION, profileId: profile.profileId,
+    ...(profile.mappingVersion === undefined ? {} : { mappingVersion: profile.mappingVersion }),
     sourceId: profile.sourceId, series: profile.series, confirmation: { ...profile.confirmation, confirmedBy: 'legacy-source-field-profile' },
     columns, tableContract, sourceFieldProfile: { profile, digest: input.digest, fingerprint: input.fingerprint } });
 }

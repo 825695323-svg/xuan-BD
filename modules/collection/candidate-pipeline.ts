@@ -15,12 +15,11 @@ import { projectNecessaryText, type NecessaryTextSelection } from './data-proces
 import { adapterColumnType, adapterConfigDigest, adapterMaterialTable, adapterParseEvidence, adapterTypeCompatible,
   parseEndpointSource, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
 
-export const CANDIDATE_PIPELINE_VERSION = 'bd-declared-table/4';
 export const CANDIDATE_LIMITS = Object.freeze({ maxOutputs: 16, maxOriginals: 32, maxObjectBytes: 268_435_456,
   maxStructuredBytes: 67_108_864, maxRows: 100_000, maxFields: 256, chunkBytes: 1_048_576 });
 export const CANDIDATE_SELECTION_LIMITS = Object.freeze({ maxSelectedRows: 5000, maxScannedRows: 2_000_000 });
 /**
- * 五步实现摘要：覆盖本模块与其实际调用的解析/投影/数值规则文件。
+ * 独立来源处理函数的实现摘要；只用于实际处理契约，不把重放绑定到固定五步。
  * 端点适配重放把它作为实现证据，任一实现变化都会使旧重放失效。
  */
 export function candidateImplementationDigest(): string {
@@ -106,7 +105,6 @@ export interface CandidateCheckEvidence {
   check_scope: string[]; gaps: string[]; sources: { source_sha256: string; row_count: number; selection?: CandidateCsvSelectionEvidence }[];
 }
 const fail = (code: string, message: string): never => { throw new TaskError(code, message); };
-const sha = (value: unknown) => wfdSha256(canonicalWfdJson(value));
 const scalar = (value: unknown) => value === null || typeof value === 'string' || typeof value === 'boolean'
   || typeof value === 'number' && Number.isFinite(value);
 const typeNames = ['string', 'safe_integer', 'decimal_string', 'boolean', 'binary64_hex'] as const;
@@ -332,14 +330,15 @@ export function annotateCandidateTable(structured: StructuredCandidateTable, ann
  * 核对步骤：合并已完成结构产物，核字段一致、行数、有限标量与输出摘要。
  * 只证明结构完整性；来源真实性、业务语义、单位与已列绑定之外的规则适用性及实现覆盖仍待核。
  */
-export function checkCandidateTables(tables: AnnotatedCandidateTable[]): { bytes: Buffer; rows: WfdRecord[]; evidence: CandidateCheckEvidence } {
+export function checkCandidateTables(tables: (AnnotatedCandidateTable | StructuredCandidateTable)[]): { bytes: Buffer; rows: WfdRecord[]; evidence: CandidateCheckEvidence } {
   if (!tables.length) fail('CANDIDATE_CHECK_SCOPE', '核对步骤至少需要一个已完成结构产物。');
-  const fieldsOf = (table: AnnotatedCandidateTable) => [...table.columns, ...Object.keys(table.annotations)];
+  const enabledAnnotations = (table: AnnotatedCandidateTable | StructuredCandidateTable) => table.kind === 'annotated-table' ? table.annotations : {};
+  const fieldsOf = (table: AnnotatedCandidateTable | StructuredCandidateTable) => [...table.columns, ...Object.keys(enabledAnnotations(table))];
   const first = tables[0]!, fields = fieldsOf(first);
   const rows: WfdRecord[] = [];
   for (const table of tables) {
     const role = table.columns.indexOf('text_role');
-    if ((role >= 0 && table.rows.some(row => row[role]?.value === 'necessary_condition') || table.annotations.text_role === 'necessary_condition') && !table.necessary_text_evidence)
+    if ((role >= 0 && table.rows.some(row => row[role]?.value === 'necessary_condition') || enabledAnnotations(table).text_role === 'necessary_condition') && !table.necessary_text_evidence)
       fail('NECESSARY_TEXT_REVIEW', '必要条件标签不是选择证明；须核定原文版本、完整段范围、用途和发布内容摘要。');
     if (table.necessary_text_evidence) {
       const contents = table.rows.map(row => Object.fromEntries(table.columns.map((name, index) => [name, row[index]!.value])));
@@ -350,7 +349,7 @@ export function checkCandidateTables(tables: AnnotatedCandidateTable[]): { bytes
     if (!table.rows.length) fail('CANDIDATE_CHECK_SCOPE', '结构产物没有数据行，不能形成完整表核对证明。');
     for (const row of table.rows) {
       if (row.length !== table.columns.length) fail('CANDIDATE_CHECK_FIELDS', '结构产物的行与字段数量不一致。');
-      const object: WfdRecord = Object.fromEntries([...table.columns.map((name, index) => [name, row[index]!.value]), ...Object.entries(table.annotations)]);
+      const object: WfdRecord = Object.fromEntries([...table.columns.map((name, index) => [name, row[index]!.value]), ...Object.entries(enabledAnnotations(table))]);
       for (const value of Object.values(object)) if (!scalar(value)) fail('CANDIDATE_CHECK_VALUE', '结构产物含非有限标量，未形成通过结果。');
       rows.push(object);
       if (rows.length > CANDIDATE_LIMITS.maxRows) fail('CANDIDATE_ROW_BUDGET', '合并后的完整表超过行数预算。');
@@ -370,40 +369,6 @@ export function checkCandidateTables(tables: AnnotatedCandidateTable[]): { bytes
       '已列绑定之外业务规则的适用性与实现覆盖未核定，未签发执行证明'],
     sources: tables.map(table => ({ source_sha256: table.source_sha256, row_count: table.total_rows,
       ...(table.selection ? { selection: table.selection } : {}) })) } };
-}
-
-/** 兼容既有候选路径：同一纯函数链一次完成五步，步骤仍由独立可调用函数产生。 */
-export function prepareCandidateTable(bytes: Uint8Array, plan: CandidateTablePlan) {
-  const parsed = parseTableSource(bytes, plan);
-  const cleaned = cleanCandidateTable(parsed, { trim: plan.trim ?? [], emptyToNull: plan.emptyToNull ?? [] });
-  const declaredTypes = plan.types && Object.keys(plan.types).length ? plan.types : undefined;
-  const structured = structureCandidateTable(cleaned, declaredTypes);
-  const annotated = annotateCandidateTable(structured, plan.annotations ?? {});
-  const checked = checkCandidateTables([annotated]);
-  const sourceParameters = { ...(plan.selection ? { selection: plan.selection } : {}), ...(plan.xlsxSelection ? { xlsxSelection: plan.xlsxSelection } : {}),
-    ...(plan.sourceProjection ? { sourceProjection: plan.sourceProjection } : {}), ...(plan.numericFormats ? { numericFormats: plan.numericFormats } : {}),
-    ...(plan.xbrlSelection ? { xbrlSelection: plan.xbrlSelection } : {}), ...(plan.necessaryTextSelection ? { necessaryTextSelection: plan.necessaryTextSelection } : {}),
-    ...(plan.sourceAdapter ? { sourceAdapter: { adapterId: plan.sourceAdapter.adapterId, version: plan.sourceAdapter.version,
-      configDigest: plan.sourceAdapter.configDigest } } : {}) };
-  const steps: WfdRecord[] = [
-    { stage: 'parse', version: parsed.adapter.version + ':' + parsed.adapter.id,
-      input_sha256: sha({ sha256: wfdSha256(bytes), format: plan.format, ...sourceParameters }),
-      output_sha256: sha(parsed), parameters: { fieldMapping: parsed.mapping, ...sourceParameters } },
-    { stage: 'clean', version: CANDIDATE_STAGE_VERSIONS.clean, input_sha256: sha(parsed), output_sha256: sha(cleaned),
-      parameters: { trim: parsed.trim, emptyToNull: parsed.emptyToNull } },
-    { stage: 'structure', version: CANDIDATE_STAGE_VERSIONS.structure, input_sha256: sha(cleaned), output_sha256: sha(structured),
-      parameters: { types: parsed.types } },
-    { stage: 'annotate', version: CANDIDATE_STAGE_VERSIONS.annotate, input_sha256: sha(structured), output_sha256: sha(annotated),
-      parameters: parsed.annotations },
-    { stage: 'check', version: CANDIDATE_STAGE_VERSIONS.check, input_sha256: sha(annotated), output_sha256: checked.evidence.structured_sha256,
-      parameters: { row_count: checked.evidence.row_count, fields: checked.evidence.fields, check_scope: checked.evidence.check_scope, gaps: checked.evidence.gaps } },
-  ];
-  return { bytes: checked.bytes, rows: checked.rows, steps, evidence: { version: CANDIDATE_PIPELINE_VERSION, source_sha256: wfdSha256(bytes),
-    plan, fields: checked.evidence.fields, row_count: checked.evidence.row_count, changes: cleaned.changes,
-    change_window_limit: cleaned.change_window_limit, type_changes: structured.type_changes,
-    type_changes_total: structured.type_changes_total, decimal_lexeme_changes_total: structured.decimal_lexeme_changes_total,
-    type_change_window_limit: structured.type_change_window_limit, type_changes_truncated: structured.type_changes_truncated,
-    check: checked.evidence, steps } };
 }
 
 function originalCell(cell: MaterialCell): MaterialScalar {

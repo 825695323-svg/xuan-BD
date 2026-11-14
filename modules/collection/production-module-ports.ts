@@ -44,8 +44,8 @@ export function processingSessionContract() {
     discovery: 'data.processing.capabilities', route: 'data.processing.route', plan: 'data.processing.plan',
     execute: 'data.processing.execute', status: 'data.processing.status', recover: 'data.processing.recover',
     moduleActions: PRODUCTION_MODULES.filter(module => stepModuleForAction(module.action) !== null).map(module => module.action),
-    feedback: '识别材料 → 只计划解析 → 单步执行并读回 → AGENTS按证据决定是否修订原计划或调用下一模块',
-    automaticCrossTrigger: false,
+    feedback: '识别材料和输入证据 → 选择一个必要模块 → 执行并返回实际结果 → AGENTS决定继续、修订或结束；数据类型不绑定处理模块',
+    automaticCrossTrigger: false, automaticFiveStages: false,
     recoveryPolicy: 'recover只核对本会话原计划的持久对象，不创建新计划；已完成步骤不重跑',
     legacyRecovery: { execute: 'data.processing.run',
       newTasks: false, scope: '仅未选择stages的历史批量计划；新计划必须单步执行并读取反馈' },
@@ -98,7 +98,7 @@ export function productionModuleDirectory(services: {
     modules, sharedWfdReader: 'R1Workspace.readProduct (bounded, fixed snapshot, single page)',
     sharedVerifier: 'production-verifier',
     sharedPublication: 'existing R1/WFD only', autoTrigger: false,
-    note: '八端口彼此并列且按需调用。AGENTS先识别、只执行解析并读取实际反馈，再按证据决定下一模块；后续依赖绑定在实际选择的处理步骤，不是固定五步。历史计划与 WFD 发布证明不被改写。' };
+    note: '八端口彼此并列且按需调用；输入产物类型只约束技术前置条件，不依据数据来源或业务类型自动绑定处理模块。AGENTS每次执行一个模块并读取实际产物，然后决定继续或结束。历史计划与 WFD 发布证明不被改写。' };
 }
 
 const fixed = (value: unknown): value is string => typeof value === 'string'

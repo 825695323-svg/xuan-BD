@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   readSourceFieldProfile, SourceFieldProfileStore, profileFingerprint, sourceFieldProfileDigest,
-  compareProfileSemantics, type SourceFieldProfile,
+  compareProfileSemantics, SemanticProductRegistryStore, type SourceFieldProfile,
 } from './source-field-profile.js';
 
 const sample = (changes: Record<string, unknown> = {}): SourceFieldProfile => ({
@@ -128,4 +128,55 @@ test('channel upgrades do not change source semantics; new tasks use one current
     throws(() => store.match({ sourceId: 'synthetic-a', series: 'daily.ohlcv' }));
     throws(() => readSourceFieldProfile(sample({ adapter: { ...ref('vendor.daily'), configDigest: 'latest' } }), 'invalid.json'));
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('semantic product registry distinguishes absent config from corrupt config', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'bd-semantic-registry-'));
+  const file = join(directory, 'semantic-products.json');
+  const fingerprint = 'f'.repeat(64);
+  try {
+    const store = new SemanticProductRegistryStore(file);
+    assert.equal(store.read(), null, '仅未配置文件才返回 null');
+    assert.equal(store.datasetFor(fingerprint), null);
+
+    writeFileSync(file, '{"version":');
+    assert.throws(() => store.read(), (error: unknown) =>
+      typeof error === 'object' && error !== null && 'code' in error
+      && error.code === 'SEMANTIC_PRODUCT_REGISTRY_INVALID',
+    '损坏的 JSON 不能被视作未登记');
+
+    writeFileSync(file, JSON.stringify({ version: 'bd.semantic-products/1', products: [] }));
+    assert.throws(() => store.datasetFor(fingerprint),
+      /语义产品登记.*没有产品条目/u, '不合法的产品清单必须阻断读取');
+
+    writeFileSync(file, JSON.stringify({ version: 'bd.semantic-products/1',
+      products: [{ fingerprint, datasetId: 'financial_daily' }] }));
+    assert.equal(store.datasetFor(fingerprint), 'financial_daily');
+    assert.equal(store.datasetFor('0'.repeat(64)), null, '合法登记中未命中的指纹仍是 null');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('new source-field profiles do not require adapter version, supersedes chain or mapping revision', () => {
+  const current = { ...sample() } as Partial<SourceFieldProfile>;
+  delete current.mappingVersion;
+  const accepted = readSourceFieldProfile(current, 'current.json');
+  assert.equal(Object.hasOwn(accepted, 'mappingVersion'), false);
+  assert.equal(accepted.adapter, undefined);
+  assert.equal(accepted.supersedes, undefined);
+  assert.equal(profileFingerprint(accepted), profileFingerprint(sample()),
+    'Business semantics remain identical across a removed historical mapping revision');
+});
+
+test('profile directory permission/shape errors must not be mistaken for missing profiles', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bd-profile-readable-'));
+  const file = join(root, 'not-a-directory');
+  try {
+    writeFileSync(file, 'ordinary file');
+    assert.throws(() => new SourceFieldProfileStore(file).list(), (error: unknown) =>
+      typeof error === 'object' && error !== null && 'code' in error
+      && error.code === 'SOURCE_FIELD_PROFILE_READ');
+    assert.deepEqual(new SourceFieldProfileStore(join(root, 'absent')).list(), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

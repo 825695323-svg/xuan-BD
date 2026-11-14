@@ -244,19 +244,6 @@ export function getStructuredOutput(artifact: CollectionArtifact): StructuredOut
   return jsonClone(requireKind(artifact, 'structured', 'structure').output);
 }
 
-export function runCollectionPipeline(input: RawArtifact, plan: CollectionPlan, registry: CollectionStepRegistry = DEFAULT_STEP_REGISTRY):
-  { state: 'succeeded'; traces: StepExecution[]; output: StructuredOutput } | { state: 'failed'; traces: StepExecution[]; failure: { stepId: string; code: string; message: string } } {
-  const traces: StepExecution[] = [];
-  let artifact: CollectionArtifact = input;
-  try {
-    for (const entry of plan.steps) { const execution = executeStep(entry.stepId, artifact, plan, registry); traces.push(execution); artifact = execution.output; }
-    return { state: 'succeeded', traces, output: getStructuredOutput(artifact) };
-  } catch (error) {
-    const failure = error instanceof CollectionPipelineError ? error : new CollectionPipelineError('plan', 'INVALID_PIPELINE', '内部加工计划或输入无效。');
-    return { state: 'failed', traces, failure: { stepId: failure.stepId, code: failure.code, message: failure.message } };
-  }
-}
-
 export function digestArtifact(value: unknown): string { return sha256(encodeArtifact(value)); }
 /** 持久化与交接证据使用这些确切字节，使摘要不依赖调用者的对象键插入顺序。 */
 export function encodeArtifact(value: unknown): Uint8Array {
