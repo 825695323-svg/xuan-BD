@@ -300,19 +300,24 @@ export class ConversationProcessingBridge {
       const declared = found.steps.find(step => step.stepId === stepId && step.kind === stage);
       if (!declared) throw new TaskError('PRODUCTION_MODULE_STEP_MISMATCH',
           '该计划没有所选模块对应步骤，不能改写冻结步骤类型。');
-      if (stage === 'parse' && declared.state === 'succeeded')
-        return { summary: '原解析步骤已经成功，复用原产物供AGENTS重新判断；没有重新解析或触发其他模块。',
-          data: view({ ...(this.planPreview(found) as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, stepId) }) };
+      // 已完成的每一类模块都返回自身实际产物反馈；不因再次调用而执行后续模块。
+      if (declared.state === 'succeeded') {
+        const feedback = this.stageFeedback(planId, stepId);
+        return { summary: '该模块已有完成产物，已交回AGENTS重新决策；没有重跑或自动调用下个模块。',
+          data: view({ ...(this.planPreview(found) as Record<string, JsonValue>), stepFeedback: feedback,
+            ...(stage === 'parse' ? { parsedPreview: feedback } : {}) }) };
+      }
       const task = service.executeStep(planId, stepId, this.operator(origin, context.task.id));
       this.link(task.id, task.id, origin, 'execution', planId);
       const done = await this.wait(context, task.id);
       authority.assert();
-      const result = this.taskResult('已按需执行所选独立加工模块，结果仍遵守原冻结计划前置证明。',
-        done, this.safePlan(planId));
-      if (stage === 'parse' && done.status === 'succeeded') return {
-        summary: '解析已完成并持久化；已将实际字段与有限原值样本交回AGENTS，后续处理由AGENTS重新决定。',
-        data: view({ ...(result.data as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, stepId) }) };
-      return result;
+      if (done.status === 'succeeded') {
+        const feedback = this.stageFeedback(planId, stepId);
+        return { summary: '当前模块已完成并持久化；真实结果已返回AGENTS，后续模块不会自动执行。',
+          data: view({ ...(this.planPreview(this.safePlan(planId), { taskId: task.id }) as Record<string, JsonValue>),
+            stepFeedback: feedback, ...(stage === 'parse' ? { parsedPreview: feedback } : {}) }) };
+      }
+      return this.taskResult('当前模块未完成；没有启动后续模块。', done, this.safePlan(planId));
     }
     if (!service) throw new TaskError('PROCESSING_UNAVAILABLE', '处理计划服务未装配。');
     if (action === 'data.processing.capabilities') {
@@ -359,18 +364,22 @@ export class ConversationProcessingBridge {
     if (action === 'data.processing.execute') {
       const selectedStepId = String(args.stepId ?? '');
       const current = service.get(planId).steps.find(step => step.stepId === selectedStepId);
-      if (current?.kind === 'parse' && current.state === 'succeeded')
-        return { summary: '返回原解析产物供AGENTS重新决策；没有重新执行。',
-          data: view({ ...(this.planPreview(service.get(planId)) as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, selectedStepId) }) };
+      if (current?.state === 'succeeded') {
+        const feedback = this.stageFeedback(planId, selectedStepId);
+        return { summary: '该步骤已经完成；只交回真实步骤产物供AGENTS决定下一步。',
+          data: view({ ...(this.planPreview(service.get(planId)) as Record<string, JsonValue>),
+            stepFeedback: feedback, ...(current.kind === 'parse' ? { parsedPreview: feedback } : {}) }) };
+      }
       const task = service.executeStep(planId, selectedStepId, operator);
-      // 只登记本分支刚创建的执行任务，status(taskId) 才能复核；不接受模型或 HTTP 自带的任务编号。
       this.link(task.id, task.id, origin, 'execution', planId);
       const done = await this.wait(context, task.id);
-      const result = this.taskResult('已按原计划执行单个步骤；完成产物与缺口以查询事实为准。', done, this.safePlan(planId));
-      if (current?.kind === 'parse' && done.status === 'succeeded') return {
-        summary: '解析单步已完成；实际字段与有限样本已交回AGENTS，不会自动执行后续模块。',
-        data: view({ ...(result.data as Record<string, JsonValue>), parsedPreview: this.parsedPreview(planId, selectedStepId) }) };
-      return result;
+      if (done.status === 'succeeded') {
+        const feedback = this.stageFeedback(planId, selectedStepId);
+        return { summary: '只执行了一个处理模块；结果已返回AGENTS，后续步骤等待明确选择。',
+          data: view({ ...(this.planPreview(this.safePlan(planId), { taskId: task.id }) as Record<string, JsonValue>),
+            stepFeedback: feedback, ...(current?.kind === 'parse' ? { parsedPreview: feedback } : {}) }) };
+      }
+      return this.taskResult('步骤未完成；没有推进其他模块。', done, this.safePlan(planId));
     }
     if (action === 'data.processing.run') {
       if (service.get(planId).outputs.some(output => output.stages !== null && output.stages !== undefined))
@@ -577,6 +586,45 @@ export class ConversationProcessingBridge {
       nextDecision: 'AGENTS must inspect this evidence, decide required modules, revise the original plan, and execute only one selected step.' });
   }
 
+  /** 每个模块完成后的有界反馈；只读取当前步骤已冻结的产物，不预测下个步骤。 */
+  private stageFeedback(planId: string, stepId: string): JsonValue {
+    const service = this.options.companion.processing!;
+    const step = service.get(planId).steps.find(item => item.stepId === stepId);
+    if (!step) throw new TaskError('PROCESSING_STEP_NOT_FOUND', '没有该计划中指定的处理步骤。');
+    if (step.state !== 'succeeded') return json({ kind: 'module_feedback', planId, stepId, state: step.state,
+      gaps: step.gaps, nextDecision: 'AGENTS must first inspect the actual pending, blocked or failed step status.' });
+    if (step.kind === 'parse') return this.parsedPreview(planId, stepId);
+
+    let artifact: unknown;
+    try { artifact = JSON.parse(service.artifact(planId, stepId).bytes.toString('utf8')); }
+    catch { throw new TaskError('PROCESSING_STEP_EVIDENCE', '完成步骤的持久产物不是有效 JSON，禁止据此继续流程。'); }
+    if (!isWfdRecord(artifact)) throw new TaskError('PROCESSING_STEP_EVIDENCE',
+      '完成步骤的产物结构无效，禁止以完成状态代替真实产物核对。');
+
+    const rows = Array.isArray(artifact.rows) ? artifact.rows : [];
+    const columns = Array.isArray(artifact.columns)
+      ? artifact.columns.filter((value): value is string => typeof value === 'string')
+      : Array.isArray(artifact.fields) ? artifact.fields.filter((value): value is string => typeof value === 'string')
+      : rows.length && isWfdRecord(rows[0]) ? Object.keys(rows[0]) : [];
+    const scalar = (value: unknown): JsonValue => {
+      const cell = isWfdRecord(value) && Object.hasOwn(value, 'value') ? value.value : value;
+      if (typeof cell === 'string') return cell.slice(0, 120);
+      return cell === null || typeof cell === 'boolean' || typeof cell === 'number' && Number.isFinite(cell) ? cell : null;
+    };
+    const sample = rows.slice(0, 3).map(row => Array.isArray(row)
+      ? Object.fromEntries(columns.slice(0, 12).map((name, index) => [name, scalar(row[index])]))
+      : isWfdRecord(row) ? Object.fromEntries(Object.entries(row).slice(0, 12).map(([name, value]) => [name, scalar(value)]))
+        : {});
+    return json({ kind: 'module_feedback', planId, stepId, module: step.kind, state: step.state,
+      outputDigest: step.outputDigest, rowCount: rows.length, fieldCount: columns.length, fields: columns.slice(0, 64),
+      sample, sampleTruncated: rows.length > 3 || columns.length > 12,
+      changesTotal: typeof artifact.changes_total === 'number' ? artifact.changes_total : null,
+      typeChangesTotal: typeof artifact.type_changes_total === 'number' ? artifact.type_changes_total : null,
+      normalization: step.normalization, checkScope: step.checkScope, gaps: step.gaps,
+      dataQuality: 'requires_contextual_review', publication: 'not_requested',
+      nextDecision: 'AGENTS must inspect this module result, then choose the next necessary module or stop; no automatic five-stage chain.' });
+  }
+
   private taskResult(summary: string, task: TaskRecord, found: unknown): TaskResult {
     if (task.status !== 'succeeded') return { summary: `${summary} 原任务状态：${task.status}。`,
       data: view({ taskId: task.id, status: task.status, error: task.error ?? null, plan: found ?? null }) };
@@ -598,7 +646,7 @@ export class ConversationProcessingBridge {
         format: material.format, support: material.support, custodyState: material.custodyState, routingState: material.routingState, gaps: material.gaps,
         dimensions: this.dimensions(material.dimensions) })),
       outputs: output.map(item => ({ outputId: item.outputId, materialIds: item.materialIds, stages: item.stages ?? null,
-        awaitingAgentDecision: Array.isArray(item.stages) && !item.stages.includes('check'), intendedAction: item.intendedAction,
+        awaitingAgentDecision: Array.isArray(item.stages), intendedAction: item.intendedAction,
         target: item.target, routingState: item.routingState, state: item.state, gaps: item.gaps, semanticGaps: item.semanticGaps,
         publishEligible: item.publishEligible, evidenceScope: item.evidenceScope, steps: item.steps })),
       steps: steps.map(step => this.step(step)), decision,
