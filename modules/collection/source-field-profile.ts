@@ -204,7 +204,7 @@ export const profileSignature = (profile: SourceFieldProfile): SemanticSignature
 });
 export const profileFingerprint = (profile: SourceFieldProfile): string => wfdSha256(canonicalWfdJson(profileSignature(profile)));
 
-/** G5 查询与跨来源比较复用同一处证据不足规则。 */
+/** 语义词典查询与跨来源比较复用同一处证据不足规则。 */
 export function profileSemanticGaps(profile: SourceFieldProfile): string[] {
   const gaps: string[] = [];
   if (profile.adjustment.status === 'unknown') gaps.push('复权状态未知；不能跨来源认定等价。');
@@ -270,7 +270,7 @@ export function compareProfileSemantics(left: SourceFieldProfile, right: SourceF
     reasons: [...new Set([...differences, ...gaps])], differences, gaps };
 }
 
-/** 指纹 → 正式数据集；登记不代替 G5 或正式 WFD 目标验证。 */
+/** 指纹 → 正式数据集；登记不代替语义词典或正式 WFD 目标验证。 */
 export interface SemanticProductRegistry {
   version: 'bd.semantic-products/1';
   products: { fingerprint: string; datasetId: string; note?: string; registeredAtUtc?: string }[];
