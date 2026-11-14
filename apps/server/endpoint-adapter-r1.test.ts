@@ -134,6 +134,14 @@ test('适配原件经普通 R1 发布及固定读回', { skip: !enabled, timeout
     const item = view.items[0]!;
     assert.equal(item.state, 'associated', JSON.stringify(item));
     const auto = item.auto as R1AutoView;
+    const selectedPlan = host.services.processing!.get(auto.planIds.at(-1)!);
+    assert.deepEqual(selectedPlan.steps.map(step => step.kind),
+      selectedPlan.outputs[0]!.stages, 'R1 only creates modules explicitly required by its publication contract');
+    assert.ok(['parse', 'structure', 'check'].every(kind => selectedPlan.steps.some(step => step.kind === kind)));
+    assert.equal(auto.taskIds.some(taskId => host.services.tasks.get(taskId).action === 'data.processing.run'), false,
+      'new R1 auto handoff must never use the legacy bulk entry');
+    assert.ok(auto.taskIds.some(taskId => host.services.tasks.get(taskId).action === 'data.processing.execute'),
+      'new R1 auto handoff must use individual persisted module tasks');
     const associations = auto.currentRequest!.local.associations as WfdRecord[];
     assert.equal(associations.length, 3);
 
