@@ -107,7 +107,7 @@ export class R1AutoBatchService {
     if (same) {
       const original = JSON.parse(String(same.record_json)) as BatchRecord;
       this.assertReuseContext(original);
-      this.db.prepare('INSERT INTO r1_auto_batch_aliases VALUES(?,?)').run(batchId, original.input.batchId);
+      // 同一冻结输入直接返回已有规范批次编号；不为每次重试追加永久别名。
       return { ...this.view(original), duplicateBatch: true };
     }
     this.assertDispatch();
@@ -123,12 +123,10 @@ export class R1AutoBatchService {
       const custodySha256 = wfdSha256(canonicalWfdJson({ file, source: { ...input.source, requested_url: requestedUrl },
         datasetId: input.datasetId, datePolicy: input.datePolicy ?? null, sourceValueColumns: input.sourceValueColumns ?? null, connection,
         ...(adapter ? { adapter: { adapterId: adapter.adapterId, version: adapter.version, configDigest: adapter.configDigest } } : {}) }));
-      // 旧条目用保管摘要做交接身份。仅当其所属批次的冻结模板与本次一致时沿用。
-      const legacy = this.entry(custodySha256);
+      // 新批次使用唯一交接身份：真实保管输入 + 来源上下文。旧摘要只留在冻结历史记录中。
       const sourceContextTemplate = input.sourceContextTemplate ?? null;
-      const reuseLegacy = canonicalWfdJson(legacy?.sourceContextTemplate ?? null) === canonicalWfdJson(sourceContextTemplate);
-      const entrySha256 = reuseLegacy ? custodySha256 : wfdSha256(canonicalWfdJson({ custodySha256, sourceContextTemplate }));
-      const local = items.find(item => item.entrySha256 === entrySha256), known = reuseLegacy ? legacy : this.entry(entrySha256);
+      const entrySha256 = wfdSha256(canonicalWfdJson({ custodySha256, sourceContextTemplate }));
+      const local = items.find(item => item.entrySha256 === entrySha256), known = this.entry(entrySha256);
       items.push({ ...file, entrySha256, requestedUrl, itemId: `item-${index + 1}`,
         uploadRequestId: `batch-upload:${custodySha256}`, autoRequestId: `batch-auto:${entrySha256}`,
         custodyTaskId: null, materialId: null, stage: 'awaiting_upload', error: null, policyAnswers: {},
