@@ -164,6 +164,18 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
     });
     const bind = (configDigest: string, adapterId: string, version = '1') => ({ adapterId, version, configDigest });
 
+    // 明确 [] 只保管来源原件；即使已经提供表格与适配器，也不自动创建解析或固定五步。
+    const custodyOnly = planInput('no-processing', eastmoneyId, { adapterId: 'eastmoney.kline.daily' });
+    custodyOnly.outputs[0]!.stages = [];
+    const custodyTask = await host.call('/processing/plans',
+      { requestId: 'explicit-no-processing', input: custodyOnly }, 202);
+    const custodyDone = await host.settled(custodyTask.jobId);
+    assert.equal(custodyDone.status, 'succeeded', JSON.stringify(custodyDone.error));
+    const custodyId = host.services.processing!.getByTask(custodyDone.id)!.plan!.planId;
+    const custodyPlan = host.services.processing!.get(custodyId);
+    assert.deepEqual(custodyPlan.steps, [], 'Only the selected module set may generate execution steps');
+    assert.equal(custodyPlan.outputs[0]!.state, 'custody_only');
+
     // 未采用版本不能进入计划。
     await rejected(host, '/processing/plans', { requestId: 'plan-unadopted',
       input: planInput('observations', eastmoneyId, bind(eastmoney.adopted.configDigest, 'eastmoney.kline.daily', '2')) },
@@ -346,6 +358,9 @@ test('端点适配首批闭环：三载体经普通 HTTP 入口进入原五步�
     assert.equal((currentParse.parameters as any).sourceAdapter.configDigest, v2.adopted.configDigest);
     assert.equal(host.services.endpointAdapters!.latestAdopted('eastmoney.kline.daily')?.version, '2',
       '稳定适配器编号始终指向最新已采用实现；此前已冻结任务无需重新适配');
+    const retired = host.services.endpointAdapters!.list('eastmoney.kline.daily')
+      .find(item => item.version === '1');
+    assert.equal(retired?.status, 'retired', 'Old adopted configurations must stop being active for new requests');
     assert.equal((reloaded.steps.find((step: { kind: string }) => step.kind === 'parse')!.parameters as any)
       .sourceAdapter.version, '1', '旧任务保留冻结解释，升级不回写或重算既有行');
     assert.notEqual(v2Run.plan.steps.find((step: { kind: string }) => step.kind === 'parse')!.specDigest,
