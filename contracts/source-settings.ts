@@ -19,6 +19,22 @@ export interface SourceOperationView {
   id: SourceOperationId; label: string; dataCapability: SourceDataCapability; assetScope: SourceAssetScope;
   run: { action: 'source.kline.read' | 'source.api.read' } | { action: 'source.fetch'; sourceId: 'tdx' };
 }
+
+export interface SourceCandidateFeedback {
+  contract: 'bd.source-candidate-feedback/1';
+  logicalRequest: { scopeId: string; operationId: SourceOperationView['id'];
+    subjectId: string | null; start: string | null; end: string | null; adjustment: string | null };
+  actualSource: { providerId: string; connectionId: string };
+  observation: { state: 'rows_observed' | 'empty_unconfirmed' | 'raw_only';
+    rowCount: number | null; acquiredAtUtc: string };
+  coverage: { actualStart: string | null; actualEnd: string | null; completeness: 'not_established' };
+  evidence: { originalRefs: { fileRefId: string; sha256: string }[] };
+  semanticStatus: 'not_verified';
+  gaps: string[];
+  next: 'return_to_agents';
+  publication: 'not_requested';
+}
+
 export interface CaptureSourceSetting {
   sourceId: CaptureSourceId; enabled: boolean; operation: string;
   parameters: Record<string, string | number>; watchTargets: string[];

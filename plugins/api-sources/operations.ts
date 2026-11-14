@@ -1,4 +1,4 @@
-import type { SourceOperationView } from '../../contracts/source-settings.js';
+import type { SourceCandidateFeedback, SourceOperationView } from '../../contracts/source-settings.js';
 import { publicKlineProvider, publicKlineProviders } from './public-kline.js';
 
 /**
@@ -35,20 +35,6 @@ export function sourceOperationsForAction(action: SourceOperationView['run']['ac
 
 
 /** 来源回执的统一、有界候选反馈。原件保管成功不等于业务数据完整、等价或已发布。 */
-export interface SourceCandidateFeedback {
-  contract: 'bd.source-candidate-feedback/1';
-  logicalRequest: { scopeId: string; operationId: SourceOperationView['id'];
-    subjectId: string | null; start: string | null; end: string | null; adjustment: string | null };
-  actualSource: { providerId: string; connectionId: string };
-  observation: { state: 'rows_observed' | 'empty_unconfirmed' | 'raw_only';
-    rowCount: number | null; acquiredAtUtc: string };
-  coverage: { actualStart: string | null; actualEnd: string | null; completeness: 'not_established' };
-  evidence: { originalRefs: { fileRefId: string; sha256: string }[] };
-  semanticStatus: 'not_verified';
-  gaps: string[];
-  next: 'return_to_agents';
-  publication: 'not_requested';
-}
 
 /** 只投影当前真实已获得的证据；不按数据类型创建清洗任务或推断行情交易日覆盖。 */
 export function sourceCandidateFeedback(input: {
