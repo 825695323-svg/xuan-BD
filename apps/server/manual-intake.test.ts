@@ -31,7 +31,7 @@ const choice = { sheetName: 'Test', headerRow: 1, firstDataRow: 2, lastDataRow: 
   columns: [{ column: 'A', header: '标识', name: 'key', type: 'string' }, { column: 'B', header: '原值', name: 'value', type: 'decimal_string' }] };
 const workbookBytes = () => fixture('<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>标识</t></is></c><c r="B1" t="inlineStr"><is><t>原值</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>000001</t></is></c><c r="B2"><v>1.2300</v></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>000002</t></is></c><c r="B3"><v>9007199254740993</v></c></row></sheetData>');
 
-test('手动投喂：XLSX明确选区进入五步，原位证据与派生偏移分开，重开可读且选区改变不复用旧解析',
+test('手动投喂：XLSX按需选择模块，原位证据与派生偏移分开，重开可读且选区改变不复用旧解析',
   { skip: !process.env.XUAN_FULL_CHAIN_ROOT ? 'Requires a dedicated isolated output root.' : false }, async () => {
     const f = createFullChainFixture({ name: 'manual-xlsx' }); let h = await openFullChainHost(f);
     try {
@@ -43,12 +43,18 @@ test('手动投喂：XLSX明确选区进入五步，原位证据与派生偏移�
       const run = async (requestId: string, selection: typeof choice) => {
         const accepted = await h.call('/processing/plans', { requestId, input: {
           routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'selected', materialIds: [materialId],
-            intendedAction: 'inspect', tables: [{ materialId, format: 'xlsx', xlsxSelection: selection }] }],
+            intendedAction: 'inspect', stages: ['parse','structure','check'], tables: [{ materialId, format: 'xlsx', xlsxSelection: selection }] }],
         } }, 202);
         const planned = await h.settled(accepted.jobId); assert.equal(planned.status, 'succeeded', JSON.stringify(planned.error));
         const planId = h.services.processing!.getByTask(planned.id)!.plan!.planId;
-        const executed = await h.call(`/processing/plans/${planId}/run`, { requestId: requestId + '-run' }, 202);
-        const done = await h.settled(executed.jobId); assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
+        for (const kind of ['parse','structure','check']) {
+          const step = h.services.processing!.get(planId).steps.find(item => item.kind === kind)!;
+          const execution = await h.call(`/processing/plans/${planId}/steps/${step.stepId}/execute`,
+            { requestId: requestId + '-' + kind }, 202);
+          const done = await h.settled(execution.jobId);
+          assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
+          assert.equal(h.services.processing!.get(planId).steps.find(item => item.stepId === step.stepId)?.state, 'succeeded');
+        }
         return h.services.processing!.get(planId);
       };
       const first = await run('xlsx-selection-one', choice), parse = first.steps.find(x => x.kind === 'parse')!;
@@ -82,7 +88,7 @@ test('手动投喂：未知二进制、代码与JSON信封保管后停在本地�
         assert.equal(h.services.materials!.readOriginal(material.envelope.materialId).sha256, wfdSha256(sample.bytes));
         const accepted = await h.call('/processing/plans', { requestId: sample.name + '-plan', input: {
           routing: { materials: [{ materialId: material.envelope.materialId, intendedAction: 'inspect' }] },
-          outputs: [{ outputId: 'local', materialIds: [material.envelope.materialId], intendedAction: 'inspect', tables: [{ materialId: material.envelope.materialId, format: 'json' }] }],
+          outputs: [{ outputId: 'local', materialIds: [material.envelope.materialId], intendedAction: 'inspect', stages: ['parse'], tables: [{ materialId: material.envelope.materialId, format: 'json' }] }],
         } }, 202);
         const task = await h.settled(accepted.jobId); assert.equal(task.status, 'succeeded', JSON.stringify(task.error));
         const plan = h.services.processing!.getByTask(task.id)!.plan!;
