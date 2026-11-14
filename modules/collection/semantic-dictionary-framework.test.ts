@@ -165,7 +165,10 @@ test('conversation dictionary only invokes the requested reader and returns cont
     assert.equal(sourceReads, 1);
     assert.equal(definitionReads, 1);
     assert.equal(dataReads, 0);
-    for (const args of [{ sourceQueryJson, groupId: 'market' }, { wfdRefJson, groupId: 'market' }, { sourceQueryJson, wfdRefJson }])
+    const mixedRequests: Record<string, string>[] = [
+      { sourceQueryJson, groupId: 'market' }, { wfdRefJson, groupId: 'market' }, { sourceQueryJson, wfdRefJson },
+    ];
+    for (const args of mixedRequests)
       await assert.rejects(bridge.execute(context as never, action.action, args), code('PRODUCTION_SEMANTIC_SOURCE_QUERY'));
     assert.equal(sourceReads, 1);
     assert.equal(definitionReads, 1);
