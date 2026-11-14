@@ -59,8 +59,7 @@ try {
     const files = pipelineOnly
       ? ['modules/collection/source-field-profile.test.ts',
         'modules/collection/source-reported-table.test.ts',
-        'modules/collection/financial-value-contracts.test.ts',
-        'apps/server/financial-value-contracts.test.ts',
+        'modules/collection/semantic-dictionary-framework.test.ts',
         'apps/server/endpoint-adapter-chain.test.ts',
         'apps/server/endpoint-adapter-r1.test.ts']
       : [...['modules/collection', 'modules/collection/data-processing', 'apps/server', 'platform/config', 'platform/resources',
@@ -75,8 +74,10 @@ try {
     // pytest 会清空 basetemp；只给本轮刚创建的唯一空目录，绝不复用或清空旧证据目录。
     const baseTemp = mkdtempSync(join(testRoot ?? absolute(tmpdir()), 'pytest-unit-'));
     const cacheRoot = join(baseTemp, 'isolated-pycache');
+    // Non-isolated child test processes inherit the same fresh read-cache prefix.
     env.PYTHONPYCACHEPREFIX = cacheRoot;
     // -I removes ambient imports; -B alone would still read old compiled tests.
+    // Keep pythonpath relative to the pinned root so spaces are not split by ini parsing.
     run(python, isolatedPythonArgs(cacheRoot, ['-m', 'pytest', '-q', '-p', 'no:cacheprovider', '--rootdir', codeRoot,
       '-o', 'pythonpath=wfd/product', 'wfd/product/tests', '-m', 'not integration', '--basetemp', baseTemp]));
   }

@@ -1,13 +1,6 @@
-/** Public field contract. Runtime numeric validation lives in the existing numeric-format module. */
-export interface DecimalPrecision {
-  /** Total decimal digits, including fractional capacity. */
-  precision: number;
-  scale: number;
-  /** Other rounding modes require independently verified semantics before admission. */
-  rounding: 'reject';
-}
-
-/** UTC metadata is an explicit instant, never a date silently promoted to midnight. */
+/** UTC metadata is an explicit instant, never a date silently promoted to midnight.
+ * Field precision and rounding are deferred; this module does not implement numeric conversion.
+ */
 export function isExplicitUtcInstant(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   const matched = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/u.exec(value);
