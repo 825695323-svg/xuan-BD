@@ -15,12 +15,11 @@ import { projectNecessaryText, type NecessaryTextSelection } from './data-proces
 import { adapterColumnType, adapterConfigDigest, adapterMaterialTable, adapterParseEvidence, adapterTypeCompatible,
   parseEndpointSource, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
 
-export const CANDIDATE_PIPELINE_VERSION = 'bd-declared-table/4';
 export const CANDIDATE_LIMITS = Object.freeze({ maxOutputs: 16, maxOriginals: 32, maxObjectBytes: 268_435_456,
   maxStructuredBytes: 67_108_864, maxRows: 100_000, maxFields: 256, chunkBytes: 1_048_576 });
 export const CANDIDATE_SELECTION_LIMITS = Object.freeze({ maxSelectedRows: 5000, maxScannedRows: 2_000_000 });
 /**
- * 独立处理函数实现摘要：覆盖解析/投影/数值规则，不定义自动执行顺序。
+ * 独立来源处理函数的实现摘要；只用于实际处理契约，不把重放绑定到固定五步。
  * 端点适配重放把它作为实现证据，任一实现变化都会使旧重放失效。
  */
 export function candidateImplementationDigest(): string {

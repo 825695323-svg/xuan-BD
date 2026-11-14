@@ -58,6 +58,7 @@ try {
     // 在 JS 中枚举，避免 Windows shell 不展开通配符或空匹配导致 Node 自动发现其他测试。
     const files = pipelineOnly
       ? ['modules/collection/source-field-profile.test.ts',
+        'modules/collection/source-reported-table.test.ts',
         'apps/server/endpoint-adapter-chain.test.ts',
         'apps/server/endpoint-adapter-r1.test.ts']
       : [...['modules/collection', 'modules/collection/data-processing', 'apps/server', 'platform/config', 'platform/resources',

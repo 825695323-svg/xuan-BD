@@ -959,6 +959,8 @@ export class ProcessingPlanService {
     stages: ProcessingStepKind[] | null): StepSpec[] {
     const steps: StepSpec[] = [], lastBySource: string[] = [];
     const selected = (kind: ProcessingStepKind) => stages === null || stages.includes(kind);
+    // 显式不处理时只保存原件和用途；不得因存在表源而隐式创建解析步骤。
+    if (stages?.length === 0) return steps;
     tables.forEach((table, index) => {
       const factsById = new Map(facts.map(fact => [fact.materialId, fact]));
       const fact = factsById.get(table.materialId)!;
