@@ -333,12 +333,13 @@ export function annotateCandidateTable(structured: StructuredCandidateTable, ann
  */
 export function checkCandidateTables(tables: (AnnotatedCandidateTable | StructuredCandidateTable)[]): { bytes: Buffer; rows: WfdRecord[]; evidence: CandidateCheckEvidence } {
   if (!tables.length) fail('CANDIDATE_CHECK_SCOPE', '核对步骤至少需要一个已完成结构产物。');
-  const fieldsOf = (table: AnnotatedCandidateTable | StructuredCandidateTable) => [...table.columns, ...Object.keys(table.annotations)];
+  const enabledAnnotations = (table: AnnotatedCandidateTable | StructuredCandidateTable) => table.kind === 'annotated-table' ? table.annotations : {};
+  const fieldsOf = (table: AnnotatedCandidateTable | StructuredCandidateTable) => [...table.columns, ...Object.keys(enabledAnnotations(table))];
   const first = tables[0]!, fields = fieldsOf(first);
   const rows: WfdRecord[] = [];
   for (const table of tables) {
     const role = table.columns.indexOf('text_role');
-    if ((role >= 0 && table.rows.some(row => row[role]?.value === 'necessary_condition') || table.annotations.text_role === 'necessary_condition') && !table.necessary_text_evidence)
+    if ((role >= 0 && table.rows.some(row => row[role]?.value === 'necessary_condition') || enabledAnnotations(table).text_role === 'necessary_condition') && !table.necessary_text_evidence)
       fail('NECESSARY_TEXT_REVIEW', '必要条件标签不是选择证明；须核定原文版本、完整段范围、用途和发布内容摘要。');
     if (table.necessary_text_evidence) {
       const contents = table.rows.map(row => Object.fromEntries(table.columns.map((name, index) => [name, row[index]!.value])));
@@ -349,7 +350,7 @@ export function checkCandidateTables(tables: (AnnotatedCandidateTable | Structur
     if (!table.rows.length) fail('CANDIDATE_CHECK_SCOPE', '结构产物没有数据行，不能形成完整表核对证明。');
     for (const row of table.rows) {
       if (row.length !== table.columns.length) fail('CANDIDATE_CHECK_FIELDS', '结构产物的行与字段数量不一致。');
-      const object: WfdRecord = Object.fromEntries([...table.columns.map((name, index) => [name, row[index]!.value]), ...Object.entries(table.annotations)]);
+      const object: WfdRecord = Object.fromEntries([...table.columns.map((name, index) => [name, row[index]!.value]), ...Object.entries(enabledAnnotations(table))]);
       for (const value of Object.values(object)) if (!scalar(value)) fail('CANDIDATE_CHECK_VALUE', '结构产物含非有限标量，未形成通过结果。');
       rows.push(object);
       if (rows.length > CANDIDATE_LIMITS.maxRows) fail('CANDIDATE_ROW_BUDGET', '合并后的完整表超过行数预算。');
