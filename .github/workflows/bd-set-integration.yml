@@ -12,9 +12,6 @@ jobs:
     timeout-minutes: 20
     env:
       SOURCE_HEAD: ${{ github.event.pull_request.head.sha }}
-      XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/r
-      XUAN_TEST_ROOT: ${{ runner.temp }}/r-tests
-      XUAN_REVIEW_VISUAL_ROOT: ${{ runner.temp }}/bd-set-visual
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -30,6 +27,9 @@ jobs:
           import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
           repo='825695323-svg/xuan-BD'
           assert os.environ['GITHUB_REPOSITORY']==repo
+          with open(os.environ['GITHUB_ENV'],'a') as env:
+              for key,folder in [('XUAN_FULL_CHAIN_ROOT','r'),('XUAN_TEST_ROOT','r-tests'),('XUAN_REVIEW_VISUAL_ROOT','bd-set-visual')]:
+                  env.write(key+'='+str(pathlib.Path(os.environ['RUNNER_TEMP'])/folder)+'\n')
           base='f6760b7339e8e802f21f1886550c5122c4cf470d'
           subprocess.run(['git','fetch','--no-tags','origin',base,'--depth=1'],check=True)
           changed=subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines()
