@@ -18,15 +18,16 @@ jobs:
         env:
           EXPECTED_TREE: 7f037a3820c3edb5a20a105f32ba63a93a06764b
         run: |
-          test "$(git rev-parse HEAD^)" = ae64552ecefd598e11071db09ca9d85e8accf031
+          test "$(git rev-parse HEAD^)" = 876583ebd4bbac24589a1227f8e26510064d64e6
           python3 - <<'PY'
           import base64, hashlib, os, pathlib, subprocess, tempfile, zlib
           first = pathlib.Path('.github/history-transfer-1.bin').read_bytes()
           second = base64.b64encode(pathlib.Path('.github/history-transfer-2.bin').read_bytes()).decode()
-          # Recover three verified transport transcription characters; the full patch digest and source tree are mandatory.
+          # Recover verified transport characters; the complete patch digest and final source tree remain mandatory.
           for old, new in [('SC4V+VBy', 'SC4V+FWBy'), ('C98uHTpS9M34', 'C98uHTpS34'), ('nn7cuPpV9f57', 'nn7cuPpV/f57')]:
               assert second.count(old) == 1
               second = second.replace(old, new)
+          second += '=' * (-len(second) % 4)
           patch = zlib.decompress(first + base64.b64decode(second))
           assert hashlib.sha256(patch).hexdigest() == '5c6dbebe2a39714d27ce9900dec4eb7682f9b64f247ee1fe47e3c71e59dd7997'
           subprocess.run(['git', 'apply', '--check', '--index', '-'], input=patch, check=True)
