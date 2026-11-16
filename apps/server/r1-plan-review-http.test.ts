@@ -30,7 +30,7 @@ function recipe(outputId: string): Omit<R1PrepareInput, 'requestId' | 'planId'> 
         semantic_context: { version: 'wfd.semantic-context/1.0', content_nature: 'observed_fact',
           time: { period_type: 'natural', frequency: 'day', interval: 'half_open', timezone: 'Asia/Shanghai' },
           statistical: { price_basis: 'nominal', period_aggregation: 'period' }, financial: { price_adjustment: { direction: 'raw' } } },
-        field_semantic_context: { volume: { measurement: { aggregation: 'period_total' } }, amount: { measurement: { aggregation: 'period_total' } } } } } } };
+        field_semantic_context: { volume: { measurement: { aggregation: 'period_total' } }, amount: { measurement: { aggregation: 'period_total' } } } } } };
 }
 
 test('HTTP multi-output review retains failed peer; selected confirmation publishes once and reopens fixed original receipt', isolated, async () => {
