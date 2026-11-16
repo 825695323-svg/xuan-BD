@@ -291,3 +291,29 @@ test('actual HTTP/WFD withdrawal uses independent announcement time without rewr
       assert.deepEqual(values(await host.call('/r1/products/read', { ...selection, at: '2025-01-21T12:00:00Z' })), {});
     } finally { await host.close(); }
   });
+
+
+test('actual historical projection rejects future-added fields while preserving explicitly compatible historical fields',
+  { skip: !enabled ? 'Requires isolated WFD_PYTHON and XUAN_FULL_CHAIN_ROOT.' : false, timeout: 180_000 }, async () => {
+    const fixture = createFullChainFixture({ name: 'r1-history-metadata', machine: true });
+    const host = await openFullChainHost(fixture);
+    try {
+      const first = await publish(host, document('metadata-original', [row('old', '10', second('2025-01-02T08:00:00Z'))]));
+      const laterRow = row('new', '20', second('2025-02-02T08:00:00Z'));
+      (laterRow.values as WfdRecord).extra = { data_type: 'decimal', value_state: 'valid_value', value: '30' };
+      const later = document('metadata-additive', [laterRow], first.snapshotId);
+      ((later.outputs as WfdRecord[])[0]!.definition as WfdRecord).field_definitions = [
+        ...definition.field_definitions, { field_code: 'extra', data_type: 'decimal', unit_code: 'count', measurement_nature: 'flow', time_role: 'observation' }];
+      const secondPublication = await publish(host, later);
+      assert.equal(secondPublication.productId, first.productId, 'Compatible additive definition retains product identity');
+      const selected = { snapshotId: secondPublication.snapshotId, productId: first.productId,
+        historyMode: 'market_known_at', at: '2025-01-10T12:00:00Z' };
+      const old = await host.call('/r1/products/read', { ...selected, fields: ['amount'] });
+      assert.equal(values(old).old, '10');
+      const mixed = await host.call('/r1/products/read', selected, 409);
+      assert.equal(mixed.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED');
+      const explicitFuture = await host.call('/r1/products/read', { ...selected, fields: ['extra'] }, 409);
+      assert.equal(explicitFuture.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED');
+      assert.equal(values(await host.call('/r1/products/read', { ...selected, snapshotId: first.snapshotId })).old, '10');
+    } finally { await host.close(); }
+  });
