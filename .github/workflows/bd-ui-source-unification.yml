@@ -14,6 +14,7 @@ on:
       - 'apps/server/ui-routes.ts'
       - 'apps/server/attachment-upload.ts'
       - 'contracts/source-settings.ts'
+      - 'contracts/source-acquisition.ts'
       - 'contracts/contracts.ts'
       - 'contracts/upload-limits.ts'
       - 'modules/collection/accept-material.ts'
@@ -58,6 +59,7 @@ jobs:
         run: |
           node --import tsx --test \
             plugins/api-sources/source-routing.test.ts \
+            plugins/api-sources/source-acquisition.test.ts \
             apps/web/src/ui/sourceSettingsClient.test.ts \
             apps/web/src/ui/PageUI.test.tsx \
             apps/web/src/ui/logic-cleanup.test.tsx \

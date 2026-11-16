@@ -1,6 +1,7 @@
 import type { CredentialReference } from '../platform/config/model.js';
 import type { JsonValue, TaskRecord } from './task-contracts.js';
 import type { CaptureSourceId } from '../plugins/capture-sources/contracts.js';
+import type { SourceReceiptReview } from './source-acquisition.js';
 
 export type SourceDataKind = 'minute_bars' | 'announcement' | 'index_change';
 export interface SourceScope { id: string; country: string; market: string; label: string }
@@ -12,7 +13,8 @@ export interface SourceConnection {
   feedIds?: string[];
 }
 export interface SourcePolicy { scopeId: string; enabled: boolean; mode: 'inherit' | 'override'; primary: string | null; backups: string[] }
-export type SourceOperationId = 'minute_bars' | 'daily_bars' | 'index_constituents';
+export const SOURCE_OPERATION_IDS = ['minute_bars', 'daily_bars', 'index_constituents'] as const;
+export type SourceOperationId = typeof SOURCE_OPERATION_IDS[number];
 export interface SourceOperationPolicy { scopeId: string; operationId: SourceOperationId; primary: string | null; backups: string[] }
 /** 来源操作同时描述可见能力与已登记的真实执行器，禁止页面自行分派。 */
 export interface SourceOperationView {
@@ -30,6 +32,8 @@ export interface SourceCandidateFeedback {
   coverage: { actualStart: string | null; actualEnd: string | null; completeness: 'not_established' };
   evidence: { originalRefs: { fileRefId: string; sha256: string }[] };
   semanticStatus: 'not_verified';
+  /** 由实际下载回执产生；不虚构尚未装配的游标或覆盖声明。 */
+  acquisition?: SourceReceiptReview;
   gaps: string[];
   next: 'return_to_agents';
   publication: 'not_requested';

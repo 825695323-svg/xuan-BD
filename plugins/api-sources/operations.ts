@@ -1,5 +1,6 @@
 import type { SourceCandidateFeedback, SourceOperationView } from '../../contracts/source-settings.js';
 import { publicKlineProvider, publicKlineProviders } from './public-kline.js';
+import { sourceReceiptReview } from './source-acquisition.js';
 
 /**
  * 唯一的接口操作目录：页面展示的操作与服务端路由使用同一份声明。
@@ -33,9 +34,6 @@ export function sourceOperationsForAction(action: SourceOperationView['run']['ac
     .map(operation => [operation.id, operation])).values()];
 }
 
-
-/** 来源回执的统一、有界候选反馈。原件保管成功不等于业务数据完整、等价或已发布。 */
-
 /** 只投影当前真实已获得的证据；不按数据类型创建清洗任务或推断行情交易日覆盖。 */
 export function sourceCandidateFeedback(input: {
   scopeId: string; operationId: SourceOperationView['id']; providerId: string; connectionId: string;
@@ -50,17 +48,17 @@ export function sourceCandidateFeedback(input: {
   if (!input.originals.length || input.originals.some(item => !item.fileRefId || !/^[a-f0-9]{64}$/u.test(item.sha256)))
     throw new Error('SOURCE_CANDIDATE_EVIDENCE: 来源候选缺少真实保管摘要和文件引用。');
   const state = input.rowCount === undefined ? 'raw_only' : input.rowCount === 0 ? 'empty_unconfirmed' : 'rows_observed';
+  const logicalRequest: SourceCandidateFeedback['logicalRequest'] = { scopeId: input.scopeId, operationId: input.operationId,
+    subjectId: input.subjectId ?? null, start: input.start ?? null, end: input.end ?? null,
+    adjustment: input.adjustment ?? null };
   return {
-    contract: 'bd.source-candidate-feedback/1',
-    logicalRequest: { scopeId: input.scopeId, operationId: input.operationId,
-      subjectId: input.subjectId ?? null, start: input.start ?? null, end: input.end ?? null,
-      adjustment: input.adjustment ?? null },
+    contract: 'bd.source-candidate-feedback/1', logicalRequest,
     actualSource: { providerId: input.providerId, connectionId: input.connectionId },
     observation: { state, rowCount: input.rowCount ?? null, acquiredAtUtc: input.acquiredAtUtc },
     coverage: { actualStart: input.actualStart ?? null, actualEnd: input.actualEnd ?? null,
       completeness: 'not_established' },
     evidence: { originalRefs: input.originals.map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })) },
-    semanticStatus: 'not_verified',
+    semanticStatus: 'not_verified', acquisition: sourceReceiptReview(logicalRequest, input.rowCount ?? null),
     gaps: [state === 'raw_only' ? '当前只有保管的原始响应；业务记录、空响应性质及覆盖未解析。'
       : state === 'empty_unconfirmed' ? '本次没有观测到记录；未证明来源确认无数据，不能补零或声明历史完整。'
       : '仅观测到原报数据行；交易日完整性和可用历史范围尚未核定。',
