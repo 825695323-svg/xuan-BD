@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -28,9 +28,9 @@ const adjustmentBasis = 'WFD financial.price_adjustment.direction=raw';
 const day = (index: number) => new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10);
 const closes = Array.from({ length: 80 }, (_, index) => 40 + ((index * 37) % 19) + index / 8);
 
-function expectedMacd() {
-  let short = closes[0]!, long = short, signal = 0;
-  return closes.map(close => {
+function expectedMacd(input = closes) {
+  let short = input[0]!, long = short, signal = 0;
+  return input.map(close => {
     short += (close - short) / 6.5;
     long += (close - long) / 13.5;
     const diff = short - long;
@@ -39,7 +39,7 @@ function expectedMacd() {
   });
 }
 
-function sourceDocument() {
+function sourceDocument(input = closes) {
   const namespace = 'full.chain.test';
   const subject = { kind: 'entity', namespace, id: 'synthetic_security' };
   const definitions = [['trade_date', 'text', 'date'], ['close', 'decimal', 'cny_per_share'], ['available_at', 'text', 'text']];
@@ -53,7 +53,7 @@ function sourceDocument() {
         roles: { observation: 'trade_date', availability: 'available_at', bar_closed: 'true' } },
       financial: { price_adjustment: { direction: 'raw' } } },
   };
-  const rows = closes.map((close, index) => ({
+  const rows = input.map((close, index) => ({
     business_key: 'daily-' + day(index), subject,
     observation_time: { status: 'known', earliest_utc: day(index) + 'T00:00:00Z', latest_exclusive_utc: day(index + 1) + 'T00:00:00Z',
       precision: 'day', source_timezone: 'UTC' },
@@ -71,9 +71,10 @@ function sourceDocument() {
   });
 }
 
-test('AGENTS computes only MACD and publishes all 80 synthetic rows to isolated WFD with stable replay',
+for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows with ${size === 12 ? 'implementation replacement' : 'stable replay'}`,
   { skip: !python || !process.env.XUAN_FULL_CHAIN_ROOT ? 'Requires explicitly selected WFD_PYTHON and XUAN_FULL_CHAIN_ROOT.' : false,
     timeout: 180_000 }, async () => {
+    const suppliedCloses = closes.slice(0, size);
     const fixture = createFullChainFixture({ name: 'macd-full-chain', machine: true,
       units: { cny_per_share: { dimension: 'money_per_share' }, text: { dimension: 'text' }, date: { dimension: 'date' } } });
     const bindingPath = join(fixture.runtime, 'config/machine.bindings.json');
@@ -114,7 +115,7 @@ test('AGENTS computes only MACD and publishes all 80 synthetic rows to isolated 
       ] });
       assert.deepEqual(workspace.toolLibrary!.view().tools.map(tool => [tool.id, tool.status]), [['macd', 'ready']]);
       assert.equal(runtime.currentIdentity().mode, 'user_test');
-      const submitted = (await runtime.client.submit(sourceDocument())).result;
+      const submitted = (await runtime.client.submit(sourceDocument(suppliedCloses))).result;
       assert.equal(submitted.state, 'published_formal', JSON.stringify({ errors: submitted.errors, state: submitted.state }));
       assert.equal(submitted.formal_publication_verified, true);
       const snapshotId = String(submitted.snapshot_id);
@@ -174,18 +175,18 @@ test('AGENTS computes only MACD and publishes all 80 synthetic rows to isolated 
       const { taskId, wfdPublication } = data;
       const result = algorithms.view(taskId).result!;
       assert.ok(result);
-      assert.equal(result.rows.length, closes.length);
+      assert.equal(result.rows.length, suppliedCloses.length);
       const associations = workspace.r1!.localExplanation(wfdPublication.requestId).associations as WfdRecord[];
-      assert.equal(associations.length, closes.length);
+      assert.equal(associations.length, suppliedCloses.length);
       const first = associations[0]!;
       const fixed = (await runtime.client.fixedRead(String(first.snapshot_id), String(first.product_id))).result;
       const readback = fixed.rows as WfdRecord[];
-      assert.equal(readback.length, closes.length);
+      assert.equal(readback.length, suppliedCloses.length);
       const fixedByDay = new Map(readback.map(envelope => {
         const row = envelope.row as WfdRecord;
         return [String((row.observation_time as WfdRecord).earliest_utc).slice(0, 10), row.values as WfdRecord];
       }));
-      for (const [index, values] of expectedMacd().entries()) {
+      for (const [index, values] of expectedMacd(suppliedCloses).entries()) {
         const actual = result.rows[index]!;
         assert.equal(actual.timestamp, day(index));
         for (const [columnIndex, column] of columns.entries()) {
@@ -213,8 +214,62 @@ test('AGENTS computes only MACD and publishes all 80 synthetic rows to isolated 
       assert.deepEqual(replay.data.wfdPublication, wfdPublication);
       assert.deepEqual(workspaceDb.connection.prepare('SELECT count(*) AS n FROM r1_handoff_attempts').get(), attempts);
       assert.equal(workspaceDb.connection.prepare('SELECT count(*) AS n FROM tasks WHERE runtime_id=?').get(ALGORITHM_RUNTIME)?.n, 1);
+      if (size === 12) {
+        // Same semantics, same fixed input, real different Python asset bytes. No mocked numerical result.
+        const revisedRoot = join(fixture.root, 'implementation-rebuild');
+        const revisedAssets = join(revisedRoot, 'plugins/financial/local-compute/assets');
+        mkdirSync(revisedAssets, { recursive: true });
+        cpSync(join(codeRoot, 'plugins/financial/local-compute/assets'), revisedAssets, { recursive: true });
+        appendFileSync(join(revisedAssets, 'indicators.py'), '\n# Isolated test-only implementation rebuild; mathematics unchanged.\n');
+        const updatedDb = new CoreDatabase(join(fixture.runtime, 'state/updated-implementation.sqlite'));
+        const updatedCore = new PersonalCore(backend, { database: updatedDb });
+        const updated = createApplicationServices(updatedCore, updatedDb, { ...common, role: 'service',
+          privateRoot: join(fixture.runtime, 'state/updated-implementation-private'), processRuntime,
+          r1ConnectionId: 'full-chain-test', materials: { environment: 'local-review' },
+          configureAlgorithms: localAlgorithmConfiguration(revisedRoot, processRuntime) });
+        try {
+          updated.permissions.grant({ label: 'isolated rebuilt MACD Python', scope: { kind: 'persistent' }, capabilities: [
+            { action: 'execute', target: { kind: 'file', path: processRuntime.path('python3') } },
+          ] });
+          const accepted = updated.algorithms!.submit('same-semantics-rebuilt-implementation', request,
+            { authority: 'operator-http', requestId: 'same-semantics-rebuilt-implementation', observedAtUtc: new Date().toISOString() });
+          const completed = await updated.tasks.wait(accepted.taskId);
+          assert.equal(completed.status, 'succeeded', JSON.stringify(completed.error));
+          const rebuilt = updated.algorithms!.view(accepted.taskId).result!;
+          assert.notEqual(rebuilt.implementationVersion, result.implementationVersion);
+          assert.equal(rebuilt.methodVersion, result.methodVersion);
+          assert.deepEqual(rebuilt.rows, result.rows);
+          const headBefore = (await runtime.client.snapshotStatus()).result.snapshot_id;
+          const second = await updated.derivedPublisher!.publish(accepted.taskId);
+          assert.equal(second.published, true, JSON.stringify(second));
+          const secondAttempt = updated.r1!.attempt(second.requestId);
+          const secondReceipt = JSON.parse(String(secondAttempt.receipt_json));
+          assert.equal(secondReceipt.wfd_state, 'unchanged', 'Implementation-only rebuild must not create financial facts');
+          assert.equal(secondReceipt.row_summary.inserted, 0);
+          assert.equal(secondReceipt.row_summary.duplicate_skipped, suppliedCloses.length);
+          assert.equal(secondReceipt.new_snapshot_created, false);
+          const links = updated.r1!.localExplanation(second.requestId).associations as WfdRecord[];
+          assert.equal(links.length, suppliedCloses.length);
+          assert.ok(links.every(link => link.product_id === first.product_id && link.definition_digest === first.definition_digest));
+          assert.equal((await runtime.client.snapshotStatus()).result.snapshot_id, headBefore);
+          const originalDocument = JSON.parse(String(workspace.r1!.attempt(wfdPublication.requestId).document_json));
+          const nextDocument = JSON.parse(String(secondAttempt.document_json));
+          assert.deepEqual(nextDocument.outputs[0].definition, originalDocument.outputs[0].definition);
+          rmSync(revisedRoot, { recursive: true, force: true });
+          updatedDb.connection.prepare('DELETE FROM algorithm_assets WHERE version=?').run(rebuilt.implementationVersion);
+          assert.deepEqual(updated.algorithms!.view(accepted.taskId).result, rebuilt,
+            'Reading frozen results must not require retired implementation bytes');
+          assert.equal((await updated.derivedPublisher!.publish(accepted.taskId)).requestId, second.requestId);
+          const pinnedAgain = (await runtime.client.fixedRead(String(first.snapshot_id), String(first.product_id))).result;
+          assert.deepEqual(pinnedAgain.rows, fixed.rows, 'Old fixed read remains unchanged after an implementation rebuild');
+        } finally {
+          updated.segments?.close(); updated.files.closeTemporaryRetention();
+          await updated.r1Batches?.dispose(); await updated.r1Auto?.dispose();
+          await updated.tasks.dispose(); await updatedCore.dispose(); updatedDb.close();
+        }
+      }
       writeFileSync(join(fixture.root, 'macd-evidence.json'), JSON.stringify({ taskId, wfdPublication, source: { productId, snapshotId },
-        derived: { snapshotId: first.snapshot_id, productId: first.product_id }, checkedRows: closes.length, checkedCells: closes.length * columns.length }, null, 2));
+        derived: { snapshotId: first.snapshot_id, productId: first.product_id }, checkedRows: suppliedCloses.length, checkedCells: suppliedCloses.length * columns.length }, null, 2));
     } finally {
       finish();
       await personal.tasks.dispose(); await personalCore.dispose(); personalDb.close();

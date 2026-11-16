@@ -14,13 +14,28 @@ export type AlgorithmMethodStatus = 'ready' | 'blocked' | 'unavailable';
 export type AlgorithmDateFormats = 'YYYY-MM-DD' | 'YYYY/MM/DD' | 'YYYYMMDD';
 export type AlgorithmAdjustment = 'unadjusted' | 'as_stored';
 
+/** 数学含义的唯一登记；不含代码路径、执行器、依赖或实现摘要。更改此契约须核对方法版本。 */
+export const MACD_SEMANTICS = Object.freeze({
+  version: 'macd/12-26-9-first-valid-v1',
+  parameters: Object.freeze({ short_period: 12, long_period: 26, signal_period: 9, init: 'first_valid' }),
+  mathematicalDefinition: 'DIFF = EMA12(close) - EMA26(close); DEA = EMA9(DIFF); MACD = 2*(DIFF-DEA)',
+  // 正式定义文字独立于目录标题、实现位置和 UI 说明；已发布含义不能随文案重构改变。
+  resultSemantics: '固定 12/26/9；短、长 EMA 以所供窗口首条收盘价初始化，DEA 以首条 DIFF=0 初始化；输出 DIFF、DEA、2 倍 MACD 柱值与 ZERO，不补历史或缺失值。',
+  initialization: 'short_long_ema_first_supplied_close_dea_zero',
+  warmup: 'all_supplied_rows_valid_from_first_seed_not_full_history',
+  missingPolicy: 'reject_missing_close_no_fill_no_padding_no_state_continuation',
+  inputPolicy: 'fixed_closed_daily_close_explicit_currency_adjustment_timezone',
+  outputFields: Object.freeze(['DIFF', 'DEA', 'MACD', 'ZERO'] as const),
+  outputUnit: 'same_as_verified_input_close',
+});
+
 export const ALGORITHM_METHODS = Object.freeze({
-  macd: { operation: 'MACD', kind: 'indicator', version: 'macd/12-26-9-first-valid-v1', field: 'MACD',
+  macd: { operation: 'MACD', kind: 'indicator', version: MACD_SEMANTICS.version, field: 'MACD',
     title: 'MACD · 固定 12/26/9',
     description: '调用既有 12/26/9 MACD 实现，以所供窗口首条收盘价初始化短、长 EMA 与 DEA；返回 DIFF、DEA、MACD 和 ZERO。',
     source: 'plugins/financial/local-compute/assets/indicators.py: MACD; operators.py: smooth',
     reference: '独立 EMA/DEA 递推核对；首值初始化，不补窗口前历史',
-    requiredFields: ['timestamp', 'close'], outputFields: ['DIFF', 'DEA', 'MACD', 'ZERO'],
+    requiredFields: ['timestamp', 'close'], outputFields: MACD_SEMANTICS.outputFields,
     limitations: ['仅按所供连续观测做首值初始化递推；不含窗口之前历史，不能视为完整历史 MACD。', '不接受递推状态续算、不补历史、不自动入库。'] },
 } as const);
 
@@ -217,8 +232,10 @@ export interface AlgorithmComputedResult {
   environment: AlgorithmEnvironment;
   taskId: string;
   methodId: AlgorithmMethodId;
+  /** 已核定数学定义版本，不由实现文件摘要派生。 */
   methodVersion: string;
   contractVersion: string;
+  /** 原任务实际执行资产摘要，只作执行与结果证据，不能成为正式定义身份。 */
   implementationVersion: string;
   parameters: JsonValue;
   metadata: AlgorithmMetadata;

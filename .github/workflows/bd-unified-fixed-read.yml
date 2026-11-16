@@ -7,6 +7,9 @@ on:
     paths:
       - 'modules/collection/data-processing/wfd-fixed-selection*'
       - 'modules/collection/data-processing/financial-fixed.ts'
+      - 'modules/financial/**'
+      - 'apps/server/macd-full-chain.test.ts'
+      - 'contracts/algorithm-definition.ts'
       - '.github/workflows/bd-unified-fixed-read.yml'
 
 permissions:
@@ -18,6 +21,18 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Select affected algorithm contracts
+        id: scope
+        run: |
+          changed="$(git diff --name-only HEAD^ HEAD)"
+          if echo "$changed" | grep -Eq '(modules/financial/|macd-full-chain|contracts/algorithm-definition|bd-unified-fixed-read)'; then
+            echo 'algorithm=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'algorithm=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.1'
@@ -33,3 +48,24 @@ jobs:
           node --import tsx --test \
             modules/collection/data-processing/wfd-fixed-selection.test.ts \
             modules/collection/data-processing/financial-fixed.test.ts
+      - uses: actions/setup-python@v5
+        if: steps.scope.outputs.algorithm == 'true'
+        with:
+          python-version: '3.12'
+      - name: Install hash-locked WFD requirements for selected algorithm tests
+        if: steps.scope.outputs.algorithm == 'true'
+        run: |
+          python -m pip install --only-binary=:all: --require-hashes -r config/local-web-python.lock.txt
+          echo "WFD_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+      - name: Verify semantic identity, frozen recovery and real MACD WFD replay
+        if: steps.scope.outputs.algorithm == 'true'
+        env:
+          XUAN_TEST_ROOT: ${{ runner.temp }}/macd-contract-tests
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/macd-wfd-tests
+        run: |
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
+          node --import tsx --test \
+            modules/financial/derived-wfd-check.test.ts \
+            modules/financial/algorithm-purpose-eligibility.test.ts \
+            modules/financial/product-machine-snapshot.test.ts \
+            apps/server/macd-full-chain.test.ts

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ALGORITHM_METHODS, type AlgorithmComputedResult, type AlgorithmData } from './algorithm-types.js';
+import { ALGORITHM_METHODS, MACD_SEMANTICS, type AlgorithmComputedResult, type AlgorithmData } from './algorithm-types.js';
 import { checkDerivedForWfd } from './derived-wfd-check.js';
 import { buildStructuredIngestDocument, type R1HandoffService } from '../collection/r1-structured-handoff.js';
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
@@ -119,7 +119,7 @@ test('固定派生未送达时沿原号重试并重新核用途，结果未知�
   const identity = { connectionId: 'instance_test', namespace: binding.namespace, mode: binding.mode,
     configSha256: 'original' } as R1ConnectionIdentity;
   result.source = { ...result.source as Record<string, never>, connectionIdentityDigest: digestOperationArgs(identity) };
-  let attempt: { state: string; requestId: string; local_refs_json: string; document_sha256: string; productId: string } | undefined;
+  let attempt: { state: string; requestId: string; local_refs_json: string; document_sha256: string; document_json: string; productId: string } | undefined;
   let suspend = false, sends = 0, recoveries = 0, usageReads = 0;
   const handoff = {
     attempt(requestId: string) {
@@ -135,6 +135,7 @@ test('固定派生未送达时沿原号重试并重新核用途，结果未知�
         requestId: localRefs.fixedAlgorithm.requestId, state: 'prepared',
         local_refs_json: JSON.stringify(localRefs),
         document_sha256: wfdSha256(canonicalWfdJson(buildStructuredIngestDocument(structured))),
+        document_json: canonicalWfdJson(buildStructuredIngestDocument(structured)),
         productId: 'p_' + wfdSha256(canonicalWfdJson(['observations', structured.subject, structured.definition])).slice(0, 24),
       };
     },
@@ -176,4 +177,120 @@ test('固定派生未送达时沿原号重试并重新核用途，结果未知�
   assert.equal(recoveries, 1);
   assert.equal(usageReads, 3);
   assert.equal(sends, 1);
+});
+
+
+/** Historical declaration fixture only; never a second execution implementation. */
+function legacyDocument(result: AlgorithmComputedResult, requestId: string) {
+  const document = buildStructuredIngestDocument(checkDerivedForWfd(result, binding, requestId, frozenInput()).structured);
+  const output = (document.outputs as Array<Record<string, unknown>>)[0]!;
+  const algorithm = (output.definition as Record<string, unknown>).algorithm_definition as Record<string, unknown>;
+  algorithm.result_semantics = '调用既有 12/26/9 MACD 实现，以所供窗口首条收盘价初始化短、长 EMA 与 DEA；返回 DIFF、DEA、MACD 和 ZERO。';
+  algorithm.definition_version = 'v' + wfdSha256(canonicalWfdJson({ method: result.methodId,
+    version: result.methodVersion, implementation: result.implementationVersion })).slice(0, 20);
+  const unsigned = structuredClone(document);
+  delete (unsigned.request_identity as Record<string, unknown>).submission_digest;
+  (document.request_identity as Record<string, unknown>).submission_digest = 'sha256:' + wfdSha256(canonicalWfdJson(unsigned));
+  return document;
+}
+
+test('implementation changes preserve formal semantics and rows but keep distinct execution evidence', () => {
+  const first = sample(), second = structuredClone(first);
+  second.implementationVersion = 'sha256:' + 'a'.repeat(64);
+  second.taskId = 'different-implementation-task';
+  second.computedAt = '2026-11-10T09:01:00Z';
+  const left = checkDerivedForWfd(first, binding, 'implementation-first', frozenInput());
+  const right = checkDerivedForWfd(second, binding, 'implementation-second', frozenInput());
+  assert.deepEqual(left.structured.definition, right.structured.definition);
+  assert.equal(left.structured.outputKey, right.structured.outputKey);
+  assert.deepEqual(left.structured.payload, right.structured.payload);
+  assert.equal(left.sourceSha256, right.sourceSha256);
+  assert.notEqual(left.resultSha256, right.resultSha256, 'Execution evidence must remain distinguishable');
+  assert.notEqual(left.source.requested_url, right.source.requested_url);
+  assert.equal(JSON.stringify(left.structured.definition).includes(first.implementationVersion), false);
+  const expected = 'v' + wfdSha256(canonicalWfdJson({ method: first.methodId,
+    version: first.methodVersion, semantics: MACD_SEMANTICS })).slice(0, 20);
+  assert.equal((left.structured.definition.algorithm_definition as Record<string, unknown>).definition_version, expected);
+});
+
+test('changed mathematical version, initialization, result values and input semantics are not implementation-only updates', () => {
+  const version = sample(); version.methodVersion = 'unregistered-math-version';
+  assert.throws(() => checkDerivedForWfd(version, binding, 'changed-version', frozenInput()), { code: 'DERIVED_METHOD_CHANGED' });
+  const seed = sample(); (seed.parameters as Record<string, unknown>).init = 'mean_of_history';
+  assert.throws(() => checkDerivedForWfd(seed, binding, 'changed-seed', frozenInput()), { code: 'DERIVED_NUMERIC_MISMATCH' });
+  const altered = sample(); altered.implementationVersion = 'sha256:' + 'a'.repeat(64); altered.rows[0]!.DIFF = 1;
+  assert.throws(() => checkDerivedForWfd(altered, binding, 'changed-value', frozenInput()), { code: 'DERIVED_NUMERIC_MISMATCH' });
+  for (const [key, value] of [['currency', 'USD'], ['timezone', 'Asia/Shanghai'], ['adjustment_basis', 'another-basis']]) {
+    const changed = sample(); (changed.metadata as unknown as Record<string, unknown>)[key!] = value;
+    assert.throws(() => checkDerivedForWfd(changed, binding, 'changed-input', frozenInput()), { code: 'DERIVED_NUMERIC_MISMATCH' });
+  }
+});
+
+test('already frozen legacy and semantic-only requests reconstruct their exact document without migration', () => {
+  const result = sample();
+  const current = buildStructuredIngestDocument(checkDerivedForWfd(result, binding, 'frozen-current', frozenInput()).structured);
+  const legacy = legacyDocument(result, 'frozen-legacy'), original = canonicalWfdJson(legacy);
+  const checked = checkDerivedForWfd(result, binding, 'frozen-legacy', frozenInput(), legacy);
+  assert.deepEqual(buildStructuredIngestDocument(checked.structured), legacy);
+  assert.equal(canonicalWfdJson(legacy), original, 'Read conversion never mutates saved declarations');
+  assert.deepEqual(buildStructuredIngestDocument(checkDerivedForWfd(result, binding, 'frozen-current', frozenInput(), current).structured), current);
+  assert.notEqual((checked.structured.definition.algorithm_definition as Record<string, unknown>).definition_version,
+    (checkDerivedForWfd(result, binding, 'new-request', frozenInput()).structured.definition.algorithm_definition as Record<string, unknown>).definition_version,
+    'New preparations must not emit the legacy implementation-derived definition identity');
+});
+
+test('legacy compatibility rejects changed document, membership, version, values or frozen parent', () => {
+  const result = sample(), frozen = legacyDocument(result, 'legacy-bound');
+  const altered = structuredClone(frozen);
+  altered.expected_parent_snapshot_id = 'another-parent';
+  assert.throws(() => checkDerivedForWfd(result, binding, 'legacy-bound', frozenInput(), altered), { code: 'DERIVED_FROZEN_DOCUMENT_CHANGED' });
+  const another = sample(); another.implementationVersion = 'sha256:' + 'b'.repeat(64);
+  assert.throws(() => checkDerivedForWfd(another, binding, 'legacy-bound', frozenInput(), frozen), { code: 'DERIVED_FROZEN_DEFINITION_CHANGED' });
+  const duplicate = structuredClone(frozen); (duplicate.outputs as unknown[]).push((duplicate.outputs as unknown[])[0]);
+  assert.throws(() => checkDerivedForWfd(result, binding, 'legacy-bound', frozenInput(), duplicate), { code: 'DERIVED_FROZEN_DEFINITION_CHANGED' });
+  const forged = structuredClone(frozen);
+  const output = (forged.outputs as Array<Record<string, unknown>>)[0]!;
+  const rows = (output.payload as Record<string, unknown>).rows as Array<Record<string, unknown>>;
+  (rows[0]!.values as Record<string, unknown>).MACD = { data_type: 'decimal', value_state: 'valid_value', value: '2' };
+  assert.throws(() => checkDerivedForWfd(result, binding, 'legacy-bound', frozenInput(), forged), { code: 'DERIVED_FROZEN_DOCUMENT_CHANGED' });
+});
+
+test('legacy lost-response recovery reads saved identity, never creates a new attempt or resubmits', async () => {
+  const result = sample(), requestId = 'bd-derived:' + wfdSha256(canonicalWfdJson({
+    taskId: result.taskId, inputDigest: result.inputDigest, source: result.source,
+    method: result.methodId, methodVersion: result.methodVersion, producer: binding.namespace, connection: 'instance_test',
+  })).slice(0,48);
+  const identity = { connectionId: 'instance_test', namespace: binding.namespace, mode: binding.mode,
+    configSha256: 'original' } as R1ConnectionIdentity;
+  result.source = { ...result.source as Record<string, never>, connectionIdentityDigest: digestOperationArgs(identity) };
+  // The actual request key includes the verified connection digest.
+  const actualId = 'bd-derived:' + wfdSha256(canonicalWfdJson({ taskId: result.taskId, inputDigest: result.inputDigest,
+    source: result.source, method: result.methodId, methodVersion: result.methodVersion,
+    producer: identity.namespace, connection: identity.connectionId })).slice(0,48);
+  assert.notEqual(actualId, requestId);
+  const document = legacyDocument(result, actualId);
+  const checked = checkDerivedForWfd(result, binding, actualId, frozenInput(), document);
+  const refs = { originalIds: ['legacy-original'], materialIds: [], sourceRefs: [checked.source], processRefs: [],
+    evidenceRefs: [{ ref_id: 'legacy-result', content_sha256: checked.sourceSha256, kind: 'fixed-algorithm-output' }],
+    fixedAlgorithm: { taskId: result.taskId, requestId: actualId, resultSha256: checked.resultSha256,
+      namespace: binding.namespace, mode: binding.mode, expectedParentSnapshotId: binding.expectedParentSnapshotId } };
+  const saved = { state: 'pending_unknown', local_refs_json: JSON.stringify(refs),
+    document_json: canonicalWfdJson(document), document_sha256: wfdSha256(canonicalWfdJson(document)) };
+  let recovered = 0;
+  const publisher = new DerivedWfdPublisher({
+    viewAlgorithm: () => ({ status: 'succeeded', requiresReview: false, result } as AlgorithmTaskView),
+    readAlgorithmInput: frozenInput,
+    runtime: () => ({ currentIdentity: () => identity, client: {} } as R1Runtime),
+    workspace: () => ({ snapshotStatus() { assert.fail('Recovery must not select current HEAD'); } } as unknown as R1WorkspaceService),
+    handoff: { attempt(id: string) { assert.equal(id, actualId); return saved; },
+      async recoverStatus(id: string) { assert.equal(id, actualId); recovered++; },
+      prepare() { assert.fail('No new attempt'); }, submitAndAssociate() { assert.fail('Unknown result cannot be resent'); },
+    } as unknown as R1HandoffService,
+  });
+  assert.equal((await publisher.publish(result.taskId)).requiresRecovery, true);
+  assert.equal(recovered, 1);
+  assert.equal(saved.document_json, canonicalWfdJson(document));
+  saved.document_json = '{bad';
+  await assert.rejects(publisher.publish(result.taskId));
+  assert.equal(recovered, 1, 'Corrupt saved document must not be reinterpreted as a missing request');
 });

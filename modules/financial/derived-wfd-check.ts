@@ -1,6 +1,6 @@
 import { TaskError } from '../../platform/jobs/tasks.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
-import { ALGORITHM_METHODS, type AlgorithmComputedResult, type AlgorithmData } from './algorithm-types.js';
+import { ALGORITHM_METHODS, MACD_SEMANTICS, type AlgorithmComputedResult, type AlgorithmData } from './algorithm-types.js';
 import { buildStructuredIngestDocument, type R1StructuredRequest, type R1SourceRef } from '../collection/r1-structured-handoff.js';
 
 export interface DerivedWfdBinding {
@@ -22,7 +22,7 @@ export interface CheckedDerivedWfd {
  * 使用原算法任务保存的完整行、WFD 固定读回逐行身份和实际算法版本构造 WFD 文档。
  */
 export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: DerivedWfdBinding, requestId: string,
-  input: AlgorithmData): CheckedDerivedWfd {
+  input: AlgorithmData, frozenDocument?: WfdRecord): CheckedDerivedWfd {
   const fail = (code: string, message: string): never => { throw new TaskError(code, message); };
   if (result.status !== 'computed' || !result.taskId || !result.inputDigest || !result.methodVersion || !result.implementationVersion)
     fail('DERIVED_RESULT_INCOMPLETE', '算法结果身份、版本或固定输入摘要缺失。');
@@ -109,14 +109,31 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     || new Set(rows.map(row => row.business_key)).size !== rows.length)
     fail('DERIVED_BUSINESS_KEYS', '不同来源行生成了相同的派生业务键，拒绝丢失观测。');
   const methodIdentity = wfdSha256(canonicalWfdJson({ method: result.methodId,
-    version: result.methodVersion, implementation: result.implementationVersion }));
-  const definitionVersion = 'v' + methodIdentity.slice(0, 20);
+    version: result.methodVersion, semantics: MACD_SEMANTICS }));
+  let definitionVersion = 'v' + methodIdentity.slice(0, 20);
+  let resultSemantics: string = MACD_SEMANTICS.resultSemantics;
+  if (frozenDocument) {
+    // 只读旧请求的冻结身份，不给新准备增加旧路径，也不执行旧算法源码。
+    const outputs = frozenDocument.outputs;
+    const output = Array.isArray(outputs) && outputs.length === 1 && isWfdRecord(outputs[0]) ? outputs[0] : null;
+    const algorithm = output && isWfdRecord(output.definition) && isWfdRecord(output.definition.algorithm_definition)
+      ? output.definition.algorithm_definition : null;
+    const legacyVersion = 'v' + wfdSha256(canonicalWfdJson({ method: result.methodId,
+      version: result.methodVersion, implementation: result.implementationVersion })).slice(0, 20);
+    if (!algorithm || ![definitionVersion, legacyVersion].includes(String(algorithm.definition_version)))
+      fail('DERIVED_FROZEN_DEFINITION_CHANGED', '原请求的冻结数学定义身份与已核验结果不一致。');
+    definitionVersion = String(algorithm!.definition_version);
+    if (definitionVersion === legacyVersion) {
+      // 旧文档的既存说明仅作精确只读匹配；新定义使用明确的 DEA=0 初始化声明。
+      resultSemantics = '调用既有 12/26/9 MACD 实现，以所供窗口首条收盘价初始化短、长 EMA 与 DEA；返回 DIFF、DEA、MACD 和 ZERO。';
+    }
+  }
   const scopeIdentity = wfdSha256(canonicalWfdJson({
     sourceProduct: verifiedSrc.productId, methodId: result.methodId, methodVersion: result.methodVersion,
     parameters: result.parameters,
   }));
   const derivedCode = 'bd.derived.' + result.methodId + '.' + scopeIdentity.slice(0, 16);
-  const math = 'DIFF = EMA12(close) - EMA26(close); DEA = EMA9(DIFF); MACD = 2*(DIFF-DEA)';
+  const math = MACD_SEMANTICS.mathematicalDefinition;
   const constants = Object.fromEntries(Object.entries(
     isWfdRecord(result.parameters) ? result.parameters : {}).filter(([,v]) =>
     typeof v === 'number' || typeof v === 'boolean' || v === null));
@@ -136,7 +153,7 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
       derivation: { required: true } },
     algorithm_definition: {
       mathematical_definition: math,
-      result_semantics: method.description,
+      result_semantics: resultSemantics,
       definition_version: definitionVersion,
       // 不伪造尚未在 WFD 正式登记的算法引用；用真实公式、版本及 BD 内部冻结证明关联。
       constants },
@@ -169,6 +186,8 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
   const unsigned = structuredClone(document);
   delete (unsigned.request_identity as WfdRecord).submission_digest;
   structured.submissionDigest = 'sha256:' + wfdSha256(canonicalWfdJson(unsigned));
+  if (frozenDocument && canonicalWfdJson(buildStructuredIngestDocument(structured)) !== canonicalWfdJson(frozenDocument))
+    fail('DERIVED_FROZEN_DOCUMENT_CHANGED', '原请求的输入范围、目标、数值或正式声明变化；不能沿原身份改写。');
   return { structured, source, originalBytes: original, sourceSha256: originalSha256, resultSha256 };
 }
 
@@ -177,7 +196,7 @@ function verifyAlgorithmNumbers(result: AlgorithmComputedResult, input: Algorith
   const rows = result.rows, source = input.rows;
   const mismatch = (message: string): never => { throw new TaskError('DERIVED_NUMERIC_MISMATCH', message); };
   if (source.length !== rows.length || !source.length || input.metadata.series_id !== result.metadata.series_id
-    || input.metadata.window_start !== result.metadata.window_start || input.metadata.window_end !== result.metadata.window_end)
+    || canonicalWfdJson(input.metadata) !== canonicalWfdJson(result.metadata))
     mismatch('固定输入与原算法持久结果的行数、序列或期间不一致。');
   const same = (actual: unknown, expected: number) => typeof actual === 'number' && Number.isFinite(actual)
       && Math.abs(actual - expected) <= 1e-10 * Math.max(1, Math.abs(expected));

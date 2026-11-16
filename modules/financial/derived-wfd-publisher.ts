@@ -48,10 +48,23 @@ export class DerivedWfdPublisher {
     if (identity.namespace !== proof.namespace || identity.mode !== proof.mode)
       throw new TaskError('DERIVED_WFD_BINDING_CHANGED', '原派生任务的 WFD 连接身份已变化，不允许借新连接重发。');
     const result = this.requireResult(proof.taskId, identity);
+    let frozenDocument;
+    try {
+      const saved = this.options.handoff.attempt(proof.requestId);
+      if (String(saved.document_sha256) !== documentSha256)
+        throw new TaskError('DERIVED_PROOF_CHANGED', '原请求文档摘要与本次核验引用不同。');
+      const parsed: unknown = JSON.parse(String(saved.document_json));
+      if (!isWfdRecord(parsed) || wfdSha256(canonicalWfdJson(parsed)) !== documentSha256)
+        throw new TaskError('DERIVED_PROOF_CHANGED', '原请求的冻结文档内容与保存摘要不同。');
+      frozenDocument = parsed;
+    } catch (error) {
+      // 首次准备在原 R1 写入之前核验；只有不存在才按当前语义构造，坏文档不能当不存在。
+      if (!(error instanceof TaskError) || error.code !== 'R1_ATTEMPT_NOT_FOUND') throw error;
+    }
     const checked = checkDerivedForWfd(result, {
       namespace: proof.namespace, mode: proof.mode,
       expectedParentSnapshotId: proof.expectedParentSnapshotId,
-    }, proof.requestId, this.options.readAlgorithmInput(proof.taskId));
+    }, proof.requestId, this.options.readAlgorithmInput(proof.taskId), frozenDocument);
     if (wfdSha256(canonicalWfdJson(result)) !== proof.resultSha256
       || checked.sourceSha256 !== refs.sourceRefs[0]?.sha256
       || checked.sourceSha256 !== refs.evidenceRefs[0]?.content_sha256
