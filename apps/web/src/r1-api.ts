@@ -1,3 +1,4 @@
+import type { R1SetPrepareInput } from '../../../contracts/r1-publication-set';
 import type { R1CapabilitiesView, R1PrepareInput, R1ProductDiscovery, R1ProductRead, R1ProductReadInput, R1RequestSummary, R1RequestView, R1SnapshotStatus } from '../../../contracts/r1-contracts';
 import type { MaterialCategory } from '../../../modules/collection/materials/contracts';
 import { request, RequestError } from './api';
@@ -25,6 +26,15 @@ function view(value: unknown): R1RequestView {
     || typeof value.planId !== 'string' || typeof value.outputId !== 'string' || !Number.isSafeInteger(value.rowCount)
     || !Array.isArray(value.previewRows) || value.previewRows.length > 5 || !object(value.local)
     || typeof value.requiresRecovery !== 'boolean' || !(value.submitTaskId === null || typeof value.submitTaskId === 'string')) throw new RequestError('R1 原请求回执无法核对，请保留原请求编号。');
+  if (value.publicationSet !== undefined) {
+    const set = value.publicationSet;
+    if (!object(set) || typeof set.setId !== 'string' || set.atomicity !== 'declared_set'
+      || set.duplicatePolicy !== 'reject_member_conflict' || !Array.isArray(set.members) || set.members.length < 2 || set.members.length > 16
+      || set.members.some(member => !object(member) || typeof member.outputId !== 'string' || typeof member.outputKey !== 'string'
+        || !Number.isSafeInteger(member.rowCount) || !Array.isArray(member.previewRows) || member.previewRows.length > 5
+        || !['not_submitted','pending_receipt','published','failed'].includes(String(member.state)) || !Array.isArray(member.errorCodes)))
+      throw new RequestError('集合回执成员或状态无法核对；保留原请求，不按首项判定成功。');
+  }
   return value as unknown as R1RequestView;
 }
 export const r1Api = {
@@ -79,6 +89,7 @@ export const r1Api = {
     return value.items;
   },
   get: async (id: string) => view(await request(`/api/bd/r1/requests/${encodeURIComponent(id)}`)),
+  prepareSet: async (input: R1SetPrepareInput) => view(await request('/api/bd/r1/prepare', 'POST', input)),
   prepare: async (input: R1PrepareInput) => view(await request('/api/bd/r1/prepare', 'POST', input)),
   submit: async (input: R1RequestView) => readBdJob(await request(`/api/bd/r1/requests/${encodeURIComponent(input.requestId)}/submit`, 'POST', { confirmationDigest: input.documentSha256 })),
   recover: async (id: string, lookupId: string) => readBdJob(await request(`/api/bd/r1/requests/${encodeURIComponent(id)}/recover`, 'POST', { lookupId })),

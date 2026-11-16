@@ -47,11 +47,11 @@ export class R1PagedReadback {
     if (this.continuation(input.requestId)) return;
     const previous = this.load(input.requestId);
     if (!previous || previous.state.mode !== 'legacy') return;
-    const outputs = input.document.outputs, output = Array.isArray(outputs) ? object(outputs[0]) : {};
+    const output = selectedOutput(input.document, input.receipt.output_key);
     if (object(output.payload).kind !== 'tabular_rows' || failure.code !== 'RESPONSE_TOO_LARGE') return;
     if (previous.state.pages || previous.state.rows.length || previous.state.cursor !== null || previous.state.complete)
       fail('CONTINUATION_INVALID', '旧读取已经核过部分内容，不能将其覆盖为新分页阶段。');
-    if (!await client.pageReadSupport?.(input.document, signal)) return;
+    if (!await client.pageReadSupport?.({ ...input.document, outputs: [output] }, signal)) return;
     signal?.throwIfAborted();
     const pageSize=negotiatedPageSize(client), refs=normalizedRefs(input.receipt), selection=sha(refs), query=pageQueryDigest(input.receipt,selection,pageSize);
     if(previous.state.selection!==selection)fail('CONTINUATION_INVALID','分页续读的原回执行集合不同。');
@@ -76,7 +76,7 @@ export class R1PagedReadback {
     if (wfdSha256(canonicalWfdJson(input.document)) !== input.documentSha256) fail('DOCUMENT_CHANGED', '固定文档摘要不符。');
     const expected = acceptedR1ReceiptRows(input.document, input.receipt);
     if (!loaded) {
-      const supported = await client.pageReadSupport?.(input.document, signal) === true;
+      const supported = await client.pageReadSupport?.({ ...input.document, outputs: [selectedOutput(input.document, input.receipt.output_key)] }, signal) === true;
       signal?.throwIfAborted();
       const pageSize=negotiatedPageSize(client);
       const initial: SavedState = { version: 2, pageSize, binding, mode: supported ? 'page' : 'legacy', manifest: null,
@@ -203,7 +203,7 @@ function normalizedRefs(receipt: R1Receipt): Ref[] {
 }
 /** Validate the complete original row classification before selecting accepted identities. */
 export function acceptedR1ReceiptRows(document: WfdRecord, receipt: R1Receipt): Map<string, WfdRecord> {
-  const first = Array.isArray(document.outputs) ? object(document.outputs[0]) : {}, rows = object(first.payload).rows;
+  const first = selectedOutput(document, receipt.output_key), rows = object(first.payload).rows;
   if (!Array.isArray(rows) || !rows.length || rows.length > 5000 || !rows.every(isWfdRecord)
     || first.output_key !== receipt.output_key || canonicalWfdJson(document.request_identity) !== canonicalWfdJson(receipt.request_identity))
     fail('RECEIPT_INVALID', '原回执输出、请求身份或冻结行集合不符。');
@@ -267,7 +267,7 @@ function verificationProjection(actual: WfdRecord, expected: WfdRecord): WfdReco
     record_ref: { snapshot_id: recordRef.snapshot_id, logical_key: recordRef.logical_key, revision_id: recordRef.revision_id }, row };
 }
 function verifyContracts(input: R1ReadbackInput, result: WfdRecord): void {
-  const outputs = input.document.outputs, first = Array.isArray(outputs) ? object(outputs[0]) : {};
+  const first = selectedOutput(input.document, input.receipt.output_key);
   const binding = readR1ContractBinding(input.receipt as unknown as WfdRecord, input.receipt.dataset_id,
     input.receipt.product_id, object(first.payload).kind === 'tabular_rows');
   if (!binding) return; // Original scalar contract doubles/tasks did not freeze four role refs.
@@ -277,3 +277,10 @@ function verifyContracts(input: R1ReadbackInput, result: WfdRecord): void {
   for (const product of products) assertR1ContractBinding(product, binding);
 }
 function fail(suffix: string, message: string): never { throw new TaskError('R1_READBACK_' + suffix, message); }
+
+function selectedOutput(document: WfdRecord, outputKey: string): WfdRecord {
+  const matches = (Array.isArray(document.outputs) ? document.outputs.filter(isWfdRecord) : [])
+    .filter(output => output.output_key === outputKey);
+  if (matches.length !== 1) fail('RECEIPT_INVALID', '回执必须对应原文档中唯一的输出，不取第一项。');
+  return matches[0]!;
+}

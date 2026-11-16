@@ -1,9 +1,10 @@
 import type { R1CapabilitiesView, R1ConnectionIdentity, R1PrepareInput, R1RequestSummary, R1RequestView, R1RowSummary, R1ScalarMapping } from '../../contracts/r1-contracts.js';
+import { readPublicationGroups, type R1SetPrepareInput, type R1SetMemberView } from '../../contracts/r1-publication-set.js';
 import type { JsonValue } from '../../contracts/task-contracts.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
 import { TaskError, type TaskExecutionContext, type TaskRecord, type TaskResult, type TaskRuntime, type TaskService } from '../../platform/jobs/tasks.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
-import { assertKnownR1Source, buildStructuredIngestDocument, parseR1Utc, validateStructuredDocument, R1_SETTLED_STATES, type R1HandoffService, type R1LocalReferences, type R1SourceRef, type R1StructuredRequest } from './r1-structured-handoff.js';
+import { assertKnownR1Source, buildStructuredIngestDocument, parseR1Utc, validateStructuredDocument, R1_SETTLED_STATES, type R1HandoffService, type R1LocalReferences, type R1SourceRef, type R1StructuredRequest, type R1PublicationRestriction } from './r1-structured-handoff.js';
 import { PROCESSING_PLAN_VERSION, type ProcessingPlanService } from './processing-plan.js';
 import type { MaterialService } from './materials/service.js';
 import type { R1Runtime } from './r1-runtime.js';
@@ -58,7 +59,8 @@ export class R1WorkspaceService {
       catch (error) { configuration = { state: 'unavailable', reason: error instanceof Error ? error.message : String(error) }; }
     }
     return { protocol: 'wfd.structured-ingest/1.0', profile: 'data_only', configuration, connection,
-      limits: R1_WEB_LIMITS, automaticSubmit: false, legacyReplay: false };
+      limits: R1_WEB_LIMITS, automaticSubmit: false, legacyReplay: false,
+      publicationSets: { prepareKind: 'publication_set', maxOutputs: 16, membership: 'frozen_plan', atomicity: 'declared_set' } };
   }
   async checkProfile() {
     this.assertDispatch();
@@ -82,6 +84,7 @@ export class R1WorkspaceService {
   filterObjects(value: unknown, signal?: AbortSignal, contextDigest?: string) { return this.reader.filterObjects(value, signal, contextDigest); }
 
   prepare(value: unknown): R1RequestView {
+    if (isWfdRecord(value) && value.kind === 'publication_set') fail('R1_SET_HOST_CHECK', '集合准备须经过受信异步限制核验。');
     const input = readInput(value), runtime = this.requireRuntime(); this.assertDispatch();
     return this.prepareInternal(input, runtime, null);
   }
@@ -89,6 +92,7 @@ export class R1WorkspaceService {
   /** 统一异步限制 verifier：prepare 与 auto/Polars 共用同一实际 WFD usage_status 检查。 */
   async prepareWithRestriction(value: unknown, signal?: AbortSignal): Promise<R1RequestView> {
     signal?.throwIfAborted();
+    if (isWfdRecord(value) && value.kind === 'publication_set') return this.prepareSetWithRestriction(value, signal);
     const input = readInput(value), runtime = this.requireRuntime(); this.assertDispatch();
     if (this.row(input.requestId)) return this.prepareInternal(input, runtime, null);
     const generation = this.tasks.getControl().generation, connection = runtime.currentIdentity();
@@ -135,6 +139,99 @@ export class R1WorkspaceService {
     });
   }
 
+
+  private setInputs(planId: string, setId: string, requestId: string): R1PrepareInput[] {
+    const plan = this.options.processing.get(planId);
+    let groups: Record<string, string[]>;
+    try { groups = readPublicationGroups(plan.consistencyGroups, plan.outputs.map(output => output.outputId)); }
+    catch (error) { fail('R1_PUBLICATION_SET', error instanceof Error ? error.message : '集合声明无效。'); }
+    const members = groups[setId];
+    if (!members) fail('R1_SET_NOT_FOUND', '原计划没有该明确发布集合，不能由界面临时拼组。');
+    if (plan.missingSteps.length || plan.missingOutputs.length) fail('R1_SET_INTEGRITY', '计划成员或步骤丢失，禁止整组准备。');
+    const graph = new Map(plan.steps.map(step => [step.stepId, step]));
+    for (const step of plan.steps) for (const dep of step.dependsOn) {
+      const prior = graph.get(dep);
+      if (!prior || (members.includes(step.outputId) !== members.includes(prior.outputId)))
+        fail('R1_SET_DEPENDENCY', '集合没有覆盖跨输出依赖的两端，不能拆分提交。');
+    }
+    const inputs = members.map(outputId => {
+      const output = plan.outputs.find(item => item.outputId === outputId)!;
+      const own = plan.steps.filter(step => step.outputId === outputId);
+      if (!own.length || own.some(step => step.state !== 'succeeded'
+        || !plan.integrity.some(item => item.stepId === step.stepId && item.present)))
+        fail('R1_SET_INTEGRITY', '集合成员的实际产物尚未齐备。');
+      const declaration = output.target?.declaration;
+      if (!isWfdRecord(declaration) || declaration.protocol !== 'wfd.structured-ingest/1.0'
+        || !isWfdRecord(declaration.source)) fail('R1_SET_SOURCE', '集合成员缺少冻结来源声明，不能取第一来源补齐。');
+      return readInput({ requestId, planId, outputId, source: declaration.source, mapping: declaration.mapping, target: declaration.target });
+    });
+    const first = inputs[0]!;
+    if (inputs.some(input => input.target.datasetId !== first.target.datasetId
+      || input.target.expectedParentSnapshotId !== first.target.expectedParentSnapshotId)
+      || new Set(inputs.map(input => input.target.outputKey)).size !== inputs.length)
+      fail('R1_SET_TARGET', '整组须使用同一数据集和父快照，且输出键必须唯一。');
+    return inputs;
+  }
+
+  private async prepareSetWithRestriction(value: WfdRecord, signal?: AbortSignal): Promise<R1RequestView> {
+    object(value, ['kind','requestId','planId','setId']);
+    id(value.requestId); id(value.planId); id(value.setId);
+    const input: R1SetPrepareInput = { kind: 'publication_set', requestId: value.requestId, planId: value.planId, setId: value.setId };
+    const runtime = this.requireRuntime(); this.assertDispatch();
+    const recipeDigest = wfdSha256(canonicalWfdJson(input)), previous = this.row(input.requestId);
+    if (previous) {
+      this.assertBinding(previous);
+      if (previous.recipe_sha256 !== recipeDigest) fail('R1_REQUEST_CONFLICT', '原集合请求不能更换计划或成员集合。');
+      return this.get(input.requestId);
+    }
+    if (this.db.prepare('SELECT request_id FROM r1_handoff_attempts WHERE request_id=?').get(input.requestId))
+      fail('R1_LEGACY_REQUEST', '原请求身份已被占用，不能绑定为新的发布集合。');
+    const generation = this.tasks.getControl().generation, identity = runtime.currentIdentity();
+    const inputs = this.setInputs(input.planId, input.setId, input.requestId), plan = this.options.processing.get(input.planId);
+    const outputRestrictions: Record<string, RestrictionEvidence | null> = Object.create(null);
+    for (const member of inputs) outputRestrictions[member.target.outputKey] = await this.verifyPublishRestriction(member,
+      plan.outputs.find(output => output.outputId === member.outputId), runtime, signal);
+    const snapshot = await this.snapshotStatus(signal);
+    if (snapshot.snapshotId !== inputs[0]!.target.expectedParentSnapshotId) fail('R1_SET_PARENT_CHANGED', 'WFD 基线变化，需重新修订并确认，不能自动换父快照。');
+    signal?.throwIfAborted(); this.assertDispatch();
+    if (generation !== this.tasks.getControl().generation || canonicalWfdJson(identity) !== canonicalWfdJson(runtime.currentIdentity()))
+      fail('R1_CONNECTION_BINDING_CHANGED', '集合核对期间运行代次或连接变化，未准备提交。');
+    // Another identical HTTP request may have completed during restriction/snapshot reads.
+    const concurrentlyAccepted = this.row(input.requestId);
+    if (concurrentlyAccepted) {
+      this.assertBinding(concurrentlyAccepted);
+      if (concurrentlyAccepted.recipe_sha256 !== recipeDigest) fail('R1_REQUEST_CONFLICT', '并发集合请求的计划或成员不同。');
+      return this.get(input.requestId);
+    }
+    const members = inputs.map(member => this.prepareOutput(member, runtime, true));
+    const first = members[0]!.structured;
+    const structured: R1StructuredRequest = { ...first, duplicatePolicy: undefined,
+      consistencyGroups: { [input.setId]: members.map(member => member.structured.outputKey) },
+      additionalOutputs: members.slice(1).map(member => member.structured), submissionDigest: 'sha256:' + '0'.repeat(64) };
+    const unsigned = buildStructuredIngestDocument(structured);
+    delete (unsigned.request_identity as WfdRecord).submission_digest;
+    structured.submissionDigest = 'sha256:' + wfdSha256(canonicalWfdJson(unsigned));
+    const document = buildStructuredIngestDocument(structured), documentText = canonicalWfdJson(document);
+    const totalRows = members.reduce((sum, member) => sum + (member.structured.payload.rows as unknown[]).length, 0);
+    if (Buffer.byteLength(documentText) > R1_WEB_LIMITS.maxDocumentBytes || totalRows > R1_WEB_LIMITS.maxRows)
+      fail('R1_WEB_BUDGET', '整组文档或总行数超过既有 Web 预算，未截断或分组重投。');
+    validateStructuredDocument(document, runtime.connection.schemaPath);
+    const outputs: Record<string, R1LocalReferences> = Object.create(null), documentSha256 = wfdSha256(documentText);
+    for (const member of members) outputs[member.structured.outputKey] = { ...member.localRefs,
+      processRefs: member.localRefs.processRefs.map(ref => ({ ...ref, document_sha256: documentSha256 })) };
+    const refs = Object.keys(outputs).sort().map(key => outputs[key]!);
+    const localRefs: R1LocalReferences = { publicationSetId: input.setId, outputs, contractBindingRequired: true,
+      originalIds: refs.flatMap(ref => ref.originalIds), materialIds: refs.flatMap(ref => ref.materialIds),
+      sourceRefs: refs.flatMap(ref => ref.sourceRefs), processRefs: refs.flatMap(ref => ref.processRefs), evidenceRefs: refs.flatMap(ref => ref.evidenceRefs) };
+    const binding = canonicalWfdJson(identity);
+    this.options.database.transaction(() => {
+      this.options.handoff.prepare({ structured, localRefs }, { outputRestrictions });
+      this.db.prepare('INSERT INTO r1_workspace_requests VALUES(?,?,?,?,?,?,NULL,?)').run(input.requestId, binding,
+        wfdSha256(binding), recipeDigest, input.planId, input.setId, Date.now());
+    });
+    return this.get(input.requestId);
+  }
+
   private prepareInternal(input: R1PrepareInput, runtime: ReturnType<R1WorkspaceService['requireRuntime']>,
     restriction: RestrictionEvidence | null): R1RequestView {
     const identity = runtime.currentIdentity();
@@ -146,7 +243,22 @@ export class R1WorkspaceService {
     }
     // Pre-workspace/legacy requests are never silently adopted under today's data-only profile.
     if (this.db.prepare('SELECT request_id FROM r1_handoff_attempts WHERE request_id=?').get(input.requestId)) fail('R1_LEGACY_REQUEST', '该请求没有本流程的冻结连接记录；只保留原身份核对，不采用当前 profile 重放。');
+    const { structured, localRefs } = this.prepareOutput(input, runtime);
+    const bindingJson = canonicalWfdJson(identity);
+    this.options.database.transaction(() => {
+      this.options.handoff.prepare({ structured, localRefs }, restriction);
+      this.db.prepare('INSERT INTO r1_workspace_requests VALUES(?,?,?,?,?,?,NULL,?)').run(input.requestId, bindingJson,
+        wfdSha256(bindingJson), recipeDigest, input.planId, input.outputId, Date.now());
+    });
+    return this.get(input.requestId);
+  }
+
+  /** Shared single-member validation; set preparation never creates member tasks or member requests. */
+  private prepareOutput(input: R1PrepareInput, runtime: ReturnType<R1WorkspaceService['requireRuntime']>, memberOfSet = false) {
+    const identity = runtime.currentIdentity();
     const plan = this.options.processing.get(input.planId), fixedOutput = plan.outputs.find(item => item.outputId === input.outputId);
+    if (!memberOfSet && Object.values(plan.consistencyGroups).some(members => members.includes(input.outputId)))
+      fail('R1_SET_WHOLE_REQUIRED', '此输出属于已声明发布集合，不能从单输出入口拆开提交。');
     if (!fixedOutput || fixedOutput.publishEligible !== true || fixedOutput.routingState !== 'ready_candidate') fail('R1_PROCESS_NOT_READY', '原计划的六维、明确发布用途与目标尚未齐备；结构成功不能替代准入。');
     const tabular = 'kind' in input.mapping && input.mapping.kind === 'tabular_rows';
     const declaration = { protocol: 'wfd.structured-ingest/1.0', target: input.target, mapping: input.mapping,
@@ -182,19 +294,13 @@ export class R1WorkspaceService {
         version: PROCESSING_PLAN_VERSION, input_sha256: original.sha256, output_sha256: output.ref.sha256,
         evidence_sha256: output.ref.sha256, document_sha256: wfdSha256(canonicalWfdJson(document)) }],
       evidenceRefs: [{ ref_id: `processing:${input.planId}:${input.outputId}`, content_sha256: output.ref.sha256, kind: 'processing-output' }] };
-    const bindingJson = canonicalWfdJson(identity);
-    this.options.database.transaction(() => {
-      this.options.handoff.prepare({ structured, localRefs }, restriction);
-      this.db.prepare('INSERT INTO r1_workspace_requests VALUES(?,?,?,?,?,?,NULL,?)').run(input.requestId, bindingJson,
-        wfdSha256(bindingJson), recipeDigest, input.planId, input.outputId, Date.now());
-    });
-    return this.get(input.requestId);
+    return { structured, localRefs };
   }
 
   list(): R1RequestSummary[] {
     return this.db.prepare(`WITH recent AS (
       SELECT request_id,created_at,rowid FROM r1_workspace_requests ORDER BY created_at DESC,rowid DESC LIMIT 20
-    ) SELECT a.request_id AS requestId,a.state,json_array_length(a.document_json,'$.outputs[0].payload.rows') AS rowCount,
+    ) SELECT a.request_id AS requestId,a.state,(SELECT SUM(json_array_length(member.value,'$.payload.rows')) FROM json_each(a.document_json,'$.outputs') member) AS rowCount,
       json_extract(a.error_json,'$.code') AS errorCode
       FROM recent JOIN r1_handoff_attempts a ON a.request_id=recent.request_id
       ORDER BY recent.created_at DESC,recent.rowid DESC`).all() as unknown as R1RequestSummary[];
@@ -204,6 +310,30 @@ export class R1WorkspaceService {
     const { attempt, local } = this.options.handoff.attemptWithExplanation(requestId);
     const rowSummary = (local.receipt as { row_summary?: R1RowSummary } | undefined)?.row_summary;
     const document = JSON.parse(String(attempt.document_json)) as WfdRecord;
+    const refs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
+    if (refs.outputs) {
+      const receipt = isWfdRecord(local.receipt) ? local.receipt : {};
+      const outcomes = Array.isArray(receipt.output_results) ? receipt.output_results.filter(isWfdRecord) : [];
+      const members: R1SetMemberView[] = (document.outputs as WfdRecord[]).map(output => {
+        const key = String(output.output_key), member = refs.outputs![key], payload = output.payload as WfdRecord;
+        const rows = Array.isArray(payload.rows) ? payload.rows.filter(isWfdRecord) : [];
+        const outcome = outcomes.find(item => item.output_key === key);
+        const errors = (Array.isArray(outcome?.errors) ? outcome.errors.filter(isWfdRecord) : [])
+          .map(error => typeof error.code === 'string' ? error.code : 'WFD_MEMBER_FAILED');
+        const verified = R1_SETTLED_STATES.has(String(attempt.state)) && Array.isArray(receipt.members)
+          && receipt.members.some(item => isWfdRecord(item) && item.output_key === key);
+        return { outputId: member.processRefs[0]!.output_id!, outputKey: key, rowCount: rows.length, previewRows: rows.slice(0, 5),
+          state: verified ? 'published' : errors.length || attempt.state === 'rejected' ? 'failed' : row.submit_task_id ? 'pending_receipt' : 'not_submitted',
+          snapshotId: verified && typeof outcome?.snapshot_id === 'string' ? outcome.snapshot_id : null,
+          productId: verified && typeof outcome?.product_id === 'string' ? outcome.product_id : null, errorCodes: errors };
+      });
+      return { requestId, state: String(attempt.state), datasetId: String(attempt.dataset_id), outputKey: refs.publicationSetId!,
+        documentSha256: String(attempt.document_sha256), connection: binding, planId: row.plan_id, outputId: row.output_id,
+        rowCount: members.reduce((sum, member) => sum + member.rowCount, 0), previewRows: [], submitTaskId: row.submit_task_id,
+        requiresRecovery: UNKNOWN_STATES.has(String(attempt.state)), local,
+        publicationSet: { setId: refs.publicationSetId!, atomicity: 'declared_set', duplicatePolicy: 'reject_member_conflict', members },
+        error: attempt.error_json ? JSON.parse(String(attempt.error_json)) as WfdRecord : null };
+    }
     const output = (document.outputs as WfdRecord[])[0]!, payload = output.payload as WfdRecord;
     const rows = Array.isArray(payload.rows) ? payload.rows as WfdRecord[] : [];
     return { requestId, state: String(attempt.state), datasetId: String(attempt.dataset_id), outputKey: String(output.output_key),
@@ -301,8 +431,19 @@ export class R1WorkspaceService {
   }
 
   private async verifyRestrictionForRequest(requestId: string, runtime: ReturnType<R1WorkspaceService['requireRuntime']>):
-    Promise<RestrictionEvidence | null> {
+    Promise<R1PublicationRestriction | null> {
     const row = this.requireRow(requestId), plan = this.options.processing.get(row.plan_id);
+    const aggregate = this.options.handoff.attempt(requestId);
+    const refs = JSON.parse(String(aggregate.local_refs_json)) as R1LocalReferences;
+    if (refs.outputs) {
+      const inputs = this.setInputs(plan.planId, refs.publicationSetId!, requestId);
+      const outputRestrictions: Record<string, RestrictionEvidence | null> = Object.create(null);
+      for (const input of inputs) {
+        const selected = plan.outputs.find(output => output.outputId === input.outputId);
+        outputRestrictions[input.target.outputKey] = await this.verifyPublishRestriction(input, selected, runtime);
+      }
+      return { outputRestrictions };
+    }
     const fixedOutput = plan.outputs.find(item => item.outputId === row.output_id);
     if (!fixedOutput) fail('R1_PREPARE', '实际加工计划没有本次输出；不能核对发布限制范围。');
     const usage = isWfdRecord(fixedOutput.usage) ? fixedOutput.usage : null;
@@ -466,12 +607,13 @@ function object(value: unknown, keys: string[]): WfdRecord { if (!isWfdRecord(va
 function boundedText(value: unknown, max: number): void { if (typeof value !== 'string' || !value.trim() || value.length > max || /[\u0000-\u001f]/u.test(value)) fail('R1_WEB_INPUT', '文本缺失或超过预算。'); }
 function id(value: unknown): asserts value is string { if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(value)) fail('R1_WEB_ID', '需要稳定的有界身份，不接受路径。'); }
 function resultFor(view: R1RequestView): TaskResult {
-  return { summary: view.rowSummary ? `R1：新增 ${view.rowSummary.inserted} 行，相同跳过 ${view.rowSummary.duplicate_skipped} 行，冲突待确认 ${view.rowSummary.conflict_pending} 行。` : `R1 ${view.state}；${view.rowCount} 行已按真实 WFD 身份核对。`, data: {
+  return { summary: view.publicationSet ? `R1 集合 ${view.state}；${view.publicationSet.members.filter(member => member.state === 'published').length}/${view.publicationSet.members.length} 个成员已固定读回。` : view.rowSummary ? `R1：新增 ${view.rowSummary.inserted} 行，相同跳过 ${view.rowSummary.duplicate_skipped} 行，冲突待确认 ${view.rowSummary.conflict_pending} 行。` : `R1 ${view.state}；${view.rowCount} 行已按真实 WFD 身份核对。`, data: {
     requestId: view.requestId, state: view.state, datasetId: view.datasetId, outputKey: view.outputKey,
     documentSha256: view.documentSha256, rowCount: view.rowCount, submitTaskId: view.submitTaskId,
     ...(view.rowSummary ? { rowSummary: view.rowSummary as unknown as JsonValue } : {}),
+    ...(view.publicationSet ? { publicationSet: view.publicationSet as unknown as JsonValue } : {}),
     requiresRecovery: view.requiresRecovery, error: view.error as JsonValue,
-    detail: { kind: 'r1_request', requestId: view.requestId, rows: view.rowSummary?.conflict_pending ? 'accepted_fixed_record_associations_with_conflicts_pending' : 'complete_fixed_record_associations' },
+    detail: { kind: 'r1_request', requestId: view.requestId, rows: view.publicationSet ? 'per_member_fixed_record_associations' : view.rowSummary?.conflict_pending ? 'accepted_fixed_record_associations_with_conflicts_pending' : 'complete_fixed_record_associations' },
   } };
 }
 function fail(code: string, message: string): never { throw new TaskError(code, message); }

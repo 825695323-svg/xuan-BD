@@ -1,3 +1,4 @@
+import type { R1PublicationSetView } from './r1-publication-set.js';
 import type { R1SourceAuthorization } from '../modules/collection/r1-source.js';
 
 /** Public local-Web slice: one processed material and explicit UTC intervals. */
@@ -61,6 +62,7 @@ export interface R1RequestView {
   submitTaskId: string | null; requiresRecovery: boolean;
   local: Record<string, unknown>; error: Record<string, unknown> | null;
   duplicatePolicy?: 'skip_identical_append'; rowSummary?: R1RowSummary;
+  publicationSet?: R1PublicationSetView;
 }
 export interface R1CapabilitiesView {
   protocol: 'wfd.structured-ingest/1.0'; profile: 'data_only';
@@ -68,6 +70,7 @@ export interface R1CapabilitiesView {
   limits: { maxRows: number; maxDocumentBytes: number; maxMaterials: 1; payload: 'scalar_rows';
     supportedPayloads?: readonly ('scalar_rows' | 'tabular_rows')[] };
   automaticSubmit: false; legacyReplay: false;
+  publicationSets?: { prepareKind: 'publication_set'; maxOutputs: 16; membership: 'frozen_plan'; atomicity: 'declared_set' };
 }
 
 export interface R1ReadConnection {
