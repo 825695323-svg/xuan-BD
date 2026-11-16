@@ -296,6 +296,16 @@ class WFDVolumeService:
         outputs = record.get("outputs") or []
         if not outputs:
             raise ValueError("FORMAL_OUTPUTS_EMPTY")
+        unpublished = record.get("unpublished_outputs", [])
+        if (not isinstance(unpublished, list)
+                or WFDDataOnlyService._unpublished_outputs(unpublished) != unpublished
+                or len({item["output_key"] for item in unpublished}) != len(unpublished)
+                or {item["output_key"] for item in unpublished} &
+                   {item.get("output_key") for item in outputs}):
+            raise ValueError("FORMAL_UNPUBLISHED_OUTPUTS_INVALID")
+        intent = self._load_target_intent(record.get("request_key"))
+        if intent is not None and intent.get("unpublished_outputs", []) != unpublished:
+            raise ValueError("FORMAL_UNPUBLISHED_INTENT_MISMATCH")
         for expected in outputs:
             key_name = expected.get("output_key")
             product_id = expected.get("product_id")
@@ -431,13 +441,14 @@ class WFDVolumeService:
                 "contract_refs": copy.deepcopy(item.get("contract_refs")),
                 "contract_bundle_ref": copy.deepcopy(item.get("contract_bundle_ref")),
             })
+        outputs.extend(copy.deepcopy(record.get("unpublished_outputs", [])))
         return self._duplicate_status({
             "protocol_version": "wfd.structured-ingest/1.0",
             "profile": DATA_ONLY_PROFILE,
             "service_version": record.get("service_version"),
             "request_key": key,
             "request_identity": dict(identity),
-            "state": "published_formal",
+            "state": "partially_published_formal" if record.get("unpublished_outputs") else "published_formal",
             "snapshot_id": record.get("snapshot_id"),
             "output_results": outputs,
             "formal_publication_ref": str(path.relative_to(self.root)),
@@ -1337,13 +1348,15 @@ class WFDVolumeService:
         except (OSError, ValueError):
             return None
 
-    def _write_target_intent(self, key, identity, fingerprint, parent, results, row_version_context=None):
+    def _write_target_intent(self, key, identity, fingerprint, parent, results, row_version_context=None,
+                             unpublished_outputs=None):
         from .writerlock import writer_lock
         with writer_lock(self.root):
             return self._write_target_intent_locked(
-                key, identity, fingerprint, parent, results, row_version_context)
+                key, identity, fingerprint, parent, results, row_version_context, unpublished_outputs)
 
-    def _write_target_intent_locked(self, key, identity, fingerprint, parent, results, row_version_context):
+    def _write_target_intent_locked(self, key, identity, fingerprint, parent, results, row_version_context,
+                                    unpublished_outputs=None):
         self._assert_no_bulk_intent(key)
         path = self._intent_path(key)
         if path.is_file():
@@ -1353,6 +1366,8 @@ class WFDVolumeService:
                 raise ValueError("REQUEST_ID_CONFLICT")
             if existing.get("row_version_context") != row_version_context:
                 raise ValueError("ROW_VERSION_ADOPTION_CHANGED:publication intent")
+            if existing.get("unpublished_outputs", []) != (unpublished_outputs or []):
+                raise ValueError("REQUEST_ID_CONFLICT:unpublished outcomes changed")
             return existing
         payload = {"format_version": "wfd.data-only-publication-intent/1.0",
                    "request_key": key, "request_identity": dict(identity),
@@ -1374,6 +1389,8 @@ class WFDVolumeService:
             payload["duplicate_policy"] = "skip_identical_append"
         if row_version_context is not None:
             payload["row_version_context"] = row_version_context
+        if unpublished_outputs:
+            payload["unpublished_outputs"] = copy.deepcopy(unpublished_outputs)
         self._verify_volume(write=True)
         _atomic_write(path, canonical(payload) + b"\n")
         return payload
@@ -1470,6 +1487,8 @@ class WFDVolumeService:
                                  "historically_activated": sid in history}}
             if intent.get("duplicate_policy"):
                 record["duplicate_policy"] = intent["duplicate_policy"]
+            if intent.get("unpublished_outputs"):
+                record["unpublished_outputs"] = copy.deepcopy(intent["unpublished_outputs"])
             self._verify_volume(write=True)
             from .writerlock import writer_lock
             with writer_lock(self.root):
@@ -2203,6 +2222,7 @@ class WFDVolumeService:
                 key, identity, fingerprint, expected_parent,
                 WFDDataOnlyService._publication_results(result.get("output_results", [])),
                 row_version_context=context,
+                unpublished_outputs=WFDDataOnlyService._unpublished_outputs(result.get("output_results", [])),
             )
         except ValueError as exc:
             return self._rejected_document(document, exc)

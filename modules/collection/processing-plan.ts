@@ -34,6 +34,7 @@ import {
 } from './processing-routing.js';
 import { ELIGIBILITY_HISTORY_MODES, ELIGIBILITY_PURPOSES, PURPOSE_ELIGIBILITY_RULE_VERSION,
   evaluatePurposeEligibility, type EligibilityHistoryMode, type EligibilityPurpose, type PurposeEvidenceClaim } from './purpose-eligibility.js';
+import { processingQuality } from './processing-quality.js';
 
 export const PROCESSING_PLAN_RUNTIME = 'bd.processing-plans';
 export const PROCESSING_PLAN_VERSION = 'bd-processing-plan/1';
@@ -308,9 +309,21 @@ export class ProcessingPlanService {
   }
 
   preparePlan(input: unknown, operator: OperatorContext): TaskRecord {
-    const normalized = this.normalizePlan(input, operator);
+    validateOperator(operator);
     const requestKey = requestKeyFor('plan', operator.requestId);
     const previous = this.request(requestKey);
+    let normalizationOperator = operator;
+    if (previous) {
+      const frozen = parseJson<{ operator: OperatorContext }>(previous.input_json).operator;
+      validateOperator(frozen);
+      if (digestOperationArgs(operatorRequestIdentity(operator)) !== digestOperationArgs(operatorRequestIdentity(frozen))) {
+        fail('REQUEST_CONFLICT', '同一计划请求不能更换操作者、请求来源或会话分支。');
+      }
+      // 重发沿首次受理的证据时刻核对，不把当前 HTTP 到达时间误判为业务变更。
+      // 保留当前受信消息核对函数，并重新核对全部原件、规则与声明，不能直接接受旧摘要。
+      normalizationOperator = { ...operator, observedAt: frozen.observedAt };
+    }
+    const normalized = this.normalizePlan(input, normalizationOperator);
     if (previous) {
       if (previous.content_digest !== normalized.contentDigest) fail('REQUEST_CONFLICT', '同一计划请求不能更换原件、规则、声明、维度或操作者。');
       return this.task(previous);
@@ -1485,7 +1498,7 @@ export class ProcessingPlanService {
       .filter(stepId => !steps.some(step => step.step_id === stepId));
     const missingOutputs = document.outputs.map(output => output.outputId)
       .filter(outputId => !outputs.some(item => item.output_id === outputId));
-    return { planId, version: document.version ?? null, requestId: requestRow?.client_request_id ?? row.request_key, parentPlanId: row.parent_plan_id, status: row.status, planDigest: row.plan_digest,
+    const plan = { planId, version: document.version ?? null, requestId: requestRow?.client_request_id ?? row.request_key, parentPlanId: row.parent_plan_id, status: row.status, planDigest: row.plan_digest,
       scopeKey: row.scope_key, executionDigest: document.executionDigest, policy: document.policy, policyDigest: row.policy_digest,
       operator: document.operator, createdAt: row.created_at, updatedAt: row.updated_at, reuseFromPlanId: document.reuseFromPlanId,
       materials: document.materials.map(material => ({ materialId: material.materialId, filename: material.filename, sha256: material.sha256,
@@ -1520,6 +1533,8 @@ export class ProcessingPlanService {
           steps: steps.filter(step => step.output_id === output.outputId).map(step => this.stepView(step)) };
       }),
       steps: steps.map(step => this.stepView(step)), integrity, missingSteps, missingOutputs };
+    return { ...plan, quality: processingQuality({ ...plan, expectedSteps: (document.steps ?? []).map(step => ({ ...step,
+      outputId: step.outputId ?? document.outputs.find(output => output.steps.includes(step.stepId))?.outputId })) }) };
   }
   private stepView(step: StepRow) {
     return { stepId: step.step_id, outputId: step.output_id, kind: step.kind, required: !!step.required, applicability: step.applicability,
@@ -1574,7 +1589,7 @@ export class ProcessingPlanService {
     return parseJson(row.plan_json) as { planId: string; version?: string; implementation?: string; policy: WfdRecord; operator: WfdRecord; executionDigest: string; reuseFromPlanId: string | null;
       materials: (MaterialFacts & { dimensions: NormalizedDimension[]; suggestions: DimensionSuggestion[]; routingState: RoutingState; gaps: string[] })[];
       outputs: (Omit<NormalizedOutput, 'steps'> & { steps: string[] })[];
-      steps: { stepId: string }[] };
+      steps: { stepId: string; outputId?: string; dependsOn?: string[] }[] };
   }
   /** 只有政策、实际实现和逐对象字节都核过的旧步骤才进入复用索引。 */
   private reusablePriorSteps(planId: string): Map<string, StepRow> {
@@ -1715,6 +1730,11 @@ function validateOperator(operator: OperatorContext): void {
 function storedOperator(operator: OperatorContext): OperatorContext {
   return { ...operator, ...(operator.conversation ? { conversation: { conversationId: operator.conversation.conversationId,
     branchId: operator.conversation.branchId } } : {}) };
+}
+function operatorRequestIdentity(operator: OperatorContext) {
+  return { operatorId: operator.operatorId, requestId: operator.requestId, method: operator.method, path: operator.path,
+    remoteAddress: operator.remoteAddress, source: operator.source ?? 'operator-http',
+    conversation: operator.conversation ? { conversationId: operator.conversation.conversationId, branchId: operator.conversation.branchId } : null };
 }
 function readRecord(value: unknown, keys: string[], code: string): WfdRecord {
   if (!isWfdRecord(value) || Object.keys(value).some(key => !keys.includes(key))) fail(code, `需要明确对象且只接受字段：${keys.join(', ')}。`);

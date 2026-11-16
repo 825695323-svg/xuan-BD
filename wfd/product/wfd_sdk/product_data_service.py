@@ -698,6 +698,9 @@ class WFDDataOnlyService(WFDProductService):
                              "records": copy.deepcopy(item.get("inserted_records", item.get("records", [])))}
                             for item in results if not item.get("errors")
                             and item.get("inserted_records", item.get("records", []))]}
+        unpublished = self._unpublished_outputs(results)
+        if unpublished:
+            plan["unpublished_outputs"] = unpublished
         if no_publication_state is not None or any("row_results" in item for item in results):
             plan.update(duplicate_policy="skip_identical_append",
                         output_results=copy.deepcopy(results),
@@ -755,6 +758,14 @@ class WFDDataOnlyService(WFDProductService):
         for name in ("duplicate_policy", "row_summary", "new_snapshot_created"):
             if name in record:
                 result[name] = copy.deepcopy(record[name])
+        if result["formal_publication_ref"]:
+            formal = json.loads((self.root / result["formal_publication_ref"]).read_text("utf-8"))
+            known = {item["output_key"] for item in result["output_results"]}
+            result["output_results"].extend(copy.deepcopy(item) for item in
+                formal.get("unpublished_outputs", []) if item["output_key"] not in known)
+        if result["state"] == "published_formal" and any(
+                item.get("errors") for item in result["output_results"]):
+            result["state"] = "partially_published_formal"
         return result
 
     def request_status(self, request_identity):
@@ -1221,7 +1232,30 @@ class WFDDataOnlyService(WFDProductService):
     def _publication_results(results):
         return [{**item, "records": copy.deepcopy(item["inserted_records"])}
                 if "inserted_records" in item else item for item in results
-                if "inserted_records" not in item or item["inserted_records"]]
+                if not item.get("errors") and
+                ("inserted_records" not in item or item["inserted_records"])]
+
+    @staticmethod
+    def _unpublished_outputs(results):
+        """Keep failed publication members in the existing receipt, without
+        persisting provider text, processing evidence, values or local paths.
+        Published records and failed members have distinct authority.
+        """
+        outcomes = []
+        for item in results:
+            if not item.get("errors"):
+                continue
+            codes = []
+            for error in item["errors"]:
+                code = error.get("code") if isinstance(error, dict) else None
+                if not isinstance(code, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", code):
+                    code = "OUTPUT_NOT_PUBLISHED"
+                if code not in codes:
+                    codes.append(code)
+            outcomes.append({"output_key": item["output_key"],
+                             "publication_state": "not_published",
+                             "errors": [{"code": code} for code in codes]})
+        return outcomes
 
     def submit(self, doc):
         with writer_lock(self.root):
@@ -1838,6 +1872,11 @@ class WFDDataOnlyService(WFDProductService):
     def _formalize(self, request_key, identity, fingerprint, results, publication,
                    historically_activated=False):
         duplicate_policy = any("row_results" in item for item in results)
+        unpublished = self._unpublished_outputs(results)
+        if not unpublished:
+            # Recovery may only have successful rows from the fixed snapshot.
+            # The existing pre-commit plan retains the other requested members.
+            unpublished = copy.deepcopy((self._load_plan(request_key) or {}).get("unpublished_outputs", []))
         results = self._publication_results(results)
         sid = publication.get("snapshot_id")
         if not sid:
@@ -1850,7 +1889,8 @@ class WFDDataOnlyService(WFDProductService):
             if (existing.get("request_key") == request_key
                     and existing.get("snapshot_id") == sid
                     and existing.get("formal_publication_state") == "published_formal"):
-                if self._formal_outputs_match(existing, results):
+                if (self._formal_outputs_match(existing, results)
+                        and existing.get("unpublished_outputs", []) == unpublished):
                     return formal_path, copy.deepcopy(existing.get("checks")), "published_formal"
                 return None, {"formal_receipt_matches": False,
                               "recovery_error": "FORMAL_RECEIPT_OUTPUT_CONFLICT"}, "formal_receipt_conflict"
@@ -1958,6 +1998,8 @@ class WFDDataOnlyService(WFDProductService):
         }
         if duplicate_policy:
             record["duplicate_policy"] = "skip_identical_append"
+        if unpublished:
+            record["unpublished_outputs"] = unpublished
         self.engine._write_immutable(formal_path, canonical(record))
         return formal_path, checks, "published_formal"
 

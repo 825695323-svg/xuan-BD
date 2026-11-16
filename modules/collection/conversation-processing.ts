@@ -9,6 +9,8 @@ import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import type { OperatorContext, ProcessingPlanInput } from './processing-plan.js';
+import type { ProcessingQuality } from '../../contracts/processing-quality.js';
+import { processingQualitySummary } from './processing-quality.js';
 import { PRODUCTION_MODULES, stepModuleForAction, readWfdModulePage,
   productionModuleDirectory, factorLibraryView, semanticDictionaryView, sourceSemanticView,
   readPublishedWfdSemanticDefinition } from './production-module-ports.js';
@@ -623,7 +625,8 @@ export class ConversationProcessingBridge {
   }
   private taskResult(summary: string, task: TaskRecord, found: unknown): TaskResult {
     if (task.status !== 'succeeded') return { summary: `${summary} 原任务状态：${task.status}。`,
-      data: view({ taskId: task.id, status: task.status, error: task.error ?? null, plan: found ?? null }) };
+      data: view({ taskId: task.id, status: task.status, error: task.error ?? null,
+        plan: this.planPreview(found, { taskId: task.id }) }) };
     return { summary, data: view(this.planPreview(found, { taskId: task.id })) };
   }
   /** 有界模型视图：保留可核事实与步骤状态，不分享完整表行或对象内容。 */
@@ -646,6 +649,7 @@ export class ConversationProcessingBridge {
         target: item.target, routingState: item.routingState, state: item.state, gaps: item.gaps, semanticGaps: item.semanticGaps,
         publishEligible: item.publishEligible, evidenceScope: item.evidenceScope, steps: item.steps })),
       steps: steps.map(step => this.step(step)), decision,
+      quality: processingQualitySummary(plan.quality as ProcessingQuality | undefined),
       query: extra.query === true, guidance: '清洗变化数只统计显式去空白与空值规则；结构步骤另列类型转换与十进制词面规范化，清洗为零不表示输出词面未变。旧产物若标记 not_recorded，变化数未知，不能按零解释。结构产物只证明编码、形状、类型、行预算与摘要；来源真实性、业务语义、对象时间、发布权限仍以缺口和真实用户输入为准。' };
     let text = JSON.stringify(preview);
     if (Buffer.byteLength(text, 'utf8') > 22000) {
