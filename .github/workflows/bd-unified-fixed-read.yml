@@ -10,6 +10,9 @@ on:
       - 'modules/financial/**'
       - 'apps/server/macd-full-chain.test.ts'
       - 'contracts/algorithm-definition.ts'
+      - 'contracts/r1-contracts.ts'
+      - 'modules/collection/r1-product-reader*'
+      - 'apps/server/r1-history-read.test.ts'
       - '.github/workflows/bd-unified-fixed-read.yml'
 
 permissions:
@@ -24,7 +27,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
-      - name: Select affected algorithm contracts
+      - name: Select affected fixed-read contracts
         id: scope
         run: |
           changed="$(git diff --name-only HEAD^ HEAD)"
@@ -32,6 +35,11 @@ jobs:
             echo 'algorithm=true' >> "$GITHUB_OUTPUT"
           else
             echo 'algorithm=false' >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -Eq '(r1-product-reader|r1-history-read|contracts/r1-contracts|product-machine-snapshot|bd-unified-fixed-read)'; then
+            echo 'history=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'history=false' >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/setup-node@v4
         with:
@@ -49,11 +57,11 @@ jobs:
             modules/collection/data-processing/wfd-fixed-selection.test.ts \
             modules/collection/data-processing/financial-fixed.test.ts
       - uses: actions/setup-python@v5
-        if: steps.scope.outputs.algorithm == 'true'
+        if: steps.scope.outputs.algorithm == 'true' || steps.scope.outputs.history == 'true'
         with:
           python-version: '3.12'
-      - name: Install hash-locked WFD requirements for selected algorithm tests
-        if: steps.scope.outputs.algorithm == 'true'
+      - name: Install hash-locked WFD requirements for selected fixed-read tests
+        if: steps.scope.outputs.algorithm == 'true' || steps.scope.outputs.history == 'true'
         run: |
           python -m pip install --only-binary=:all: --require-hashes -r config/local-web-python.lock.txt
           echo "WFD_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
@@ -69,3 +77,13 @@ jobs:
             modules/financial/algorithm-purpose-eligibility.test.ts \
             modules/financial/product-machine-snapshot.test.ts \
             apps/server/macd-full-chain.test.ts
+      - name: Verify explicit historical reads and stage-bound input over HTTP and WFD
+        if: steps.scope.outputs.history == 'true'
+        env:
+          XUAN_TEST_ROOT: ${{ runner.temp }}/history-contract-tests
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/history-wfd-tests
+        run: |
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
+          node --import tsx --test \
+            modules/collection/r1-product-reader.test.ts \
+            apps/server/r1-history-read.test.ts
