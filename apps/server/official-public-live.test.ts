@@ -76,7 +76,7 @@ test('live official originals use existing custody, bounded pagination and indiv
   try {
     for (const entry of usable) {
       assert.ok(entry.file && /^[a-z]+-[12]\.(json|csv)$/u.test(entry.file), 'Only manifest-selected bounded local filenames');
-      const bytes = readFileSync(join(rawRoot, entry.file));
+      const bytes: Buffer = readFileSync(join(rawRoot, entry.file));
       assert.equal(entry.status, 200); assert.equal(entry.finalUrl, entry.requestedUrl);
       assert.equal(bytes.length, entry.bytes); assert.equal(sha(bytes), entry.sha256);
       const label = 'official-' + entry.provider + '-' + entry.page;
