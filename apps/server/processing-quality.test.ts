@@ -112,9 +112,13 @@ test('HTTP quality survives reopening and directs revision without invalidating 
     assert.ok(goodSteps.every(step => step.state === 'succeeded' && step.reusedFrom?.planId === planId));
     assert.deepEqual(host.services.processing!.outputArtifact(revised.planId, 'good').bytes, goodBytes);
     const revisedParse = revised.steps.find(step => step.stepId === 'parse:bad:0')!;
-    assert.equal(revisedParse.state, 'pending', 'A changed type changes the frozen parse specification; candidates are not forced reuse');
-    assert.equal(revisedParse.reusedFrom, null);
-    await complete(host, revised.planId, 'bad', 'quality-repaired');
+    assert.equal(revisedParse.state, 'succeeded', 'A scalar type change belongs to structure; verified parsing can be reused');
+    assert.equal(revisedParse.reusedFrom?.planId, planId);
+    assert.equal(revisedParse.outputDigest, before.steps.find(step => step.stepId === revisedParse.stepId)!.outputDigest);
+    for (const kind of ['structure', 'check']) {
+      const result = await execute(host, revised.planId, 'bad', kind, `quality-repaired-${kind}`);
+      assert.equal(result.task.status, 'succeeded', JSON.stringify(result.task.error));
+    }
     const repaired = await query(host, revised.planId);
     assert.ok(repaired.outputs.every(output => output.state === 'structured' && !output.publishEligible));
     assert.ok(!repaired.quality.issues.some(item => item.kind === 'execution_failure' || item.kind === 'dependency_blocked'));
@@ -128,6 +132,19 @@ test('HTTP quality survives reopening and directs revision without invalidating 
     const unchanged = (await prepare(host, revisedInput, 'quality-unchanged', revised.planId)).plan;
     assert.ok(unchanged.steps.every(step => step.state === 'succeeded' && step.reusedFrom?.planId === revised.planId));
     assert.equal(count(host, 'candidate_objects'), objectCount, 'An unchanged plan must not duplicate existing processing artifacts');
+
+    const remappedInput = structuredClone(revisedInput);
+    remappedInput.outputs[0]!.tables![0]!.fieldMapping = { name: 'label' };
+    const remapped = (await prepare(host, remappedInput, 'quality-remapped', unchanged.planId)).plan;
+    const remappedParse = remapped.steps.find(step => step.stepId === 'parse:bad:0')!;
+    assert.equal(remappedParse.state, 'pending', 'A changed parsing rule must invalidate the retained parse candidate');
+    assert.equal(remappedParse.reusedFrom, null);
+    assert.notEqual(remappedParse.specDigest, revisedParse.specDigest);
+    assert.ok(remapped.steps.filter(step => step.outputId === 'good')
+      .every(step => step.state === 'succeeded' && step.reusedFrom?.planId === unchanged.planId));
+    await complete(host, remapped.planId, 'bad', 'quality-remapped');
+    assert.deepEqual((await host.call(`/processing/plans/${remapped.planId}/outputs/bad/artifact`)).rows,
+      [{ label: 'synthetic-bad', value: 'not-a-number' }]);
     assert.equal(count(host, 'r1_handoff_attempts'), 0);
     assert.deepEqual(host.services.materials!.readOriginal(bad).bytes, samples.bad);
   } finally { await host.close(); }
