@@ -13,6 +13,7 @@ export const ALGORITHM_DEFINITIONS: readonly AlgorithmDefinition[] = Object.free
     { output: 'ZERO', expression: 'ZERO_t = 0' },
   ],
   semantics: [
+    { key: 'methodVersion', label: '数学定义版本', value: ALGORITHM_METHODS.macd.version, state: 'fixed' },
     { key: 'parameters', label: '周期', value: '固定 12/26/9。', state: 'fixed' },
     { key: 'seed', label: '初始化', value: '按所供窗口首条有效收盘价初始化，不补窗口前历史或接续状态。', state: 'fixed' },
     { key: 'coefficient', label: '柱值系数', value: '2 × (DIFF − DEA)，不与 1 倍口径混用。', state: 'fixed' },
@@ -20,7 +21,8 @@ export const ALGORITHM_DEFINITIONS: readonly AlgorithmDefinition[] = Object.free
   warmup: '可用区间以原计算服务的预热标记为准；窗口首值初始化不等同完整长期历史。',
   missingPolicy: '不补历史、不扩窗、不推定价格单位、复权或可得时间。',
   implementations: [{ id: 'impl.local.indicators.macd', role: 'primary', language: 'Python',
-    location: 'plugins/financial/local-compute/assets/indicators.py: MACD', version: ALGORITHM_METHODS.macd.version }],
+    location: 'plugins/financial/local-compute/assets/indicators.py: MACD',
+    note: '实际实现摘要从运行目录 implementationVersion 读取，不借用数学定义版本。' }],
   configurations: [{ id: 'cfg.macd.base', label: '受控 MACD', frequency: '日线',
     parameters: '12/26/9 固定；init=first_valid', entry: 'library' }],
   products: [], legacyAliases: [],
