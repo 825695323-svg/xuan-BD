@@ -1,5 +1,6 @@
 import type { R1PublicationSetView } from './r1-publication-set.js';
 import type { R1SourceAuthorization } from '../modules/collection/r1-source.js';
+import type { EligibilityHistoryMode } from '../modules/collection/purpose-eligibility.js';
 
 /** Public local-Web slice: one processed material and explicit UTC intervals. */
 export interface R1TimeMapping {
@@ -95,11 +96,18 @@ export interface R1ProductDiscovery {
   selections: R1ProductSelection[]; products: Record<string, unknown>[]; limits: R1ReadLimits;
 }
 export interface R1ProductRead {
-  snapshotId: string; productId: string; historyMode: 'snapshot_contents'; connection: R1ReadConnection;
+  snapshotId: string; productId: string; historyMode: EligibilityHistoryMode; connection: R1ReadConnection;
   result: Record<string, unknown>; limits: R1ReadLimits;
 }
 export interface R1ProductReadInput {
   snapshotId: string; productId: string; cursor?: string | null;
+  /** 不传时仍只读固定快照；历史模式与截止必须由调用方明确选择。 */
+  historyMode?: EligibilityHistoryMode;
+  /** 显式秒级 UTC 截止。日期粒度的来源证据不得由此改写成午夜。 */
+  at?: string;
+  /** system_held_at 必须同时固定范围及实际可用阶段，不自动升级为正式可读。 */
+  heldScope?: string;
+  usableStage?: 'acquired' | 'custodied' | 'published_readable';
   /** Only fields declared by this product in the selected fixed snapshot; omitted means all. */
   fields?: string[];
 }

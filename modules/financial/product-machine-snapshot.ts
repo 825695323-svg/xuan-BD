@@ -2,6 +2,7 @@ import type { JsonValue } from '../../contracts/task-contracts.js';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { WfdProductMachineClient } from '../../adapters/database/wfd-product-machine.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
+import { isExplicitUtcInstant } from '../../contracts/financial-value.js';
 import type { AlgorithmSnapshotPort, AlgorithmSnapshotRead, AlgorithmSnapshotReference, AlgorithmSnapshotRowEvidence } from './algorithm-types.js';
 import { wfdFixedReadEvidence } from '../collection/purpose-eligibility.js';
 
@@ -205,8 +206,22 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
           action: '历史截止必须由实际 WFD 读取固定并返回；不能用业务日期或当前时间替代。',
         }));
       }
+      if (fixed.perspective === 'system_held_at' && (result.held_scope !== fixed.heldScope
+        || result.usable_stage !== fixed.usableStage)) {
+        throw new TaskError('ALGORITHM_SNAPSHOT_HOLDING_MISMATCH', 'WFD 实际持有范围或阶段与冻结请求不同；不得把 acquired 当作 published_readable。');
+      }
       const rawRows = Array.isArray(result.rows) ? result.rows.filter(isWfdRecord) : [];
+      if (fixed.perspective === 'system_held_at' && rawRows.some(row => row.held_scope !== fixed.heldScope
+        || row.usable_stage !== fixed.usableStage)) {
+        throw new TaskError('ALGORITHM_SNAPSHOT_HOLDING_MISMATCH', '逐行实际持有证据缺失或范围/阶段不同，不从请求补成事实。');
+      }
       const diagnostics = Array.isArray(result.diagnostics) ? result.diagnostics : [];
+      if (fixed.perspective && fixed.perspective !== 'snapshot_contents'
+        && diagnostics.some(item => isWfdRecord(item) && (item.decision === 'indeterminate'
+          || fixed.perspective === 'market_known_at' && item.reason === 'WITHDRAWN_AT_PERSPECTIVE'))) {
+        throw new TaskError('ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE',
+          '历史版本选择存在待补证据，不能把仍有撤销/公开时间缺口的部分结果送入计算。');
+      }
       const declaredRows = typeof result.row_count === 'number' ? result.row_count : null;
       if (declaredRows === null || rawRows.length !== declaredRows) {
         throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '产品服务固定读取返回的行数与声明不一致；拒绝截断采用。');
@@ -313,6 +328,8 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
           requestedAt: fixed.at ?? null,
           actualPerspective: result.perspective ?? null,
           actualAt: result.at ?? null,
+          requestedHeldScope: fixed.heldScope ?? null, actualHeldScope: result.held_scope ?? null,
+          requestedUsableStage: fixed.usableStage ?? null, actualUsableStage: result.usable_stage ?? null,
           includeHistory: result.include_history ?? null,
           diagnostics: diagnostics.slice(0, 64),
         },
@@ -643,6 +660,7 @@ function projectEnvelopeRow(row: WfdRecord): WfdRecord {
     business_key: inner.business_key ?? null,
     observation_time: inner.observation_time ?? null,
     public_time: inner.public_time ?? null,
+    held_at: row.held_at ?? null, held_scope: row.held_scope ?? null, usable_stage: row.usable_stage ?? null,
     subject: row.subject ?? inner.subject ?? null,
     record_ref: row.record_ref ?? null,
     revision: row.revision ?? null,
@@ -784,6 +802,19 @@ function uniqueText(values: unknown[]): string[] {
 }
 
 function assertReference(reference: AlgorithmSnapshotReference): void {
+  const perspective = reference?.perspective ?? 'snapshot_contents';
+  if (!['snapshot_contents', 'market_known_at', 'system_held_at'].includes(perspective)
+    || /^(latest|current)$/iu.test(reference?.snapshotId ?? '')
+    || (perspective === 'snapshot_contents' ? reference?.at !== undefined
+      : !isExplicitUtcInstant(reference?.at) || reference.at.length !== 20))
+    throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '固定历史读取须明确有效 UTC 截止和具体快照，不能隐式切换 latest 或视角。');
+  if (perspective === 'system_held_at') {
+    if (typeof reference.heldScope !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(reference.heldScope)
+      || !['acquired', 'custodied', 'published_readable'].includes(String(reference.usableStage)))
+      throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '系统历史读取必须明确持有范围及可用阶段。');
+  } else if (reference?.heldScope !== undefined || reference?.usableStage !== undefined) {
+    throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '非系统历史读取不能混入持有范围或阶段。');
+  }
   if (!reference || reference.kind !== 'wfd_fixed_snapshot'
     || typeof reference.instanceId !== 'string' || !reference.instanceId
     || typeof reference.productId !== 'string' || !reference.productId

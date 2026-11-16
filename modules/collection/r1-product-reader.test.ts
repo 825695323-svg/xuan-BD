@@ -14,6 +14,7 @@ const product = { product_id: 'p_fixture', dataset_id: 'actual_dataset', payload
   subject: { kind: 'physical_object', namespace: 'test', id: 'fixture' },
   declaration: { semantic_code: 'fixture.metric', definition_authority: 'test', field_definitions: [
     { field_code: 'label', data_type: 'text', unit_code: 'text' }, { field_code: 'amount', data_type: 'decimal', unit_code: 'count' }] },
+  contracts: { read: { perspectives: ['snapshot_contents', 'market_known_at', 'system_held_at'] } },
   definition_ref: { id: 'def_actual', version: 'v_actual' }, contract_ref: { id: 'contract_actual' } };
 const reply = (result: WfdRecord) => ({ result, response: {}, transport: {} }) as WfdProductMachineReply;
 const isCode = (code: string) => (error: unknown) => !!error && typeof error === 'object' && 'code' in error && error.code === code;
@@ -34,8 +35,8 @@ function fixture() {
       if (state.error) throw state.error;
       const result: WfdRecord = { format_version: 'wfd.read-product-result/0.1', operation: 'read_product',
         snapshot_id: request.snapshot_id, product_id: request.product_id, dataset_id: request.dataset_id,
-        fields: request.fields, history_mode: request.history_mode, knowledge_cutoff: null, held_scope: null,
-        usable_stage: null, business_time_range: null, subject: null, query_hash: 'sha256:' + 'b'.repeat(64),
+        fields: request.fields, history_mode: request.history_mode, knowledge_cutoff: request.knowledge_cutoff, held_scope: request.held_scope,
+        usable_stage: request.usable_stage, business_time_range: null, subject: null, query_hash: 'sha256:' + 'b'.repeat(64),
         budget: { max_scan_bytes: request.max_scan_bytes }, diagnostics: [], complete: true,
         rows: [{ record_ref: { logical_key: 'row-actual', revision_id: 'r_actual' }, business_time: { status: 'unknown' },
           values: { amount: { value: null, value_state: 'missing_unknown', data_type: 'decimal', unit: { unit_code: 'count' } },
@@ -75,6 +76,7 @@ test('query refuses caller paths, datasets and history overrides before dispatch
   ]) await assert.rejects(f.reader.discoverProducts(value), isCode('R1_READ_INPUT'));
   for (const value of [
     { snapshotId: 's_fixture', productId: 'p_fixture', historyMode: 'market_known_at' },
+    { snapshotId: 's_fixture', productId: 'p_fixture', historyMode: null },
     { snapshotId: 's_fixture', productId: 'p_fixture', datasetId: 'injected' },
     { snapshotId: 's_fixture', productId: 'p_fixture', cursor: 'x'.repeat(8193) },
   ]) await assert.rejects(f.reader.readProduct(value), isCode('R1_READ_INPUT'));
@@ -156,4 +158,67 @@ test('selected projection rejects a different response projection and preserves 
   f.state.error = new WfdProductMachineError('WFD_PRODUCT_MACHINE_REJECTED', 'query mismatch', {
     operation: 'read_product', requestId: 'fixture', remoteCode: 'CURSOR_QUERY_MISMATCH' });
   await assert.rejects(f.reader.readProduct({ snapshotId: 's_fixture', productId: 'p_fixture', fields: ['label'], cursor: 'previous-query-cursor' }), isCode('CURSOR_QUERY_MISMATCH'));
+});
+
+
+test('historical reads explicitly bind mode, UTC cutoff, scope and stage to the existing WFD request', async () => {
+  const f = fixture();
+  const at = '2025-04-01T02:03:04Z';
+  const market = await f.reader.readProduct({ snapshotId: 's_fixture', productId: 'p_fixture', historyMode: 'market_known_at', at });
+  assert.equal(market.historyMode, 'market_known_at');
+  const wire = f.calls.find(call => call.operation === 'read_product')!.input as WfdRecord;
+  assert.deepEqual(wire.knowledge_cutoff, { status: 'known', precision: 'second', earliest_utc: at,
+    latest_exclusive_utc: '2025-04-01T02:03:05Z', source_timezone: 'UTC' });
+  assert.equal(wire.held_scope, null);
+  for (const usableStage of ['acquired', 'custodied', 'published_readable'] as const) {
+    const result = await f.reader.readProduct({ snapshotId: 's_fixture', productId: 'p_fixture',
+      historyMode: 'system_held_at', at, heldScope: 'isolated-instance', usableStage });
+    assert.equal(result.result.usable_stage, usableStage);
+    assert.equal(result.result.held_scope, 'isolated-instance');
+  }
+  assert.ok(f.calls.every(call => ['contract_discovery', 'read_product'].includes(call.operation)),
+    'Historical reads never submit, calculate or publish');
+});
+
+test('invalid or ambiguous historical requests fail before discovery without date-to-midnight conversion', async () => {
+  const f = fixture(), base = { snapshotId: 's_fixture', productId: 'p_fixture' };
+  const wrong = [
+    { at: '2025-01-01T00:00:00Z' }, { historyMode: 'market_known_at' },
+    ...['2025-01-01', '2025-02-30T00:00:00Z', '2025-01-01T00:00:00', '2025-01-01T00:00:00.123Z']
+      .map(at => ({ historyMode: 'market_known_at', at })),
+    { historyMode: 'unknown' },
+    { historyMode: 'system_held_at', at: '2025-01-01T00:00:00Z' },
+    { historyMode: 'system_held_at', at: '2025-01-01T00:00:00Z', heldScope: 'i', usableStage: 'latest' },
+    { historyMode: 'market_known_at', at: '2025-01-01T00:00:00Z', heldScope: 'i' },
+  ];
+  for (const item of wrong) await assert.rejects(f.reader.readProduct({ ...base, ...item }), isCode('R1_READ_INPUT'));
+  assert.deepEqual(f.calls, []);
+});
+
+test('unsupported history contracts never silently fall back to snapshot contents', async () => {
+  const f = fixture();
+  f.state.products[0]!.contracts = { read: { perspectives: ['snapshot_contents'] } };
+  await assert.rejects(f.reader.readProduct({ snapshotId: 's_fixture', productId: 'p_fixture',
+    historyMode: 'market_known_at', at: '2025-04-01T00:00:00Z' }), isCode('R1_READ_HISTORY_UNSUPPORTED'));
+  assert.deepEqual(f.calls.map(call => call.operation), ['contract_discovery']);
+});
+
+for (const key of ['history_mode', 'knowledge_cutoff', 'held_scope', 'usable_stage'])
+  test('historical read rejects a mismatched actual response: ' + key, async () => {
+    const f = fixture();
+    f.state.changeResult = result => { result[key] = key === 'usable_stage' ? 'acquired' : 'foreign'; };
+    await assert.rejects(f.reader.readProduct({ snapshotId: 's_fixture', productId: 'p_fixture',
+      historyMode: 'system_held_at', at: '2025-04-01T00:00:00Z', heldScope: 'i', usableStage: 'published_readable' }),
+    isCode('R1_READ_RESPONSE_INVALID'));
+    assert.equal(f.calls.filter(call => call.operation === 'read_product').length, 1, 'No fallback or automatic retry');
+  });
+
+
+test('market reconstruction cannot reuse predecessor public time for a data-only withdrawal', async () => {
+  const f = fixture();
+  f.state.changeResult = result => { result.diagnostics = [{ decision: 'ineligible', reason: 'WITHDRAWN_AT_PERSPECTIVE' }]; };
+  await assert.rejects(f.reader.readProduct({ snapshotId: 's_fixture', productId: 'p_fixture',
+    historyMode: 'market_known_at', at: '2025-02-01T00:00:00Z' }), isCode('R1_READ_REVISION_TIME_UNSUPPORTED'));
+  const snapshot = await f.reader.readProduct({ snapshotId: 's_fixture', productId: 'p_fixture' });
+  assert.equal(snapshot.historyMode, 'snapshot_contents', 'Fixed snapshot inspection remains available');
 });

@@ -4,6 +4,8 @@ import { WfdProductMachineError } from '../../adapters/database/wfd-product-mach
 import type { WfdFilterPlan } from '../../adapters/database/wfd-product-machine.js';
 import { canonicalWfdJson, isWfdRecord, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
+import { isExplicitUtcInstant } from '../../contracts/financial-value.js';
+import { ELIGIBILITY_HISTORY_MODES, type EligibilityHistoryMode } from './purpose-eligibility.js';
 import type { R1Runtime } from './r1-runtime.js';
 
 export const R1_READ_LIMITS = Object.freeze({ pageSize: 100, maxScanRows: 5000, maxScanBytes: 16_777_216,
@@ -15,7 +17,7 @@ function fail(code: string, message: string): never { throw new TaskError(code, 
 const connection = (identity: R1ConnectionIdentity): R1ReadConnection => ({ connectionId: identity.connectionId,
   profile: identity.profile, mode: identity.mode, runtimeIdentity: identity.runtimeIdentity, callerId: identity.callerId, namespace: identity.namespace });
 
-/** Only the bound R1 client is used. Projection is restricted to discovered fields; dataset, time and budgets are host-owned. */
+/** Only the bound R1 client is used. Projection is restricted to discovered fields; history intent is explicit and actual time evidence remains WFD-owned. */
 export class R1ProductReader {
   constructor(private readonly options: { runtime(): ReadRuntime; control(): { stopped: boolean; generation: number } }) {}
 
@@ -108,7 +110,8 @@ export class R1ProductReader {
   }
 
   async readProduct(value: unknown, signal?: AbortSignal): Promise<R1ProductRead> {
-    const input = body(value, ['snapshotId', 'productId', 'fields', 'cursor']);
+    const input = body(value, ['snapshotId', 'productId', 'fields', 'cursor', 'historyMode', 'at', 'heldScope', 'usableStage']);
+    const history = readHistorySelection(input);
     if (!fixed(input.snapshotId) || !identifier(input.productId) || input.cursor !== undefined && input.cursor !== null
       && (typeof input.cursor !== 'string' || !input.cursor || input.cursor.length > 8192 || /[\u0000-\u001f]/u.test(input.cursor))) {
       fail('R1_READ_INPUT', '读取需要固定快照、实际产品及有界原游标；不接受路径或查询覆盖。');
@@ -125,6 +128,13 @@ export class R1ProductReader {
       const product = discovered.selections.find(item => item.productId === productId);
       if (!product) fail('R1_READ_PRODUCT_NOT_FOUND', '该产品不在所选固定快照中；请重新发现实际产品。');
       if (!product.readable) fail('R1_READ_PROJECTION_UNSUPPORTED', product.reason!);
+      if (history.mode !== 'snapshot_contents') {
+        const contracts = discovered.products.filter(item => item.product_id === productId);
+        if (contracts.some(item => {
+          const read = isWfdRecord(item.contracts) && isWfdRecord(item.contracts.read) ? item.contracts.read : {};
+          return !Array.isArray(read.perspectives) || !read.perspectives.includes(history.mode);
+        })) fail('R1_READ_HISTORY_UNSUPPORTED', '固定产品合同未声明所选历史视角；不退回快照内容或最新数据。');
+      }
       const fields = input.fields === undefined ? product.fields : [...input.fields as string[]].sort();
       if (fields.length > R1_READ_LIMITS.maxFields || fields.some(field => !product.fields.includes(field))) {
         fail('R1_READ_FIELDS', '所选字段未在该固定快照产品中声明，或超过 64 字段预算；请按实际发现结果重新选择。');
@@ -132,15 +142,20 @@ export class R1ProductReader {
       active();
       const reply = await runtime.client.readProduct({ protocol_version: 'wfd.read/1.3-product1', operation: 'read_product',
         dataset_id: product.datasetId, snapshot_id: snapshotId, product_id: productId, fields,
-        history_mode: 'snapshot_contents', knowledge_cutoff: null, held_scope: null, usable_stage: null, subject: null,
+        history_mode: history.mode, knowledge_cutoff: history.cutoff, held_scope: history.heldScope, usable_stage: history.usableStage, subject: null,
         business_time_range: null, page_size: R1_READ_LIMITS.pageSize, max_nodes: R1_READ_LIMITS.maxScanRows,
         max_scan_bytes: R1_READ_LIMITS.maxScanBytes, cursor: input.cursor ?? null }, wait);
       active(); const result = reply.result; boundedResult(result);
+      // 当前 data_only 撤销引用未改写的原行，未单独登记撤销公开时间。
+      // 不把原披露时间解释为撤销时间；保留其他读取视角，不伪造市场历史。
+      if (history.mode === 'market_known_at' && Array.isArray(result.diagnostics)
+        && result.diagnostics.some(item => isWfdRecord(item) && item.reason === 'WITHDRAWN_AT_PERSPECTIVE'))
+        fail('R1_READ_REVISION_TIME_UNSUPPORTED', '撤销缺少可独立核验的公开时间，此历史查询未采用；可按明确持有阶段或固定快照核对。');
       const page = isWfdRecord(result.page) ? result.page : {};
       if (result.format_version !== 'wfd.read-product-result/0.1' || result.operation !== 'read_product'
         || result.snapshot_id !== snapshotId || result.product_id !== productId || result.dataset_id !== product.datasetId
-        || result.history_mode !== 'snapshot_contents' || result.knowledge_cutoff !== null || result.held_scope !== null
-        || result.usable_stage !== null || result.subject !== null || result.business_time_range !== null
+        || result.history_mode !== history.mode || canonicalWfdJson(result.knowledge_cutoff) !== canonicalWfdJson(history.cutoff)
+        || result.held_scope !== history.heldScope || result.usable_stage !== history.usableStage || result.subject !== null || result.business_time_range !== null
         || canonicalWfdJson(result.fields) !== canonicalWfdJson(fields)
         || !Array.isArray(result.rows) || result.rows.length > R1_READ_LIMITS.pageSize
         || result.rows.some(row => !isWfdRecord(row) || !isWfdRecord(row.values) || !isWfdRecord(row.record_ref))
@@ -153,7 +168,7 @@ export class R1ProductReader {
         || (page.has_more ? typeof page.next_cursor !== 'string' || !page.next_cursor || page.next_cursor.length > 8192 : page.next_cursor !== null)) {
         fail('R1_READ_RESPONSE_INVALID', 'WFD 返回的固定身份、时间视角、投影或分页无法核对；本页未采用。');
       }
-      return { snapshotId, productId, historyMode: 'snapshot_contents', connection: connection(identity), result, limits: R1_READ_LIMITS };
+      return { snapshotId, productId, historyMode: history.mode, connection: connection(identity), result, limits: R1_READ_LIMITS };
     }, signal);
   }
 
@@ -277,9 +292,37 @@ export class R1ProductReader {
 }
 
 function body(value: unknown, keys: string[]): WfdRecord {
-  if (!isWfdRecord(value) || Object.keys(value).some(key => !keys.includes(key))) fail('R1_READ_INPUT', '此入口只接受固定快照、发现的产品、已声明投影字段和原游标；不接受路径、数据库、权限或时间覆盖。');
+  if (!isWfdRecord(value) || Object.keys(value).some(key => !keys.includes(key))) fail('R1_READ_INPUT', '此入口只接受固定快照、发现的产品、已声明投影字段和原游标；不接受路径、数据库、权限或未登记的查询覆盖。');
   return value;
 }
 function boundedResult(value: WfdRecord): void {
   if (Buffer.byteLength(canonicalWfdJson(value)) > R1_READ_LIMITS.maxResultBytes) fail('R1_READ_BUDGET', '完整查询结果超过本入口 2 MiB 预算；未截断或伪称完成。');
+}
+
+
+/** 只固定读取意图；版本选择、时间证据和实例台账仍由既有 WFD 查询执行。 */
+function readHistorySelection(input: WfdRecord) {
+  const mode = input.historyMode === undefined ? 'snapshot_contents' : input.historyMode;
+  if (!(ELIGIBILITY_HISTORY_MODES as readonly unknown[]).includes(mode))
+    fail('R1_READ_INPUT', '历史视角须为实际登记的固定快照、市场可知或系统持有模式。');
+  if (mode === 'snapshot_contents') {
+    if (input.at !== undefined || input.heldScope !== undefined || input.usableStage !== undefined)
+      fail('R1_READ_INPUT', '快照内容读取不能携带历史截止或持有声明；请明确选择历史视角。');
+    return { mode: mode as EligibilityHistoryMode, cutoff: null, heldScope: null, usableStage: null };
+  }
+  if (!isExplicitUtcInstant(input.at) || input.at.length !== 20)
+    fail('R1_READ_INPUT', '历史读取必须提供真实秒级 UTC 截止；日期、无时区及非法日历时刻不能隐式补齐。');
+  const end = new Date(Date.parse(input.at) + 1000).toISOString().replace('.000Z', 'Z');
+  if (end.length !== 20) fail('R1_READ_INPUT', '截止超出当前 UTC 时间合同范围。');
+  if (mode === 'system_held_at') {
+    if (!identifier(input.heldScope) || !['acquired', 'custodied', 'published_readable'].includes(String(input.usableStage)))
+      fail('R1_READ_INPUT', '系统历史读取须明确持有范围和可用阶段，不能将已取得当作正式可读。');
+  } else if (input.heldScope !== undefined || input.usableStage !== undefined) {
+    fail('R1_READ_INPUT', '市场公开视角不能混入系统持有范围或阶段。');
+  }
+  return { mode: mode as EligibilityHistoryMode,
+    cutoff: { status: 'known', precision: 'second', earliest_utc: input.at,
+      latest_exclusive_utc: end, source_timezone: 'UTC' },
+    heldScope: mode === 'system_held_at' ? input.heldScope as string : null,
+    usableStage: mode === 'system_held_at' ? input.usableStage as 'acquired' | 'custodied' | 'published_readable' : null };
 }
