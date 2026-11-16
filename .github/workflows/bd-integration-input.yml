@@ -1,0 +1,20 @@
+name: Temporary BD integration input
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/bd-integration-input.yml'
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: git archive --format=tar.gz -o "$RUNNER_TEMP/bd-integration-source.tar.gz" HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bd-integration-source
+          path: ${{ runner.temp }}/bd-integration-source.tar.gz
+          retention-days: 1
