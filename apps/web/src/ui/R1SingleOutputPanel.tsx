@@ -296,6 +296,7 @@ export function R1Panel() {
     finally { setBusy(false); }
   };
   const showView = (current: R1RequestView) => {
+    if (current.publicationSet) throw new Error('此请求为关联发布集合，请在已有计划多输出审阅中查看全部成员。');
     setView(current); setConfirmed(false);
     const savedSource = frozenSource(current);
     setSource({ source_id: text(savedSource.source_id), provider: text(savedSource.provider), requested_url: text(savedSource.requested_url),

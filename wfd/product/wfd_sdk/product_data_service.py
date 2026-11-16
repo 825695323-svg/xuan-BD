@@ -2299,6 +2299,12 @@ class WFDDataOnlyService(WFDProductService):
         if failed:
             normalized_outputs = [out for out in normalized_outputs
                                   if out["output_key"] not in failed]
+            # Prepared revisions are not published record identities. A failed
+            # declared set must not expose its otherwise-valid peer as received.
+            if not dedupe:
+                for item in results:
+                    if item["output_key"] in failed:
+                        item["records"] = []
             if dedupe:
                 for item in results:
                     if item["output_key"] in failed:

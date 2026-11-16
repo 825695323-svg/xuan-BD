@@ -15,6 +15,11 @@ on:
       - 'apps/server/ui-routes.ts'
       - 'apps/server/attachment-upload.ts'
       - 'contracts/r1-contracts.ts'
+      - 'contracts/r1-publication-set.ts'
+      - 'modules/collection/r1-workspace.ts'
+      - 'modules/collection/r1-structured-handoff.ts'
+      - 'modules/collection/r1-paged-readback.ts'
+      - 'modules/collection/processing-plan.ts'
       - 'contracts/source-settings.ts'
       - 'contracts/source-acquisition.ts'
       - 'contracts/contracts.ts'
@@ -57,7 +62,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           changed="$(git diff --name-only HEAD^ HEAD)"
-          if [ "$EVENT_NAME" = workflow_dispatch ] || echo "$changed" | grep -Eq '(r1-plan-review|R1PlanReview|R1Panel|R1SingleOutputPanel|contracts/r1-contracts)'; then
+          if [ "$EVENT_NAME" = workflow_dispatch ] || echo "$changed" | grep -Eq '(r1-plan-review|R1PlanReview|R1Panel|R1SingleOutputPanel|contracts/r1-contracts|r1-publication-set|r1-workspace|r1-structured-handoff|r1-paged-readback|processing-plan)'; then
             echo 'r1=true' >> "$GITHUB_OUTPUT"
           else
             echo 'r1=false' >> "$GITHUB_OUTPUT"

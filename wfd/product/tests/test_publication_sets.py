@@ -240,3 +240,25 @@ def test_native_recovery_rejects_formal_receipt_that_lost_failed_members(tmp_pat
     assert recovered["formal_publication_verified"] is False
     assert recovered["errors"][0]["code"] == "FORMAL_RECEIPT_OUTPUT_CONFLICT"
     assert commit_names(service.root) == before
+
+
+def test_data_service_failed_set_never_exposes_prepared_record_identities(tmp_path):
+    from test_r1_data_only import make_data_service
+    service = make_data_service(tmp_path)
+    members = outputs()[:2]
+    members[0]["definition"]["unit_code"] = "synthetic_unregistered_unit"
+    document = request(members, "failed-direct-service-set",
+                       consistency_groups={"pair": ["left", "right"]})
+    result = service.submit(document)
+    assert result["state"] == "registered_not_published", result
+    assert result["snapshot_id"] is None
+    outcomes = {item["output_key"]: item for item in result["output_results"]}
+    assert outcomes["left"]["errors"][0]["code"] == "UNIT_DEFINITION_REQUIRED"
+    assert outcomes["right"]["errors"][0]["code"] == "CONSISTENCY_GROUP_FAILED"
+    assert all(not item.get("records") for item in outcomes.values())
+    reopened = make_data_service(tmp_path)
+    # BD treats this explicit rejection as a lookup, never a second submission.
+    restored = reopened.request_status(document["request_identity"])
+    assert restored["state"] == "registered_not_published"
+    assert restored["snapshot_id"] is None
+    assert restored["output_results"] == result["output_results"]

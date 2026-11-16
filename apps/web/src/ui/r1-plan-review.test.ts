@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { R1PrepareInput, R1RequestView, R1SnapshotStatus } from '../../../../contracts/r1-contracts.js';
-import { prepareReviewedR1Output, r1ConfirmationKey, reviewR1Plan, submitReviewedR1Request, type R1ReviewPort } from '../r1-plan-review.js';
+import { prepareReviewedR1Set, prepareReviewedR1Output, r1ConfirmationKey, reviewR1Plan, submitReviewedR1Request, type R1ReviewPort } from '../r1-plan-review.js';
 
 // All values in this file are synthetic UI protocol fixtures, not provider or production settings.
 const source = { source_id: 'fixture', provider: 'fixture', requested_url: 'test:fixture',
@@ -51,7 +51,8 @@ function fixture() {
 test('all outputs remain visible; failed independent peer does not qualify itself or block good output', () => {
   const input = plan(), before = JSON.stringify(input), reviewed = reviewR1Plan(input);
   assert.equal(reviewed.submissionMode, 'one_independent_output');
-  assert.equal(reviewed.collectionSubmission, 'not_supported');
+  assert.equal(reviewed.collectionSubmission, 'declared_sets');
+  assert.deepEqual(reviewed.sets, []);
   assert.equal(reviewed.outputs.length, 2);
   assert.equal(reviewed.outputs[0]!.eligible, true);
   assert.equal(reviewed.outputs[1]!.eligible, false);
@@ -171,4 +172,59 @@ test('one explicit confirmation creates at most one submission call', async () =
   const { state, port } = fixture();
   await submitReviewedR1Request(port, structuredClone(state.view));
   assert.equal(state.submits, 1);
+});
+
+function setPlan() {
+  const input = plan();
+  for (const output of input.outputs) { output.state = 'structured'; output.publishEligible = true; output.routingState = 'ready_candidate'; output.semantic.quality = 'pass'; output.gaps = []; }
+  for (const step of input.steps) step.state = 'succeeded';
+  return { ...input, consistencyGroups: { pair: ['good','bad'] } };
+}
+function setFixture() {
+  const f = fixture(); f.state.plan = setPlan();
+  f.state.view.outputId = 'pair'; f.state.view.outputKey = 'pair'; f.state.view.rowCount = 2;
+  f.state.view.publicationSet = { setId: 'pair', atomicity: 'declared_set', duplicatePolicy: 'reject_member_conflict',
+    members: ['bad','good'].map(outputId => ({ outputId, outputKey: outputId, rowCount: 1, previewRows: [], state: 'not_submitted', snapshotId: null, productId: null, errorCodes: [] })) };
+  let calls = 0;
+  f.port.prepareSet = async input => { calls++; f.state.view.requestId = input.requestId; return structuredClone(f.state.view); };
+  return { ...f, calls: () => calls };
+}
+test('declared set is eligible only as a whole; its members cannot use individual preparation', async () => {
+  const f = setFixture(), reviewed = reviewR1Plan(f.state.plan);
+  assert.equal(reviewed.sets[0]!.eligible, true);
+  assert.ok(reviewed.outputs.every(output => !output.eligible));
+  await assert.rejects(prepareReviewedR1Output(f.port, reviewed.outputs[0]!, 'not-a-set'), code('R1_REVIEW_BLOCKED'));
+  const prepared = await prepareReviewedR1Set(f.port, reviewed.sets[0]!, 'whole-pair');
+  assert.equal(prepared.publicationSet!.members.length, 2); assert.equal(f.calls(), 1); assert.equal(f.state.submits, 0);
+});
+test('failed, changed or missing set member blocks the whole set, not silently selecting its good peer', async () => {
+  const f = setFixture(), before = reviewR1Plan(f.state.plan).sets[0]!;
+  f.state.plan.outputs[0]!.publishEligible = false;
+  assert.equal(reviewR1Plan(f.state.plan).sets[0]!.eligible, false);
+  await assert.rejects(prepareReviewedR1Set(f.port, before, 'whole-pair'), code('R1_REVIEW_CHANGED'));
+  assert.equal(f.calls(), 0);
+  const malformed = setPlan(); malformed.consistencyGroups.pair = ['good','missing'];
+  assert.throws(() => reviewR1Plan(malformed), code('R1_PUBLICATION_SET'));
+});
+test('set declaration cannot conceal unsupported nested groups or different frozen parents', () => {
+  const input: any = setPlan(); input.outputs[0].target.publicationSet = 'another';
+  assert.equal(reviewR1Plan(input).sets[0]!.eligible, false);
+  const parent: any = setPlan(); parent.outputs[0].target.expectedSnapshotId = 'other';
+  parent.outputs[0].target.declaration.target.expectedParentSnapshotId = 'other';
+  assert.ok(reviewR1Plan(parent).sets[0]!.reasons.includes('R1_SET_TARGET'));
+});
+test('whole-set confirmation binds members and current parent without automatic rebinding or submission loop', async () => {
+  const f = setFixture(), visible = structuredClone(f.state.view);
+  const key = r1ConfirmationKey(visible); f.state.view.publicationSet!.members.pop();
+  assert.notEqual(r1ConfirmationKey(f.state.view), key);
+  await assert.rejects(submitReviewedR1Request(f.port, visible), code('R1_CONFIRMATION_CHANGED'));
+  f.state.view = visible; f.state.snapshotId = 'new-head';
+  await assert.rejects(submitReviewedR1Request(f.port, visible), code('R1_REVIEW_BASELINE_CHANGED'));
+  assert.equal(f.state.submits, 0);
+  f.state.snapshotId = null; await submitReviewedR1Request(f.port, visible); assert.equal(f.state.submits, 1);
+});
+test('reopened pending set remains an original lookup; it cannot resubmit individual members', async () => {
+  const f = setFixture(); f.state.view.state = 'pending_receipt'; f.state.view.requiresRecovery = true;
+  await assert.rejects(submitReviewedR1Request(f.port, structuredClone(f.state.view)), code('R1_REVIEW_LOOKUP_REQUIRED'));
+  assert.equal(f.state.submits, 0); assert.equal(f.calls(), 0);
 });

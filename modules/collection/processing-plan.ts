@@ -35,6 +35,7 @@ import {
 import { ELIGIBILITY_HISTORY_MODES, ELIGIBILITY_PURPOSES, PURPOSE_ELIGIBILITY_RULE_VERSION,
   evaluatePurposeEligibility, type EligibilityHistoryMode, type EligibilityPurpose, type PurposeEvidenceClaim } from './purpose-eligibility.js';
 import { processingQuality } from './processing-quality.js';
+import { readPublicationGroups, type R1PublicationGroups } from '../../contracts/r1-publication-set.js';
 
 export const PROCESSING_PLAN_RUNTIME = 'bd.processing-plans';
 export const PROCESSING_PLAN_VERSION = 'bd-processing-plan/1';
@@ -81,7 +82,7 @@ export interface ProcessingOutputInput { outputId: string; materialIds: string[]
   dimensions?: Partial<Record<DimensionKey, ProcessingDimensionInput>>; suggestions?: ProcessingSuggestionInput[]; rejectReason?: string;
   coverage?: { complete: boolean; gaps: string[]; scope: string }; intendedAction?: 'inspect' | 'publish'; usage?: ProcessingUsageInput }
 export interface ProcessingPlanInput { routing: { materials: ProcessingMaterialRoutingInput[] }; outputs: ProcessingOutputInput[];
-  previousPlanId?: string }
+  previousPlanId?: string; consistencyGroups?: R1PublicationGroups }
 export interface ProcessingDecisionInput { materialId: string; dimensions?: Partial<Record<DimensionKey, ProcessingDimensionInput>>;
   suggestions?: ProcessingSuggestionInput[]; intendedAction?: 'inspect' | 'publish' }
 
@@ -105,7 +106,7 @@ interface NormalizedOutput { outputId: string; materialIds: string[]; tables: Ca
   intendedAction: 'inspect' | 'publish'; usage: StructuredUsage; dimensions: NormalizedDimension[]; suggestions: DimensionSuggestion[]; rejectReason: string | null;
   coverage: { complete: boolean; gaps: string[]; scope: string } | null; adapterGaps: string[]; routingState: RoutingState;
   gaps: string[]; steps: StepSpec[] }
-interface NormalizedPlanInput { requestId: string; previousPlanId: string | null; operator: OperatorContext;
+interface NormalizedPlanInput { consistencyGroups?: R1PublicationGroups; requestId: string; previousPlanId: string | null; operator: OperatorContext;
   materials: NormalizedMaterialRouting[]; outputs: NormalizedOutput[]; steps: StepSpec[]; scopeKey: string;
   executionDigest: string; contentDigest: string; reuseFromPlanId: string | null }
 interface NormalizedDecisionInput { requestId: string; operator: OperatorContext; materialId: string; facts: MaterialFacts;
@@ -596,7 +597,7 @@ export class ProcessingPlanService {
   private normalizePlan(input: unknown, operator: OperatorContext): NormalizedPlanInput {
     validateOperator(operator);
     if (Buffer.byteLength(canonicalWfdJson(input), 'utf8') > PROCESSING_LIMITS.maxInputBytes) fail('PROCESSING_INPUT_BUDGET', '计划输入超过 HTTP 请求预算。');
-    const raw = readRecord(input, ['routing', 'outputs', 'previousPlanId'], 'PROCESSING_PLAN_INPUT');
+    const raw = readRecord(input, ['routing', 'outputs', 'previousPlanId', 'consistencyGroups'], 'PROCESSING_PLAN_INPUT');
     const routing = readRecord(raw.routing, ['materials'], 'PROCESSING_ROUTING_INPUT');
     const materialInputs = readArray(routing.materials, 1, PROCESSING_LIMITS.maxMaterials, 'PROCESSING_MATERIALS');
     // 适配表源的原句证据须在按声明字符集解码后的同一文本上定位；先按引用取出冻结配置，未采用则留待规范化时明确失败。
@@ -692,16 +693,20 @@ export class ProcessingPlanService {
       allSteps.push(...steps);
     }
     if (allSteps.length > PROCESSING_LIMITS.maxSteps) fail('PROCESSING_STEP_BUDGET', '处理步骤超过本计划预算。');
+    let groups: R1PublicationGroups;
+    try { groups = readPublicationGroups(raw.consistencyGroups, outputs.map(o => o.outputId)); }
+    catch (error) { fail('PROCESSING_PUBLICATION_SET', error instanceof Error ? error.message : '集合成员无效。'); }
+    const groupBinding = Object.keys(groups).length ? { consistencyGroups: groups } : {};
     const scopeKey = wfdSha256(canonicalWfdJson({ policy: PROCESSING_POLICY.version,
       materials: materials.map(item => ({ materialId: item.materialId, sha256: item.facts.sha256 })).sort((a, b) => a.materialId.localeCompare(b.materialId)),
       outputs: outputs.map(item => item.outputId).sort() }));
-    const executionDigest = wfdSha256(canonicalWfdJson({ policy: PROCESSING_POLICY.version,
+    const executionDigest = wfdSha256(canonicalWfdJson({ ...groupBinding, policy: PROCESSING_POLICY.version,
       materials: materials.map(item => ({ materialId: item.materialId, sha256: item.facts.sha256 })).sort((a, b) => a.materialId.localeCompare(b.materialId)),
       outputs: outputs.map(item => ({ outputId: item.outputId, materialIds: item.materialIds, tables: item.tables, target: item.target,
         stages: item.stages, intendedAction: item.intendedAction, usage: item.usage,
         dimensions: item.dimensions.map(dimension => ({ key: dimension.key, status: dimension.status, value: dimension.value })) })),
       steps: allSteps.map(step => ({ stepId: step.stepId, specDigest: step.specDigest })) }));
-    const contentDigest = digestOperationArgs(withoutVolatile({ previousPlanId, operatorId: operator.operatorId,
+    const contentDigest = digestOperationArgs(withoutVolatile({ ...groupBinding, previousPlanId, operatorId: operator.operatorId,
       policy: PROCESSING_POLICY.version,
       materials: materials.map(material => ({ materialId: material.materialId, sha256: material.facts.sha256,
         dimensions: material.dimensions, suggestions: material.suggestions, intendedAction: material.intendedAction })),
@@ -709,7 +714,7 @@ export class ProcessingPlanService {
         target: output.target, stages: output.stages, usage: output.usage, dimensions: output.dimensions, suggestions: output.suggestions,
         rejectReason: output.rejectReason, coverage: output.coverage })) }));
     if (Buffer.byteLength(canonicalWfdJson({ materials, outputs, steps: allSteps }), 'utf8') > 2 * 1024 * 1024) fail('PROCESSING_INPUT_BUDGET', '计划输入超过持久化预算。');
-    return { requestId: operator.requestId, previousPlanId, operator: storedOperator(operator), materials, outputs, steps: allSteps, scopeKey,
+    return { ...groupBinding, requestId: operator.requestId, previousPlanId, operator: storedOperator(operator), materials, outputs, steps: allSteps, scopeKey,
       executionDigest, contentDigest, reuseFromPlanId: previousPlanId ?? null };
   }
 
@@ -1094,6 +1099,7 @@ export class ProcessingPlanService {
       requestId: input.requestId, parentPlanId: input.previousPlanId, policy: PROCESSING_POLICY, policyDigest: PROCESSING_POLICY_DIGEST,
       operator: { operatorId: input.operator.operatorId }, createdAt, scopeKey: input.scopeKey, executionDigest: input.executionDigest,
       contentDigest: input.contentDigest, reuseFromPlanId,
+      ...(input.consistencyGroups ? { consistencyGroups: input.consistencyGroups } : {}),
       materials: input.materials.map(material => ({ ...material.facts, dimensions: material.dimensions,
         suggestions: material.suggestions, routingState: material.routingState, gaps: material.gaps, intendedAction: material.intendedAction })),
       outputs: input.outputs.map(output => ({ outputId: output.outputId, materialIds: output.materialIds, tables: output.tables,
@@ -1501,6 +1507,7 @@ export class ProcessingPlanService {
     const plan = { planId, version: document.version ?? null, requestId: requestRow?.client_request_id ?? row.request_key, parentPlanId: row.parent_plan_id, status: row.status, planDigest: row.plan_digest,
       scopeKey: row.scope_key, executionDigest: document.executionDigest, policy: document.policy, policyDigest: row.policy_digest,
       operator: document.operator, createdAt: row.created_at, updatedAt: row.updated_at, reuseFromPlanId: document.reuseFromPlanId,
+      consistencyGroups: document.consistencyGroups ?? {},
       materials: document.materials.map(material => ({ materialId: material.materialId, filename: material.filename, sha256: material.sha256,
         byteLength: material.byteLength, mediaType: material.mediaType, format: material.format, support: material.support,
         adapter: material.adapter, custodyState: material.custodyState, routingState: material.routingState, gaps: material.gaps,
@@ -1586,7 +1593,7 @@ export class ProcessingPlanService {
   private task(request: RequestRow): TaskRecord { if (!request.task_id) fail('PROCESSING_TASK_NOT_FOUND', '处理请求尚未绑定任务。'); return this.tasks.get(request.task_id); }
   private document(row: PlanRow) {
     if (wfdSha256(row.plan_json) !== row.plan_digest) fail('PROCESSING_PLAN_CHANGED', '处理计划摘要与持久记录不符。');
-    return parseJson(row.plan_json) as { planId: string; version?: string; implementation?: string; policy: WfdRecord; operator: WfdRecord; executionDigest: string; reuseFromPlanId: string | null;
+    return parseJson(row.plan_json) as { consistencyGroups?: R1PublicationGroups; planId: string; version?: string; implementation?: string; policy: WfdRecord; operator: WfdRecord; executionDigest: string; reuseFromPlanId: string | null;
       materials: (MaterialFacts & { dimensions: NormalizedDimension[]; suggestions: DimensionSuggestion[]; routingState: RoutingState; gaps: string[] })[];
       outputs: (Omit<NormalizedOutput, 'steps'> & { steps: string[] })[];
       steps: { stepId: string; outputId?: string; dependsOn?: string[] }[] };

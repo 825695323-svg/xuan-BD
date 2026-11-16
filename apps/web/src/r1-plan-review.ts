@@ -1,3 +1,4 @@
+import { readPublicationGroups, type R1SetPrepareInput } from '../../../contracts/r1-publication-set.js';
 import type { R1PrepareInput, R1RequestView, R1SnapshotStatus } from '../../../contracts/r1-contracts.js';
 
 /** Read-only projection for the existing single-output R1 transport, never a publication authority. */
@@ -9,12 +10,17 @@ export interface R1OutputReview {
 }
 export interface R1PlanReview {
   planId: string; planDigest: string; outputs: R1OutputReview[];
-  submissionMode: 'one_independent_output'; collectionSubmission: 'not_supported';
+  submissionMode: 'one_independent_output'; collectionSubmission: 'declared_sets'; sets: R1SetReview[];
+}
+export interface R1SetReview {
+  planId: string; setId: string; outputIds: string[]; eligible: boolean; reasons: string[];
+  expectedSnapshotId: string | null; stamp: string;
 }
 export interface R1ReviewPort {
   plan(id: string): Promise<Record<string, unknown>>;
   snapshotStatus(): Promise<R1SnapshotStatus>;
   prepare(input: R1PrepareInput): Promise<R1RequestView>;
+  prepareSet?(input: R1SetPrepareInput): Promise<R1RequestView>;
   get(id: string): Promise<R1RequestView>;
   submit(view: R1RequestView): Promise<unknown>;
 }
@@ -32,7 +38,7 @@ function canonical(value: unknown): string {
 }
 const groupKeys = ['consistencyGroups', 'consistency_groups', 'publicationSets', 'publication_sets', 'publicationSet', 'publicationGroup', 'dependencies'];
 function hasGroup(value: unknown): boolean {
-  return object(value) && groupKeys.some(key => Object.hasOwn(value, key) && value[key] !== null
+  return object(value) && groupKeys.some(key => Object.hasOwn(value, key) && value[key] !== null && value[key] !== undefined
     && !(Array.isArray(value[key]) && value[key].length === 0)
     && !(object(value[key]) && Object.keys(value[key]).length === 0));
 }
@@ -77,8 +83,8 @@ export function reviewR1Plan(value: unknown): R1PlanReview {
     }
     return [...found].sort();
   }
-  return { planId, planDigest, submissionMode: 'one_independent_output', collectionSubmission: 'not_supported',
-    outputs: outputs.map(output => {
+  const groups = readPublicationGroups(value.consistencyGroups, outputIds);
+  const projected = outputs.map(output => {
       const outputId = String(output.outputId), reasons: string[] = [], own = steps.filter(step => step.outputId === outputId);
       const relatedOutputIds = related(outputId);
       const target = object(output.target) ? output.target : {};
@@ -90,8 +96,10 @@ export function reviewR1Plan(value: unknown): R1PlanReview {
       if (output.state !== 'structured' || output.publishEligible !== true || output.intendedAction !== 'publish'
         || output.routingState !== 'ready_candidate') reasons.push('R1_OUTPUT_NOT_READY');
       if (materialIds.length !== 1) reasons.push('R1_MULTI_SOURCE_UNSUPPORTED');
-      if (relatedOutputIds.length || hasGroup(value) || hasGroup(output) || hasGroup(target)
-        || hasGroup(declaration) || hasGroup(destination)) reasons.push('R1_COLLECTION_CONFIRMATION_REQUIRED');
+      if (relatedOutputIds.length || Object.values(groups).some(members => members.includes(outputId)))
+        reasons.push('R1_COLLECTION_CONFIRMATION_REQUIRED');
+      if (hasGroup({ ...value, consistencyGroups: undefined }) || hasGroup(output) || hasGroup(target)
+        || hasGroup(declaration) || hasGroup(destination)) reasons.push('R1_SET_DECLARATION_UNSUPPORTED');
       const ownIntegrity = (value.integrity as Record<string, unknown>[]).filter(item => own.some(step => step.stepId === item.stepId));
       if ((value.missingOutputs as string[]).includes(outputId)
         || (value.missingSteps as string[]).length > 0 || !own.length
@@ -121,7 +129,19 @@ export function reviewR1Plan(value: unknown): R1PlanReview {
         outputKey: typeof destination.outputKey === 'string' ? destination.outputKey : null,
         expectedSnapshotId: typeof destination.expectedParentSnapshotId === 'string' ? destination.expectedParentSnapshotId : null,
         relatedOutputIds, reasons: [...new Set(reasons)], gaps: [...new Set(gaps)], eligible: reasons.length === 0, stamp, recipe };
-    }) };
+    });
+  const sets: R1SetReview[] = Object.entries(groups).map(([setId, outputIds]) => {
+    const members = outputIds.map(id => projected.find(output => output.outputId === id)!);
+    const reasons = members.flatMap(member => member.reasons.filter(reason => reason !== 'R1_COLLECTION_CONFIRMATION_REQUIRED'));
+    if (members.some(member => member.relatedOutputIds.some(id => !outputIds.includes(id)))) reasons.push('R1_SET_DEPENDENCY');
+    if (members.some(member => member.datasetId !== members[0]!.datasetId
+      || member.expectedSnapshotId !== members[0]!.expectedSnapshotId)
+      || new Set(members.map(member => member.outputKey)).size !== members.length) reasons.push('R1_SET_TARGET');
+    return { planId, setId, outputIds, eligible: reasons.length === 0, reasons: [...new Set(reasons)],
+      expectedSnapshotId: members[0]!.expectedSnapshotId,
+      stamp: canonical({ setId, outputIds, members: members.map(member => member.stamp) }) };
+  });
+  return { planId, planDigest, outputs: projected, submissionMode: 'one_independent_output', collectionSubmission: 'declared_sets', sets };
 }
 
 /** Preparation never submits; derive the recipe again from the fresh authoritative plan, not editable UI JSON. */
@@ -140,7 +160,8 @@ export async function prepareReviewedR1Output(port: R1ReviewPort, reviewed: R1Ou
 }
 
 export function r1ConfirmationKey(view: R1RequestView): string {
-  return canonical([view.requestId, view.planId, view.outputId, view.datasetId, view.outputKey, view.documentSha256, view.connection]);
+  return canonical([view.requestId, view.planId, view.outputId, view.datasetId, view.outputKey, view.documentSha256, view.connection,
+    view.publicationSet ? { setId: view.publicationSet.setId, members: view.publicationSet.members.map(member => [member.outputId, member.outputKey]) } : null]);
 }
 /** Confirmation is consumed once by the caller; an unknown/successful original must be queried, never resent in a loop. */
 export async function submitReviewedR1Request(port: R1ReviewPort, reviewed: R1RequestView): Promise<unknown> {
@@ -149,9 +170,30 @@ export async function submitReviewedR1Request(port: R1ReviewPort, reviewed: R1Re
   if (fresh.requiresRecovery || (fresh.submitTaskId !== null && fresh.state !== 'send_failed')
     || !['prepared_profile_pending', 'send_failed'].includes(fresh.state))
     fail('R1_REVIEW_LOOKUP_REQUIRED', '原请求需要查询或恢复；不能把未确认回执或已成功结果当成未提交。');
-  const selected = reviewR1Plan(await port.plan(fresh.planId)).outputs.find(output => output.outputId === fresh.outputId);
+  const plan = reviewR1Plan(await port.plan(fresh.planId));
+  const selected = fresh.publicationSet ? plan.sets.find(set => set.setId === fresh.publicationSet!.setId)
+    : plan.outputs.find(output => output.outputId === fresh.outputId);
+  if (fresh.publicationSet && (!selected || !('outputIds' in selected)
+    || canonical([...selected.outputIds].sort()) !== canonical(fresh.publicationSet.members.map(member => member.outputId).sort())))
+    fail('R1_CONFIRMATION_CHANGED', '集合成员与原计划不一致，不能沿旧确认提交。');
   if (!selected?.eligible) fail('R1_REVIEW_BLOCKED', '原计划的输出或依赖不再满足独立确认条件。');
   const snapshot = await port.snapshotStatus();
   if (snapshot.snapshotId !== selected.expectedSnapshotId) fail('R1_REVIEW_BASELINE_CHANGED', 'WFD 基线已改变，旧确认不能自动重绑。');
   return port.submit(fresh);
+}
+
+/** Server derives every member recipe from the frozen plan; UI sends neither rows nor a partial member list. */
+export async function prepareReviewedR1Set(port: R1ReviewPort, reviewed: R1SetReview, requestId: string): Promise<R1RequestView> {
+  if (!id(requestId) || !port.prepareSet) fail('R1_SET_UNAVAILABLE', '集合准备入口不可用或原请求编号无效。');
+  const fresh = reviewR1Plan(await port.plan(reviewed.planId)).sets.find(set => set.setId === reviewed.setId);
+  if (!fresh || fresh.stamp !== reviewed.stamp) fail('R1_REVIEW_CHANGED', '集合成员或质量已变化，请重新审阅。');
+  if (!fresh.eligible) fail('R1_REVIEW_BLOCKED', '集合仍有阻断项，不能跳过失败成员。');
+  if ((await port.snapshotStatus()).snapshotId !== fresh.expectedSnapshotId)
+    fail('R1_REVIEW_BASELINE_CHANGED', '集合父快照已变化，未自动重绑。');
+  const result = await port.prepareSet({ kind: 'publication_set', requestId, planId: fresh.planId, setId: fresh.setId });
+  if (result.requestId !== requestId || result.planId !== fresh.planId || result.publicationSet?.setId !== fresh.setId
+    || !digest(result.documentSha256)
+    || canonical(result.publicationSet.members.map(member => member.outputId).sort()) !== canonical([...fresh.outputIds].sort()))
+    fail('R1_REVIEW_RECEIPT', '集合准备回执与已审阅成员不一致，须查询原请求。');
+  return result;
 }

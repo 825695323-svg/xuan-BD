@@ -54,6 +54,9 @@ export interface R1LocalReferences {
   sourceRefs: R1SourceRef[];
   processRefs: R1ProcessRef[];
   evidenceRefs: R1EvidenceRef[];
+  /** One real request may bind several independently verified originals by output_key. */
+  outputs?: Record<string, R1LocalReferences>;
+  publicationSetId?: string;
   /** New workspace preparations pin four role refs; old scalar task JSON stays unchanged. */
   contractBindingRequired?: true;
   /** 唯一 MACD 算法的受信独立核验证明；不经过原报加工计划。 */
@@ -79,7 +82,13 @@ export interface R1StructuredRequest {
   definitionMode?: 'create' | 'reuse';
   definitionRef?: WfdRecord | null;
   consistencyGroups?: WfdRecord;
+  /** Extra members share the real request identity and parent snapshot, never child submissions. */
+  additionalOutputs?: R1StructuredRequest[];
   duplicatePolicy?: 'skip_identical_append';
+}
+export type R1PublicationRestriction = RestrictionEvidence | { outputRestrictions: Record<string, RestrictionEvidence | null> };
+export function r1MemberCheckpoint(requestId: string, outputKey: string): string {
+  return '@set:' + wfdSha256(canonicalWfdJson([requestId, outputKey]));
 }
 export interface R1ReceiptRow {
   business_key: string;
@@ -213,9 +222,15 @@ export class R1HandoffService {
     });
   }
 
-  prepare(input: { structured: R1StructuredRequest; localRefs: R1LocalReferences }, restriction?: RestrictionEvidence | null): R1PrepareResult {
+  prepare(input: { structured: R1StructuredRequest; localRefs: R1LocalReferences }, restriction?: R1PublicationRestriction | null): R1PrepareResult {
     const document = buildStructuredIngestDocument(input.structured);
     assertDataOnly(document);
+    if ((document.outputs as WfdRecord[]).length > 1) {
+      const keys = (document.outputs as WfdRecord[]).map(output => String(output.output_key));
+      if (!input.localRefs.outputs || new Set(keys).size !== keys.length
+        || canonicalWfdJson([...keys].sort()) !== canonicalWfdJson(Object.keys(input.localRefs.outputs).sort())
+        || input.structured.duplicatePolicy) fail('R1_SET_REFERENCE', '整组文档与本地成员引用必须一致；集合冲突不能逐行跳过。');
+    }
     const documentSha256 = wfdSha256(canonicalWfdJson(document));
     this.assertLocalRefs(input.localRefs, documentSha256);
     this.assertPublicationUsage(input.structured.definition, input.localRefs, 'prepare', restriction, document);
@@ -251,8 +266,10 @@ export class R1HandoffService {
   async recordReceipt(requestId: string, receipt: R1Receipt,
     client: WfdStructuredIngestClient): Promise<{ state: string; associated: number; pending: number; errors: string[] }> {
     let rows: WfdRecord[];
+    const attempt = this.attempt(requestId);
+    if (((JSON.parse(String(attempt.document_json)) as WfdRecord).outputs as unknown[]).length > 1)
+      fail('R1_SET_WHOLE_REQUIRED', '集合回执必须整体核对，不能从单成员回执结束整组请求。');
     try {
-      const attempt = this.attempt(requestId);
       rows = await this.readback.read({ requestId, documentSha256: String(attempt.document_sha256),
         document: JSON.parse(String(attempt.document_json)) as WfdRecord, receipt }, client);
     } catch (error) {
@@ -268,12 +285,14 @@ export class R1HandoffService {
   }
 
   /** 只接受经实际 fixed_read 核对的逐行身份；缺一/错一即 pending，不插 association。 */
-  private associateVerifiedReceipt(requestId: string, receipt: R1Receipt, verifiedFixedRows: WfdRecord[]): {
+  private associateVerifiedReceipt(requestId: string, receipt: R1Receipt, verifiedFixedRows: WfdRecord[], memberOfSet = false): {
     state: string; associated: number; pending: number; errors: string[]
   } {
     const attempt = this.attempt(requestId);
     const document = JSON.parse(String(attempt.document_json)) as WfdRecord;
-    const output = ((document.outputs as unknown[])[0] ?? {}) as WfdRecord;
+    const outputs = (document.outputs as WfdRecord[]);
+    if (outputs.length > 1 && !memberOfSet) fail('R1_SET_WHOLE_REQUIRED', '集合只能整体完成核对。');
+    const output = outputs.find(item => item.output_key === receipt.output_key) ?? {};
     const errors: string[] = [];
     let expectedRows = new Map<string, WfdRecord>();
     try { expectedRows = acceptedR1ReceiptRows(document, receipt); }
@@ -344,20 +363,22 @@ export class R1HandoffService {
     if (rows.length !== expectedKeys.size) errors.push(`row_count:${rows.length}/${expectedKeys.size}`);
     for (const key of expectedKeys) if (!rows.some(row => asRecord(row).business_key === key)) errors.push(`missing_business_key:${key}`);
     if (errors.length) {
-      this.db.prepare("UPDATE r1_handoff_attempts SET state='pending_receipt',receipt_json=?,pending_count=?,error_json=?,updated_at=? WHERE request_id=?")
+      if (!memberOfSet) this.db.prepare("UPDATE r1_handoff_attempts SET state='pending_receipt',receipt_json=?,pending_count=?,error_json=?,updated_at=? WHERE request_id=?")
         .run(canonicalWfdJson(receipt), Math.max(rows.length, 1), canonicalWfdJson({ code: 'R1_RECEIPT_MISMATCH', errors }), Date.now(), requestId);
       return { state: 'pending_receipt', associated: 0, pending: Math.max(rows.length, 1), errors };
     }
-    if (R1_SETTLED_STATES.has(String(attempt.state)) && attempt.receipt_json && attempt.receipt_json !== canonicalWfdJson(receipt)) {
+    if (!memberOfSet && R1_SETTLED_STATES.has(String(attempt.state)) && attempt.receipt_json && attempt.receipt_json !== canonicalWfdJson(receipt)) {
       fail('R1_RECEIPT_CONFLICT', '同一 request 已关联不同 WFD 回执；拒绝改写。');
     }
-    const refs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
+    const rootRefs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
+    const refs = rootRefs.outputs ? rootRefs.outputs[receipt.output_key] : rootRefs;
+    if (!refs) fail('R1_SET_REFERENCE', '集合回执缺对应来源引用。');
     const originalId = refs.originalIds[0] ?? refs.materialIds[0];
     const sourceId = refs.sourceRefs[0]?.source_id;
     if (!originalId || !sourceId) fail('R1_LOCAL_REFERENCE', '关联需要 BD 原件与来源引用。');
     let associated = 0;
     const settledState = receipt.row_summary?.conflict_pending ? receipt.rows.length ? 'partially_associated' : 'conflicts_pending' : 'associated';
-    this.options.database.transaction(() => {
+    const associate = () => {
       for (const row of rows) {
         const result = this.db.prepare(`INSERT INTO r1_record_associations
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(dataset_id,product_id,record_id,record_version,request_id,original_id) DO NOTHING`).run(
@@ -366,9 +387,10 @@ export class R1HandoffService {
           canonicalWfdJson(refs.processRefs), canonicalWfdJson(refs.evidenceRefs), Date.now());
         associated += Number(result.changes ?? 0);
       }
-      this.db.prepare("UPDATE r1_handoff_attempts SET state=?,receipt_json=?,pending_count=0,error_json=NULL,updated_at=? WHERE request_id=?")
+      if (!memberOfSet) this.db.prepare("UPDATE r1_handoff_attempts SET state=?,receipt_json=?,pending_count=0,error_json=NULL,updated_at=? WHERE request_id=?")
         .run(settledState, canonicalWfdJson(receipt), Date.now(), requestId);
-    });
+    };
+    if (memberOfSet) associate(); else this.options.database.transaction(associate);
     return { state: settledState, associated, pending: 0, errors: [] };
   }
 
@@ -378,7 +400,7 @@ export class R1HandoffService {
   }
 
   /** 首次发送前重新核对加工用途；已受理或结果未知的请求仍按原身份恢复。 */
-  assertPublicationReadyToSend(requestId: string, restriction?: RestrictionEvidence | null): void {
+  assertPublicationReadyToSend(requestId: string, restriction?: R1PublicationRestriction | null): void {
     const attempt = this.attempt(requestId);
     if (R1_SETTLED_STATES.has(String(attempt.state)) || ['rejected', 'sending', 'pending_unknown', 'pending_receipt'].includes(String(attempt.state))) return;
     const document = JSON.parse(String(attempt.document_json)) as WfdRecord;
@@ -388,7 +410,7 @@ export class R1HandoffService {
   }
 
   /** 实际 submit 结果 → 逐输出 records → 实际 fixed_read → 逐行关联。 */
-  async submitAndAssociate(requestId: string, client: WfdStructuredIngestClient, signal?: AbortSignal, restriction?: RestrictionEvidence | null): Promise<WfdRecord> {
+  async submitAndAssociate(requestId: string, client: WfdStructuredIngestClient, signal?: AbortSignal, restriction?: R1PublicationRestriction | null): Promise<WfdRecord> {
     const attempt = this.attempt(requestId);
     if (R1_SETTLED_STATES.has(String(attempt.state))) return this.localExplanation(requestId);
     if (attempt.state === 'rejected') fail('R1_WFD_REJECTED', '原请求已由 WFD 明确拒绝；不重发原身份。');
@@ -436,6 +458,8 @@ export class R1HandoffService {
         .run(canonicalWfdJson(result), canonicalWfdJson({ code: 'R1_RESULT_IDENTITY_MISMATCH' }), Date.now(), requestId);
       return { state: 'pending_receipt', errors: ['R1_RESULT_IDENTITY_MISMATCH'] };
     }
+    if (Array.isArray(document.outputs) && document.outputs.length > 1)
+      return this.consumeSetResult(requestId, document, result, client, signal);
     const state = typeof result.state === 'string' ? result.state : 'unknown';
     if (document.duplicate_policy === 'skip_identical_append' && ['published_formal','published_sandbox','partially_published_formal','partially_published_sandbox','unchanged','conflicts_pending'].includes(state))
       result = await this.completeDuplicateStatus(document, result, client, signal);
@@ -509,6 +533,73 @@ export class R1HandoffService {
       asRecord(JSON.parse(String(attempt.error_json))),signal);
     const fixedRows = receipt.rows.length ? await this.readback.read(readInput, client, signal) : [];
     return this.associateVerifiedReceipt(requestId, receipt, fixedRows);
+  }
+
+
+  /** A single WFD request, independently verified member rows, then one local association commit. */
+  private async consumeSetResult(requestId: string, document: WfdRecord, result: WfdRecord,
+    client: WfdStructuredIngestClient, signal?: AbortSignal): Promise<WfdRecord> {
+    const attempt = this.attempt(requestId), declared = document.outputs as WfdRecord[];
+    const outcomes = Array.isArray(result.output_results) ? result.output_results.filter(isWfdRecord) : [];
+    if (!outcomes.length && result.state === 'rejected' && Array.isArray(result.errors) && result.errors.length
+      && isTerminalWfdRejection(result, document)) {
+      this.db.prepare("UPDATE r1_handoff_attempts SET state='rejected',receipt_json=?,pending_count=0,error_json=?,updated_at=? WHERE request_id=?")
+        .run(canonicalWfdJson(result), canonicalWfdJson({ code: 'R1_WFD_REJECTED', errors: result.errors }), Date.now(), requestId);
+      return this.localExplanation(requestId);
+    }
+    if (outcomes.length !== declared.length || new Set(outcomes.map(item => item.output_key)).size !== declared.length
+      || outcomes.some(item => !declared.some(output => output.output_key === item.output_key))
+      || result.outputs_complete === false || asRecord(result.pagination).has_more === true)
+      fail('R1_SET_RECEIPT_INCOMPLETE', '整组回执缺员、重员或未完成分页，禁止记录整组成功。');
+    const published = outcomes.filter(item => ['published_formal', 'published_sandbox'].includes(String(item.publication_state)));
+    const failed = outcomes.filter(item => !published.includes(item));
+    const state = String(result.state);
+    if (!['published_formal','published_sandbox','partially_published_formal','partially_published_sandbox','registered_not_published','rejected'].includes(state)
+      || failed.some(item => !['not_published','rejected','failed','registered_not_published'].includes(String(item.publication_state))
+        || !Array.isArray(item.errors) || !item.errors.length || Array.isArray(item.records) && item.records.length > 0))
+      fail('R1_SET_NOT_FINAL', '集合成员尚无明确终态，保留原请求等待核对。');
+    if ((published.length === declared.length) !== ['published_formal','published_sandbox'].includes(state)
+      || (published.length > 0 && failed.length > 0) !== state.startsWith('partially_published'))
+      fail('R1_SET_STATE_MISMATCH', '集合总状态与成员状态不一致。');
+    for (const members of Object.values(asRecord(document.consistency_groups))) {
+      if (!Array.isArray(members)) fail('R1_SET_REFERENCE', '原集合声明无效。');
+      const count = published.filter(item => members.includes(item.output_key)).length;
+      if (count > 0 && count !== members.length) fail('R1_SET_ATOMICITY', '关联集合发生半组发布，禁止将回执误报成功。');
+    }
+    if (published.length && (!result.snapshot_id || published.some(item => item.snapshot_id !== result.snapshot_id)))
+      fail('R1_SET_SNAPSHOT_MISMATCH', '集合成员必须绑定同一正式快照，不能拼接不同 HEAD。');
+    const verified: { receipt: R1Receipt; rows: WfdRecord[] }[] = [];
+    for (const outcome of published) {
+      signal?.throwIfAborted();
+      const records = Array.isArray(outcome.records) ? outcome.records.filter(isWfdRecord) : [];
+      const receipt: R1Receipt = {
+        dataset_id: String(attempt.dataset_id), output_key: String(outcome.output_key), product_id: String(outcome.product_id ?? ''),
+        definition_digest: String(asRecord(outcome.definition_ref).digest ?? ''), snapshot_id: String(outcome.snapshot_id ?? ''),
+        request_identity: asRecord(result.request_identity),
+        ...readR1ContractBinding(outcome, String(attempt.dataset_id), String(outcome.product_id ?? ''), true),
+        rows: records.map(item => ({ business_key: String(item.record_id ?? ''), record_id: String(item.record_id ?? ''), record_version: String(item.record_version ?? '') })),
+      };
+      acceptedR1ReceiptRows(document, receipt);
+      const rows = await this.readback.read({ requestId: r1MemberCheckpoint(requestId, receipt.output_key),
+        documentSha256: String(attempt.document_sha256), document, receipt }, client, signal);
+      verified.push({ receipt, rows });
+    }
+    signal?.throwIfAborted();
+    const finalState = failed.length ? published.length ? 'partially_associated' : 'rejected' : 'associated';
+    const receipt = { kind: 'publication_set', request_identity: document.request_identity, snapshot_id: result.snapshot_id ?? null,
+      wfd_state: state, output_results: outcomes, members: verified.map(item => item.receipt),
+      failed_outputs: failed.map(item => ({ output_key: item.output_key, publication_state: item.publication_state, errors: item.errors })) };
+    this.options.database.transaction(() => {
+      // No member links are committed until all published members have genuine fixed readback.
+      for (const member of verified) {
+        const outcome = this.associateVerifiedReceipt(requestId, member.receipt, member.rows, true);
+        if (outcome.errors.length) fail('R1_SET_READBACK', '集合固定读回不一致：' + outcome.errors.join('；'));
+      }
+      this.db.prepare('UPDATE r1_handoff_attempts SET state=?,receipt_json=?,pending_count=0,error_json=?,updated_at=? WHERE request_id=?')
+        .run(finalState, canonicalWfdJson(receipt), failed.length ? canonicalWfdJson({ code: 'R1_SET_MEMBER_FAILED',
+          members: receipt.failed_outputs }) : null, Date.now(), requestId);
+    });
+    return this.localExplanation(requestId);
   }
 
   private async completeDuplicateStatus(document: WfdRecord, initial: WfdRecord, client: WfdStructuredIngestClient, signal?: AbortSignal): Promise<WfdRecord> {
@@ -645,8 +736,11 @@ export class R1HandoffService {
   assertSourceAuthorized(requestId: string): void {
     const attempt = this.attempt(requestId);
     const refs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
-    if (refs.sourceRefs.length !== 1) fail('R1_LOCAL_REFERENCE', '原请求缺唯一来源声明。');
-    assertKnownR1Source(refs.sourceRefs[0]);
+    const members = refs.outputs ? Object.values(refs.outputs) : [refs];
+    for (const member of members) {
+      if (member.sourceRefs.length !== 1) fail('R1_LOCAL_REFERENCE', '原请求成员缺唯一来源声明。');
+      assertKnownR1Source(member.sourceRefs[0]);
+    }
   }
 
   localExplanation(requestId: string): WfdRecord {
@@ -665,7 +759,8 @@ export class R1HandoffService {
     const associations = this.db.prepare('SELECT * FROM r1_record_associations WHERE request_id=? ORDER BY product_id,record_id,record_version').all(requestId);
     const local = { state: attempt.state, request_id: requestId, local_refs: refs, originals, associations,
       ...(attempt.receipt_json ? { receipt: JSON.parse(String(attempt.receipt_json)) as WfdRecord } : {}),
-      readback: this.readback.progress(requestId),
+      readback: refs.outputs ? { scope: 'publication_set', members: Object.keys(refs.outputs).map(outputKey => ({
+        outputKey, progress: this.readback.progress(r1MemberCheckpoint(requestId, outputKey)) })) } : this.readback.progress(requestId),
       note: 'BD 可在 WFD 不可用时独立解释该 request 的原件/来源/加工/证据；association 为空时未拿到实际 WFD 行身份。' };
     return { attempt, local };
   }
@@ -684,7 +779,12 @@ export class R1HandoffService {
     if (!row) return null;
     const attempt = this.attempt(String(row.request_id));
     if (!R1_SETTLED_STATES.has(String(attempt.state))) fail('R1_ASSOCIATION_UNVERIFIED', '原请求未完成固定读回核对。');
-    const refs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
+    const allRefs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
+    const setReceipt = attempt.receipt_json ? asRecord(JSON.parse(String(attempt.receipt_json))) : {};
+    const actualMember = (Array.isArray(setReceipt.members) ? setReceipt.members.filter(isWfdRecord) : [])
+      .find(member => member.product_id === input.productId);
+    const refs = allRefs.outputs ? allRefs.outputs[String(actualMember?.output_key)] : allRefs;
+    if (!refs) fail('R1_SET_REFERENCE', '此行没有准确的集合成员来源，不能关联全部原件。');
     const materialIds = new Set(refs.materialIds);
     // The normal workspace preserves an R1 original acquisition, while its
     // exact material identity lives in the already verified processing plan.
@@ -740,6 +840,13 @@ export class R1HandoffService {
       offset = Number((result.pagination as WfdRecord).next_offset ?? offset + outputs.length);
       if (!Number.isSafeInteger(offset) || offset <= 0) fail('R1_RECOVERY_PAGING', '状态分页游标无效。');
     }
+    if (Array.isArray(document.outputs) && document.outputs.length > 1) {
+      if (!collected.length && lastState === 'rejected') return this.consumeResult(requestId, lastResult, client, signal);
+      if (!outputsComplete || collected.length !== outputsTotal || outputsTotal !== document.outputs.length)
+        fail('R1_SET_RECEIPT_INCOMPLETE', '集合回执分页未完整，不按首个输出推断结果。');
+      return this.consumeResult(requestId, { ...lastResult, output_results: collected,
+        outputs_total: outputsTotal, outputs_complete: true }, client, signal);
+    }
     const outputStates = collected.map(item => typeof item.publication_state === 'string' ? item.publication_state : 'unknown');
     const allFormal = outputStates.length > 0 && outputStates.every(state => state === 'published_formal');
     if (R1_SETTLED_STATES.has(String(attempt.state))) {
@@ -770,7 +877,21 @@ export class R1HandoffService {
   }
 
   private assertPublicationUsage(definition: WfdRecord, refs: R1LocalReferences,
-    boundary: 'prepare' | 'first_send', restrictionOverride?: RestrictionEvidence | null, document?: WfdRecord): void {
+    boundary: 'prepare' | 'first_send', restrictionOverride?: R1PublicationRestriction | null, document?: WfdRecord): void {
+    if (refs.outputs) {
+      const outputs = Array.isArray(document?.outputs) ? document.outputs.filter(isWfdRecord) : [];
+      if (outputs.length !== Object.keys(refs.outputs).length || !restrictionOverride || !('outputRestrictions' in restrictionOverride))
+        fail('R1_SET_RESTRICTION_REQUIRED', '整组发布必须逐成员核对当前用途限制。');
+      for (const output of outputs) {
+        const key = String(output.output_key), member = refs.outputs[key];
+        if (!member || !Object.hasOwn(restrictionOverride.outputRestrictions, key)) fail('R1_SET_REFERENCE', '整组引用和限制证明缺少成员。');
+        this.assertPublicationUsage(asRecord(output.definition), member, boundary,
+          restrictionOverride.outputRestrictions[key], { ...document!, outputs: [output] });
+      }
+      return;
+    }
+    if (restrictionOverride && 'outputRestrictions' in restrictionOverride)
+      fail('R1_SET_REFERENCE', '单输出不能采用未匹配的集合限制证明。');
     if (refs.fixedAlgorithm) {
       // 数值证明不能替代本次目标的用途限制；每次准备与实际发送都需受信宿主新读取。
       const output = Array.isArray(document?.outputs) ? document.outputs[0] : null;
@@ -850,6 +971,19 @@ export class R1HandoffService {
   }
 
   private assertLocalRefs(refs: R1LocalReferences, documentSha256: string): void {
+    if (refs?.outputs) {
+      const members = Object.values(refs.outputs);
+      if (members.length < 2 || members.length > 16 || refs.fixedAlgorithm || !refs.publicationSetId
+        || members.some(member => member.outputs || member.fixedAlgorithm)) fail('R1_SET_REFERENCE', '集合来源引用结构无效。');
+      for (const field of ['originalIds','materialIds','sourceRefs','processRefs','evidenceRefs'] as const) {
+        const expected: unknown[] = [];
+        for (const member of members) expected.push(...member[field]);
+        if (canonicalWfdJson(refs[field]) !== canonicalWfdJson(expected))
+          fail('R1_SET_REFERENCE', '集合来源引用必须精确对应全部成员，不能混入无关原件。');
+      }
+      for (const member of members) this.assertLocalRefs(member, documentSha256);
+      return;
+    }
     if (!refs || !['originalIds', 'materialIds', 'sourceRefs', 'processRefs', 'evidenceRefs']
       .every(key => Array.isArray(refs[key as keyof R1LocalReferences]))) {
       fail('R1_LOCAL_REFERENCE', 'R1 需要完整的原件、材料、来源、加工及证据引用数组。');
@@ -949,18 +1083,18 @@ export function buildStructuredIngestDocument(input: R1StructuredRequest): WfdRe
     intent: 'submit',
     producer_namespace: input.producerNamespace,
     expected_parent_snapshot_id: input.expectedParentSnapshotId,
-    outputs: [{
-      output_key: input.outputKey,
+    outputs: [input, ...(input.additionalOutputs ?? [])].map(member => ({
+      output_key: member.outputKey,
       logical_domain: 'observations',
-      subject: input.subject,
-      definition_mode: input.definitionMode ?? 'create',
-      definition_ref: input.definitionMode === 'reuse' ? input.definitionRef ?? null : null,
-      definition: input.definitionMode === 'reuse' ? null : input.definition,
-      input_mode: input.inputMode,
-      coverage: input.coverage,
-      payload: input.payload,
-      ...(input.revisions ? { revisions: input.revisions } : {}),
-    }],
+      subject: member.subject,
+      definition_mode: member.definitionMode ?? 'create',
+      definition_ref: member.definitionMode === 'reuse' ? member.definitionRef ?? null : null,
+      definition: member.definitionMode === 'reuse' ? null : member.definition,
+      input_mode: member.inputMode,
+      coverage: member.coverage,
+      payload: member.payload,
+      ...(member.revisions ? { revisions: member.revisions } : {}),
+    })),
     ...(input.consistencyGroups ? { consistency_groups: input.consistencyGroups } : {}),
     ...(input.duplicatePolicy ? { duplicate_policy: input.duplicatePolicy } : {}),
   };
