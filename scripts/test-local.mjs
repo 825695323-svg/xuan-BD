@@ -61,6 +61,7 @@ try {
         'modules/collection/source-reported-table.test.ts',
         'modules/collection/semantic-dictionary-framework.test.ts',
         'modules/collection/processing-quality.test.ts',
+        'modules/collection/processing-plan-request.test.ts',
         'apps/server/processing-quality.test.ts',
         'apps/server/r1-dedup.test.ts',
         'apps/server/endpoint-adapter-chain.test.ts',

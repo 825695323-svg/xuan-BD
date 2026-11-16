@@ -309,9 +309,21 @@ export class ProcessingPlanService {
   }
 
   preparePlan(input: unknown, operator: OperatorContext): TaskRecord {
-    const normalized = this.normalizePlan(input, operator);
+    validateOperator(operator);
     const requestKey = requestKeyFor('plan', operator.requestId);
     const previous = this.request(requestKey);
+    let normalizationOperator = operator;
+    if (previous) {
+      const frozen = parseJson<{ operator: OperatorContext }>(previous.input_json).operator;
+      validateOperator(frozen);
+      if (digestOperationArgs(operatorRequestIdentity(operator)) !== digestOperationArgs(operatorRequestIdentity(frozen))) {
+        fail('REQUEST_CONFLICT', '同一计划请求不能更换操作者、请求来源或会话分支。');
+      }
+      // 重发沿首次受理的证据时刻核对，不把当前 HTTP 到达时间误判为业务变更。
+      // 保留当前受信消息核对函数，并重新核对全部原件、规则与声明，不能直接接受旧摘要。
+      normalizationOperator = { ...operator, observedAt: frozen.observedAt };
+    }
+    const normalized = this.normalizePlan(input, normalizationOperator);
     if (previous) {
       if (previous.content_digest !== normalized.contentDigest) fail('REQUEST_CONFLICT', '同一计划请求不能更换原件、规则、声明、维度或操作者。');
       return this.task(previous);
@@ -1718,6 +1730,11 @@ function validateOperator(operator: OperatorContext): void {
 function storedOperator(operator: OperatorContext): OperatorContext {
   return { ...operator, ...(operator.conversation ? { conversation: { conversationId: operator.conversation.conversationId,
     branchId: operator.conversation.branchId } } : {}) };
+}
+function operatorRequestIdentity(operator: OperatorContext) {
+  return { operatorId: operator.operatorId, requestId: operator.requestId, method: operator.method, path: operator.path,
+    remoteAddress: operator.remoteAddress, source: operator.source ?? 'operator-http',
+    conversation: operator.conversation ? { conversationId: operator.conversation.conversationId, branchId: operator.conversation.branchId } : null };
 }
 function readRecord(value: unknown, keys: string[], code: string): WfdRecord {
   if (!isWfdRecord(value) || Object.keys(value).some(key => !keys.includes(key))) fail(code, `需要明确对象且只接受字段：${keys.join(', ')}。`);
