@@ -111,7 +111,7 @@ export function reviewR1Plan(value: unknown): R1PlanReview {
       if (mapping.kind !== 'tabular_rows') reasons.push('R1_SOURCE_EDITOR_REQUIRED');
       if (!['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope']
         .every(key => typeof source[key] === 'string' && String(source[key]).trim())) reasons.push('R1_SOURCE_UNCONFIRMED');
-      const recipe = reasons.length ? null : structuredClone({ planId, outputId, source, mapping, target: destination }) as Omit<R1PrepareInput, 'requestId'>;
+      const recipe = reasons.length ? null : structuredClone({ planId, outputId, source, mapping, target: destination }) as unknown as Omit<R1PrepareInput, 'requestId'>;
       const gaps = [...(strings(output.gaps) ? output.gaps : []), ...(strings(output.semanticGaps) ? output.semanticGaps : [])];
       // Unrelated completion timestamps do not invalidate a selected output's review.
       const stamp = canonical({ planId, planDigest, output, own, ownIntegrity, relatedOutputIds,
@@ -146,7 +146,8 @@ export function r1ConfirmationKey(view: R1RequestView): string {
 export async function submitReviewedR1Request(port: R1ReviewPort, reviewed: R1RequestView): Promise<unknown> {
   const fresh = await port.get(reviewed.requestId);
   if (r1ConfirmationKey(fresh) !== r1ConfirmationKey(reviewed)) fail('R1_CONFIRMATION_CHANGED', '原请求文档或连接已改变，旧确认已失效。');
-  if (fresh.requiresRecovery || !['prepared_profile_pending', 'send_failed'].includes(fresh.state))
+  if (fresh.requiresRecovery || (fresh.submitTaskId !== null && fresh.state !== 'send_failed')
+    || !['prepared_profile_pending', 'send_failed'].includes(fresh.state))
     fail('R1_REVIEW_LOOKUP_REQUIRED', '原请求需要查询或恢复；不能把未确认回执或已成功结果当成未提交。');
   const selected = reviewR1Plan(await port.plan(fresh.planId)).outputs.find(output => output.outputId === fresh.outputId);
   if (!selected?.eligible) fail('R1_REVIEW_BLOCKED', '原计划的输出或依赖不再满足独立确认条件。');
