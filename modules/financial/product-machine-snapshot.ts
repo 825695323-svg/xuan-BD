@@ -218,7 +218,7 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
       const diagnostics = Array.isArray(result.diagnostics) ? result.diagnostics : [];
       if (fixed.perspective && fixed.perspective !== 'snapshot_contents'
         && diagnostics.some(item => isWfdRecord(item) && (item.decision === 'indeterminate'
-          || fixed.perspective === 'market_known_at' && item.reason === 'WITHDRAWN_AT_PERSPECTIVE'))) {
+          || fixed.perspective === 'market_known_at' && item.reason === 'WITHDRAWN_AT_PERSPECTIVE' && !isWfdRecord(item.withdrawal_public_time)))) {
         throw new TaskError('ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE',
           '历史版本选择存在待补证据，不能把仍有撤销/公开时间缺口的部分结果送入计算。');
       }
