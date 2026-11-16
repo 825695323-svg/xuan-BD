@@ -8,13 +8,26 @@ permissions:
 jobs:
   source:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - run: git archive --format=tar.gz -o "$RUNNER_TEMP/bd-integration-source.tar.gz" HEAD
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: |
+          npm ci
+          mkdir -p "$RUNNER_TEMP/bd-tools/bin" "$RUNNER_TEMP/bd-tools/wheels"
+          cp "$(command -v node)" "$RUNNER_TEMP/bd-tools/bin/node"
+          python -m pip download --only-binary=:all: -r wfd/product/requirements-duckdb.txt -d "$RUNNER_TEMP/bd-tools/wheels"
+          tar czf "$RUNNER_TEMP/bd-integration-tools.tar.gz" node_modules -C "$RUNNER_TEMP/bd-tools" bin wheels
       - uses: actions/upload-artifact@v4
         with:
-          name: bd-integration-source
-          path: ${{ runner.temp }}/bd-integration-source.tar.gz
+          name: bd-integration-tools
+          path: ${{ runner.temp }}/bd-integration-tools.tar.gz
           retention-days: 1
