@@ -1,0 +1,68 @@
+name: BD official public API focused probes
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/probe-official-apis.py'
+      - 'plugins/api-sources/official-public*.ts'
+      - 'apps/server/official-public*.test.ts'
+      - 'contracts/source-acquisition.ts'
+      - 'plugins/api-sources/source-acquisition.ts'
+      - '.github/workflows/bd-official-api-probes.yml'
+  workflow_dispatch:
+    inputs:
+      live:
+        description: 'Explicitly authorize up to seven no-key official API reads'
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: read
+concurrency:
+  group: bd-official-public-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Locked build and repository checks
+        run: |
+          npm ci
+          npm run repo:check
+          npm run build
+      - name: Focused official-source contracts and existing acquisition regressions
+        run: |
+          node --import tsx --test plugins/api-sources/official-public.test.ts plugins/api-sources/source-acquisition.test.ts plugins/api-sources/source-routing.test.ts
+      - name: Live official reads only for this authorized feature or explicit manual choice
+        if: github.head_ref == 'feat/bd-official-api-samples' || (github.event_name == 'workflow_dispatch' && inputs.live)
+        run: python scripts/probe-official-apis.py --output "$RUNNER_TEMP/bd-official-live"
+      - name: Actual official originals through HTTP custody and selected BD modules
+        if: github.head_ref == 'feat/bd-official-api-samples' || (github.event_name == 'workflow_dispatch' && inputs.live)
+        env:
+          XUAN_OFFICIAL_PROBE_ROOT: ${{ runner.temp }}/bd-official-live
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-official-chain
+          XUAN_TEST_ROOT: ${{ runner.temp }}/bd-official-tests
+        run: |
+          mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
+          node --import tsx --test apps/server/official-public-live.test.ts
+      - name: Preserve bounded public raw responses and honest failures
+        if: always() && (github.head_ref == 'feat/bd-official-api-samples' || (github.event_name == 'workflow_dispatch' && inputs.live))
+        uses: actions/upload-artifact@v4
+        with:
+          name: bd-official-public-samples
+          path: ${{ runner.temp }}/bd-official-live/
+          retention-days: 3
+          if-no-files-found: warn
