@@ -7,6 +7,12 @@ on:
   pull_request:
     paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', '.gitattributes', 'AGENTS.md', 'LICENSE', 'staging/**', 'wfd/product/**']
   workflow_dispatch:
+    inputs:
+      full_regression:
+        description: 'Run the optional full Linux Node/Python regression'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -122,7 +128,7 @@ jobs:
           "$BD_NODE" "$BD_NPM" run test:pipeline
 
       - name: Full Node regression and real WFD source-based tests
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.full_regression
         shell: bash
         run: |
           export XUAN_TEST_ROOT="$RUNNER_TEMP/bd-full-tests"

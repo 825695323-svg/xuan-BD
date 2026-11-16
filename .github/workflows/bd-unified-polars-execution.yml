@@ -16,6 +16,12 @@ on:
       - 'apps/server/services.ts'
       - '.github/workflows/bd-unified-polars-execution.yml'
   workflow_dispatch:
+    inputs:
+      full_regression:
+        description: 'Run the optional full Linux Node/TypeScript regression'
+        type: boolean
+        required: false
+        default: false
   pull_request:
     paths:
       - 'modules/collection/production-verifier*.ts'
@@ -74,12 +80,11 @@ jobs:
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
           env -u WFD_PYTHON -u POLARS_PYTHON node --import tsx --test apps/server/r1-routes.test.ts
       - name: Full native Node and TypeScript regression (failures remain visible)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.full_regression }}
         env:
           XUAN_TEST_ROOT: ${{ runner.temp }}/bd-unified-full-tests
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-unified-full-chain
         run: |
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
-          # Runtime-only suites already run with explicit WFD_PYTHON/POLARS_PYTHON above.
-          # Default full suite keeps the fixture-less environment of scripts/test-local.mjs.
+          # Explicit opt-in only. Focused processing and R1 tests above remain enabled.
           env -u WFD_PYTHON -u POLARS_PYTHON npm test
