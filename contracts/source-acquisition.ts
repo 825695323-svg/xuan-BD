@@ -1,20 +1,20 @@
-import type { SourceCandidateFeedback } from './source-settings.js';
-
-/** 只描述逻辑请求和已有证据，不授予来源权限或正式发布资格。 */
-export type AcquisitionRequest = SourceCandidateFeedback['logicalRequest'];
-export interface AcquisitionBinding {
-  providerId: string;
-  connectionId: string;
-  configurationDigest: string;
+/** 逻辑请求独立于股票操作目录；实际网络权限和注册能力由来源端口校验。 */
+export interface AcquisitionRequest {
+  scopeId: string;
+  operationId: string;
+  subjectId: string | null;
+  start: string | null;
+  end: string | null;
+  adjustment: string | null;
 }
+export interface AcquisitionBinding { providerId: string; connectionId: string; configurationDigest: string }
 export interface AcquisitionOriginal { fileRefId: string; sha256: string }
 export interface AcquisitionPage {
   cursor: string | null;
-  /** undefined 为来源未声明；null 才是来源明确没有下一页。 */
+  /** undefined 为未声明，null 才表示明确结束。 */
   nextCursor?: string | null;
   original: AcquisitionOriginal;
   rowCount: number;
-  /** 使用来源已解析的逻辑行键，不从日期首尾推定中间完整。 */
   keys: string[];
 }
 export interface AcquisitionCheckpoint {
@@ -27,7 +27,6 @@ export interface AcquisitionCheckpoint {
 }
 export interface AcquisitionCoverage {
   requestKey: string;
-  /** 预期范围由明确的产品/日历契约提供；本模块不推断交易日或停牌。 */
   expectedKeys: string[];
   evidence: AcquisitionOriginal;
 }
@@ -49,7 +48,6 @@ export interface AcquisitionReview {
   returnTo: 'agents';
   publication: 'not_requested';
 }
-
 export interface SourceReceiptReview {
   requestKey: string;
   outcome: 'data' | 'undetermined';

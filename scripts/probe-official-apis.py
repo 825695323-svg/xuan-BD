@@ -1,4 +1,4 @@
-"""Explicitly opted-in, bounded official public API smoke probes. No credentials or retries."""
+"""Explicitly opted-in, bounded official public API probes. No credentials or retries."""
 import argparse
 import datetime
 import hashlib
@@ -15,6 +15,10 @@ MAX_BYTES = 1_048_576
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
 
 
 def endpoints():
@@ -44,24 +48,27 @@ def main():
         if provider in failed:
             continue
         started = time.monotonic()
-        result = {'provider': provider, 'page': page, 'requestedUrl': url,
-                  'acquiredAtUtc': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')}
+        result = {'provider': provider, 'page': page, 'requestedUrl': url, 'requestedAtUtc': utc_now()}
         try:
             request = urllib.request.Request(url, headers={'User-Agent': 'Xuan-BD public official data compatibility test', 'Accept': 'text/csv' if provider == 'ecb' else 'application/json'})
             with opener.open(request, timeout=18) as response:
                 body = response.read(MAX_BYTES + 1)
                 if len(body) > MAX_BYTES:
-                    raise ValueError('Response exceeded explicitly bounded 1 MiB probe budget')
+                    raise ValueError('Response exceeded bounded 1 MiB probe budget')
                 result.update(status=response.status, contentType=response.headers.get('Content-Type', ''), finalUrl=response.url)
             text = body.decode('utf-8-sig', errors='strict')
             if provider != 'ecb':
                 json.loads(text)
             filename = provider + '-' + str(page) + ('.csv' if provider == 'ecb' else '.json')
             (root / filename).write_bytes(body)
-            result.update(file=filename, bytes=len(body), sha256=hashlib.sha256(body).hexdigest(), state='received')
+            result.update(file=filename, bytes=len(body), sha256=hashlib.sha256(body).hexdigest(), state='received', acquiredAtUtc=utc_now())
             print('OFFICIAL_BODY ' + provider + ' page=' + str(page) + ' ' + text[:1600], flush=True)
+        except urllib.error.HTTPError as error:
+            result.update(state='failed', status=error.code, observedAtUtc=utc_now(), error=type(error).__name__ + ': ' + str(error))
+            failed.add(provider)
+            error.close()
         except (OSError, ValueError, UnicodeError) as error:
-            result.update(state='failed', error=type(error).__name__ + ': ' + str(error))
+            result.update(state='failed', observedAtUtc=utc_now(), error=type(error).__name__ + ': ' + str(error))
             failed.add(provider)
         result['durationSeconds'] = round(time.monotonic() - started, 3)
         results.append(result)
@@ -73,7 +80,7 @@ def main():
     successful = {r['provider'] for r in results if r['state'] == 'received' and r['provider'] not in failed}
     print('OFFICIAL_SUMMARY ' + json.dumps({'successfulProviders': sorted(successful), 'failedProviders': sorted(failed)}), flush=True)
     if len(successful) < 2:
-        raise SystemExit('Fewer than two official services completed their bounded probes; not a successful live validation')
+        raise SystemExit('Fewer than two official services completed bounded probes; live validation did not pass')
 
 
 if __name__ == '__main__':

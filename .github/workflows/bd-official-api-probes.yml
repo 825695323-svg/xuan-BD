@@ -43,9 +43,21 @@ jobs:
           npm ci
           npm run repo:check
           npm run build
+      - name: Focused official-source contracts and existing acquisition regressions
+        run: |
+          node --import tsx --test plugins/api-sources/official-public.test.ts plugins/api-sources/source-acquisition.test.ts plugins/api-sources/source-routing.test.ts
       - name: Live official reads only for this authorized feature or explicit manual choice
         if: github.head_ref == 'feat/bd-official-api-samples' || (github.event_name == 'workflow_dispatch' && inputs.live)
         run: python scripts/probe-official-apis.py --output "$RUNNER_TEMP/bd-official-live"
+      - name: Actual official originals through HTTP custody and selected BD modules
+        if: github.head_ref == 'feat/bd-official-api-samples' || (github.event_name == 'workflow_dispatch' && inputs.live)
+        env:
+          XUAN_OFFICIAL_PROBE_ROOT: ${{ runner.temp }}/bd-official-live
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-official-chain
+          XUAN_TEST_ROOT: ${{ runner.temp }}/bd-official-tests
+        run: |
+          mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
+          node --import tsx --test apps/server/official-public-live.test.ts
       - name: Preserve bounded public raw responses and honest failures
         if: always() && (github.head_ref == 'feat/bd-official-api-samples' || (github.event_name == 'workflow_dispatch' && inputs.live))
         uses: actions/upload-artifact@v4
