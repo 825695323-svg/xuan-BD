@@ -9,7 +9,7 @@ import { PageActions, PageButton, PageEmpty, PageField, PageHeading } from './Pa
 import { R1DuplicateResult } from './R1DuplicateResult';
 import './R1PlanReviewPanel.css';
 
-interface Ticket { requestId: string; planId: string; outputId: string; received: boolean }
+interface Ticket { requestId: string; planId: string; outputId: string; awaitingReceipt: boolean }
 const reasonText: Record<string, [string, string]> = {
   R1_OUTPUT_NOT_READY: ['输出的处理、用途或发布目标尚未满足。', 'Processing, purpose or target is not ready.'],
   R1_MULTI_SOURCE_UNSUPPORTED: ['此入口只支持单原件输出，不会取第一份原件代替全部。', 'This path requires one original per output.'],
@@ -27,7 +27,7 @@ function readTicket(key: string | null): Ticket | null {
     if (!value || typeof value !== 'object') return null;
     const t = value as Record<string, unknown>;
     return [t.requestId, t.planId, t.outputId].every(item => typeof item === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/u.test(item))
-      && typeof t.received === 'boolean' ? t as unknown as Ticket : null;
+      && typeof t.awaitingReceipt === 'boolean' ? t as unknown as Ticket : null;
   } catch { return null; }
 }
 
@@ -67,7 +67,7 @@ export function R1PlanReviewPanel({ port = r1Api }: { port?: R1ReviewPort }) {
   }
   function receive(result: R1RequestView) {
     setView(result); setConfirmation(null); setLookupId(result.requestId);
-    remember({ requestId: result.requestId, planId: result.planId, outputId: result.outputId, received: true });
+    remember({ requestId: result.requestId, planId: result.planId, outputId: result.outputId, awaitingReceipt: false });
   }
   function loadPlan() {
     setConfirmation(null); setView(null); setReview(null); setSelectedId('');
@@ -82,12 +82,18 @@ export function R1PlanReviewPanel({ port = r1Api }: { port?: R1ReviewPort }) {
     if (!selected?.eligible) return;
     setConfirmation(null);
     void act(async current => {
-      if (ticket && !ticket.received && (ticket.planId !== selected.planId || ticket.outputId !== selected.outputId))
+      if (ticket && ticket.awaitingReceipt && (ticket.planId !== selected.planId || ticket.outputId !== selected.outputId))
         throw new Error(words('上一准备回执未知，请先按原请求编号查询；不能直接创建另一请求。', 'Look up the unconfirmed original preparation before creating another request.'));
       const requestId = ticket?.planId === selected.planId && ticket.outputId === selected.outputId
         ? ticket.requestId : `web-r1-review-${crypto.randomUUID()}`;
-      remember({ requestId, planId: selected.planId, outputId: selected.outputId, received: false });
-      const result = await prepareReviewedR1Output(port, selected, requestId);
+      const next = { requestId, planId: selected.planId, outputId: selected.outputId, awaitingReceipt: false };
+      remember(next);
+      const guardedPort: R1ReviewPort = { ...port, prepare: input => {
+        if (!current()) throw new Error('Review context changed before preparation.');
+        remember({ ...next, awaitingReceipt: true });
+        return port.prepare(input);
+      } };
+      const result = await prepareReviewedR1Output(guardedPort, selected, requestId);
       if (!current()) return;
       receive(result);
       setNotice(words('已冻结所选输出的准备文档，尚未提交。请核对下方目标、原文摘要和连接。', 'The selected output is prepared, not submitted. Review its target, document digest and connection below.'));
@@ -107,7 +113,11 @@ export function R1PlanReviewPanel({ port = r1Api }: { port?: R1ReviewPort }) {
     const visible = view;
     setConfirmation(null); // Consume before awaiting, not after the side effect.
     void act(async current => {
-      await submitReviewedR1Request(port, visible);
+      const guardedPort: R1ReviewPort = { ...port, submit: input => {
+        if (!current()) throw new Error('Review context changed before submission.');
+        return port.submit(input);
+      } };
+      await submitReviewedR1Request(guardedPort, visible);
       const result = await port.get(visible.requestId);
       if (!current()) return;
       receive(result);
@@ -123,7 +133,8 @@ export function R1PlanReviewPanel({ port = r1Api }: { port?: R1ReviewPort }) {
       if (current()) receive(result);
     });
   }
-  const canConfirm = view && !view.requiresRecovery && ['prepared_profile_pending', 'send_failed'].includes(view.state);
+  const canConfirm = view && !view.requiresRecovery && (view.submitTaskId === null || view.state === 'send_failed')
+    && ['prepared_profile_pending', 'send_failed'].includes(view.state);
   return <section className="r1-plan-review" aria-label={words('多输出审阅与逐项确认', 'Multi-output review and individual confirmation')}>
     <PageHeading title={words('多输出审阅与逐项确认', 'Multi-output review and individual confirmation')}
       description={words('读取已有计划，展示所有输出。每次只确认一个独立输出；关联发布集合保持阻断，不循环拆开提交。',
