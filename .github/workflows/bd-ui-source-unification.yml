@@ -114,7 +114,8 @@ jobs:
       - name: Verify actual multi-output review over HTTP and WFD, with an isolated browser
         if: steps.scope.outputs.r1 == 'true'
         env:
-          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/r1-review-chain
+          # Short isolated parent avoids Chromium's Unix-domain socket length limit.
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/r
           XUAN_TEST_ROOT: ${{ runner.temp }}/r1-review-tests
           XUAN_REVIEW_VISUAL_ROOT: ${{ runner.temp }}/xuan-bd-ui-visual/r1-review
         run: |
