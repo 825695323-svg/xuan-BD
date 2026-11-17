@@ -53,6 +53,9 @@ export function assertR1FilterEcho(input: RecordValue, result: RecordValue, disc
   for (const raw of [...result.objects as unknown[], ...result.indeterminate as unknown[]]) {
     const item = object(raw);
     if (!(universe as unknown[]).some(subject => canonical(subject) === canonical(item.subject))) fail();
+    for (const name of Object.keys(object(item.values))) {
+      if (!Object.hasOwn(object(item.record_refs), name) || !verified.some(binding => binding.metric === name && canonical(binding.subject) === canonical(item.subject))) fail();
+    }
     for (const [name, rawRef] of Object.entries(object(item.record_refs))) {
       const ref = object(rawRef), binding = verified.find(value => value.metric === name && canonical(value.subject) === canonical(item.subject));
       const record = object(ref.record_ref);

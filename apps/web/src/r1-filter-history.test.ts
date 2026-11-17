@@ -46,3 +46,8 @@ test('filter permits only explicit empty budget gap and equivalent discovery dup
  assert.throws(() => assertR1FilterEcho(input, altered, discovery));
  }
 });
+
+test('filter does not display unbound extra values or values missing a fixed record reference', () => {
+ assert.throws(() => assertR1FilterEcho(input, { ...result, objects: [{ ...result.objects[0], values: { unexpected: { value: '99' } } }] }, discovery));
+ assert.throws(() => assertR1FilterEcho(input, { ...result, objects: [{ subject, values: { m: { value: '99' } }, record_refs: {} }] }, discovery));
+});
