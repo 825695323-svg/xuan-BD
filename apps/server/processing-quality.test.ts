@@ -188,6 +188,21 @@ test('HTTP missing artifact and persisted rows remain visible after explicit int
     await complete(host, plan.planId, 'observed', 'quality-missing');
     const before = await query(host, plan.planId), parse = before.steps.find(step => step.kind === 'parse')!;
     assert.ok(parse.output);
+    // 成功步骤引用丢失：恢复报告和质量视图必须一致，不能以空 corrupt 宣称核查完成。
+    const savedReference = host.database.connection.prepare(
+      'SELECT output_json FROM processing_plan_steps WHERE plan_id=? AND step_id=?').get(plan.planId, parse.stepId)!.output_json;
+    host.database.connection.prepare('UPDATE processing_plan_steps SET output_json=NULL WHERE plan_id=? AND step_id=?')
+      .run(plan.planId, parse.stepId);
+    const missingRefRecovery = await host.call(`/processing/plans/${plan.planId}/recover`,
+      { requestId: 'quality-missing-reference-recovery' }, 202);
+    const missingRefResult = await host.settled(missingRefRecovery.jobId);
+    assert.equal(missingRefResult.status, 'succeeded');
+    const integrity = (missingRefResult.result!.data as unknown as { integrity: { corrupt: string[] } }).integrity;
+    assert.ok(integrity.corrupt.some(issue => issue.startsWith(parse.stepId + ':')));
+    assert.ok((await query(host, plan.planId)).quality.issues.some(issue =>
+      issue.kind === 'artifact_or_record_missing' && issue.stepId === parse.stepId));
+    host.database.connection.prepare('UPDATE processing_plan_steps SET output_json=? WHERE plan_id=? AND step_id=?')
+      .run(savedReference, plan.planId, parse.stepId);
     // Deliberate fault injection in this newly created synthetic state only. Queries and recovery still use real HTTP routes.
     const storage = host.database.connection.prepare("SELECT type FROM sqlite_master WHERE name='candidate_objects'").get()!.type;
     const objectTable = storage === 'view' ? 'candidate_object_layouts' : 'candidate_objects';
