@@ -26,7 +26,7 @@ export const CANDIDATE_SELECTION_LIMITS = Object.freeze({ maxSelectedRows: 5000,
 export function candidateImplementationDigest(): string {
   const files = ['./candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts',
     './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts',
-    './data-processing/necessary-text.ts', './data-processing/event-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts',
+    './data-processing/necessary-text.ts', './data-processing/event-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fact.ts', './data-processing/financial-fixed.ts',
     './materials/contracts.ts', '../../platform/capabilities/browser/html-extraction.ts', '../../adapters/database/wfd-transport.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
   return wfdSha256(Buffer.concat(files));
 }

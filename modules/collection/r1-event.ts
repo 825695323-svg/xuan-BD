@@ -1,3 +1,4 @@
+import { isR1RelationDeclaration, compileR1RelationDeclaration, checkR1RelationRows } from './r1-relation.js';
 import { readFileSync } from 'node:fs';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
@@ -71,9 +72,9 @@ export function checkR1EventRows(rows: unknown[], value: unknown) {
   });
   return { ...compiled, rows: mapped, quality: 'pass' as const };
 }
-export const isR1MappedDeclaration = (value: unknown) => isR1TabularDeclaration(value) || isR1EventDeclaration(value);
-export const compileR1MappedDeclaration = (value: unknown) => isR1EventDeclaration(value) ? compileR1EventDeclaration(value) : compileR1TabularDeclaration(value);
-export const checkR1MappedRows = (rows: unknown[], value: unknown) => isR1EventDeclaration(value) ? checkR1EventRows(rows, value) : checkR1TabularRows(rows, value);
+export const isR1MappedDeclaration = (value: unknown) => isR1TabularDeclaration(value) || isR1EventDeclaration(value) || isR1RelationDeclaration(value);
+export const compileR1MappedDeclaration = (value: unknown) => isR1RelationDeclaration(value) ? compileR1RelationDeclaration(value) : isR1EventDeclaration(value) ? compileR1EventDeclaration(value) : compileR1TabularDeclaration(value);
+export const checkR1MappedRows = (rows: unknown[], value: unknown) => isR1RelationDeclaration(value) ? checkR1RelationRows(rows, value) : isR1EventDeclaration(value) ? checkR1EventRows(rows, value) : checkR1TabularRows(rows, value);
 
 function readTimeMapping(value: unknown): WfdRecord {
   const time = object(value);
