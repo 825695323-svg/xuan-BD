@@ -2709,20 +2709,25 @@ class WFDDataOnlyService(WFDProductService):
                      if dep.get("role") not in {"calendar_ref", "accounting_calendar_ref"}]
         return super()._check_dependencies(remaining, dataset_id, checked)
 
+    @staticmethod
+    def _guard_definition_history(entries, *, perspective, at):
+        if perspective != "market_known_at":
+            return
+        for entry in entries:
+            binding = ((entry.get("source_bundle") or {}).get("_wfd_product_bindings") or {}).get(entry.get("output_key")) or {}
+            decision = eligibility_at(binding.get("definition_public_time"), at, mode=perspective)
+            if decision["decision"] != "eligible":
+                # Until temporal definition projection is supported, refuse the
+                # product rather than expose any future/unknown technical metadata.
+                raise ValueError("HISTORY_DEFINITION_TIME_UNSUPPORTED")
+
     def _read(self, product_id=None, *, snapshot_id, perspective="snapshot_contents",
               at=None, subject=None, include_history=False, verify_contract_files=True):
         if perspective == "market_known_at":
             snapshot = self.engine._valid_snapshot_exact(snapshot_id, verify_payloads=False)
-            for entry in snapshot.get("files", []):
-                if product_id is not None and entry.get("product_id") != product_id:
-                    continue
-                binding = ((entry.get("source_bundle") or {}).get("_wfd_product_bindings") or {}).get(entry.get("output_key")) or {}
-                decision = eligibility_at(binding.get("definition_public_time"), at, mode=perspective)
-                if decision["decision"] != "eligible":
-                    # ProductQuery also projects definitions from the whole fixed
-                    # manifest. Until temporal definition projection is supported,
-                    # reject the product rather than leak future/unknown metadata.
-                    raise ValueError("HISTORY_DEFINITION_TIME_UNSUPPORTED")
+            entries = [entry for entry in snapshot.get("files", [])
+                       if product_id is None or entry.get("product_id") == product_id]
+            self._guard_definition_history(entries, perspective=perspective, at=at)
         return super()._read(product_id, snapshot_id=snapshot_id, perspective=perspective,
                              at=at, subject=subject, include_history=include_history,
                              verify_contract_files=verify_contract_files)

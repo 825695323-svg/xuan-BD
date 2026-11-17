@@ -357,6 +357,16 @@ for (const [name, time] of [
           historyMode: 'market_known_at', at: '2025-01-10T12:00:00Z' }, 409);
         assert.equal(denied.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED');
         assert.equal(denied.result, undefined, 'Refusal must not attach future definition metadata');
+        await assert.rejects(() => host.services.r1Runtime!.client.readProduct({
+          protocol_version: 'wfd.read/1.3-product1', operation: 'read_product',
+          dataset_id: 'synthetic_history', snapshot_id: published.snapshotId, product_id: published.productId,
+          fields: ['not_a_declared_field'], history_mode: 'market_known_at',
+          knowledge_cutoff: second('2025-01-10T12:00:00Z'), held_scope: null, usable_stage: null,
+          subject: null, business_time_range: null, page_size: 10, max_nodes: 1000,
+          max_scan_bytes: 8_000_000, cursor: null,
+        }), (error: any) => error.remoteCode === 'HISTORY_DEFINITION_TIME_UNSUPPORTED'
+          && !JSON.stringify(error).includes('available_fields'));
+
         hold(fixture, published, ['2025-01-05T09:00:00Z', '2025-01-05T10:00:00Z', '2025-01-06T09:00:00Z']);
         assert.equal(values(await host.call('/r1/products/read', { ...selected,
           historyMode: 'system_held_at', at: '2025-01-10T12:00:00Z',
