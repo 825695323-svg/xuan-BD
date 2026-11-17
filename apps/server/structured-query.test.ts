@@ -63,7 +63,7 @@ test('HTTP real Python publication, multi-object filter and persisted exact evid
   let host = await openFullChainHost(fixture);
   const transcript: unknown[] = [];
   try {
-    const published = [];
+    const published: Awaited<ReturnType<typeof publish>>[] = [];
     for (const [subject, value] of [['region_a', '10'], ['region_b', '10'], ['region_c', '0']]) {
       const item = await publish(host, subject!, value!); published.push(item);
       await documentFixture(host, item.material);
@@ -95,6 +95,44 @@ test('HTTP real Python publication, multi-object filter and persisted exact evid
     assert.equal(joint.qualification.historical_claim, false);
     assert.equal(joint.objects[0].documents.citations.length, 1);
     assert.equal(joint.objects[0].documents.citations[0].document_id, published[0]!.material.envelope.materialId);
+    // Fault injection into a real HTTP/WFD chain, not a claimed second live database connection.
+    const runtime = host.services.r1Runtime!, workspace = host.services.r1Workspace!, tasks = host.services.tasks;
+    const currentIdentity = runtime.currentIdentity.bind(runtime), filter = workspace.filterObjects.bind(workspace);
+    const machineFilter = runtime.client.filterObjects.bind(runtime.client), control = tasks.getControl.bind(tasks);
+    const wrong = () => ({ ...currentIdentity(), connectionId: 'isolated-other-connection' });
+    const refused = async (code: string) => {
+      const result = await host.call('/retrieval/joint', { structured: plan, documents: documentContext }, 409);
+      assert.equal(result.code, code, JSON.stringify(result));
+      assert.ok(!JSON.stringify(result).includes(published[0]!.material.envelope.materialId));
+      assert.ok(!JSON.stringify(result).includes('联合检索证据'));
+    };
+    runtime.currentIdentity = wrong;
+    try { await refused('R1_CONNECTION_BINDING_CHANGED'); } finally { runtime.currentIdentity = currentIdentity; }
+    runtime.client.filterObjects = async (...args) => {
+      const result = await machineFilter(...args); runtime.currentIdentity = wrong; return result;
+    };
+    try { await refused('R1_CONNECTION_BINDING_CHANGED'); }
+    finally { runtime.client.filterObjects = machineFilter; runtime.currentIdentity = currentIdentity; }
+    workspace.filterObjects = async (...args) => {
+      const result = await filter(...args); runtime.currentIdentity = wrong; return result;
+    };
+    try { await refused('R1_CONNECTION_BINDING_CHANGED'); }
+    finally { workspace.filterObjects = filter; runtime.currentIdentity = currentIdentity; }
+    for (const duringQuery of [true, false]) {
+      const change = () => { const fixed = control(); tasks.getControl = () => ({ ...fixed, generation: fixed.generation + 1 }); };
+      if (duringQuery) runtime.client.filterObjects = async (...args) => { const result = await machineFilter(...args); change(); return result; };
+      else workspace.filterObjects = async (...args) => { const result = await filter(...args); change(); return result; };
+      try { await refused('BD_STOPPED'); }
+      finally { tasks.getControl = control; runtime.client.filterObjects = machineFilter; workspace.filterObjects = filter; }
+    }
+    const association = host.services.r1!.recordMaterials.bind(host.services.r1!);
+    host.services.r1!.recordMaterials = () => null;
+    try {
+      const missing = await host.call('/retrieval/joint', { structured: plan, documents: documentContext });
+      assert.equal(missing.status, 'coverage_insufficient'); assert.equal(missing.objects[0].documents, null);
+      assert.ok(missing.objects[0].gaps.some((gap: any) => gap.code === 'BD_RECORD_ASSOCIATION_MISSING'));
+    } finally { host.services.r1!.recordMaterials = association; }
+    assert.deepEqual((await host.call('/retrieval/joint', { structured: plan, documents: documentContext })).objects, joint.objects);
     const jointSecond = await host.call('/retrieval/joint', { structured: { ...plan, cursor: joint.page.next_cursor }, documents: documentContext });
     assert.equal(jointSecond.status, 'matched', JSON.stringify(jointSecond));
     assert.equal(jointSecond.objects[0].documents.citations[0].document_id, published[1]!.material.envelope.materialId,

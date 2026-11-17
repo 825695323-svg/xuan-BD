@@ -26,8 +26,8 @@ export const CANDIDATE_SELECTION_LIMITS = Object.freeze({ maxSelectedRows: 5000,
 export function candidateImplementationDigest(): string {
   const files = ['./candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts',
     './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts',
-    './data-processing/necessary-text.ts', './data-processing/event-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts',
-    './materials/contracts.ts', '../../adapters/database/wfd-transport.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
+    './data-processing/necessary-text.ts', './data-processing/event-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fact.ts', './data-processing/financial-fixed.ts',
+    './materials/contracts.ts', '../../platform/capabilities/browser/html-extraction.ts', '../../adapters/database/wfd-transport.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
   return wfdSha256(Buffer.concat(files));
 }
 export const CANDIDATE_STAGE_VERSIONS = Object.freeze({ parse: 'bd-source-parsers/3', clean: 'bd-explicit-clean/1',
@@ -349,6 +349,14 @@ export function checkCandidateTables(tables: (AnnotatedCandidateTable | Structur
     const role = table.columns.indexOf('text_role');
     if ((role >= 0 && table.rows.some(row => row[role]?.value === 'necessary_condition') || enabledAnnotations(table).text_role === 'necessary_condition') && !table.necessary_text_evidence)
       fail('NECESSARY_TEXT_REVIEW', '必要条件标签不是选择证明；须核定原文版本、完整段范围、用途和发布内容摘要。');
+    if ((role >= 0 && table.rows.some(row => row[role]?.value === 'source_excerpt') || enabledAnnotations(table).text_role === 'source_excerpt') && !table.event_text_evidence)
+      fail('EVENT_TEXT_REVIEW', '事件原文标签不是选择证明；须保留冻结原文、传播身份与选录内容摘要。');
+    if (table.event_text_evidence) {
+      const contents = table.rows.map(row => Object.fromEntries(table.columns.map((name, index) => [name, row[index]!.value])));
+      if (wfdSha256(canonicalWfdJson(contents)) !== table.event_text_evidence.publishedContentSha256
+        || Object.keys(enabledAnnotations(table)).some(name => table.columns.includes(name)))
+        fail('EVENT_TEXT_REVIEW', '待发布事件原文或传播身份与选录摘要不一致，或标注试图覆盖原字段。');
+    }
     if (table.necessary_text_evidence) {
       const contents = table.rows.map(row => Object.fromEntries(table.columns.map((name, index) => [name, row[index]!.value])));
       if (wfdSha256(canonicalWfdJson(contents)) !== table.necessary_text_evidence.publishedContentSha256)
