@@ -67,6 +67,8 @@ try {
         'apps/server/event-occurrence-r1.test.ts',
         'modules/collection/data-processing/event-text.test.ts',
         'apps/server/processing-dependencies.test.ts',
+        'apps/server/processing-record-dependencies.test.ts',
+        'modules/collection/processing-record-dependencies.test.ts',
         'apps/server/r1-dedup.test.ts',
         'apps/server/endpoint-adapter-chain.test.ts',
         'apps/server/endpoint-adapter-r1.test.ts']

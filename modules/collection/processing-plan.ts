@@ -1,3 +1,4 @@
+import { parsedRecordDependencies, type ParsedRecordDependency } from './processing-record-dependencies.js';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { CoreDatabase } from '../../platform/state/database.js';
@@ -461,6 +462,8 @@ export class ProcessingPlanService {
     const dependencies: { outputField: string; materialId: string; sourceSha256: string;
       inputField: string | null; kind: 'mapped_field' | 'constant'; stepId: string;
       specDigest: string; sourceArtifactSha256: string }[] = [];
+    const recordDependencies: (ParsedRecordDependency & { stepId: string; specDigest: string; sourceArtifactSha256: string })[] = [];
+    const recordGaps: string[] = [];
     const gaps: string[] = missingSteps.map(step => `${step.stepId}:persisted_step_missing`);
     const parses = steps.filter(step => step.kind === 'parse');
     if (!parses.length) gaps.push('no_persisted_parse_steps');
@@ -472,6 +475,18 @@ export class ProcessingPlanService {
     };
     for (const spec of parses) {
       const params = spec.parameters;
+      if (params.format === 'financial-fixed') {
+        const artifact = this.artifact(planId, spec.stepId);
+        if (wfdSha256(artifact.bytes) !== artifact.step.outputDigest)
+          fail('PROCESSING_ARTIFACT_CHANGED', '记录依赖所依据的解析产物摘要不符。');
+        const parsed = JSON.parse(artifact.bytes.toString('utf8')) as ParsedCandidateTable;
+        const material = candidate.materials.find(item => item.materialId === params.materialId);
+        const edges = material && parsed.source_sha256 === material.sha256
+          ? parsedRecordDependencies(parsed, params.financialCalculation) : null;
+        if (!edges) recordGaps.push(`${spec.stepId}:fixed_record_evidence_unknown`);
+        else recordDependencies.push(...edges.map(edge => ({ ...edge, stepId: spec.stepId,
+          specDigest: spec.specDigest, sourceArtifactSha256: artifact.ref.sha256 })));
+      } else recordGaps.push(`${spec.stepId}:record_dependency_not_supported`);
       // 专用投影、适配器和财务读取可能含复合依赖；不能猜成一对一原始字段。
       if (!['csv', 'json'].includes(String(params.format)) || params.sourceProjection || params.sourceAdapter) {
         gaps.push(`${spec.stepId}:unsupported_field_dependency_projection`);
@@ -499,6 +514,9 @@ export class ProcessingPlanService {
     return { version: 'bd.field-dependencies/1', planId, outputId, planDigest: candidate.planDigest,
       outputSha256: candidate.ref.sha256, coverage: 'selected_processing_output_only',
       complete: gaps.length === 0, dependencies, gaps,
+      recordDependencies: { coverage: 'verified_parse_candidates_only', publishedProductQualification: 'not_asserted',
+        downstreamImpact: 'unknown', edges: recordDependencies, gaps: [...missingSteps.map(step => `${step.stepId}:persisted_step_missing`),
+          ...(!parses.length ? ['no_persisted_parse_steps'] : []), ...recordGaps] },
       impact: 'Listed edges identify known direct field dependencies in this output, not an exhaustive affected-product set; downstream products and unknown transformations are not scanned.' };
   }
   /** 候选服务只从这里取已核对的受管引用；不读取客户端自带对象或路径。 */
