@@ -622,6 +622,18 @@ export class PostPublicationCorrectionService {
       const approved = task?.status === 'succeeded' || (row.authorization_task_id
         && this.approvalWasApproved(row.authorization_task_id));
       if (!approved) fail('CORRECTION_AUTHORIZATION_NOT_APPROVED', '原审批没有批准记录；不能恢复签票。');
+      // 已正式发布的原号只做回执/关联恢复，不把临时处理产物绑定到正式数据寿命。
+      let known: WfdRecord;
+      try { known = (await this.client.requestStatus(document.request_identity as WfdRecord)).result as WfdRecord; }
+      catch (error) {
+        this.markUnknown(caseId, 'status_unavailable', error);
+        throw new TaskError('CORRECTION_OUTCOME_UNKNOWN', '原号状态不可查；未因恢复重新发送。');
+      }
+      if (known.state === 'published_formal' && Array.isArray(known.output_results) && known.output_results.length) {
+        this.db.prepare(`UPDATE correction_cases SET state='repairing',updated_at=? WHERE case_id=?`).run(Date.now(), caseId);
+        return this.commitRepair(caseId, row, frozen, document, undefined, known);
+      }
+      this.assertRepairQuality(frozen.planId, frozen.outputId);
       let ticket: WfdRecord;
       try { ticket = await this.authorizeFrozenTicket(caseId, row, frozen, document); }
       catch (error) {
@@ -662,7 +674,14 @@ export class PostPublicationCorrectionService {
   }
 
   /** 只从当前计划已完成的固定结构产物取值；正文/摘要不能冒充实际加工。 */
+  private assertRepairQuality(planId: string, outputId: string): void {
+    const quality = this.options.processing.get(planId).quality;
+    if (quality.revision.affectedOutputIds.includes(outputId))
+      fail('CORRECTION_REPAIR_QUALITY', '所选修复输出存在已报告的产物、执行或依赖缺口；未继续冻结或发布更正。');
+  }
+
   private repairOutputRows(planId: string, outputId: string): WfdRecord[] {
+    this.assertRepairQuality(planId, outputId);
     let artifact: { bytes: Buffer; ref?: { sha256?: string } };
     try { artifact = this.options.processing.outputArtifact(planId, outputId); }
     catch { return fail('CORRECTION_REPAIR_OUTPUT_NOT_READY', '修复计划输出尚未完成结构化核对，不能准备更正。'); }
@@ -897,6 +916,7 @@ export class PostPublicationCorrectionService {
       .filter(issue => issue.state === 'active').map(issue => String(issue.issue_id)));
     if (!activeIds.has(caseId))
       fail('CORRECTION_SUSPENSION_MISSING', 'WFD 当前持久事项中没有生效的原报/派生暂停；未发布。');
+    this.assertRepairQuality(frozen.planId, frozen.outputId);
     let ticket: WfdRecord;
     try { ticket = await this.authorizeFrozenTicket(caseId, row, frozen, document); }
     catch (error) {
@@ -950,6 +970,7 @@ export class PostPublicationCorrectionService {
     if (preloaded) {
       result = preloaded;
     } else {
+      this.assertRepairQuality(frozen.planId, frozen.outputId);
       // 原号提交；发送后结果未知沿同一 request_identity 查询，不换号、不重发。
       try { result = (await this.client.submit(document, signal)).result as WfdRecord; }
       catch (error) {
