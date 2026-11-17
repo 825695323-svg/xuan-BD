@@ -28,6 +28,7 @@ export function CaptureSourcesPage() {
   const [query, setQuery] = useState('');
   /** 自定义来源单独读取；两者都回来之前不判定"没有这个对象"。 */
   const [catalogReady, setCatalogReady] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [loginOpen, setLoginOpen] = useState<Set<string>>(new Set());
   const [loginBusy, setLoginBusy] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -46,14 +47,26 @@ export function CaptureSourcesPage() {
   const sourceCheck = useSourceCheck(loadSourceSettings);
   useEffect(() => {
     let alive = true;
+    let customRequest = 0;
     const loadStates = () => { void request('/api/capture-sources')
       .then((value) => { const list = (value as { sources?: { sourceId: string; state: string }[] }).sources ?? [];
         if (alive) setLoginStates(Object.fromEntries(list.map((item) => [item.sourceId, item.state]))); })
       .catch(() => { if (alive) setLoginStates({}); }); };
-    const loadCustom = () => { void request('/api/ui/custom-sources')
-      .then((value) => { if (alive) setCustomSources(((value as { sources?: CustomSource[] }).sources) ?? []); })
-      .catch(() => { if (alive) setCustomSources([]); })
-      .finally(() => { if (alive) setCatalogReady(true); }); };
+    const loadCustom = () => {
+      const requestId = ++customRequest;
+      void request('/api/ui/custom-sources').then((value) => {
+        if (!alive || requestId !== customRequest) return;
+        const list = (value as { sources?: CustomSource[] } | null)?.sources;
+        if (!Array.isArray(list) || !list.every(source => source && typeof source.id === 'string'
+          && typeof source.label === 'string' && Array.isArray(source.operations)
+          && source.operations.every(operation => typeof operation === 'string'))) throw new Error('CUSTOM_SOURCE_CATALOG_INVALID');
+        setCustomSources(list); setCatalogReady(true); setCatalogError(null);
+      }).catch(failure => {
+        if (!alive || requestId !== customRequest) return;
+        // 失败不等于完整空目录：保留已存对象，隐藏未重新确认的详情。
+        setCatalogReady(false); setCatalogError(errorDetail(failure));
+      });
+    };
     void loadSourceSettings(); void loadCustom(); loadStates();
     const timer = window.setInterval(() => { void loadSourceSettings(); loadCustom(); loadStates(); }, 10_000);
     void request('/api/skills')
@@ -170,6 +183,7 @@ export function CaptureSourcesPage() {
       {loginError && <ErrorNote detail={loginError}>{words('登录操作未完成。', 'The login action did not complete.')}</ErrorNote>}
       <SourceCheckError error={sourceCheck.error} />
       {error && <ErrorNote detail={error}>{words('采集源状态暂时无法读取。', 'Capture source status could not be read.')}</ErrorNote>}
+      {catalogError && <ErrorNote detail={catalogError}>{words('自定义来源目录暂时无法读取；保留原选择，等待下一次读取。', 'The custom source catalog could not be read; the saved selection is retained until the next read.')}</ErrorNote>}
       {!error && !sources && <PageEmpty state="loading">{words('读取中…', 'Loading…')}</PageEmpty>}
       {!!sources?.length && <div className="object-list">{visibleSources.map((source) => {
         const meta = metaOf(source);
