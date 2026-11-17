@@ -452,7 +452,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   // 片段与索引落在独立 SQLite 文件（与 core.sqlite 同目录，便于随证据单独备份）。
   const segmentDatabasePath = database.path === ':memory:' ? ':memory:' : join(dirname(database.path), 'segments.sqlite');
   const segments = materials ? new SegmentService({ database, databasePath: segmentDatabasePath, tasks: currentTasks, files, materials }) : undefined;
-  const structuredRetrieval = r1Workspace && r1 && segments ? new StructuredRetrievalService({ structured: r1Workspace, handoff: r1, segments }) : undefined;
+  const structuredRetrieval = r1Workspace && r1 && segments ? new StructuredRetrievalService({ structured: r1Workspace, segments }) : undefined;
   const bd = options.role === 'service' ? new BdService({ tasks: currentTasks,
     core, health: options.health, versions: options.serviceVersions, collection, materials, semantics }) : undefined;
   const batchCustody = { core, database, get tasks() { return currentTasks(); }, files, permissions, attachmentRoot, bd, materials };

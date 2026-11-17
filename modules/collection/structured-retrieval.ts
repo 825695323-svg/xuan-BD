@@ -5,11 +5,15 @@ import type { SegmentService } from './segments/service.js';
 import type { SegmentRetrievalResult } from './segments/contracts.js';
 
 export const JOINT_RETRIEVAL_SCHEMA = 'bd.structured-document-retrieval/1';
-interface StructuredQueryPort { filterObjects(value: unknown, signal?: AbortSignal, contextDigest?: string): Promise<WfdRecord> }
+export interface JointEvidenceReadScope extends Pick<R1HandoffService, 'recordMaterials'> { assertCurrent(): void }
+interface StructuredQueryPort {
+  filterObjects(value: unknown, signal?: AbortSignal, contextDigest?: string): Promise<WfdRecord>;
+  beginJointEvidenceRead(signal?: AbortSignal): JointEvidenceReadScope;
+}
 
 /** Joins exact verified record versions to BD evidence. No fuzzy subject inference or new evidence registrations. */
 export class StructuredRetrievalService {
-  constructor(private readonly options: { structured: StructuredQueryPort; handoff: Pick<R1HandoffService, 'recordMaterials'>;
+  constructor(private readonly options: { structured: StructuredQueryPort;
     segments: SegmentService }) {
     options.segments.attachJointRetrieval('/api/bd/retrieval/joint');
   }
@@ -19,7 +23,7 @@ export class StructuredRetrievalService {
       documentSchema: 'bd.doc-retrieval/2', identityJoin: 'verified dataset/product/record/version association -> material document',
       historicalModes: ['market_known_at', 'system_held_at'],
       asOfRule: 'both sides use structured knowledge_cutoff.earliest_utc; coarse cutoffs remain conservative',
-      fixedDocumentIndexRequired: true, maxDocumentLimitPerObject: 50,
+      fixedDocumentIndexRequired: true, connectionScope: 'entire query and local join match each original request binding', maxDocumentLimitPerObject: 50,
       snapshotContents: 'current content association only; no historical qualification and no history-mode mapping',
       limitations: ['no inferred entity/listing relationships', 'missing BD row association or document index remains a specific gap',
         'local documents have no per-document permission model', 'WFD current-only business policy remains enforced'] };
@@ -51,7 +55,10 @@ export class StructuredRetrievalService {
     // The document/index context is included in the WFD-signed query cursor.
     // A later page cannot silently replace the text, index or history mode.
     const contextDigest = 'sha256:' + wfdSha256(canonicalWfdJson({ schema: JOINT_RETRIEVAL_SCHEMA, documents: docs }));
+    const scope = this.options.structured.beginJointEvidenceRead(signal);
+    scope.assertCurrent();
     const structured = await this.options.structured.filterObjects(plan, signal, contextDigest);
+    scope.assertCurrent();
     const objects = Array.isArray(structured.objects) ? structured.objects : [];
     const joined: WfdRecord[] = [];
     for (const item of objects) {
@@ -71,12 +78,13 @@ export class StructuredRetrievalService {
         const key = canonicalWfdJson(identity);
         if (seen.has(key)) continue;
         seen.add(key);
-        const found = this.options.handoff.recordMaterials(identity);
+        const found = scope.recordMaterials(identity);
         if (!found) { gaps.push({ code: 'BD_RECORD_ASSOCIATION_MISSING', metric, ...identity }); continue; }
         if (!found.materialIds.length) { gaps.push({ code: 'DOCUMENT_MATERIAL_LINK_MISSING', metric, requestId: found.requestId }); continue; }
         found.materialIds.forEach(id => materialIds.add(id));
         associations.push({ ...identity, ...found });
       }
+      scope.assertCurrent();
       const retrieval: SegmentRetrievalResult | null = materialIds.size ? this.options.segments.search({
         method: docs.method as 'keyword' | 'exact', query: docs.query as string,
         limit: Number(docs.limit ?? 20), indexVersion: docs.indexVersion as string,
@@ -92,6 +100,7 @@ export class StructuredRetrievalService {
       joined.push({ subject: item.subject, values: item.values, record_refs: item.record_refs,
         associations, documents: retrieval, gaps });
     }
+    scope.assertCurrent();
     const complete = joined.every(item => Array.isArray(item.gaps) && !item.gaps.length)
       && isWfdRecord(structured.coverage) && structured.coverage.data_complete === true;
     return { schema: JOINT_RETRIEVAL_SCHEMA, structured,

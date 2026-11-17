@@ -1,3 +1,6 @@
+import { parsedRecordDependencies, readRecordDependencySelection, selectRecordDependencyImpact, RECORD_IMPACT_SELECTION_LIMIT, type ParsedRecordDependency } from './processing-record-dependencies.js';
+
+import { R1_RELATION_RULE_VERSION } from './r1-relation.js';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { CoreDatabase } from '../../platform/state/database.js';
@@ -186,7 +189,7 @@ export class ProcessingPlanService {
     polarsCleaner?: PolarsSourceCleaner;
     /** Host-only module switches; cannot be changed by model tools or an existing plan. */
     modules?: Partial<Record<ProcessingStepKind, boolean>> }) {
-    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts', './data-processing/wfd-fixed-selection.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
+    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/event-text.ts', '../../platform/capabilities/browser/html-extraction.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fact.ts', './data-processing/financial-fixed.ts', './data-processing/wfd-fixed-selection.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
     this.versionBinding = Object.freeze({ processing: PROCESSING_PLAN_VERSION,
       implementation: wfdSha256(Buffer.concat(files)), policy: PROCESSING_POLICY_DIGEST,
       ...(options.modules ? { productionModules: wfdSha256(canonicalWfdJson(options.modules)) } : {}),
@@ -228,7 +231,8 @@ export class ProcessingPlanService {
         methods: ['trim', 'empty_to_null'], noSilentFallback: true },
       fieldDependencies: { route: '/processing/plans/:id/outputs/:outputId/dependencies', readOnly: true,
         coverage: 'selected_processing_output_only', supported: ['plain_csv_json_mapping', 'constant_annotation'],
-        unknownTransforms: 'explicit_gaps', formalDownstreamImpact: false },
+        unknownTransforms: 'explicit_gaps', formalDownstreamImpact: false,
+        exactRecordImpact: { method: 'POST', maxRecordRefs: RECORD_IMPACT_SELECTION_LIMIT, coverage: 'verified_parse_candidates_only' } },
       calculationMethods: 'not_part_of_cleaning',
       custodyStates: ['inventoried', 'receiving', 'received'], routingStates: ['needs_classification', 'needs_adapter', 'needs_target', 'needs_review', 'ready_candidate', 'rejected'],
       dimensions: DIMENSION_KEYS.map(key => ({ key, label: dimensionLabel(key), statuses: ['known', 'unknown', 'conflict'] })),
@@ -252,7 +256,10 @@ export class ProcessingPlanService {
           output: 'candidate-ready {rows} object and structural evidence; business semantics remain explicit gaps' },
       ],
       notImplemented: ['business rule applicability and implementation coverage beyond the listed bindings are unverified', 'OCR/transcription semantic validation', 'binary/code execution', 'formal database admission', 'archive member expansion'],
-      semanticAdapters: [{ protocol: 'wfd.structured-ingest/1.0', mappingKind: 'event_records', ruleVersion: R1_EVENT_RULE_VERSION,
+      semanticAdapters: [{ protocol: 'wfd.structured-ingest/1.0', mappingKind: 'relation_edges', ruleVersion: R1_RELATION_RULE_VERSION,
+        scope: 'explicit source_claim only; partial_observation; object identity columns and subject fixed explicitly; validity and public time remain independent; no identity or truth inference',
+        mappingShape: '{kind:"relation_edges",businessKey,relationType,object:{kind,namespace,id},effectivePeriod,publicTime,fields:[{fieldCode,value,state}]}',
+        targetRule: 'definition measurement_nature=relation,time_role=validity,unit_code=not_applicable,content_nature=source_claim; fixed field definitions; known time columns or explicit unknown; no relationship correction or complete snapshots' }, { protocol: 'wfd.structured-ingest/1.0', mappingKind: 'event_records', ruleVersion: R1_EVENT_RULE_VERSION,
         scope: 'explicit source_claim/plan/forecast/observed_fact/outcome; event/public/expected times remain distinct; source correction pins prior definition/record; status is an explicit source declaration, not a verified state machine; no fact inference',
         mappingShape: '{kind:"event_records",eventId,eventType,assertionKind,caseId?,contentNature,status,eventTime,publicTime,expectedTime?,fields:[{fieldCode,value,state}]}',
         targetRule: 'definition measurement_nature=event,time_role=event,unit_code=not_applicable,content_nature matches row nature (outcome maps to actual_outcome); fixed field definitions; time mapping is explicit unknown+sourceTimezone or known+earliestUtc/latestExclusiveUtc/precision/sourceTimezone'  }, { protocol: 'wfd.structured-ingest/1.0', mappingKind: 'tabular_rows', ruleVersion: R1_TABULAR_RULE_VERSION,
@@ -280,7 +287,7 @@ export class ProcessingPlanService {
         endpointAdapter: 'optional sourceAdapter:{adapterId,version,configDigest}; only an adopted version is resolved and frozen into this plan; format stays the carrier family (csv|json)',
         dedicated: { xlsx: { required: ['xlsxSelection'], shape: 'sheetName,headerRow,firstDataRow,lastDataRow,firstColumn,lastColumn,columns[{column,header,name,type?}]' },
           xbrl: { required: ['xbrlSelection'], shape: '{version:"bd-xbrl-numeric/1",reportId,reportVersion,concepts:["{namespaceURI}localName"]}; empty concepts selects all supported numeric facts' },
-          text: { requiredOneOf: ['necessaryTextSelection', 'eventTextSelection'], eventScope: 'exact excerpts and declared occurrence only; no event truth or public time inferred',
+          text: { requiredOneOf: ['necessaryTextSelection', 'eventTextSelection'], eventScope: 'exact UTF8 source or explicitly hashed existing static HTML projection; declared occurrence only; no rendered-page completeness, event truth or public time inferred',
             eventShape: '{version:"bd-event-source-excerpts/1",sourceSha256,occurrence:{namespace,publisherId,publicationId,kind:"original"|"repost",upstreamPublicationId:string|null},reviewBasis,excerpts:[{start,end,quote}]}; exact original UTF-16 code-unit ranges', shape: '{version:"bd-necessary-business-paragraph/1",sourceSha256,documentVersion,purpose,reviewBasis,paragraphs:[{start,end,quote}]}; complete original paragraphs only' },
           pdf: { required: ['pdfSelection'], shape: '{version:"bd-financial-pdf-regions/1",sourceSha256,report:{id,version,subjectScheme,subjectCode,accountingStandard,currency,auditStatus},regions:[{page,yMin,yMax,statement,scope,section,label:[xMin,xMax],expectedLabels,rowBands:[{yMin,yMax}],columns:[{xMin,xMax,dimension,periodType,startDate,endDate,unit,numericFormat}],continuations?:[{rowIndex,columnIndex,page,yMin,yMax,xMin,xMax,quote}]}]}' },
           'financial-fixed': { required: ['financialCalculation'], shape: 'financialFixed.calculation above; executable only through this managed plan and bound trusted reader' } },
@@ -456,7 +463,8 @@ export class ProcessingPlanService {
     return { outputId, ref, bytes: this.options.objects.get(ref), routingState: row.routing_state, gaps: parseJson(row.gaps_json) };
   }
   /** 从已核对步骤投影字段依赖；不另存血缘，也不外推全库影响范围。 */
-  fieldDependencies(planId: string, outputId: string) {
+  fieldDependencies(planId: string, outputId: string, selection?: unknown) {
+    const selectedRefs = selection === undefined ? null : readRecordDependencySelection(selection);
     const candidate = this.candidateOutput(planId, outputId);
     const finalArtifact = this.outputArtifact(planId, outputId);
     if (wfdSha256(finalArtifact.bytes) !== candidate.ref.sha256)
@@ -467,6 +475,8 @@ export class ProcessingPlanService {
     const dependencies: { outputField: string; materialId: string; sourceSha256: string;
       inputField: string | null; kind: 'mapped_field' | 'constant'; stepId: string;
       specDigest: string; sourceArtifactSha256: string }[] = [];
+    const recordDependencies: (ParsedRecordDependency & { stepId: string; specDigest: string; sourceArtifactSha256: string })[] = [];
+    const recordGaps: string[] = [];
     const gaps: string[] = missingSteps.map(step => `${step.stepId}:persisted_step_missing`);
     const parses = steps.filter(step => step.kind === 'parse');
     if (!parses.length) gaps.push('no_persisted_parse_steps');
@@ -478,6 +488,18 @@ export class ProcessingPlanService {
     };
     for (const spec of parses) {
       const params = spec.parameters;
+      if (params.format === 'financial-fixed') {
+        const artifact = this.artifact(planId, spec.stepId);
+        if (wfdSha256(artifact.bytes) !== artifact.step.outputDigest)
+          fail('PROCESSING_ARTIFACT_CHANGED', '记录依赖所依据的解析产物摘要不符。');
+        const parsed = JSON.parse(artifact.bytes.toString('utf8')) as ParsedCandidateTable;
+        const material = candidate.materials.find(item => item.materialId === params.materialId);
+        const edges = material && parsed.source_sha256 === material.sha256
+          ? parsedRecordDependencies(parsed, params.financialCalculation) : null;
+        if (!edges) recordGaps.push(`${spec.stepId}:fixed_record_evidence_unknown`);
+        else recordDependencies.push(...edges.map(edge => ({ ...edge, stepId: spec.stepId,
+          specDigest: spec.specDigest, sourceArtifactSha256: artifact.ref.sha256 })));
+      } else recordGaps.push(`${spec.stepId}:record_dependency_not_supported`);
       // 专用投影、适配器和财务读取可能含复合依赖；不能猜成一对一原始字段。
       if (!['csv', 'json'].includes(String(params.format)) || params.sourceProjection || params.sourceAdapter) {
         gaps.push(`${spec.stepId}:unsupported_field_dependency_projection`);
@@ -502,9 +524,14 @@ export class ProcessingPlanService {
       }
       if (params.selection) gaps.push(`${spec.stepId}:row_selection_dependency_not_field_value_dependency`);
     }
+    const allRecordGaps = [...missingSteps.map(step => `${step.stepId}:persisted_step_missing`),
+      ...(!parses.length ? ['no_persisted_parse_steps'] : []), ...recordGaps];
     return { version: 'bd.field-dependencies/1', planId, outputId, planDigest: candidate.planDigest,
       outputSha256: candidate.ref.sha256, coverage: 'selected_processing_output_only',
       complete: gaps.length === 0, dependencies, gaps,
+      recordDependencies: { coverage: 'verified_parse_candidates_only', publishedProductQualification: 'not_asserted',
+        downstreamImpact: 'unknown', edges: recordDependencies, gaps: allRecordGaps },
+      ...(selectedRefs ? { recordImpact: selectRecordDependencyImpact(selectedRefs, recordDependencies, allRecordGaps) } : {}),
       impact: 'Listed edges identify known direct field dependencies in this output, not an exhaustive affected-product set; downstream products and unknown transformations are not scanned.' };
   }
   /** 候选服务只从这里取已核对的受管引用；不读取客户端自带对象或路径。 */
@@ -1020,7 +1047,7 @@ export class ProcessingPlanService {
     if (fact.byteLength > byteBudget) {
       gaps.push(`tables[${index}] ${table.materialId}: 完整原件 ${fact.byteLength} 字节超过本次 ${byteBudget} 字节解析预算；未用截断预览提交。`);
     }
-    if ((table.format === 'xbrl' ? !/\.(?:xbrl|xml|xhtml)$/iu.test(fact.filename) : fact.format !== expected)
+    if ((table.eventTextSelection?.sourceView?.kind === 'html_static_text' ? !/\.html?$/iu.test(fact.filename) : table.format === 'xbrl' ? !/\.(?:xbrl|xml|xhtml)$/iu.test(fact.filename) : fact.format !== expected)
       || table.format === 'xlsx' && (!table.xlsxSelection || !/\.xlsx$/iu.test(fact.filename))) {
       gaps.push(`tables[${index}] ${table.materialId}: 材料实际格式=${fact.format}，声明格式=${table.format}；缺对应解析器，预览只作线索。`);
     }
@@ -1151,7 +1178,7 @@ export class ProcessingPlanService {
       });
       if (!closed) {
         step.state = 'pending'; step.output = null; step.outputDigest = null; step.checkScope = []; step.reusedFrom = null;
-        step.semantic = null;
+        step.semantic = null; step.normalization = null;
         step.startedAt = null; step.completedAt = null;
         step.gaps = [...step.gaps, '前置阶段未复用或旧产物不可核；未借用旧步骤证明。'];
       }
@@ -1542,7 +1569,8 @@ export class ProcessingPlanService {
       }
     }
     for (const step of steps) {
-      if (step.state !== 'succeeded' || !step.output_json) continue;
+      if (step.state !== 'succeeded') continue;
+      if (!step.output_json) { corrupt.push(`${step.step_id}: 成功步骤缺少产物引用`); continue; }
       const ref = this.ref(step.output_json);
       if (!this.options.objects.verify(ref)) { corrupt.push(`${step.step_id}: 对象缺失或长度不符`); continue; }
       try {

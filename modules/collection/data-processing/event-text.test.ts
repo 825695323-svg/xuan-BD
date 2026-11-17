@@ -34,3 +34,23 @@ test('event declaration keeps upstream unknown and rejects unmodeled factual aut
   assert.equal(records(value)[0].upstream_publication_id, null);
   assert.throws(() => readEventTextSelection({ ...selection(), verifiedFact: true }), /传播身份/);
 });
+
+test('explicit existing HTML text projection binds cross-node quotes and original DOM locations', () => {
+  const html = Buffer.from('<html><body><article><p>公司<strong>预计</strong>明年投产。</p><script>已完成投产</script><p hidden>隐藏公告</p></article></body></html>');
+  const projected = '公司预计明年投产。';
+  const rule: EventTextSelection = { ...selection(), sourceSha256: wfdSha256(html),
+    sourceView: { kind: 'html_static_text', rootSelector: 'article', textSha256: wfdSha256(projected) },
+    excerpts: [{ start: 0, end: projected.length, quote: projected }] };
+  const result = projectEventText(html, rule), row = JSON.parse(result.jsonBytes.toString())[0];
+  assert.equal(row.text, projected); assert.equal(row.position_unit, 'html_static_text_utf16_code_units');
+  assert.equal(row.source_sha256, wfdSha256(html)); assert.equal(row.public_time_status, 'unknown');
+  assert.equal(result.evidence.sourceProjection!.positions[0]!.locations.length, 3);
+  assert.equal(result.evidence.sourceProjection!.complete, false);
+  assert.ok(result.evidence.sourceProjection!.reasons.includes('script-content-not-executed'));
+  assert.throws(() => projectEventText(html, { ...rule, sourceView: { ...rule.sourceView!, textSha256: '0'.repeat(64) } }), /摘要/);
+  assert.throws(() => projectEventText(html, { ...rule, sourceView: { ...rule.sourceView!, rootSelector: 'article,p' } }), /摘要|唯一/);
+  assert.throws(() => projectEventText(html, { ...rule, sourceView: { ...rule.sourceView!, rootSelector: '[hidden]' } }), /唯一/);
+  assert.throws(() => projectEventText(html, { ...rule, sourceView: { ...rule.sourceView!, rootSelector: 'script' } }), /唯一/);
+  assert.throws(() => projectEventText(Buffer.from('<html><title>安全验证</title><body><article>公司预计明年投产。</article></body></html>'),
+    { ...rule, sourceSha256: wfdSha256('<html><title>安全验证</title><body><article>公司预计明年投产。</article></body></html>') }), /验证页/);
+});
