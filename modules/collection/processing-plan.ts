@@ -1151,7 +1151,7 @@ export class ProcessingPlanService {
       });
       if (!closed) {
         step.state = 'pending'; step.output = null; step.outputDigest = null; step.checkScope = []; step.reusedFrom = null;
-        step.semantic = null;
+        step.semantic = null; step.normalization = null;
         step.startedAt = null; step.completedAt = null;
         step.gaps = [...step.gaps, '前置阶段未复用或旧产物不可核；未借用旧步骤证明。'];
       }
