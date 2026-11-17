@@ -334,6 +334,9 @@ export function createWorkspaceRouter(services: ApplicationServices): Router {
     router.get('/retrieval/segments/:id', (req, res) => res.json(segments.segment(req.params.id)));
     router.get('/retrieval/index-versions', (_req, res) => res.json({ items: segments.indexVersions() }));
     router.get('/retrieval/storage', (_req, res) => res.json(segments.storage()));
+    router.post('/retrieval/index/rebuild-fts', (req, res) => {
+      r1Body(req.body, []); res.json(segments.rebuildFts());
+    });
     router.post('/retrieval/index', (req, res) => {
       const body = r1Body(req.body, ['note']);
       res.status(201).json(segments.buildIndex(typeof body.note === 'string' ? body.note : undefined));

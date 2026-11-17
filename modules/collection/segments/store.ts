@@ -2,6 +2,7 @@
  * 片段存储与检索：片段行不可重建（证据侧），索引版本可核验后重建。
  * 索引与片段同库（node:sqlite），不引入外部检索服务。
  */
+import { TaskError } from '../../../platform/jobs/tasks.js';
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { DocSegment, DocumentTimeRecord, RetrievalExclusion, RetrievalHistoryMode, SearchHit, SegmentTable,
@@ -175,7 +176,7 @@ export function ensureSegmentSchema(db: DatabaseSync): void {
     }
     if (!oldFts && segmentCount > 0) throw new Error('已有片段缺少原全文索引；未自动重建。');
     if (oldContent) {
-      db.exec('DROP TABLE doc_segments_fts; ALTER TABLE doc_segments_fts_next RENAME TO doc_segments_fts');
+      db.exec('DROP TABLE IF EXISTS doc_segments_fts; ALTER TABLE doc_segments_fts_next RENAME TO doc_segments_fts');
     }
     const versions = db.prepare(`SELECT v.index_version,v.segment_count,v.document_count,
       COUNT(m.segment_id) AS members,COUNT(s.segment_id) AS found,COUNT(DISTINCT s.document_id) AS documents,
@@ -207,6 +208,7 @@ interface SegmentRow {
 }
 
 function toSegment(row: SegmentRow): DocSegment {
+  assertSegmentText(row);
   return {
     segment_id: row.segment_id, document_id: row.document_id, document_version: row.document_version,
     parser_version: row.parser_version, ordinal: row.ordinal,
@@ -245,6 +247,7 @@ export function putDocumentSegments(db: DatabaseSync, segments: DocSegment[], no
     const state = db.prepare('SELECT * FROM doc_segment_storage WHERE id=1').get() as unknown as SegmentState;
     let inserted = 0, existing = 0;
     for (const segment of segments) {
+      assertSegmentText(segment);
       const stored = byId.get(segment.segment_id) as { text_digest?: string } | undefined;
       if (stored) {
         if (stored.text_digest !== segment.text_digest) throw new Error(`片段身份冲突：${segment.segment_id} 已存在但摘要不同。`);
@@ -668,4 +671,67 @@ export function segmentStorage(db: DatabaseSync): SegmentStorageReport {
   return { segments, documents, indexVersions, textBytes, tokenBytes, ftsIndexBytes, membershipRows, sharedIndexVersions, pages,
     oldestParsedAt: range.lo === null ? null : Number(range.lo),
     newestParsedAt: range.hi === null ? null : Number(range.hi) };
+}
+
+/** A digest is an integrity check, not source verification or a reconstructed signature. */
+function assertSegmentText(value: { text: string; text_digest: string }): void {
+  if (typeof value.text !== 'string' || !/^[a-f0-9]{64}$/u.test(value.text_digest)
+    || createHash('sha256').update(value.text, 'utf8').digest('hex') !== value.text_digest)
+    throw new TaskError('SEGMENT_TEXT_CHANGED', '片段身份冲突：正文与冻结摘要不同，未返回片段或重建索引。');
+}
+export const FTS_REBUILD_LIMITS = Object.freeze({ segments: 10000, textBytes: 32 * 1024 * 1024, versions: 1000,
+  memberships: 100000, elapsedMs: 5000 });
+
+/** Explicit repair of only the derived current-format cache, without new evidence or index identities. */
+export function rebuildSegmentFts(db: DatabaseSync): { schema: string; segments: number; textBytes: number; indexVersions: number; identityPreserved: true } {
+  if (storageVersion(db) !== STORAGE_VERSION) throw new TaskError('SEGMENT_FTS_REBUILD_REFUSED',
+    '显式缓存修复只接受现行片段格式；旧格式或缺失存储头须独立核对，未自动迁移。');
+  const started = Date.now();
+  const fail = (message: string): never => { throw new TaskError('SEGMENT_FTS_REBUILD_REFUSED', message); };
+  const active = () => { if (Date.now() - started > FTS_REBUILD_LIMITS.elapsedMs) fail('重建超过明确时间预算，事务已取消。'); };
+  return segmentTransaction(db, () => {
+    if (storageVersion(db) !== STORAGE_VERSION) fail('等待写锁期间片段格式变化。');
+    const count = Number(db.prepare('SELECT count(*) n FROM doc_segments').get()!.n);
+    if (count > FTS_REBUILD_LIMITS.segments) fail('超出有限片段重建预算，未扫描全文。');
+    const totals = db.prepare('SELECT count(*) n,coalesce(sum(length(CAST(text AS BLOB))),0) bytes FROM doc_segments').get()!;
+    const versionCount = Number(db.prepare('SELECT count(*) n FROM doc_index_versions').get()!.n);
+    const memberCount = Number(db.prepare('SELECT count(*) n FROM doc_index_members').get()!.n);
+    if (Number(totals.n) > FTS_REBUILD_LIMITS.segments || Number(totals.bytes) > FTS_REBUILD_LIMITS.textBytes
+      || versionCount > FTS_REBUILD_LIMITS.versions || memberCount > FTS_REBUILD_LIMITS.memberships) fail('超出有限重建预算，未扩大扫描或修改缓存。');
+    const state = db.prepare('SELECT * FROM doc_segment_storage WHERE id=1').get() as unknown as SegmentState;
+    const rows = db.prepare('SELECT segment_id,segment_seq,document_id,text,text_digest FROM doc_segments ORDER BY segment_seq').all();
+    let digest = EMPTY_DIGEST, seq = 0;
+    const documents = new Set<string>();
+    for (const row of rows) {
+      active(); assertSegmentText(row as unknown as { text: string; text_digest: string });
+      if (!Number.isSafeInteger(row.segment_seq) || Number(row.segment_seq) <= seq || typeof row.segment_id !== 'string') fail('稳定片段序号或身份无效。');
+      seq = Number(row.segment_seq); digest = nextDigest(digest, String(row.segment_id)); documents.add(String(row.document_id));
+    }
+    if (!state || state.last_seq !== seq || state.segment_count !== rows.length || state.document_count !== documents.size
+      || state.content_digest !== digest) fail('片段存储头与完整成员不一致。');
+    if (db.prepare(`SELECT 1 FROM doc_index_members m LEFT JOIN doc_index_versions v ON v.index_version=m.index_version
+      LEFT JOIN doc_segments s ON s.segment_id=m.segment_id WHERE v.index_version IS NULL OR s.segment_id IS NULL LIMIT 1`).get()) fail('索引成员引用丢失。');
+    for (const version of db.prepare('SELECT * FROM doc_index_versions').all()) {
+      active();
+      if (version.tokenizer !== SEGMENT_TOKENIZER) fail('索引分词器不同，不能用当前规则替换历史缓存。');
+      const cutoff = version.segment_cutoff;
+      if (cutoff !== null && (!Number.isSafeInteger(cutoff) || Number(cutoff) < 0 || Number(cutoff) > seq)) fail('索引序号范围无效。');
+      if (cutoff !== null && db.prepare('SELECT 1 FROM doc_index_members WHERE index_version=? LIMIT 1').get(version.index_version!)) fail('索引同时声明范围与显式成员。');
+      const actual = cutoff !== null
+        ? db.prepare('SELECT count(*) n,count(DISTINCT document_id) docs FROM doc_segments WHERE segment_seq<=?').get(cutoff!)!
+        : db.prepare(`SELECT count(*) n,count(DISTINCT s.document_id) docs FROM doc_index_members m JOIN doc_segments s
+          ON s.segment_id=m.segment_id WHERE m.index_version=?`).get(version.index_version!)!;
+      if (actual.n !== version.segment_count || actual.docs !== version.document_count) fail('固定索引成员计数不一致。');
+    }
+    active();
+    // Transactional replacement in the same cache: rollback restores the exact previous FTS on every failure.
+    db.exec(`DROP TABLE IF EXISTS doc_segments_fts;
+      CREATE VIRTUAL TABLE doc_segments_fts USING fts5(tokens, content='', contentless_delete=1,
+        tokenize='unicode61 remove_diacritics 2');`);
+    const insert = db.prepare('INSERT INTO doc_segments_fts(rowid,tokens) VALUES (?,?)');
+    for (const row of rows) { active(); insert.run(row.segment_seq!, indexTokens(String(row.text))); }
+    db.exec("INSERT INTO doc_segments_fts(doc_segments_fts,rank) VALUES('integrity-check',1)");
+    active();
+    return { schema: 'bd.segment-fts-rebuild/1', segments: rows.length, textBytes: Number(totals.bytes), indexVersions: versionCount, identityPreserved: true };
+  });
 }
