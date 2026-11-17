@@ -122,16 +122,26 @@ test('continuous correction: synthetic source bytes traverse real publication, c
       assert.equal(suspended.state, 'suspended');
       const previousSha = host.services.materials!.readOriginal(String(firstItem.materialId)).sha256;
       const newSha = host.services.materials!.readOriginal(repairMaterialId).sha256;
-      const prepareCorrection = (requestId: string, status = 200) => host.call('/corrections/cases/case-continuous/prepare', { requestId,
+      const prepareCorrection = (requestId: string, status = 200, times?: { requestedAtUtc?: string; acquiredAtUtc?: string }) => host.call('/corrections/cases/case-continuous/prepare', { requestId,
         input: { planId: repairPlanId, outputId: 'observations', originalSha256: newSha,
           expectedParentSnapshotId: latestSnapshotId,
           reason: '供应商更正原件将 20260102 收盘价由 2 更正为 20，按原定义与字段映射重新交接。',
           sourceRevision: { sourceId: 'continuous-correction-fixture', provider: 'isolated fixture',
             requestedUrl: 'file:///explicit-selected-observations/part-2.csv',
-            requestedAtUtc: new Date(Date.now() + 30 * 60_000).toISOString(),
-            acquiredAtUtc: new Date(Date.now() + 60 * 60_000).toISOString(),
+            requestedAtUtc: times?.requestedAtUtc ?? new Date(Date.now() + 30 * 60_000).toISOString(),
+            acquiredAtUtc: times?.acquiredAtUtc ?? new Date(Date.now() + 60 * 60_000).toISOString(),
             revisionBasis: '供应商后续版本更正同一交易日收盘价', usageScope: 'isolated continuous correction verification',
             originalSha256: newSha, previousOriginalSha256: previousSha } } }, status);
+      // Source revision input uses the same explicit UTC contract as ordinary R1 originals.
+      for (const value of ['2030-01-02T00:00:00', '2030-02-30T00:00:00Z', '2030-02-29T00:00:00Z',
+        '2030-01-02T24:00:00Z', '2030-01-02T00:00:00.0001Z', '2030-01-02T00:00:00+00:00']) {
+        for (const field of ['requestedAtUtc', 'acquiredAtUtc'] as const) {
+          const invalid = await prepareCorrection('continuous-invalid-time-' + field, 409,
+            { requestedAtUtc: '2030-01-01T00:00:00Z', acquiredAtUtc: '2030-03-01T00:00:00Z', [field]: value });
+          assert.equal(invalid.code, 'CORRECTION_SOURCE_REVISION_REQUIRED');
+          assert.equal((await host.call('/corrections/cases/case-continuous')).state, 'suspended');
+        }
+      }
       // Only this isolated repair plan is fault-injected; real HTTP quality must block freezing.
       const db = host.database.connection;
       const savedParse = db.prepare("SELECT step_id,output_json FROM processing_plan_steps WHERE plan_id=? AND output_id='observations' AND kind='parse'")
@@ -160,6 +170,11 @@ test('continuous correction: synthetic source bytes traverse real publication, c
       assert.ok(quality.revision.affectedOutputIds.includes('unrelated'));
       assert.ok(!quality.revision.affectedOutputIds.includes('observations'));
       assert.ok(quality.issues.some(issue => issue.kind === 'needs_evidence' && issue.outputId === 'observations'));
+      for (const fraction of ['', '.0', '.00', '.000', '.1', '.12', '.123']) {
+        const valid = await prepareCorrection('continuous-valid-time-' + fraction, 200,
+          { requestedAtUtc: `2030-01-02T00:00:00${fraction}Z`, acquiredAtUtc: `2030-01-02T00:00:01${fraction}Z` });
+        assert.equal(valid.view.state, 'prepared');
+      }
       const prepared = await prepareCorrection('continuous-prepare');
       const authorized = await host.call('/corrections/cases/case-continuous/authorize', { requestId: 'continuous-authorize',
         input: { frozenSha256: prepared.frozenSha256, confirmationDigest: prepared.documentSha256 } }, 202);
