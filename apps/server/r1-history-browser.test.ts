@@ -143,7 +143,8 @@ test('actual React history reader preserves explicit modes, real holding stages 
       assert.equal(await browser.evaluate(`!!document.querySelector(${q(root + ' .r1-read-result')})`), false);
       assert.match(await browser.evaluate<string>(`document.querySelector(${q(root)}).textContent`), /R1_READ_HISTORY_METADATA_UNSUPPORTED/u);
       await browser.close(); browser = undefined; await host.close(); host = await openFullChainHost(fixture, webRoot!);
-      const reopened = join(fixture.root, 'reopened'); mkdirSync(reopened); browser = await openIsolatedBrowser(program!, reopened);
+      // Keep the isolated reopen path below Chromium's Unix socket path limit.
+      const reopened = join(fixture.root, 'r'); mkdirSync(reopened); browser = await openIsolatedBrowser(program!, reopened);
       await navigate(browser, host); await select(browser, known.productId); await click(browser, '读取持久数据');
       assert.equal((await pageResult(browser)).page.total_rows, 103);
       // Browser transport fault injection only: delay a real read response, then change the
