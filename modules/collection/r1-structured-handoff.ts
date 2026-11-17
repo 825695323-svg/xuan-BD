@@ -1,3 +1,4 @@
+import { r1PayloadRowKey } from './r1-paged-readback.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
@@ -315,7 +316,7 @@ export class R1HandoffService {
     if (!Array.isArray(receipt.rows) || expectedKeys.size > 0 && receipt.rows.length === 0) errors.push('missing:rows');
     const fixed = (Array.isArray(verifiedFixedRows) ? verifiedFixedRows : []).map(row => ({
       row,
-      businessKey: isWfdRecord(row.row) && typeof row.row.business_key === 'string' ? row.row.business_key : '',
+      businessKey: isWfdRecord(row.row) && typeof row.row[r1PayloadRowKey(output)] === 'string' ? row.row[r1PayloadRowKey(output)] : '',
       recordId: typeof row.record_id === 'string' ? row.record_id : '',
       recordVersion: typeof row.record_version === 'string' ? row.record_version : '',
       productId: typeof row.product_id === 'string' ? row.product_id : '',
@@ -498,7 +499,9 @@ export class R1HandoffService {
         .run(canonicalWfdJson(result), 1, canonicalWfdJson({ code: 'R1_REQUEST_IDENTITY_MISSING' }), Date.now(), requestId);
       return { state: 'pending_receipt', errors: ['R1_REQUEST_IDENTITY_MISSING'] };
     }
-    const requireContracts = asRecord((Array.isArray(document.outputs) ? asRecord(document.outputs[0]) : {}).payload).kind === 'tabular_rows'
+    const frozenResultOutput = Array.isArray(document.outputs)
+      ? document.outputs.map(asRecord).find(member => member.output_key === output.output_key) : undefined;
+    const requireContracts = ['tabular_rows', 'event_records'].includes(String(asRecord(frozenResultOutput?.payload).kind))
       || (JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences).contractBindingRequired === true;
     const contractBinding = requireContracts ? readR1ContractBinding(output, String(attempt.dataset_id), productId, true) : undefined;
     const receipt: R1Receipt = {
@@ -648,7 +651,9 @@ export class R1HandoffService {
 
   private async readConflictRows(document: WfdRecord, receipt: R1Receipt, client: WfdStructuredIngestClient, signal?: AbortSignal): Promise<WfdRecord[]> {
     const conflicts = (receipt.row_results ?? []).filter(row => row.state === 'conflict_pending');
-    const payloadRows = asRecord(asRecord((document.outputs as unknown[])[0]).payload).rows as WfdRecord[];
+    const frozenOutput = (document.outputs as WfdRecord[]).find(output => output.output_key === receipt.output_key);
+    if (!frozenOutput) fail('R1_CONFLICT_READBACK', '冲突输出不属于冻结文档。');
+    const payloadRows = asRecord(frozenOutput.payload).rows as WfdRecord[];
     const groups = new Map<string, { snapshot: string; product: string; refs: Map<string, WfdRecord>; history: boolean }>();
     for (const conflict of conflicts) for (const ref of conflict.existing_records) {
       const key = canonicalWfdJson([ref.snapshot_id, ref.product_id]);
@@ -679,7 +684,7 @@ export class R1HandoffService {
           const key = canonicalWfdJson([group.snapshot,group.product,row.record_id,row.record_version]);
           if (verified.has(key) || row.product_id !== group.product || asRecord(row.record_ref).snapshot_id !== group.snapshot
             || asRecord(row.record_ref).logical_key !== row.record_id || asRecord(row.record_ref).revision_id !== row.record_version
-            || asRecord(row.row).business_key !== row.record_id
+            || asRecord(row.row)[r1PayloadRowKey(frozenOutput)] !== row.record_id
             || ref.withdrawn === true && asRecord(row.revision).withdrawn !== true
             || asRecord(row.definition_ref).digest !== asRecord(ref.definition_ref).digest) fail('R1_CONFLICT_READBACK', '冲突旧值的固定身份、定义或唯一性不同。');
           verified.set(key, { ...ref, row: asRecord(row.row), ...(ref.withdrawn === true ? { revision: row.revision, revision_state: row.revision_state } : {}) }); count++;
@@ -1087,7 +1092,7 @@ export function buildStructuredIngestDocument(input: R1StructuredRequest): WfdRe
     expected_parent_snapshot_id: input.expectedParentSnapshotId,
     outputs: [input, ...(input.additionalOutputs ?? [])].map(member => ({
       output_key: member.outputKey,
-      logical_domain: 'observations',
+      logical_domain: member.payload.kind === 'event_records' ? 'events' : 'observations',
       subject: member.subject,
       definition_mode: member.definitionMode ?? 'create',
       definition_ref: member.definitionMode === 'reuse' ? member.definitionRef ?? null : null,

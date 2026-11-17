@@ -51,6 +51,8 @@ test('F09 page negotiation keeps calendar-dependent and unresolved reuse targets
     } } }) } as unknown as WfdProductMachineClient);
   const natural = { outputs: [{ payload: { kind: 'scalar_rows' }, definition: { semantic_context: { time: { period_type: 'natural' } } } }] };
   assert.equal(await client.pageReadSupport(natural), true);
+  const event = structuredClone(natural); event.outputs[0]!.payload.kind = 'event_records';
+  assert.equal(await client.pageReadSupport(event), false, 'Event pagination is not advertised; retain bounded full read.');
   const calendar = structuredClone(natural) as WfdRecord;
   const definition = (calendar.outputs as WfdRecord[])[0].definition as WfdRecord;
   (definition.semantic_context as WfdRecord).time = { period_type: 'trading', calendar_ref: { fixed: true } };
