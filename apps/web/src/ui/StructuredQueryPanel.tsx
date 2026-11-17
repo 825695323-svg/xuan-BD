@@ -1,9 +1,12 @@
 import { R1_CONTEXT_OPERATIONS, type R1ContextOperation, type R1ContextReadInput, type R1ContextRead } from '../../../../contracts/r1-contracts';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { R1ProductDiscovery } from '../../../../contracts/r1-contracts';
 import { r1Api } from '../r1-api';
 import { queryObject as object, structuredQueryApi, type QueryRecord } from '../structured-query-api';
-import { ErrorNote, errorDetail } from './Controls';
+import { ErrorNote, errorDetail, useWords } from './Controls';
+import { PageField } from './PageUI';
+import { R1HistoryError, sameR1ReadConnection } from '../r1-read-history';
+import { buildR1ContextHistory } from '../r1-context-history';
 
 interface Clause { field: string; operator: string; value: string; second: string; otherField: string;
   negate: boolean; includeLow: boolean; includeHigh: boolean }
@@ -23,94 +26,137 @@ function label(code: string, prefix: string): string {
 const contextLabels: Record<R1ContextOperation, string> = { read_company_context: '公司上下文', read_relation_graph: '关系图',
   read_applicable_rules: '适用规则', read_event_timeline: '事件时间线' };
 
+const contextEnglish: Record<R1ContextOperation, string> = { read_company_context: 'Company context', read_relation_graph: 'Relation graph', read_applicable_rules: 'Applicable rules', read_event_timeline: 'Event timeline' };
+
 export function StructuredQueryPanel({ ready }: { ready: boolean }) {
+  const words = useWords();
   const [kind, setKind] = useState<'filter' | R1ContextOperation>('filter');
   return <>
-    <section className="r1-stage"><label>查询种类<select value={kind} onChange={event => setKind(event.target.value as typeof kind)}>
-      <option value="filter">结构化筛选与联合检索</option>
-      {R1_CONTEXT_OPERATIONS.map(operation => <option value={operation} key={operation}>{contextLabels[operation]}（固定快照）</option>)}
+    <section className="r1-stage"><label>{words('查询种类', 'Query kind')}<select aria-label={words('查询种类', 'Query kind')} value={kind} onChange={event => setKind(event.target.value as typeof kind)}>
+      <option value="filter">{words('结构化筛选与联合检索', 'Structured filtering and joint retrieval')}</option>
+      {R1_CONTEXT_OPERATIONS.map(operation => <option value={operation} key={operation}>{words(contextLabels[operation], contextEnglish[operation])}{operation === 'read_relation_graph' ? words('（快照 / 市场历史）', ' (snapshot / market history)') : words('（固定快照）', ' (snapshot)')}</option>)}
     </select></label></section>
     {kind === 'filter' ? <FilterQueryPanel ready={ready} /> : <ContextQueryPanel key={kind} ready={ready} operation={kind} />}
   </>;
 }
 
 function ContextQueryPanel({ ready, operation }: { ready: boolean; operation: R1ContextOperation }) {
+  const words = useWords(), graph = operation === 'read_relation_graph';
+  const name = words(contextLabels[operation], contextEnglish[operation]);
   const [discovery, setDiscovery] = useState<R1ProductDiscovery | null>(null), [focus, setFocus] = useState('');
   const [depth, setDepth] = useState(1), [pageSize, setPageSize] = useState(20), [filter, setFilter] = useState('');
   const [fields, setFields] = useState<string[]>([]), [lastRequest, setLastRequest] = useState<R1ContextReadInput | null>(null);
   const [view, setView] = useState<R1ContextRead | null>(null), [pageNumber, setPageNumber] = useState(1);
+  const [historyMode, setHistoryMode] = useState<'snapshot_contents' | 'market_known_at'>('snapshot_contents');
+  const [at, setAt] = useState(''), [start, setStart] = useState(''), [end, setEnd] = useState('');
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
+  const epoch = useRef(0), active = useRef(false);
+  useEffect(() => {
+    epoch.current++; active.current = false; setBusy(false); setDiscovery(null); setFocus('');
+    setView(null); setLastRequest(null); setPageNumber(1); setError(null);
+    return () => { epoch.current++; active.current = false; };
+  }, [ready]);
   const choices = [...new Map((discovery?.selections ?? []).map(item => {
     const key = JSON.stringify([item.datasetId, item.subject]); return [key, { key, datasetId: item.datasetId, subject: item.subject }];
   })).values()];
   const selected = choices.find(item => item.key === focus);
   const availableFields = [...new Set((discovery?.selections ?? []).filter(item => item.datasetId === selected?.datasetId).flatMap(item => item.fields))].sort();
   const changed = () => { setView(null); setLastRequest(null); setPageNumber(1); setError(null); };
-  const act = async (work: () => Promise<void>) => { if (busy) return; setBusy(true); setError(null);
-    try { await work(); } catch (caught) { setError(errorDetail(caught)); } finally { setBusy(false); } };
-  const read = async (input: R1ContextReadInput, page: number) => {
-    const result = await structuredQueryApi.context(input); setView(result); setLastRequest(input); setPageNumber(page);
+  const act = async (work: (current: () => boolean) => Promise<void>) => {
+    if (active.current || !ready) return;
+    active.current = true; const requestEpoch = ++epoch.current, current = () => epoch.current === requestEpoch;
+    setBusy(true); setError(null);
+    try { await work(current); }
+    catch (caught) { if (current()) setError(caught instanceof R1HistoryError ? `${caught.code}: ${words(caught.message, caught.english)}` : errorDetail(caught)); }
+    finally { if (current()) { active.current = false; setBusy(false); } }
+  };
+  const read = async (input: R1ContextReadInput, page: number, current: () => boolean) => {
+    setView(null);
+    const response = await structuredQueryApi.context(input);
+    if (!current()) return;
+    if (!discovery || !sameR1ReadConnection(discovery.connection, response.connection)) throw new Error(words(
+      'R1_READ_CONNECTION_CHANGED：上下文与固定发现的连接不同，请重新载入。',
+      'R1_READ_CONNECTION_CHANGED: context and fixed discovery connections differ; reload before reading.'));
+    setView(response); setLastRequest(input); setPageNumber(page);
   };
   const build = (): R1ContextReadInput => {
-    if (!discovery || !selected) throw new Error('先载入固定快照，并选择真实数据集及完整主体。');
+    if (!discovery || !selected) throw new Error(words('先载入固定快照，并选择真实数据集及完整主体。', 'Load a fixed snapshot and select an actual dataset and full subject identity.'));
     const names = filter.split(/[,，]/u).map(value => value.trim()).filter(Boolean);
     return { operation, snapshotId: discovery.snapshotId, datasetId: selected.datasetId, subject: selected.subject, pageSize,
-      ...(fields.length ? { fields } : {}),
+      ...(graph ? buildR1ContextHistory({ historyMode, ...(historyMode === 'market_known_at' ? { at, start, end } : {}) }) : {}),
+      ...(fields.length ? { fields: fields.slice() } : {}),
       ...(['read_company_context', 'read_relation_graph'].includes(operation) ? { maxDepth: depth } : {}),
-      ...(names.length && operation === 'read_relation_graph' ? { relationTypes: names } : {}),
+      ...(names.length && graph ? { relationTypes: names } : {}),
       ...(names.length && operation === 'read_applicable_rules' ? { ruleCodes: names } : {}),
       ...(names.length && operation === 'read_event_timeline' ? { eventTypes: names } : {}) };
   };
   const result = object(view?.result), page = object(result.page);
-  const rows = Array.isArray(operation === 'read_relation_graph' ? result.edges : result.rows)
-    ? (operation === 'read_relation_graph' ? result.edges : result.rows) as QueryRecord[] : [];
+  const rows = Array.isArray(graph ? result.edges : result.rows) ? (graph ? result.edges : result.rows) as QueryRecord[] : [];
   const gaps = Array.isArray(result.gaps) ? result.gaps : [], conflicts = Array.isArray(result.rule_conflicts) ? result.rule_conflicts : [];
-  return <section className="r1-stage structured-query-panel" aria-label={`${contextLabels[operation]}固定快照查询`} aria-busy={busy}>
-    <h3>{contextLabels[operation]} · 固定快照内容</h3>
-    <p className="r1-help">本入口只读所选固定快照，不证明市场当时已知或系统当时持有。主体种类、命名空间和编号共同决定身份；记录、合同、覆盖与缺口分别显示。</p>
-    <div className="r1-actions"><button type="button" className="text-button" disabled={!ready || busy} onClick={() => void act(async () => {
+  const eligibility = Array.isArray(result.eligibility_diagnostics) ? result.eligibility_diagnostics : [];
+  return <section className="r1-stage structured-query-panel r1-context-panel" aria-label={words(`${contextLabels[operation]}上下文查询`, `${contextEnglish[operation]} query`)} aria-busy={busy}>
+    <h3>{name} · {words('固定快照读取', 'Fixed snapshot read')}</h3>
+    <p className="r1-help">{graph ? words('固定快照是读取范围。市场公开截止与关系有效期分别填写：已公告不等于在所选区间生效，连通也不证明来源声明已经核实。未知时间保留缺口或拒绝，不自动补当前时间。',
+      'The fixed snapshot bounds the read. Enter market knowledge cutoff and relation validity separately: announced does not mean effective for that interval, and connectivity does not verify a source claim. Unknown times remain gaps or refusals; the current time is never filled in.')
+      : words('此上下文仍只支持固定快照；不证明市场当时已知或系统当时持有。完整主体身份、记录、合同和缺口分别显示。', 'This context remains snapshot-only; it does not establish historical market knowledge or system holding. Full subject identities, records, contracts and gaps remain separate.')}</p>
+    <div className="r1-actions"><button type="button" className="text-button" disabled={!ready || busy} onClick={() => void act(async current => {
       changed(); setFocus(''); setFields([]); setDiscovery(null);
-      const snapshot = await r1Api.snapshotStatus();
-      if (!snapshot.snapshotId) throw new Error('绑定实例尚无已发布快照。');
-      setDiscovery(await r1Api.discoverProducts(snapshot.snapshotId));
-    })}>载入当前快照主体</button><span className="r1-help">{discovery ? <>本次固定：<code>{discovery.snapshotId}</code></> : '先载入真实产品和主体。'}</span></div>
+      const snapshot = await r1Api.snapshotStatus(); if (!current()) return;
+      if (!snapshot.snapshotId) throw new Error(words('绑定实例尚无已发布快照。', 'The bound instance has no published snapshot.'));
+      const found = await r1Api.discoverProducts(snapshot.snapshotId); if (!current()) return;
+      if (!sameR1ReadConnection(snapshot.connection, found.connection)) throw new Error(words('快照与发现连接不一致，请重新载入。', 'Snapshot and discovery bindings differ; reload.'));
+      setDiscovery(found);
+    })}>{words('载入当前快照主体', 'Load current snapshot subjects')}</button>
+      <span className="r1-help">{discovery ? <>{words('本次固定', 'Pinned snapshot')}：<code>{discovery.snapshotId}</code></> : words('先载入真实产品和主体。', 'Load actual products and subjects first.')}</span></div>
+    {graph && <div className="r1-grid">
+      <PageField label={words('关系图时间视角', 'Relation graph perspective')}><select aria-label={words('关系图时间视角', 'Relation graph perspective')} value={historyMode} disabled={!ready || busy} onChange={event => {
+        setHistoryMode(event.target.value as typeof historyMode); setAt(''); setStart(''); setEnd(''); changed();
+      }}><option value="snapshot_contents">{words('固定快照内容', 'Snapshot contents')}</option><option value="market_known_at">{words('市场当时已知', 'Market known at')}</option></select></PageField>
+      {historyMode === 'market_known_at' && <>
+        <PageField label={words('公开知识截止（秒级 UTC）', 'Knowledge cutoff (UTC seconds)')} hint={words('YYYY-MM-DDTHH:mm:ssZ；与有效期分开。', 'YYYY-MM-DDTHH:mm:ssZ; independent of validity.')}>
+          <input aria-label={words('公开知识截止（秒级 UTC）', 'Knowledge cutoff (UTC seconds)')} value={at} maxLength={20} disabled={busy || !ready} placeholder="YYYY-MM-DDTHH:mm:ssZ" onChange={e => { setAt(e.target.value); changed(); }} /></PageField>
+        <PageField label={words('有效期起点（秒级 UTC）', 'Validity start (UTC seconds)')}>
+          <input aria-label={words('有效期起点（秒级 UTC）', 'Validity start (UTC seconds)')} value={start} maxLength={20} disabled={busy || !ready} placeholder="YYYY-MM-DDTHH:mm:ssZ" onChange={e => { setStart(e.target.value); changed(); }} /></PageField>
+        <PageField label={words('有效期终点（含该秒，UTC）', 'Validity end (inclusive UTC second)')} hint={words('遵循既有 WFD 区间合同，终点包含该秒；不以公开截止补全。', 'The existing WFD interval includes the end second; the knowledge cutoff never fills this value.')}>
+          <input aria-label={words('有效期终点（含该秒，UTC）', 'Validity end (inclusive UTC second)')} value={end} maxLength={20} disabled={busy || !ready} placeholder="YYYY-MM-DDTHH:mm:ssZ" onChange={e => { setEnd(e.target.value); changed(); }} /></PageField>
+      </>}
+    </div>}
     {discovery && <>
-      <div className="r1-grid"><label>数据集与完整主体<select disabled={busy} value={focus} onChange={event => { setFocus(event.target.value); setFields([]); changed(); }}>
-        <option value="">选择真实主体</option>{choices.map(item => <option value={item.key} key={item.key}>{item.datasetId} · {String(item.subject.kind)} · {String(item.subject.namespace)} · {String(item.subject.id)}</option>)}
-      </select></label>
-      {['read_company_context', 'read_relation_graph'].includes(operation) && <label>关系深度<select disabled={busy} value={depth} onChange={event => { setDepth(Number(event.target.value)); changed(); }}>
-        {[0, 1, 2, 3].map(value => <option key={value} value={value}>{value}层{value === 0 ? '（仅焦点身份）' : ''}</option>)}
-      </select></label>}
-      <label>每页条数<input type="number" min={1} max={100} disabled={busy} value={pageSize} onChange={event => { setPageSize(Number(event.target.value)); changed(); }} /></label>
-      {operation !== 'read_company_context' && <label>{operation === 'read_relation_graph' ? '关系类型' : operation === 'read_event_timeline' ? '事件类型' : '规则码'}（可选，逗号分隔）<input disabled={busy} value={filter} onChange={event => { setFilter(event.target.value); changed(); }} /></label>}
+      <div className="r1-grid"><PageField label={words('数据集与完整主体', 'Dataset and full subject')}><select aria-label={words('数据集与完整主体', 'Dataset and full subject')} disabled={busy} value={focus} onChange={event => { setFocus(event.target.value); setFields([]); changed(); }}>
+        <option value="">{words('选择真实主体', 'Select an actual subject')}</option>{choices.map(item => <option value={item.key} key={item.key}>{item.datasetId} · {String(item.subject.kind)} · {String(item.subject.namespace)} · {String(item.subject.id)}</option>)}</select></PageField>
+      {['read_company_context', 'read_relation_graph'].includes(operation) && <PageField label={words('关系深度', 'Relation depth')}><select aria-label={words('关系深度', 'Relation depth')} disabled={busy} value={depth} onChange={event => { setDepth(Number(event.target.value)); changed(); }}>
+        {[0, 1, 2, 3].map(value => <option key={value} value={value}>{value} {words('层', 'levels')}{value === 0 ? words('（仅焦点身份）', ' (focus identity only)') : ''}</option>)}</select></PageField>}
+      <PageField label={words('每页条数', 'Page size')}><input aria-label={words('每页条数', 'Page size')} type="number" min={1} max={100} disabled={busy} value={pageSize} onChange={event => { setPageSize(Number(event.target.value)); changed(); }} /></PageField>
+      {operation !== 'read_company_context' && <PageField label={graph ? words('关系类型（可选）', 'Relation types (optional)') : operation === 'read_event_timeline' ? words('事件类型（可选）', 'Event types (optional)') : words('规则码（可选）', 'Rule codes (optional)')} hint={words('逗号分隔', 'Comma-separated')}><input disabled={busy} value={filter} onChange={event => { setFilter(event.target.value); changed(); }} /></PageField>}
       </div>
-      {selected && availableFields.length > 0 && <fieldset className="r1-read-fields"><legend>字段投影（可选；未选择则读取各产品的声明字段）</legend><div className="r1-read-field-options">
-        {availableFields.map(field => <label key={field}><input type="checkbox" disabled={busy} checked={fields.includes(field)} onChange={event => { setFields(previous => event.target.checked ? [...previous, field] : previous.filter(value => value !== field)); changed(); }} />{field}</label>)}
-      </div></fieldset>}
-      <p className="r1-help">{operation === 'read_relation_graph' ? '未知有效期关系保留不确定原因，不扩展为确认身份。图预算截断与分页末尾分别核对。'
-        : operation === 'read_applicable_rules' ? '同码多依据并列返回冲突；本入口不解释优先级或例外。没有规则产品时显示明确缺口。'
-          : operation === 'read_event_timeline' ? '计划与实际事件按原性质和状态分列，不合并为已发生事实。' : '只返回当前数据集内可达的公司、证券、关系和事件；不代表公司全量信息。'}</p>
-      <button type="button" className="primary-button" disabled={!ready || busy || !selected} onClick={() => void act(async () => { changed(); await read(build(), 1); })}>读取固定快照上下文</button>
+      {selected && availableFields.length > 0 && <fieldset className="r1-read-fields"><legend>{words('字段投影（可选；未选择则按产品声明）', 'Fields (optional; empty uses product declarations)')}</legend><div className="r1-read-field-options">
+        {availableFields.map(field => <label key={field}><input type="checkbox" disabled={busy} checked={fields.includes(field)} onChange={event => { setFields(previous => event.target.checked ? [...previous, field] : previous.filter(value => value !== field)); changed(); }} />{field}</label>)}</div></fieldset>}
+      <p className="r1-help">{graph ? words('未知有效期关系不扩展为确认身份；图预算截断与分页末尾分别核对。发现列表仍是固定合同，不是过去可知产品目录。', 'Unknown validity does not establish a connected identity. Graph truncation and pagination are distinct. Discovery remains fixed contracts, not a historical product catalog.')
+        : operation === 'read_applicable_rules' ? words('同码多依据并列返回冲突，不解释优先级或例外。', 'Conflicting bases with the same code remain parallel; no priority or exception is inferred.')
+          : operation === 'read_event_timeline' ? words('计划与实际事件按原性质分列，不合并为已发生事实。', 'Plans and outcomes remain separate, not merged into established facts.') : words('仅返回当前数据集内可达上下文，不代表公司全量信息。', 'Only reachable context in this dataset is returned, not complete company information.')}</p>
+      <button type="button" className="primary-button" disabled={!ready || busy || !selected} onClick={() => void act(async current => { changed(); await read(build(), 1, current); })}>{words('读取固定快照上下文', 'Read fixed snapshot context')}</button>
     </>}
-    {busy && <p className="r1-help" role="status">正在读取固定快照上下文…</p>}{error && <ErrorNote>{error}</ErrorNote>}
-    {view && <div className="r1-read-result" aria-label="上下文读取结果">
-      <p role="status">{contextLabels[operation]}；第{pageNumber}页，本页{rows.length}条。{page.has_more ? '还有后续页。' : '已到当前结果末页；覆盖与缺口仍须核对。'}</p>
-      <p className="r1-help">固定快照：<code>{view.snapshotId}</code>；主体：{String(view.subject.kind)} / {String(view.subject.namespace)} / {String(view.subject.id)}。</p>
-      {result.truncated === true && <p className="danger-text">图读取达到预算，当前结果已截断，不能作为完整关系图。</p>}
-      {conflicts.length > 0 && <p className="danger-text">规则存在多份冲突依据，已并列返回；没有选择其中一份作为最终裁决。</p>}
+    {busy && <p className="r1-help" role="status">{words('正在读取固定上下文…', 'Reading fixed context…')}</p>}{error && <ErrorNote>{error}</ErrorNote>}
+    {view && <div className="r1-read-result" aria-label={words('上下文读取结果', 'Context read result')}>
+      <p role="status">{name} · {words(`第${pageNumber}页，本页${rows.length}条。`, `Page ${pageNumber}, ${rows.length} entries.`)} {page.has_more ? words('还有后续页。', 'More pages remain.') : words('当前末页；覆盖与缺口仍须核对。', 'Last page; inspect coverage and gaps.')}</p>
+      <p className="r1-help">{words('固定快照', 'Fixed snapshot')}：<code>{view.snapshotId}</code> · {display(view.subject)}</p>
+      {graph && <p className="r1-help">{words('已核对查询参数', 'Verified query parameters')}：{view.historyMode} · {display(result.knowledge_cutoff)} · {display(result.business_time_range)}</p>}
+      {result.truncated === true && <p className="danger-text">{words('图预算已截断，不是完整关系图。', 'The graph budget truncated this result; it is not complete.')}</p>}
+      {conflicts.length > 0 && <p className="danger-text">{words('冲突依据并列，未作最终裁决。', 'Conflicting bases remain parallel; no final decision was made.')}</p>}
       {rows.map((row, index) => <div className="r1-proof" key={index}>
-        <strong>{String(object(row.subject).id ?? '未声明主体')} · {display(row.row_type ?? row.relation_type ?? '记录')}</strong>
-        {row.object ? <p>{display(row.relation_type)} → {display(object(row.object).id)}；连通资格：{display(row.connectivity)}</p> : null}
-        {row.event ? <p>事件性质：{display(object(row.event).content_nature)}；状态：{display(object(row.event).status)}；编号：{display(object(row.event).event_id)}</p> : null}
-        {row.rule ? <p>规则：{display(object(row.rule).rule_code)}；{object(row.rule).conflict === true ? '冲突依据并列' : '依据按原记录显示'}</p> : null}
+        <strong>{String(object(row.subject).id ?? words('未声明主体', 'Unspecified subject'))} · {display(row.row_type ?? row.relation_type ?? words('记录', 'Record'))}</strong>
+        {row.object ? <p>{display(row.relation_type)} → {display(object(row.object).id)} · {words('连通资格', 'Connectivity')}：{display(row.connectivity)} · {words('原性质', 'Original nature')}：{display(row.content_nature)}</p> : null}
+        {row.event ? <p>{words('事件性质 / 状态 / 编号', 'Event nature / status / ID')}：{display(object(row.event).content_nature)} / {display(object(row.event).status)} / {display(object(row.event).event_id)}</p> : null}
+        {row.rule ? <p>{words('规则', 'Rule')}：{display(object(row.rule).rule_code)} · {object(row.rule).conflict === true ? words('冲突依据并列', 'Conflicting bases') : words('按原记录显示', 'As recorded')}</p> : null}
         {Object.keys(object(row.values)).length > 0 && <pre className="database-text-preview">{JSON.stringify(row.values, null, 2)}</pre>}
-        <details><summary>记录版本、时间及固定合同</summary><pre className="database-text-preview">{JSON.stringify(row, null, 2)}</pre></details>
+        <details><summary>{words('记录版本、时间及固定合同', 'Record versions, times and fixed contracts')}</summary><pre className="database-text-preview">{JSON.stringify(row, null, 2)}</pre></details>
       </div>)}
-      {gaps.length > 0 && <div className="r1-proof"><strong>读取缺口与限制</strong><pre className="database-text-preview">{JSON.stringify(gaps, null, 2)}</pre></div>}
+      {eligibility.length > 0 && <details open><summary>{words('公开资格诊断（未知不等于不存在）', 'Public eligibility diagnostics (unknown does not mean absent)')}</summary><pre className="database-text-preview">{JSON.stringify(eligibility, null, 2)}</pre></details>}
+      {gaps.length > 0 && <div className="r1-proof"><strong>{words('读取缺口与限制', 'Gaps and limits')}</strong><pre className="database-text-preview">{JSON.stringify(gaps, null, 2)}</pre></div>}
       <button type="button" className="text-button" disabled={busy || page.has_more !== true || typeof page.next_cursor !== 'string' || !lastRequest} onClick={() => {
-        if (lastRequest && typeof page.next_cursor === 'string') void act(() => read({ ...lastRequest, cursor: page.next_cursor as string }, pageNumber + 1));
-      }}>继续下一页上下文</button>
-      <details><summary>关联身份、覆盖、预算与完整固定结果</summary><pre className="database-text-preview">{JSON.stringify(view, null, 2)}</pre></details>
+        if (lastRequest && typeof page.next_cursor === 'string') void act(current => read({ ...lastRequest, cursor: page.next_cursor as string }, pageNumber + 1, current));
+      }}>{words('继续下一页上下文', 'Next context page')}</button>
+      <details><summary>{words('关联身份、覆盖、预算与完整固定结果', 'Identity, coverage, budget and full fixed result')}</summary><pre className="database-text-preview">{JSON.stringify(view, null, 2)}</pre></details>
     </div>}
   </section>;
 }

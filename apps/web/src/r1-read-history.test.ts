@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertR1ReadHistoryEcho, buildR1ReadHistory, isR1HoldingInstance, validateR1ReadHistoryInput } from './r1-read-history.js';
+import { assertR1ReadHistoryEcho, buildR1ReadHistory, isR1HoldingInstance, validateR1ReadHistoryInput, sameR1ReadConnection } from './r1-read-history.js';
 
 const at = '2025-01-02T03:04:05Z';
 const status = { holdingInstance: { instanceId: 'synthetic-instance', bindingSource: 'volume_binding' as const } };
@@ -74,5 +74,16 @@ test('every historical echo field must match; missing and extra cutoff fields fa
   for (const key of ['knowledge_cutoff', 'held_scope', 'usable_stage']) {
     const echo = response('snapshot_contents'); delete (echo.result as Record<string, unknown>)[key];
     assert.throws(() => assertR1ReadHistoryEcho({}, echo));
+  }
+});
+
+
+test('shared read binding comparison checks all six identity fields, never just connection ID', () => {
+  const binding = { connectionId: 'synthetic', profile: 'data_only' as const, mode: 'user_test' as const,
+    runtimeIdentity: 'runtime', callerId: 'caller', namespace: 'synthetic' };
+  assert.equal(sameR1ReadConnection(binding, { ...binding }), true);
+  for (const field of Object.keys(binding)) {
+    assert.equal(sameR1ReadConnection(binding, { ...binding, [field]: 'changed' }), false, field);
+    assert.equal(sameR1ReadConnection({ ...binding, [field]: '' }, { ...binding, [field]: '' }), false, field);
   }
 });

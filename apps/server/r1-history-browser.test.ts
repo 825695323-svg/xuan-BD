@@ -44,6 +44,7 @@ async function click(browser: Browser, text: string, twice = false) {
 async function navigate(browser: Browser, host: FullChainHost) {
   await browser.page('Page.navigate', { url: host.base.replace('/api/bd', '/') });
   await browser.until(`(()=>{if(document.querySelector(${q(root)})&&document.querySelector('.r1-panel')?.getAttribute('aria-busy')==='false')return true;(document.querySelector('button[aria-label="数据库"]')||document.querySelector('button[aria-label="Database"]'))?.click();return false;})()`, 'Actual application reader unavailable');
+  assert.equal(await browser.evaluate(`document.querySelectorAll('.r1-read-panel').length`), 1, 'The product reader must not share a sibling reconciliation key');
 }
 async function select(browser: Browser, productId: string) {
   await click(browser, '取得当前固定快照');

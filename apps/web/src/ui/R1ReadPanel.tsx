@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { R1ProductDiscovery, R1ProductRead, R1ProductReadInput, R1ReadConnection, R1SnapshotStatus } from '../../../../contracts/r1-contracts';
+import type { R1ProductDiscovery, R1ProductRead, R1ProductReadInput, R1SnapshotStatus } from '../../../../contracts/r1-contracts';
 import { RequestError } from '../api';
 import { r1Api } from '../r1-api';
-import { buildR1ReadHistory, R1HistoryError } from '../r1-read-history';
+import { buildR1ReadHistory, R1HistoryError, sameR1ReadConnection } from '../r1-read-history';
 import { PageField } from './PageUI';
 import { ErrorNote, errorDetail, useWords } from './Controls';
 
@@ -29,12 +29,6 @@ function reportSeries(product: Record<string, unknown>) {
     || !String(identity.identity_resolution_rule).startsWith('source_reported_date_and_identity_columns:')) return '';
   return typeof identity.alias_scope === 'string' ? identity.alias_scope : '';
 }
-
-const sameReadConnection = (left: R1ReadConnection, right: R1ReadConnection) =>
-  ['connectionId', 'profile', 'mode', 'runtimeIdentity', 'callerId', 'namespace'].every(key => {
-    const value = left[key as keyof R1ReadConnection];
-    return typeof value === 'string' && !!value && value === right[key as keyof R1ReadConnection];
-  });
 
 /** Independent of the local preparation/receipt editor; all data comes from fresh fixed WFD reads. */
 export function R1ReadPanel({ ready }: { ready: boolean }) {
@@ -80,7 +74,7 @@ export function R1ReadPanel({ ready }: { ready: boolean }) {
   const read = (cursor: string | null, nextPage: number) => act(async current => {
     if (!discovery || !fieldsReady) return;
     setResult(null);
-    if (historyMode === 'system_held_at' && (!status || !sameReadConnection(status.connection, discovery.connection)))
+    if (historyMode === 'system_held_at' && (!status || !sameR1ReadConnection(status.connection, discovery.connection)))
       throw new RequestError(words('持有实例与产品发现的绑定不一致；请重新取得当前固定快照并发现产品。',
         'The holding instance and discovery bindings differ; reload the current snapshot and rediscover products.'));
     const input: R1ProductReadInput = cursor && lastRequest ? { ...lastRequest, cursor } : {
@@ -90,7 +84,7 @@ export function R1ReadPanel({ ready }: { ready: boolean }) {
     };
     const response = await r1Api.readProduct(input);
     if (!current()) return;
-    if (!sameReadConnection(response.connection, discovery.connection))
+    if (!sameR1ReadConnection(response.connection, discovery.connection))
       throw new RequestError(words('R1_READ_CONNECTION_CHANGED：固定发现与读取的连接不同；请重新发现产品。',
         'R1_READ_CONNECTION_CHANGED: fixed discovery and read connections differ; rediscover before continuing.'));
     setResult(response); setLastRequest(input); setPageIndex(nextPage);

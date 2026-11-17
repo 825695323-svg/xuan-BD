@@ -782,6 +782,6 @@ export function R1Panel() {
       {recent.map(item => <button type="button" className="database-row database-row--button" key={item.requestId} disabled={busy} onClick={() => void action(async () => { showView(await r1Api.get(item.requestId)); setLookupId(item.requestId); setConfirmed(false); })}><span>{item.requestId}</span><span>{words(states[item.state] ?? item.state, item.state)}</span></button>)}
     </section>
     <R1ReadPanel key={JSON.stringify(caps?.connection ?? null)} ready={ready} />
-    <StructuredQueryPanel ready={ready} />
+    <StructuredQueryPanel key={`context:${JSON.stringify(caps?.connection ?? null)}`} ready={ready} />
   </div>;
 }
