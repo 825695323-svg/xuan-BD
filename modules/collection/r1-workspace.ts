@@ -1,3 +1,4 @@
+import type { JointEvidenceReadScope } from './structured-retrieval.js';
 import type { R1CapabilitiesView, R1ConnectionIdentity, R1PrepareInput, R1RequestSummary, R1RequestView, R1RowSummary, R1ScalarMapping } from '../../contracts/r1-contracts.js';
 import { readPublicationGroups, type R1SetPrepareInput, type R1SetMemberView } from '../../contracts/r1-publication-set.js';
 import type { JsonValue } from '../../contracts/task-contracts.js';
@@ -84,6 +85,27 @@ export class R1WorkspaceService {
   readProduct(value: unknown, signal?: AbortSignal) { return this.reader.readProduct(value, signal); }
   readContext(value: unknown, signal?: AbortSignal) { return this.reader.readContext(value, signal); }
   filterObjects(value: unknown, signal?: AbortSignal, contextDigest?: string) { return this.reader.filterObjects(value, signal, contextDigest); }
+
+  /** Host-only scope spans the WFD await and local evidence join; never accepts caller connection claims. */
+  beginJointEvidenceRead(signal?: AbortSignal): JointEvidenceReadScope {
+    this.assertDispatch();
+    const runtime = this.requireRuntime(), fingerprint = canonicalWfdJson(runtime.currentIdentity());
+    const generation = this.tasks.getControl().generation;
+    const assertCurrent = () => {
+      signal?.throwIfAborted();
+      this.assertDispatch();
+      if (this.tasks.getControl().generation !== generation) fail('BD_STOPPED', '联合查询期间服务代次变化，未返回旧范围证据。');
+      if (canonicalWfdJson(this.requireRuntime().currentIdentity()) !== fingerprint)
+        fail('R1_CONNECTION_BINDING_CHANGED', '联合查询期间连接身份变化，未返回本地证据。');
+    };
+    return { assertCurrent, recordMaterials: identity => {
+      assertCurrent();
+      const found = this.options.handoff.recordMaterials(identity);
+      if (found) this.assertBinding(this.requireRow(found.requestId));
+      assertCurrent();
+      return found;
+    } };
+  }
 
   prepare(value: unknown): R1RequestView {
     if (isWfdRecord(value) && value.kind === 'publication_set') fail('R1_SET_HOST_CHECK', '集合准备须经过受信异步限制核验。');
