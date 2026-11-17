@@ -93,9 +93,16 @@ export class R1ProductReader {
           || !isWfdRecord(value) || !isWfdRecord(value.definition) || typeof value.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(value.digest))) {
         fail('R1_READ_RESPONSE_INVALID', '当前快照或空库状态无法按绑定身份核对；不能将错误当作空库。');
       }
+      const holding = result.holding_instance;
+      if (holding !== undefined && holding !== null && (!isWfdRecord(holding)
+        || Object.keys(holding).sort().join(',') !== 'instance_id,source' || !identifier(holding.instance_id)
+        || !['volume_binding', 'target_instance'].includes(String(holding.source))))
+        fail('R1_READ_RESPONSE_INVALID', '实例持有身份不是当前WFD提供的固定绑定。');
       return { snapshotId: result.snapshot_id as string | null, empty: result.empty as boolean, authority: 'active_head',
         connection: { ...connection(identity), roles: result.caller_roles as string[] },
-        units: result.unit_definitions as R1SnapshotStatus['units'] };
+        units: result.unit_definitions as R1SnapshotStatus['units'],
+        ...(holding === undefined ? {} : { holdingInstance: holding === null ? null : { instanceId: (holding as WfdRecord).instance_id as string,
+          bindingSource: (holding as WfdRecord).source as 'volume_binding' | 'target_instance' } }) };
     }, signal);
   }
 
