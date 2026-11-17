@@ -146,10 +146,10 @@ export class R1ProductReader {
         business_time_range: null, page_size: R1_READ_LIMITS.pageSize, max_nodes: R1_READ_LIMITS.maxScanRows,
         max_scan_bytes: R1_READ_LIMITS.maxScanBytes, cursor: input.cursor ?? null }, wait);
       active(); const result = reply.result; boundedResult(result);
-      // 当前 data_only 撤销引用未改写的原行，未单独登记撤销公开时间。
-      // 不把原披露时间解释为撤销时间；保留其他读取视角，不伪造市场历史。
+      // 撤销保留原行，市场资格仅采用独立公告时间；旧记录或时间精度缺口不降级采用。
       if (history.mode === 'market_known_at' && Array.isArray(result.diagnostics)
-        && result.diagnostics.some(item => isWfdRecord(item) && item.reason === 'WITHDRAWN_AT_PERSPECTIVE'))
+        && result.diagnostics.some(item => isWfdRecord(item) && (item.reason === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED'
+          || item.reason === 'WITHDRAWN_AT_PERSPECTIVE' && !isWfdRecord(item.withdrawal_public_time))))
         fail('R1_READ_REVISION_TIME_UNSUPPORTED', '撤销缺少可独立核验的公开时间，此历史查询未采用；可按明确持有阶段或固定快照核对。');
       const page = isWfdRecord(result.page) ? result.page : {};
       if (result.format_version !== 'wfd.read-product-result/0.1' || result.operation !== 'read_product'

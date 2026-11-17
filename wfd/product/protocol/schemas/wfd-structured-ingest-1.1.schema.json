@@ -762,7 +762,21 @@
           "$ref": "#/$defs/payload"
         },
         "revisions": {
-          "type": "object"
+          "type": "object",
+          "description": "Logical-key revisions retain previous and reason; withdrawal may additionally declare withdrawal_public_time independently of the unchanged predecessor row.",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["previous", "reason"],
+            "additionalProperties": false,
+            "properties": {
+              "previous": { "type": "object" },
+              "reason": { "type": "string", "minLength": 1 },
+              "withdrawal_public_time": {
+                "type": "object",
+                "description": "Validated by the existing WFD TimeWithPrecision contract and calendar checks; allowed only for withdrawal."
+              }
+            }
+          }
         }
       },
       "required": [

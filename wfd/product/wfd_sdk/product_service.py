@@ -1249,7 +1249,7 @@ class WFDProductService:
         physical, versions = copy.deepcopy(out), {}
         physical_rows = []
 
-        def add_version(row, logical, previous, revision_mode, withdrawn=False, reason=None):
+        def add_version(row, logical, previous, revision_mode, withdrawn=False, reason=None, withdrawal_public_time=None):
             previous_id = previous["record_ref"]["revision_id"] if previous else None
             revision_id = append_revision_id(product["product_id"], row, revision_mode,
                                              previous_id, fingerprint, out["output_key"])
@@ -1258,6 +1258,8 @@ class WFDProductService:
             versions[physical_key] = {"logical_key": logical, "revision_id": revision_id,
                 "supersedes": previous_id, "input_mode": revision_mode,
                 "withdrawn": withdrawn, "reason": reason}
+            if withdrawal_public_time is not None:
+                versions[physical_key]["withdrawal_public_time"] = copy.deepcopy(withdrawal_public_time)
             physical_rows.append(row)
 
         if mode == "complete_snapshot":
@@ -1342,8 +1344,14 @@ class WFDProductService:
                 previous_id, reason = None, None
                 if mode in REVISION_MODES:
                     change = revisions[logical]
-                    if not isinstance(change, dict) or set(change) != {"previous", "reason"} or not isinstance(change["reason"], str) or not change["reason"].strip():
+                    if (not isinstance(change, dict) or not {"previous", "reason"} <= set(change)
+                            or set(change) - {"previous", "reason", "withdrawal_public_time"}
+                            or not isinstance(change["reason"], str) or not change["reason"].strip()):
                         raise ValueError("REVISION_DECLARATION_INVALID")
+                    withdrawal_time = change.get("withdrawal_public_time")
+                    if "withdrawal_public_time" in change and (mode != "withdrawal"
+                            or self._time_errors(withdrawal_time)):
+                        raise ValueError("WITHDRAWAL_PUBLIC_TIME_INVALID")
                     previous = change["previous"]
                     if not isinstance(previous, dict) or set(previous) != {"product_id", "snapshot_id", "logical_key", "revision_id"}:
                         raise ValueError("REVISION_REFERENCE_INVALID")
@@ -1361,7 +1369,8 @@ class WFDProductService:
                     if mode == "withdrawal" and row != targets[0]["row"]:
                         raise ValueError("WITHDRAWAL_MUST_REFERENCE_UNCHANGED_ROW")
                     add_version(copy.deepcopy(row), logical, latest, mode,
-                                withdrawn=mode == "withdrawal", reason=change["reason"])
+                                withdrawn=mode == "withdrawal", reason=change["reason"],
+                                withdrawal_public_time=withdrawal_time)
                 elif prior:
                     raise ValueError("DUPLICATE_LOGICAL_KEY_REQUIRES_REVISION")
                 else:
@@ -3320,9 +3329,18 @@ class WFDProductService:
                 time = row.get("public_time", source.get("public_time"))
                 business_key = version["logical_key"]
                 time = source.get("row_public_times", {}).get(entry["output_key"], {}).get(physical_key, time)
+                if version.get("withdrawn") and ("withdrawal_public_time" in version
+                        or source.get("_wfd_data_only") is True):
+                    # The tombstone retains the predecessor bytes. Its announcement
+                    # is separate evidence, never the predecessor publication time.
+                    time = version.get("withdrawal_public_time")
                 if perspective == "system_held_at":
                     time = source.get("_wfd_received_time")
                 eligibility = eligibility_at(time, at, mode=perspective)
+                if (perspective == "market_known_at" and version.get("withdrawn")
+                        and source.get("_wfd_data_only") is True
+                        and eligibility["decision"] == "indeterminate"):
+                    eligibility["reason"] = "WITHDRAWAL_PUBLIC_TIME_UNRESOLVED"
                 item = {"product_id": product["product_id"], "row": row, "subject": row_subject,
                         "definition_ref": product["definition_ref"], "eligibility": eligibility,
                         "evidence_refs": block["evidence"], "source": source,
@@ -3363,12 +3381,13 @@ class WFDProductService:
                 selected.extend(group)
                 continue
             if len(leaves) != 1 or leaves[0]["revision"]["withdrawn"]:
-                item = group[-1]
+                item = leaves[0] if len(leaves) == 1 else group[-1]
                 diagnostics.append({"product_id": item["product_id"], "business_key": item["record_ref"]["logical_key"],
                     "subject": item["subject"], "object": item["row"].get("object"),
                     "relation_type": item["row"].get("relation_type"), "contract_ref": item["contract_ref"],
                     "decision": "ineligible" if len(leaves) == 1 else "indeterminate",
-                    "reason": "WITHDRAWN_AT_PERSPECTIVE" if len(leaves) == 1 else "REVISION_BRANCH_CONFLICT"})
+                    "reason": "WITHDRAWN_AT_PERSPECTIVE" if len(leaves) == 1 else "REVISION_BRANCH_CONFLICT",
+                    "withdrawal_public_time": copy.deepcopy(item["revision"].get("withdrawal_public_time"))})
             else:
                 selected.extend(leaves)
         rows = selected

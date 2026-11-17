@@ -30,13 +30,14 @@ function row(key: string, value: string, publicTime?: WfdRecord): WfdRecord {
     values: { amount: { data_type: 'decimal', value_state: 'valid_value', value } } };
 }
 function document(requestId: string, rows: WfdRecord[], parent: string | null = null,
-  revision?: { mode: 'source_correction' | 'withdrawal'; definitionRef: WfdRecord; previous: WfdRecord }) {
+  revision?: { mode: 'source_correction' | 'withdrawal'; definitionRef: WfdRecord; previous: WfdRecord; withdrawalPublicTime?: WfdRecord }) {
   return buildStructuredIngestDocument({ requestId, datasetId: 'synthetic_history', namespace, producerNamespace: namespace,
     submissionDigest: 'sha256:' + wfdSha256(canonicalWfdJson({ requestId, rows, parent, revision: revision ?? null })),
     expectedParentSnapshotId: parent, outputKey: 'history', subject, definition,
     inputMode: revision?.mode ?? 'partial_observation',
     ...(revision ? { definitionMode: 'reuse' as const, definitionRef: revision.definitionRef,
-      revisions: { [String(rows[0]!.business_key)]: { previous: revision.previous, reason: 'Explicit isolated history boundary fixture' } } } : {}),
+      revisions: { [String(rows[0]!.business_key)]: { previous: revision.previous, reason: 'Explicit isolated history boundary fixture',
+        ...(revision.withdrawalPublicTime ? { withdrawal_public_time: revision.withdrawalPublicTime } : {}) } } } : {}),
     coverage: { scope: { synthetic: true }, basis: 'observed_partial', completeness: 'partial', absence_means: 'unknown' },
     payload: { kind: 'tabular_rows', rows } });
 }
@@ -248,4 +249,45 @@ test('actual algorithm fixed-input port preserves stage-specific evidence instea
       if (originalTestMode === undefined) delete process.env.WFD_HOLDINGS_TEST_MODE;
       else process.env.WFD_HOLDINGS_TEST_MODE = originalTestMode;
     }
+  });
+
+
+test('actual HTTP/WFD withdrawal uses independent announcement time without rewriting predecessor or old snapshots',
+  { skip: !enabled ? 'Requires isolated WFD_PYTHON and XUAN_FULL_CHAIN_ROOT.' : false, timeout: 180_000 }, async () => {
+    const fixture = createFullChainFixture({ name: 'r1-withdrawal-time', machine: true });
+    let host = await openFullChainHost(fixture);
+    try {
+      const originalRow = row('known', '10', second('2025-01-02T08:00:00Z'));
+      const original = await publish(host, document('withdrawal-original', [originalRow]));
+      const fixed = { snapshotId: original.snapshotId, productId: original.productId };
+      const current = await host.call('/r1/products/read', fixed);
+      const previous = (current.result.rows as WfdRecord[])[0]!.record_ref as WfdRecord;
+      const withdrawal = { mode: 'withdrawal' as const, definitionRef: original.output.definition_ref as WfdRecord,
+        previous, withdrawalPublicTime: { status: 'known', earliest_utc: '2025-01-20T00:00:00Z',
+          latest_exclusive_utc: '2025-01-21T00:00:00Z', precision: 'day', source_timezone: 'UTC' } };
+      const bad = await host.services.r1Runtime!.client.submit(document('withdrawal-changed-row',
+        [row('known', '10', second('2025-01-20T08:00:00Z'))], original.snapshotId, withdrawal));
+      assert.notEqual(bad.result.state, 'published_formal', 'New announcement must not authorize predecessor mutation');
+      for (const [requestId, time] of [
+        ['withdrawal-invalid-date', { ...second('2025-01-20T08:00:00Z'), earliest_utc: '2025-02-30T08:00:00Z' }],
+        ['withdrawal-reversed', { ...second('2025-01-20T08:00:00Z'), latest_exclusive_utc: '2025-01-19T08:00:00Z' }],
+      ] as const) {
+        const invalid = await host.services.r1Runtime!.client.submit(document(requestId, [originalRow], original.snapshotId,
+          { ...withdrawal, withdrawalPublicTime: time }));
+        assert.notEqual(invalid.result.state, 'published_formal', requestId);
+      }
+      const withdrawn = await publish(host, document('withdrawal-explicit', [originalRow], original.snapshotId, withdrawal));
+      const selection = { ...fixed, snapshotId: withdrawn.snapshotId, historyMode: 'market_known_at' };
+      assert.equal(values(await host.call('/r1/products/read', { ...selection, at: '2025-01-10T12:00:00Z' })).known, '10');
+      const imprecise = await host.call('/r1/products/read', { ...selection, at: '2025-01-20T12:00:00Z' }, 409);
+      assert.equal(imprecise.code, 'R1_READ_REVISION_TIME_UNSUPPORTED');
+      const after = await host.call('/r1/products/read', { ...selection, at: '2025-01-21T12:00:00Z' });
+      assert.deepEqual(values(after), {});
+      assert.ok(after.result.diagnostics.some((item: WfdRecord) => item.reason === 'WITHDRAWN_AT_PERSPECTIVE'
+        && canonicalWfdJson(item.withdrawal_public_time) === canonicalWfdJson(withdrawal.withdrawalPublicTime)));
+      assert.equal(values(await host.call('/r1/products/read', fixed)).known, '10');
+      await host.close(); host = await openFullChainHost(fixture);
+      assert.equal(values(await host.call('/r1/products/read', { ...selection, at: '2025-01-10T12:00:00Z' })).known, '10');
+      assert.deepEqual(values(await host.call('/r1/products/read', { ...selection, at: '2025-01-21T12:00:00Z' })), {});
+    } finally { await host.close(); }
   });
