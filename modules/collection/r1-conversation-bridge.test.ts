@@ -525,7 +525,9 @@ test('processing dedicated formats cross the genuine personal tool bridge with e
       assert.equal(output.rows.length, 1);
       assert.equal(format === 'text' ? output.rows[0].text : output.rows[0].value, format === 'text' ? paragraph : '1234.56');
       const caps = await invoke(h, selected.input, 'data.processing.capabilities', {}, 'dedicated-capabilities-' + format);
-      assert.ok(caps.preview.data.catalog.tableInputs.dedicated[format].required.length);
+      const requirements = caps.preview.data.catalog.tableInputs.dedicated[format];
+      if (format === 'text') assert.deepEqual(requirements.requiredOneOf, ['necessaryTextSelection', 'eventTextSelection']);
+      else assert.ok(requirements.required.length);
       json(join(f.root, 'dedicated-bridge-proof.json'), { format, materialId, planId, actualOutput: output, genuineToolOrigin: true,
         providerInvoked: false, syntheticRegressionSource: true, published: false });
     } finally { await h.close(); }
@@ -556,7 +558,9 @@ test('processing financial-fixed selector survives personal tool schema and norm
   });
 
 test('F05 R1 UI invalidates confirmation on detail loads and gates recovery on original submission', () => {
-  const source = readFileSync(join(codeRoot, 'apps/web/src/ui/R1Panel.tsx'), 'utf8');
+  const entry = readFileSync(join(codeRoot, 'apps/web/src/ui/R1Panel.tsx'), 'utf8');
+  assert.ok(entry.includes("from './R1SingleOutputPanel'") && entry.includes('<SingleOutputPanel />'));
+  const source = readFileSync(join(codeRoot, 'apps/web/src/ui/R1SingleOutputPanel.tsx'), 'utf8');
   const show = /const showView = \(current: R1RequestView\) => \{([\s\S]*?)\n  \};/u.exec(source);
   assert.ok(show);
   assert.ok(show[1]!.includes('setConfirmed(false)'), 'Every detail load must invalidate prior human confirmation.');

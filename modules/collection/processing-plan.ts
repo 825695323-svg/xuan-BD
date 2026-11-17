@@ -13,6 +13,7 @@ import type { PolarsSourceCleaner } from './data-processing/polars-cleaning.js';
 import { MAX_SOURCE } from '../../platform/capabilities/conversion/formats.js';
 import { readNumericFormat } from './data-processing/numeric-format.js';
 import { readXbrlSelection } from './data-processing/xbrl-table.js';
+import { readEventTextSelection } from './data-processing/event-text.js';
 import { readNecessaryTextSelection } from './data-processing/necessary-text.js';
 import { readFinancialPdfSelection, projectFinancialPdf } from './data-processing/financial-pdf.js';
 import { readFinancialCalculation, projectFinancialFixed, type FinancialReader } from './data-processing/financial-fixed.js';
@@ -224,13 +225,16 @@ export class ProcessingPlanService {
       cleaningEngine: this.options.polarsCleaner?.capabilities() ?? {
         engine: 'typescript', status: 'legacy_compatibility', reason: '受信 Polars 未装配，沿原冻结处理契约执行。',
         methods: ['trim', 'empty_to_null'], noSilentFallback: true },
+      fieldDependencies: { route: '/processing/plans/:id/outputs/:outputId/dependencies', readOnly: true,
+        coverage: 'selected_processing_output_only', supported: ['plain_csv_json_mapping', 'constant_annotation'],
+        unknownTransforms: 'explicit_gaps', formalDownstreamImpact: false },
       calculationMethods: 'not_part_of_cleaning',
       custodyStates: ['inventoried', 'receiving', 'received'], routingStates: ['needs_classification', 'needs_adapter', 'needs_target', 'needs_review', 'ready_candidate', 'rejected'],
       dimensions: DIMENSION_KEYS.map(key => ({ key, label: dimensionLabel(key), statuses: ['known', 'unknown', 'conflict'] })),
       policy: PROCESSING_POLICY,
       steps: [
         { kind: 'parse', implementation: CANDIDATE_STAGE_VERSIONS.parse, adapters: ['utf8-csv/1', 'utf8-json-table/1', 'utf8-csv-exact-selection/1', 'xlsx-explicit-selection/1',
-          'bd-xbrl-numeric/1', 'bd-necessary-business-paragraph/1', 'bd-financial-pdf-regions/1', 'bd-financial-fixed/1'],
+          'bd-xbrl-numeric/1', 'bd-necessary-business-paragraph/1', 'bd-event-source-excerpts/1', 'bd-financial-pdf-regions/1', 'bd-financial-fixed/1'],
           rules: ['strict_utf8', 'csv_or_json_row_table', 'unique_nonempty_source_fields', 'explicit_field_mapping', 'explicit_scalar_types', 'trim', 'empty_to_null', 'constant_annotations'],
           applicability: 'CSV/JSON tables; explicit XLSX cells; namespace-resolved numeric XBRL subset; reviewed whole UTF-8 business paragraphs; frozen native PDF regions; trusted fixed financial records. Unsupported structures remain blocked.', required: true,
           output: 'parsed table with original values, source types, quotes and locations' },
@@ -272,7 +276,8 @@ export class ProcessingPlanService {
         endpointAdapter: 'optional sourceAdapter:{adapterId,version,configDigest}; only an adopted version is resolved and frozen into this plan; format stays the carrier family (csv|json)',
         dedicated: { xlsx: { required: ['xlsxSelection'], shape: 'sheetName,headerRow,firstDataRow,lastDataRow,firstColumn,lastColumn,columns[{column,header,name,type?}]' },
           xbrl: { required: ['xbrlSelection'], shape: '{version:"bd-xbrl-numeric/1",reportId,reportVersion,concepts:["{namespaceURI}localName"]}; empty concepts selects all supported numeric facts' },
-          text: { required: ['necessaryTextSelection'], shape: '{version:"bd-necessary-business-paragraph/1",sourceSha256,documentVersion,purpose,reviewBasis,paragraphs:[{start,end,quote}]}; complete original paragraphs only' },
+          text: { requiredOneOf: ['necessaryTextSelection', 'eventTextSelection'], eventScope: 'exact excerpts and declared occurrence only; no event truth or public time inferred',
+            eventShape: '{version:"bd-event-source-excerpts/1",sourceSha256,occurrence:{namespace,publisherId,publicationId,kind:"original"|"repost",upstreamPublicationId:string|null},reviewBasis,excerpts:[{start,end,quote}]}; exact original UTF-16 code-unit ranges', shape: '{version:"bd-necessary-business-paragraph/1",sourceSha256,documentVersion,purpose,reviewBasis,paragraphs:[{start,end,quote}]}; complete original paragraphs only' },
           pdf: { required: ['pdfSelection'], shape: '{version:"bd-financial-pdf-regions/1",sourceSha256,report:{id,version,subjectScheme,subjectCode,accountingStandard,currency,auditStatus},regions:[{page,yMin,yMax,statement,scope,section,label:[xMin,xMax],expectedLabels,rowBands:[{yMin,yMax}],columns:[{xMin,xMax,dimension,periodType,startDate,endDate,unit,numericFormat}],continuations?:[{rowIndex,columnIndex,page,yMin,yMax,xMin,xMax,quote}]}]}' },
           'financial-fixed': { required: ['financialCalculation'], shape: 'financialFixed.calculation above; executable only through this managed plan and bound trusted reader' } },
         numericFormat: '{decimal:"."|",",grouping:"."|","|" "|null,negative:"minus"|"minus_or_parentheses",plus:boolean,percent:"reject"|"as_reported"|"fraction"}; only for explicit decimal_string columns' },
@@ -445,6 +450,58 @@ export class ProcessingPlanService {
     const row = this.outputRow(planId, outputId); if (!row || row.state !== 'structured' || !row.structured_json) fail('PROCESSING_OUTPUT_NOT_READY', '该输出尚未形成完整结构产物。');
     const ref = this.ref(row.structured_json);
     return { outputId, ref, bytes: this.options.objects.get(ref), routingState: row.routing_state, gaps: parseJson(row.gaps_json) };
+  }
+  /** 从已核对步骤投影字段依赖；不另存血缘，也不外推全库影响范围。 */
+  fieldDependencies(planId: string, outputId: string) {
+    const candidate = this.candidateOutput(planId, outputId);
+    const finalArtifact = this.outputArtifact(planId, outputId);
+    if (wfdSha256(finalArtifact.bytes) !== candidate.ref.sha256)
+      fail('PROCESSING_ARTIFACT_CHANGED', '字段依赖所依据的最终结构产物摘要不符。');
+    const plan = this.planRow(planId)!;
+    const steps = this.stepRows(planId).filter(step => step.output_id === outputId).map(step => this.stepView(step));
+    const missingSteps = this.document(plan).steps.filter(step => step.outputId === outputId && !steps.some(item => item.stepId === step.stepId));
+    const dependencies: { outputField: string; materialId: string; sourceSha256: string;
+      inputField: string | null; kind: 'mapped_field' | 'constant'; stepId: string;
+      specDigest: string; sourceArtifactSha256: string }[] = [];
+    const gaps: string[] = missingSteps.map(step => `${step.stepId}:persisted_step_missing`);
+    const parses = steps.filter(step => step.kind === 'parse');
+    if (!parses.length) gaps.push('no_persisted_parse_steps');
+    const dependsOn = (stepId: string, inputId: string, visited = new Set<string>()): boolean => {
+      if (visited.has(stepId)) return false;
+      visited.add(stepId);
+      return (steps.find(step => step.stepId === stepId)?.dependsOn ?? [])
+        .some(id => id === inputId || dependsOn(id, inputId, visited));
+    };
+    for (const spec of parses) {
+      const params = spec.parameters;
+      // 专用投影、适配器和财务读取可能含复合依赖；不能猜成一对一原始字段。
+      if (!['csv', 'json'].includes(String(params.format)) || params.sourceProjection || params.sourceAdapter) {
+        gaps.push(`${spec.stepId}:unsupported_field_dependency_projection`);
+        continue;
+      }
+      const artifact = this.artifact(planId, spec.stepId);
+      if (wfdSha256(artifact.bytes) !== artifact.step.outputDigest)
+        fail('PROCESSING_ARTIFACT_CHANGED', '字段依赖所依据的解析产物摘要不符。');
+      const parsed = JSON.parse(artifact.bytes.toString('utf8')) as ParsedCandidateTable;
+      const material = candidate.materials.find(item => item.materialId === params.materialId);
+      if (!material || parsed.source_sha256 !== material.sha256 || parsed.kind !== 'parsed-table'
+        || parsed.source_columns.length !== parsed.columns.length)
+        fail('PROCESSING_LINEAGE_CHANGED', '字段依赖与冻结材料、解析列身份不一致。');
+      parsed.columns.forEach((outputField, index) => dependencies.push({ outputField,
+        materialId: material.materialId, sourceSha256: material.sha256, inputField: parsed.source_columns[index]!,
+        kind: 'mapped_field', stepId: spec.stepId, specDigest: spec.specDigest, sourceArtifactSha256: artifact.ref.sha256 }));
+      const annotation = steps.find(step => step.kind === 'annotate' && dependsOn(step.stepId, spec.stepId));
+      if (annotation && this.stepRow(planId, annotation.stepId)?.state === 'succeeded') {
+        for (const outputField of Object.keys(parsed.annotations)) dependencies.push({ outputField,
+          materialId: material.materialId, sourceSha256: material.sha256, inputField: null,
+          kind: 'constant', stepId: annotation.stepId, specDigest: annotation.specDigest, sourceArtifactSha256: artifact.ref.sha256 });
+      }
+      if (params.selection) gaps.push(`${spec.stepId}:row_selection_dependency_not_field_value_dependency`);
+    }
+    return { version: 'bd.field-dependencies/1', planId, outputId, planDigest: candidate.planDigest,
+      outputSha256: candidate.ref.sha256, coverage: 'selected_processing_output_only',
+      complete: gaps.length === 0, dependencies, gaps,
+      impact: 'Listed edges identify known direct field dependencies in this output, not an exhaustive affected-product set; downstream products and unknown transformations are not scanned.' };
   }
   /** 候选服务只从这里取已核对的受管引用；不读取客户端自带对象或路径。 */
   candidateOutput(planId: string, outputId: string) {
@@ -967,7 +1024,7 @@ export class ProcessingPlanService {
   }
 
   private outputMaterialFacts(fact: MaterialFacts, tables: CandidateTablePlan[]): MaterialFacts {
-    const selected = tables.find(table => table.materialId === fact.materialId && (table.selection || table.xlsxSelection || table.xbrlSelection || table.necessaryTextSelection || table.pdfSelection || table.financialCalculation || table.sourceAdapter)
+    const selected = tables.find(table => table.materialId === fact.materialId && (table.selection || table.xlsxSelection || table.xbrlSelection || table.necessaryTextSelection || table.eventTextSelection || table.pdfSelection || table.financialCalculation || table.sourceAdapter)
       && this.tableCapabilityGaps(fact, table, 0).length === 0);
     return selected ? { ...fact, support: 'supported', ...(selected.format === 'xlsx'
       ? { adapter: { id: 'xlsx-explicit-selection', version: '1' } }
@@ -986,7 +1043,7 @@ export class ProcessingPlanService {
       const fact = factsById.get(table.materialId)!;
       const parseGaps = this.tableCapabilityGaps(fact, table, index);
       const parseId = `parse:${outputId}:${index}`;
-      const dedicatedAdapter = ({ xlsx: 'xlsx-explicit-selection', xbrl: 'bd-xbrl-numeric', text: 'bd-necessary-business-paragraph',
+      const dedicatedAdapter = ({ xlsx: 'xlsx-explicit-selection', xbrl: 'bd-xbrl-numeric', text: table.eventTextSelection ? 'bd-event-source-excerpts' : 'bd-necessary-business-paragraph',
         pdf: 'bd-financial-pdf-regions', 'financial-fixed': 'bd-financial-fixed' } as Partial<Record<CandidateTablePlan['format'], string>>)[table.format]
         ?? (table.sourceAdapter ? `endpoint:${table.sourceAdapter.adapterId}` : table.selection ? 'utf8-csv-exact-selection' : undefined);
       const adapterVersion = table.sourceAdapter ? `${table.sourceAdapter.version}:${table.sourceAdapter.configDigest.slice(0, 12)}`
@@ -1001,6 +1058,7 @@ export class ProcessingPlanService {
           ...(table.numericFormats ? { numericFormats: table.numericFormats } : {}),
           ...(table.xbrlSelection ? { xbrlSelection: table.xbrlSelection } : {}),
           ...(table.necessaryTextSelection ? { necessaryTextSelection: table.necessaryTextSelection } : {}),
+          ...(table.eventTextSelection ? { eventTextSelection: table.eventTextSelection } : {}),
           ...(table.pdfSelection ? { pdfSelection: table.pdfSelection } : {}),
           ...(table.financialCalculation ? { financialCalculation: table.financialCalculation, financialReaderBinding: table.financialReaderBinding } : {}),
           ...(table.sourceProjection ? { sourceProjection: table.sourceProjection } : {}) },
@@ -1701,6 +1759,7 @@ function digestParameters(spec: Pick<StepSpec, 'kind' | 'parameters'>): WfdRecor
     ...(spec.parameters.numericFormats ? { numericFormats: spec.parameters.numericFormats } : {}),
     ...(spec.parameters.xbrlSelection ? { xbrlSelection: spec.parameters.xbrlSelection } : {}),
     ...(spec.parameters.necessaryTextSelection ? { necessaryTextSelection: spec.parameters.necessaryTextSelection } : {}),
+    ...(spec.parameters.eventTextSelection ? { eventTextSelection: spec.parameters.eventTextSelection } : {}),
     ...(spec.parameters.pdfSelection ? { pdfSelection: spec.parameters.pdfSelection } : {}),
     ...(spec.parameters.financialCalculation ? { financialCalculation: spec.parameters.financialCalculation,
       financialReaderBinding: spec.parameters.financialReaderBinding } : {}) } : spec.parameters;
@@ -1803,7 +1862,7 @@ function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[]
   if (value === undefined) return [];
   const list = readArray(value, 1, PROCESSING_LIMITS.maxTablesPerOutput, 'PROCESSING_TABLES');
   return list.map(item => {
-    const record = readRecord(item, ['materialId', 'format', 'sourceAdapter', 'sourceContext', 'sourceReceiptTaskId', 'fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations', 'selection', 'xlsxSelection', 'sourceProjection', 'numericFormats', 'xbrlSelection', 'necessaryTextSelection', 'pdfSelection', 'financialCalculation'], 'PROCESSING_TABLE');
+    const record = readRecord(item, ['materialId', 'format', 'sourceAdapter', 'sourceContext', 'sourceReceiptTaskId', 'fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations', 'selection', 'xlsxSelection', 'sourceProjection', 'numericFormats', 'xbrlSelection', 'necessaryTextSelection', 'eventTextSelection', 'pdfSelection', 'financialCalculation'], 'PROCESSING_TABLE');
     const materialId = readId(record.materialId, 'PROCESSING_MATERIAL_ID');
     if (!materialIds.includes(materialId)) fail('PROCESSING_TABLES', '表源必须属于本输出的原件。');
     if (!['csv', 'json', 'xlsx', 'xbrl', 'text', 'pdf', 'financial-fixed'].includes(String(record.format))) fail('PROCESSING_TABLES', '表源须明确为受支持格式及其专用选择规则。');
@@ -1830,12 +1889,14 @@ function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[]
     const sourceProjection = record.sourceProjection === undefined ? undefined : readSourceProjection(record.sourceProjection);
     const xbrlSelection = record.xbrlSelection === undefined ? undefined : readXbrlSelection(record.xbrlSelection);
     const necessaryTextSelection = record.necessaryTextSelection === undefined ? undefined : readNecessaryTextSelection(record.necessaryTextSelection);
+    const eventTextSelection = record.eventTextSelection === undefined ? undefined : readEventTextSelection(record.eventTextSelection);
+    if (eventTextSelection && necessaryTextSelection) fail('PROCESSING_TABLES', '必要业务段与事件选录不能混用。');
     const pdfSelection = record.pdfSelection === undefined ? undefined : readFinancialPdfSelection(record.pdfSelection);
     const financialCalculation = record.financialCalculation === undefined ? undefined : readFinancialCalculation(record.financialCalculation);
-    if ((record.format === 'xbrl') !== !!xbrlSelection || (record.format === 'text') !== !!necessaryTextSelection
+    if ((record.format === 'xbrl') !== !!xbrlSelection || (record.format === 'text') !== !!(necessaryTextSelection || eventTextSelection)
       || (record.format === 'pdf') !== !!pdfSelection || (record.format === 'financial-fixed') !== !!financialCalculation) fail('PROCESSING_TABLES', '专用格式须具有同格式的明确投影选择，不能挪用其他格式规则。');
     if (sourceAdapter && !['csv', 'json'].includes(String(record.format))) fail('PROCESSING_TABLES', '端点适配表源须声明载体族 csv 或 json。');
-    if (sourceAdapter && (selection || xlsxSelection || xbrlSelection || necessaryTextSelection || pdfSelection
+    if (sourceAdapter && (selection || xlsxSelection || xbrlSelection || necessaryTextSelection || eventTextSelection || pdfSelection
       || financialCalculation || record.numericFormats !== undefined)) fail('PROCESSING_TABLES', '端点适配表源不接受选区、专用投影或区域数值规则。');
     if (record.numericFormats !== undefined && !isWfdRecord(record.numericFormats)) fail('PROCESSING_NUMERIC_FORMAT', '数值语法须按明确列名逐项声明。');
     const numericFormats = record.numericFormats === undefined ? undefined : Object.fromEntries(Object.entries(record.numericFormats as WfdRecord).map(([key, format]) => [key, readNumericFormat(format)]));
@@ -1851,7 +1912,7 @@ function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[]
       ...(record.sourceContext !== undefined ? { sourceContext: record.sourceContext } : {}),
       ...(record.sourceReceiptTaskId !== undefined ? { sourceReceiptTaskId: readId(record.sourceReceiptTaskId, 'PROCESSING_RECEIPT_TASK_ID') } : {}), ...(xlsxSelection ? { xlsxSelection } : {}), ...(record.fieldMapping ? { fieldMapping: record.fieldMapping as Record<string, string> } : {}),
       ...(numericFormats ? { numericFormats } : {}), ...(xbrlSelection ? { xbrlSelection } : {}),
-      ...(necessaryTextSelection ? { necessaryTextSelection } : {}), ...(pdfSelection ? { pdfSelection } : {}),
+      ...(necessaryTextSelection ? { necessaryTextSelection } : {}), ...(eventTextSelection ? { eventTextSelection } : {}), ...(pdfSelection ? { pdfSelection } : {}),
       ...(financialCalculation ? { financialCalculation } : {}),
       ...(Object.keys(types).length ? { types } : {}),
       ...(record.trim ? { trim: record.trim as string[] } : {}), ...(record.emptyToNull ? { emptyToNull: record.emptyToNull as string[] } : {}),
