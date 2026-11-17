@@ -38,7 +38,8 @@ function csv(rows: string[][]): Buffer {
     + rows.map(row => row.join(',')).join('\n') + '\n');
 }
 
-test('continuous correction: a real source correction supersedes the published row and reopens',
+// 合成 CSV 原件经真实 BD/R1/WFD 连续发布与更正；不代表供应商真实性或现场业务验收。
+test('continuous correction: synthetic source bytes traverse real publication, correction and reopening',
   { skip: !enabled, timeout: 240_000 }, async () => {
     const fixture = createFullChainFixture({ name: 'continuous-correction', machine: true,
       units: { date: { dimension: 'date' }, cny_per_share: { dimension: 'money_per_share' } } });
@@ -89,14 +90,19 @@ test('continuous correction: a real source correction supersedes the published r
           dimensions: { role: known, informationNature: unknown, businessObject: known,
             objectTime: unknown, purpose, structureGranularity: known }, intendedAction: 'inspect' }] },
         outputs: [{ outputId: 'observations', materialIds: [repairMaterialId], intendedAction: 'inspect',
+          stages: ['parse', 'clean', 'structure', 'annotate', 'check'],
           tables: [{ ...(originalTables[0] as WfdRecord), materialId: repairMaterialId }], target: originalTarget }] };
       const planned = await host.call('/processing/plans', { requestId: 'correction-repair-plan', input: repairInput }, 202);
       const planTask = await host.settled(planned.jobId, 120_000);
       assert.equal(planTask.status, 'succeeded', JSON.stringify(planTask.error));
       const repairPlanId = host.services.processing!.getByTask(planTask.id)!.plan!.planId;
-      const run = await host.call(`/processing/plans/${repairPlanId}/run`, { requestId: 'correction-repair-run' }, 202);
-      const runTask = await host.settled(run.jobId, 120_000);
-      assert.equal(runTask.status, 'succeeded', JSON.stringify(runTask.error));
+      const repairPlan = host.services.processing!.get(repairPlanId);
+      for (const step of repairPlan.steps) {
+        const run = await host.call(`/processing/plans/${repairPlanId}/steps/${step.stepId}/execute`,
+          { requestId: 'correction-repair-' + step.stepId }, 202);
+        const runTask = await host.settled(run.jobId, 120_000);
+        assert.equal(runTask.status, 'succeeded', JSON.stringify(runTask.error));
+      }
       const capabilities = await host.call('/corrections/capabilities');
       const registered = await host.call('/corrections/cases', { requestId: 'continuous-register', input: {
         caseId: 'case-continuous', kind: 'source_correction', errorType: 'source_content_correction',
@@ -152,6 +158,8 @@ test('continuous correction: a real source correction supersedes the published r
       const readRows = async (productId: string) => ((await host.services.r1Runtime!.client.fixedRead(
         newSnapshot, productId)).result as WfdRecord).rows as WfdRecord[];
       const sourceRows = await readRows(originalProduct);
+      assert.deepEqual(sourceRows.map(row => cellValue(row.row as WfdRecord)).sort(), ['1', '20', '3', '4'],
+        'Correction must retain both unchanged later-batch rows and the untouched original row');
       const sourceByKey = new Map(sourceRows.map(row =>
         [String((row.record_ref as WfdRecord).logical_key), row]));
       const correctedKey = 'source_row_8a141c63f6ebfc53c77198a6b7540f7c32f278cb681f710017ff7a01ceaadb35';
