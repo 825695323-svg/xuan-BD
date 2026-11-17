@@ -57,7 +57,11 @@ try {
     env.PYTHONNOUSERSITE = '1';
     // 在 JS 中枚举，避免 Windows shell 不展开通配符或空匹配导致 Node 自动发现其他测试。
     const files = pipelineOnly
-      ? ['modules/collection/source-field-profile.test.ts',
+      ? ['platform/capabilities/ocr/evidence.test.ts', 'apps/server/local-ocr-live.test.ts', 'apps/server/ocr-review-live.test.ts',
+        'apps/server/transcription-review.test.ts',
+        'platform/capabilities/transcription/progress.test.ts',
+        'platform/runtime/process-output.test.ts', 'platform/runtime/file-workspace.test.ts', 'apps/server/transcription-review-live.test.ts',
+        'modules/collection/source-field-profile.test.ts',
         'modules/collection/source-reported-table.test.ts',
         'modules/collection/semantic-dictionary-framework.test.ts',
         'modules/collection/processing-quality.test.ts',
@@ -67,11 +71,25 @@ try {
         'apps/server/price-action-boundary.test.ts',
         'apps/server/event-occurrence.test.ts',
         'apps/server/event-occurrence-r1.test.ts',
+        'apps/server/official-event-r1.test.ts',
+        'apps/server/official-event-lifecycle-r1.test.ts',
+        'modules/collection/event-text-integrity.test.ts',
+        'modules/collection/event-implementation-binding.test.ts',
         'apps/server/event-records-r1.test.ts',
         'apps/server/event-lifecycle-r1.test.ts',
+        'apps/server/relation-ingest-r1.test.ts',
+        'apps/server/relation-set-r1.test.ts',
+        'modules/collection/r1-relation.test.ts',
+        'platform/plugins/direct-relation-versions.test.ts',
+        'apps/server/relation-history-r1.test.ts',
+
+        'apps/server/financial-fact-r1.test.ts',
+        'apps/server/event-history-r1.test.ts',
         'modules/collection/r1-event.test.ts',
         'modules/collection/data-processing/event-text.test.ts',
         'apps/server/processing-dependencies.test.ts',
+        'apps/server/processing-record-dependencies.test.ts',
+        'modules/collection/processing-record-dependencies.test.ts',
         'apps/server/r1-dedup.test.ts',
         'apps/server/r1-coverage.test.ts',
         'modules/collection/r1-product-coverage.test.ts',
@@ -79,7 +97,7 @@ try {
         'apps/server/endpoint-adapter-r1.test.ts',
         'apps/server/record-evidence-r1.test.ts']
       : [...['modules/collection', 'modules/collection/data-processing', 'apps/server', 'platform/config', 'platform/resources',
-        'platform/capabilities/conversion', 'plugins/api-sources', 'plugins/api-sources/providers/werss', 'plugins/api-sources/providers/wechat'].flatMap(directory =>
+        'platform/capabilities/conversion', 'platform/capabilities/ocr', 'plugins/api-sources', 'plugins/api-sources/providers/werss', 'plugins/api-sources/providers/wechat'].flatMap(directory =>
         readdirSync(join(codeRoot, directory), { withFileTypes: true }).filter(entry => entry.isFile() && entry.name.endsWith('.test.ts'))
           .map(entry => join(directory, entry.name))),
         'scripts/adopt-product-machine-wiring.test.ts', 'scripts/adopt-polars-python.test.ts'].sort();

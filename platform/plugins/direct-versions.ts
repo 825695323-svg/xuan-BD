@@ -25,7 +25,8 @@ const groups = {
   compare: ['platform/capabilities/files/compare.ts'],
   web: ['platform/capabilities/browser/public-web.ts', 'platform/capabilities/browser/raw-page.ts', 'platform/capabilities/browser/html-extraction.ts'],
   search: ['platform/capabilities/browser/search.ts'],
-  transcription: ['platform/capabilities/transcription/local.ts', 'platform/resources/bundled.ts'],
+  transcription: ['platform/capabilities/transcription/local.ts', 'platform/capabilities/transcription/progress.ts', 'platform/resources/bundled.ts'],
+  localOcr: ['platform/capabilities/ocr/local.ts', 'platform/capabilities/ocr/evidence.ts', 'platform/capabilities/ocr/vision.swift', 'modules/collection/materials/ocr-adapter.ts'],
   video: ['platform/capabilities/transcription/video.ts', 'platform/capabilities/transcription/network.ts'],
   browser: ['platform/capabilities/browser/index.ts', 'platform/capabilities/browser/owned-page.ts', 'platform/capabilities/browser/sites.ts'],
   capture: ['plugins/capture-sources/index.ts', 'plugins/capture-sources/contracts.ts', 'plugins/capture-sources/sites.ts',
@@ -52,11 +53,12 @@ const groups = {
   materialRead: ['modules/collection/materials/service.ts', 'modules/collection/data-processing/material-inspector/index.ts'],
   materialProcess: ['modules/collection/materials/semantic.ts', 'modules/collection/materials/semantic-contracts.ts', 'modules/collection/data-processing/table-cleaner/index.ts'],
   materialTranscription: ['modules/collection/materials/media-adapter.ts'],
-  r1: ['modules/collection/conversation-r1.ts', 'modules/collection/r1-workspace.ts', 'modules/collection/r1-record-evidence.ts', 'modules/collection/r1-runtime.ts',
+  r1: ['modules/collection/conversation-r1.ts', 'modules/collection/r1-workspace.ts', 'modules/collection/r1-record-evidence.ts', 'modules/collection/structured-retrieval.ts', 'modules/collection/r1-runtime.ts',
     'modules/collection/r1-structured-handoff.ts', 'modules/collection/conversation-processing.ts', 'modules/collection/processing-plan.ts',
     'contracts/workspace-services.ts', 'contracts/r1-contracts.ts', 'adapters/database/wfd-product-machine.ts', 'adapters/database/wfd-transport.ts',
     'adapters/database/wfd-product-connection.ts', 'platform/config/connections.ts', 'platform/resources/bindings.ts',
-    'modules/collection/r1-paged-readback.ts', 'modules/collection/r1-event.ts', 'modules/collection/r1-tabular.ts', 'modules/collection/candidate-service.ts', 'modules/collection/candidate-object-storage.ts'],
+    'modules/collection/r1-paged-readback.ts', 'modules/collection/r1-event.ts', 'modules/collection/r1-relation.ts',
+    'wfd/product/protocol/schemas/wfd-common.schema.json', 'modules/collection/r1-tabular.ts', 'modules/collection/candidate-service.ts', 'modules/collection/candidate-object-storage.ts'],
 } as const;
 export type DirectImplementation = keyof typeof groups;
 const packageGroups: Partial<Record<DirectImplementation | 'common', readonly string[]>> = {

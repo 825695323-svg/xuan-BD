@@ -114,6 +114,7 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
     } else {
       implementation.push('material', 'materialRead'); configuration = options.conversationMaterialVersions?.(action) ?? null;
       if (['material.read', 'material.process'].includes(action)) implementation.push('materialProcess');
+      if (action === 'material.ocr') { implementation.push('localOcr'); configuration = { material: configuration, ocr: local.localOcr.captureVersions() }; }
       if (action === 'material.transcribe') {
         implementation.push('materialTranscription'); configuration = { material: configuration, transcription: local.localTranscription.captureVersions(action) };
       }
