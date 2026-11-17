@@ -152,3 +152,38 @@ test('采集源自定义目录临时失败不是删除，恢复后仅完整成�
     window.setInterval = originalInterval; window.clearInterval = originalClear; env.cleanup();
   }
 });
+
+test('算法紧凑详情区分登记参数、关联定义与真实执行，当前阻断不折叠', async () => {
+  const { PreferencesProvider, ToolsPage } = await loadPageComponents();
+  const env = browser(), previousFetch = globalThis.fetch;
+  const { createRoot } = await import('react-dom/client');
+  const root = createRoot(env.document.getElementById('root')!);
+  const { ALGORITHM_REGISTRY } = await import('../../../../modules/financial/algorithm-registry.js');
+  const { definitionFor } = await import('../../../../modules/financial/algorithm-definitions.js');
+  let invalid = false;
+  globalThis.fetch = async input => {
+    if (String(input) === '/api/ui/preferences') return reply(preferences);
+    assert.equal(String(input), '/api/ui/tool-library');
+    return reply({ status: 'ready', reason: null, tools: [{ ...ALGORITHM_REGISTRY[0], status: 'blocked',
+      reason: 'Synthetic missing input', missing: ['Synthetic fixed snapshot required'],
+      parameters: invalid ? [{ key: 'short_period', label: '短周期', defaultValue: '12' }] : ALGORITHM_REGISTRY[0]!.parameters,
+      definition: definitionFor('macd') }] });
+  };
+  try {
+    await act(() => root.render(<PreferencesProvider><ToolsPage /></PreferencesProvider>));
+    assert.deepEqual([...env.document.querySelectorAll('.object-detail-content > .object-detail-section h3')].map(e => e.textContent),
+      ['算法定义', '计算配置', '关联产物', '准入与执行状态']);
+    const diagnostics = env.document.querySelector('details.object-detail-diagnostics')!;
+    assert.equal(diagnostics.hasAttribute('open'), false);
+    assert.match(diagnostics.textContent ?? '', /DIFF_t/u);
+    assert.match(env.document.querySelector('.object-detail-content')?.textContent ?? '', /固定 12.*固定 26.*固定 9/u);
+    assert.match(env.document.querySelector('.object-detail-content')?.textContent ?? '', /本页未读取执行回执/u);
+    assert.equal(env.document.querySelector('.object-detail-blockers')?.closest('details'), null);
+    assert.match(env.document.querySelector('.object-detail-blockers')?.textContent ?? '', /Synthetic fixed snapshot required/u);
+    assert.match(env.document.querySelector('.object-detail-content')?.textContent ?? '', /Synthetic missing input/u);
+    invalid = true;
+    await act(() => env.document.querySelector<HTMLButtonElement>('.object-detail-head button')!.click());
+    assert.match(env.document.querySelector('[role="alert"]')?.textContent ?? '', /算法目录读取失败/u);
+    assert.equal(env.document.querySelector('.object-detail-content > .object-detail-section'), null);
+  } finally { await act(() => root.unmount()); globalThis.fetch = previousFetch; env.cleanup(); }
+});

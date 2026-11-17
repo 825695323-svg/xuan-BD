@@ -488,11 +488,12 @@ export function ApiSourcesPage() {
           ? <DetailHeader title={sourceLabel(selectedConnection)}
             status={selectedConnection.enabled ? words('已启用', 'Enabled') : words('已停用', 'Disabled')}
             tone={selectedConnection.enabled ? 'ready' : 'warning'}
-            meta={`${selectedConnection.alias} · ${selectedConnection.scopes.join(' / ')}`} />
+            meta={words('启用与路由是配置，不代表检查或实际运行成功。', 'Enablement and routing are configuration, not proof of a successful check or run.')} />
           : <DetailHeader title={market.label}
             status={configuredSources.length ? words('已配置', 'Configured') : words('未配置', 'Not configured')}
             tone={configuredSources.length ? 'ready' : 'neutral'}
             meta={inheritsGlobal && configuredSources.length > 0 ? words('继承全局默认编排', 'Inherits the global default arrangement') : undefined} />}
+      notices={<>{(sourceCheck.error || error) && <p className="object-detail-note">{words('页面读取与操作反馈，不表示当前所选来源的运行结果。', 'Page read/action feedback, not the execution result of the currently selected source.')}</p>}<SourceCheckError error={sourceCheck.error} />{error && <ErrorNote detail={error}>{words('接口源状态暂时无法读取。', 'API source status could not be read.')}</ErrorNote>}</>}
       summary={selection.pending ? undefined : selectedConnection
         ? <DetailFacts items={[
           { label: words('数据能力', 'Capabilities'), value: selectedOperations.length ? selectedOperations.map((operation) => operation.label).join(' · ') : words('没有公开运行动作', 'No public operations') },
@@ -500,7 +501,7 @@ export function ApiSourcesPage() {
           { label: words('最近检查', 'Latest check'), value: <SourceCheckLine check={selectedCheck} /> },
         ]} />
         : marketSummary}
-      diagnostics={selectedConnection ? <DetailDiagnostics label={words('来源标识与范围', 'Source identity and scope')}>
+      diagnostics={selectedConnection ? <DetailDiagnostics key={selectedConnection.id} label={words('来源标识与范围', 'Source identity and scope')}>
         <dl className="object-detail-facts">
           <div><dt>{words('连接编号', 'Connection ID')}</dt><dd><code>{selectedConnection.id}</code></dd></div>
           <div><dt>{words('别名', 'Alias')}</dt><dd>{selectedConnection.alias}</dd></div>
@@ -518,7 +519,6 @@ export function ApiSourcesPage() {
           {selectedConnection.enabled && selectedOperations.length > 0 && <button type="button" className="text-button"
             onClick={() => { setRunReceipt(null); setRunError(null); setRunSource(selectedConnection); }}>{words('运行…', 'Run…')}</button>}
         </div> : <>
-          {error && <ErrorNote detail={error}>{words('接口源状态暂时无法读取。', 'API source status could not be read.')}</ErrorNote>}
           {marketFilters}
           {marketTypes}
         </>}
@@ -527,7 +527,6 @@ export function ApiSourcesPage() {
   return <div className="data-page page-panes page-panes--api" data-settings-revision={sourceSettings?.revision ?? 'unknown'}>
     {nav}
     <div className="page-cards" aria-label={words('来源', 'Sources')}>
-      <SourceCheckError error={sourceCheck.error} />
       <div className="object-list">
         <button type="button" className="object-card" aria-current={!selectedConnection && !selection.pending ? 'true' : undefined} onClick={() => selection.select('__market__')}>
           <span className="object-card-main">

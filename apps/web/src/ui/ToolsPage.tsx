@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ToolLibraryTool, ToolLibraryView } from '../../../../contracts/tool-library';
 import { request } from '../api';
 import { ErrorNote, errorDetail, useWords } from './Controls';
-import { DetailFacts, DetailHeader, DetailSection, ObjectDetailPanel } from './ObjectDetailPanel';
+import { DetailDiagnostics, DetailFacts, DetailHeader, DetailSection, ObjectDetailPanel } from './ObjectDetailPanel';
 import { PageButton, PageEmpty, PageSearch } from './PageUI';
 import { useObjectSelection } from './useStoredSelection';
 import { setWorkspaceObject } from './workspace-context';
@@ -15,10 +15,15 @@ function isTool(value: unknown): value is ToolLibraryTool {
     && typeof value.title === 'string' && typeof value.description === 'string'
     && (value.status === 'ready' || value.status === 'blocked' || value.status === 'unavailable')
     && (value.reason === null || typeof value.reason === 'string')
+    && Array.isArray(value.parameters) && value.parameters.every(parameter => isRecord(parameter)
+      && typeof parameter.key === 'string' && typeof parameter.label === 'string'
+      && [parameter.defaultValue, parameter.min, parameter.max].every(number => typeof number === 'number' && Number.isFinite(number)))
+    && (value.sources === undefined || strings(value.sources))
     && strings(value.outputFields) && strings(value.limitations)
     && (value.requiredInputs === undefined || strings(value.requiredInputs))
     && (value.missing === undefined || strings(value.missing))
     && (value.definition === undefined || isRecord(value.definition) && Array.isArray(value.definition.formula)
+      && (value.definition.products === undefined || Array.isArray(value.definition.products) && value.definition.products.every(product => isRecord(product) && ['id', 'label', 'configurationId', 'note'].every(key => typeof product[key] === 'string')))
       && value.definition.formula.every(line => isRecord(line) && typeof line.output === 'string'
         && typeof line.expression === 'string' && (line.note === undefined || typeof line.note === 'string')));
 }
@@ -65,7 +70,7 @@ export function ToolsPage() {
   const visible = tools.filter(tool => [tool.title, tool.id, tool.description, ...(tool.requiredInputs ?? [])]
     .some(text => text.toLowerCase().includes(search)));
   const labels: Record<ToolLibraryTool['status'], string> = {
-    ready: words('可用', 'Available'),
+    ready: words('准入可用', 'Eligible'),
     blocked: words('受阻', 'Blocked'),
     unavailable: words('不可用', 'Unavailable'),
   };
@@ -103,7 +108,18 @@ export function ToolsPage() {
         setCatalog({ state: 'loading' });
         setReload(value => value + 1);
       }}>{words('重新读取', 'Refresh')}</PageButton>} />}
-      summary={facts.length > 0 && <DetailFacts items={facts} />}>
+      summary={facts.length > 0 && <DetailFacts items={facts} />}
+      diagnostics={selected && <DetailDiagnostics key={selectedId} label={words('公式、限制与实现来源', 'Formula, limitations and implementation sources')}>
+        {!!formula?.length && <DetailSection title={words('公式', 'Formula')}>
+          {formula.map(line => <p key={line.output} className="object-detail-value"><code>{line.expression}</code>{line.note && <> · {line.note}</>}</p>)}
+        </DetailSection>}
+        {selected.limitations.length > 0 && <DetailSection title={words('使用限制', 'Limitations')}>
+          <ul className="object-detail-value">{selected.limitations.map(item => <li key={item}>{item}</li>)}</ul>
+        </DetailSection>}
+        {!!selected.sources?.length && <DetailSection title={words('实现来源', 'Implementation sources')}>
+          <ul className="object-detail-value">{selected.sources.map(item => <li key={item}><code>{item}</code></li>)}</ul>
+        </DetailSection>}
+      </DetailDiagnostics>}>
       {catalog.state === 'loading' && <PageEmpty state="loading">{words('正在读取算法目录…', 'Loading the algorithm catalog…')}</PageEmpty>}
       {catalog.state === 'failed' && <ErrorNote detail={catalog.error}>{words('算法目录读取失败。', 'Could not load the algorithm catalog.')}</ErrorNote>}
       {view?.status === 'unavailable' && tools.length === 0 && <PageEmpty state="unavailable">
@@ -111,19 +127,27 @@ export function ToolsPage() {
       </PageEmpty>}
       {view?.status === 'ready' && tools.length === 0 && <PageEmpty>{words('暂无已登记算法。', 'No algorithms are registered.')}</PageEmpty>}
       {selected && <>
-        <p className="object-detail-note">{selected.description}</p>
-        {selected.status !== 'ready' && selected.reason && <PageEmpty state="unavailable">{selected.reason}</PageEmpty>}
-        {!!formula?.length && <DetailSection title={words('公式', 'Formula')}>
-          {formula.map(line => <p key={line.output} className="object-detail-value">
-            <code>{line.expression}</code>{line.note && <> · {line.note}</>}
-          </p>)}
-        </DetailSection>}
-        {requirements.length > 0 && <DetailSection title={words('待满足条件', 'Requirements')}>
+        {selected.reason && <p className="object-detail-value status-warning">{selected.reason}</p>}
+        {requirements.length > 0 && <div className="object-detail-blockers" role="status">
+          <strong>{words('待满足条件', 'Requirements')}</strong>
           <ul className="object-detail-value">{requirements.map(item => <li key={item}>{item}</li>)}</ul>
-        </DetailSection>}
-        {selected.limitations.length > 0 && <DetailSection title={words('使用限制', 'Limitations')}>
-          <ul className="object-detail-value">{selected.limitations.map(item => <li key={item}>{item}</li>)}</ul>
-        </DetailSection>}
+        </div>}
+        <DetailSection title={words('算法定义', 'Algorithm definition')}>
+          <p className="object-detail-value">{selected.description}</p>
+        </DetailSection>
+        <DetailSection title={words('计算配置', 'Calculation configuration')} note={words('登记参数，非已保存的运行配置', 'Registered parameters, not saved run configuration')}>
+          {selected.parameters.length ? <DetailFacts items={selected.parameters.map(parameter => ({ label: parameter.key,
+            value: parameter.min === parameter.max ? words(`固定 ${parameter.defaultValue}`, `Fixed ${parameter.defaultValue}`)
+              : words(`默认 ${parameter.defaultValue}；范围 ${parameter.min}–${parameter.max}`, `Default ${parameter.defaultValue}; range ${parameter.min}–${parameter.max}`) }))} />
+            : <p className="object-detail-value">{words('未登记参数。', 'No registered parameters.')}</p>}
+        </DetailSection>
+        <DetailSection title={words('关联产物', 'Related products')} note={words('定义关联，不是实际产物回执', 'Definition links, not actual product receipts')}>
+          {selected.definition?.products?.length ? <ul className="object-detail-value">{selected.definition.products.map(product => <li key={product.id}>{product.label} · {product.configurationId} · {product.note}</li>)}</ul>
+            : <p className="object-detail-value">{words('目录未登记产物关联；实际产物需按任务核对。', 'No product links are registered in this catalog; actual products require task evidence.')}</p>}
+        </DetailSection>
+        <DetailSection title={words('准入与执行状态', 'Eligibility and execution')}>
+          <p className="object-detail-value">{words('顶部状态仅为当前准入；本页未读取执行回执，不能据此判定已运行或成功。', 'The header shows eligibility only. This page has not read execution receipts and cannot establish that a run occurred or succeeded.')}</p>
+        </DetailSection>
       </>}
     </ObjectDetailPanel>
   </div>;
