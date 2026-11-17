@@ -109,3 +109,28 @@ test('current is a valid literal business key even though latest/current snapsho
   assert.equal((result.selections[0]!.rows[0]!.record_ref as { logical_key: string }).logical_key, 'current');
   await assert.rejects(selectWfdFixedRecords([{ ...selected, snapshotId: 'current' }], reader, new AbortController().signal));
 });
+
+test('explicit historical selections bind the cutoff and real holding stage, never accept latest or indeterminate inputs', async () => {
+  const history = { historyMode: 'system_held_at' as const, at: '2025-02-01T00:00:00Z', heldScope: 'synthetic-instance', usableStage: 'published_readable' as const };
+  const cutoff = { status: 'known', precision: 'second', earliest_utc: history.at,
+    latest_exclusive_utc: '2025-02-01T00:00:01Z', source_timezone: 'UTC' };
+  const selected = { snapshotId: 'snapshot', productId: 'product', businessKeys: ['one'] };
+  const page = { snapshot_id: 'snapshot', product_id: 'product', history_mode: history.historyMode, knowledge_cutoff: cutoff,
+    held_scope: history.heldScope, usable_stage: history.usableStage, complete: true, diagnostics: [],
+    rows: [{ record_ref: { logical_key: 'one', revision_id: 'version-one' }, values: { amount: { value: '1' } },
+      eligibility: { decision: 'eligible' }, held_scope: history.heldScope, usable_stage: history.usableStage, held_at: '2025-01-03T00:00:00Z' }],
+    page: { has_more: false, next_cursor: null } };
+  const read = async (result = page) => selectWfdFixedRecords([selected], async input => {
+    assert.equal(input.historyMode, history.historyMode); assert.equal(input.at, history.at);
+    assert.equal(input.usableStage, 'published_readable');
+    return { connection: { identity: 'synthetic' }, result };
+  }, new AbortController().signal, reason => { throw new Error(reason); }, history);
+  assert.equal((await read()).historyQualification, 'system_held_at');
+  for (const change of [
+    { history_mode: 'snapshot_contents' }, { complete: false }, { held_scope: 'other-instance' }, { usable_stage: 'acquired' },
+    { knowledge_cutoff: { ...cutoff, earliest_utc: '2025-02-02T00:00:00Z' } },
+    { diagnostics: [{ decision: 'indeterminate' }] },
+    { rows: [{ ...page.rows[0]!, held_at: '2025-03-01T00:00:00Z' }] },
+    { rows: [{ ...page.rows[0]!, held_scope: 'wrong-instance' }] },
+  ]) await assert.rejects(read({ ...page, ...change } as typeof page));
+});

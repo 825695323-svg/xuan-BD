@@ -1,8 +1,13 @@
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../../adapters/database/wfd-transport.js';
+import { isExplicitUtcInstant } from '../../../contracts/financial-value.js';
 import { TaskError } from '../../../platform/jobs/tasks.js';
 
 /** 现有 WFD read_product 受信只读连接；只接收明确产品与快照身份。 */
-export type WfdFixedRecordReader = (value: { snapshotId: string; productId: string; cursor?: string }, signal?: AbortSignal) =>
+export interface WfdFixedHistorySelection {
+  historyMode: 'market_known_at' | 'system_held_at'; at: string;
+  heldScope?: string; usableStage?: 'acquired' | 'custodied' | 'published_readable';
+}
+export type WfdFixedRecordReader = (value: { snapshotId: string; productId: string; cursor?: string } & Partial<WfdFixedHistorySelection>, signal?: AbortSignal) =>
   Promise<{ result: WfdRecord; connection?: unknown }>;
 export interface WfdFixedRecordSelection {
   snapshotId: string; productId: string; businessKeys: readonly string[];
@@ -19,12 +24,26 @@ export interface WfdFixedSelectionResult {
   connection: unknown;
   selections: WfdSelectedRecordSet[];
   /** 只声明固定快照内容，不把公布时间或原行版本冒充历史时点可得资格。 */
-  historyQualification: 'not_asserted';
+  historyQualification: 'not_asserted' | WfdFixedHistorySelection['historyMode'];
+  historySelection?: WfdFixedHistorySelection;
 }
 const identifier = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_.:/-]{1,128}$/u.test(value);
 const fixedIdentity = (value: unknown): value is string =>
   identifier(value) && !/^(?:latest|current)$/iu.test(value);
+
+export function readFixedHistorySelection(raw: unknown): WfdFixedHistorySelection {
+  if (!isWfdRecord(raw) || Object.keys(raw).some(key => !['historyMode', 'at', 'heldScope', 'usableStage'].includes(key))
+    || !['market_known_at', 'system_held_at'].includes(String(raw.historyMode))
+    || typeof raw.at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(raw.at)
+    || !isExplicitUtcInstant(raw.at)) throw new TaskError('WFD_FIXED_HISTORY', '历史选集须明确视角和真实秒级UTC截止，不推定日期的具体时刻。');
+  if (raw.historyMode === 'system_held_at') {
+    if (!identifier(raw.heldScope) || !['acquired', 'custodied', 'published_readable'].includes(String(raw.usableStage)))
+      throw new TaskError('WFD_FIXED_HISTORY', '系统历史必须明确持有实例和所需可用阶段。');
+  } else if (raw.heldScope !== undefined || raw.usableStage !== undefined)
+    throw new TaskError('WFD_FIXED_HISTORY', '市场历史不接受系统持有阶段替代公开时间。');
+  return structuredClone(raw) as unknown as WfdFixedHistorySelection;
+}
 
 /**
  * 受信固定行选集。整套选集内连接不变、分页完整、所选业务键唯一；
@@ -35,7 +54,9 @@ const fixedIdentity = (value: unknown): value is string =>
 export async function selectWfdFixedRecords(
   refs: readonly WfdFixedRecordSelection[], reader: WfdFixedRecordReader, signal: AbortSignal,
   onError: (reason: string) => never = reason => { throw new TaskError('WFD_FIXED_SELECTION', reason); },
+  historyInput?: WfdFixedHistorySelection,
 ): Promise<WfdFixedSelectionResult> {
+  const history = historyInput ? readFixedHistorySelection(historyInput) : undefined;
   if (!Array.isArray(refs) || !refs.length || refs.length > 8) onError('固定行选择最多八项，不能隐式扫描全部快照。');
   let connection: unknown;
   const selections: WfdSelectedRecordSet[] = [];
@@ -53,7 +74,7 @@ export async function selectWfdFixedRecords(
     do {
       signal.throwIfAborted();
       const received = await reader({
-        snapshotId: ref.snapshotId, productId: ref.productId, ...(cursor ? { cursor } : {}),
+        snapshotId: ref.snapshotId, productId: ref.productId, ...(history ?? {}), ...(cursor ? { cursor } : {}),
       }, signal);
       if (connection !== undefined && canonicalWfdJson(received.connection ?? null) !== canonicalWfdJson(connection)) {
         onError('同一次固定选集读取期间 WFD 受信连接身份变化。');
@@ -64,14 +85,30 @@ export async function selectWfdFixedRecords(
         || !Array.isArray(page.rows) || !isWfdRecord(page.page)
         || typeof page.page.has_more !== 'boolean'
         || page.rows.length > 100) onError('WFD 固定快照/产品或分页返回不完整。');
-      if (page.history_mode !== undefined && page.history_mode !== 'snapshot_contents') {
+      if (!history && page.history_mode !== undefined && page.history_mode !== 'snapshot_contents') {
         onError('固定行选集只接收 snapshot_contents，不声明历史时点可得。');
+      }
+      if (history) {
+        const cutoff = { status: 'known', earliest_utc: history.at,
+          latest_exclusive_utc: new Date(Date.parse(history.at) + 1000).toISOString().replace('.000Z', 'Z'),
+          precision: 'second', source_timezone: 'UTC' };
+        if (page.history_mode !== history.historyMode || canonicalWfdJson(page.knowledge_cutoff) !== canonicalWfdJson(cutoff)
+          || page.held_scope !== (history.heldScope ?? null) || page.usable_stage !== (history.usableStage ?? null)
+          || !Array.isArray(page.diagnostics) || page.diagnostics.some(item => !isWfdRecord(item)
+            || item.decision === 'indeterminate' || isWfdRecord(item.eligibility) && item.eligibility.decision === 'indeterminate')
+          || !page.page.has_more && page.complete !== true) onError('历史固定选集的截止、阶段或完整性未满足；不回退最新值或使用部分输入。');
       }
       for (const row of page.rows) {
         if (++count > 5000) onError('固定产品扫描超过五千行预算，不截取结果冒充完整。');
         if (!isWfdRecord(row) || !isWfdRecord(row.record_ref) || !isWfdRecord(row.values)) {
           onError('WFD 固定行缺记录版本或原始字段。');
         }
+        if (history && (!isWfdRecord(row.eligibility) || row.eligibility.decision !== 'eligible'))
+          onError('历史固定输入未返回逐行可用资格。');
+        if (history?.historyMode === 'system_held_at' && (row.held_scope !== history.heldScope
+          || row.usable_stage !== history.usableStage || typeof row.held_at !== 'string'
+          || !isExplicitUtcInstant(row.held_at) || Date.parse(row.held_at) > Date.parse(history.at)))
+          onError('系统历史输入缺少所需阶段的真实持有时间，不能从公开或请求时间补填。');
         const record = row.record_ref;
         const key = record.logical_key ?? record.record_id;
         if (!identifier(key)) onError('来源行缺稳定业务键。');
@@ -99,5 +136,6 @@ export async function selectWfdFixedRecords(
     selections.push({ selection: ref, rows, selectedRowsSha256: wfdSha256(canonicalWfdJson(rows)),
       recordVersions: rows.map(row => row.record_ref as WfdRecord) });
   }
-  return { connection: connection ?? null, selections, historyQualification: 'not_asserted' };
+  return { connection: connection ?? null, selections, historyQualification: history?.historyMode ?? 'not_asserted',
+    ...(history ? { historySelection: history } : {}) };
 }
