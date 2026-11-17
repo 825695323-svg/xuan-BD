@@ -8,7 +8,7 @@ test('explicit object reference projects only display identity and exact API mar
   assert.ok(text.startsWith('```json\n'));
   assert.ok(text.endsWith('\n```'));
   const value = JSON.parse(text.slice(8, -4));
-  assert.deepEqual(Object.keys(value), ['schema', 'scope', 'page', 'kind', 'id', 'label', 'market']);
+  assert.deepEqual(Object.keys(value), ['schema', 'scope', 'page', 'kind', 'id', 'label', 'versionRefs', 'diagnosticRefs', 'businessScope', 'market']);
   assert.equal(value.scope, 'display_reference_not_execution_authority'); assert.equal(value.label, '```\nlabel');
   assert.deepEqual(value.market, { id: 'cn', label: 'China' });
   assert.equal(text.includes('never-forward'), false); assert.equal(text.includes('arbitrary detail'), false);
@@ -38,6 +38,7 @@ test('display object epoch invalidates A-to-B-to-A and pending transitions witho
   const a = { page: 'capture', kind: 'source' as const, id: 'a', label: 'A' };
   setWorkspaceObject(a); const first = currentWorkspaceObject().revision;
   setWorkspaceObject({ ...a }); assert.equal(currentWorkspaceObject().revision, first);
+  assert.equal(currentWorkspaceObject().object, a, 'Identical reconstructed catalogue references retain the existing snapshot and do not republish');
   setWorkspaceObject({ ...a, id: 'b' }); setWorkspaceObject(a);
   assert.ok(currentWorkspaceObject().revision > first);
   const beforePending = currentWorkspaceObject().revision;

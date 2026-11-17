@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ObjectReferenceEvidence } from '../object-reference-evidence';
 
 /**
  * 当前选中业务对象的统一显示引用入口。
@@ -12,6 +13,7 @@ export interface WorkspaceObjectRef {
   id: string;
   label: string;
   detail?: string;
+  evidence?: ObjectReferenceEvidence;
   market?: { id: string; label: string };
 }
 
@@ -23,7 +25,8 @@ export function currentWorkspaceObject(): { object: WorkspaceObjectRef | null; r
 const listeners = new Set<(value: WorkspaceObjectRef | null) => void>();
 
 export function setWorkspaceObject(value: WorkspaceObjectRef | null): void {
-  if (JSON.stringify(current) !== JSON.stringify(value)) revision += 1;
+  if (JSON.stringify(current) === JSON.stringify(value)) return;
+  revision += 1;
   current = value;
   for (const listener of listeners) {
     try { listener(value); } catch { /* 单个订阅失败不影响其他订阅者。 */ }

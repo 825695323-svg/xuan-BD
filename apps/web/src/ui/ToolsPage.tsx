@@ -5,6 +5,7 @@ import { ErrorNote, errorDetail, useWords } from './Controls';
 import { DetailDiagnostics, DetailFacts, DetailHeader, DetailSection, ObjectDetailPanel } from './ObjectDetailPanel';
 import { PageButton, PageEmpty, PageSearch } from './PageUI';
 import { useObjectSelection } from './useStoredSelection';
+import { algorithmReferenceEvidence } from '../object-reference-evidence';
 import { setWorkspaceObject } from './workspace-context';
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -62,9 +63,9 @@ export function ToolsPage() {
   const selectedId = selected?.id;
   const selectedTitle = selected?.title;
   useEffect(() => {
-    setWorkspaceObject(selectedId && selectedTitle ? { page: 'tools', kind: 'algorithm', id: selectedId, label: selectedTitle } : null);
+    setWorkspaceObject(selectedId && selectedTitle && selected && view ? { page: 'tools', kind: 'algorithm', id: selectedId, label: selectedTitle, evidence: algorithmReferenceEvidence(view, selected) } : null);
     return () => setWorkspaceObject(null);
-  }, [selectedId, selectedTitle]);
+  }, [selectedId, selectedTitle, selected, view]);
 
   const search = query.trim().toLowerCase();
   const visible = tools.filter(tool => [tool.title, tool.id, tool.description, ...(tool.requiredInputs ?? [])]

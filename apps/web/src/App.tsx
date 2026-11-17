@@ -106,6 +106,7 @@ function Application() {
       setObjectAskError(words('对象、会话或本地资料资格已变化；请取消后重新选择。', 'The object, conversation or local data eligibility changed. Cancel and select again.')); return;
     }
     try {
+      if (objectReferenceText(currentWorkspaceObject().object!) !== intent.text) throw new Error('OBJECT_REFERENCE_EVIDENCE_CHANGED');
       current.appendDraftReference(intent.text, { conversationId: intent.target.conversationId, branchId: intent.target.branchId,
         generation: intent.target.generation!, revision: intent.target.localRevision });
       // The manager synchronously confirmed the exact branch edit; persistence may still be pending.

@@ -158,8 +158,14 @@ async function previewObject(browser: Browser, english = false) {
   const text = await browser.evaluate<string>("document.querySelector('pre.object-reference-preview').textContent");
   assert.ok(text.startsWith('```json\n') && text.endsWith('\n```'));
   const reference = JSON.parse(text.slice(8, -4));
-  assert.equal(reference.schema, 'bd.ui-object-reference/1'); assert.equal(reference.scope, 'display_reference_not_execution_authority');
-  assert.deepEqual(Object.keys(reference).sort(), ['schema', 'scope', 'page', 'kind', 'id', 'label', ...(reference.page === 'api-sources' ? ['market'] : [])].sort());
+  assert.equal(reference.schema, 'bd.ui-object-reference/2'); assert.equal(reference.scope, 'display_reference_not_execution_authority');
+  assert.deepEqual(Object.keys(reference).sort(), ['schema', 'scope', 'page', 'kind', 'id', 'label', 'versionRefs', 'diagnosticRefs', 'businessScope', ...(reference.page === 'api-sources' ? ['market'] : [])].sort());
+  assert.equal(reference.businessScope.actualCoverage, 'unknown');
+  assert.equal(reference.businessScope.runtimeParameters, 'not_included');
+  assert.equal(reference.diagnosticRefs.stableException.state, 'unknown');
+  const denyKeys = (value: unknown): void => { if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) { assert.ok(!['baseUrl', 'token', 'credential', 'parameters', 'reason', 'configurationDigest'].includes(key), 'Private/unscoped field leaked: ' + key); denyKeys(child); } };
+  denyKeys(reference); assert.doesNotMatch(text, /https?:\/\/|synthetic-private-reason|synthetic-token-sentinel/u);
   return { text, reference };
 }
 async function dialogAction(browser: Browser, label: string, twice = false) {
@@ -310,6 +316,33 @@ test('actual three-page selections preserve shared conversation and survive real
           assert.deepEqual(Object.keys(preview.reference.market).sort(), ['id', 'label']);
           assert.equal(preview.reference.market.id, Object.keys(apiSelections)[0]!.split(':')[1]);
         }
+        if (page === 'api-sources') {
+          const view = await host.services.sourceSettings.view();
+          const connection = view.connections.find(item => item.id === preview.reference.id)!; assert.ok(connection);
+          const plugin = view.apiPlugins.find(item => item.id === connection.pluginId)!; assert.ok(plugin);
+          assert.deepEqual(preview.reference.versionRefs.find((v: { kind: string }) => v.kind === 'source_settings_document'),
+            { kind: 'source_settings_document', objectId: 'source-settings', version: view.revision, state: 'known' });
+          assert.deepEqual(preview.reference.versionRefs.find((v: { kind: string }) => v.kind === 'api_plugin'),
+            { kind: 'api_plugin', objectId: plugin.id, version: plugin.version, state: 'known' });
+          assert.equal(preview.reference.businessScope.marketId, preview.reference.market.id);
+          assert.equal(preview.reference.businessScope.scopeId, 'CN/A_STOCK', 'Fixture restores the initial mainland market, not its UI id as a backend scope');
+          assert.ok(view.scopes.some(item => item.id === preview.reference.businessScope.scopeId));
+        } else if (page === 'capture') {
+          assert.deepEqual(preview.reference.businessScope.registeredOperations, ['read-page']);
+          assert.equal(preview.reference.businessScope.kind, 'registered_capture');
+          assert.equal(preview.reference.versionRefs.find((v: { kind: string }) => v.kind === 'capture_registry').state, 'unknown');
+        } else {
+          const view = host.workspaceServices.toolLibrary!.view(), tool = view.tools.find(item => item.id === preview.reference.id)!; assert.ok(tool);
+          const definition = tool.definition!;
+          const method = definition.semantics?.filter(item => item.key === 'methodVersion' && item.state === 'fixed') ?? [];
+          assert.equal(preview.reference.versionRefs.find((v: { kind: string }) => v.kind === 'mathematical_method').version, method.length === 1 ? method[0]!.value : null);
+          const actualImplementations = preview.reference.versionRefs.filter((v: { kind: string }) => v.kind === 'algorithm_implementation');
+          assert.deepEqual(actualImplementations.map((v: { objectId: string | null; version: string | null }) => [v.objectId, v.version]),
+            definition.implementations?.length ? definition.implementations.map(item => [item.id, item.version ?? null]) : [[null, null]]);
+          assert.deepEqual(preview.reference.versionRefs.find((v: { kind: string }) => v.kind === 'selected_algorithm_configuration'),
+            { kind: 'selected_algorithm_configuration', objectId: null, version: null, state: 'unknown' });
+          assert.equal(preview.reference.businessScope.selectedConfigurationId, null);
+        }
         await dialogScreenshot(browser, visuals, 'object-preview-' + page + '-en');
         const selectedPage: string = await browser.evaluate<string>("document.querySelector('.app-shell').getAttribute('data-page')");
         await dialogAction(browser, 'Add to current draft', true);
@@ -376,6 +409,35 @@ test('actual three-page selections preserve shared conversation and survive real
       assert.deepEqual(host.core.getState(secondId).messages, second.messages);
       assert.deepEqual(host.services.tasks.list(), tasks); assert.deepEqual(host.workspaceServices.tasks.list(), workspaceTasks);
       assert.equal(browser.requests.filter(r => r.method === 'POST' && /\/api\/(conversations\/[^/]+\/(?:send|send-requests)|tasks)/u.test(new URL(r.url).pathname)).length, 0);
+      // Synthetic observations are recorded by the real settings service only.
+      // They are explicitly blocked/unknown, never evidence of supplier access.
+      await previewObject(browser, true);
+      const sourceSettings = host.services.sourceSettings;
+      const expiredCheck = sourceSettings.saveCheck({ id: 'synthetic-selection-a', checkedAt: new Date(Date.now() - 600000).toISOString(),
+        configurationRevision: sourceSettings.get().revision, status: 'blocked', reachable: null, authorized: null, capabilityAvailable: null, freshness: 'unknown',
+        reason: 'synthetic-private-reason https://fixture.example.test/private synthetic-token-sentinel parameters=private' });
+      await browser.until("[...document.querySelectorAll('dialog[open] button')].some(e=>e.textContent==='Add to current draft'&&e.disabled)", 'New real check observation must invalidate an old frozen preview', 25000);
+      await dialogAction(browser, 'Cancel');
+      const expired = await previewObject(browser, true);
+      assert.equal(expired.reference.diagnosticRefs.latestCheck.validity, 'expired');
+      assert.equal(expired.reference.diagnosticRefs.latestCheck.checkedAt, expiredCheck.checkedAt);
+      assert.equal(expired.reference.diagnosticRefs.latestCheck.executionEligibility, 'not_asserted');
+      const beforeConfiguration = sourceSettings.get();
+      sourceSettings.update(beforeConfiguration, 'synthetic-reference-revision-only');
+      assert.equal(sourceSettings.get().revision, beforeConfiguration.revision + 1);
+      await browser.until("[...document.querySelectorAll('dialog[open] button')].some(e=>e.textContent==='Add to current draft'&&e.disabled)", 'Real configuration revision must invalidate preview', 25000);
+      await dialogAction(browser, 'Cancel');
+      const mismatch = await previewObject(browser, true);
+      assert.equal(mismatch.reference.diagnosticRefs.latestCheck.validity, 'configuration_mismatch');
+      assert.equal(mismatch.reference.diagnosticRefs.latestCheck.configurationRevision, beforeConfiguration.revision);
+      assert.equal(mismatch.reference.versionRefs.find((v: { kind: string }) => v.kind === 'source_settings_document').version, sourceSettings.get().revision);
+      await dialogAction(browser, 'Add to current draft');
+      const evidenceExpected = secondExpected + '\n\n' + mismatch.text;
+      for (let attempt = 0; attempt < 100 && host.core.getDraft(secondId, 'main', '', second.branchId).text !== evidenceExpected; attempt++) await delay(50);
+      assert.equal(host.core.getDraft(secondId, 'main', '', second.branchId).text, evidenceExpected);
+      assert.doesNotMatch(evidenceExpected, /synthetic-private-reason|synthetic-token-sentinel|https?:\/\//u);
+      assert.equal(host.core.getDraft(initial.conversationId, 'main', '', initial.branchId).text, expectedDraft);
+      assert.deepEqual(host.services.tasks.list(), tasks); assert.deepEqual(host.workspaceServices.tasks.list(), workspaceTasks);
       assert.equal(browser.blockedRequests.length, 0);
     } finally { await browser?.close(); await host.close(); }
   });
@@ -398,5 +460,16 @@ test('object selection HTTP fixture uses real registered catalogue and private c
       const state = await stateResponse.json(); assert.equal(state.conversationId, host.core.getState().conversationId);
       const draftResponse = await fetch(host.url + `api/conversations/${state.conversationId}/draft`, { headers }); assert.equal(draftResponse.status, 200);
       assert.equal(host.services.tasks.list().length, 0);
+      const settings = host.services.sourceSettings, before = settings.get();
+      const check = settings.saveCheck({ id: 'synthetic-selection-a', checkedAt: new Date(Date.now() - 600000).toISOString(), configurationRevision: before.revision,
+        status: 'blocked', reachable: null, authorized: null, capabilityAvailable: null, freshness: 'unknown', reason: 'Explicit synthetic observation, no external check performed' });
+      const checkedResponse = await fetch(host.url + 'api/ui/source-settings', { headers }); assert.equal(checkedResponse.status, 200);
+      const checked = await checkedResponse.json(), observed = checked.checks.find((item: { id: string }) => item.id === check.id);
+      assert.equal(observed.checkedAt, check.checkedAt); assert.equal(observed.configurationRevision, before.revision);
+      assert.equal(observed.status, 'partial'); assert.ok(Date.parse(observed.validUntil) < Date.now());
+      settings.update(before, 'synthetic-reference-http-revision');
+      const updatedResponse = await fetch(host.url + 'api/ui/source-settings', { headers }); assert.equal(updatedResponse.status, 200);
+      const updated = await updatedResponse.json(); assert.equal(updated.revision, before.revision + 1);
+      assert.equal(updated.checks.find((item: { id: string }) => item.id === check.id).configurationRevision, before.revision);
     } finally { await host.close(); }
   });

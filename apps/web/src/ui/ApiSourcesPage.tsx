@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { apiReferenceEvidence } from '../object-reference-evidence';
 import { setWorkspaceObject } from './workspace-context';
 import { useObjectSelection } from './useStoredSelection';
 import type { DragEvent } from 'react';
@@ -265,8 +266,8 @@ export function ApiSourcesPage() {
   useEffect(() => {
     if (selection.pending || !sourceSettings || error) { setWorkspaceObject(null); return; }
     setWorkspaceObject(selectedConnection
-      ? { page: 'api-sources', kind: 'supplier', id: selectedConnection.id, label: sourceLabel(selectedConnection), detail: marketLabelOf(selected), market: { id: selected, label: marketLabelOf(selected) } }
-      : { page: 'api-sources', kind: 'market', id: selected, label: marketLabelOf(selected), market: { id: selected, label: marketLabelOf(selected) } });
+      ? { page: 'api-sources', kind: 'supplier', id: selectedConnection.id, label: sourceLabel(selectedConnection), detail: marketLabelOf(selected), market: { id: selected, label: marketLabelOf(selected) }, evidence: apiReferenceEvidence(sourceSettings, selectedConnection?.id ?? null, selected, scopeId ?? null) }
+      : { page: 'api-sources', kind: 'market', id: selected, label: marketLabelOf(selected), market: { id: selected, label: marketLabelOf(selected) }, evidence: apiReferenceEvidence(sourceSettings, null, selected, scopeId ?? null) });
   }, [selectedConnection, selected, selection.pending, sourceSettings, error]);
   useEffect(() => () => setWorkspaceObject(null), []);
   const supportsType = (connection: SourceConnection, operationId: SourceOperationId) =>
