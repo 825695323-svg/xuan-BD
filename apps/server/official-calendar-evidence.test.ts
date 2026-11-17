@@ -18,6 +18,17 @@ test('captured official holiday notices retain source and conversion evidence wi
     let host = await openFullChainHost(fixture);
     const manifest = JSON.parse(readFileSync(join(rawRoot!, 'manifest.json'), 'utf8'));
     assert.equal(manifest.kind, 'explicit_official_holiday_notice_capture'); assert.equal(manifest.fixture, false);
+    assert.equal(manifest.bdSourceFetch.status, 'failed');
+    assert.equal(manifest.bdSourceFetch.errorCode, 'WEB_ADDRESS_BLOCKED');
+    assert.equal(manifest.bdSourceFetch.action, 'source.fetch');
+    assert.equal(manifest.bdSourceFetch.sourceUrl, notices[0]!.url);
+    assert.equal(manifest.bdSourceFetch.evidenceFile, 'bd-source-fetch-failure.json');
+    const failureBytes = readFileSync(join(rawRoot!, manifest.bdSourceFetch.evidenceFile));
+    assert.equal(wfdSha256(failureBytes), manifest.bdSourceFetch.evidenceSha256);
+    const failure = JSON.parse(failureBytes.toString());
+    assert.equal(failure.taskId, manifest.bdSourceFetch.taskId);
+    assert.equal(failure.action, 'source.fetch'); assert.equal(failure.sourceUrl, notices[0]!.url);
+    assert.equal(failure.status, 'failed'); assert.equal(failure.error.code, 'WEB_ADDRESS_BLOCKED'); assert.equal(failure.result, null);
     const proofs: any[] = [];
     try {
       await host.call('/retrieval/settings', { requestId: 'calendar-no-auto-register', autoRegister: 'disabled' });
@@ -66,7 +77,7 @@ test('captured official holiday notices retain source and conversion evidence wi
         assert.equal(host.services.processing!.get(planId).outputs[0]!.publishEligible, false);
         proofs.push({ ...notice, acquisition: manifest.acquisition, bdSourceFetch: manifest.bdSourceFetch, receipt, materialId: material.materialId, conversionRef,
           derivedEvidenceMaterialId: materialId, planId, rowsSha256: wfdSha256(canonicalWfdJson(rows)),
-          qualification: { scope: '2026_partial_holiday_notice_only', sourceAuthenticity: 'official_https_content_observed',
+          qualification: { scope: '2026_partial_holiday_notice_only', sourceAuthenticity: 'capture_manifest_claim_not_independently_verified',
             independentCalendarVerification: false, fullSessionCalendar: 'unknown', securityLifecycle: 'unknown',
             vendorHistoryWindow: 'unknown', historicalAvailability: 'not_asserted', publication: 'not_requested', automaticBackfill: false } });
       }
