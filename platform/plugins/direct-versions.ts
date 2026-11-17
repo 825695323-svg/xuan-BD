@@ -25,7 +25,7 @@ const groups = {
   compare: ['platform/capabilities/files/compare.ts'],
   web: ['platform/capabilities/browser/public-web.ts', 'platform/capabilities/browser/raw-page.ts', 'platform/capabilities/browser/html-extraction.ts'],
   search: ['platform/capabilities/browser/search.ts'],
-  transcription: ['platform/capabilities/transcription/local.ts', 'platform/resources/bundled.ts'],
+  transcription: ['platform/capabilities/transcription/local.ts', 'platform/capabilities/transcription/progress.ts', 'platform/resources/bundled.ts'],
   localOcr: ['platform/capabilities/ocr/local.ts', 'platform/capabilities/ocr/evidence.ts', 'platform/capabilities/ocr/vision.swift', 'modules/collection/materials/ocr-adapter.ts'],
   video: ['platform/capabilities/transcription/video.ts', 'platform/capabilities/transcription/network.ts'],
   browser: ['platform/capabilities/browser/index.ts', 'platform/capabilities/browser/owned-page.ts', 'platform/capabilities/browser/sites.ts'],

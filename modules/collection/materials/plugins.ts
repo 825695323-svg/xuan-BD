@@ -23,6 +23,9 @@ export type MaterialMediaTextResult = {
   textReference: { fileRefId: string; fileRefVersion: number; sha256: string };
   /** 组件原生时间段输出另存，不把进度输出或模型推断当作定位证据。 */
   evidenceReference?: { fileRefId: string; fileRefVersion: number; sha256: string };
+  /** Execution-time probe and model bytes; absent on historical tasks, never backfilled. */
+  probeReference?: { fileRefId: string; fileRefVersion: number; sha256: string };
+  recognition?: { backend: 'whisper.cpp-local'; modelSha256: string; durationMs: number };
   /** 完整时间段留在原生输出；有界任务结果明确返回截断状态。 */
   segmentCount?: number;
   segmentsTruncated?: boolean;

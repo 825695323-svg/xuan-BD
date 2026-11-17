@@ -23,6 +23,10 @@ test('actual manifest-verified local Whisper preserves native transcript evidenc
       assert.equal(host.services.direct.registry.get('audio.transcribe').availability.available, true);
       const task = startDirect(host, 'audio.transcribe', { fileRefId: ref.id }, 'public-local-transcription');
       const finished = await host.settled(task.id, 240000);
+      const progressEvents = host.services.tasks.events(task.id).filter(e => ['PROGRESS', 'WORKER_STATE', 'SIDE_EFFECT_RESULT'].includes(e.type));
+      console.log('TRANSCRIPTION_NUMERIC_DIAGNOSTICS', JSON.stringify({ budget: host.services.tasks.getBudget(task.id),
+        events: progressEvents.map(e => ({ type: e.type, timestamp: e.timestamp,
+          ...(e.type === 'PROGRESS' && (e.data as any).data?.basis === 'whisper_native_progress' ? { nativePercent: (e.data as any).data.percent } : {}) })) }));
       assert.equal(finished.status, 'succeeded', JSON.stringify(finished.error));
       const data = finished.result!.data as any;
       assert.equal(data.backend, 'whisper.cpp-local'); assert.equal(data.source.sha256, sampleSha256);

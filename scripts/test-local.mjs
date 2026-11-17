@@ -58,6 +58,9 @@ try {
     // 在 JS 中枚举，避免 Windows shell 不展开通配符或空匹配导致 Node 自动发现其他测试。
     const files = pipelineOnly
       ? ['platform/capabilities/ocr/evidence.test.ts', 'apps/server/local-ocr-live.test.ts', 'apps/server/ocr-review-live.test.ts',
+        'apps/server/transcription-review.test.ts',
+        'platform/capabilities/transcription/progress.test.ts',
+        'platform/runtime/process-output.test.ts', 'platform/runtime/file-workspace.test.ts', 'apps/server/transcription-review-live.test.ts',
         'modules/collection/source-field-profile.test.ts',
         'modules/collection/source-reported-table.test.ts',
         'modules/collection/semantic-dictionary-framework.test.ts',
