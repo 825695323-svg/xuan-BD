@@ -38,7 +38,8 @@ function pageFromHash(): Page {
 function Application() {
   const words = useWords(), chat = useConversation('pi'), { t } = usePreferences();
   // 真实任务流只在这里订阅一次，会话视图与任务中心共用。
-  const tasks = useConversationTasks(chat.conversation?.conversationId);
+  const taskFeed = useConversationTasks(chat.conversation?.conversationId);
+  const tasks = taskFeed.tasks;
   const [page, setPage] = useState<Page>(pageFromHash);
   const pageTitle = t(PAGE_TITLE_KEYS[page]);
   const viewedObject = useWorkspaceObject(page);
@@ -146,7 +147,7 @@ function Application() {
     {objectAskError && !objectAsk && <ErrorNote>{objectAskError}</ErrorNote>}
     {objectAskNotice && <div className="page-notice" role="status">{words('引用已附加到草稿，尚未发送；保存状态请以输入框为准。', 'Reference added to the draft, not sent. Check the composer for save status.')}<PageButton onClick={() => setObjectAskNotice(false)}>{words('关闭', 'Dismiss')}</PageButton></div>}
     <WorkspaceLayout onAskObject={['capture', 'api-sources', 'tools'].includes(page) ? askObject : undefined} canAskObject={mayAddObject(chat) && !objectAsk}
-      title={pageTitle} pageKey={page} contextLabel={pageTitle} tasks={tasks}
+      title={pageTitle} pageKey={page} contextLabel={pageTitle} tasks={tasks} taskFeed={taskFeed}
       showDirectory={!['capture', 'api-sources', 'tools', 'conversations', 'database'].includes(page)}
       showAgent={page !== 'conversations' && page !== 'database'}
       agent={<ConversationView chat={chat} hidden={false} dispatchBlocked={runtime?.control.stopped ?? false} controlUnconfirmed={!runtime || !!runtimeError} compact tasks={tasks} />}>

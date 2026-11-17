@@ -501,3 +501,14 @@
 .object-reference-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow-y: auto; font-size: var(--ui-meta-size); }
 .agent-context > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .agent-context > button { flex: 0 0 auto; margin-inline-start: auto; }
+
+/* Read-only task detail stays within the existing task pane. */
+.agent-task-feed { display: flex; align-items: center; gap: var(--ui-space-2); color: var(--muted); font-size: var(--ui-meta-size); }
+.agent-task-feed > span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.agent-task-feed > button { flex: 0 0 auto; }
+.agent-task-row progress { width: 100%; accent-color: var(--accent); }
+.agent-task-details { margin-top: var(--ui-space-2); font-size: var(--ui-meta-size); overflow-wrap: anywhere; }
+.agent-task-details summary { cursor: pointer; min-height: var(--ui-control-height); display: list-item; align-content: center; }
+.agent-task-details dl { margin: var(--ui-space-2) 0; }
+.agent-task-details dt { color: var(--muted); }
+.agent-task-details dd { margin: 0 0 var(--ui-space-2); }
