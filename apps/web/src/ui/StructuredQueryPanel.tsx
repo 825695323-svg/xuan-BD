@@ -8,6 +8,7 @@ import { PageField } from './PageUI';
 import { R1HistoryError, sameR1ReadConnection } from '../r1-read-history';
 import { buildR1ContextHistory } from '../r1-context-history';
 import { buildR1FilterHistory, assertR1FilterEcho } from '../r1-filter-history';
+import { assertR1JointEcho } from '../r1-joint-history';
 
 interface Clause { field: string; operator: string; value: string; second: string; otherField: string;
   negate: boolean; includeLow: boolean; includeHigh: boolean }
@@ -254,14 +255,14 @@ function FilterQueryPanel({ ready }: { ready: boolean }) {
       indexVersion, mode: history === 'snapshot_contents' ? null : history, asOf: knowledge?.earliest_utc ?? null } } : {}) };
   };
   const execute = (input: { structured: QueryRecord; documents?: QueryRecord }, page: number) => act(async current => {
-    const previousHash = page > 1 ? String(result?.query_hash) : undefined;
+    const previousHash = page > 1 ? String(input.documents ? object(result?.structured).query_hash : result?.query_hash) : undefined;
     setResult(null); setLastRequest(null);
     const response = input.documents ? await structuredQueryApi.joint(input) : await structuredQueryApi.filter(input.structured);
     if (!current()) return;
-    if (!input.documents) {
-      if (!discovery) throw new Error(words('固定产品发现已失效。', 'The fixed product discovery is no longer valid.'));
-      assertR1FilterEcho(input.structured, response, discovery, previousHash);
-    }
+    if (!discovery) throw new Error(words('固定产品发现已失效。', 'The fixed product discovery is no longer valid.'));
+    if (input.documents) await assertR1JointEcho({ structured: input.structured, documents: input.documents }, response, discovery, previousHash);
+    else assertR1FilterEcho(input.structured, response, discovery, previousHash);
+    if (!current()) return;
     setLastRequest(input); setResult(response); setPageNumber(page);
   });
   const structured = result?.schema === 'bd.structured-document-retrieval/1' ? object(result.structured) : result ?? {}, page = object(structured.page);
@@ -277,7 +278,7 @@ function FilterQueryPanel({ ready }: { ready: boolean }) {
       const [found, versions] = await Promise.all([r1Api.discoverProducts(snapshot.snapshotId), structuredQueryApi.indexes()]);
       if (!current()) return;
       if (!sameR1ReadConnection(snapshot.connection, found.connection) || found.snapshotId !== snapshot.snapshotId) throw new Error(words('固定快照与连接身份无法核对。', 'The fixed snapshot and connection identity could not be verified.'));
-      setSnapshotStatus(snapshot); setStage(''); setDiscovery(found); setIndexes(versions); setIndexVersion(versions[0]?.index_version ?? '');
+      setSnapshotStatus(snapshot); setStage(''); setDiscovery(found); setIndexes(versions); setIndexVersion('');
     })}>{words('载入当前快照产品', 'Load current snapshot products')}</button><span className="r1-help">{discovery ? <>{words('本次固定：', 'Fixed snapshot: ')}<code>{discovery.snapshotId}</code></> : words('先载入真实产品与固定合同。', 'Load actual products and fixed contracts first.')}</span></div>
     {discovery && <>
       <fieldset className="r1-read-fields"><legend>{words('选择对象产品', 'Select subject products')}</legend><div className="r1-read-field-options">{choices.map(product => {
@@ -310,6 +311,7 @@ function FilterQueryPanel({ ready }: { ready: boolean }) {
         <label>{words('每页对象数', 'Objects per page')}<input type="number" min={1} max={100} value={pageSize} disabled={busy} onChange={e => { setPageSize(Number(e.target.value)); changed(); }} /></label>
         <label>{words('关联资料检索词（可选）', 'Related document query (optional)')}<input value={documentQuery} disabled={busy} onChange={e => { setDocumentQuery(e.target.value); changed(); }} /></label></div>
       {documentQuery.trim() && <label>{words('固定文档索引', 'Fixed document index')}<select value={indexVersion} disabled={busy} onChange={e => { setIndexVersion(e.target.value); changed(); }}><option value="">{words('选择已登记索引', 'Select a registered index')}</option>{indexes.map(index => <option key={index.index_version} value={index.index_version}>{new Date(index.built_at).toLocaleString(words('zh-CN', 'en'))} · {index.index_version}</option>)}</select></label>}
+      {documentQuery.trim() && <p className="r1-help">{words('联合历史仅支持固定内容或市场当时已知；须明确选择文档索引。市场历史可能使用事后索引重建，但仍独立核公开时间。系统持有与文档持有阶段不可互换。', 'Joint history supports snapshot contents or market-known reads only. Select a fixed document index explicitly. Market history may use a later index reconstruction, with public time checked separately. WFD holding stages are not document holding stages.')}</p>}
       <p className="r1-help">{words('资料只检索已核对回链的原材料；没有行版本关联、文档索引或历史公开证明时保留缺口。本地文档尚无逐文档权限模型。', 'Document retrieval uses only originals with verified links. Missing record-version links, document indexes or historical public evidence remain gaps. Local documents do not yet have per-document permissions.')}</p>
       <button type="button" className="primary-button" disabled={busy || !selected.length || !fields.length || !start || !end} onClick={() => {
         try { const input = build(); void execute(input, 1); } catch (caught) { setError(caught instanceof R1HistoryError ? `${caught.code}: ${words(caught.message, caught.english)}` : errorDetail(caught)); }
@@ -318,13 +320,14 @@ function FilterQueryPanel({ ready }: { ready: boolean }) {
     {busy && <p className="r1-help" role="status">{words('正在查询固定产品与资格…', 'Querying fixed products and eligibility…')}</p>}{error && <ErrorNote>{error}</ErrorNote>}
     {result && <div className="r1-read-result" aria-label={words('结构化筛选结果', 'Structured filter results')}><p role="status">{words(outcomes[String(result.status)] ?? display(result.status), outcomeEnglish[String(result.status)] ?? display(result.status))}{words(`；第${pageNumber}页，本页${objects.length}个对象。`, `; page ${pageNumber}, ${objects.length} subjects on this page.`)}</p>
       <p className="r1-help">{words(`扫描完成：${object(structured.scan_receipt).scan_complete ? '是' : '否'}；已确认匹配${display(object(structured.scan_receipt).matched_objects)}个；未知或有覆盖缺口${Array.isArray(structured.indeterminate) ? structured.indeterminate.length : 0}个。`, `Scan complete: ${object(structured.scan_receipt).scan_complete ? 'yes' : 'no'}; confirmed matches: ${display(object(structured.scan_receipt).matched_objects)}; unknown or coverage gaps: ${Array.isArray(structured.indeterminate) ? structured.indeterminate.length : 0}.`)}</p>
-      {result.qualification ? <p className="r1-help">{display(object(result.qualification).note)} {words('文档索引：', 'Document index: ')}{display(object(result.qualification).document_index_version)}</p> : null}
+      {result.qualification ? <p className="r1-help">{display(object(result.qualification).mode)} · {display(object(result.qualification).as_of)} · {object(result.qualification).note === '两侧分别执行同一种资格门后按精确行版本关联。' ? words('两侧分别执行同一种资格门后按精确行版本关联。', 'Both sides apply their own public eligibility gates, then link exact record versions.') : object(result.qualification).note === '固定内容关联；两侧均不声明历史可知或当时持有。' ? words('固定内容关联；两侧均不声明历史可知或当时持有。', 'Fixed content association; neither side claims historical public knowledge or holding.') : display(object(result.qualification).note)} {words('文档索引：', 'Document index: ')}{display(object(result.qualification).document_index_version)}</p> : null}
       {objects.map((item, i) => <div className="r1-proof" key={i}><strong>{display(object(item.subject).id)}</strong>
         <div className="r1-table-scroll"><table><thead><tr><th>{words('字段', 'Field')}</th><th>{words('实际比较值', 'Compared value')}</th><th>{words('状态', 'State')}</th><th>{words('单位', 'Unit')}</th></tr></thead><tbody>{Object.entries(object(item.values)).map(([name, raw]) => {
           const cell = object(raw), ref = object(object(item.record_refs)[name]);
           return <tr key={name}><td>{label(String(ref.field ?? name), 'src_')}</td><td>{display(cell.value)}</td><td>{words(valueStates[String(cell.value_state)] ?? display(cell.value_state), stateEnglish[String(cell.value_state)] ?? display(cell.value_state))}</td><td>{label(String(object(cell.unit).unit_code ?? ''), 'srcunit_')}</td></tr>;
         })}</tbody></table></div>
-        {Array.isArray(object(item.documents).citations) && (object(item.documents).citations as unknown[]).map((raw, n) => { const cite = object(raw); return <details key={n}><summary>{words(`关联资料 · 第${display(cite.page_number)}页 · ${display(cite.document_id)}`, `Related document · page ${display(cite.page_number)} · ${display(cite.document_id)}`)}</summary><p className="r1-help">{display(cite.excerpt)}</p><small>{words(`文档版本：${display(cite.document_version)}；解析版本：${display(cite.parser_version)}`, `Document version: ${display(cite.document_version)}; parser version: ${display(cite.parser_version)}`)}</small></details>; })}
+        {object(object(item.documents).qualification).reconstruction === 'post_hoc' && <p className="r1-help">{words('事后索引重建：该索引晚于查询公开截止，不表示当时已拥有此索引。', 'Post-hoc index reconstruction: this index was built after the public cutoff; this does not mean it was held then.')}</p>}
+        {Array.isArray(object(item.documents).citations) && (object(item.documents).citations as unknown[]).map((raw, n) => { const cite = object(raw); return <details key={n}><summary>{words(`关联资料 · 第${display(cite.page_number)}页 · ${display(cite.document_id)}`, `Related document · page ${display(cite.page_number)} · ${display(cite.document_id)}`)}</summary><p className="r1-help">{display(cite.excerpt)}</p>{cite.excerpt_truncated === true && <p className="r1-help">{words('节选已截断；此处不独立核验完整片段摘要。', 'This excerpt is truncated; the full segment digest is not independently verified here.')}</p>}<small>{words(`文档版本：${display(cite.document_version)}；解析版本：${display(cite.parser_version)}`, `Document version: ${display(cite.document_version)}; parser version: ${display(cite.parser_version)}`)}</small></details>; })}
         <details><summary>{words('记录版本与资料资格', 'Record versions and document eligibility')}</summary><pre className="database-text-preview">{JSON.stringify({ records: item.record_refs, qualification: object(item.documents).qualification, gaps: item.gaps }, null, 2)}</pre></details>
       </div>)}
       <p className="r1-help">{page.has_more ? words('还有后续页；当前页不代表结果已穷尽。', 'More pages remain; this page does not exhaust the results.') : page.result_exhausted ? words('已到固定查询末页；数据覆盖与证据缺口仍单独保留。', 'The fixed query has reached its final page; coverage and evidence gaps remain separate.') : words('扫描或选择尚未完成，不能声明完整结果。', 'The scan or selection is incomplete; complete results cannot be claimed.')}</p>
