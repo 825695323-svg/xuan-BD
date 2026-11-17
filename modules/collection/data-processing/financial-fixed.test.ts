@@ -105,3 +105,27 @@ test('explicit compatible financial inputs reject mixed scope, calendar, unit, i
   await assert.rejects(projectFinancialFixed({ ...input, compatibleInputs: { periodType: 'duration', periods } }, reader,
     new AbortController().signal), /同一目录快照/u);
 });
+
+test('ordinary standardization validates source period dates and nature without enabling calculations', async () => {
+  for (const changes of [
+    { start_date: '2024-02-30' }, { end_date: '2024-02-30' }, { end_date: '1900-02-29' },
+    { start_date: '2024-07-01', end_date: '2024-06-30' },
+    { period_type: 'unknown' }, { period_type: 'instant' },
+    { concept: '资产总计', period_type: 'duration' },
+    { concept: '资产总计', period_type: 'instant', end_date: '2024-06-30' },
+    { end_date: '9999-12-31' },
+  ]) {
+    await assert.rejects(project([row('invalid-period', '10', '2024-01-01', '2024-06-30',
+      { concept: '其中：营业收入', ...changes })]), /期间/u);
+  }
+  const century = await project([row('century-leap', '10', '2000-02-29', '2000-02-29', { concept: '其中：营业收入' })]);
+  assert.equal(JSON.parse(century.jsonBytes.toString())[0].end_utc, '2000-03-01T00:00:00Z');
+  for (const [concept, period_type] of [['其中：营业收入', 'duration'], ['资产总计', 'instant']]) {
+    const result = await project([row('leap-day', '10.0000', '2024-02-29', '2024-02-29', { concept, period_type })]);
+    const [output] = JSON.parse(result.jsonBytes.toString());
+    assert.equal(output.start_utc, '2024-02-29T00:00:00Z');
+    assert.equal(output.end_utc, '2024-03-01T00:00:00Z');
+    assert.equal(output.value, '10.0000');
+    assert.equal(result.evidence.compatibility, null);
+  }
+});

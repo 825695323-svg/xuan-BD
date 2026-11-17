@@ -150,6 +150,7 @@ async function createRepairPlan(host: FullChainHost, materialId: string, bytes: 
   };
   const input = { routing: { materials: [{ materialId, dimensions, intendedAction: 'inspect' }] },
     outputs: [{ outputId: 'repair-output', materialIds: [materialId], intendedAction: 'inspect',
+      stages: ['parse', 'clean', 'structure', 'annotate', 'check'],
       tables: [{ materialId, format: 'csv', trim: [firstField], types: { value_decimal: 'decimal_string' },
         annotations: { source_original_sha256: wfdSha256(bytes) } }],
       coverage: { complete: false, scope: '本次只执行结构检查；未认定业务发布资格。',
@@ -158,9 +159,12 @@ async function createRepairPlan(host: FullChainHost, materialId: string, bytes: 
   const planTask = await host.settled(planned.jobId, 120_000);
   assert.equal(planTask.status, 'succeeded', JSON.stringify(planTask.error));
   const planId = host.services.processing!.getByTask(planTask.id)!.plan!.planId;
-  const run = await host.call(`/processing/plans/${planId}/run`, { requestId: `${tag}-run` }, 202);
-  const runTask = await host.settled(run.jobId, 120_000);
-  assert.equal(runTask.status, 'succeeded', JSON.stringify(runTask.error));
+  for (const kind of ['parse', 'clean', 'structure', 'annotate', 'check']) {
+    const step = host.services.processing!.get(planId).steps.find(item => item.kind === kind)!;
+    const run = await host.call(`/processing/plans/${planId}/steps/${step.stepId}/execute`, { requestId: `${tag}-${kind}` }, 202);
+    const runTask = await host.settled(run.jobId, 120_000);
+    assert.equal(runTask.status, 'succeeded', JSON.stringify(runTask.error));
+  }
   const plan = await host.call(`/processing/plans/${planId}`);
   const output = plan.outputs.find((item: WfdRecord) => item.outputId === 'repair-output');
   assert.equal(output.state, 'structured', JSON.stringify(plan.outputs));
@@ -234,9 +238,37 @@ test('已发布错误更正：真实新加工产物、审批拒绝后重办、�
       assert.equal(impact.items.some((item: WfdRecord) => item.productId === b.product_id), false);
       assert.ok(impact.gaps.some((gap: string) => gap.startsWith('coverage:')));
 
+      // 冻结后持久清单损坏不得把未受影响系列送入暂停，也不得在恢复入口绕过。
+      const db = host.database.connection;
+      const savedImpact = (db.prepare('SELECT impact_json FROM correction_cases WHERE case_id=?')
+        .get('case-main') as { impact_json: string }).impact_json;
+      const changedImpact = JSON.parse(savedImpact);
+      changedImpact.items[0].productId = b.product_id;
+      changedImpact.items[0].recordVersion = (b.records as WfdRecord[])[0]!.record_version;
+      db.prepare('UPDATE correction_cases SET impact_json=? WHERE case_id=?')
+        .run(JSON.stringify(changedImpact), 'case-main');
+      const corruptSuspend = await host.call('/corrections/cases/case-main/suspend',
+        { requestId: 'correction-corrupt-suspend' }, 409);
+      assert.equal(corruptSuspend.code, 'CORRECTION_IMPACT_CHANGED');
+      assert.equal(host.services.corrections!.view('case-main').state, 'impact_frozen');
+      db.prepare("UPDATE correction_cases SET state='suspend_failed' WHERE case_id='case-main'").run();
+      const corruptRecovery = await host.call('/corrections/cases/case-main/recover',
+        { requestId: 'correction-corrupt-recovery' }, 409);
+      assert.equal(corruptRecovery.code, 'CORRECTION_IMPACT_CHANGED');
+      assert.equal(host.services.corrections!.view('case-main').state, 'suspend_failed');
+      const untouched = (await host.services.r1Runtime!.connection.client.usageStatus()).result as WfdRecord;
+      assert.equal((untouched.issues as WfdRecord[]).some(issue => issue.issue_id === 'case-main'), false);
+      db.prepare("UPDATE correction_cases SET impact_json=?,state='impact_frozen' WHERE case_id='case-main'")
+        .run(savedImpact);
+
       // 3) 正式暂停落盘 WFD；磁盘重开仍生效
       const suspended = await host.call('/corrections/cases/case-main/suspend', { requestId: 'correction-suspend' });
       assert.equal(suspended.state, 'suspended');
+      // 模拟本地暂停失败状态，真实 WFD 已有同声明；只恢复同事项，不另建暂停。
+      db.prepare("UPDATE correction_cases SET state='suspend_failed' WHERE case_id='case-main'").run();
+      const recoveredSuspension = await host.call('/corrections/cases/case-main/recover',
+        { requestId: 'correction-valid-recovery' });
+      assert.equal(recoveredSuspension.state, 'suspended');
       const status = (await host.services.r1Runtime!.connection.client.usageStatus()).result as WfdRecord;
       assert.equal((status.issues as WfdRecord[]).filter(issue => issue.issue_id === 'case-main' && issue.state === 'active').length, 1);
       await host.close();
@@ -350,7 +382,7 @@ test('已发布错误更正：真实新加工产物、审批拒绝后重办、�
     }
   });
 
-test('错误适配绑定按真实裸 hex 配置摘要匹配计划', { skip: !enabled, timeout: 300_000 }, async () => {
+test('错误适配绑定扫描多表输出并按裸 hex 配置摘要精确匹配、保留预算边界', { skip: !enabled, timeout: 300_000 }, async () => {
   const fixture = createFullChainFixture({ name: 'post-pub-adapter-digest', machine: true,
     units: { count: { dimension: 'quantity' } } });
   const host = await openFullChainHost(fixture);
@@ -362,6 +394,18 @@ test('错误适配绑定按真实裸 hex 配置摘要匹配计划', { skip: !ena
     const materialId = host.services.materials!.getByTask(intake.id)!.envelope.materialId;
     const published = await publish(host, 'digest');
     const seeded = seedAssociations(host, published.doc, published.receipt, 'digest', materialId);
+    // Explicit synthetic persisted multi-table precondition: the first table is unrelated,
+    // the second uses the faulty adapter, and a third matching table must not duplicate impact.
+    for (const [stepId, ordinal, parameters] of [['unrelated-first-table', -1, '{}'],
+      ['same-adapter-third-table', 1, null]] as const) {
+      host.database.connection.prepare(`INSERT INTO processing_plan_steps(plan_id,step_id,ordinal,output_id,kind,required,applicability,
+        depends_json,implementation,parameters_json,completion_json,spec_digest,state,input_json,check_scope_json,gaps_json)
+        SELECT plan_id,?, ?,output_id,kind,required,applicability,depends_json,implementation,COALESCE(?,parameters_json),
+          completion_json,spec_digest,state,input_json,check_scope_json,gaps_json
+        FROM processing_plan_steps WHERE plan_id=? AND step_id=?`).run(stepId, ordinal, parameters,
+          seeded.series_a!.planId, 'parse:' + seeded.series_a!.outputId);
+    }
+
     const capabilities = await host.call('/corrections/capabilities');
     await host.call('/corrections/cases', { requestId: 'digest-register', input: {
       caseId: 'case-digest', kind: 'processing_repair', errorType: 'mapping_error',
@@ -369,8 +413,12 @@ test('错误适配绑定按真实裸 hex 配置摘要匹配计划', { skip: !ena
       binding: { adapter: ERROR_ADAPTER }, connectionSha256: capabilities.connectionSha256 } }, 201);
     const impact = await host.call('/corrections/cases/case-digest/impact', { requestId: 'digest-impact' });
     assert.equal(impact.state, 'impact_frozen', JSON.stringify(impact.gaps));
+    assert.equal(impact.itemCount, 1, 'Later matching parse must be included exactly once, unrelated first parse cannot hide it');
     assert.equal(impact.items.some((item: WfdRecord) => item.productId ===
       (published.receipt.output_results as WfdRecord[]).find(entry => entry.output_key === 'series_a')!.product_id), true);
+    assert.equal(impact.items.some((item: WfdRecord) => item.productId ===
+      (published.receipt.output_results as WfdRecord[]).find(entry => entry.output_key === 'series_b')!.product_id), false);
+    assert.equal(impact.coverage, 'proven_subset_only');
     // A legacy case may already have frozen a partial scan: do not send it to WFD.
     const db = host.database.connection;
     db.prepare(`UPDATE correction_cases SET impact_json=json_insert(impact_json,'$.gaps[#]','plan_scan_over_budget')
