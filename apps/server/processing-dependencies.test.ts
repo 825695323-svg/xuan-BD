@@ -45,6 +45,8 @@ test('HTTP field dependencies are a read-only projection of actual fixed process
       [['name', 'name', 'mapped_field'], ['amount', 'value', 'mapped_field'], [null, 'unit', 'constant']]);
     assert.ok(result.dependencies.every((item: any) => item.materialId === materialId && item.sourceSha256.length === 64));
     assert.equal(JSON.stringify(result).includes('1.2300'), false);
+    assert.equal(JSON.stringify(result).includes('synthetic-unit'), false);
+    assert.ok(result.dependencies.every((item: any) => item.sourceArtifactSha256.length === 64));
     assert.deepEqual(counts(host), before);
     await host.close(); host = await openFullChainHost(fixture);
     assert.deepEqual(await host.call(`/processing/plans/${planId}/outputs/result/dependencies`), result);

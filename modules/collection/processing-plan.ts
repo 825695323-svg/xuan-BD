@@ -458,7 +458,7 @@ export class ProcessingPlanService {
     const missingSteps = this.document(plan).steps.filter(step => step.outputId === outputId && !steps.some(item => item.stepId === step.stepId));
     const dependencies: { outputField: string; materialId: string; sourceSha256: string;
       inputField: string | null; kind: 'mapped_field' | 'constant'; stepId: string;
-      specDigest: string; artifactSha256: string }[] = [];
+      specDigest: string; sourceArtifactSha256: string }[] = [];
     const gaps: string[] = missingSteps.map(step => `${step.stepId}:persisted_step_missing`);
     const parses = steps.filter(step => step.kind === 'parse');
     if (!parses.length) gaps.push('no_persisted_parse_steps');
@@ -485,12 +485,12 @@ export class ProcessingPlanService {
         fail('PROCESSING_LINEAGE_CHANGED', '字段依赖与冻结材料、解析列身份不一致。');
       parsed.columns.forEach((outputField, index) => dependencies.push({ outputField,
         materialId: material.materialId, sourceSha256: material.sha256, inputField: parsed.source_columns[index]!,
-        kind: 'mapped_field', stepId: spec.stepId, specDigest: spec.specDigest, artifactSha256: artifact.ref.sha256 }));
+        kind: 'mapped_field', stepId: spec.stepId, specDigest: spec.specDigest, sourceArtifactSha256: artifact.ref.sha256 }));
       const annotation = steps.find(step => step.kind === 'annotate' && dependsOn(step.stepId, spec.stepId));
       if (annotation && this.stepRow(planId, annotation.stepId)?.state === 'succeeded') {
         for (const outputField of Object.keys(parsed.annotations)) dependencies.push({ outputField,
           materialId: material.materialId, sourceSha256: material.sha256, inputField: null,
-          kind: 'constant', stepId: annotation.stepId, specDigest: annotation.specDigest, artifactSha256: artifact.ref.sha256 });
+          kind: 'constant', stepId: annotation.stepId, specDigest: annotation.specDigest, sourceArtifactSha256: artifact.ref.sha256 });
       }
       if (params.selection) gaps.push(`${spec.stepId}:row_selection_dependency_not_field_value_dependency`);
     }
