@@ -10,6 +10,7 @@ on:
       - 'apps/server/workspace-routes.ts'
       - 'apps/server/logic-cleanup.test.ts'
       - 'apps/server/r1-routes.test.ts'
+      - 'apps/server/r1-history-browser.test.ts'
       - 'apps/server/r1-plan-review-http.test.ts'
       - 'apps/server/configured-app.ts'
       - 'apps/server/ui-routes.ts'
@@ -55,6 +56,11 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           changed="$(git diff --name-only HEAD^ HEAD)"
+          if [ "$EVENT_NAME" = workflow_dispatch ] || echo "$changed" | grep -Eq '(r1-read-history|R1ReadPanel|R1SingleOutputPanel|R1Panel\.css|r1-api|r1-history-browser|bd-ui-source-unification)'; then
+            echo 'history=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'history=false' >> "$GITHUB_OUTPUT"
+          fi
           if [ "$EVENT_NAME" = workflow_dispatch ] || echo "$changed" | grep -Eq '(r1-plan-review|R1PlanReview|R1Panel|R1SingleOutputPanel|contracts/r1-contracts|r1-publication-set|r1-workspace|r1-structured-handoff|r1-paged-readback|processing-plan)'; then
             echo 'r1=true' >> "$GITHUB_OUTPUT"
           else
@@ -81,6 +87,7 @@ jobs:
             plugins/api-sources/source-acquisition.test.ts \
             apps/web/src/ui/sourceSettingsClient.test.ts \
             apps/web/src/ui/PageUI.test.tsx \
+            apps/web/src/r1-read-history.test.ts \
             apps/web/src/ui/logic-cleanup.test.tsx \
             apps/server/logic-cleanup.test.ts \
             modules/collection/production-module-ports.test.ts
@@ -91,11 +98,11 @@ jobs:
         if: steps.scope.outputs.r1 == 'true'
         run: node --import tsx --test apps/web/src/ui/r1-plan-review.test.ts
       - uses: actions/setup-python@v5
-        if: steps.scope.outputs.r1 == 'true'
+        if: steps.scope.outputs.r1 == 'true' || steps.scope.outputs.history == 'true'
         with:
           python-version: '3.12'
       - name: Prepare isolated WFD and explicit test browser bindings
-        if: steps.scope.outputs.r1 == 'true'
+        if: steps.scope.outputs.r1 == 'true' || steps.scope.outputs.history == 'true'
         run: |
           python -m pip install -r wfd/product/requirements-duckdb.txt
           echo "WFD_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
@@ -126,6 +133,19 @@ jobs:
         run: |
           mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
           node --import tsx --test apps/server/r1-plan-review-http.test.ts
+      - name: Verify actual historical reads in the React UI and bound WFD
+        if: steps.scope.outputs.history == 'true'
+        env:
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/h
+          XUAN_TEST_ROOT: ${{ runner.temp }}/r1-history-tests
+          XUAN_HISTORY_VISUAL_ROOT: ${{ runner.temp }}/xuan-bd-ui-visual/r1-history
+        run: |
+          mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
+          set -euo pipefail
+          export XUAN_TEST_WEB_ROOT="$GITHUB_WORKSPACE/dist/web"
+          node --import tsx --test --test-reporter=tap apps/server/r1-history-browser.test.ts | tee "$RUNNER_TEMP/r1-history.tap"
+          grep -q '^# fail 0$' "$RUNNER_TEMP/r1-history.tap"
+          grep -q '^# skipped 0$' "$RUNNER_TEMP/r1-history.tap"
       - name: Browser geometry and screenshot visual audit
         run: node scripts/visual-ui-audit.mjs
       - name: Retain visual screenshots and DOM measurements
