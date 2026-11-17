@@ -7,12 +7,14 @@ export type DetailTone = 'ready' | 'warning' | 'blocked' | 'neutral';
  * 只统一容器、间距、标题与状态呈现；各业务页内部字段仍由各自组件决定。
  * 不新增读取、不发起动作、不写入任何状态。
  */
-export function ObjectDetailPanel({ label, header, summary, diagnostics, children, className }: {
+export function ObjectDetailPanel({ label, header, summary, notices, diagnostics, children, className }: {
   /** 无障碍名称，例如"来源详情"。 */
   label: string;
   header: ReactNode;
   /** 当前对象最重要的几条信息，固定在主体之上。 */
   summary?: ReactNode;
+  /** 当前页面读取或操作异常，始终展开，不作为历史诊断折叠。 */
+  notices?: ReactNode;
   /** 默认折叠的技术与审计信息。 */
   diagnostics?: ReactNode;
   children: ReactNode;
@@ -21,10 +23,11 @@ export function ObjectDetailPanel({ label, header, summary, diagnostics, childre
   return <aside className={`object-detail${className ? ` ${className}` : ''}`} aria-label={label}>
     {header}
     <div className="object-detail-scroll">
+      {notices ? <div className="object-detail-notices">{notices}</div> : null}
       {summary ? <section className="object-detail-summary" aria-label={label}>{summary}</section> : null}
       <div className="object-detail-content">{children}</div>
+      {diagnostics}
     </div>
-    {diagnostics}
   </aside>;
 }
 

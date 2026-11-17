@@ -180,10 +180,6 @@ export function CaptureSourcesPage() {
   return <div className="data-page page-panes">
     {nav}
     <section className="page-cards" aria-label={words('采集源', 'Capture sources')}>
-      {loginError && <ErrorNote detail={loginError}>{words('登录操作未完成。', 'The login action did not complete.')}</ErrorNote>}
-      <SourceCheckError error={sourceCheck.error} />
-      {error && <ErrorNote detail={error}>{words('采集源状态暂时无法读取。', 'Capture source status could not be read.')}</ErrorNote>}
-      {catalogError && <ErrorNote detail={catalogError}>{words('自定义来源目录暂时无法读取；保留原选择，等待下一次读取。', 'The custom source catalog could not be read; the saved selection is retained until the next read.')}</ErrorNote>}
       {!error && !sources && <PageEmpty state="loading">{words('读取中…', 'Loading…')}</PageEmpty>}
       {!!sources?.length && <div className="object-list">{visibleSources.map((source) => {
         const meta = metaOf(source);
@@ -200,32 +196,38 @@ export function CaptureSourcesPage() {
     </section>
     <ObjectDetailPanel
       label={words('来源详情', 'Source detail')}
+      notices={<>{(loginError || sourceCheck.error || error || catalogError) && <p className="object-detail-note">{words('页面读取与操作反馈，不表示当前所选来源的运行结果。', 'Page read/action feedback, not the execution result of the currently selected source.')}</p>}      {loginError && <ErrorNote detail={loginError}>{words('登录操作未完成。', 'The login action did not complete.')}</ErrorNote>}
+      <SourceCheckError error={sourceCheck.error} />
+      {error && <ErrorNote detail={error}>{words('采集源状态暂时无法读取。', 'Capture source status could not be read.')}</ErrorNote>}
+      {catalogError && <ErrorNote detail={catalogError}>{words('自定义来源目录暂时无法读取；保留原选择，等待下一次读取。', 'The custom source catalog could not be read; the saved selection is retained until the next read.')}</ErrorNote>}
+</>}
       header={<DetailHeader
         title={selection.pending ? words('正在读取…', 'Loading…') : selectedSource?.label ?? words('未选择来源', 'No source selected')}
         status={selectedSource ? (selectedSource.available ? words('可用', 'Available') : words('不可用', 'Unavailable')) : undefined}
         tone={selectedSource?.available ? 'ready' : 'warning'} />}
       summary={selectedSource ? <DetailFacts items={[
+        { label: words('采集配置', 'Capture configuration'), value: selectedSetting?.enabled ? selectedSetting.operation : words('未启用', 'Not enabled') },
+        { label: words('渠道 / 语言', 'Channel / language'), value: [selectedMeta?.channel, selectedMeta?.languages.join(' / ')].filter(Boolean).join(' · ') || '—' },
         { label: words('登录态', 'Login'), value: loginText(loginStates[selectedSource.sourceId]) },
-        { label: words('渠道', 'Channel'), value: selectedMeta?.channel ?? '—' },
-        { label: words('采集范围', 'Coverage'), value: selectedMeta?.regions.join(' / ') || '—' },
-        { label: words('最近检查', 'Latest check'), value: <SourceCheckLine check={selectedCheck} /> },
       ]} /> : undefined}
-      diagnostics={selectedSource ? <DetailDiagnostics label={words('分类与语言说明', 'Topics and languages')}
-        count={words(`${(selectedMeta?.topics.length ?? 0) + (selectedMeta?.languages.length ?? 0)} 项`, `${(selectedMeta?.topics.length ?? 0) + (selectedMeta?.languages.length ?? 0)} items`)}>
-        <dl className="object-detail-facts">
-          <div><dt>{words('分类', 'Topics')}</dt><dd>{selectedMeta?.topics.join(' / ') || words('未分类', 'Unclassified')}</dd></div>
-          <div><dt>{words('语言', 'Languages')}</dt><dd>{selectedMeta?.languages.join(' / ') || '—'}</dd></div>
-        </dl>
+      diagnostics={selectedSource ? <DetailDiagnostics key={selectedId} label={words('来源标识与分类', 'Source identity and topics')}>
+        <DetailFacts items={[
+          { label: words('来源编号', 'Source ID'), value: <code>{selectedSource.sourceId}</code> },
+          { label: words('分类', 'Topics'), value: selectedMeta?.topics.join(' / ') || words('未分类', 'Unclassified') },
+          { label: words('采集范围', 'Coverage'), value: selectedMeta?.regions.join(' / ') || '—' },
+        ]} />
       </DetailDiagnostics> : undefined}>
       {selection.pending ? <p className="object-detail-note">{words('来源列表尚未读回，暂不显示详情，也不回落到其他来源。',
         'The source list has not loaded yet; no detail is shown and no other source is substituted.')}</p>
         : !selectedSource ? <p className="object-detail-note">{words('从第二栏选择一个来源，这里显示它的登录态、覆盖范围与最近检查。',
           'Pick a source from the list; its login state, coverage and latest check appear here.')}</p> : <>
-        <DetailSection title={words('可用操作', 'Operations')} note={words('按该来源已登记的固定操作', 'Fixed operations registered for this source')}>
+        <DetailSection title={words('采集能力', 'Capture capabilities')} note={words('按该来源已登记的固定操作', 'Fixed operations registered for this source')}>
           <p className="object-detail-value">{(selectedSource.operations ?? []).map((item) => operationLabels[item.operation] ?? baiduLabels[item.operation] ?? item.operation).join(' · ') || words('无固定操作', 'No fixed operations')}</p>
         </DetailSection>
-        <DetailSection title={words('采集配置', 'Capture')}>
-          <p className="object-detail-value">{selectedSetting?.enabled ? selectedSetting.operation : words('未启用', 'Not enabled')}</p>
+        <DetailSection title={words('最近检查与运行', 'Latest check and run')}>
+          <SourceCheckLine check={selectedCheck} />
+          {selectedSource.reason && <p className="object-detail-value status-warning">{selectedSource.reason}</p>}
+          <p className="object-detail-note">{words('当前详情没有任务运行回执；登录、配置和检查均不代表采集完成。', 'This detail has no task execution receipt; login, configuration and checks do not prove collection completed.')}</p>
         </DetailSection>
         <div className="supplier-detail-actions">
           {selectedSource.sourceId !== 'baidu-drive' && selectedSource.loginRequired !== false && <button type="button" className="text-button" disabled={loginBusy === selectedSource.sourceId}

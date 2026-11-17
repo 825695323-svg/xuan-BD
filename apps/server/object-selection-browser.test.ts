@@ -62,18 +62,72 @@ async function fill(browser: Browser, selector: string, value: string) {
   await browser.evaluate(`(()=>{const e=document.querySelector(${q(selector)});const p=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(p,'value').set.call(e,${q(value)});e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));e.blur();})()`);
 }
 const stored = (browser: Browser) => browser.evaluate<string | null>("sessionStorage.getItem('xuan.capture.object')");
-async function capture(browser: Browser, root: string, name: string, width: number, scheme: string) {
+async function capture(browser: Browser, root: string, name: string, width: number, scheme: string, diagnostics = false) {
   await browser.page('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
   await browser.page('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }] });
-  const geometry = await browser.evaluate<Array<{ width: number; left: number; right: number; allowedLeft: number; allowedRight: number }>>(`(()=>{
-    return [...document.querySelectorAll('.data-nav input[type=search],.object-detail button,.object-detail input,.object-detail select')]
-      .filter(e=>e.getClientRects().length>0).map(e=>{const box=e.getBoundingClientRect();let left=0,right=innerWidth;
-        for(let p=e.parentElement;p;p=p.parentElement){const style=getComputedStyle(p);if(['auto','scroll'].includes(style.overflowX)){const r=p.getBoundingClientRect();left=Math.max(0,r.left);right=Math.min(innerWidth,r.right);return {width:box.width,left:Math.max(box.left,left),right:Math.min(box.right,right),allowedLeft:left,allowedRight:right};}}
-        return {width:box.width,left:box.left,right:box.right,allowedLeft:left,allowedRight:right};});})()`);
+  const geometry = await browser.evaluate<Array<{ label: string; left: number; right: number; top: number; bottom: number;
+    visibleLeft: number; visibleRight: number; visibleTop: number; visibleBottom: number }>>(`(async()=>{
+    const results=[];
+    const controls=[...document.querySelectorAll('.data-nav input[type=search],.object-detail button,.object-detail input,.object-detail select,.object-detail summary')]
+      .filter(e=>e.getClientRects().length>0);
+    for(const e of controls){
+      e.scrollIntoView({block:'center',inline:'nearest'});
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      const box=e.getBoundingClientRect();let left=0,right=innerWidth,top=0,bottom=innerHeight;
+      for(let p=e.parentElement;p;p=p.parentElement){const style=getComputedStyle(p),r=p.getBoundingClientRect();
+        if(['auto','scroll','hidden','clip'].includes(style.overflowX)){left=Math.max(left,r.left+p.clientLeft);right=Math.min(right,r.left+p.clientLeft+p.clientWidth);}
+        if(['auto','scroll','hidden','clip'].includes(style.overflowY)){top=Math.max(top,r.top+p.clientTop);bottom=Math.min(bottom,r.top+p.clientTop+p.clientHeight);}}
+      results.push({label:e.getAttribute('aria-label')||e.textContent,left:box.left,right:box.right,top:box.top,bottom:box.bottom,
+        visibleLeft:left,visibleRight:right,visibleTop:top,visibleBottom:bottom});
+    }return results;})()`);
   assert.ok(geometry.length > 0, 'Actual page must expose a visible search or detail control');
-  for (const box of geometry) assert.ok(box.width > 0 && box.left >= box.allowedLeft - 2 && box.right <= box.allowedRight + 2,
-    'Control must fit viewport or an actual horizontal scroll container: ' + JSON.stringify(box));
+  for (const box of geometry) {
+    assert.ok(box.right > box.left && box.bottom > box.top, 'Control must have real positive dimensions: ' + JSON.stringify(box));
+    assert.ok(Math.min(box.right, box.visibleRight) > Math.max(box.left, box.visibleLeft)
+      && Math.min(box.bottom, box.visibleBottom) > Math.max(box.top, box.visibleTop),
+    'Scrolled control must actually intersect viewport and all clipping ancestors: ' + JSON.stringify(box));
+    assert.ok(box.left >= box.visibleLeft - 2 && box.right <= box.visibleRight + 2,
+      'Unclipped control rect must fit horizontally; overflow is not concealed: ' + JSON.stringify(box));
+  }
+  await browser.evaluate(`(()=>{const scroll=document.querySelector('.object-detail-scroll');if(scroll)scroll.scrollTop=0;document.querySelector('.object-detail')?.scrollIntoView({block:'start',inline:'nearest'});${diagnostics ? "document.querySelector('.object-detail-diagnostics > summary')?.scrollIntoView({block:'center',inline:'nearest'});" : ''}})()`);
+  await browser.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   writeFileSync(join(root, name + '.png'), Buffer.from((await browser.page('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+}
+
+async function verifyCompactDetails(browser: Browser, kind: 'capture' | 'api' | 'tools', english = false) {
+  const headings = kind === 'tools'
+    ? (english ? ['Algorithm definition', 'Calculation configuration', 'Related products', 'Eligibility and execution'] : ['算法定义', '计算配置', '关联产物', '准入与执行状态'])
+    : kind === 'capture' ? (english ? ['Capture capabilities', 'Latest check and run'] : ['采集能力', '最近检查与运行']) : [];
+  await browser.until("!!document.querySelector('.object-detail-diagnostics')", 'Selected object diagnostics unavailable');
+  for (const heading of headings) {
+    assert.equal(await browser.evaluate(`(()=>{const h=[...document.querySelectorAll('.object-detail-content h3')].find(e=>e.textContent===${q(heading)});return !!h&&!h.closest('details:not([open])')&&h.getClientRects().length>0;})()`), true,
+      'Professional content must remain expanded: ' + heading);
+  }
+  const text = await browser.evaluate<string>("document.querySelector('.object-detail').textContent");
+  if (kind === 'capture') {
+    assert.match(text, english ? /no task execution receipt/u : /没有任务运行回执/u);
+    assert.equal(await browser.evaluate("document.querySelector('.object-detail-status').textContent"), english ? 'Unavailable' : '不可用');
+    const labels = await browser.evaluate<string[]>("[...document.querySelectorAll('.object-detail-summary dt')].map(e=>e.textContent)");
+    assert.deepEqual(labels, english ? ['Capture configuration', 'Channel / language', 'Login'] : ['采集配置', '渠道 / 语言', '登录态']);
+  } else if (kind === 'tools') {
+    assert.match(text, english ? /Registered parameters, not saved run configuration/u : /登记参数，非已保存的运行配置/u);
+    assert.match(text, english ? /Definition links, not actual product receipts/u : /定义关联，不是实际产物回执/u);
+    assert.match(text, english ? /cannot establish that a run occurred or succeeded/u : /不能据此判定已运行或成功/u);
+  } else {
+    const labels = await browser.evaluate<string[]>("[...document.querySelectorAll('.object-detail-summary dt')].map(e=>e.textContent)");
+    assert.deepEqual(labels, english ? ['Capabilities', 'Routing', 'Latest check'] : ['数据能力', '来源路由', '最近检查']);
+    assert.match(text, english ? /configuration, not proof of a successful check or run/u : /配置，不代表检查或实际运行成功/u);
+  }
+  assert.equal(await browser.evaluate("document.querySelector('.object-detail-diagnostics').open"), false, 'Diagnostics start collapsed');
+  assert.equal(await browser.evaluate("!!document.querySelector('.object-detail-scroll .object-detail-diagnostics')"), true);
+  await browser.evaluate("document.querySelector('.object-detail-diagnostics > summary').scrollIntoView({block:'center'});document.querySelector('.object-detail-diagnostics > summary').focus()");
+  await browser.page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await browser.page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await browser.until("document.querySelector('.object-detail-diagnostics').open===true", 'Keyboard must expand native diagnostics');
+  assert.ok((await browser.evaluate<string>("document.querySelector('.object-detail-diagnostics-body').textContent")).trim());
+  await browser.page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await browser.page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await browser.until("document.querySelector('.object-detail-diagnostics').open===false", 'Keyboard must close diagnostics');
 }
 
 test('actual three-page selections preserve shared conversation and survive real catalogue read faults',
@@ -104,9 +158,18 @@ test('actual three-page selections preserve shared conversation and survive real
       assert.equal(await stored(browser), 'synthetic-selection-a');
       assert.equal(await browser.evaluate("!!document.querySelector('.object-card[aria-current=true]')"), false, 'Incomplete catalogue must not select another object');
       assert.match(await browser.evaluate<string>("document.querySelector('.object-detail-title').textContent"), /正在读取/u);
+      assert.match(await browser.evaluate<string>("document.querySelector('.object-detail-notices').textContent"), /自定义来源目录暂时无法读取/u);
       await browser.evaluate("window.__catalogMode='normal'"); await nav(browser, '算法'); await nav(browser, '采集源');
       await browser.until("[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.textContent.includes('Synthetic selection A'))", 'Recovery lost stored selection');
+      await verifyCompactDetails(browser, 'capture');
+      await browser.evaluate("document.querySelector('.object-detail-diagnostics > summary').click()");
+      await browser.until("document.querySelector('.object-detail-diagnostics').open===true", 'Diagnostics must open before object switch');
+      await capture(browser, visuals, 'compact-capture-diagnostics-zh', 390, 'light', true);
+      await card(browser, 'Synthetic selection B');
+      assert.equal(await browser.evaluate("document.querySelector('.object-detail-diagnostics').open"), false, 'New selected object resets native diagnostics');
+      await card(browser, 'Synthetic selection A');
       await capture(browser, visuals, 'selection-capture-light', 1440, 'light');
+      await capture(browser, visuals, 'compact-capture-zh-dark', 390, 'dark');
       await browser.evaluate("window.__catalogMode='hold'"); await nav(browser, '算法'); await nav(browser, '采集源');
       await browser.until('window.__catalogWaiting===true', 'Delayed real catalogue reply not reached');
       assert.equal(await stored(browser), 'synthetic-selection-a');
@@ -126,11 +189,15 @@ test('actual three-page selections preserve shared conversation and survive real
       await browser.until("document.querySelectorAll('.object-card').length>0", 'Real tools catalogue unavailable');
       const toolTitle = await browser.evaluate<string>("[...document.querySelectorAll('.object-card-title')].at(-1).textContent");
       await card(browser, toolTitle); const toolId = await browser.evaluate<string>("sessionStorage.getItem('xuan.tools.object')"); assert.ok(toolId);
+      await verifyCompactDetails(browser, 'tools');
+      await capture(browser, visuals, 'compact-tools-zh-light', 390, 'light');
       await fill(browser, '.data-nav input[type=search]', 'unmatched-synthetic-algorithm');
       assert.equal(await browser.evaluate("sessionStorage.getItem('xuan.tools.object')"), toolId);
       await nav(browser, '接口源');
       await browser.until("document.querySelectorAll('.object-card').length>1", 'Actual API source catalogue unavailable');
       const apiTitle = await browser.evaluate<string>("[...document.querySelectorAll('.object-card-title')].at(-1).textContent"); await card(browser, apiTitle);
+      await verifyCompactDetails(browser, 'api');
+      await capture(browser, visuals, 'compact-api-zh-light', 390, 'light');
       const apiSelections = await browser.evaluate<Record<string, string>>("Object.fromEntries(Object.keys(sessionStorage).filter(k=>k.startsWith('xuan.api-sources.object:')).map(k=>[k,sessionStorage.getItem(k)]))");
       assert.ok(Object.keys(apiSelections).length);
       await fill(browser, '.data-nav input[type=search]', 'unmatched-synthetic-market');
@@ -163,7 +230,21 @@ test('actual three-page selections preserve shared conversation and survive real
       await browser.evaluate(`(async()=>{const session=JSON.parse(sessionStorage.getItem('mashiro.local-data-generation'));if(!Number.isSafeInteger(session?.generation))throw Error('Missing actual local session');const headers={'x-local-data-generation':String(session.generation),'x-mashiro-client':'web','Content-Type':'application/json'};const p=await (await fetch('/api/ui/preferences',{headers})).json();const r=await fetch('/api/ui/preferences',{method:'PUT',headers,body:JSON.stringify({revision:p.revision,language:'en'})});if(!r.ok)throw Error('Preference update failed');})()`);
       await browser.page('Page.reload'); await nav(browser, 'Capture sources');
       await browser.until("[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.textContent.includes('Synthetic selection A'))", 'English refresh lost selection');
+      await verifyCompactDetails(browser, 'capture', true);
       await capture(browser, visuals, 'selection-capture-en', 1440, 'light');
+      await capture(browser, visuals, 'compact-capture-en-light', 390, 'light');
+      await nav(browser, 'Algorithms');
+      await browser.until("!!document.querySelector('.object-card[aria-current=true]')", 'Selected algorithm not restored');
+      await verifyCompactDetails(browser, 'tools', true);
+      await capture(browser, visuals, 'compact-tools-en-dark', 390, 'dark');
+      await nav(browser, 'API sources');
+      await browser.until("!!document.querySelector('.object-card[aria-current=true]')", 'Selected API source not restored');
+      await verifyCompactDetails(browser, 'api', true);
+      await capture(browser, visuals, 'compact-api-en-dark', 390, 'dark');
+      assert.equal(host.core.getState().conversationId, initial.conversationId);
+      assert.equal(host.core.getState().branchId, initial.branchId);
+      assert.deepEqual(host.services.tasks.list(), tasks);
+      assert.deepEqual(host.workspaceServices.tasks.list(), workspaceTasks);
       assert.equal(browser.blockedRequests.length, 0);
     } finally { await browser?.close(); await host.close(); }
   });
