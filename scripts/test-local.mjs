@@ -69,6 +69,7 @@ try {
         'apps/server/event-occurrence-r1.test.ts',
         'apps/server/event-records-r1.test.ts',
         'apps/server/event-lifecycle-r1.test.ts',
+        'apps/server/relation-history-r1.test.ts',
         'modules/collection/r1-event.test.ts',
         'modules/collection/data-processing/event-text.test.ts',
         'apps/server/processing-dependencies.test.ts',
