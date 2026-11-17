@@ -72,6 +72,7 @@ try {
         'apps/server/relation-ingest-r1.test.ts',
         'apps/server/relation-set-r1.test.ts',
         'modules/collection/r1-relation.test.ts',
+        'platform/plugins/direct-relation-versions.test.ts',
         'apps/server/relation-history-r1.test.ts',
         'modules/collection/r1-event.test.ts',
         'modules/collection/data-processing/event-text.test.ts',
