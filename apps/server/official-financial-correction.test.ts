@@ -22,9 +22,13 @@ const fields = ['report_id', 'report_version', 'subject_scheme', 'subject_code',
   'statement', 'scope', 'section', 'concept', 'dimension', 'period_type', 'start_date', 'end_date', 'unit', 'value'];
 const numericFormat = { decimal: '.', grouping: ',', negative: 'minus', plus: false, percent: 'reject' } as const;
 /** Coordinates/labels and metadata are manually checked against source pages, not auto-inferred. */
-function selection(item: typeof pinned[number]): FinancialPdfSelection {
+function selection(item: typeof pinned[number], stable = false): FinancialPdfSelection {
   const notice = item.id === 'correction-2024';
   return { version: 'bd-financial-pdf-regions/1', sourceSha256: item.sha256,
+    ...(stable && !notice ? { factIdentity: { version: 'bd-financial-fact/1' as const, seriesId: 'longxi-600592-q1-revenue-correction-2025-04',
+      periodBasis: 'Selected reports explicitly state 2024-01-01 through 2024-03-31; no annual fiscal-calendar assertion',
+      basis: 'Operator-declared same selected consolidated revenue fact; correction notice SHA 3ffffb22d327f84001562d3f8de047fff6a6fc25be181ade6440374098c4ebeb page 2 before/after row',
+      assertion: 'same_fact_across_report_editions' as const } } : {}),
     report: { id: 'longxi-600592-2024-q1', version: item.id, subjectScheme: 'SSE', subjectCode: '600592',
       accountingStandard: 'CAS', currency: 'CNY', auditStatus: notice ? 'not_asserted_for_notice' : 'unaudited' },
     regions: [{ page: item.page, yMin: item.y - 2, yMax: item.y + 2, statement: notice ? 'correction_notice' : 'income_statement',
@@ -47,13 +51,15 @@ async function execute(host: FullChainHost, id: string, input: any) {
   return { planId, done: { status: 'succeeded', error: null } };
 }
 
-test('official original, corrected report and correction notice preserve native cells through BD and fixed WFD reads without inventing revision eligibility',
+for (const stable of [false, true]) test('official PDF fixed source pipeline: ' + (stable ? 'explicit selected fact correction' : 'independent editions'),
   { skip: !enabled ? 'Requires downloaded official manifest, explicit WFD_PYTHON and isolated root; never fetches automatically.' : false, timeout: 300_000 }, async () => {
     const manifest = JSON.parse(readFileSync(join(root!, 'manifest.json'), 'utf8'));
     assert.equal(manifest.kind, 'official_financial_correction_probe'); assert.equal(manifest.synthetic, false);
     const fixture = createFullChainFixture({ name: 'official-financial-correction', machine: true,
       units: { cny: { dimension: 'money' }, text: { dimension: 'text' } } });
     let host = await openFullChainHost(fixture), snapshotId: string | null = null;
+    let correction: any = null;
+    const selectedFields = stable ? [...fields, 'financial_fact_identity'] : fields;
     const fixed: any[] = [], materials: string[] = [], originalRows: any[] = [];
     try {
       for (const item of pinned) {
@@ -76,18 +82,22 @@ test('official original, corrected report and correction notice preserve native 
           requested_at_utc: receipt.requestedAt, acquired_at_utc: receipt.acquiredAt,
           usage_scope: 'Selected official financial correction evidence in isolated BD/WFD test only',
           authorization: { status: 'authorized', basis: 'User requested free official sample verification; isolated selected-cell publication' } };
-        const target = { datasetId: 'official_longxi_q1', outputKey: 'financial.source.revenue', expectedParentSnapshotId: snapshotId,
+        const target: any = { datasetId: 'official_longxi_q1', outputKey: 'financial.source.revenue', expectedParentSnapshotId: snapshotId,
           subject: { kind: 'entity', namespace: 'full.chain.test', id: 'longxi_600592' },
           definition: { semantic_code: 'financial.source.revenue', measurement_nature: 'mixed_observation', unit_code: 'per_field',
             definition_authority: 'full.chain.test', time_role: 'observation',
-            field_definitions: fields.map(field_code => ({ field_code, data_type: field_code === 'value' ? 'decimal' : 'text',
+            field_definitions: selectedFields.map(field_code => ({ field_code, data_type: field_code === 'value' ? 'decimal' : 'text',
               unit_code: field_code === 'value' ? 'cny' : 'text', measurement_nature: 'flow', time_role: 'observation' })),
             semantic_context: { version: 'wfd.semantic-context/1.0', content_nature: 'source_claim',
+              identity: { identity_resolution_rule: stable ? 'explicit_selected_financial_fact_axes' : 'explicit_report_edition_and_selected_axes' },
+              coverage_quality: { completeness: 'partial', absence_means: 'unknown' },
               time: { period_type: 'natural', frequency: 'source_reported_calendar_period', interval: 'half_open', timezone: 'UTC' } } },
           inputMode: 'partial_observation', coverage: { scope: { issuer: '600592', report: item.id, selectedPage: item.page, selectedConcept: 'revenue' },
             basis: 'observed_partial', completeness: 'partial', absence_means: 'unknown' } };
+        if (stable && item.id === 'corrected-q1') Object.assign(target, { inputMode: 'source_correction', definitionMode: 'reuse',
+          definition: correction.definition, definitionRef: correction.definitionRef, revisions: { [correction.previous.logical_key]: { previous: correction.previous, reason: 'Explicit same selected fact, official correction notice before/after row' } } });
         const mapping = { kind: 'tabular_rows', businessKey: 'business_key', earliestUtc: 'start_utc', latestExclusiveUtc: 'end_utc',
-          precision: 'day', sourceTimezone: 'UTC', fields: fields.map(fieldCode => ({ fieldCode, value: fieldCode,
+          precision: 'day', sourceTimezone: 'UTC', fields: selectedFields.map(fieldCode => ({ fieldCode, value: fieldCode,
             state: fieldCode === 'value' ? 'value_state' : 'metadata_state' })) };
         const adopted: Record<string, string> = { role: 'financial-record', informationNature: 'source_claim', purpose: source.usage_scope,
           businessObject: '600592 consolidated revenue', objectTime: 'Source-stated January-March 2024; not historical availability',
@@ -98,7 +108,7 @@ test('official original, corrected report and correction notice preserve native 
         const work = await execute(host, item.id, { routing: { materials: [{ materialId, dimensions, intendedAction: isNotice ? 'inspect' : 'publish' }] },
           outputs: [{ outputId: 'selected', materialIds: [materialId], intendedAction: isNotice ? 'inspect' : 'publish',
             stages: isNotice ? ['parse'] : ['parse', 'structure', 'annotate', 'check'],
-            tables: [{ materialId, format: 'pdf', pdfSelection: selection(item), types: { value: 'decimal_string' },
+            tables: [{ materialId, format: 'pdf', pdfSelection: selection(item, stable), types: { value: 'decimal_string' },
               annotations: { metadata_state: 'valid_value' } }],
             ...(!isNotice ? { target: { declaration: { protocol: 'wfd.structured-ingest/1.0', source, target, mapping },
               expectedSnapshotId: snapshotId } } : {}) }] });
@@ -124,11 +134,15 @@ test('official original, corrected report and correction notice preserve native 
         const row = read.result.rows.find((row: any) => row.values.report_version.value === item.id);
         assert.equal(row.values.value.value, item.expected); assert.equal(row.values.currency.value, 'CNY');
         assert.equal(row.values.scope.value, 'consolidated'); assert.equal(row.values.unit.value, 'cny');
+        if (stable) {
+          const rawFixed = (await host.services.r1Runtime!.client.fixedRead(snapshotId!, association.product_id)).result as any;
+          correction = { previous: rawFixed.rows[0].record_ref, definitionRef: rawFixed.products[0].definition_ref, definition: rawFixed.products[0].declaration };
+        }
         originalRows.push(row);
         fixed.push({ snapshotId, productId: association.product_id, businessKeys: [row.record_ref.logical_key] });
         console.log('OFFICIAL_CORRECTION_SELECTED ' + JSON.stringify({ id: item.id, sha256: item.sha256, page: item.page,
           archiveDate: item.archiveDate, archiveDatePrecision: 'day_only_not_public_instant', value: item.expected,
-          selectedScopeOnly: true, publication: 'isolated_source_claim_not_source_correction' }));
+          selectedScopeOnly: true, publication: stable ? 'isolated_explicit_selected_fact_correction' : 'isolated_source_claim_not_source_correction' }));
       }
       for (const [index, ref] of fixed.entries()) {
         const work = await execute(host, 'standardize-' + index, { routing: { materials: [{ materialId: materials[index], intendedAction: 'inspect' }] },
@@ -152,10 +166,10 @@ test('official original, corrected report and correction notice preserve native 
       const historical = await host.call('/r1/products/read', { snapshotId: fixed[1].snapshotId, productId: fixed[1].productId,
         historyMode: 'market_known_at', at: '2025-05-01T00:00:00Z' }, 409);
       assert.equal(historical.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED');
-      // Both editions remain source claims. No implicit source_correction or latest-edition winner.
+      // Default keeps both editions; only explicit complete fact identity opts into source correction.
       const latest = await host.call('/r1/products/read', { snapshotId, productId: fixed[1].productId });
-      assert.equal(latest.result.rows.length, 2);
-      assert.deepEqual(latest.result.rows.map((row: any) => row.values.value.value).sort(), ['473861731.94', '546936730.12']);
+      assert.equal(latest.result.rows.length, stable ? 1 : 2);
+      assert.deepEqual(latest.result.rows.map((row: any) => row.values.value.value).sort(), stable ? ['473861731.94'] : ['473861731.94', '546936730.12']);
       await host.close(); host = await openFullChainHost(fixture);
       for (const [index, ref] of fixed.entries()) {
         const read = await host.call('/r1/products/read', { snapshotId: ref.snapshotId, productId: ref.productId });

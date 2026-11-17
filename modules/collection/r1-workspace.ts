@@ -1,3 +1,4 @@
+import { verifyFinancialFactRow } from './data-processing/financial-fact.js';
 import type { JointEvidenceReadScope } from './structured-retrieval.js';
 import type { R1CapabilitiesView, R1ConnectionIdentity, R1PrepareInput, R1RequestSummary, R1RequestView, R1RowSummary, R1ScalarMapping } from '../../contracts/r1-contracts.js';
 import { readPublicationGroups, type R1SetPrepareInput, type R1SetMemberView } from '../../contracts/r1-publication-set.js';
@@ -110,7 +111,7 @@ export class R1WorkspaceService {
   prepare(value: unknown): R1RequestView {
     if (isWfdRecord(value) && value.kind === 'publication_set') fail('R1_SET_HOST_CHECK', '集合准备须经过受信异步限制核验。');
     const input = readInput(value), runtime = this.requireRuntime(); this.assertDispatch();
-    if (input.target.inputMode === 'source_correction') fail('R1_CORRECTION_HOST_CHECK', '事件修订须经过异步固定前驱与定义核对。');
+    if (input.target.inputMode === 'source_correction') fail('R1_CORRECTION_HOST_CHECK', '来源修订须经过异步固定前驱与定义核对。');
     return this.prepareInternal(input, runtime, null);
   }
 
@@ -124,7 +125,7 @@ export class R1WorkspaceService {
     const plan = this.options.processing.get(input.planId);
     const fixedOutput = plan.outputs.find(item => item.outputId === input.outputId);
     const restriction = await this.verifyPublishRestriction(input, fixedOutput, runtime, signal);
-    await this.verifyEventCorrection(input, runtime, signal);
+    await this.verifyCorrection(input, runtime, signal);
     signal?.throwIfAborted();
     this.assertDispatch();
     if (generation !== this.tasks.getControl().generation) fail('TASK_NOT_ACTIVE', '核对期间停止代次已改变，未准备交接。');
@@ -133,11 +134,24 @@ export class R1WorkspaceService {
     return this.prepareInternal(input, runtime, restriction);
   }
 
-  private async verifyEventCorrection(input: R1PrepareInput, runtime: ReturnType<R1WorkspaceService['requireRuntime']>, signal?: AbortSignal): Promise<void> {
+  private async verifyCorrection(input: R1PrepareInput, runtime: ReturnType<R1WorkspaceService['requireRuntime']>, signal?: AbortSignal): Promise<void> {
     if (input.target.inputMode !== 'source_correction') return;
-    readEventCorrection(input.target);
+    readCorrection(input.target);
     const target = input.target, frozen = this.options.processing.get(input.planId).outputs.find(output => output.outputId === input.outputId)?.target;
     if (canonicalWfdJson(frozen?.declaration) !== canonicalWfdJson({ protocol: 'wfd.structured-ingest/1.0', source: input.source, target, mapping: input.mapping })) fail('R1_TARGET_CHANGED', '修订目标与冻结加工合同不同。');
+    const event = 'kind' in input.mapping && input.mapping.kind === 'event_records';
+    const rowKey = event ? 'event_id' : 'business_key';
+    const factIdentities = new Map<string, string>();
+    if (!event) {
+      const actual = this.options.processing.outputArtifact(input.planId, input.outputId);
+      const candidate = this.options.processing.candidateOutput(input.planId, input.outputId);
+      if (wfdSha256(actual.bytes) !== candidate.ref.sha256) fail('R1_PROCESS_OUTPUT_MISMATCH', '实际加工对象摘要变化。');
+      const parsed: unknown = JSON.parse(actual.bytes.toString('utf8'));
+      if (!isWfdRecord(parsed) || !Array.isArray(parsed.rows)) fail('R1_PROCESS_OUTPUT_FORMAT', '加工产物没有真实 rows。');
+      const checked = checkR1MappedRows(parsed.rows, frozen!.declaration);
+      if (checked.quality !== 'pass') fail('R1_TABULAR_SEMANTICS', checked.gaps.join('；'));
+      for (const row of checked.rows) factIdentities.set(String((row as WfdRecord).business_key), verifyFinancialFactRow(row));
+    }
     const fixedReads = new Map<string, WfdRecord>();
     for (const [key, revision] of Object.entries(target.revisions!)) {
       const previous = revision.previous;
@@ -154,15 +168,17 @@ export class R1WorkspaceService {
         if (result.snapshot_id !== snapshot || !Array.isArray(result.products) || !Array.isArray(result.rows)) fail('R1_CORRECTION_READBACK', '前驱固定读取的快照或数据集不符。');
         const products = result.products.filter(isWfdRecord).filter(product => product.product_id === previous.product_id && product.dataset_id === target.datasetId
           && canonicalWfdJson(product.definition_ref) === canonicalWfdJson(target.definitionRef));
-        if (products.length !== 1 || products[0]!.logical_domain !== 'events' || products[0]!.payload_kind !== 'event_records'
+        if (products.length !== 1 || products[0]!.logical_domain !== (event ? 'events' : 'observations') || products[0]!.payload_kind !== (event ? 'event_records' : 'tabular_rows')
           || canonicalWfdJson(products[0]!.subject) !== canonicalWfdJson(target.subject)
-          || canonicalWfdJson(products[0]!.declaration) !== canonicalWfdJson(target.definition)) fail('R1_CORRECTION_DEFINITION', '前驱实际事件定义、主体或完整定义引用与修订合同不符。');
+          || canonicalWfdJson(products[0]!.declaration) !== canonicalWfdJson(target.definition)) fail('R1_CORRECTION_DEFINITION', '前驱实际定义、主体或完整定义引用与修订合同不符。');
         const rows = result.rows.filter(isWfdRecord).filter(row => row.record_id === key && row.record_version === previous.revision_id);
         if (rows.length !== 1 || rows[0]!.product_id !== previous.product_id || !isWfdRecord(rows[0]!.row)
-          || rows[0]!.row.event_id !== key || !isWfdRecord(rows[0]!.record_ref)
-          || rows[0]!.record_ref.logical_key !== key || rows[0]!.record_ref.revision_id !== previous.revision_id
+          || rows[0]!.row[rowKey] !== key || !isWfdRecord(rows[0]!.record_ref)
+          || rows[0]!.record_ref.product_id !== previous.product_id || rows[0]!.record_ref.logical_key !== key || rows[0]!.record_ref.revision_id !== previous.revision_id
           || rows[0]!.record_ref.snapshot_id !== snapshot || isWfdRecord(rows[0]!.revision) && rows[0]!.revision.withdrawn === true)
-          fail('R1_CORRECTION_PREDECESSOR', '前驱事件实际身份、版本或撤销状态不符。');
+          fail('R1_CORRECTION_PREDECESSOR', '前驱实际身份、版本或撤销状态不符。');
+        if (!event && verifyFinancialFactRow(rows[0]!.row as WfdRecord) !== factIdentities.get(key))
+          fail('R1_CORRECTION_FACT_IDENTITY', '前驱与新行完整财务事实身份不同。');
       }
     }
   }
@@ -225,7 +241,7 @@ export class R1WorkspaceService {
         || !isWfdRecord(declaration.source)) fail('R1_SET_SOURCE', '集合成员缺少冻结来源声明，不能取第一来源补齐。');
       return readInput({ requestId, planId, outputId, source: declaration.source, mapping: declaration.mapping, target: declaration.target });
     });
-    if (inputs.some(input => input.target.inputMode === 'source_correction')) fail('R1_SET_CORRECTION_UNSUPPORTED', '首批事件修订仅支持单输出固定前驱核对，不在集合中跳过核对。');
+    if (inputs.some(input => input.target.inputMode === 'source_correction')) fail('R1_SET_CORRECTION_UNSUPPORTED', '首批来源修订仅支持单输出固定前驱核对，不在集合中跳过核对。');
     const first = inputs[0]!;
     if (inputs.some(input => input.target.datasetId !== first.target.datasetId
       || input.target.expectedParentSnapshotId !== first.target.expectedParentSnapshotId)
@@ -339,7 +355,7 @@ export class R1WorkspaceService {
     const checked = tabular ? checkR1MappedRows(parsed.rows, declaration) : null;
     if (checked && checked.quality !== 'pass') fail('R1_TABULAR_SEMANTICS', checked.gaps.join('；'));
     const rows = checked ? checked.rows : scalarRows(parsed.rows, input.mapping as R1ScalarMapping, input.target.inputMode === 'partial_observation');
-    if (input.target.inputMode === 'source_correction' && canonicalWfdJson(Object.keys(input.target.revisions!).sort()) !== canonicalWfdJson(rows.map(row => String(row.event_id)).sort())) fail('R1_CORRECTION_KEYS', '修订前驱必须精确覆盖全部实际事件键。');
+    if (input.target.inputMode === 'source_correction' && canonicalWfdJson(Object.keys(input.target.revisions!).sort()) !== canonicalWfdJson(rows.map(row => String((row as WfdRecord)[event ? 'event_id' : 'business_key'])).sort())) fail('R1_CORRECTION_KEYS', '修订前驱必须精确覆盖全部实际记录键。');
     const structured: R1StructuredRequest = { ...input.target, namespace: identity.namespace, producerNamespace: identity.namespace,
       requestId: input.requestId, ...(input.target.inputMode === 'partial_observation' ? { duplicatePolicy: 'skip_identical_append' as const } : {}), submissionDigest: 'sha256:' + '0'.repeat(64), payload: { kind: event ? 'event_records' : tabular ? 'tabular_rows' : 'scalar_rows', rows } };
     const unsigned = buildStructuredIngestDocument(structured);
@@ -645,16 +661,16 @@ function readInput(value: unknown): R1PrepareInput {
   if (!event && !['day', 'minute', 'second'].includes(String(mapping.precision))) fail('R1_WEB_TIME', '当前切片只支持显式 day/minute/second 时间精度。');
   id(target.datasetId); id(target.outputKey);
   if (target.expectedParentSnapshotId !== null) id(target.expectedParentSnapshotId);
-  if (!['partial_observation', 'complete_snapshot', ...(event ? ['source_correction'] : [])].includes(String(target.inputMode)) || !isWfdRecord(target.subject) || !isWfdRecord(target.definition) || !isWfdRecord(target.coverage)) fail('R1_WEB_TARGET', '目标身份、定义、覆盖或输入模式无效。');
-  if (target.inputMode === 'source_correction') readEventCorrection(target);
+  if (!['partial_observation', 'complete_snapshot', ...(tabular ? ['source_correction'] : [])].includes(String(target.inputMode)) || !isWfdRecord(target.subject) || !isWfdRecord(target.definition) || !isWfdRecord(target.coverage)) fail('R1_WEB_TARGET', '目标身份、定义、覆盖或输入模式无效。');
+  if (target.inputMode === 'source_correction') readCorrection(target);
   else if (target.definitionMode !== undefined || target.definitionRef !== undefined || target.revisions !== undefined) fail('R1_CORRECTION_TARGET', '普通追加不得夹带修订目标。');
   if (event) compileR1EventDeclaration({ protocol: 'wfd.structured-ingest/1.0', mapping, target, source });
   else if (tabular) compileR1MappedDeclaration({ protocol: 'wfd.structured-ingest/1.0', mapping, target, source });
   return JSON.parse(canonicalWfdJson(input)) as R1PrepareInput;
 }
-function readEventCorrection(target: WfdRecord): void {
+function readCorrection(target: WfdRecord): void {
   if (target.definitionMode !== 'reuse' || !isWfdRecord(target.definitionRef) || !isWfdRecord(target.revisions)
-    || !Object.keys(target.revisions).length || Object.keys(target.revisions).length > 5000 || typeof target.expectedParentSnapshotId !== 'string') fail('R1_CORRECTION_TARGET', '事件修订须复用固定定义、父快照和明确前驱。');
+    || !Object.keys(target.revisions).length || Object.keys(target.revisions).length > 5000 || typeof target.expectedParentSnapshotId !== 'string') fail('R1_CORRECTION_TARGET', '来源修订须复用固定定义、父快照和明确前驱。');
   for (const [key, raw] of Object.entries(target.revisions)) {
     id(key); const revision = object(raw, ['previous', 'reason']); boundedText(revision.reason, 4000);
     const previous = object(revision.previous, ['product_id', 'snapshot_id', 'logical_key', 'revision_id']);
