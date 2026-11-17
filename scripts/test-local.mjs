@@ -67,6 +67,8 @@ try {
         'apps/server/price-action-boundary.test.ts',
         'apps/server/event-occurrence.test.ts',
         'apps/server/event-occurrence-r1.test.ts',
+        'apps/server/official-event-r1.test.ts',
+        'modules/collection/event-text-integrity.test.ts',
         'apps/server/event-records-r1.test.ts',
         'apps/server/event-lifecycle-r1.test.ts',
         'modules/collection/r1-event.test.ts',
