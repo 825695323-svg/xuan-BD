@@ -225,6 +225,12 @@ test('real conversation material read and Vision OCR produce a read-only, unrevi
       await host.close(); host = await open(fixture);
       assert.equal(host.services.tasks.get(ocrTask.id).status, 'succeeded');
       assert.deepEqual(await readOcrReviewPacket(host.services, materialId, ocrTask.id), packet);
+      const reopenedHandoff = await readOcrReviewHandoff(host.services, materialId, ocrTask.id, questionId);
+      assert.equal(reopenedHandoff.state, 'user_statement_received');
+      assert.equal(reopenedHandoff.response?.text, answerText);
+      assert.equal(reopenedHandoff.response?.commandId, received.response.commandId);
+      assert.equal(reopenedHandoff.humanVerification, 'not_established');
+      assert.equal((await readOcrReviewHandoff(host.services, materialId, ocrTask.id, dismissId)).state, 'dismissed');
       assert.deepEqual(count(), before);
       assert.equal(wfdSha256(readFileSync(imagePath)), wfdSha256(original));
       // Fault injection only AFTER a real successful pipeline. Rollback restores
