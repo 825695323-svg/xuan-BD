@@ -224,11 +224,11 @@ R1 返回 `R1_READ_HISTORY_METADATA_UNSUPPORTED`。这不是自动选择旧定�
 
 ### 本地转录实际证据核对（显式可选验收）
 
-已对原应用资源清单绑定的 ffmpeg、ffprobe、whisper-cli 和 whisper_base 模型核文件摘要，再复制至独立测试运行根。`local-transcription-live.test.ts` 用 whisper.cpp 官方公开 JFK 演示音频（`https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav`，SHA-256 `59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e`）实际经过材料保管、`audio.transcribe`、本地模型推理、原生JSON时间片段与文本产物、持久任务和重开读取。原音频未修改；文本和原生时间片段各自摘要校验，改写文字或越界时间反例拒绝。没有按字数补造时间轴、上传私有材料或调用外部识别服务。
+已对原应用资源清单绑定的 ffmpeg、ffprobe、whisper-cli 和 whisper_base 模型核文件摘要，再复制至独立测试运行根。`local-transcription-live.test.ts` 用 whisper.cpp 官方公开 JFK 演示音频（`https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.9.1/samples/jfk.wav`，SHA-256 `59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e`）实际经过材料保管、`audio.transcribe`、本地模型推理、原生JSON时间片段与文本产物、持久任务和重开读取。原音频未修改；文本和原生时间片段各自摘要校验，改写文字或越界时间反例拒绝。没有按字数补造时间轴、上传私有材料或调用外部识别服务。
 
 该转录文字是模型输出，不是逐字准确认证或原件事实；测试仅核对一个短语锚点及原生证据一致性。把识别文本声明为音频原件上的精确文本选录时，既有加工格式门禁拒绝，不能直接获事件发布资格。OCR材料适配器仍未装配，未用假识别器或替代模型宣称完成；带图像输入的模型配置只是声明，未在本次做外部OCR实调用。
 
-此验收必须显式设置 `XUAN_TEST_TRANSCRIPTION_BUNDLE`（已有应用代码根，内含原资源清单）、`XUAN_TEST_TRANSCRIPTION_AUDIO`（上述已核摘要的本地音频）与独立 `XUAN_FULL_CHAIN_ROOT`，直接用 `node --import tsx --test apps/server/local-transcription-live.test.ts` 执行。不自动下载程序、模型或样本；默认未提供资源时跳过，不能将CI跳过计作真实语音验收。测试支撑只增加可选资源来源根，不改变生产绑定或用户配置。
+此验收必须显式设置 `XUAN_TEST_TRANSCRIPTION_BUNDLE`（已有应用代码根，内含原资源清单）、`XUAN_TEST_TRANSCRIPTION_AUDIO`（上述已核摘要的本地音频）与独立 `XUAN_FULL_CHAIN_ROOT`，直接用 `node --import tsx --test apps/server/local-transcription-live.test.ts` 执行。该测试本身不下载程序、模型或样本；macOS recipe 复用既有锁定随包构建，并按下述固定版本、长度和摘要规则取得公开样本。其他手动调用默认未提供资源时跳过，不能将跳过计作真实语音验收。测试支撑只增加可选资源来源根，不改变生产绑定或用户配置。
 ### 官方HTML事件选录与传播实测
 
 事件选录可显式指定 `sourceView: {kind: "html_static_text", rootSelector, textSha256}`，复用既有静态HTML解析及排除规则。选择器须唯一命中未排除节点，原HTML摘要、完整静态投影摘要、选录范围/原DOM文本节点位置一起冻结；跨标签文字可进入现有加工/R1事件域。位置标明静态投影UTF16而非原字节位置，脚本/嵌入/链接未读取的局部性仍保留，验证/登录页拒绝。旧纯文本选择继续使用原件UTF16定位，不换身份。处理实现摘要包括事件投影及HTML抽取源码。
