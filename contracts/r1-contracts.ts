@@ -26,7 +26,14 @@ export interface R1EventMapping {
   eventTime: R1EventTimeMapping; publicTime: R1EventTimeMapping; expectedTime?: R1EventTimeMapping;
   fields: { fieldCode: string; value: string; state: string }[];
 }
-export type R1Mapping = R1ScalarMapping | R1TabularMapping | R1EventMapping;
+/** Explicit source-claim relation; identity, validity and public time are independent. */
+export interface R1RelationMapping {
+  kind: 'relation_edges'; businessKey: string; relationType: string;
+  object: { kind: string; namespace: string; id: string };
+  effectivePeriod: R1EventTimeMapping; publicTime: R1EventTimeMapping;
+  fields: { fieldCode: string; value: string; state: string }[];
+}
+export type R1Mapping = R1ScalarMapping | R1TabularMapping | R1EventMapping | R1RelationMapping;
 export interface R1SourceDeclaration {
   source_id: string; provider: string; requested_url: string;
   requested_at_utc: string; acquired_at_utc: string; usage_scope: string;
@@ -42,6 +49,8 @@ export interface R1PrepareInput {
   target: { datasetId: string; outputKey: string; expectedParentSnapshotId: string | null;
     subject: Record<string, unknown>; definition: Record<string, unknown>;
     inputMode: 'partial_observation' | 'complete_snapshot' | 'source_correction'; coverage: Record<string, unknown>;
+    /** Independent explicit definition availability; never inferred from row/source dates. */
+    definitionPublicTime?: Record<string, unknown>;
     definitionMode?: 'reuse'; definitionRef?: Record<string, unknown>;
     revisions?: Record<string, { previous: { product_id: string; snapshot_id: string; logical_key: string; revision_id: string }; reason: string }> };
 }
@@ -79,7 +88,7 @@ export interface R1CapabilitiesView {
   protocol: 'wfd.structured-ingest/1.0'; profile: 'data_only';
   configuration: { state: string; reason: string | null }; connection: R1ConnectionIdentity | null;
   limits: { maxRows: number; maxDocumentBytes: number; maxMaterials: 1; payload: 'scalar_rows';
-    supportedPayloads?: readonly ('scalar_rows' | 'tabular_rows' | 'event_records')[] };
+    supportedPayloads?: readonly ('scalar_rows' | 'tabular_rows' | 'event_records' | 'relation_edges')[] };
   automaticSubmit: false; legacyReplay: false;
   publicationSets?: { prepareKind: 'publication_set'; maxOutputs: 16; membership: 'frozen_plan'; atomicity: 'declared_set' };
 }
@@ -89,6 +98,8 @@ export interface R1ReadConnection {
   runtimeIdentity: string; callerId: string; namespace: string;
 }
 export interface R1SnapshotStatus {
+  /** Actual bound WFD instance only; does not assert any usable stage or invent holding facts. */
+  holdingInstance?: { instanceId: string; bindingSource: 'volume_binding' | 'target_instance' } | null;
   snapshotId: string | null; empty: boolean; authority: 'active_head';
   connection: R1ReadConnection & { roles: string[] };
   units: Record<string, { definition: Record<string, unknown>; digest: string }>;
@@ -128,11 +139,13 @@ export type R1ContextOperation = typeof R1_CONTEXT_OPERATIONS[number];
 export interface R1ContextReadInput {
   operation: R1ContextOperation; snapshotId: string; datasetId: string; subject: Record<string, unknown>;
   fields?: string[]; pageSize?: number; cursor?: string | null; maxDepth?: number;
+  /** Relation graph only: explicit market cutoff plus validity range; other contexts remain snapshot-only. */
+  historyMode?: 'snapshot_contents' | 'market_known_at'; at?: string;
   relationTypes?: string[]; eventTypes?: string[]; ruleCodes?: string[]; businessTimeRange?: Record<string, unknown> | null;
 }
 export interface R1ContextRead {
   operation: R1ContextOperation; snapshotId: string; datasetId: string; subject: Record<string, unknown>;
-  historyMode: 'snapshot_contents'; connection: R1ReadConnection; result: Record<string, unknown>; limits: R1ReadLimits;
+  historyMode: 'snapshot_contents' | 'market_known_at'; connection: R1ReadConnection; result: Record<string, unknown>; limits: R1ReadLimits;
 }
 
 export interface R1DefinitionIntent {
