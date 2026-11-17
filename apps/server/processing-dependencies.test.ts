@@ -69,3 +69,31 @@ test('HTTP field dependencies expose selection scope and missing persisted steps
     assert.ok(missing.gaps.some((gap: string) => gap.includes('persisted_step_missing')));
   } finally { await host.close(); }
 });
+
+test('HTTP dedicated text projection is explicitly unknown rather than fabricated one-to-one field lineage', isolated, async () => {
+  const fixture = createFullChainFixture({ name: 'field-dependencies-projection' });
+  const host = await openFullChainHost(fixture);
+  try {
+    const quote = '公司预计明年投产，尚须审批。', bytes = Buffer.from(quote);
+    const upload = await host.upload('synthetic-note.txt', 'data', bytes, 'note-upload');
+    assert.equal((await host.settled(upload.jobId)).status, 'succeeded');
+    const materialId = host.services.materials!.getByTask(upload.jobId)!.envelope.materialId;
+    const sourceSha256 = host.services.materials!.getByTask(upload.jobId)!.envelope.sha256;
+    const accepted = await host.call('/processing/plans', { requestId: 'note-plan', input: {
+      routing: { materials: [{ materialId, intendedAction: 'inspect' }] }, outputs: [{ outputId: 'result', materialIds: [materialId],
+        intendedAction: 'inspect', stages: ['parse', 'structure', 'annotate', 'check'], tables: [{ materialId, format: 'text',
+          necessaryTextSelection: { version: 'bd-necessary-business-paragraph/1', sourceSha256, documentVersion: 'synthetic-1',
+            purpose: 'limiting_condition', reviewBasis: 'Synthetic full paragraph with explicit condition.',
+            paragraphs: [{ start: 0, end: quote.length, quote }] } }] }],
+    } }, 202);
+    const done = await host.settled(accepted.jobId);
+    assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
+    const planId = host.services.processing!.getByTask(done.id)!.plan!.planId;
+    await complete(host, planId);
+    const result = await host.call(`/processing/plans/${planId}/outputs/result/dependencies`);
+    assert.equal(result.complete, false);
+    assert.deepEqual(result.dependencies, []);
+    assert.ok(result.gaps.some((gap: string) => gap.includes('unsupported_field_dependency_projection')));
+    assert.equal(JSON.stringify(result).includes(quote), false);
+  } finally { await host.close(); }
+});
