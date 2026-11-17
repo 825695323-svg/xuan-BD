@@ -82,10 +82,11 @@ export async function uploadFile(conversationId: string, file: File): Promise<Fi
 }
 export const getTasks = async (id: string) => await request(`/api/tasks?conversationId=${encodeURIComponent(id)}`) as TaskRecord[];
 export const createTask = async (input: { title: string; action: string; args: JsonValue; conversationId: string; requestId: string; dependencies?: string[]; reviewRequired?: boolean }) => await request('/api/tasks', 'POST', input) as TaskRecord;
-export const getTaskDetails = async (id: string) => await request(`/api/tasks/${encodeURIComponent(id)}`) as { task: TaskRecord; runs: TaskRun[]; attempts: TaskAttempt[]; events: TaskEvent[] };
+export const getTaskDetails = async (id: string) => await request(`/api/tasks/${encodeURIComponent(id)}`, 'GET', undefined, { requireLocalData: true }) as { task: TaskRecord; runs: TaskRun[]; attempts: TaskAttempt[]; events: TaskEvent[]; recoverySupported: boolean };
 export const commandTask = async (task: TaskRecord, command: string, extra: { reason?: string; dependencies?: string[] } = {}) => await request(`/api/tasks/${encodeURIComponent(task.id)}/command`, 'POST', {
   command, ...(command === 'pause' || command === 'cancel' ? { generation: task.generation, runId: task.currentRunId } : { version: task.version }), ...extra,
 }) as TaskRecord;
+export const recoverTask = async (task: TaskRecord) => await request(`/api/tasks/${encodeURIComponent(task.id)}/recover`, 'POST', { version: task.version }, { requireLocalData: true }) as TaskRecord;
 export const reconcileTask = async (task: TaskRecord, outcome: string, evidence: string) => await request(`/api/tasks/${encodeURIComponent(task.id)}/reconcile`, 'POST', { version: task.version, outcome, evidence }) as TaskRecord;
 export type ApprovalView = ApprovalRequest & { task?: Pick<TaskRecord, 'title' | 'action' | 'args'>; origin?: {
   notice: string; receiver: { provider: string; model: string; origin: string }; conversationId: string;

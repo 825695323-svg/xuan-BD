@@ -4,6 +4,7 @@ import { getTasks, mergeTasks, readTaskUpdate } from './platform-api';
 import { localDataGeneration, localDataRevision, notifyLocalDataRevoked, subscribeLocalDataRevoked } from './local-data-context';
 
 export interface ConversationTaskFeed {
+  scope: string;
   tasks: TaskRecord[];
   status: 'idle' | 'loading' | 'ready' | 'stale' | 'error';
   refreshing: boolean;
@@ -79,5 +80,5 @@ export function useConversationTasks(conversationId: string | null | undefined):
     return () => { disposed = true; ++request; unsubscribe(); source.close(); refreshRef.current = () => {}; };
   }, [id, generation, revision, scope]);
   // Never expose the previous conversation during the render preceding effect cleanup.
-  return { ...(state.scope === scope ? state : { tasks: [], status: id && generation !== null ? 'loading' as const : 'idle' as const, refreshing: false }), refresh };
+  return { ...(state.scope === scope ? state : { scope, tasks: [], status: id && generation !== null ? 'loading' as const : 'idle' as const, refreshing: false }), refresh };
 }

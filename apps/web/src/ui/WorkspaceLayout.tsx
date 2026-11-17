@@ -162,7 +162,7 @@ export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children,
               {layout.taskCollapsed ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
             </IconButton>
           </header>
-          {!layout.taskCollapsed && <TaskCenter tasks={conversationTasks} feed={taskFeed} />}
+          {!layout.taskCollapsed && <TaskCenter key={taskFeed?.scope} tasks={conversationTasks} feed={taskFeed} />}
         </section>
       </div>
     </aside>}

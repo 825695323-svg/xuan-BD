@@ -269,7 +269,7 @@ export function createPlatformRouter(services: ApplicationServices) {
   });
   router.get('/tasks/:id', (req, res) => {
     const task = tasks.get(req.params.id), runs = tasks.getRuns(task.id);
-    res.json({ task, runs, attempts: runs.flatMap((run) => tasks.getAttempts(run.id)), events: tasks.events(task.id) });
+    res.json({ task, runs, attempts: runs.flatMap((run) => tasks.getAttempts(run.id)), events: tasks.events(task.id), recoverySupported: tasks.recoverySupported(task.id) });
   });
   router.post('/tasks', (req, res) => {
     const body = object(req.body), action = string(body.action), conversationId = optionalString(body.conversationId);

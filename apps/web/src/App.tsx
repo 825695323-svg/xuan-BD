@@ -152,7 +152,7 @@ function Application() {
       showDirectory={!['capture', 'api-sources', 'tools', 'conversations', 'database'].includes(page)}
       showAgent={page !== 'conversations' && page !== 'database'}
       agent={<ConversationView chat={chat} hidden={false} dispatchBlocked={runtime?.control.stopped ?? false} controlUnconfirmed={!runtime || !!runtimeError} compact tasks={tasks} />}>
-    {page === 'conversations' && <ConversationView chat={chat} hidden={false} dispatchBlocked={runtime?.control.stopped ?? false} controlUnconfirmed={!runtime || !!runtimeError} tasks={tasks} />}
+    {page === 'conversations' && <ConversationView chat={chat} hidden={false} dispatchBlocked={runtime?.control.stopped ?? false} controlUnconfirmed={!runtime || !!runtimeError} tasks={tasks} taskFeed={taskFeed} />}
     {page === 'capture' && <CaptureSourcesPage />}
     {page === 'api-sources' && <ApiSourcesPage />}
     {page === 'database' && <DatabasePage onBringToConversation={bringToConversation} />}

@@ -1,3 +1,5 @@
+import { TaskCenter } from './TaskCenter';
+import type { ConversationTaskFeed } from '../useConversationTasks';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, Check, ChevronLeft, ChevronRight, Copy, Pencil, RotateCcw, X } from 'lucide-react';
 import { ActionBarPrimitive, AssistantRuntimeProvider, BranchPickerPrimitive, ExportedMessageRepository, MessagePrimitive, ThreadPrimitive,
@@ -268,7 +270,7 @@ function PendingApprovals() {
   </div>;
 }
 
-export default function ConversationView({ chat, hidden, dispatchBlocked, controlUnconfirmed, compact = false, tasks: sharedTasks }: { chat: Chat; hidden: boolean; dispatchBlocked: boolean; controlUnconfirmed: boolean; compact?: boolean; tasks?: TaskRecord[] }) {
+export default function ConversationView({ chat, hidden, dispatchBlocked, controlUnconfirmed, compact = false, tasks: sharedTasks, taskFeed }: { chat: Chat; hidden: boolean; dispatchBlocked: boolean; controlUnconfirmed: boolean; compact?: boolean; tasks?: TaskRecord[]; taskFeed?: ConversationTaskFeed }) {
   const words = useWords();
   // 应用层已订阅真实任务流时直接复用，避免同一会话开两条 SSE 和两份任务状态。
   const [ownTasks, setOwnTasks] = useState<TaskRecord[]>([]);
@@ -343,6 +345,7 @@ export default function ConversationView({ chat, hidden, dispatchBlocked, contro
       {state ? <Thread key={state.conversationId} chat={controlledChat} tasks={sharedTasks ?? ownTasks} scrollPositions={scrollPositions.current} hidden={hidden} />
         : <div className="conversation-loading" role="status"><BrandAsset kind="xuan" size={32} /><p>{chat.selectedId || chat.newPending ? words('正在读取会话…', 'Loading conversation…') : words('说点什么，或拖入文件…', 'Send a message or drop files…')}</p>{!chat.selectedId && !chat.listLoading && <button type="button" className="text-button" disabled={chat.newPending} onClick={() => void chat.newConversation()}>{words('新建会话', 'New conversation')}</button>}</div>}
       {chat.readOnly && state && <div className="read-only-bar"><p>{state.visibility === 'archived' ? words('此会话已归档。', 'This conversation is archived.') : words('此会话位于最近删除。', 'This conversation is in Recently deleted.')}</p><button type="button" className="text-button" disabled={chat.managementPending} onClick={() => void chat.changeVisibility(state.conversationId, 'active').catch(() => {})}>{words('恢复并继续会话', 'Restore and continue')}</button></div>}
+      {!compact && taskFeed && <details className="conversation-task-center"><summary>{words('任务中心', 'Task center')}</summary><TaskCenter key={taskFeed?.scope} tasks={(sharedTasks ?? []).filter(task => task.runtimeId !== 'pi')} feed={taskFeed} /></details>}
       <PendingApprovals />
       <Composer chat={controlledChat} hidden={chat.readOnly} dispatchBlocked={dispatchBlocked} controlUnconfirmed={controlUnconfirmed} />
     </div>

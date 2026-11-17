@@ -1,7 +1,9 @@
+import { useState } from 'react';
+import { TaskRecovery } from './TaskRecovery';
 import type { TaskRecord, TaskStatus } from '../../../../contracts/task-contracts';
 import type { ConversationTaskFeed } from '../useConversationTasks';
 import { ErrorNote, useWords } from './Controls';
-import { PageButton, PageEmpty } from './PageUI';
+import { PageButton, PageEmpty, PageSearch } from './PageUI';
 import { TaskState, taskStateText } from './TaskResults';
 
 export function taskCenterGroup(status: TaskStatus): 'active' | 'attention' | 'finished' {
@@ -9,7 +11,7 @@ export function taskCenterGroup(status: TaskStatus): 'active' | 'attention' | 'f
   if (['waiting_approval', 'paused', 'interrupted', 'needs_review', 'blocked', 'awaiting_review'].includes(status)) return 'attention';
   return 'finished';
 }
-function TaskRow({ task }: { task: TaskRecord }) {
+function TaskRow({ task, feed }: { task: TaskRecord; feed?: ConversationTaskFeed }) {
   const words = useWords();
   const fraction = task.progress?.fraction;
   return <article className="agent-task-row" data-task-id={task.id} data-state={task.status}>
@@ -31,12 +33,15 @@ function TaskRow({ task }: { task: TaskRecord }) {
       {task.error?.nextAction && <p>{task.error.nextAction}</p>}
       {task.approvalId && <p>{words('授权须在现有会话审批条处理，本视图不批准。', 'Authorization belongs in the existing conversation approval strip, not this view.')}</p>}
       <p>{words('只读记录；查看不会重试、继续或派发任务。', 'Read-only record. Viewing does not retry, resume or dispatch a task.')}</p>
+      {feed && <TaskRecovery task={task} ready={feed.status === 'ready' && !feed.refreshing} refresh={feed.refresh} />}
     </details>
   </article>;
 }
-/** The feed belongs to App. This view adds neither a subscription nor task execution. */
+/** The feed belongs to App. This view adds no subscription; execution requires a separate explicit confirmation. */
 export function TaskCenter({ tasks, feed }: { tasks: readonly TaskRecord[]; feed?: ConversationTaskFeed }) {
   const words = useWords();
+  const [query, setQuery] = useState('');
+  const filtered = tasks.filter(task => [task.id, task.title, task.action, task.status, taskStateText(task.status, words)].some(value => value.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())));
   const status = feed?.status ?? 'idle';
   const groups = [
     ['active', words('受理与运行', 'Accepted and running')],
@@ -51,10 +56,12 @@ export function TaskCenter({ tasks, feed }: { tasks: readonly TaskRecord[]; feed
     {status === 'error' && <ErrorNote>{words('任务读取失败，尚不能确认是否为空。请刷新重试。', 'Task read failed; an empty list is not confirmed. Refresh to retry.')}</ErrorNote>}
     {status === 'stale' && <ErrorNote>{words('任务更新已中断或刷新失败；以下为上次记录，可能过时。重连后重新核对。', 'Task updates stopped or refresh failed. Last-read records may be stale; reconnect to verify.')}</ErrorNote>}
     {status === 'ready' && !tasks.length && <p className="workspace-empty">{words('当前会话还没有任务记录。', 'No tasks for this conversation yet.')}</p>}
+    <PageSearch compact label={words('查找当前会话任务：标题、编号、动作或状态', 'Find current conversation tasks: title, ID, action or status')} value={query} onChange={setQuery} />
+    {status === 'ready' && !!tasks.length && !filtered.length && <PageEmpty>{words('当前会话没有匹配的任务记录。', 'No matching task records in this conversation.')}</PageEmpty>}
     {groups.map(([group, label]) => {
-      const items = tasks.filter(task => taskCenterGroup(task.status) === group).slice().sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+      const items = filtered.filter(task => taskCenterGroup(task.status) === group).slice().sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
       return items.length ? <section key={group} data-task-group={group}><p className="agent-tasks-group">{label} · {items.length}</p>
-        {items.map(task => <TaskRow key={task.id} task={task} />)}</section> : null;
+        {items.map(task => <TaskRow key={task.id} task={task} feed={feed} />)}</section> : null;
     })}
   </div>;
 }

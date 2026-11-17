@@ -693,3 +693,7 @@ button svg, a svg { flex-shrink: 0; }
   .model-trigger { max-width: min(210px, 45dvw); }
   .page-notice { left: 10px; right: 10px; gap: 8px; flex-wrap: wrap; }
 }
+
+/* Standalone conversation uses the same task view and feed as the embedded workspace. */
+.conversation-task-center { flex: 0 1 auto; min-height: 0; max-height: 40%; overflow: auto; border-top: 1px solid var(--line); }
+.conversation-task-center > summary { padding: var(--ui-space-2) var(--ui-space-3); cursor: pointer; }
