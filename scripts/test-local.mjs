@@ -63,6 +63,7 @@ try {
         'modules/collection/processing-quality.test.ts',
         'modules/collection/processing-plan-request.test.ts',
         'apps/server/processing-quality.test.ts',
+        'apps/server/processing-dependencies.test.ts',
         'apps/server/r1-dedup.test.ts',
         'apps/server/endpoint-adapter-chain.test.ts',
         'apps/server/endpoint-adapter-r1.test.ts']
