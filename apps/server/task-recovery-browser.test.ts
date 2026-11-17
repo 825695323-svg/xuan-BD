@@ -140,8 +140,9 @@ test('task recovery HTTP uses actual original runs, versions and unknown-effect 
   });
 
 async function button(browser: Browser, text: string, scope = 'document') {
-  await browser.until(`[...${scope}.querySelectorAll('button')].some(e=>e.textContent.trim()===${q(text)}&&!e.disabled)`, 'Missing actual button ' + text);
-  await browser.evaluate(`[...${scope}.querySelectorAll('button')].find(e=>e.textContent.trim()===${q(text)}&&!e.disabled).click()`);
+  // SSE may render between two CDP calls. Resolve and click the actual enabled
+  // control in one browser turn; no forced click and no relaxed disabled gate.
+  await browser.until(`(()=>{const root=${scope};if(!root)return false;const b=[...root.querySelectorAll('button')].find(e=>e.textContent.trim()===${q(text)}&&!e.disabled);if(!b)return false;b.click();return true;})()`, 'Missing actual enabled button ' + text);
 }
 async function inspect(browser: Browser, id: string, english = false) {
   const scope = `document.querySelector('[data-task-id='+${q(JSON.stringify(id))}+']')`;
@@ -207,6 +208,7 @@ test('actual recovery UI searches current tasks and confirms one original-task a
       await button(browser, '核对原外部结果');
       await browser.until(`!document.querySelector('[aria-label="确认原任务操作"]')`, 'Preview must close');
       assert.equal(host.services.tasks.get(s.unknown.id).status, 'needs_review'); assert.equal(host.executions.get(s.unknown.id), 1);
+      await browser.until(`!!document.querySelector('[data-task-id='+${q(JSON.stringify(s.unknown.id))}+'] [role=status]')&&document.querySelector('.agent-tasks-list')?.getAttribute('aria-busy')==='false'`, 'Original lookup response and follow-up refresh must finish before the next task action');
       await inspect(browser, s.paused.id);
       // Actual service change invalidates the frozen preview; no synthetic task payload.
       await host.services.tasks.cancel(s.paused.id);
