@@ -146,6 +146,41 @@ jobs:
         run: |
           python scripts/bootstrap-resources.py --profile bundle --output "$GITHUB_WORKSPACE/resources/bundled"
           "$BD_NODE" --import tsx -e "import {BundledResources} from './platform/resources/bundled.ts'; new BundledResources(process.cwd()).verify(); console.log('BUNDLE_MANIFEST_VERIFIED');"
+      - name: Verify actual local transcription on the supported macOS bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          export XUAN_TEST_ROOT="$RUNNER_TEMP/bd-transcription-tests"
+          export XUAN_FULL_CHAIN_ROOT="$RUNNER_TEMP/bd-transcription-chain"
+          export XUAN_TEST_TRANSCRIPTION_BUNDLE="$GITHUB_WORKSPACE"
+          export XUAN_TEST_TRANSCRIPTION_AUDIO="$RUNNER_TEMP/bd-public-jfk.wav"
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
+          python - <<'PYMEDIA'
+          import hashlib, os, pathlib, urllib.request
+          # Upstream MIT-licensed whisper.cpp sample; public JFK speech, not private media.
+          # The already hash-locked bundle retains the upstream LICENSE.
+          url = 'https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.9.1/samples/jfk.wav'
+          with urllib.request.urlopen(url, timeout=60) as response:
+              data = response.read(2 * 1024 * 1024 + 1)
+          assert len(data) == 352078, 'Unexpected public audio length'
+          assert hashlib.sha256(data).hexdigest() == '59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e', 'Public audio digest mismatch'
+          with pathlib.Path(os.environ['XUAN_TEST_TRANSCRIPTION_AUDIO']).open('xb') as output:
+              output.write(data)
+          PYMEDIA
+          "$BD_NODE" --import tsx --test --test-concurrency=1 --test-reporter=tap apps/server/local-transcription-live.test.ts apps/server/transcription-review-live.test.ts apps/server/transcription-review.test.ts platform/resources/direct-trusted-resources.test.ts | tee "$RUNNER_TEMP/bd-transcription-result.tap"
+          grep -q '^# skipped 0$' "$RUNNER_TEMP/bd-transcription-result.tap"
+      - name: Verify actual optional macOS Vision OCR with synthetic image
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          export XUAN_TEST_ROOT="$RUNNER_TEMP/bd-vision-tests"
+          export XUAN_FULL_CHAIN_ROOT="$RUNNER_TEMP/bd-vision-chain"
+          export XUAN_TEST_VISION_OCR="$RUNNER_TEMP/bd-vision-ocr"
+          mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
+          test ! -e "$XUAN_TEST_VISION_OCR"
+          xcrun swiftc -O platform/capabilities/ocr/vision.swift -o "$XUAN_TEST_VISION_OCR" -framework Vision -framework ImageIO
+          "$BD_NODE" --import tsx --test --test-concurrency=1 --test-reporter=tap apps/server/local-ocr-live.test.ts apps/server/ocr-review-live.test.ts platform/capabilities/ocr/evidence.test.ts platform/capabilities/ocr/adapter.test.ts | tee "$RUNNER_TEMP/bd-vision-result.tap"
+          grep -q '^# skipped 0$' "$RUNNER_TEMP/bd-vision-result.tap"
       - name: Reject tracked build outputs or changes to source
         shell: bash
         run: |
