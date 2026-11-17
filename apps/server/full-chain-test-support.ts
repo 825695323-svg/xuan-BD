@@ -46,6 +46,7 @@ function writeJson(path: string, value: unknown): void {
 /** Caller selects a new, dedicated parent root after checking that it did not exist before this batch. */
 export function createFullChainFixture(input: { name: string; machine?: boolean; bundledTranscription?: boolean;
   privateRoot?: string;
+  bundledCodeRoot?: string;
   units?: Record<string, { dimension: string }> }): FullChainFixture {
   const parent = process.env.XUAN_FULL_CHAIN_ROOT;
   assert.ok(parent && isAbsolute(parent) && existsSync(parent) && statSync(parent).isDirectory(),
@@ -72,7 +73,7 @@ export function createFullChainFixture(input: { name: string; machine?: boolean;
   const store = join(root, 'wfd-store'), wfdRuntime = join(root, 'wfd-runtime');
   let modelPath: string | undefined;
   if (input.bundledTranscription) {
-    const bundle = new BundledResources(codeRoot), local = join(root, 'bundled-transcription');
+    const bundle = new BundledResources(input.bundledCodeRoot ?? codeRoot), local = join(root, 'bundled-transcription');
     mkdirSync(local);
     for (const [id, resourceKey] of [['ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe'], ['whisper_cli', 'whisper_cli']] as const) {
       const source = bundle.executable(id), entry = bundle.manifest.platforms[bundle.platform]!.executables[id]!;

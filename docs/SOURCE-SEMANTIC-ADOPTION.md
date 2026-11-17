@@ -221,3 +221,11 @@ R1 返回 `R1_READ_HISTORY_METADATA_UNSUPPORTED`。这不是自动选择旧定�
 `POST /r1/products/coverage` 仅接收 `snapshotId`、`productId` 和最多 256 个唯一 `businessKeys`。复用绑定的 `read_product`，沿同一快照、连接与查询的原游标读取；扫描上限为 50 页、5,000 行、30 秒。只有完整扫描结束、总行数一致且没有读取诊断，才返回各键的 `observed` 或 `not_observed`。读取不完整、扫描预算耗尽或中止时，整份清单标为 `unknown`；权限、身份、重复键或游标损坏仍明确报错，不伪装来源无数据。返回已观察记录的固定引用，不返回金融值或原文。
 
 范围明确为**调用方指定业务键在所选产品固定快照中是否观察到**，不是数据正确性或世界完整性判断。调用方清单不是权威交易日历；空读与 `not_observed` 不能推出停牌、不存在、未上市或供应商确实无数据。`calendarQualification: not_asserted` 保留日历应有集合、证券生命周期及来源覆盖能力的未核实边界，本接口不自动补采、不写库、不换源。实际 HTTP/WFD 测试覆盖 105 行两页、缺键与重开一致；合成样本不是生产供应商覆盖证明。
+
+### 本地转录实际证据核对（显式可选验收）
+
+已对原应用资源清单绑定的 ffmpeg、ffprobe、whisper-cli 和 whisper_base 模型核文件摘要，再复制至独立测试运行根。`local-transcription-live.test.ts` 用 whisper.cpp 官方公开 JFK 演示音频（`https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav`，SHA-256 `59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e`）实际经过材料保管、`audio.transcribe`、本地模型推理、原生JSON时间片段与文本产物、持久任务和重开读取。原音频未修改；文本和原生时间片段各自摘要校验，改写文字或越界时间反例拒绝。没有按字数补造时间轴、上传私有材料或调用外部识别服务。
+
+该转录文字是模型输出，不是逐字准确认证或原件事实；测试仅核对一个短语锚点及原生证据一致性。把识别文本声明为音频原件上的精确文本选录时，既有加工格式门禁拒绝，不能直接获事件发布资格。OCR材料适配器仍未装配，未用假识别器或替代模型宣称完成；带图像输入的模型配置只是声明，未在本次做外部OCR实调用。
+
+此验收必须显式设置 `XUAN_TEST_TRANSCRIPTION_BUNDLE`（已有应用代码根，内含原资源清单）、`XUAN_TEST_TRANSCRIPTION_AUDIO`（上述已核摘要的本地音频）与独立 `XUAN_FULL_CHAIN_ROOT`，直接用 `node --import tsx --test apps/server/local-transcription-live.test.ts` 执行。不自动下载程序、模型或样本；默认未提供资源时跳过，不能将CI跳过计作真实语音验收。测试支撑只增加可选资源来源根，不改变生产绑定或用户配置。
