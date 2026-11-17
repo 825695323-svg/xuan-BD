@@ -27,7 +27,7 @@ export function candidateImplementationDigest(): string {
   const files = ['./candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts',
     './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts',
     './data-processing/necessary-text.ts', './data-processing/event-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts',
-    './materials/contracts.ts', '../../adapters/database/wfd-transport.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
+    './materials/contracts.ts', '../../platform/capabilities/browser/html-extraction.ts', '../../adapters/database/wfd-transport.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
   return wfdSha256(Buffer.concat(files));
 }
 export const CANDIDATE_STAGE_VERSIONS = Object.freeze({ parse: 'bd-source-parsers/3', clean: 'bd-explicit-clean/1',
