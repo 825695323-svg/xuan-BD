@@ -179,7 +179,8 @@ test('actual task center shares real task feed, rejects stale replies and never 
       const failedSelector = `[data-task-id=${JSON.stringify(seeded.failed.id)}]`;
       await browser.evaluate(`document.querySelector(${q(failedSelector + ' summary')}).click()`);
       assert.match(await browser.evaluate<string>(`document.querySelector(${q(failedSelector)}).textContent`), /SYNTHETIC_FAILURE|Explicit synthetic failure/u);
-      assert.equal(await browser.evaluate(`document.querySelectorAll(${q(failedSelector + ' button')}).length`), 0, 'Record viewing has no dispatch controls');
+      assert.deepEqual(await browser.evaluate(`[...document.querySelectorAll(${q(failedSelector + ' button')})].map(button=>button.textContent)`), ['查看恢复操作'], 'Record viewing only exposes preview, not direct execution');
+      assert.equal(await browser.evaluate("document.querySelectorAll('dialog[aria-label=\"确认原任务操作\"]').length"), 0, 'Viewing does not automatically open execution confirmation');
       await screenshot(browser, visual, 'task-center-zh-light', 'light');
       await screenshot(browser, visual, 'task-center-zh-dark', 'dark');
       await screenshot(browser, visual, 'task-center-failure-zh-light', 'light', seeded.failed.id);

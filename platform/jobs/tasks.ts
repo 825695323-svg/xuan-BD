@@ -359,6 +359,12 @@ export class TaskService {
     return { task, envelope };
   }
 
+  /** Read-only runtime capability, not authorization or a promise that recovery will succeed. */
+  recoverySupported(taskId: string): boolean {
+    const task = this.get(taskId);
+    return this.runtimes.list().some(runtime => runtime.id === task.runtimeId && typeof runtime.recover === 'function');
+  }
+
   get(taskId: string): TaskRecord {
     const row = this.database.connection.prepare('SELECT * FROM tasks WHERE id=?').get(taskId);
     if (!row) throw new TaskError('TASK_NOT_FOUND', '没有找到此任务。');
