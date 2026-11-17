@@ -247,6 +247,14 @@ R1 返回 `R1_READ_HISTORY_METADATA_UNSUPPORTED`。这不是自动选择旧定�
 返回原图既有读取链接、完整识别文本、区域与置信度、识别器/系统版本及固定产物引用，供人工逐区域查看。8MiB是每份文本/原生JSON产物的读取上限，不是含文字和观察数组的整个HTTP核对包大小。`reviewStatus=not_recorded` 表示本接口没有人工核对记录，不能反推无人核对；`eventEligibility=not_established` 明确尚未建立正式事件候选资格。只读接口不接 `confirmed`、时间、事件关系或核实状态，不保存用户核对行为，不将 OCR 字串转换成原始图片 UTF16 位置。现有文本选录与语义用户消息证据合同保持不变；OCR 到人工确认再到正式事件仍需独立、可追溯的证据合同和交接验收。
 
 `ocr-review-live.test.ts` 采用真实 Core 附件与模型工具网关生成来源记录，实际经过 `material.read → material.ocr → Vision → HTTP核对包`；模型只是无网络传输测试端，不替代 OCR，也未手造成功 call/link 记录。覆盖重开一致、不增任务、错误材料/任务、缺来源、篡改产物、外站请求拒绝及不接受 confirmed。使用显式已有 helper 与隔离根，默认缺资源跳过；合成图和单次识别不代表真实供应商准确性，尚未把 localData 撤销代次纳入此项验收。
+
+### OCR 待人工交接与会话陈述来源（不等于核实）
+
+核对包下的 `/handoff` 只读生成固定材料/任务/原件及两份产物摘要、识别器、会话分支和问题语义共同绑定的摘要及问题。模型可沿既有 `ask_user` 传递原问题，**不能代答**；没有新增回答、审批或发布动作，也不自动调用问题回答接口。用户仍通过原会话问题界面回答或忽略。
+
+`/handoff/:questionId` 只读核原问题与实际 ask_user 调用、创建输入、分支祖先链、原回答命令及已有用户消息。排队回答可以尚无消息编号，返回真实投递状态；失败/取消/替换命令、跨分支、不同问题/选项、缺调用、指错回执或助手同文均拒绝。不会借用已结束任务的权限或凭一个 answered/confirmed 字段声称用户核实。
+
+状态仅有 `awaiting_question`、`awaiting_user`、`dismissed`、`user_statement_received`。最后一项保留用户原话与命令/消息身份，仍固定 `humanVerification=not_established`、`eventEligibility=not_established`；即使回答出现“确认”，也不自动判断已逐字核验，不授权发布或晋级永久事实审计。陈述的可追溯性依赖现有受信宿主与会话记录，不宣称抵抗任意数据库管理者篡改。正式 OCR 事件交接仍须后续独立契约，不将图像坐标转换成 UTF16 原文证据。
 ### 官方HTML事件选录与传播实测
 
 事件选录可显式指定 `sourceView: {kind: "html_static_text", rootSelector, textSha256}`，复用既有静态HTML解析及排除规则。选择器须唯一命中未排除节点，原HTML摘要、完整静态投影摘要、选录范围/原DOM文本节点位置一起冻结；跨标签文字可进入现有加工/R1事件域。位置标明静态投影UTF16而非原字节位置，脚本/嵌入/链接未读取的局部性仍保留，验证/登录页拒绝。旧纯文本选择继续使用原件UTF16定位，不换身份。处理实现摘要包括事件投影及HTML抽取源码。

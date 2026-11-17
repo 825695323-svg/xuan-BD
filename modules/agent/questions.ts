@@ -74,7 +74,7 @@ export class AgentQuestionService {
       if (row.answer !== text) throw new CoreError('QUESTION_ANSWER_CONFLICT', '此问题已有不同回答，不能覆盖或重复发送。');
       return { question: toQuestion(row), receipt: JSON.parse(row.receipt_json!) as SendReceipt };
     }
-    const message = `用户对问题的回答（仅补充信息，不构成操作授权）：\n问题：${row.question}\n回答：${text}`;
+    const message = questionAnswerMessage(row.question, text);
     // 固定问题身份覆盖发送已接受、问题状态尚未更新的崩溃窗口。
     const stableRequestId = `question-answer-${row.id}`;
     const previous = this.core.store.one<CommandRow>('SELECT * FROM commands WHERE request_id=?', stableRequestId);
@@ -113,4 +113,9 @@ export class AgentQuestionService {
 function toQuestion(row: QuestionRow): AgentQuestion {
   return { id: row.id, conversationId: row.conversation_id, branchId: row.branch_id, question: row.question,
     options: JSON.parse(row.options_json) as string[], status: row.status, answer: row.answer, createdAt: row.created_at, updatedAt: row.updated_at };
+}
+
+/** Shared exact transport text; a response is information, never action authority. */
+export function questionAnswerMessage(question: string, answer: string): string {
+  return `用户对问题的回答（仅补充信息，不构成操作授权）：\n问题：${question}\n回答：${answer}`;
 }
