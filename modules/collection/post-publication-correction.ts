@@ -5,7 +5,7 @@ import type { CoreDatabase } from '../../platform/state/database.js';
 import { TaskError, type TaskExecutionContext, type TaskRecord, type TaskResult, type TaskRuntime, type TaskService } from '../../platform/jobs/tasks.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
-import { buildStructuredIngestDocument, type R1StructuredRequest } from './r1-structured-handoff.js';
+import { buildStructuredIngestDocument, parseR1Utc, type R1StructuredRequest } from './r1-structured-handoff.js';
 import type { ProcessingPlanService } from './processing-plan.js';
 import type { MaterialService } from './materials/service.js';
 import type { R1Runtime } from './r1-runtime.js';
@@ -1319,9 +1319,9 @@ function readRepairInput(value: unknown, kind: CorrectionKind): {
     const revision = sourceRevision as WfdRecord;
     for (const key of ['sourceId', 'provider', 'requestedUrl', 'requestedAtUtc', 'acquiredAtUtc',
       'revisionBasis', 'usageScope'] as const) bounded(revision[key], 4096);
-    const requested = Date.parse(String(revision.requestedAtUtc)), acquired = Date.parse(String(revision.acquiredAtUtc));
+    const requested = parseR1Utc(revision.requestedAtUtc), acquired = parseR1Utc(revision.acquiredAtUtc);
     if (!Number.isFinite(requested) || !Number.isFinite(acquired) || acquired < requested)
-      fail('CORRECTION_SOURCE_REVISION_REQUIRED', '供应商更正须有明确请求/取得时间，且取得不早于请求。');
+      fail('CORRECTION_SOURCE_REVISION_REQUIRED', '供应商更正须有有效 UTC 请求/取得时间（最多三位小数），且取得不早于请求。');
     if (revision.license !== undefined) bounded(revision.license, 4096);
     if (revision.authorization !== undefined && !isWfdRecord(revision.authorization))
       fail('CORRECTION_SOURCE_REVISION_REQUIRED', '来源授权声明须为明确对象。');
