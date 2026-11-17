@@ -60,9 +60,15 @@ for (const stable of [false, true]) test('official PDF fixed source pipeline: ' 
     let host = await openFullChainHost(fixture), snapshotId: string | null = null;
     let correction: any = null;
     const selectedFields = stable ? [...fields, 'financial_fact_identity'] : fields;
-    const fixed: any[] = [], materials: string[] = [], originalRows: any[] = [];
+    const fixed: any[] = [], materials: string[] = [], originalRows: any[] = [], heldTimes: string[] = [];
+    let holdingInstance: string | null = null;
+    assert.equal((await host.call('/r1/products/snapshot', {})).holdingInstance, null, 'Read-only empty status must not create an instance');
     try {
       for (const item of pinned) {
+        if (item.id === 'corrected-q1' && heldTimes[0]) {
+          const wait = Date.parse(heldTimes[0]) + 1100 - Date.now();
+          if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+        }
         const receipt = manifest.sources.find((entry: any) => entry.id === item.id);
         assert.equal(receipt.url, item.url); assert.equal(receipt.status, 200); assert.equal(receipt.sha256, item.sha256);
         const bytes = readFileSync(join(root!, item.id + '.pdf'));
@@ -138,20 +144,46 @@ for (const stable of [false, true]) test('official PDF fixed source pipeline: ' 
           const rawFixed = (await host.services.r1Runtime!.client.fixedRead(snapshotId!, association.product_id)).result as any;
           correction = { previous: rawFixed.rows[0].record_ref, definitionRef: rawFixed.products[0].definition_ref, definition: rawFixed.products[0].declaration };
         }
+        const status = await host.call('/r1/products/snapshot', {});
+        assert.equal(status.holdingInstance.bindingSource, 'target_instance');
+        holdingInstance ??= status.holdingInstance.instanceId;
+        assert.equal(status.holdingInstance.instanceId, holdingInstance);
+        const held = await host.call('/r1/products/read', { snapshotId, productId: association.product_id,
+          historyMode: 'system_held_at', at: new Date().toISOString().replace(/\.\d{3}Z$/u, 'Z'),
+          heldScope: holdingInstance, usableStage: 'published_readable' });
+        const heldRow = held.result.rows.find((value: any) => value.record_ref.revision_id === row.record_ref.revision_id);
+        assert.ok(heldRow); assert.equal(heldRow.usable_stage, 'published_readable');
+        assert.equal(heldRow.held_scope, holdingInstance); assert.equal(heldRow.eligibility.decision, 'eligible');
+        assert.ok(Number.isFinite(Date.parse(heldRow.held_at))); heldTimes.push(heldRow.held_at);
+        assert.notEqual(heldRow.held_at.slice(0, 10), item.archiveDate, 'Host holding time is not market archive time');
         originalRows.push(row);
         fixed.push({ snapshotId, productId: association.product_id, businessKeys: [row.record_ref.logical_key] });
         console.log('OFFICIAL_CORRECTION_SELECTED ' + JSON.stringify({ id: item.id, sha256: item.sha256, page: item.page,
           archiveDate: item.archiveDate, archiveDatePrecision: 'day_only_not_public_instant', value: item.expected,
           selectedScopeOnly: true, publication: stable ? 'isolated_explicit_selected_fact_correction' : 'isolated_source_claim_not_source_correction' }));
       }
+      assert.ok(Date.parse(heldTimes[1]!) > Date.parse(heldTimes[0]!));
+      const heldInput = { snapshotId, productId: fixed[1].productId, historyMode: 'system_held_at',
+        heldScope: holdingInstance, usableStage: 'published_readable' };
+      const beforeCorrection = await host.call('/r1/products/read', { ...heldInput, at: heldTimes[0] });
+      assert.equal(beforeCorrection.result.rows.length, 1);
+      assert.equal(beforeCorrection.result.rows[0].values.value.value, '546936730.12');
+      const afterCorrection = await host.call('/r1/products/read', { ...heldInput, at: heldTimes[1] });
+      assert.equal(afterCorrection.result.rows.length, stable ? 1 : 2);
+      assert.ok(afterCorrection.result.rows.some((row: any) => row.values.value.value === '473861731.94'));
+      for (const stage of ['acquired', 'custodied']) {
+        const missingStage = await host.call('/r1/products/read', { ...heldInput, usableStage: stage, at: heldTimes[1] }, 409);
+        assert.equal(missingStage.code, 'INSTANCE_HOLDING_UNKNOWN');
+      }
       for (const [index, ref] of fixed.entries()) {
         const work = await execute(host, 'standardize-' + index, { routing: { materials: [{ materialId: materials[index], intendedAction: 'inspect' }] },
           outputs: [{ outputId: 'mapped', materialIds: [materials[index]], intendedAction: 'inspect', stages: ['parse'],
             tables: [{ materialId: materials[index], format: 'financial-fixed', financialCalculation: {
-              version: 'bd-financial-fixed/1', operation: 'standardize', inputs: [ref] } }] }] });
+              version: 'bd-financial-fixed/1', operation: 'standardize', inputs: [ref],
+              history: { historyMode: 'system_held_at', at: heldTimes[index], heldScope: holdingInstance, usableStage: 'published_readable' } } }] }] });
         assert.equal(work.done.status, 'succeeded', JSON.stringify(work.done.error));
         const artifact = JSON.parse(host.services.processing!.artifact(work.planId, 'parse:mapped:0').bytes.toString());
-        assert.equal(artifact.financial_evidence.historicalQualification, 'not_asserted');
+        assert.equal(artifact.financial_evidence.historicalQualification, 'system_held_at');
         assert.equal(artifact.rows[0][artifact.columns.indexOf('value')].value, pinned[index]!.expected);
       }
       const compatible = await execute(host, 'unasserted-compatibility', {
@@ -171,6 +203,8 @@ for (const stable of [false, true]) test('official PDF fixed source pipeline: ' 
       assert.equal(latest.result.rows.length, stable ? 1 : 2);
       assert.deepEqual(latest.result.rows.map((row: any) => row.values.value.value).sort(), stable ? ['473861731.94'] : ['473861731.94', '546936730.12']);
       await host.close(); host = await openFullChainHost(fixture);
+      assert.equal((await host.call('/r1/products/snapshot', {})).holdingInstance.instanceId, holdingInstance);
+      assert.deepEqual((await host.call('/r1/products/read', { ...heldInput, at: heldTimes[0] })).result.rows, beforeCorrection.result.rows);
       for (const [index, ref] of fixed.entries()) {
         const read = await host.call('/r1/products/read', { snapshotId: ref.snapshotId, productId: ref.productId });
         assert.deepEqual(read.result.rows.find((row: any) => row.record_ref.logical_key === ref.businessKeys[0]), originalRows[index]);

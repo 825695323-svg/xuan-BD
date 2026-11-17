@@ -91,6 +91,8 @@ export interface R1ReadConnection {
   runtimeIdentity: string; callerId: string; namespace: string;
 }
 export interface R1SnapshotStatus {
+  /** Actual bound WFD instance only; does not assert any usable stage or invent holding facts. */
+  holdingInstance?: { instanceId: string; bindingSource: 'volume_binding' | 'target_instance' } | null;
   snapshotId: string | null; empty: boolean; authority: 'active_head';
   connection: R1ReadConnection & { roles: string[] };
   units: Record<string, { definition: Record<string, unknown>; digest: string }>;

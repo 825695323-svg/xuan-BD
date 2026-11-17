@@ -1245,6 +1245,10 @@ class ProductQuery:
             "product_id": item.get("product_id"),
             "subject": copy.deepcopy(item_subject),
             "business_time": copy.deepcopy(business_time),
+            # Preserve only the service's actual per-record holding evidence.
+            # The query cutoff is not a holding timestamp or stage proof.
+            **{key: copy.deepcopy(item[key]) for key in ("held_at", "held_scope", "usable_stage")
+               if key in item},
             "business_time_role": role,
             "times": {
                 key: copy.deepcopy((item.get("row") or {})[key])
