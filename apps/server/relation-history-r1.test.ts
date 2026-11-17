@@ -79,7 +79,29 @@ test('relation public history and validity stay independent; unknown-validity li
       assert.ok(active.result.nodes.some((item: any) => item.identity.id === 'synthetic_unknown_public'),
         'Snapshot validity graph is not historical-public qualification; unknown announcement is not hidden as proof of market knowledge');
       const unsupported = await host.call('/r1/query/context', { ...graphRequest, historyMode: 'market_known_at', at: '2025-02-01T00:00:00Z' }, 409);
-      assert.equal(unsupported.code, 'R1_READ_INPUT');
+      assert.equal(unsupported.code, 'R1_CONTEXT_HISTORY_INPUT');
+      const historicalRequest = { ...graphRequest, historyMode: 'market_known_at', at: '2025-02-01T00:00:00Z',
+        businessTimeRange: { role: 'validity', start: '2025-05-01', end: '2025-05-01', timezone: 'UTC' }, pageSize: 1 };
+      const historic = await host.call('/r1/query/context', historicalRequest);
+      assert.equal(historic.historyMode, 'market_known_at');
+      assert.ok(historic.result.nodes.some((item: any) => item.identity.id === 'synthetic_instrument'));
+      assert.ok(!historic.result.nodes.some((item: any) => ['synthetic_theme_group', 'synthetic_unknown_public', 'synthetic_unknown_effective'].includes(item.identity.id)));
+      assert.equal(historic.result.knowledge_cutoff.earliest_utc, historicalRequest.at);
+      assert.equal(historic.result.page.has_more, true);
+      const next = await host.call('/r1/query/context', { ...historicalRequest, cursor: historic.result.page.next_cursor });
+      assert.equal(next.result.page.has_more, false);
+      const drift = await host.call('/r1/query/context', { ...historicalRequest, at: '2025-04-02T00:00:00Z', cursor: historic.result.page.next_cursor }, 409);
+      assert.ok(drift.code);
+      const later = await host.call('/r1/query/context', { ...historicalRequest, pageSize: 100, at: '2025-04-02T00:00:00Z' });
+      assert.ok(later.result.nodes.some((item: any) => item.identity.id === 'synthetic_theme_group'));
+      assert.ok(!later.result.nodes.some((item: any) => item.identity.id === 'synthetic_unknown_public'));
+      const notEffective = await host.call('/r1/query/context', { ...historicalRequest,
+        businessTimeRange: { role: 'validity', start: '2025-02-01', end: '2025-02-01', timezone: 'UTC' } });
+      assert.equal(notEffective.result.nodes.length, 1);
+      const client = host.services.r1Runtime!.client, nativeRead = client.readContext.bind(client);
+      client.readContext = async (...args) => { const reply = await nativeRead(...args); return { ...reply, result: { ...reply.result, knowledge_cutoff: null } }; };
+      assert.equal((await host.call('/r1/query/context', historicalRequest, 409)).code, 'R1_CONTEXT_RESPONSE_INVALID');
+      client.readContext = nativeRead;
       const typed = await host.call('/r1/query/context', { ...graphRequest, relationTypes: ['declared_theme_member'],
         businessTimeRange: { role: 'validity', start: '2025-05-01', end: '2025-05-01', timezone: 'UTC' } });
       assert.equal(typed.result.edges.length, 1); assert.equal(typed.result.edges[0].object.id, 'synthetic_theme_group');
@@ -87,6 +109,7 @@ test('relation public history and validity stay independent; unknown-validity li
       await host.close(); host = await openFullChainHost(fixture);
       assert.deepEqual((await read('2025-02-01T00:00:00Z')).result.rows, beforeEffective.result.rows);
       assert.deepEqual((await graph('2025-05-01')).result.edges, active.result.edges);
+      assert.deepEqual((await host.call('/r1/query/context', historicalRequest)).result, historic.result);
       assert.deepEqual(host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get(), tasks);
       assert.equal((await host.call('/r1/products/snapshot', {})).snapshotId, published.snapshotId);
     } finally { await host.close(); }
@@ -103,5 +126,49 @@ test('unknown relation definition publication refuses historical values without 
       assert.deepEqual(labels(await host.call('/r1/products/read', published)), ['known-edge']);
       const refused = await host.call('/r1/products/read', { ...published, historyMode: 'market_known_at', at: '2025-02-01T00:00:00Z' }, 409);
       assert.equal(refused.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED'); assert.equal(refused.result, undefined);
+      const graphRefused = await host.call('/r1/query/context', { operation: 'read_relation_graph', datasetId, snapshotId: published.snapshotId, subject,
+        historyMode: 'market_known_at', at: '2025-02-01T00:00:00Z', businessTimeRange: { role: 'validity', start: '2025-02-01', end: '2025-02-01', timezone: 'UTC' } }, 409);
+      assert.equal(graphRefused.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED'); assert.equal(graphRefused.result, undefined);
+    } finally { await host.close(); }
+  });
+
+test('market relation graph preserves each visible row contract after an additive definition and rejects stale query cursors',
+  { skip: !enabled, timeout: 180000 }, async () => {
+    const fixture = createFullChainFixture({ name: 'relation-contract-history', machine: true, units: { text: { dimension: 'text' } } });
+    const host = await openFullChainHost(fixture);
+    try {
+      const validity = interval('2025-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+      const first = await publish(host, document('contract-original', [edge('old-link', identity('old'), 'declared_theme_member', validity, second('2025-01-02T00:00:00Z'))], second('2025-01-01T00:00:00Z')));
+      const original = (await host.services.r1Runtime!.client.fixedRead(first.snapshotId, first.productId)).result;
+      const oldMeta = (original.products as WfdRecord[])[0]!;
+      const addedRow = edge('new-link', identity('new'), 'declared_theme_member', validity, second('2025-02-02T00:00:00Z'));
+      (addedRow.values as WfdRecord).extra = { data_type: 'text', value_state: 'valid_value', value: 'explicit additive field' };
+      const doc = document('contract-additive', [addedRow], second('2025-01-01T00:00:00Z'));
+      doc.expected_parent_snapshot_id = first.snapshotId;
+      const output = (doc.outputs as WfdRecord[])[0]!, definition = output.definition as WfdRecord;
+      (definition.field_definitions as WfdRecord[]).push({ field_code: 'extra', data_type: 'text', unit_code: 'text', measurement_nature: 'relation', time_role: 'validity' });
+      const latest = await publish(host, doc); assert.equal(latest.productId, first.productId);
+      const query = { operation: 'read_relation_graph', datasetId, snapshotId: latest.snapshotId, subject, fields: ['label'],
+        historyMode: 'market_known_at', at: '2025-03-01T00:00:00Z', pageSize: 1,
+        businessTimeRange: { role: 'validity', start: '2025-05-01', end: '2025-05-01', timezone: 'UTC' } };
+      const page = await host.call('/r1/query/context', query);
+      const secondPage = await host.call('/r1/query/context', { ...query, cursor: page.result.page.next_cursor });
+      const edges = [...page.result.edges, ...secondPage.result.edges];
+      assert.equal(edges.length, 2);
+      const old = edges.find((item: any) => item.record_ref.logical_key === 'old-link');
+      const next = edges.find((item: any) => item.record_ref.logical_key === 'new-link');
+      assert.deepEqual(old.contract_refs, oldMeta.contract_refs);
+      assert.deepEqual(old.contract_bundle_ref, oldMeta.contract_bundle_ref);
+      assert.notDeepEqual(next.definition_ref, old.definition_ref);
+      assert.ok(next.contract_refs.semantic && next.contract_bundle_ref);
+      const oldCutoff = await host.call('/r1/query/context', { ...query, pageSize: 100, at: '2025-01-03T00:00:00Z' });
+      assert.equal(oldCutoff.result.edges.length, 1); assert.deepEqual(oldCutoff.result.edges[0].contract_refs, oldMeta.contract_refs);
+      for (const changed of [{ snapshotId: first.snapshotId }, { relationTypes: ['related_to'] },
+        { businessTimeRange: { role: 'validity', start: '2025-06-01', end: '2025-06-01', timezone: 'UTC' } }]) {
+        const refused = await host.call('/r1/query/context', { ...query, ...changed, cursor: page.result.page.next_cursor }, 409);
+        assert.ok(refused.code);
+      }
+      assert.equal((await host.call('/r1/query/context', { ...query, operation: 'read_event_timeline' }, 409)).code, 'R1_CONTEXT_HISTORY_INPUT');
+      assert.equal((await host.call('/r1/query/context', { ...query, historyMode: 'system_held_at' }, 409)).code, 'R1_READ_INPUT');
     } finally { await host.close(); }
   });
