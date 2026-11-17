@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { readOcrReviewPacket } from './ocr-review.js';
 import { join } from 'node:path';
 import { CoreError } from '../../platform/runtime/errors.js';
 import { normalizeAttachmentRefs } from '../../modules/agent/state/store.js';
@@ -161,6 +162,10 @@ export function createUiRouter(services: ApplicationServices) {
       throw new CoreError('CONTROL_RESUME_UNCONFIRMED', '恢复未能全部持久确认，本 BD 已重新请求停止；请核对当前控制状态后再恢复。', 503);
     }
     res.json(runtime());
+  });
+  router.get('/materials/:id/ocr-review/:taskId', async (req, res) => {
+    if (Object.keys(req.query).length) throw new CoreError('INVALID_QUERY', 'OCR review accepts only fixed material and task identifiers.', 400);
+    res.json(await readOcrReviewPacket(services, req.params.id, req.params.taskId));
   });
   router.get('/materials/:id/draft-reference', (req, res) => {
     const link = materialLinksExist() ? services.core.store.one<{ file_ref_id: string; file_ref_version: number }>(
