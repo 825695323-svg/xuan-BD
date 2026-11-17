@@ -182,7 +182,7 @@ function readTabularMapping(value: unknown): R1TabularMapping | null {
     ...(restoredBar ? { bar: restoredBar } : {}), ...(publicTime ? { publicTime } : {}) };
 }
 
-function readMapping(value: unknown): R1Mapping | null {
+function readMapping(value: unknown): R1ScalarMapping | R1TabularMapping | null {
   const raw = objectOrNull(value); if (!raw) return null;
   return raw.kind === 'tabular_rows' ? readTabularMapping(raw) : readScalarMapping(raw);
 }

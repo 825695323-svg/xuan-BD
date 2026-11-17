@@ -162,7 +162,7 @@ export function checkR1TabularRows(rows: readonly unknown[], declaration: unknow
       const state = rule.state ? raw[rule.state] : undefined;
       if (state === undefined && !rule.state) continue;
       if (typeof state !== 'string') fail('STATE', `${String(field.field_code)} 没有明确状态值。`);
-      const value = raw[rule.value]; checkCell(String(field.data_type), state, value, String(field.field_code));
+      const value = raw[rule.value]; checkR1Cell(String(field.data_type), state, value, String(field.field_code));
       values[String(field.field_code)] = { data_type: field.data_type, value_state: state, value };
     }
     const row: WfdRecord = { business_key: key, subject: target.subject, observation_time: mappedTime(raw, mapping), values };
@@ -232,7 +232,7 @@ function mappedTime(raw: WfdRecord, mapping: R1TimeMapping): WfdRecord {
   if (!Number.isFinite(first) || !Number.isFinite(last) || last <= first) fail('TIME', '业务时间必须是有效且终点晚于起点的明确 UTC 区间；未补日历或猜测时区。');
   return { status: 'known', precision: mapping.precision, earliest_utc: start, latest_exclusive_utc: end, source_timezone: mapping.sourceTimezone };
 }
-function checkCell(type: string, state: string, value: unknown, code: string): void {
+export function checkR1Cell(type: string, state: string, value: unknown, code: string): void {
   if (NULL_STATES.has(state)) { if (value !== null) fail('VALUE_STATE', `${code}: 缺失状态必须保留 null，不能把缺失写成零。`); return; }
   if (!['valid_value', 'reported_zero'].includes(state)) fail('VALUE_STATE', `${code}: 不支持该值状态。`);
   if (type === 'decimal' || type === 'integer') {
