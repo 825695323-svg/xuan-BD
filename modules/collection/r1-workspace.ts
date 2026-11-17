@@ -17,7 +17,7 @@ import type { RestrictionEvidence } from './purpose-eligibility.js';
 export const R1_WORKSPACE_RUNTIME = 'bd.r1-structured-ingest';
 export const R1_WORKSPACE_VERSION = 'bd.r1-workspace/1';
 export const R1_WEB_LIMITS = Object.freeze({ maxRows: 5000, maxDocumentBytes: 786432, maxMaterials: 1 as const, payload: 'scalar_rows' as const,
-  supportedPayloads: ['scalar_rows', 'tabular_rows', 'event_records'] as const });
+  supportedPayloads: ['scalar_rows', 'tabular_rows', 'event_records', 'relation_edges'] as const });
 const UNKNOWN_STATES = new Set(['sending', 'pending_unknown', 'pending_receipt']);
 interface RequestRow { request_id: string; binding_json: string; binding_sha256: string; recipe_sha256: string;
   plan_id: string; output_id: string; submit_task_id: string | null }
@@ -169,7 +169,7 @@ export class R1WorkspaceService {
       purpose: usage.purpose as 'current_publish' | 'historical_publish',
       expectedSnapshotId: input.target.expectedParentSnapshotId,
       productRef,
-      logicalDomain: 'kind' in input.mapping && input.mapping.kind === 'event_records' ? 'events' : 'observations',
+      logicalDomain: 'kind' in input.mapping && input.mapping.kind === 'event_records' ? 'events' : 'kind' in input.mapping && input.mapping.kind === 'relation_edges' ? 'foundation' : 'observations',
       subject: input.target.subject as WfdRecord,
       definition: input.target.definition as WfdRecord,
       definitionMode: productRef && typeof productRef.product_id === 'string' ? 'reuse' : 'create',
@@ -300,7 +300,8 @@ export class R1WorkspaceService {
       fail('R1_SET_WHOLE_REQUIRED', '此输出属于已声明发布集合，不能从单输出入口拆开提交。');
     if (!fixedOutput || fixedOutput.publishEligible !== true || fixedOutput.routingState !== 'ready_candidate') fail('R1_PROCESS_NOT_READY', '原计划的六维、明确发布用途与目标尚未齐备；结构成功不能替代准入。');
     const event = 'kind' in input.mapping && input.mapping.kind === 'event_records';
-    const tabular = event || 'kind' in input.mapping && input.mapping.kind === 'tabular_rows';
+    const relation = 'kind' in input.mapping && input.mapping.kind === 'relation_edges';
+    const tabular = event || relation || 'kind' in input.mapping && input.mapping.kind === 'tabular_rows';
     const declaration = { protocol: 'wfd.structured-ingest/1.0', target: input.target, mapping: input.mapping,
       ...(tabular ? { source: input.source } : {}) };
     if (canonicalWfdJson(fixedOutput.target?.declaration ?? null) !== canonicalWfdJson(declaration)
@@ -319,7 +320,7 @@ export class R1WorkspaceService {
     const rows = checked ? checked.rows : scalarRows(parsed.rows, input.mapping as R1ScalarMapping, input.target.inputMode === 'partial_observation');
     if (input.target.inputMode === 'source_correction' && canonicalWfdJson(Object.keys(input.target.revisions!).sort()) !== canonicalWfdJson(rows.map(row => String(row.event_id)).sort())) fail('R1_CORRECTION_KEYS', '修订前驱必须精确覆盖全部实际事件键。');
     const structured: R1StructuredRequest = { ...input.target, namespace: identity.namespace, producerNamespace: identity.namespace,
-      requestId: input.requestId, ...(input.target.inputMode === 'partial_observation' ? { duplicatePolicy: 'skip_identical_append' as const } : {}), submissionDigest: 'sha256:' + '0'.repeat(64), payload: { kind: event ? 'event_records' : tabular ? 'tabular_rows' : 'scalar_rows', rows } };
+      requestId: input.requestId, ...(input.target.inputMode === 'partial_observation' ? { duplicatePolicy: 'skip_identical_append' as const } : {}), submissionDigest: 'sha256:' + '0'.repeat(64), payload: { kind: relation ? 'relation_edges' : event ? 'event_records' : tabular ? 'tabular_rows' : 'scalar_rows', rows } };
     const unsigned = buildStructuredIngestDocument(structured);
     const digestInput = structuredClone(unsigned);
     delete (digestInput.request_identity as WfdRecord).submission_digest;
@@ -607,22 +608,24 @@ function readInput(value: unknown): R1PrepareInput {
   const sourceFields = ['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope'];
   const source = object(input.source, [...sourceFields, 'license', 'authorization']);
   const event = isWfdRecord(input.mapping) && input.mapping.kind === 'event_records';
-  const tabular = event || isWfdRecord(input.mapping) && input.mapping.kind === 'tabular_rows';
-  const mapping = object(input.mapping, event ? ['kind', 'eventId', 'eventType', 'assertionKind', 'caseId', 'contentNature', 'status', 'eventTime', 'publicTime', 'expectedTime', 'fields'] : tabular
+  const relation = isWfdRecord(input.mapping) && input.mapping.kind === 'relation_edges';
+  const tabular = event || relation || isWfdRecord(input.mapping) && input.mapping.kind === 'tabular_rows';
+  const mapping = object(input.mapping, relation ? ['kind', 'businessKey', 'relationType', 'object', 'effectivePeriod', 'publicTime', 'fields'] : event ? ['kind', 'eventId', 'eventType', 'assertionKind', 'caseId', 'contentNature', 'status', 'eventTime', 'publicTime', 'expectedTime', 'fields'] : tabular
     ? ['kind', 'businessKey', 'earliestUtc', 'latestExclusiveUtc', 'precision', 'sourceTimezone', 'fields', 'bar', 'publicTime']
     : ['businessKey', 'value', 'earliestUtc', 'latestExclusiveUtc', 'precision', 'sourceTimezone']);
-  const target = object(input.target, ['datasetId', 'outputKey', 'expectedParentSnapshotId', 'subject', 'definition', 'inputMode', 'coverage', 'definitionMode', 'definitionRef', 'revisions']);
+  const target = object(input.target, ['datasetId', 'outputKey', 'expectedParentSnapshotId', 'subject', 'definition', 'inputMode', 'coverage', 'definitionMode', 'definitionRef', 'revisions', 'definitionPublicTime']);
   for (const field of sourceFields) boundedText(source[field], 4096);
   if (Object.hasOwn(source, 'license') && (typeof source.license !== 'string' || source.license.length > 4096
     || /[\u0000-\u001f]/u.test(source.license))) fail('R1_WEB_INPUT', '旧来源许可文字格式无效。');
   if (Object.keys(source).length !== sourceFields.length + Number(Object.hasOwn(source, 'license')) + Number(Object.hasOwn(source, 'authorization'))
-    || !tabular && Object.keys(mapping).length !== 6 || Object.keys(target).length !== (target.inputMode === 'source_correction' ? 10 : 7)) fail('R1_WEB_INPUT', '来源、映射和目标必须逐项明确，不能补猜。');
+    || !tabular && Object.keys(mapping).length !== 6 || Object.keys(target).length !== (target.inputMode === 'source_correction' ? 10 : 7) + Number(Object.hasOwn(target, 'definitionPublicTime'))) fail('R1_WEB_INPUT', '来源、映射和目标必须逐项明确，不能补猜。');
+  if (Object.hasOwn(target, 'definitionPublicTime') && !isWfdRecord(target.definitionPublicTime)) fail('R1_WEB_TIME', '定义公开时间必须是显式 WFD 时间对象；未从行或来源时间补推。');
   assertKnownR1Source(source as unknown as R1PrepareInput['source']);
-  if (!event) for (const field of ['businessKey', ...(!tabular ? ['value'] : []), 'earliestUtc', 'latestExclusiveUtc', 'sourceTimezone']) boundedText(mapping[field], 128);
-  if (!event && !['day', 'minute', 'second'].includes(String(mapping.precision))) fail('R1_WEB_TIME', '当前切片只支持显式 day/minute/second 时间精度。');
+  if (!event && !relation) for (const field of ['businessKey', ...(!tabular ? ['value'] : []), 'earliestUtc', 'latestExclusiveUtc', 'sourceTimezone']) boundedText(mapping[field], 128);
+  if (!event && !relation && !['day', 'minute', 'second'].includes(String(mapping.precision))) fail('R1_WEB_TIME', '当前切片只支持显式 day/minute/second 时间精度。');
   id(target.datasetId); id(target.outputKey);
   if (target.expectedParentSnapshotId !== null) id(target.expectedParentSnapshotId);
-  if (!['partial_observation', 'complete_snapshot', ...(event ? ['source_correction'] : [])].includes(String(target.inputMode)) || !isWfdRecord(target.subject) || !isWfdRecord(target.definition) || !isWfdRecord(target.coverage)) fail('R1_WEB_TARGET', '目标身份、定义、覆盖或输入模式无效。');
+  if (!(relation ? ['partial_observation'] : ['partial_observation', 'complete_snapshot', ...(event ? ['source_correction'] : [])]).includes(String(target.inputMode)) || !isWfdRecord(target.subject) || !isWfdRecord(target.definition) || !isWfdRecord(target.coverage)) fail('R1_WEB_TARGET', '目标身份、定义、覆盖或输入模式无效。');
   if (target.inputMode === 'source_correction') readEventCorrection(target);
   else if (target.definitionMode !== undefined || target.definitionRef !== undefined || target.revisions !== undefined) fail('R1_CORRECTION_TARGET', '普通追加不得夹带修订目标。');
   if (event) compileR1EventDeclaration({ protocol: 'wfd.structured-ingest/1.0', mapping, target, source });

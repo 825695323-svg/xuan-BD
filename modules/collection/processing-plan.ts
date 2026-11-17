@@ -1,3 +1,4 @@
+import { R1_RELATION_RULE_VERSION } from './r1-relation.js';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { CoreDatabase } from '../../platform/state/database.js';
@@ -252,7 +253,10 @@ export class ProcessingPlanService {
           output: 'candidate-ready {rows} object and structural evidence; business semantics remain explicit gaps' },
       ],
       notImplemented: ['business rule applicability and implementation coverage beyond the listed bindings are unverified', 'OCR/transcription semantic validation', 'binary/code execution', 'formal database admission', 'archive member expansion'],
-      semanticAdapters: [{ protocol: 'wfd.structured-ingest/1.0', mappingKind: 'event_records', ruleVersion: R1_EVENT_RULE_VERSION,
+      semanticAdapters: [{ protocol: 'wfd.structured-ingest/1.0', mappingKind: 'relation_edges', ruleVersion: R1_RELATION_RULE_VERSION,
+        scope: 'explicit source_claim only; partial_observation; object identity columns and subject fixed explicitly; validity and public time remain independent; no identity or truth inference',
+        mappingShape: '{kind:"relation_edges",businessKey,relationType,object:{kind,namespace,id},effectivePeriod,publicTime,fields:[{fieldCode,value,state}]}',
+        targetRule: 'definition measurement_nature=relation,time_role=validity,unit_code=not_applicable,content_nature=source_claim; fixed field definitions; known time columns or explicit unknown; no relationship correction or complete snapshots' }, { protocol: 'wfd.structured-ingest/1.0', mappingKind: 'event_records', ruleVersion: R1_EVENT_RULE_VERSION,
         scope: 'explicit source_claim/plan/forecast/observed_fact/outcome; event/public/expected times remain distinct; source correction pins prior definition/record; status is an explicit source declaration, not a verified state machine; no fact inference',
         mappingShape: '{kind:"event_records",eventId,eventType,assertionKind,caseId?,contentNature,status,eventTime,publicTime,expectedTime?,fields:[{fieldCode,value,state}]}',
         targetRule: 'definition measurement_nature=event,time_role=event,unit_code=not_applicable,content_nature matches row nature (outcome maps to actual_outcome); fixed field definitions; time mapping is explicit unknown+sourceTimezone or known+earliestUtc/latestExclusiveUtc/precision/sourceTimezone'  }, { protocol: 'wfd.structured-ingest/1.0', mappingKind: 'tabular_rows', ruleVersion: R1_TABULAR_RULE_VERSION,
