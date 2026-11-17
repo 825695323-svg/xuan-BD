@@ -1,3 +1,5 @@
+import { TaskError } from '../../platform/jobs/tasks.js';
+import { FINANCIAL_MAPPING_VERSION } from './data-processing/financial-fixed.js';
 import { canonicalWfdJson, isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { ParsedCandidateTable } from './candidate-pipeline.js';
 
@@ -17,7 +19,7 @@ export function parsedRecordDependencies(parsed: ParsedCandidateTable, calculati
   const evidence = parsed.financial_evidence;
   if (parsed.kind !== 'parsed-table' || parsed.format !== 'financial-fixed' || parsed.adapter?.id !== 'bd-financial-fixed'
     || !isWfdRecord(evidence) || evidence.version !== 'bd-financial-fixed/1' || evidence.operation !== 'standardize'
-    || !fixed(evidence.mappingVersion) || !isWfdRecord(calculation) || !Array.isArray(calculation.inputs)
+    || evidence.mappingVersion !== FINANCIAL_MAPPING_VERSION || !isWfdRecord(calculation) || !Array.isArray(calculation.inputs)
     || !Array.isArray(evidence.inputs) || !Array.isArray(evidence.lineage)
     || evidence.inputs.length !== calculation.inputs.length || parsed.selection || parsed.sourceProjection) return null;
   const allowed = new Set<string>();
@@ -38,7 +40,7 @@ export function parsedRecordDependencies(parsed: ParsedCandidateTable, calculati
   }
   if (!Array.isArray(parsed.source_columns) || !Array.isArray(parsed.rows) || !parsed.rows.every(Array.isArray)) return null;
   const keyColumn = parsed.source_columns.indexOf('business_key');
-  if (keyColumn < 0 || parsed.total_rows !== parsed.rows.length || evidence.outputRows !== parsed.rows.length
+  if (keyColumn < 0 || parsed.source_columns.lastIndexOf('business_key') !== keyColumn || parsed.total_rows !== parsed.rows.length || evidence.outputRows !== parsed.rows.length
     || evidence.lineage.length !== parsed.rows.length) return null;
   const actualKeys = new Set(parsed.rows.map(row => row[keyColumn]?.original));
   if (actualKeys.size !== parsed.rows.length) return null;
@@ -51,4 +53,30 @@ export function parsedRecordDependencies(parsed: ParsedCandidateTable, calculati
     result.push({ parsedBusinessKey: edge.businessKey, sourceRecordRef: ref });
   }
   return result;
+}
+
+export const RECORD_IMPACT_SELECTION_LIMIT = 128;
+export function readRecordDependencySelection(value: unknown): ParsedRecordDependency['sourceRecordRef'][] {
+  if (!isWfdRecord(value) || Object.keys(value).join(',') !== 'recordRefs' || !Array.isArray(value.recordRefs)
+    || !value.recordRefs.length || value.recordRefs.length > RECORD_IMPACT_SELECTION_LIMIT)
+    throw new TaskError('PROCESSING_RECORD_IMPACT_INPUT', '精确影响查询须提供1至128个完整固定记录引用；不接受全库扫描、时间或概念匹配。');
+  const refs = value.recordRefs.map(raw => {
+    const ref = record(raw);
+    if (!ref || !isWfdRecord(raw) || Object.keys(raw).sort().join(',') !== 'logical_key,product_id,revision_id,snapshot_id')
+      throw new TaskError('PROCESSING_RECORD_IMPACT_INPUT', '记录引用须且仅须含固定snapshot_id、product_id、logical_key、revision_id。');
+    return ref;
+  });
+  if (new Set(refs.map(ref => canonicalWfdJson(ref))).size !== refs.length)
+    throw new TaskError('PROCESSING_RECORD_IMPACT_INPUT', '精确影响查询不能含重复记录引用。');
+  return refs;
+}
+export function selectRecordDependencyImpact<T extends ParsedRecordDependency>(
+  refs: ParsedRecordDependency['sourceRecordRef'][], edges: T[], gaps: string[]) {
+  return { coverage: 'selected_output_verified_parse_candidate_edges_only', downstreamImpact: 'unknown',
+    publishedProductQualification: 'not_asserted',
+    results: refs.map(sourceRecordRef => {
+      const matches = edges.filter(edge => canonicalWfdJson(edge.sourceRecordRef) === canonicalWfdJson(sourceRecordRef));
+      return { sourceRecordRef, status: matches.length ? 'observed' : gaps.length ? 'unknown' : 'not_observed', matches };
+    }), gaps,
+    absenceMeaning: 'not_observed refers only to these verified parse-candidate edges, not absence of downstream or published-product impact' };
 }

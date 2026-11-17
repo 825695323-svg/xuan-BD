@@ -86,8 +86,20 @@ test('verified fixed record dependencies remain parse candidates, read-only and 
     assert.equal(result.recordDependencies.edges.length, 1);
     assert.deepEqual(result.recordDependencies.edges[0].sourceRecordRef, sourceRef);
     assert.equal(JSON.stringify(result).includes(values.value), false);
+    const impactRequest = { recordRefs: [sourceRef, current.result.rows[0].record_ref] };
+    const impact = await host.call(`/processing/plans/${planId}/outputs/financial/dependencies`, impactRequest);
+    assert.deepEqual(impact.recordImpact.results.map((item: any) => item.status), ['observed', 'not_observed']);
+    assert.equal(impact.recordImpact.results[0].matches.length, 1);
+    assert.equal(impact.recordImpact.results[1].matches.length, 0);
+    assert.equal(impact.recordImpact.downstreamImpact, 'unknown');
+    assert.equal(JSON.stringify(impact).includes(values.value), false);
     assert.deepEqual(counts(), before);
     await host.close(); host = await openFullChainHost(fixture);
     assert.deepEqual(await host.call(`/processing/plans/${planId}/outputs/financial/dependencies`), result);
+    assert.deepEqual(await host.call(`/processing/plans/${planId}/outputs/financial/dependencies`, impactRequest), impact);
+    host.database.connection.prepare("DELETE FROM processing_plan_steps WHERE plan_id=? AND kind='parse'").run(planId);
+    const incomplete = await host.call(`/processing/plans/${planId}/outputs/financial/dependencies`, impactRequest);
+    assert.deepEqual(incomplete.recordImpact.results.map((item: any) => item.status), ['unknown', 'unknown']);
+    assert.ok(incomplete.recordImpact.gaps.some((gap: string) => gap.includes('persisted_step_missing')));
   } finally { await host.close(); }
 });

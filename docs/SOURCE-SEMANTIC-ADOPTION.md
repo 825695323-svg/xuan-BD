@@ -227,3 +227,5 @@ R1 返回 `R1_READ_HISTORY_METADATA_UNSUPPORTED`。这不是自动选择旧定�
 既有处理输出 `dependencies` 只读响应增加 `recordDependencies`。对 `financial-fixed`，校验受管解析产物摘要、冻结材料来源、逐项固定输入及 `recordVersions`，并将明确 `lineage` 与解析行业务键逐一核对后，返回快照、产品、逻辑键和修订号白名单引用。不按相同概念、键名或时间推测关联，不返回原始数值。证据缺失或不一致保留 unknown 缺口。
 
 边界为 `verified_parse_candidates_only`：解析候选不是已发布产品，后续变换、其他处理输出及下游影响仍为 unknown；不声明全库依赖完整，不自动失效、重算或发布。记录引用不会将原有字段依赖缺口变成完整。隔离合成 WFD 发布及实际 HTTP 处理管路验证读后不写入、进程重开一致；这不是生产来源更正验收。
+
+同一 `dependencies` 路由的只读 POST 可提交最多 128 个唯一完整 `recordRefs`，精确筛选单输出内已核验解析候选的直接记录边。四元组必须全部相同，不按逻辑键或更正时间推断继承影响。已核验边匹配为 observed；未匹配且解析证据完整才为 not_observed（仅这些解析候选边中未观察到），缺步骤或证据不全为 unknown。下游及已发布产品影响始终未断言，不提供全库扫描或自动失效。实际 HTTP 更正链测试同时查询旧/新修订，确认只命中原消费引用，并验证缺失解析步骤后未匹配结果为 unknown。
