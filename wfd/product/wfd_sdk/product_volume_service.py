@@ -1523,7 +1523,7 @@ class WFDVolumeService:
             write_targets_document=self._target_write_targets(),
             write_target_reserved_families=self._target_reserved_families(),
             adjustment_anchors_document=self._target_adjustment_anchors(),
-            basis_price_catalog=self._target_basis_catalog(),
+            basis_price_catalog=self._target_basis_catalog(), local_holdings=False,
         )
 
     def _bulk_parent(self, expected):
