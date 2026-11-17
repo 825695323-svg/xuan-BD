@@ -209,11 +209,22 @@ test('actual recovery UI searches current tasks and confirms one original-task a
       await browser.until(`!document.querySelector('[aria-label="确认原任务操作"]')`, 'Preview must close');
       assert.equal(host.services.tasks.get(s.unknown.id).status, 'needs_review'); assert.equal(host.executions.get(s.unknown.id), 1);
       await browser.until(`!!document.querySelector('[data-task-id='+${q(JSON.stringify(s.unknown.id))}+'] [role=status]')&&document.querySelector('.agent-tasks-list')?.getAttribute('aria-busy')==='false'`, 'Original lookup response and follow-up refresh must finish before the next task action');
-      await inspect(browser, s.paused.id);
-      // Actual service change invalidates the frozen preview; no synthetic task payload.
-      await host.services.tasks.cancel(s.paused.id);
-      await browser.until("[...document.querySelectorAll('button')].some(e=>e.textContent==='继续原任务'&&e.disabled)", 'Changed version must disable frozen confirmation');
+      // Same-state real reconciliation advances version without remounting the row.
+      await inspect(browser, s.unknown.id);
+      const oldUnknownVersion = host.services.tasks.get(s.unknown.id).version;
+      const mutationPosts = () => browser!.requests.filter(r => r.method === 'POST' && /\/tasks\/.*\/(?:command|recover)$/.test(r.url)).length;
+      const beforeVersionChanges = mutationPosts();
+      await host.services.tasks.recover(s.unknown.id);
+      assert.equal(host.services.tasks.get(s.unknown.id).status, 'needs_review');
+      assert.ok(host.services.tasks.get(s.unknown.id).version > oldUnknownVersion);
+      await browser.until("[...document.querySelectorAll('dialog[open] button')].some(e=>e.textContent==='核对原外部结果'&&e.disabled)", 'Same-row version change must disable the old confirmation');
+      assert.equal(mutationPosts(), beforeVersionChanges);
       await button(browser, '取消');
+      await inspect(browser, s.paused.id);
+      // A real group change remounts the row and destroys its old preview.
+      await host.services.tasks.cancel(s.paused.id);
+      await browser.until(`document.querySelector('[data-task-id='+${q(JSON.stringify(s.paused.id))}+']')?.dataset.state==='cancelled'&&!document.querySelector('dialog[aria-label="确认原任务操作"]')`, 'Regrouped task must remove its old confirmation');
+      assert.equal(mutationPosts(), beforeVersionChanges);
       // Delay a genuine detail response, then switch via the actual new-conversation UI.
       await browser.evaluate('window.__holdTaskDetail=true');
       const unsupportedScope = `document.querySelector('[data-task-id='+${q(JSON.stringify(s.unsupported.id))}+']')`;
