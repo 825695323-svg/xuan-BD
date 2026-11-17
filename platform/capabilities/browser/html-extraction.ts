@@ -16,7 +16,7 @@ const OMIT = 'head,script,style,noscript,template,iframe,object,embed,svg,form,i
 const BLOCK = /^(?:ADDRESS|ARTICLE|BLOCKQUOTE|BR|DD|DIV|DL|DT|FIGCAPTION|FIGURE|H[1-6]|HR|LI|MAIN|OL|P|PRE|SECTION|TABLE|TD|TH|TR|UL)$/u;
 
 /** 只做确定性结构解析；保留字词、错字与重复，不摘要、纠错、去重或推断。 */
-export function extractPublicWebHtml(html: string): HtmlExtraction {
+export function extractPublicWebHtml(html: string, selection?: { rootSelector: string }): HtmlExtraction {
   const { document } = parseHTML(html), elements = document.querySelectorAll('*');
   if (elements.length > 20_000) throw new DirectError('WEB_HTML_LIMIT', '页面元素超过本次 20,000 个上限。');
   const selectors = new Map<Element, string>(), depths = new Map<Element, number>(), siblingCounts = new Map<Element | null, Map<string, number>>();
@@ -49,10 +49,18 @@ export function extractPublicWebHtml(html: string): HtmlExtraction {
     for (const node of element.childNodes) if (node.nodeType === 3) nodePositions.set(node, { selector: selectors.get(element)!, textNode: ++textNode });
   }
   for (const element of document.querySelectorAll(OMIT)) element.remove();
+  let selectedRoot: Element | undefined;
+  if (selection) {
+    if (typeof selection.rootSelector !== 'string' || !selection.rootSelector.trim() || selection.rootSelector.length > 512) throw new DirectError('WEB_HTML_SELECTION', '显式正文选择器无效或过长。');
+    let matches: NodeListOf<Element>;
+    try { matches = document.querySelectorAll(selection.rootSelector); } catch { throw new DirectError('WEB_HTML_SELECTION', '显式正文选择器语法无效。'); }
+    if (matches.length !== 1) throw new DirectError('WEB_HTML_SELECTION', '显式正文选择器必须唯一匹配未排除的原生节点。');
+    selectedRoot = matches[0];
+  }
   const mains = document.querySelectorAll('main,[role="main"]'), articles = document.querySelectorAll('article');
   const structured = mains.length === 1 ? mains[0] : articles.length === 1 ? articles[0] : undefined;
   // 不访问 linkedom 的 document.body getter（取值器）；它会向 HTML 片段插入空 body（正文）节点。
-  const root = structured ?? document.querySelector('body') ?? (document.documentElement?.tagName === 'HTML' ? document.documentElement : document);
+  const root = selectedRoot ?? structured ?? document.querySelector('body') ?? (document.documentElement?.tagName === 'HTML' ? document.documentElement : document);
   const nativeNode = (node: Node): HtmlBodyNode | null => {
     if (node.nodeType === 3) {
       const position = nodePositions.get(node);

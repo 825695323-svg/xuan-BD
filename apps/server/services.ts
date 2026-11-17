@@ -67,6 +67,7 @@ import { PostPublicationCorrectionService } from '../../modules/collection/post-
 import { acceptWorkspaceMaterial } from '../../modules/collection/accept-material.js';
 import { ConversationMaterialBridge } from '../../modules/collection/conversation-materials.js';
 import { mediaPluginCatalog, mediaPluginRegistrations } from '../../modules/collection/materials/plugins.js';
+import { createMaterialOcrAdapter } from '../../modules/collection/materials/ocr-adapter.js';
 import { createMaterialTranscriptionAdapter } from '../../modules/collection/materials/media-adapter.js';
 import { UiPreferenceService } from '../../platform/config/ui-preferences.js';
 import type { FrozenRunConfiguration } from '../../contracts/ui-contracts.js';
@@ -277,7 +278,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const artifactManifest = createArtifactManifestActions({ database, files, tasks: () => {
     if (!tasks) throw new TaskError('SERVICE_NOT_READY', '任务服务尚未准备好。'); return tasks;
   } });
-  const mediaAdapters = [createMaterialTranscriptionAdapter(() => direct?.localTranscription)];
+  const mediaAdapters = [createMaterialTranscriptionAdapter(() => direct?.localTranscription), createMaterialOcrAdapter(() => direct?.localOcr)];
   const conversationMaterials = options.workspaceServices ? new ConversationMaterialBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
     assertPath: path => direct.assertPublicPath(path), mediaAdapters: () => mediaAdapters }) : undefined;
@@ -451,7 +452,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   // 片段与索引落在独立 SQLite 文件（与 core.sqlite 同目录，便于随证据单独备份）。
   const segmentDatabasePath = database.path === ':memory:' ? ':memory:' : join(dirname(database.path), 'segments.sqlite');
   const segments = materials ? new SegmentService({ database, databasePath: segmentDatabasePath, tasks: currentTasks, files, materials }) : undefined;
-  const structuredRetrieval = r1Workspace && r1 && segments ? new StructuredRetrievalService({ structured: r1Workspace, handoff: r1, segments }) : undefined;
+  const structuredRetrieval = r1Workspace && r1 && segments ? new StructuredRetrievalService({ structured: r1Workspace, segments }) : undefined;
   const bd = options.role === 'service' ? new BdService({ tasks: currentTasks,
     core, health: options.health, versions: options.serviceVersions, collection, materials, semantics }) : undefined;
   const batchCustody = { core, database, get tasks() { return currentTasks(); }, files, permissions, attachmentRoot, bd, materials };

@@ -38,7 +38,8 @@ function csv(rows: string[][]): Buffer {
     + rows.map(row => row.join(',')).join('\n') + '\n');
 }
 
-test('continuous correction: a real source correction supersedes the published row and reopens',
+// 合成 CSV 原件经真实 BD/R1/WFD 连续发布与更正；不代表供应商真实性或现场业务验收。
+test('continuous correction: synthetic source bytes traverse real publication, correction and reopening',
   { skip: !enabled, timeout: 240_000 }, async () => {
     const fixture = createFullChainFixture({ name: 'continuous-correction', machine: true,
       units: { date: { dimension: 'date' }, cny_per_share: { dimension: 'money_per_share' } } });
@@ -89,14 +90,20 @@ test('continuous correction: a real source correction supersedes the published r
           dimensions: { role: known, informationNature: unknown, businessObject: known,
             objectTime: unknown, purpose, structureGranularity: known }, intendedAction: 'inspect' }] },
         outputs: [{ outputId: 'observations', materialIds: [repairMaterialId], intendedAction: 'inspect',
+          stages: ['parse', 'clean', 'structure', 'annotate', 'check'],
           tables: [{ ...(originalTables[0] as WfdRecord), materialId: repairMaterialId }], target: originalTarget }] };
+      repairInput.outputs.push({ ...repairInput.outputs[0]!, outputId: 'unrelated' });
       const planned = await host.call('/processing/plans', { requestId: 'correction-repair-plan', input: repairInput }, 202);
       const planTask = await host.settled(planned.jobId, 120_000);
       assert.equal(planTask.status, 'succeeded', JSON.stringify(planTask.error));
       const repairPlanId = host.services.processing!.getByTask(planTask.id)!.plan!.planId;
-      const run = await host.call(`/processing/plans/${repairPlanId}/run`, { requestId: 'correction-repair-run' }, 202);
-      const runTask = await host.settled(run.jobId, 120_000);
-      assert.equal(runTask.status, 'succeeded', JSON.stringify(runTask.error));
+      const repairPlan = host.services.processing!.get(repairPlanId);
+      for (const step of repairPlan.steps) {
+        const run = await host.call(`/processing/plans/${repairPlanId}/steps/${step.stepId}/execute`,
+          { requestId: 'correction-repair-' + step.stepId }, 202);
+        const runTask = await host.settled(run.jobId, 120_000);
+        assert.equal(runTask.status, 'succeeded', JSON.stringify(runTask.error));
+      }
       const capabilities = await host.call('/corrections/capabilities');
       const registered = await host.call('/corrections/cases', { requestId: 'continuous-register', input: {
         caseId: 'case-continuous', kind: 'source_correction', errorType: 'source_content_correction',
@@ -115,22 +122,77 @@ test('continuous correction: a real source correction supersedes the published r
       assert.equal(suspended.state, 'suspended');
       const previousSha = host.services.materials!.readOriginal(String(firstItem.materialId)).sha256;
       const newSha = host.services.materials!.readOriginal(repairMaterialId).sha256;
-      const prepared = await host.call('/corrections/cases/case-continuous/prepare', { requestId: 'continuous-prepare',
+      const prepareCorrection = (requestId: string, status = 200, times?: { requestedAtUtc?: string; acquiredAtUtc?: string }) => host.call('/corrections/cases/case-continuous/prepare', { requestId,
         input: { planId: repairPlanId, outputId: 'observations', originalSha256: newSha,
           expectedParentSnapshotId: latestSnapshotId,
           reason: '供应商更正原件将 20260102 收盘价由 2 更正为 20，按原定义与字段映射重新交接。',
           sourceRevision: { sourceId: 'continuous-correction-fixture', provider: 'isolated fixture',
             requestedUrl: 'file:///explicit-selected-observations/part-2.csv',
-            requestedAtUtc: new Date(Date.now() + 30 * 60_000).toISOString(),
-            acquiredAtUtc: new Date(Date.now() + 60 * 60_000).toISOString(),
+            requestedAtUtc: times?.requestedAtUtc ?? new Date(Date.now() + 30 * 60_000).toISOString(),
+            acquiredAtUtc: times?.acquiredAtUtc ?? new Date(Date.now() + 60 * 60_000).toISOString(),
             revisionBasis: '供应商后续版本更正同一交易日收盘价', usageScope: 'isolated continuous correction verification',
-            originalSha256: newSha, previousOriginalSha256: previousSha } } }).catch((error: unknown) => error);
-      assert.ok(!(prepared instanceof Error), prepared instanceof Error ? prepared.message : '');
+            originalSha256: newSha, previousOriginalSha256: previousSha } } }, status);
+      // Source revision input uses the same explicit UTC contract as ordinary R1 originals.
+      for (const value of ['2030-01-02T00:00:00', '2030-02-30T00:00:00Z', '2030-02-29T00:00:00Z',
+        '2030-01-02T24:00:00Z', '2030-01-02T00:00:00.0001Z', '2030-01-02T00:00:00+00:00']) {
+        for (const field of ['requestedAtUtc', 'acquiredAtUtc'] as const) {
+          const invalid = await prepareCorrection('continuous-invalid-time-' + field, 409,
+            { requestedAtUtc: '2030-01-01T00:00:00Z', acquiredAtUtc: '2030-03-01T00:00:00Z', [field]: value });
+          assert.equal(invalid.code, 'CORRECTION_SOURCE_REVISION_REQUIRED');
+          assert.equal((await host.call('/corrections/cases/case-continuous')).state, 'suspended');
+        }
+      }
+      // Only this isolated repair plan is fault-injected; real HTTP quality must block freezing.
+      const db = host.database.connection;
+      const savedParse = db.prepare("SELECT step_id,output_json FROM processing_plan_steps WHERE plan_id=? AND output_id='observations' AND kind='parse'")
+        .get(repairPlanId) as { step_id: string; output_json: string };
+      db.prepare('UPDATE processing_plan_steps SET output_json=NULL WHERE plan_id=? AND step_id=?')
+        .run(repairPlanId, savedParse.step_id);
+      const snapshotBefore = (await host.services.r1Runtime!.connection.client.snapshotStatus()).result;
+      const tasksBefore = db.prepare('SELECT count(*) AS n FROM tasks').get()!.n;
+      const blocked = await prepareCorrection('continuous-prepare-missing-reference', 409);
+      assert.equal(blocked.code, 'CORRECTION_REPAIR_QUALITY');
+      assert.ok(host.services.processing!.get(repairPlanId).quality.revision.affectedOutputIds.includes('observations'));
+      assert.equal((await host.call('/corrections/cases/case-continuous')).state, 'suspended');
+      const invalidAuthorization = await host.call('/corrections/cases/case-continuous/authorize',
+        { requestId: 'continuous-blocked-authorize', input: { frozenSha256: '0'.repeat(64), confirmationDigest: '0'.repeat(64) } }, 409);
+      assert.equal(invalidAuthorization.code, 'CORRECTION_STATE');
+      assert.equal(db.prepare('SELECT count(*) AS n FROM tasks').get()!.n, tasksBefore);
+      assert.deepEqual((await host.services.r1Runtime!.connection.client.snapshotStatus()).result, snapshotBefore);
+      assert.equal((db.prepare('SELECT plan_json FROM processing_plans WHERE plan_id=?').get(originalPlanId) as { plan_json: string }).plan_json,
+        originalPlanRow.plan_json);
+      assert.equal(db.prepare("SELECT count(*) AS n FROM r1_record_associations WHERE request_id='correction:case-continuous'").get()!.n, 0);
+      db.prepare('UPDATE processing_plan_steps SET output_json=? WHERE plan_id=? AND step_id=?')
+        .run(savedParse.output_json, repairPlanId, savedParse.step_id);
+      // Same material does not create an implicit dependency on another output.
+      db.prepare("UPDATE processing_plan_steps SET output_json=NULL WHERE plan_id=? AND output_id='unrelated' AND kind='parse'").run(repairPlanId);
+      const quality = host.services.processing!.get(repairPlanId).quality;
+      assert.ok(quality.revision.affectedOutputIds.includes('unrelated'));
+      assert.ok(!quality.revision.affectedOutputIds.includes('observations'));
+      assert.ok(quality.issues.some(issue => issue.kind === 'needs_evidence' && issue.outputId === 'observations'));
+      for (const fraction of ['', '.0', '.00', '.000', '.1', '.12', '.123']) {
+        const valid = await prepareCorrection('continuous-valid-time-' + fraction, 200,
+          { requestedAtUtc: `2030-01-02T00:00:00${fraction}Z`, acquiredAtUtc: `2030-01-02T00:00:01${fraction}Z` });
+        assert.equal(valid.view.state, 'prepared');
+      }
+      const prepared = await prepareCorrection('continuous-prepare');
       const authorized = await host.call('/corrections/cases/case-continuous/authorize', { requestId: 'continuous-authorize',
         input: { frozenSha256: prepared.frozenSha256, confirmationDigest: prepared.documentSha256 } }, 202);
       const waiting = await waitTask(host, authorized.id, ['waiting_approval'], 'continuous approval');
+      db.prepare('UPDATE processing_plan_steps SET output_json=NULL WHERE plan_id=? AND step_id=?').run(repairPlanId, savedParse.step_id);
       host.services.tasks.approve(waiting.approvalId!);
-      const done = await waitTask(host, authorized.id, ['succeeded', 'failed', 'cancelled', 'needs_review', 'blocked'], 'continuous repair');
+      const damaged = await waitTask(host, authorized.id, ['succeeded', 'failed', 'cancelled', 'needs_review', 'blocked'], 'damaged after freeze');
+      assert.equal(damaged.status, 'failed', JSON.stringify(damaged.error));
+      assert.equal(damaged.error!.code, 'CORRECTION_REPAIR_QUALITY');
+      assert.deepEqual((await host.services.r1Runtime!.connection.client.snapshotStatus()).result, snapshotBefore);
+      assert.equal(db.prepare("SELECT count(*) AS n FROM r1_record_associations WHERE request_id='correction:case-continuous'").get()!.n, 0);
+      db.prepare('UPDATE processing_plan_steps SET output_json=? WHERE plan_id=? AND step_id=?')
+        .run(savedParse.output_json, repairPlanId, savedParse.step_id);
+      const retry = await host.call('/corrections/cases/case-continuous/authorize', { requestId: 'continuous-authorize-repaired',
+        input: { frozenSha256: prepared.frozenSha256, confirmationDigest: prepared.documentSha256 } }, 202);
+      const retryWaiting = await waitTask(host, retry.id, ['waiting_approval'], 'repaired approval');
+      host.services.tasks.approve(retryWaiting.approvalId!);
+      const done = await waitTask(host, retry.id, ['succeeded', 'failed', 'cancelled', 'needs_review', 'blocked'], 'continuous repair');
       assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
       const view = await host.call('/corrections/cases/case-continuous');
       assert.equal(view.state, 'resolved', JSON.stringify(view));
@@ -152,6 +214,8 @@ test('continuous correction: a real source correction supersedes the published r
       const readRows = async (productId: string) => ((await host.services.r1Runtime!.client.fixedRead(
         newSnapshot, productId)).result as WfdRecord).rows as WfdRecord[];
       const sourceRows = await readRows(originalProduct);
+      assert.deepEqual(sourceRows.map(row => cellValue(row.row as WfdRecord)).sort(), ['1', '20', '3', '4'],
+        'Correction must retain both unchanged later-batch rows and the untouched original row');
       const sourceByKey = new Map(sourceRows.map(row =>
         [String((row.record_ref as WfdRecord).logical_key), row]));
       const correctedKey = 'source_row_8a141c63f6ebfc53c77198a6b7540f7c32f278cb681f710017ff7a01ceaadb35';
@@ -170,6 +234,15 @@ test('continuous correction: a real source correction supersedes the published r
       assert.equal(associations.length, 2, JSON.stringify(associations));
       const publicRead = await host.call('/r1/requests/correction:case-continuous');
       assert.equal(publicRead.state, 'associated', JSON.stringify(publicRead));
+      // 模拟已发布回执丢失且临时parse引用随后不可用；只按原号恢复，不能永久依赖中间产物。
+      const publishedSnapshot = (await host.services.r1Runtime!.connection.client.snapshotStatus()).result;
+      db.prepare('UPDATE processing_plan_steps SET output_json=NULL WHERE plan_id=? AND step_id=?')
+        .run(repairPlanId, savedParse.step_id);
+      db.prepare("UPDATE correction_cases SET state='blocked',result_json=NULL WHERE case_id='case-continuous'").run();
+      await host.call('/corrections/cases/case-continuous/recover', { requestId: 'continuous-published-recovery' });
+      assert.equal((await host.call('/corrections/cases/case-continuous')).state, 'resolved');
+      assert.deepEqual((await host.services.r1Runtime!.connection.client.snapshotStatus()).result, publishedSnapshot);
+      assert.equal(db.prepare("SELECT count(*) AS n FROM r1_record_associations WHERE request_id='correction:case-continuous'").get()!.n, 2);
       // 磁盘重开：已解决状态与固定读回均持久，不重复正式替代。
       await host.close();
       host = await openFullChainHost(fixture);

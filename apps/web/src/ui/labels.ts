@@ -75,7 +75,7 @@ const additions = {
   'data.environment': ['环境', 'Environment'],
   'tools.title.material.ocr': ['OCR（文字识别）接口', 'OCR interface'],
   'tools.title.material.transcribe': ['音频与视频转录接口', 'Audio and video transcription interface'],
-  'tools.description.material.ocr': ['为图片和 PDF 文字识别保留接口；适配器尚未接入。', 'Reserved for image and PDF text recognition. No adapter is connected.'],
+  'tools.description.material.ocr': ['使用显式装配的本机图片识别；未配置时不可用，识别结果尚需核对。', 'Uses explicitly configured local image recognition; unavailable when unconfigured. Recognized text still needs verification.'],
   'tools.description.material.transcribe': ['为音视频转录保留接口；适配器尚未接入。', 'Reserved for audio and video transcription. No adapter is connected.'],
   'storage.group.data': ['数据存储', 'Data storage'],
   'storage.group.database': ['数据库', 'Database'],

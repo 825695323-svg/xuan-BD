@@ -20,6 +20,7 @@ import { searchPublicWeb, validateSearchArgs } from './browser/search.js';
 import { transcribeVideo, validateVideoUrl } from './transcription/video.js';
 import { compareRegisteredFiles } from './files/compare.js';
 import { createTextFile, editTextFile, readTextPage, searchTextFiles } from './files/text.js';
+import { recognizeLocalImage } from './ocr/local.js';
 import { transcriptionSegmentPreview, transcribeLocalFile, type LocalTranscriptionInput, type LocalTranscriptionResult } from './transcription/local.js';
 import { directDependencyVersions, directFileVersion, directResourceVersions, guardDirectContext, type DirectImplementation } from '../plugins/direct-versions.js';
 import { BundledResources } from '../resources/bundled.js';
@@ -123,6 +124,7 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
     if (action === 'mac.shortcut') {
       programs.push('shortcuts'); configuration = shortcuts.find(shortcut => shortcut.id === args.shortcutId) ?? null;
     }
+    if (action === 'material.ocr') { implementation.push('localOcr'); programs.push('vision-ocr'); configuration = { platform: process.platform, backend: 'apple-vision-local' }; }
     if (action === 'image.ocr') {
       implementation.push('model', 'ocr');
       if (!options.agentImageOcrVersion) throw new DirectError('DIRECT_VERSION_UNAVAILABLE', '图片识字需要宿主提供当前实际模型与连接版本。');
@@ -144,6 +146,22 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
       protection.assertCapabilities(capabilities, capability => trustedRootFor(taskAction, capability));
       return await originalContext.requestApproval(operation, capabilities, approvalOptions);
     } };
+  };
+  const localOcr: DirectRuntimeBundle['localOcr'] = {
+    availability: () => {
+      if (process.platform !== 'darwin') return { available: false, reason: '本机 Vision OCR 仅支持 macOS；其他平台不自动替代。' };
+      try { const path = requireBinary('vision-ocr'); if (!options.resources?.document.resources.vision_ocr?.sha256 || directFileVersion(path).sha256 !== options.resources.document.resources.vision_ocr.sha256) throw Error();
+        return { available: true }; } catch { return { available: false, reason: '本机 Vision OCR 程序未显式登记摘要或身份已变化。' }; }
+    },
+    captureVersions: () => captureVersions('material.ocr'),
+    async execute(context, input) {
+      if (context.task.action !== 'material.ocr') throw new DirectError('RUNTIME_MISMATCH', '本机 OCR 仅供当前材料 OCR 任务。');
+      const availability = localOcr.availability();
+      if (!availability.available) throw new DirectError('TOOL_UNAVAILABLE', availability.reason!);
+      if (!samePathIdentity(inspectPath(artifactRoot), { ...artifactIdentity, invocationPath: artifactRoot, canonicalPath: artifactRoot, links: [] })) throw new DirectError('ARTIFACT_ROOT_CHANGED', '产物目录身份已变化。');
+      return recognizeLocalImage(protectedContext(context), input, { files: options.files, artifactRoot, binary: requireBinary('vision-ocr'),
+        assertPath: path => protection.assertPath(path), runTool: runStagedTool });
+    },
   };
   const transcriptionBinary = requireBinary;
   const localTranscription: DirectRuntimeBundle['localTranscription'] = {
@@ -192,7 +210,7 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
         return result('本机音视频转录已完成；原件与时间段证据已保留。', {
           ...JSON.parse(JSON.stringify(extracted)), ...transcriptionSegmentPreview(extracted.segments), ...textPreview(extracted.text), fileRefId: extracted.textReference.fileRefId,
           sha256: extracted.textReference.sha256,
-        }, [extracted.textReference.fileRefId, extracted.evidenceReference.fileRefId]);
+        }, [extracted.textReference.fileRefId, extracted.evidenceReference.fileRefId, extracted.probeReference.fileRefId]);
       }
       if (routed.action === 'file.compare') return await compareRegisteredFiles(context, { leftFileRefId: String(args.leftFileRefId), rightFileRefId: String(args.rightFileRefId) }, options.files, artifactRoot);
       if (routed.action === 'file.glob' || routed.action === 'file.grep') return await searchTextFiles(context, routed.action, args, options.files, artifactRoot, path => protection.assertPath(path));
@@ -372,7 +390,7 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
       videoMaxMinutes = nextVideoMaxMinutes; videoMaxBytes = nextVideoMaxBytes;
     };
   };
-  return { runtime: reportedRuntime, registry, router, localTranscription,
+  return { runtime: reportedRuntime, registry, router, localTranscription, localOcr,
     prepareConfiguration,
     configuration: () => ({ whisperModelPath: configuredModelPath ?? null, shortcuts, videoMaxMinutes, videoMaxBytes }),
     configure(input) { prepareConfiguration(input)(); }, assertPublicPath(path, allowMissing = false) {
@@ -539,13 +557,15 @@ export function validateMediaProbe(stdout: string, maxSeconds = 3600): void {
 }
 
 function stagedToolRunner(runtime?: ProcessRuntime) { return async function runStagedTool(context: TaskExecutionContext, workspace: DirectWorkspace, authority: DirectAuthority,
-  binary: DirectBinary, args: string[], binaryPath: string, timeoutMs = 120_000): Promise<DirectProcessResult> {
+  binary: DirectBinary, args: string[], binaryPath: string, timeoutMs = 120_000,
+  onOutput?: (stream: 'stdout' | 'stderr', chunk: Buffer) => void | Promise<void>): Promise<DirectProcessResult> {
   const effectId = randomUUID();
   const binaryIdentity = inspectPath(binaryPath);
   await context.emit({ type: 'side_effect_started', effectId, description: binary === 'yt-dlp' ? '使用固定工具读取公开视频信息' : '使用固定本机工具处理本次暂存文件', operation: { binary: binaryPath } });
   try {
     const response = await runDirectProcess({ runtime: runtime!, binary, binaryPath, args, cwd: workspace.path, signal: context.signal, timeoutMs, maxOutputBytes: binary === 'yt-dlp' ? 8_000_000 : 2_000_000,
       onProcessState: (event) => context.emit({ type: 'process_state', ...event }), onHeartbeat: (event) => context.emit({ type: 'heartbeat', ...event }),
+      ...(onOutput ? { onOutput } : {}),
       assertAuthorized: () => { authority.assert(); workspace.assertCurrent(); if (!samePathIdentity(binaryIdentity, inspectPath(binaryPath), true)) throw new DirectError('TOOL_CHANGED', '工具身份已变化，需要重新核对授权。'); } });
     await context.emit({ type: 'side_effect_result', effectId, outcome: 'succeeded', evidence: binary === 'yt-dlp' ? '视频提取进程与输出流已正常收束；网络入口随后单独关闭，产物另行核对。' : '本机工具进程与输出流已正常收束，影响限于本次暂存；产物另行核对。' });
     return response;

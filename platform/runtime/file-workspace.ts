@@ -170,17 +170,20 @@ export class DirectWorkspace {
       if (!before.isFile() || before.nlink !== 1n || before.size > BigInt(maxBytes)) throw new DirectError('OUTPUT_TOO_LARGE', '工具产物不是允许的普通文件或超过上限。');
       const hash = createHash('sha256');
       let offset = 0;
+      const buffer = Buffer.alloc(1024 * 1024);
       while (true) {
         this.assertCurrent();
-        const buffer = Buffer.alloc(128_000);
         const { bytesRead } = await opened.handle.read(buffer, 0, buffer.length, offset);
+        this.context.signal.throwIfAborted();
         if (!bytesRead) break;
         offset += bytesRead;
         if (offset > maxBytes) throw new DirectError('OUTPUT_TOO_LARGE', '工具产物超过上限。');
         hash.update(buffer.subarray(0, bytesRead));
       }
       const after = await opened.handle.stat({ bigint: true });
-      if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs || BigInt(offset) !== before.size) {
+      this.context.signal.throwIfAborted();
+      this.assertCurrent();
+      if (!after.isFile() || after.nlink !== 1n || before.ctimeNs !== after.ctimeNs || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs || BigInt(offset) !== before.size) {
         throw new DirectError('OUTPUT_CHANGED', '核对期间工具产物已变化。', true);
       }
       return { bytes: offset, sha256: hash.digest('hex') };

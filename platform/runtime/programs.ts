@@ -8,7 +8,7 @@ import { CAPTURE_SOURCE_IDS } from '../../plugins/capture-sources/contracts.js';
 
 const PROGRAMS = { open: 'open', mdfind: 'mdfind', shortcuts: 'shortcuts',
   ffmpeg: 'ffmpeg', ffprobe: 'ffprobe', 'whisper-cli': 'whisper_cli', 'yt-dlp': 'yt_dlp', python3: 'python', bdpan: 'bdpan', security: 'security',
-  node: 'node', 'polars-python': 'polars_python', browser_engine: 'browser_engine', taskkill: 'taskkill' } as const;
+  'vision-ocr': 'vision_ocr', node: 'node', 'polars-python': 'polars_python', browser_engine: 'browser_engine', taskkill: 'taskkill' } as const;
 export type RegisteredProgramName = keyof typeof PROGRAMS;
 type Identity = { path: string; canonical: string; device: bigint; inode: bigint; size: bigint; mtime: bigint; ctime: bigint };
 type DirectoryIdentity = Pick<Identity, 'path' | 'canonical' | 'device' | 'inode'>;
