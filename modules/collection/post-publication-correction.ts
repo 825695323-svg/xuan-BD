@@ -199,15 +199,17 @@ export class PostPublicationCorrectionService {
       const entry = row as unknown as { plan_id: string; output_id: string; parameters_json: string };
       const key = entry.plan_id + '\u0000' + entry.output_id;
       if (seen.has(key)) continue;
-      seen.add(key);
       let parameters: WfdRecord;
       try { parameters = JSON.parse(entry.parameters_json) as WfdRecord; }
       catch { gaps.push(`plan:${entry.plan_id}:parse_parameters_unreadable`); continue; }
       const adapter = parameters.sourceAdapter;
       if (exact || (binding.adapter && isWfdRecord(adapter)
         && adapter.adapterId === binding.adapter.adapterId && adapter.version === binding.adapter.version
-        && sameAdapterDigest(adapter.configDigest, binding.adapter.configDigest)))
+        && sameAdapterDigest(adapter.configDigest, binding.adapter.configDigest))) {
+        // Only deduplicate a proven match; an unrelated earlier table cannot hide a later faulty adapter.
+        seen.add(key);
         matched.push({ planId: entry.plan_id, outputId: entry.output_id });
+      }
     }
     if (!matched.length) gaps.push('no_plan_matches_error_binding');
     return matched;
