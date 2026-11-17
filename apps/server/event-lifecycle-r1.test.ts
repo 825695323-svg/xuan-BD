@@ -23,7 +23,8 @@ async function prepare(host: FullChainHost, requestId: string, raw: WfdRecord, p
     eventTime: nature === 'outcome' ? time('actual') : { status: 'unknown', sourceTimezone: 'UTC' }, publicTime: time('public'),
     ...(nature === 'plan' ? { expectedTime: time('expected') } : {}), fields: [{ fieldCode: 'statement', value: 'statement', state: 'state' }] };
   const target = { datasetId: 'synthetic_event_lifecycle', outputKey: 'event.' + nature, expectedParentSnapshotId: parent, subject,
-    definition: correction?.definition ?? definition(nature), inputMode: correction ? 'source_correction' : 'partial_observation',
+    definition: correction?.definition ?? definition(nature),
+    definitionPublicTime: { status: 'known', earliest_utc: '2026-01-01T00:00:00Z', latest_exclusive_utc: '2026-01-02T00:00:00Z', precision: 'day', source_timezone: 'UTC' }, inputMode: correction ? 'source_correction' : 'partial_observation',
     coverage: { scope: { synthetic: true }, basis: 'observed_partial', completeness: 'partial', absence_means: 'unknown' },
     ...(correction ? { definitionMode: 'reuse', definitionRef: correction.definitionRef,
       revisions: { [String(raw.event_id)]: { previous: correction.previous, reason: 'Explicit synthetic disclosure changes expected production date, not occurrence fact.' } } } : {}) };
@@ -81,6 +82,9 @@ test('actual R1 event lifecycle keeps changed expected date, historical plan, an
       assert.equal(staleDone.status, 'failed', JSON.stringify(staleView));
       assert.equal(staleView.state, 'rejected', JSON.stringify(staleView));
       assert.equal((await host.call('/r1/products/snapshot', {})).snapshotId, revised.snapshot_id, 'Submission cannot rebind an old confirmed correction to the newer HEAD.');
+      const frozenTime = await prepare(host, 'changed-definition-time', row('plan', '2026-09-01', '2026-07-05'), revised.snapshot_id);
+      frozenTime.target.definitionPublicTime.earliest_utc = '2025-01-01T00:00:00Z';
+      assert.equal((await host.call('/r1/prepare', frozenTime, 409)).code, 'R1_TARGET_CHANGED');
       const actual = await publish(host, await prepare(host, 'actual-published', row('outcome', '2026-07-03', '2026-07-04'), revised.snapshot_id));
       const stale = await prepare(host, 'stale-plan', row('plan', '2026-09-01', '2026-07-05'), actual.snapshot_id, correction);
       assert.equal((await host.call('/r1/prepare', stale, 409)).code, 'R1_CORRECTION_PREDECESSOR');
@@ -88,6 +92,12 @@ test('actual R1 event lifecycle keeps changed expected date, historical plan, an
       const crossed = await prepare(host, 'cross-product', row('plan', '2026-09-01', '2026-07-05'), actual.snapshot_id, crossProduct);
       const crossedResult = await host.call('/r1/prepare', crossed, 409);
       assert.ok(crossedResult.code); assert.equal((await host.call('/r1/products/snapshot', {})).snapshotId, actual.snapshot_id);
+      const historical = await host.call('/r1/products/read', { snapshotId: actual.snapshot_id, productId: revised.product_id, historyMode: 'market_known_at', at: '2026-02-01T00:00:00Z' });
+      assert.equal(historical.result.rows.length, 1);
+      assert.equal(historical.result.rows[0].times.expected_time.earliest_utc, '2026-06-01T00:00:00Z');
+      assert.equal(historical.result.rows[0].times.event_time.status, 'unknown');
+      const beforeOutcome = await host.call('/r1/products/read', { snapshotId: actual.snapshot_id, productId: actual.product_id, historyMode: 'market_known_at', at: '2026-07-03T12:00:00Z' });
+      assert.equal(beforeOutcome.result.rows.length, 0, 'Actual date cannot replace its later public disclosure time.');
       const fixedActual = (await host.services.r1Runtime!.client.fixedRead(actual.snapshot_id, actual.product_id)).result;
       const fixedPlan = (await host.services.r1Runtime!.client.fixedRead(actual.snapshot_id, revised.product_id)).result;
       assert.equal(((fixedActual.rows as WfdRecord[])[0]!.row as WfdRecord).case_id, ((fixedPlan.rows as WfdRecord[])[0]!.row as WfdRecord).case_id);

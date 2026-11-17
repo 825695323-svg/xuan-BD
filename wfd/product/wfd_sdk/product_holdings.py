@@ -27,7 +27,7 @@ _P5_BUNDLE_KEYS = {"bundle_id", "format_version", "mode", "logical_state_digest"
 _P5_PROOF_KEYS = {"format_version", "request_key", "request_identity", "instance_id",
                   "snapshot_id", "product_id", "bundle", "records", "stages",
                   "content_sha256"}
-_PRODUCTION_PROOF = {"r2_publish", "target_commit_recovery", "p5_import"}
+_PRODUCTION_PROOF = {"r2_publish", "target_commit_recovery", "p5_import", "data_only_publish"}
 _TEST_MODE = "WFD_HOLDINGS_TEST_MODE"
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _INSTANCE_ID = re.compile(r"^wfi_[0-9a-f]{32}$")
@@ -450,7 +450,37 @@ class HoldingLedger:
             raise HoldingError("HOLDING_STAGE_PROOF_REQUIRED")
         if proof.get("snapshot_id") != snapshot_id:
             raise HoldingError("HOLDING_PROOF_SNAPSHOT_MISMATCH")
-        if kind == "p5_import":
+        if kind == "data_only_publish":
+            # The immutable formal receipt is also the host's readable-stage
+            # proof. Never accept caller times or derive them from file mtimes.
+            if any(value is not None for value in (acquired_at, custodied_at, readable_at)):
+                raise HoldingError("HOLDING_STAGE_TIME_AUTHORITY")
+            records = _normalize_stage_records(records)
+            receipt = _json_document(self.root / "catalog/product_service/data_only_formal_publications"
+                                     / f"{request_key}.json", "HOLDING_STAGE_PROOF_MISSING")
+            identity = receipt.get("request_identity") or {}
+            holding = receipt.get("holding") or {}
+            expected_key = _sha([identity.get("dataset_id"), identity.get("trusted_actor_namespace"),
+                                 identity.get("request_id")])
+            if (receipt.get("format_version") != "wfd.data-only-formal-publication/1.0"
+                    or receipt.get("formal_publication_state") != "published_formal"
+                    or receipt.get("request_key") != request_key or expected_key != request_key
+                    or receipt.get("snapshot_id") != snapshot_id
+                    or set(holding) != {"format_version", "instance_id", "published_readable_at"}
+                    or holding.get("format_version") != "wfd.data-only-readable-proof/1.0"
+                    or holding.get("instance_id") != self.instance_id):
+                raise HoldingError("HOLDING_STAGE_PROOF_MISMATCH")
+            outputs = [item for item in receipt.get("outputs", [])
+                       if item.get("product_id") == product_id and item.get("snapshot_id") == snapshot_id]
+            if not outputs:
+                raise HoldingError("HOLDING_STAGE_PROOF_PRODUCT_MISMATCH")
+            members = {(r.get("record_id"), r.get("record_version")): r
+                       for output in outputs for r in output.get("records", [])}
+            expected = _normalize_stage_records(list(members.values()))
+            if records != expected:
+                raise HoldingError("HOLDING_STAGE_PROOF_RECORD_MISMATCH")
+            readable_at = _parse_stamp(holding.get("published_readable_at"), "HOLDING_STAGE_INVALID")
+        elif kind == "p5_import":
             if any(value is not None for value in (acquired_at, custodied_at, readable_at)):
                 raise HoldingError("HOLDING_STAGE_TIME_AUTHORITY")
             if not isinstance(product_id, str) or not _SAFE_ID.fullmatch(product_id):
@@ -507,7 +537,7 @@ class HoldingLedger:
         binding = resolve_target_instance(self.root, create=False)
         if binding["instance_id"] != self.instance_id:
             raise HoldingError("HOLDING_INSTANCE_MISMATCH")
-        if kind != "p5_import" and binding["source"] != "volume_binding":
+        if kind not in {"p5_import", "data_only_publish"} and binding["source"] != "volume_binding":
             raise HoldingError("HOLDING_INSTANCE_UNBOUND")
         wanted = {(r.get("record_id"), r.get("record_version")) for r in records}
         if not wanted.issubset(self._snapshot_records(snapshot_id, product_id)):
