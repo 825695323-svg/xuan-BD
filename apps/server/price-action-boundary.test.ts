@@ -82,6 +82,11 @@ test('actual BD keeps raw price and corporate-action claims separate and refuses
         actionTarget, actionMapping);
       const action = await publish(host, actionPlan);
       assert.notEqual(action.product_id, raw.product_id);
+      const afterActionPrice = await host.call('/r1/products/read', { snapshotId: action.snapshot_id, productId: raw.product_id });
+      assert.equal(afterActionPrice.result.rows[0].values.close.value, rawRead.result.rows[0].values.close.value);
+      for (const key of ['product_id', 'logical_key', 'revision_id'])
+        assert.equal(afterActionPrice.result.rows[0].record_ref[key], rawRead.result.rows[0].record_ref[key],
+          'A company-action source claim cannot create a replacement or adjusted price revision');
       const timeline = await host.call('/r1/query/context', { operation: 'read_event_timeline', datasetId: 'synthetic_action_claim',
         snapshotId: action.snapshot_id, subject });
       assert.equal(timeline.result.rows.length, 1);
