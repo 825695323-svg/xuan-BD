@@ -1,5 +1,5 @@
 import { isExplicitUtcInstant } from '../../../contracts/financial-value';
-import type { R1ProductReadInput, R1SnapshotStatus } from '../../../contracts/r1-contracts';
+import type { R1ProductReadInput, R1SnapshotStatus, R1ReadConnection } from '../../../contracts/r1-contracts';
 
 export class R1HistoryError extends Error {
   constructor(readonly code: string, chinese: string, readonly english: string) { super(chinese); }
@@ -67,3 +67,9 @@ export function assertR1ReadHistoryEcho(input: History, response: unknown): void
     || result.usable_stage !== (mode === 'system_held_at' ? input.usableStage : null))
     throw new R1HistoryError('R1_HISTORY_ECHO_MISMATCH', '历史截止、实例或阶段回显无法完整核对。', 'The returned cutoff, instance or stage cannot be fully verified.');
 }
+
+export const sameR1ReadConnection = (left: R1ReadConnection, right: R1ReadConnection) =>
+  ['connectionId', 'profile', 'mode', 'runtimeIdentity', 'callerId', 'namespace'].every(key => {
+    const value = left[key as keyof R1ReadConnection];
+    return typeof value === 'string' && !!value && value === right[key as keyof R1ReadConnection];
+  });

@@ -1,5 +1,6 @@
 import type { R1ContextRead, R1ContextReadInput } from '../../../contracts/r1-contracts';
 import { request, RequestError } from './api';
+import { assertR1ContextHistoryEcho, validateR1ContextHistoryInput } from './r1-context-history';
 
 export type QueryRecord = Record<string, unknown>;
 export const queryObject = (value: unknown): QueryRecord => value && typeof value === 'object' && !Array.isArray(value) ? value as QueryRecord : {};
@@ -13,9 +14,11 @@ function filterResult(value: unknown): QueryRecord {
 }
 export const structuredQueryApi = {
   context: async (input: R1ContextReadInput): Promise<R1ContextRead> => {
+    validateR1ContextHistoryInput(input);
     const value = queryObject(await request('/api/bd/r1/query/context', 'POST', input)), result = queryObject(value.result), page = queryObject(result.page);
+    assertR1ContextHistoryEcho(input, value);
     if (value.operation !== input.operation || value.snapshotId !== input.snapshotId || value.datasetId !== input.datasetId
-      || value.historyMode !== 'snapshot_contents' || queryObject(value.connection).profile !== 'data_only'
+      || queryObject(value.connection).profile !== 'data_only'
       || result.operation !== input.operation || result.snapshot_id !== input.snapshotId || result.dataset_id !== input.datasetId
       || !Array.isArray(result.gaps) || !Array.isArray(input.operation === 'read_relation_graph' ? result.edges : result.rows)
       || typeof page.has_more !== 'boolean' || page.has_more && typeof page.next_cursor !== 'string') throw new RequestError('上下文读取的固定身份或分页无法核对。');
