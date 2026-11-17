@@ -349,6 +349,14 @@ export function checkCandidateTables(tables: (AnnotatedCandidateTable | Structur
     const role = table.columns.indexOf('text_role');
     if ((role >= 0 && table.rows.some(row => row[role]?.value === 'necessary_condition') || enabledAnnotations(table).text_role === 'necessary_condition') && !table.necessary_text_evidence)
       fail('NECESSARY_TEXT_REVIEW', '必要条件标签不是选择证明；须核定原文版本、完整段范围、用途和发布内容摘要。');
+    if ((role >= 0 && table.rows.some(row => row[role]?.value === 'source_excerpt') || enabledAnnotations(table).text_role === 'source_excerpt') && !table.event_text_evidence)
+      fail('EVENT_TEXT_REVIEW', '事件原文标签不是选择证明；须保留冻结原文、传播身份与选录内容摘要。');
+    if (table.event_text_evidence) {
+      const contents = table.rows.map(row => Object.fromEntries(table.columns.map((name, index) => [name, row[index]!.value])));
+      if (wfdSha256(canonicalWfdJson(contents)) !== table.event_text_evidence.publishedContentSha256
+        || Object.keys(enabledAnnotations(table)).some(name => table.columns.includes(name)))
+        fail('EVENT_TEXT_REVIEW', '待发布事件原文或传播身份与选录摘要不一致，或标注试图覆盖原字段。');
+    }
     if (table.necessary_text_evidence) {
       const contents = table.rows.map(row => Object.fromEntries(table.columns.map((name, index) => [name, row[index]!.value])));
       if (wfdSha256(canonicalWfdJson(contents)) !== table.necessary_text_evidence.publishedContentSha256)
