@@ -97,6 +97,7 @@ jobs:
             apps/web/src/r1-filter-history.test.ts \
             apps/web/src/r1-joint-history.test.ts \
             apps/web/src/useConversationTasks.test.tsx \
+            apps/web/src/object-reference-evidence.test.ts \
             apps/web/src/object-reference.test.ts \
             apps/web/src/object-reference-draft.test.ts \
             apps/web/src/ui/logic-cleanup.test.tsx \

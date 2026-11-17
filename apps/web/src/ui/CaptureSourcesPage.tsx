@@ -6,6 +6,7 @@ import { MorphIcon } from './MorphIcon';
 import { RunReceipt, SourceCheckError, SourceCheckLine, useSourceCheck, type SourceRunTask } from './SourceActions';
 import { DetailDiagnostics, DetailFacts, DetailHeader, DetailSection, ObjectDetailPanel } from './ObjectDetailPanel';
 import { useObjectSelection } from './useStoredSelection';
+import { captureReferenceEvidence } from '../object-reference-evidence';
 import { setWorkspaceObject } from './workspace-context';
 import type { CaptureSourceSetting, SourceSettingsView } from '../../../../contracts/source-settings';
 import {
@@ -170,8 +171,8 @@ export function CaptureSourcesPage() {
   const selectedCheck = selectedSource ? settings?.checks.find((item) => item.id === selectedSource.sourceId) : undefined;
   // 只发布"当前在看哪个来源"，不写会话、不触发采集。
   useEffect(() => {
-    setWorkspaceObject(selectedId ? { page: 'capture', kind: 'source', id: selectedId, label: selectedSource?.label ?? selectedId } : null);
-  }, [selectedId, selectedSource?.label]);
+    setWorkspaceObject(selectedId && !error ? { page: 'capture', kind: 'source', id: selectedId, label: selectedSource?.label ?? selectedId, evidence: captureReferenceEvidence(selectedId, selectedSource?.operations, error ? null : settings) } : null);
+  }, [selectedId, selectedSource?.label, selectedSource?.operations, settings, error]);
   useEffect(() => () => setWorkspaceObject(null), []);
   const loginText = (state?: string) => state === 'saved' ? words('已保存', 'Saved')
     : state === 'public' ? words('公开可读', 'Public') : state === 'expired' ? words('已过期', 'Expired')
