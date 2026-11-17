@@ -114,14 +114,19 @@ export class R1WorkspaceService {
     readEventCorrection(input.target);
     const target = input.target, frozen = this.options.processing.get(input.planId).outputs.find(output => output.outputId === input.outputId)?.target;
     if (canonicalWfdJson(frozen?.declaration) !== canonicalWfdJson({ protocol: 'wfd.structured-ingest/1.0', source: input.source, target, mapping: input.mapping })) fail('R1_TARGET_CHANGED', '修订目标与冻结加工合同不同。');
+    const fixedReads = new Map<string, WfdRecord>();
     for (const [key, revision] of Object.entries(target.revisions!)) {
       const previous = revision.previous;
       for (const snapshot of [...new Set([previous.snapshot_id, target.expectedParentSnapshotId!])]) {
         signal?.throwIfAborted();
-        const response = snapshot === target.expectedParentSnapshotId
-          ? await runtime.client.fixedRead(snapshot, previous.product_id, signal)
-          : await runtime.client.fixedReadHistory(snapshot, previous.product_id, signal);
-        const result = response.result;
+        const readKey = canonicalWfdJson([snapshot, previous.product_id]);
+        let result = fixedReads.get(readKey);
+        if (!result) {
+          const response = snapshot === target.expectedParentSnapshotId
+            ? await runtime.client.fixedRead(snapshot, previous.product_id, signal)
+            : await runtime.client.fixedReadHistory(snapshot, previous.product_id, signal);
+          result = response.result; fixedReads.set(readKey, result);
+        }
         if (result.snapshot_id !== snapshot || !Array.isArray(result.products) || !Array.isArray(result.rows)) fail('R1_CORRECTION_READBACK', '前驱固定读取的快照或数据集不符。');
         const products = result.products.filter(isWfdRecord).filter(product => product.product_id === previous.product_id && product.dataset_id === target.datasetId
           && canonicalWfdJson(product.definition_ref) === canonicalWfdJson(target.definitionRef));
