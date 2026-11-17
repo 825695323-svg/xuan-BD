@@ -222,6 +222,13 @@ R1 返回 `R1_READ_HISTORY_METADATA_UNSUPPORTED`。这不是自动选择旧定�
 
 范围明确为**调用方指定业务键在所选产品固定快照中是否观察到**，不是数据正确性或世界完整性判断。调用方清单不是权威交易日历；空读与 `not_observed` 不能推出停牌、不存在、未上市或供应商确实无数据。`calendarQualification: not_asserted` 保留日历应有集合、证券生命周期及来源覆盖能力的未核实边界，本接口不自动补采、不写库、不换源。实际 HTTP/WFD 测试覆盖 105 行两页、缺键与重开一致；合成样本不是生产供应商覆盖证明。
 
+### 本地转录实际证据核对（显式可选验收）
+
+已对原应用资源清单绑定的 ffmpeg、ffprobe、whisper-cli 和 whisper_base 模型核文件摘要，再复制至独立测试运行根。`local-transcription-live.test.ts` 用 whisper.cpp 官方公开 JFK 演示音频（`https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.9.1/samples/jfk.wav`，SHA-256 `59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e`）实际经过材料保管、`audio.transcribe`、本地模型推理、原生JSON时间片段与文本产物、持久任务和重开读取。原音频未修改；文本和原生时间片段各自摘要校验，改写文字或越界时间反例拒绝。没有按字数补造时间轴、上传私有材料或调用外部识别服务。
+
+该转录文字是模型输出，不是逐字准确认证或原件事实；测试仅核对一个短语锚点及原生证据一致性。把识别文本声明为音频原件上的精确文本选录时，既有加工格式门禁拒绝，不能直接获事件发布资格。OCR材料适配器仍未装配，未用假识别器或替代模型宣称完成；带图像输入的模型配置只是声明，未在本次做外部OCR实调用。
+
+此验收必须显式设置 `XUAN_TEST_TRANSCRIPTION_BUNDLE`（已有应用代码根，内含原资源清单）、`XUAN_TEST_TRANSCRIPTION_AUDIO`（上述已核摘要的本地音频）与独立 `XUAN_FULL_CHAIN_ROOT`，直接用 `node --import tsx --test apps/server/local-transcription-live.test.ts` 执行。该测试本身不下载程序、模型或样本；macOS recipe 复用既有锁定随包构建，并按下述固定版本、长度和摘要规则取得公开样本。其他手动调用默认未提供资源时跳过，不能将跳过计作真实语音验收。测试支撑只增加可选资源来源根，不改变生产绑定或用户配置。
 ### 官方HTML事件选录与传播实测
 
 事件选录可显式指定 `sourceView: {kind: "html_static_text", rootSelector, textSha256}`，复用既有静态HTML解析及排除规则。选择器须唯一命中未排除节点，原HTML摘要、完整静态投影摘要、选录范围/原DOM文本节点位置一起冻结；跨标签文字可进入现有加工/R1事件域。位置标明静态投影UTF16而非原字节位置，脚本/嵌入/链接未读取的局部性仍保留，验证/登录页拒绝。旧纯文本选择继续使用原件UTF16定位，不换身份。处理实现摘要包括事件投影及HTML抽取源码。
@@ -343,3 +350,5 @@ R1表格 `source_correction` 仅支持这种完整财务事实身份，复用事
 ### 更正暂停冻结声明完整性
 
 用途暂停与 `suspend_failed` 恢复在既有共享声明边界重验持久 `impact_json` 的规范摘要；不一致返回 `CORRECTION_IMPACT_CHANGED`，不写 WFD、不更改本地状态。扫描超预算仍优先拒绝，不改变 `impact_incomplete` 或已证明子集边界。隔离实际 HTTP/WFD 测试证明：将冻结 A 范围改为未受影响 B 而保留摘要时，暂停及恢复均拒绝；恢复原声明后暂停、同事项幂等恢复、重开、修复读回继续通过。初始 BD 发布关联及本地失败状态为明确合成前置，不声称真实故障注入、供应商验收或全库影响完备。
+
+既有 recipe 在 macOS 已锁随包构建后，以 whisper.cpp v1.9.1 公开 JFK 样本的固定长度及 SHA 验证，再实际运行转录与资源授权测试；零跳过是该步骤的门禁。样本来源仓库采用 MIT 许可，随包保留其锁定 LICENSE。Linux 未登记 bundle，不伪装平台；Windows 本切片仍只验证既有随包构建，不宣称已完成此转录实证。识别结果始终是模型输出，不自动成为逐字人工核对或来源事实。
