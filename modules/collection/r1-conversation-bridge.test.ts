@@ -525,7 +525,9 @@ test('processing dedicated formats cross the genuine personal tool bridge with e
       assert.equal(output.rows.length, 1);
       assert.equal(format === 'text' ? output.rows[0].text : output.rows[0].value, format === 'text' ? paragraph : '1234.56');
       const caps = await invoke(h, selected.input, 'data.processing.capabilities', {}, 'dedicated-capabilities-' + format);
-      assert.ok(caps.preview.data.catalog.tableInputs.dedicated[format].required.length);
+      const requirements = caps.preview.data.catalog.tableInputs.dedicated[format];
+      if (format === 'text') assert.deepEqual(requirements.requiredOneOf, ['necessaryTextSelection', 'eventTextSelection']);
+      else assert.ok(requirements.required.length);
       json(join(f.root, 'dedicated-bridge-proof.json'), { format, materialId, planId, actualOutput: output, genuineToolOrigin: true,
         providerInvoked: false, syntheticRegressionSource: true, published: false });
     } finally { await h.close(); }
