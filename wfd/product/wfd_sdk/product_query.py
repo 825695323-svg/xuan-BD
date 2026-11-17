@@ -1611,8 +1611,8 @@ class ProductQuery:
             try:
                 guard(entries, perspective=request["history_mode"], at=at)
             except ValueError as exc:
-                raise ProductQueryError("HISTORY_DEFINITION_TIME_UNSUPPORTED",
-                                        "Fixed definition is not qualified at this market cutoff") from exc
+                code = "CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED" if str(exc) == "CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED" else "HISTORY_DEFINITION_TIME_UNSUPPORTED"
+                raise ProductQueryError(code, "Fixed definition is not qualified at this market cutoff") from exc
 
     def _read_context_product(self, session, product_id):
         cache = session["cache"]

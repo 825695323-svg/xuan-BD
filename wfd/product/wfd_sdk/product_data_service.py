@@ -2715,6 +2715,8 @@ class WFDDataOnlyService(WFDProductService):
             return
         for entry in entries:
             binding = ((entry.get("source_bundle") or {}).get("_wfd_product_bindings") or {}).get(entry.get("output_key")) or {}
+            if current_only_business((binding.get("product") or {}).get("declaration")):
+                raise ValueError("CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED")
             decision = eligibility_at(binding.get("definition_public_time"), at, mode=perspective)
             if decision["decision"] != "eligible":
                 # Until temporal definition projection is supported, refuse the
