@@ -57,7 +57,8 @@ try {
     env.PYTHONNOUSERSITE = '1';
     // 在 JS 中枚举，避免 Windows shell 不展开通配符或空匹配导致 Node 自动发现其他测试。
     const files = pipelineOnly
-      ? ['modules/collection/source-field-profile.test.ts',
+      ? ['modules/collection/segment-fts-rebuild.test.ts', 'apps/server/segment-fts-rebuild-http.test.ts',
+        'modules/collection/source-field-profile.test.ts',
         'modules/collection/source-reported-table.test.ts',
         'modules/collection/semantic-dictionary-framework.test.ts',
         'modules/collection/processing-quality.test.ts',
