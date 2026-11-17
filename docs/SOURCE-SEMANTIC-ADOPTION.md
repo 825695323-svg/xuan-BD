@@ -222,6 +222,23 @@ R1 返回 `R1_READ_HISTORY_METADATA_UNSUPPORTED`。这不是自动选择旧定�
 
 范围明确为**调用方指定业务键在所选产品固定快照中是否观察到**，不是数据正确性或世界完整性判断。调用方清单不是权威交易日历；空读与 `not_observed` 不能推出停牌、不存在、未上市或供应商确实无数据。`calendarQualification: not_asserted` 保留日历应有集合、证券生命周期及来源覆盖能力的未核实边界，本接口不自动补采、不写库、不换源。实际 HTTP/WFD 测试覆盖 105 行两页、缺键与重开一致；合成样本不是生产供应商覆盖证明。
 
+### 正式行的只读来源回查
+
+`POST /api/bd/r1/records/evidence` 仅接受 `datasetId/productId/recordId/recordVersion`，
+沿已固定读回的本地关联找到原请求，核对当前连接与该请求冻结身份，再实际读取关联快照的完整固定行及四合同。
+不使用 latest，不接受调用方提供材料或路径，不按相同摘要合并来源。发布集合只返回对应成员的原件。
+
+响应 `bd.record-evidence/1` 提供已复验字节 SHA 的材料和既有下载入口；无材料链接返回明确 gap，
+不建立新索引。加工与证据引用标为 `frozen_reference_not_revalidated`：它们是冻结引用，
+本入口没有重新执行加工或重新读取其所有产物。来源关联不构成事实核实或历史可知资格。
+读取沿已有私有资料代次门禁，不借用 current_publish 准入，也不宣称逐文档 ACL。
+
+实际验收：`apps/server/record-evidence-r1.test.ts` 使用隔离真实上传、加工、WFD 发布与 HTTP 读取，
+覆盖版本/连接/合同错配、去重来源归属、集合成员隔离、原件和持久摘要变化、私有门禁与重开无新任务。
+回查的 `sourceBytesStatus=verified` 只在至少一份冻结原件实际读取并核对后返回；原件身份空缺或字节损坏直接拒绝。
+`processingRefsStatus` 与 `evidenceRefsStatus` 独立标注冻结引用未重新验证。
+同一产品对应多个集合输出时当前安全拒绝，不任选 first；本地计划/来源不可用也不表示 WFD 正式记录失效。
+
 ### 本地转录实际证据核对（显式可选验收）
 
 已对原应用资源清单绑定的 ffmpeg、ffprobe、whisper-cli 和 whisper_base 模型核文件摘要，再复制至独立测试运行根。`local-transcription-live.test.ts` 用 whisper.cpp 官方公开 JFK 演示音频（`https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.9.1/samples/jfk.wav`，SHA-256 `59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e`）实际经过材料保管、`audio.transcribe`、本地模型推理、原生JSON时间片段与文本产物、持久任务和重开读取。原音频未修改；文本和原生时间片段各自摘要校验，改写文字或越界时间反例拒绝。没有按字数补造时间轴、上传私有材料或调用外部识别服务。

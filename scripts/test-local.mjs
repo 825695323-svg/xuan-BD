@@ -94,7 +94,8 @@ try {
         'apps/server/r1-coverage.test.ts',
         'modules/collection/r1-product-coverage.test.ts',
         'apps/server/endpoint-adapter-chain.test.ts',
-        'apps/server/endpoint-adapter-r1.test.ts']
+        'apps/server/endpoint-adapter-r1.test.ts',
+        'apps/server/record-evidence-r1.test.ts']
       : [...['modules/collection', 'modules/collection/data-processing', 'apps/server', 'platform/config', 'platform/resources',
         'platform/capabilities/conversion', 'platform/capabilities/ocr', 'plugins/api-sources', 'plugins/api-sources/providers/werss', 'plugins/api-sources/providers/wechat'].flatMap(directory =>
         readdirSync(join(codeRoot, directory), { withFileTypes: true }).filter(entry => entry.isFile() && entry.name.endsWith('.test.ts'))

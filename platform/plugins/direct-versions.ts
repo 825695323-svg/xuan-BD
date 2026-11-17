@@ -53,7 +53,7 @@ const groups = {
   materialRead: ['modules/collection/materials/service.ts', 'modules/collection/data-processing/material-inspector/index.ts'],
   materialProcess: ['modules/collection/materials/semantic.ts', 'modules/collection/materials/semantic-contracts.ts', 'modules/collection/data-processing/table-cleaner/index.ts'],
   materialTranscription: ['modules/collection/materials/media-adapter.ts'],
-  r1: ['modules/collection/conversation-r1.ts', 'modules/collection/r1-workspace.ts', 'modules/collection/structured-retrieval.ts', 'modules/collection/r1-runtime.ts',
+  r1: ['modules/collection/conversation-r1.ts', 'modules/collection/r1-workspace.ts', 'modules/collection/r1-record-evidence.ts', 'modules/collection/structured-retrieval.ts', 'modules/collection/r1-runtime.ts',
     'modules/collection/r1-structured-handoff.ts', 'modules/collection/conversation-processing.ts', 'modules/collection/processing-plan.ts',
     'contracts/workspace-services.ts', 'contracts/r1-contracts.ts', 'adapters/database/wfd-product-machine.ts', 'adapters/database/wfd-transport.ts',
     'adapters/database/wfd-product-connection.ts', 'platform/config/connections.ts', 'platform/resources/bindings.ts',
