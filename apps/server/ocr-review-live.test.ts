@@ -16,6 +16,7 @@ import { CoreDatabase } from '../../platform/state/database.js';
 import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { createApplicationServices } from './services.js';
 import { createFullChainFixture } from './full-chain-test-support.js';
+import { readOcrReviewHandoff } from './ocr-handoff.js';
 import { readOcrReviewPacket } from './ocr-review.js';
 
 const binary = process.env.XUAN_TEST_VISION_OCR;
@@ -152,6 +153,71 @@ test('real conversation material read and Vision OCR produce a read-only, unrevi
       assert.equal(packet.reviewStatus, 'not_recorded'); assert.equal(packet.eventEligibility, 'not_established');
       assert.equal(packet.textBasis, 'ocr_recognition');
       const count = () => host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get();
+      // Synthetic HTTP answers below are test fixtures, never the owner's approval.
+      const handoffEndpoint = endpoint + '/handoff';
+      const initialResponse = await fetch(host.base + handoffEndpoint); assert.equal(initialResponse.status, 200);
+      const initial = await initialResponse.json();
+      assert.equal(initial.schema, 'bd-ocr-human-handoff/1'); assert.equal(initial.state, 'awaiting_question');
+      assert.equal(initial.questionId, null); assert.equal(initial.response, null);
+      assert.equal(initial.eventEligibility, 'not_established'); assert.equal(initial.humanVerification, 'not_established');
+      const tools = host.services.modelTools.toolFactory({ model, getCurrentInput: () => input });
+      assert.ok(!tools.some(tool => /answer|confirm/iu.test(tool.name)), 'The model has no user-answer or signing tool.');
+      const ask = tools.find(tool => tool.name === 'ask_user'); assert.ok(ask);
+      const askQuestion = async (callId: string) => {
+        await ask.execute(callId, { question: initial.question, options: initial.options }, undefined, undefined, unusedPiContext);
+        const row = host.database.connection.prepare('SELECT id FROM agent_questions WHERE run_id=? AND generation=? AND tool_call_id=?').get(input.runId, input.generation, callId);
+        assert.ok(row); return String(row.id);
+      };
+      const questionId = await askQuestion('synthetic-ocr-review-question');
+      const pending = await readOcrReviewHandoff(host.services, materialId, ocrTask.id, questionId);
+      assert.equal(pending.state, 'awaiting_user'); assert.equal(pending.digest, initial.digest);
+      const fakeQuery = await fetch(host.base + handoffEndpoint + '/' + questionId + '?confirmed=true');
+      assert.equal(fakeQuery.status, 400);
+      const fakePost = await fetch(host.base + handoffEndpoint + '/' + questionId, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-mashiro-client': 'web' }, body: JSON.stringify({ confirmed: true }) });
+      assert.ok(fakePost.status >= 400);
+      // Synthetic HTTP test input, never a real user's attestation. Even an unqualified affirmative must not upgrade evidence.
+      const answerText = '全部确认无误'; // Synthetic answer: the word 确认 must not imply verification.
+      const answerResponse = await fetch(host.base + `/api/questions/${questionId}/answer`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-mashiro-client': 'web' },
+        body: JSON.stringify({ answer: answerText, requestId: 'synthetic-ocr-answer-001' }) });
+      assert.equal(answerResponse.status, 202);
+      const answeredReceipt = await answerResponse.json();
+      const receivedResponse = await fetch(host.base + handoffEndpoint + '/' + questionId); assert.equal(receivedResponse.status, 200);
+      const received = await receivedResponse.json();
+      assert.equal(received.state, 'user_statement_received'); assert.equal(received.response.text, answerText);
+      assert.equal(received.response.basis, 'user_statement');
+      assert.equal(received.response.commandId, answeredReceipt.receipt.commandId);
+      assert.equal(received.response.messageId, null, 'A queued genuine answer need not have a user message yet.');
+      assert.ok(['queued', 'held'].includes(received.response.deliveryState));
+      assert.equal(received.humanVerification, 'not_established'); assert.equal(received.eventEligibility, 'not_established');
+      const rejectedMutation = async (mutate: () => void) => {
+        host.database.connection.exec('BEGIN');
+        try { mutate(); await assert.rejects(readOcrReviewHandoff(host.services, materialId, ocrTask.id, questionId)); }
+        finally { host.database.connection.exec('ROLLBACK'); }
+      };
+      // Synthetic branch-provenance fault, not a claim of UI branch switching.
+      await rejectedMutation(() => {
+        const branch = host.database.connection.prepare('SELECT * FROM branches WHERE id=?').get(input.branchId)!;
+        const alternateId = 'synthetic-ocr-other-branch';
+        host.database.connection.prepare('INSERT INTO branches(id,conversation_id,head_message_id,session_ref,checkpoint_json,checkpoint_head_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+          .run(alternateId, branch.conversation_id, null, null, null, null, branch.created_at, branch.updated_at);
+        host.database.connection.prepare('UPDATE agent_questions SET branch_id=? WHERE id=?').run(alternateId, questionId);
+      });
+      await rejectedMutation(() => { host.database.connection.prepare('UPDATE agent_questions SET question=? WHERE id=?').run('Changed OCR question', questionId); });
+      await rejectedMutation(() => { host.database.connection.prepare('UPDATE agent_questions SET options_json=? WHERE id=?').run('["confirmed"]', questionId); });
+      await rejectedMutation(() => { host.database.connection.prepare('UPDATE agent_questions SET receipt_json=? WHERE id=?').run(JSON.stringify({ commandId: input.inputId, runId: input.runId, status: 'consumed' }), questionId); });
+      await rejectedMutation(() => { host.database.connection.prepare("UPDATE commands SET state='cancelled' WHERE id=?").run(received.response.commandId); });
+      await rejectedMutation(() => { host.database.connection.prepare("UPDATE messages SET role='assistant' WHERE id=?").run(input.messageId); });
+      await rejectedMutation(() => { host.database.connection.prepare('DELETE FROM model_tool_calls WHERE parent_run_id=? AND parent_generation=? AND tool_call_id=?').run(input.runId, input.generation, 'synthetic-ocr-review-question'); });
+      assert.equal((await readOcrReviewHandoff(host.services, materialId, ocrTask.id, questionId)).state, 'user_statement_received');
+      const dismissId = await askQuestion('synthetic-ocr-dismiss-question');
+      const dismissedResponse = await fetch(host.base + `/api/questions/${dismissId}/dismiss`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-mashiro-client': 'web' }, body: '{}' });
+      assert.equal(dismissedResponse.status, 200);
+      const dismissed = await readOcrReviewHandoff(host.services, materialId, ocrTask.id, dismissId);
+      assert.equal(dismissed.state, 'dismissed'); assert.equal(dismissed.response, null);
+      assert.equal(dismissed.humanVerification, 'not_established');
       const before = count();
       await assert.rejects(readOcrReviewPacket(host.services, 'wrong-material', ocrTask.id));
       await assert.rejects(readOcrReviewPacket(host.services, materialId, readTask.id));
