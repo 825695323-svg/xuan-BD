@@ -1,4 +1,6 @@
 import { parsedRecordDependencies, readRecordDependencySelection, selectRecordDependencyImpact, RECORD_IMPACT_SELECTION_LIMIT, type ParsedRecordDependency } from './processing-record-dependencies.js';
+
+import { R1_RELATION_RULE_VERSION } from './r1-relation.js';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { CoreDatabase } from '../../platform/state/database.js';
@@ -187,7 +189,7 @@ export class ProcessingPlanService {
     polarsCleaner?: PolarsSourceCleaner;
     /** Host-only module switches; cannot be changed by model tools or an existing plan. */
     modules?: Partial<Record<ProcessingStepKind, boolean>> }) {
-    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts', './data-processing/wfd-fixed-selection.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
+    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fact.ts', './data-processing/financial-fixed.ts', './data-processing/wfd-fixed-selection.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
     this.versionBinding = Object.freeze({ processing: PROCESSING_PLAN_VERSION,
       implementation: wfdSha256(Buffer.concat(files)), policy: PROCESSING_POLICY_DIGEST,
       ...(options.modules ? { productionModules: wfdSha256(canonicalWfdJson(options.modules)) } : {}),
@@ -254,7 +256,10 @@ export class ProcessingPlanService {
           output: 'candidate-ready {rows} object and structural evidence; business semantics remain explicit gaps' },
       ],
       notImplemented: ['business rule applicability and implementation coverage beyond the listed bindings are unverified', 'OCR/transcription semantic validation', 'binary/code execution', 'formal database admission', 'archive member expansion'],
-      semanticAdapters: [{ protocol: 'wfd.structured-ingest/1.0', mappingKind: 'event_records', ruleVersion: R1_EVENT_RULE_VERSION,
+      semanticAdapters: [{ protocol: 'wfd.structured-ingest/1.0', mappingKind: 'relation_edges', ruleVersion: R1_RELATION_RULE_VERSION,
+        scope: 'explicit source_claim only; partial_observation; object identity columns and subject fixed explicitly; validity and public time remain independent; no identity or truth inference',
+        mappingShape: '{kind:"relation_edges",businessKey,relationType,object:{kind,namespace,id},effectivePeriod,publicTime,fields:[{fieldCode,value,state}]}',
+        targetRule: 'definition measurement_nature=relation,time_role=validity,unit_code=not_applicable,content_nature=source_claim; fixed field definitions; known time columns or explicit unknown; no relationship correction or complete snapshots' }, { protocol: 'wfd.structured-ingest/1.0', mappingKind: 'event_records', ruleVersion: R1_EVENT_RULE_VERSION,
         scope: 'explicit source_claim/plan/forecast/observed_fact/outcome; event/public/expected times remain distinct; source correction pins prior definition/record; status is an explicit source declaration, not a verified state machine; no fact inference',
         mappingShape: '{kind:"event_records",eventId,eventType,assertionKind,caseId?,contentNature,status,eventTime,publicTime,expectedTime?,fields:[{fieldCode,value,state}]}',
         targetRule: 'definition measurement_nature=event,time_role=event,unit_code=not_applicable,content_nature matches row nature (outcome maps to actual_outcome); fixed field definitions; time mapping is explicit unknown+sourceTimezone or known+earliestUtc/latestExclusiveUtc/precision/sourceTimezone'  }, { protocol: 'wfd.structured-ingest/1.0', mappingKind: 'tabular_rows', ruleVersion: R1_TABULAR_RULE_VERSION,
@@ -1173,7 +1178,7 @@ export class ProcessingPlanService {
       });
       if (!closed) {
         step.state = 'pending'; step.output = null; step.outputDigest = null; step.checkScope = []; step.reusedFrom = null;
-        step.semantic = null;
+        step.semantic = null; step.normalization = null;
         step.startedAt = null; step.completedAt = null;
         step.gaps = [...step.gaps, '前置阶段未复用或旧产物不可核；未借用旧步骤证明。'];
       }
@@ -1564,7 +1569,8 @@ export class ProcessingPlanService {
       }
     }
     for (const step of steps) {
-      if (step.state !== 'succeeded' || !step.output_json) continue;
+      if (step.state !== 'succeeded') continue;
+      if (!step.output_json) { corrupt.push(`${step.step_id}: 成功步骤缺少产物引用`); continue; }
       const ref = this.ref(step.output_json);
       if (!this.options.objects.verify(ref)) { corrupt.push(`${step.step_id}: 对象缺失或长度不符`); continue; }
       try {

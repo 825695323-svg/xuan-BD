@@ -406,7 +406,9 @@ class WFDDataOnlyService(WFDProductService):
     def __init__(self, engine, *, caller_roles=None, caller_id="local",
                  unit_registry=None, trusted_actor_namespaces=None,
                  write_targets_document=None, write_target_reserved_families=None,
-                 adjustment_anchors_document=None, basis_price_catalog=None):
+                 adjustment_anchors_document=None, basis_price_catalog=None, local_holdings=True):
+        # Host-only preparation switch: R2 observes its stages on the target.
+        self._local_holdings = bool(local_holdings)
         self._write_targets_document = (copy.deepcopy(write_targets_document)
                                         if write_targets_document is not None else None)
         # A preparation store holds no historical products: the families that
@@ -560,10 +562,19 @@ class WFDDataOnlyService(WFDProductService):
         units = {code: {"definition": definition,
                         "digest": "sha256:" + sha(canonical({"code": code, "definition": definition}))}
                  for code, definition in sorted(self.unit_registry.items())}
+        from .product_holdings import resolve_target_instance, HoldingError
+        try:
+            binding = resolve_target_instance(self.root, create=False)
+            holding_instance = {"instance_id": binding["instance_id"], "source": binding["source"]}
+        except HoldingError as exc:
+            if str(exc).split(":", 1)[0] != "HOLDING_INSTANCE_UNBOUND":
+                raise
+            holding_instance = None
         return {"format_version": "wfd.snapshot-status/1", "profile": DATA_ONLY_PROFILE,
                 "snapshot_id": head["snapshot_id"] if head is not None else None,
                 "empty": head is None, "authority": "active_head",
                 "caller_id": self.caller_id, "caller_roles": sorted(self.caller_roles),
+                "holding_instance": holding_instance,
                 "unit_definitions": self._public_unit_definitions(units)}
 
     # ---------------------------------------------------------------- validation
@@ -762,6 +773,7 @@ class WFDDataOnlyService(WFDProductService):
                 result[name] = copy.deepcopy(record[name])
         if result["formal_publication_ref"]:
             formal = json.loads((self.root / result["formal_publication_ref"]).read_text("utf-8"))
+            result["holding_status"] = self._formal_holding_status(formal)
             known = {item["output_key"] for item in result["output_results"]}
             result["output_results"].extend(copy.deepcopy(item) for item in
                 formal.get("unpublished_outputs", []) if item["output_key"] not in known)
@@ -910,7 +922,7 @@ class WFDDataOnlyService(WFDProductService):
             })
         return results
 
-    def _recover_submission(self, key, identity, fingerprint, intent, known, persist=True):
+    def _recover_submission(self, key, identity, fingerprint, intent, known, persist=True, recover_holdings=False):
         receipt = known if isinstance(known, dict) else {}
         sid = receipt.get("snapshot_id")
         if not sid:
@@ -951,7 +963,7 @@ class WFDDataOnlyService(WFDProductService):
         formal_path = f"catalog/product_service/data_only_formal_publications/{key}.json"
         if (self.root / formal_path).is_file():
             formal_path, checks, state = self._formalize(
-                key, identity, fingerprint, results, receipt)
+                key, identity, fingerprint, results, receipt, recover_holdings=recover_holdings)
             if state == "formal_receipt_conflict":
                 record = {"format_version": DATA_ONLY_STATUS_FORMAT, "profile": DATA_ONLY_PROFILE,
                           "request_key": key, "request_identity": copy.deepcopy(identity),
@@ -1876,8 +1888,57 @@ class WFDDataOnlyService(WFDProductService):
                 return False
         return True
 
+    @staticmethod
+    def _formal_holding_groups(record):
+        groups = {}
+        for output in record["outputs"]:
+            members = groups.setdefault(output["product_id"], {})
+            for member in output["records"]:
+                members[(member["record_id"], member["record_version"])] = member
+        return [{"product_id": pid, "records": list(members.values())}
+                for pid, members in sorted(groups.items())]
+
+    def _record_formal_holdings(self, record):
+        holding = record.get("holding")
+        if holding is None:
+            return  # Old receipts are not evidence of an actual readable time.
+        from .product_holdings import HoldingLedger, HoldingError
+        try:
+            ledger = HoldingLedger(self.root, holding.get("instance_id"))
+            for output in self._formal_holding_groups(record):
+                ledger.record_batch(snapshot_id=record["snapshot_id"], product_id=output["product_id"],
+                                    records=output["records"], proof={"kind": "data_only_publish",
+                                    "snapshot_id": record["snapshot_id"], "request_key": record["request_key"]})
+        except (OSError, ValueError, HoldingError):
+            # The immutable formal receipt already proves publication. A ledger
+            # write failure is recoverable, not a failed publication to resend.
+            pass
+
+    def _formal_holding_status(self, record):
+        holding = record.get("holding")
+        if holding is None:
+            return {"state": "not_recorded", "reason": "no_ordinary_readable_proof"}
+        from .product_holdings import HoldingLedger, HoldingError
+        try:
+            facts = HoldingLedger(self.root, holding["instance_id"]).facts()
+            for output in self._formal_holding_groups(record):
+                wanted = {(r["record_id"], r["record_version"]) for r in output["records"]}
+                found = {(r["record_id"], r["record_version"])
+                         for fact in facts if fact.get("product_id") == output["product_id"]
+                         and fact.get("snapshot_id") == record["snapshot_id"]
+                         and fact.get("proof", {}).get("request_key") == record["request_key"]
+                         and fact.get("proof", {}).get("kind") == "data_only_publish"
+                         for r in fact["records"] if r.get("stages") == {
+                             "published_readable": holding["published_readable_at"]}}
+                if wanted != found:
+                    return {"state": "pending", "reason": "same_request_submit_can_recover"}
+            return {"state": "recorded", "instance_id": holding["instance_id"],
+                    "published_readable_at": holding["published_readable_at"]}
+        except (OSError, ValueError, HoldingError, KeyError):
+            return {"state": "pending", "reason": "holding_ledger_unavailable"}
+
     def _formalize(self, request_key, identity, fingerprint, results, publication,
-                   historically_activated=False):
+                   historically_activated=False, record_holdings=False, recover_holdings=False):
         duplicate_policy = any("row_results" in item for item in results)
         unpublished = self._unpublished_outputs(results)
         if not unpublished:
@@ -1898,6 +1959,8 @@ class WFDDataOnlyService(WFDProductService):
                     and existing.get("formal_publication_state") == "published_formal"):
                 if (self._formal_outputs_match(existing, results)
                         and existing.get("unpublished_outputs", []) == unpublished):
+                    if record_holdings or recover_holdings:
+                        self._record_formal_holdings(existing)
                     return formal_path, copy.deepcopy(existing.get("checks")), "published_formal"
                 return None, {"formal_receipt_matches": False,
                               "recovery_error": "FORMAL_RECEIPT_OUTPUT_CONFLICT"}, "formal_receipt_conflict"
@@ -2007,7 +2070,18 @@ class WFDDataOnlyService(WFDProductService):
             record["duplicate_policy"] = "skip_identical_append"
         if unpublished:
             record["unpublished_outputs"] = unpublished
+        if record_holdings and self._local_holdings:
+            from .product_holdings import resolve_target_instance, _now
+            instance = resolve_target_instance(self.root, create=True)
+            # Persist the true verification time atomically with its receipt.
+            # An existing volume uses its actual identity, not an invented one.
+            # R2 preparation disables this; its stages are observed on target.
+            record["holding"] = {"format_version": "wfd.data-only-readable-proof/1.0",
+                                 "instance_id": instance["instance_id"],
+                                 "published_readable_at": _now()}
         self.engine._write_immutable(formal_path, canonical(record))
+        if record_holdings:
+            self._record_formal_holdings(record)
         return formal_path, checks, "published_formal"
 
     def _prepare_bulk_product(self, document, header, prior_product=None):
@@ -2053,6 +2127,9 @@ class WFDDataOnlyService(WFDProductService):
                             "output_results": [], "idempotent_replay": False,
                             "production_publishable": False}
                 if self._terminal(prior.get("state")):
+                    if self.has_permission("publish") and prior.get("formal_publication_ref"):
+                        formal = json.loads((self.root / prior["formal_publication_ref"]).read_text("utf-8"))
+                        self._record_formal_holdings(formal)
                     return self._public_status(prior, replay=True)
         try:
             identity = self._validate_document(doc)
@@ -2098,7 +2175,8 @@ class WFDDataOnlyService(WFDProductService):
                     "production_publishable": False}
         known = self.engine._known_request(key)
         if known is not None and intent is not None and known.get("snapshot_id"):
-            recovered = self._recover_submission(key, identity, fingerprint, intent, known)
+            recovered = self._recover_submission(key, identity, fingerprint, intent, known,
+                                                 recover_holdings=self.has_permission("publish"))
             if recovered is not None:
                 return recovered
         if known is not None and intent is None and known.get("snapshot_id"):
@@ -2432,7 +2510,7 @@ class WFDDataOnlyService(WFDProductService):
             formal_path, checks = None, None
         else:
             formal_path, checks, state = self._formalize(
-                key, identity, fingerprint, results, receipt)
+                key, identity, fingerprint, results, receipt, record_holdings=True)
             if state == "published_formal":
                 for item in results:
                     if item.get("publication_state") in {"published_sandbox", "published_formal"}:
@@ -3312,7 +3390,8 @@ class WFDDataOnlyService(WFDProductService):
                 "subject": copy.deepcopy(item.get("subject")),
                 "object": (item.get("row") or {}).get("object"),
                 "relation_type": (item.get("row") or {}).get("relation_type"),
-                "contract_ref": copy.deepcopy(item.get("contract_ref")),
+                # An unqualified row is identified for coverage diagnostics,
+                # but its later/unknown contract is not historical metadata.
                 "decision": decision,
                 "holding_state": holding_state,
                 "reason": reason,
@@ -3423,6 +3502,36 @@ class WFDDataOnlyService(WFDProductService):
             ref = row.get("record_ref") or {}
             row["record_id"] = ref.get("logical_key")
             row["record_version"] = ref.get("revision_id")
+        # Excluded identities belong to the physical snapshot, not the held
+        # historical view. Publish only product-level gap counts; selection
+        # above continues to use the original internal record diagnostics.
+        aggregates = {}
+        retained = []
+        count_basis = ("current_fixed_snapshot_not_subject_filtered_not_historical_known_total"
+                       if subject is None else
+                       "current_fixed_snapshot_subject_filtered_not_historical_known_total")
+        holding_reasons = {"unknown": "NO_HOLDING_FACT_FOR_RECORD_VERSION",
+                           "not_yet_held": "HELD_STAGE_AFTER_CUTOFF"}
+        for diagnostic in public.get("diagnostics", []):
+            state = diagnostic.get("holding_state")
+            if (state not in holding_reasons
+                    or diagnostic.get("reason") != holding_reasons[state]):
+                retained.append(diagnostic)
+                continue
+            key = (diagnostic.get("product_id"), state)
+            if key not in aggregates:
+                aggregates[key] = {
+                    "code": "INSTANCE_HOLDING_COVERAGE_GAP",
+                    "scope": "product", "aggregation": "record_versions_by_holding_state",
+                    "product_id": key[0], "holding_state": state,
+                    "decision": "indeterminate" if state == "unknown" else "ineligible",
+                    "reason": "NO_HOLDING_FACT_FOR_RECORD_VERSION" if state == "unknown" else "HELD_STAGE_AFTER_CUTOFF",
+                    "count": 0,
+                    "count_basis": count_basis,
+                }
+            aggregates[key]["count"] += 1
+        public["diagnostics"] = retained + [aggregates[key] for key in sorted(aggregates)]
+        public["holding_coverage"]["count_basis"] = count_basis
         public["held_scope"] = held_scope
         public["usable_stage"] = usable_stage
         public["held_at"] = at
