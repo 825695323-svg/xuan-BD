@@ -3390,7 +3390,8 @@ class WFDDataOnlyService(WFDProductService):
                 "subject": copy.deepcopy(item.get("subject")),
                 "object": (item.get("row") or {}).get("object"),
                 "relation_type": (item.get("row") or {}).get("relation_type"),
-                "contract_ref": copy.deepcopy(item.get("contract_ref")),
+                # An unqualified row is identified for coverage diagnostics,
+                # but its later/unknown contract is not historical metadata.
                 "decision": decision,
                 "holding_state": holding_state,
                 "reason": reason,

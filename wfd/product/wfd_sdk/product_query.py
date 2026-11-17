@@ -755,7 +755,7 @@ class ProductQuery:
             roles.add("session_date")
         return roles
 
-    def _validate_business_time_role(self, business_range, manifest_products):
+    def _validate_business_time_role(self, business_range, manifest_products, *, history_mode="snapshot_contents"):
         if business_range is None or business_range.get("role") == "declared":
             return
         requested = business_range["role"]
@@ -770,12 +770,14 @@ class ProductQuery:
                 "declared_roles": sorted(roles),
             })
         if not available or requested not in available:
+            # Historical preflight may inspect later fixed contracts. Their roles
+            # and references are not evidence qualified at the requested cutoff.
             raise ProductQueryError(
                 "BUSINESS_TIME_ROLE_MISMATCH",
                 "Requested business-time role is not declared by the fixed product contract",
                 {"requested_role": requested,
-                 "available_roles": sorted(available or []),
-                 "contracts": contracts,
+                 **({"available_roles": sorted(available or []), "contracts": contracts}
+                    if history_mode == "snapshot_contents" else {}),
                  "rule": "caller cannot rename observation_time to another role"})
 
     @staticmethod
@@ -2173,7 +2175,8 @@ class ProductQuery:
             if session["business_range"] is not None:
                 try:
                     self._validate_business_time_role(
-                        session["business_range"], read["products"])
+                        session["business_range"], read["products"],
+                        history_mode=session["request"]["history_mode"])
                 except ProductQueryError as exc:
                     session["gaps"].append(exc.as_dict())
                     continue
@@ -2302,7 +2305,8 @@ class ProductQuery:
             if session["business_range"] is not None:
                 try:
                     self._validate_business_time_role(
-                        session["business_range"], read["products"])
+                        session["business_range"], read["products"],
+                        history_mode=session["request"]["history_mode"])
                 except ProductQueryError as exc:
                     session["gaps"].append(exc.as_dict())
                     continue
@@ -2368,7 +2372,8 @@ class ProductQuery:
             if session["business_range"] is not None:
                 try:
                     self._validate_business_time_role(
-                        session["business_range"], read["products"])
+                        session["business_range"], read["products"],
+                        history_mode=session["request"]["history_mode"])
                 except ProductQueryError as exc:
                     session["gaps"].append(exc.as_dict())
                     continue
@@ -2654,7 +2659,8 @@ class ProductQuery:
         self._current_business_policy(request, manifest_products)
 
         dependency_plan = self._dependency_plan(request, manifest_products)
-        self._validate_business_time_role(business_range, manifest_products)
+        self._validate_business_time_role(business_range, manifest_products,
+                                          history_mode=request["history_mode"])
         perspective = request["history_mode"]
         batch_gate = getattr(self.service, "_query_batches_supported", None)
         use_batches = self._data_only_projection() and callable(batch_gate) and batch_gate(

@@ -411,3 +411,42 @@ test('actual WFD rejects invalid definition times and same-value retries cannot 
         productId: first.productId, historyMode: 'market_known_at', at: '2025-01-10T12:00:00Z' })).known, '10');
     } finally { await host.close(); }
   });
+
+// Legitimate additive evolution and actual host receipt times, not synthetic holding facts.
+test('actual HTTP held projection excludes later additive fields and rejects unsupported range overrides',
+  { skip: !enabled ? 'Requires isolated WFD_PYTHON and XUAN_FULL_CHAIN_ROOT.' : false, timeout: 180_000 }, async () => {
+    const fixture = createFullChainFixture({ name: 'held-metadata-diagnostics', machine: true, units: { text: { dimension: 'text' }, count: { dimension: 'quantity' } } });
+    const host = await openFullChainHost(fixture);
+    try {
+      const first = await publish(host, document('held-meta-old', [row('old', '10')]));
+      const holding = (await host.call('/r1/products/snapshot', {})).holdingInstance;
+      const history = { historyMode: 'system_held_at', heldScope: holding.instanceId, usableStage: 'published_readable' };
+      const initial = await host.call('/r1/products/read', { snapshotId: first.snapshotId, productId: first.productId,
+        fields: ['amount'], ...history, at: new Date().toISOString().replace(/\.\d{3}Z$/u, 'Z') });
+      const at = initial.result.rows[0].held_at;
+      await new Promise(resolve => setTimeout(resolve, 1100));
+      const next = document('held-meta-new', [row('new', '20')], first.snapshotId);
+      const output = (next.outputs as WfdRecord[])[0]!;
+      ((output.definition as WfdRecord).field_definitions as WfdRecord[]).push({ field_code: 'future_note',
+        data_type: 'text', unit_code: 'text', measurement_nature: 'flow', time_role: 'event' });
+      (((output.payload as WfdRecord).rows as WfdRecord[])[0]!.values as WfdRecord).future_note = {
+        data_type: 'text', value_state: 'valid_value', value: 'later-only-note' };
+      const secondPublished = await publish(host, next);
+      assert.equal(secondPublished.productId, first.productId, 'additive evolution keeps the real product');
+      const selected = { snapshotId: secondPublished.snapshotId, productId: first.productId, fields: ['amount'] };
+      const fixed = (await host.services.r1Runtime!.client.fixedRead(secondPublished.snapshotId, first.productId)).result;
+      const laterContract = (fixed.products as WfdRecord[]).find(item => JSON.stringify(item.declaration).includes('future_note'))!.contract_ref as WfdRecord;
+      const historical = await host.call('/r1/products/read', { ...selected, ...history, at });
+      assert.deepEqual(values(historical), { old: '10' });
+      assert.ok(!JSON.stringify(historical).includes('future_note'));
+      assert.ok(!JSON.stringify(historical).includes('later-only-note'));
+      assert.ok(!JSON.stringify(historical).includes(String(laterContract.digest)), JSON.stringify(historical));
+      const denied = await host.call('/r1/products/read', { ...selected, ...history, at,
+        businessTimeRange: { role: 'event', start: '2024-01-01', end: '2025-01-01', timezone: 'UTC' } }, 409);
+      assert.equal(denied.code, 'R1_READ_INPUT');
+      assert.ok(!JSON.stringify(denied).includes('future_note'));
+      assert.ok(!JSON.stringify(denied).includes('contract_ref'));
+      const snapshot = await host.call('/r1/products/read', selected);
+      assert.deepEqual(values(snapshot), { old: '10', new: '20' });
+    } finally { await host.close(); }
+  });
