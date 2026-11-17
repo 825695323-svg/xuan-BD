@@ -114,10 +114,24 @@ test('task recovery HTTP uses actual original runs, versions and unknown-effect 
       const s = await seedRecovery(host), tasks = host.services.tasks, ids = tasks.list().map(t => t.id).sort();
       const eventResponse = await fetch(host.url + 'api/tasks/events?conversationId=' + s.state.conversationId, { headers: { 'x-local-data-generation': '1' }, signal: AbortSignal.timeout(5000) });
       assert.equal(eventResponse.status, 200);
-      const reader = eventResponse.body!.getReader();
-      assert.match(new TextDecoder().decode((await reader.read()).value), /event: tasks/u);
+      const reader = eventResponse.body!.getReader(), decoder = new TextDecoder();
+      let buffer = '', bytes = 0;
+      const readEvent = async (name: string) => {
+        for (;;) {
+          const boundary = /\r?\n\r?\n/u.exec(buffer);
+          if (boundary) {
+            const frame = buffer.slice(0, boundary.index); buffer = buffer.slice(boundary.index + boundary[0].length);
+            if (frame.split(/\r?\n/u).includes('event: ' + name)) return frame;
+            continue;
+          }
+          const part = await reader.read(); assert.equal(part.done, false, 'SSE ended before complete ' + name + ' frame');
+          bytes += part.value!.byteLength; assert.ok(bytes <= 1_048_576, 'Bounded synthetic SSE frame budget');
+          buffer += decoder.decode(part.value, { stream: true });
+        }
+      };
+      assert.match(await readEvent('tasks'), /data: /u);
       host.invalidateTaskStreams();
-      assert.match(new TextDecoder().decode((await reader.read()).value), /event: lifecycle/u);
+      assert.match(await readEvent('lifecycle'), /data: .*unavailable/u);
       await reader.cancel();
 
       for (const [item, supported] of [[s.retry, true], [s.unsupported, false]] as const) {
