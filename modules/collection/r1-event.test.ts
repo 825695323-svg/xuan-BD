@@ -19,15 +19,39 @@ test('event source claim mapping preserves explicit unknowns and never copies re
 });
 test('event admission rejects outcome laundering, missing states, target drift, and invented public time', () => {
   for (const mutation of [
-    (value: any) => { value.mapping.status = 'completed'; },
+    (value: any) => { value.mapping.contentNature = 'plan'; value.mapping.status = 'completed'; value.mapping.expectedTime = { status: 'unknown', sourceTimezone: 'UTC' }; },
     (value: any) => { value.mapping.contentNature = 'outcome'; },
     (value: any) => { value.mapping.publicTime = { status: 'known', earliestUtc: 'acquired' }; },
     (value: any) => { value.target.definition.semantic_context.content_nature = 'observed_fact'; },
     (value: any) => { value.mapping.fields[0].state = undefined; },
     (value: any) => { value.mapping.publisherAuthority = 'verified'; },
-  ]) { const value = declaration(); mutation(value); assert.throws(() => compileR1EventDeclaration(value), /事件|未知|映射/); }
+  ]) { const value = declaration(); mutation(value); assert.throws(() => compileR1EventDeclaration(value), /事件|未知|映射|计划|预计/); }
   assert.throws(() => checkR1EventRows([{ ...row(), nature: 'observed_fact' }], declaration()), /来源主张/);
   assert.throws(() => checkR1EventRows([{ ...row(), id: '../forged' }], declaration()), /身份/);
   assert.throws(() => checkR1EventRows([{ ...row(), state: 'unknown' }], declaration()), /null/);
   assert.throws(() => checkR1EventRows([{ ...row(), state: undefined }], declaration()), /状态/);
+});
+
+test('future plan uses expected time without substituting it into unknown occurrence or public time', () => {
+  const value: any = declaration(); value.mapping.contentNature = 'plan'; value.mapping.status = 'planned';
+  value.target.definition.semantic_context.content_nature = 'plan';
+  assert.throws(() => compileR1EventDeclaration(value), /预计时间/);
+  value.mapping.expectedTime = { status: 'known', earliestUtc: 'expected_start', latestExclusiveUtc: 'expected_end', precision: 'day', sourceTimezone: 'UTC' };
+  const raw = { ...row(), nature: 'plan', expected_start: '2027-02-01T00:00:00Z', expected_end: '2027-02-02T00:00:00Z' };
+  const output = checkR1EventRows([raw], value).rows[0]!;
+  assert.equal(output.expected_time!.earliest_utc, raw.expected_start); assert.equal(output.event_time.status, 'unknown'); assert.equal(output.public_time.status, 'unknown');
+  assert.throws(() => checkR1EventRows([{ ...raw, expected_start: '2027-02-30T00:00:00Z' }], value), /UTC/);
+  assert.throws(() => checkR1EventRows([{ ...raw, expected_end: raw.expected_start }], value), /UTC/);
+  value.mapping.status = 'realized'; assert.throws(() => compileR1EventDeclaration(value), /已完成事实/);
+});
+
+test('future elections, meetings, financial reporting, production and commitments use declared types rather than inferred occurrence', () => {
+  const value: any = declaration(); value.mapping.contentNature = 'plan'; value.mapping.status = 'planned';
+  value.target.definition.semantic_context.content_nature = 'plan';
+  value.mapping.expectedTime = { status: 'unknown', sourceTimezone: 'UTC' };
+  for (const type of ['election', 'meeting', 'financial_report', 'production_start', 'company_commitment']) {
+    const output = checkR1EventRows([{ ...row(), nature: 'plan', type }], value).rows[0]!;
+    assert.equal(output.event_type, type); assert.equal(output.content_nature, 'plan');
+    assert.equal(output.expected_time!.status, 'unknown'); assert.equal(output.event_time.status, 'unknown');
+  }
 });

@@ -60,6 +60,8 @@ export interface R1LocalReferences {
   publicationSetId?: string;
   /** New workspace preparations pin four role refs; old scalar task JSON stays unchanged. */
   contractBindingRequired?: true;
+  /** Host-verified fixed definition for reuse; kept only in BD, never external lineage. */
+  reusedDefinition?: { definitionRef: WfdRecord; declaration: WfdRecord };
   /** 唯一 MACD 算法的受信独立核验证明；不经过原报加工计划。 */
   fixedAlgorithm?: { taskId: string; requestId: string; resultSha256: string;
     namespace: string; mode: 'production' | 'user_test'; expectedParentSnapshotId: string | null };
@@ -899,6 +901,15 @@ export class R1HandoffService {
     }
     if (restrictionOverride && 'outputRestrictions' in restrictionOverride)
       fail('R1_SET_REFERENCE', '单输出不能采用未匹配的集合限制证明。');
+    const frozenOutput = Array.isArray(document?.outputs) ? asRecord(document!.outputs[0]) : {};
+    if (frozenOutput.definition_mode === 'reuse') {
+      const fixed = refs.reusedDefinition;
+      if (!fixed || !isWfdRecord(fixed.declaration) || canonicalWfdJson(fixed.definitionRef) !== canonicalWfdJson(frozenOutput.definition_ref)
+        || isWfdRecord(definition) && Object.keys(definition).length > 0 && canonicalWfdJson(definition) !== canonicalWfdJson(fixed.declaration))
+        fail('R1_REUSED_DEFINITION_REQUIRED', '复用定义须有宿主核定并冻结的原定义，不能按空定义跳过用途检查。');
+      definition = fixed.declaration;
+    }
+    if (!isWfdRecord(definition)) fail('R1_DEFINITION_REQUIRED', '用途核对缺少实际定义。');
     if (refs.fixedAlgorithm) {
       // 数值证明不能替代本次目标的用途限制；每次准备与实际发送都需受信宿主新读取。
       const output = Array.isArray(document?.outputs) ? document.outputs[0] : null;
