@@ -230,10 +230,11 @@ test('actual recovery UI searches current tasks and confirms one original-task a
       await browser.evaluate(`(async()=>{const s=JSON.parse(sessionStorage.getItem('mashiro.local-data-generation'));const headers={'x-local-data-generation':String(s.generation),'x-mashiro-client':'web','Content-Type':'application/json'};const p=await(await fetch('/api/ui/preferences',{headers})).json();const r=await fetch('/api/ui/preferences',{method:'PUT',headers,body:JSON.stringify({revision:p.revision,language:'en'})});if(!r.ok)throw Error('Preference save failed');})()`);
       await browser.page('Page.reload');
       await browser.until(`!!document.querySelector('.conversation-row[data-conversation-id='+${q(JSON.stringify(s.state.conversationId))}+']')`, 'Original conversation unavailable');
-      await browser.evaluate(`document.querySelector('.conversation-row[data-conversation-id='+${q(JSON.stringify(s.state.conversationId))}+']').click()`);
+      await browser.evaluate(`document.querySelector('.conversation-row[data-conversation-id='+${q(JSON.stringify(s.state.conversationId))}+'] .conversation-item').click()`);
       await browser.until("!!document.querySelector('.conversation-task-center')", 'Standalone shared center missing');
       await browser.evaluate("document.querySelector('.conversation-task-center:not([open]) > summary')?.click()");
       await browser.until("document.querySelector('.agent-tasks-list')?.dataset.feedStatus==='ready'", 'English task feed missing');
+      await browser.until(`document.querySelector('.conversation-row[data-active=true]')?.dataset.conversationId===${q(s.state.conversationId)}&&!!document.querySelector('[data-task-id='+${q(JSON.stringify(s.paused.id))}+']')`, 'Original conversation task must actually be selected');
       await inspect(browser, s.paused.id, true);
       await capturePreview(browser, process.env.XUAN_TASK_VISUAL_ROOT ?? root, 'task-recovery-en-light', 'light');
       await capturePreview(browser, process.env.XUAN_TASK_VISUAL_ROOT ?? root, 'task-recovery-en-dark', 'dark');
