@@ -103,7 +103,7 @@ export async function invokeMediaAction(h: Host, input: BackendInput, action: st
   try { await perform.execute(toolCallId, { action, args }, undefined, undefined, unusedPiContext); }
   catch (error) {
     const tasks = h.services.tasks.list();
-    throw new Error(`${String(error)}; actual task failures: ${JSON.stringify(tasks.map(t => ({ action: t.action, status: t.status, error: t.error })))}`);
+    throw new Error(`${String(error)}; actual task failures: ${JSON.stringify(tasks.map(t => ({ action: t.action, status: t.status, error: t.error, budget: h.services.tasks.getBudget(t.id), events: h.services.tasks.events(t.id).filter(e => ['PROGRESS', 'WORKER_STATE', 'SIDE_EFFECT_RESULT'].includes(e.type)).map(e => ({ type: e.type, timestamp: e.timestamp, ...(e.type === 'PROGRESS' && (e.data as any).data?.basis === 'whisper_native_progress' ? { nativePercent: (e.data as any).data.percent } : {}) })) })))}`);
   }
   const row = h.database.connection.prepare('SELECT task_id FROM model_tool_calls WHERE parent_run_id=? AND parent_generation=? AND tool_call_id=?').get(input.runId, input.generation, toolCallId);
   assert.ok(row?.task_id);

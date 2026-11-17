@@ -167,7 +167,7 @@ jobs:
           with pathlib.Path(os.environ['XUAN_TEST_TRANSCRIPTION_AUDIO']).open('xb') as output:
               output.write(data)
           PYMEDIA
-          "$BD_NODE" --import tsx --test --test-concurrency=1 --test-reporter=tap apps/server/local-transcription-live.test.ts apps/server/transcription-review-live.test.ts apps/server/transcription-review.test.ts platform/resources/direct-trusted-resources.test.ts | tee "$RUNNER_TEMP/bd-transcription-result.tap"
+          "$BD_NODE" --import tsx --test --test-concurrency=1 --test-reporter=tap apps/server/local-transcription-live.test.ts apps/server/transcription-review-live.test.ts apps/server/transcription-review.test.ts platform/capabilities/transcription/progress.test.ts platform/runtime/process-output.test.ts platform/resources/direct-trusted-resources.test.ts | tee "$RUNNER_TEMP/bd-transcription-result.tap"
           grep -q '^# skipped 0$' "$RUNNER_TEMP/bd-transcription-result.tap"
       - name: Verify actual optional macOS Vision OCR with synthetic image
         if: runner.os == 'macOS'

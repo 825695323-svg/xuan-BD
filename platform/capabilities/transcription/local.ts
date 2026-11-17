@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto';
+import { createWhisperProgressParser } from './progress.js';
+import { createHash, randomUUID } from 'node:crypto';
 import { extname, join } from 'node:path';
 import type { FileReferenceService } from '../../resources/files.js';
 import type { TaskExecutionContext } from '../../jobs/tasks.js';
@@ -46,7 +47,8 @@ export interface LocalTranscriptionOptions {
   assertPath(path: string): void;
   assertModelPath(path: string): void;
   runTool(context: TaskExecutionContext, workspace: DirectWorkspace, authority: DirectAuthority,
-    binary: DirectBinary, args: string[], path: string, timeout?: number): Promise<DirectProcessResult>;
+    binary: DirectBinary, args: string[], path: string, timeout?: number,
+    onOutput?: (stream: 'stdout' | 'stderr', chunk: Buffer) => void | Promise<void>): Promise<DirectProcessResult>;
   convert(input: string, extension: string, output: string, format: string): string[];
   validateModel(header: Buffer): void;
   validateProbe(value: string, maxSeconds?: number): void;
@@ -185,9 +187,20 @@ export async function transcribeLocalFile(context: TaskExecutionContext, input: 
     const wave = await workspace.fingerprint(wav, 512 * 1024 * 1024);
     if (wave.bytes <= 44 || wave.bytes >= 512 * 1024 * 1024) throw new DirectError('INVALID_AUDIO_OUTPUT', '音频标准化没有生成完整、有效的音轨。');
     const prefix = join(workspace.path, 'transcript');
+    const progress = createWhisperProgressParser();
+    const progressIdentity = createHash('sha256').update(JSON.stringify([sourceFingerprint.sha256, modelFingerprint.sha256, wave.sha256, context.task.versions])).digest('hex');
     const response = await options.runTool(context, workspace, authority, 'whisper-cli', [
-      '-m', model, '-f', wav, '-l', 'auto', '-t', '4', '-p', '1', '-otxt', '-oj', '-of', prefix, '-ng',
-    ], binaries['whisper-cli'], 30 * 60_000);
+      '-m', model, '-f', wav, '-l', 'auto', '-t', '4', '-p', '1', '-otxt', '-oj', '-of', prefix, '-ng', '-pp',
+    ], binaries['whisper-cli'], 30 * 60_000, async (stream, chunk) => {
+      authority.assert(); context.signal.throwIfAborted();
+      for (const percent of progress.push(stream, chunk)) {
+        // Source/model/wave identity deduplicates repeated native evidence across retries.
+        // Native 100% is recognition progress, not publication or factual verification.
+        await context.emit({ type: 'progress', message: '本机识别器报告新的原生处理进度；产物尚待核验。',
+          evidenceKey: `whisper:${progressIdentity}:${percent}`,
+          data: { basis: 'whisper_native_progress', percent } });
+      }
+    });
     if (/no tensors loaded|empty model for testing/iu.test(response.stderr)) throw new DirectError('WHISPER_TEST_MODEL', '所选文件没有模型权重，不能用于真实转录。');
     const text = await workspace.readText(prefix + '.txt', MAX_TEXT_BYTES);
     const native = await workspace.readText(prefix + '.json', MAX_TEXT_BYTES);

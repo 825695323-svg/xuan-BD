@@ -31,6 +31,8 @@ export interface DirectProcessOptions {
   maxOutputBytes?: number;
   onProcessState?(event: DirectProcessState): void | Promise<void>;
   onHeartbeat?(event: DirectProcessHeartbeat): void | Promise<void>;
+  /** Host-only bounded observation; never delivered for sensitive service output. */
+  onOutput?(stream: 'stdout' | 'stderr', chunk: Buffer): void | Promise<void>;
 }
 export interface DirectProcessState {
   pid: number; startIdentity: string; state: 'started' | 'exited'; timestamp: number;
@@ -158,14 +160,17 @@ async function executeProcess(options: DirectProcessOptions, service: boolean): 
       if (options.onHeartbeat) { heartbeatTimer = setInterval(() => heartbeat(false), 5000); heartbeatTimer.unref(); }
       if (windows && failure) stop(failure.code, failure.message);
     });
-    const consume = (destination: Buffer[]) => (chunk: Buffer) => {
+    const consume = (destination: Buffer[], stream: 'stdout' | 'stderr') => (chunk: Buffer) => {
       outputBytes += chunk.length;
       if (outputBytes > maxOutputBytes) { stop('PROCESS_OUTPUT_LIMIT', '本机工具输出超过本次上限。'); return; }
-      if (!options.sensitiveOutput) destination.push(Buffer.from(chunk));
+      if (!options.sensitiveOutput) {
+        const observed = Buffer.from(chunk); destination.push(observed);
+        if (options.onOutput) notify(() => options.onOutput!(stream, Buffer.from(observed)));
+      }
       heartbeat(true);
     };
-    child.stdout!.on('data', consume(stdout));
-    child.stderr!.on('data', consume(stderr));
+    child.stdout!.on('data', consume(stdout, 'stdout'));
+    child.stderr!.on('data', consume(stderr, 'stderr'));
     child.once('error', (error) => { spawnError = error; });
     if (stdin !== undefined && child.stdin) {
       child.stdin.on('error', () => stop('PROCESS_INPUT_FAILED', '本机工具未完整接收固定输入。'));
