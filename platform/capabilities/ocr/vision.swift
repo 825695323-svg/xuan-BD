@@ -63,7 +63,7 @@ func run() throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     let json = try encoder.encode(evidence)
-    try require(json.count <= 16 * 1024 * 1024, "JSON budget exceeded")
+    try require(json.count <= 8 * 1024 * 1024, "JSON budget exceeded")
     // Artifacts are consumed only after successful process completion and host validation.
     try Data(plainText.utf8).write(to: textPath, options: .withoutOverwriting)
     try json.write(to: jsonPath, options: .withoutOverwriting)

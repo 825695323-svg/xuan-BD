@@ -1,6 +1,6 @@
 /** Local OCR observations are recognition evidence, not verified source truth. */
 export const VISION_EVIDENCE_SCHEMA = 'xuan.apple-vision-ocr/1' as const;
-export const VISION_LIMITS = Object.freeze({ inputBytes: 25 * 1024 * 1024, pixels: 40_000_000, side: 20_000, observations: 10_000, textBytes: 8 * 1024 * 1024, jsonBytes: 16 * 1024 * 1024 });
+export const VISION_LIMITS = Object.freeze({ inputBytes: 25 * 1024 * 1024, pixels: 40_000_000, side: 20_000, observations: 10_000, textBytes: 8 * 1024 * 1024, jsonBytes: 8 * 1024 * 1024 });
 export interface VisionObservation {
   page: 1;
   text: string;
