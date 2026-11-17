@@ -1,0 +1,23 @@
+{
+  "sources": [
+    {
+      "file": "gov-cn-2025-holidays.html",
+      "url": "https://www.gov.cn/zhengce/zhengceku/202411/content_6986383.htm",
+      "sha256": "2ce246e9776a9b2102e96ac9d438804a869a541c530c62c9db5a54aedc9e7b13",
+      "bytes": 29117,
+      "captureCompletedAt": "2026-11-17T04:18:28.520012+00:00",
+      "status": "HTTP 200 via curl --fail; captured public government notice",
+      "scope": "Exact captured HTML, no linked resources/scripts fetched or executed"
+    },
+    {
+      "file": "kashi-2025-holidays.html",
+      "url": "https://www.kashi.gov.cn/ksdqxzgs/c115966/202411/e116097ae08f4324ae5802863f2a96ba.shtml",
+      "sha256": "c8dceca4859f14a8b81e8d89397407dff08b9792c762434e7b9739e339ede6cc",
+      "bytes": 40459,
+      "captureCompletedAt": "2026-11-17T04:18:14.791195+00:00",
+      "status": "HTTP 200 via curl --fail; captured public government notice",
+      "scope": "Exact captured HTML, no linked resources/scripts fetched or executed"
+    }
+  ],
+  "disclosure": "Original government notice and local government attributed copy. Capture is not publication time; tests retain unknown event/public time. Fixture load time is the test acquisition time. Repost upstream ID remains an operator declaration, not a resolved cross-source relation."
+}

@@ -189,7 +189,7 @@ export class ProcessingPlanService {
     polarsCleaner?: PolarsSourceCleaner;
     /** Host-only module switches; cannot be changed by model tools or an existing plan. */
     modules?: Partial<Record<ProcessingStepKind, boolean>> }) {
-    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fact.ts', './data-processing/financial-fixed.ts', './data-processing/wfd-fixed-selection.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
+    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/event-text.ts', '../../platform/capabilities/browser/html-extraction.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fact.ts', './data-processing/financial-fixed.ts', './data-processing/wfd-fixed-selection.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
     this.versionBinding = Object.freeze({ processing: PROCESSING_PLAN_VERSION,
       implementation: wfdSha256(Buffer.concat(files)), policy: PROCESSING_POLICY_DIGEST,
       ...(options.modules ? { productionModules: wfdSha256(canonicalWfdJson(options.modules)) } : {}),
@@ -287,7 +287,7 @@ export class ProcessingPlanService {
         endpointAdapter: 'optional sourceAdapter:{adapterId,version,configDigest}; only an adopted version is resolved and frozen into this plan; format stays the carrier family (csv|json)',
         dedicated: { xlsx: { required: ['xlsxSelection'], shape: 'sheetName,headerRow,firstDataRow,lastDataRow,firstColumn,lastColumn,columns[{column,header,name,type?}]' },
           xbrl: { required: ['xbrlSelection'], shape: '{version:"bd-xbrl-numeric/1",reportId,reportVersion,concepts:["{namespaceURI}localName"]}; empty concepts selects all supported numeric facts' },
-          text: { requiredOneOf: ['necessaryTextSelection', 'eventTextSelection'], eventScope: 'exact excerpts and declared occurrence only; no event truth or public time inferred',
+          text: { requiredOneOf: ['necessaryTextSelection', 'eventTextSelection'], eventScope: 'exact UTF8 source or explicitly hashed existing static HTML projection; declared occurrence only; no rendered-page completeness, event truth or public time inferred',
             eventShape: '{version:"bd-event-source-excerpts/1",sourceSha256,occurrence:{namespace,publisherId,publicationId,kind:"original"|"repost",upstreamPublicationId:string|null},reviewBasis,excerpts:[{start,end,quote}]}; exact original UTF-16 code-unit ranges', shape: '{version:"bd-necessary-business-paragraph/1",sourceSha256,documentVersion,purpose,reviewBasis,paragraphs:[{start,end,quote}]}; complete original paragraphs only' },
           pdf: { required: ['pdfSelection'], shape: '{version:"bd-financial-pdf-regions/1",sourceSha256,report:{id,version,subjectScheme,subjectCode,accountingStandard,currency,auditStatus},regions:[{page,yMin,yMax,statement,scope,section,label:[xMin,xMax],expectedLabels,rowBands:[{yMin,yMax}],columns:[{xMin,xMax,dimension,periodType,startDate,endDate,unit,numericFormat}],continuations?:[{rowIndex,columnIndex,page,yMin,yMax,xMin,xMax,quote}]}]}' },
           'financial-fixed': { required: ['financialCalculation'], shape: 'financialFixed.calculation above; executable only through this managed plan and bound trusted reader' } },
@@ -1047,7 +1047,7 @@ export class ProcessingPlanService {
     if (fact.byteLength > byteBudget) {
       gaps.push(`tables[${index}] ${table.materialId}: 完整原件 ${fact.byteLength} 字节超过本次 ${byteBudget} 字节解析预算；未用截断预览提交。`);
     }
-    if ((table.format === 'xbrl' ? !/\.(?:xbrl|xml|xhtml)$/iu.test(fact.filename) : fact.format !== expected)
+    if ((table.eventTextSelection?.sourceView?.kind === 'html_static_text' ? !/\.html?$/iu.test(fact.filename) : table.format === 'xbrl' ? !/\.(?:xbrl|xml|xhtml)$/iu.test(fact.filename) : fact.format !== expected)
       || table.format === 'xlsx' && (!table.xlsxSelection || !/\.xlsx$/iu.test(fact.filename))) {
       gaps.push(`tables[${index}] ${table.materialId}: 材料实际格式=${fact.format}，声明格式=${table.format}；缺对应解析器，预览只作线索。`);
     }
