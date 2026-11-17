@@ -11,6 +11,7 @@ import { projectXlsxNativeSelection, type XlsxTableSelection, type XlsxSelection
 import { projectSourceReportedTable, type CandidateSourceProjection } from './source-reported-table.js';
 import { normalizeNumericLexeme, readNumericFormat, type NumericFormat } from './data-processing/numeric-format.js';
 import { projectXbrlTable, type XbrlSelection } from './data-processing/xbrl-table.js';
+import { projectEventText, type EventTextSelection } from './data-processing/event-text.js';
 import { projectNecessaryText, type NecessaryTextSelection } from './data-processing/necessary-text.js';
 import { adapterColumnType, adapterConfigDigest, adapterMaterialTable, adapterParseEvidence, adapterTypeCompatible,
   parseEndpointSource, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
@@ -25,7 +26,7 @@ export const CANDIDATE_SELECTION_LIMITS = Object.freeze({ maxSelectedRows: 5000,
 export function candidateImplementationDigest(): string {
   const files = ['./candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts',
     './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts',
-    './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts',
+    './data-processing/necessary-text.ts', './data-processing/event-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts',
     './materials/contracts.ts', '../../adapters/database/wfd-transport.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
   return wfdSha256(Buffer.concat(files));
 }
@@ -53,6 +54,7 @@ export interface CandidateTablePlan {
   financialReaderBinding?: string;
   xbrlSelection?: XbrlSelection;
   necessaryTextSelection?: NecessaryTextSelection;
+  eventTextSelection?: EventTextSelection;
   pdfSelection?: import('./data-processing/financial-pdf.js').FinancialPdfSelection;
   numericFormats?: Record<string, NumericFormat>;
   xlsxSelection?: XlsxTableSelection;
@@ -77,6 +79,7 @@ export interface ParsedCandidateTable {
   numericFormats?: Record<string, NumericFormat>;
   financial_evidence?: WfdRecord;
   necessary_text_evidence?: WfdRecord;
+  event_text_evidence?: WfdRecord;
   /** 端点适配身份、载体、字符集、单位换算依据与缺口；随步骤产物持久化。 */
   adapter_evidence?: WfdRecord;
   source_projection?: { kind: 'xlsx-explicit-selection'; json_sha256: string; location_scope: 'derived-json-utf16'; evidence: XlsxSelectionEvidence };
@@ -118,15 +121,21 @@ export function parseTableSource(bytes: Uint8Array, plan: CandidateTablePlan): P
   if (plan.format === 'xbrl' || plan.format === 'text') {
     if (plan.selection || plan.xlsxSelection || plan.sourceProjection || Object.keys(plan.fieldMapping ?? {}).length || plan.pdfSelection)
       fail('CANDIDATE_RULES', '财报标记及必要文字专用投影不接受其他格式选区或字段重命名。');
-    const projection = plan.format === 'xbrl' ? projectXbrlTable(bytes, plan.xbrlSelection!) : projectNecessaryText(bytes, plan.necessaryTextSelection!);
-    const parsed = parseTableSource(projection.jsonBytes, { ...plan, format: 'json', xbrlSelection: undefined, necessaryTextSelection: undefined });
+    if (plan.format === 'xbrl' && (plan.eventTextSelection || plan.necessaryTextSelection))
+      fail('CANDIDATE_RULES', 'XBRL 不接受文字选录规则。');
+    if (plan.format === 'text' && !!plan.eventTextSelection === !!plan.necessaryTextSelection)
+      fail('CANDIDATE_RULES', '文字来源须明确选择必要业务段或事件原文，不能混合。');
+    const projection = plan.format === 'xbrl' ? projectXbrlTable(bytes, plan.xbrlSelection!)
+      : plan.eventTextSelection ? projectEventText(bytes, plan.eventTextSelection) : projectNecessaryText(bytes, plan.necessaryTextSelection!);
+    const parsed = parseTableSource(projection.jsonBytes, { ...plan, format: 'json', xbrlSelection: undefined, necessaryTextSelection: undefined, eventTextSelection: undefined });
     return { ...parsed, format: plan.format, source_sha256: wfdSha256(bytes),
-      adapter: { id: plan.format === 'xbrl' ? 'bd-xbrl-numeric' : 'bd-necessary-business-paragraph', version: '1' },
+      adapter: { id: plan.format === 'xbrl' ? 'bd-xbrl-numeric' : plan.eventTextSelection ? 'bd-event-source-excerpts' : 'bd-necessary-business-paragraph', version: '1' },
       ...(plan.format === 'xbrl' ? { financial_evidence: projection.evidence as unknown as WfdRecord }
-        : { necessary_text_evidence: projection.evidence as unknown as WfdRecord }) };
+        : plan.eventTextSelection ? { event_text_evidence: projection.evidence as unknown as WfdRecord }
+          : { necessary_text_evidence: projection.evidence as unknown as WfdRecord }) };
   }
   if (plan.format === 'pdf' || plan.format === 'financial-fixed') fail('CANDIDATE_PDF_ASYNC', 'PDF财报/固定财务变换须由受管处理计划异步读取；不通过同步表解析绕过。');
-  if (plan.xbrlSelection || plan.necessaryTextSelection || plan.pdfSelection) fail('CANDIDATE_RULES', '专用投影规则与表源格式不一致。');
+  if (plan.xbrlSelection || plan.necessaryTextSelection || plan.eventTextSelection || plan.pdfSelection) fail('CANDIDATE_RULES', '专用投影规则与表源格式不一致。');
   if (plan.format === 'xlsx') {
     if (!plan.xlsxSelection || plan.selection) fail('XLSX_SELECTION_REQUIRED', '工作簿须明确工作表、表头、行列范围；不接受 CSV 选件规则。');
     if (bytes.byteLength > MAX_SOURCE) fail('CANDIDATE_PARSE_BUDGET', '工作簿超过原生转换原件预算；未放大转换保护。');
@@ -170,7 +179,7 @@ function parseAdapterTable(bytes: Uint8Array, plan: CandidateTablePlan): ParsedC
   const binding = plan.sourceAdapter as FrozenAdapterBinding;
   if (!('config' in binding) || !binding.config) fail('CANDIDATE_ADAPTER_NOT_FROZEN', '适配引用尚未解析为冻结配置；未按未冻结版本解析。');
   if (!['csv', 'json'].includes(plan.format)) fail('CANDIDATE_ADAPTER_FORMAT', '端点适配只用于声明为 CSV/JSON 载体族的表源；其他格式须使用各自专用规则。');
-  if (plan.selection || plan.xlsxSelection || plan.xbrlSelection || plan.necessaryTextSelection
+  if (plan.selection || plan.xlsxSelection || plan.xbrlSelection || plan.necessaryTextSelection || plan.eventTextSelection
     || plan.pdfSelection || plan.financialCalculation || plan.numericFormats)
     fail('CANDIDATE_ADAPTER_RULES', '端点适配表源不接受选区、专用投影或区域数值规则；这些规则会与载体声明冲突。');
   if (adapterConfigDigest(binding.config) !== binding.configDigest) fail('CANDIDATE_ADAPTER_CHANGED', '冻结适配配置与摘要不符；未按其他版本继续。');
