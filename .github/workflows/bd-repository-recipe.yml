@@ -179,7 +179,7 @@ jobs:
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
           test ! -e "$XUAN_TEST_VISION_OCR"
           xcrun swiftc -O platform/capabilities/ocr/vision.swift -o "$XUAN_TEST_VISION_OCR" -framework Vision -framework ImageIO
-          "$BD_NODE" --import tsx --test --test-concurrency=1 --test-reporter=tap apps/server/local-ocr-live.test.ts platform/capabilities/ocr/evidence.test.ts platform/capabilities/ocr/adapter.test.ts | tee "$RUNNER_TEMP/bd-vision-result.tap"
+          "$BD_NODE" --import tsx --test --test-concurrency=1 --test-reporter=tap apps/server/local-ocr-live.test.ts apps/server/ocr-review-live.test.ts platform/capabilities/ocr/evidence.test.ts platform/capabilities/ocr/adapter.test.ts | tee "$RUNNER_TEMP/bd-vision-result.tap"
           grep -q '^# skipped 0$' "$RUNNER_TEMP/bd-vision-result.tap"
       - name: Reject tracked build outputs or changes to source
         shell: bash
