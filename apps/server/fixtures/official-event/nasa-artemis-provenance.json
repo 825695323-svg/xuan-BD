@@ -1,0 +1,48 @@
+{
+  "sources": [
+    {
+      "kind": "planned",
+      "file": "nasa-artemis-planned.html",
+      "url": "https://www.nasa.gov/news-release/nasa-sets-coverage-for-artemis-i-moon-mission-launch/",
+      "sha256": "c3196f77ff01f739fc5625681778caa3bd163f51367507c10729a6f3ef29cb6e",
+      "bytes": 288895,
+      "captureCompletedAt": "2026-11-17T05:32:25.116Z",
+      "rootSelector": "body",
+      "quote": "NASA Sets Coverage for Artemis I Moon Mission Launch\nNASA\nNov 04, 2022\nMEDIA ADVISORYM22-161\nNASA’s Space Launch System rocket with the Orion spacecraft for Artemis I arrived to Launch Pad 39B at Kennedy Space Center in Florida Nov. 4. Launch of the uncrewed Artemis I flight test is targeted for Nov. 14. Credits: NASA/Joel Kowsky\nEditor’s note: This advisory is no longer current as of Friday, Nov. 11. NASA issued an updated advisory for Artemis I launch and coverage, which is available on the agency’s website.\nNASA is targeting Monday, Nov. 14, for the launch of the Artemis I Moon mission during a 69-minute launch window that opens at 12:07 a.m. EST.",
+      "earliestUtc": "2022-11-14T05:07:00Z",
+      "latestExclusiveUtc": "2022-11-14T06:16:00Z",
+      "sourceTimezone": "America/New_York",
+      "precision": "minute"
+    },
+    {
+      "kind": "revised",
+      "file": "nasa-artemis-revised.html",
+      "url": "https://www.nasa.gov/blogs/missions/2022/11/08/nasa-prepares-rocket-spacecraft-ahead-of-tropical-storm-nicole-re-targets-launch/",
+      "sha256": "7a74dd1effe4cb10a00c5c9bb9ef1de4350f44a5067b1519f78e8c26cf7b1c22",
+      "bytes": 269893,
+      "captureCompletedAt": "2026-11-17T05:32:26.879Z",
+      "rootSelector": "body",
+      "quote": "NASA is continuing to monitor Tropical Storm Nicole and has decided to re-target a launch for the Artemis I mission for Wednesday, Nov. 16, pending safe conditions for employees to return to work, as well as inspections after the storm has passed. Adjusting the target launch date will allow the workforce to tend to the needs of their families and homes, and provide sufficient logistical time to get back into launch status following the storm.\nKennedy currently is in a HURCON (Hurricane Condition) III status, which includes securing facilities, property and equipment at the center, as well as briefing and deploying the “ride-out” team. As part of NASA’s hurricane preparedness protocol, a “ride-out” team includes a set of personnel who will remain in a safe location at Kennedy throughout the storm to monitor centerwide conditions, including the flight hardware for the Artemis I mission. Kennedy will release non-essential personnel at the HURCON II status as the agency continues to prioritize its employees in the Kennedy area.\nBased on expected weather conditions and options to roll back ahead of the storm, the agency determined Sunday evening the safest option for the launch hardware was to keep the Space Launch System (SLS) rocket and Orion spacecraft secured at the pad.\nThe SLS rocket is designed to withstand 85 mph (74.4 knot) winds at the 60-foot level with structural margin. Current forecasts predict the greatest risks at the pad are high winds that are not expected to exceed the SLS design. The rocket is designed to withstand heavy rains at the launch pad and the spacecraft hatches have been secured to prevent water intrusion.\nIn preparation for the storm, teams have powered down the Orion spacecraft, SLS core stage, interim cryogenic propulsion stage, and boosters. Engineers have also installed a hard cover over the launch abort system window, retracted and secured the crew access arm on the mobile launcher and configured the settings for the environmental control system on the spacecraft and rocket elements. Teams also are securing nearby hardware and performing walkdowns for potential debris in the area.\nTeams are poised to resume work as soon as weather and Kennedy center status allows. Once back on-site, technicians will perform walkdowns and inspections at the pad to assess the status of the rocket and spacecraft as soon as practicable.\nA launch during a two-hour window that opens at 1:04 a.m. EST on Nov. 16 would result in a splashdown on Sunday, Dec. 11. If needed, NASA has a back-up launch opportunity on Saturday, Nov. 19, and will coordinate with the U.S. Space Force for additional launch opportunities.\nThe agency continues to rely on the most up to date information from the National Oceanic and Atmospheric Administration, U.S. Space Force, and the National Hurricane Center throughout its evaluations and continues to closely monitor conditions for the Kennedy area.\nKathryn Hambleton\nNovember 8, 2022 5:47PM",
+      "earliestUtc": "2022-11-16T06:04:00Z",
+      "latestExclusiveUtc": "2022-11-16T08:04:00Z",
+      "sourceTimezone": "America/New_York",
+      "precision": "minute"
+    },
+    {
+      "kind": "actual",
+      "file": "nasa-artemis-actual.html",
+      "url": "https://www.nasa.gov/news-release/liftoff-nasas-artemis-i-mega-rocket-launches-orion-to-moon/",
+      "sha256": "38f027458125116c9c3ad6786d8d11e1f252482ddc771b5904290fbc2ebfc457",
+      "bytes": 281928,
+      "captureCompletedAt": "2026-11-17T05:32:28.524Z",
+      "rootSelector": "body",
+      "quote": "Liftoff! NASA’s Artemis I Mega Rocket Launches Orion to Moon\nNASA\nNov 16, 2022\nRELEASE22-117\nNASA’s Space Launch System rocket carrying the Orion spacecraft launches on the Artemis I flight test, Wednesday, Nov. 16, 2022, from Launch Complex 39B at NASA’s Kennedy Space Center in Florida. NASA’s Artemis I mission is the first integrated flight test of the agency’s deep space exploration systems: the Orion spacecraft, Space Launch System (SLS) rocket, and ground systems. SLS and Orion launched at 1:47am ET from Launch Pad 39B at the Kennedy Space Center.\nNASA/Bill Ingalls\nFollowing a successful launch of NASA’s Space Launch System (SLS), the most powerful rocket in the world, the agency’s Orion spacecraft is on its way to the Moon as part of the Artemis program. Carrying an uncrewed Orion, SLS lifted off for its flight test debut at 1:47 a.m. EST Wednesday from Launch Pad 39B at NASA’s Kennedy Space Center in Florida.",
+      "earliestUtc": "2022-11-16T06:47:00Z",
+      "latestExclusiveUtc": "2022-11-16T06:48:00Z",
+      "sourceTimezone": "America/New_York",
+      "precision": "minute"
+    }
+  ],
+  "disclosure": "Current captured NASA HTML, including later edits; not archived 2022 bytes. Original dates and launch windows are explicit operator transcription of page statements. EST is UTC-05:00. Planned ranges are 69-minute/two-hour windows, actual range is stated minute precision. Public and definition publication qualification remain unknown. No linked media/scripts fetched or executed, no endorsement, no independently verified mission outcome.",
+  "usageGuidelines": "https://www.nasa.gov/nasa-brand-center/images-and-media/"
+}
