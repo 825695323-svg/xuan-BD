@@ -122,7 +122,7 @@ export async function projectFinancialPdf(bytes: Buffer, raw: FinancialPdfSelect
           rows.push({ business_key: businessKey, ...identity, ...(fact ? { financial_fact_identity: fact.identity } : {}), value, value_state: value === null ? 'unknown' : value === '0' ? 'reported_zero' : 'valid_value',
             start_utc: column.startDate + 'T00:00:00Z', end_utc: new Date(Date.parse(column.endDate + 'T00:00:00Z') + 86_400_000).toISOString().replace('.000Z', 'Z') });
           const originalItems = row.line.filter(item => item.x >= region.label[0] && item.x < region.label[1] || item.x >= column.xMin && item.x < column.xMax);
-          evidence.push({ businessKey, ...(fact ? { financialFactIdentity: JSON.parse(fact.identity) } : {}), page: region.page, originalLexeme: lexical, value, originalItems, continued,
+          evidence.push({ businessKey, ...(fact ? { financialFactIdentity: JSON.parse(fact.identity), identityAssurance: 'operator_declared_axes_checked_not_independent_source_verification' } : {}), page: region.page, originalLexeme: lexical, value, originalItems, continued,
             coordinateSystem: 'PDF-user-space/origin-native/transform-retained', selection: { yMin: region.yMin, yMax: region.yMax,
               label: region.label, value: [column.xMin, column.xMax] } });
         }
