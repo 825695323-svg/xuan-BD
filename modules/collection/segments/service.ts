@@ -11,7 +11,7 @@
  * 规则来源：《4.2-文档片段化实现契约-v1》§一—§十、4.3 §8、4.8 §8、V2.0 §8.3。
  */
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { JsonValue } from '../../../contracts/task-contracts.js';
@@ -30,7 +30,7 @@ import {
 import { segmentsFromConversionArtifact, type ConversionArtifactEnvelope } from './from-conversion.js';
 import { discoverArtifacts, ensureArtifactLedger, recordArtifact, setArtifactStatus } from './artifacts.js';
 import {
-  createCurrentIndexVersion, documentsWithoutTextLayer, ensureSegmentSchema, listDocumentVersions,
+  rebuildSegmentFts, FTS_REBUILD_LIMITS, createCurrentIndexVersion, documentsWithoutTextLayer, ensureSegmentSchema, listDocumentVersions,
   listIndexVersions, listSegments, putDocumentSegments, putDocumentVersion, readDocumentVersion, readSegment,
   resolveIndexVersion, resolveVisibleVersions, searchSegments, searchSegmentsExact, segmentStorage, upperOf,
 } from './store.js';
@@ -216,6 +216,8 @@ export class SegmentService {
       historyModes: ['system_held_at', 'market_known_at'],
       timeStates: ['known', 'unknown', 'not_applicable'],
       indexes: ['keyword', 'exact'],
+      ftsRepair: { endpoint: '/api/bd/retrieval/index/rebuild-fts', explicitOnly: true, limits: FTS_REBUILD_LIMITS,
+        integrityScope: 'local text SHA-256 only; not original source or location verification' },
       settings: this.settings(),
       structuredSide: { wired: this.jointEntry !== null, entry: this.jointEntry,
         reason: this.jointEntry ? '联合入口按已核对的WFD记录/版本关联材料；独立文档结果保持bd.doc-retrieval/2。'
@@ -391,6 +393,17 @@ export class SegmentService {
         throw new TaskError('SEGMENT_INDEX_EMPTY', '还没有任何片段；先对已登记转换产物做片段化。');
       throw error;
     }
+  }
+
+  rebuildFts() {
+    if (this.db) return { ...rebuildSegmentFts(this.db), limits: FTS_REBUILD_LIMITS };
+    // Do not use the normal lazy connection here: it may commit an old-format migration.
+    const path = this.options.databasePath;
+    if (path === ':memory:' || !existsSync(path) || !statSync(path).isFile())
+      throw new TaskError('SEGMENT_FTS_REBUILD_REFUSED', '尚无现行片段库，未创建或迁移证据库。');
+    const db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
+    try { db.exec('PRAGMA busy_timeout=5000'); return { ...rebuildSegmentFts(db), limits: FTS_REBUILD_LIMITS }; }
+    finally { db.close(); }
   }
 
   indexVersions(): ReturnType<typeof listIndexVersions> { return listIndexVersions(this.connection); }

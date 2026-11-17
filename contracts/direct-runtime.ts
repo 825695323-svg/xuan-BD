@@ -12,6 +12,7 @@ import type { CustomSourceRegistry } from '../plugins/capture-sources/custom-reg
 import type { BrowserConfiguration } from '../platform/capabilities/browser/index.js';
 import type { LocalTranscriptionInput, LocalTranscriptionResult } from '../platform/capabilities/transcription/local.js';
 import type { AgentImageOcrRunner } from './llm.js';
+import type { LocalOcrInput, LocalOcrResult } from '../platform/capabilities/ocr/local.js';
 import type { CaptureSessions } from '../plugins/capture-sources/contracts.js';
 import type { ResourceBindings } from '../platform/resources/bindings.js';
 import type { SourceSettingsService } from '../platform/config/source-settings.js';
@@ -96,6 +97,11 @@ export interface DirectRuntimeBundle {
   configuration(): DirectRuntimeConfiguration;
   assertPublicPath(path: string, allowMissing?: boolean): void;
   sourceChecks?: { check(connectionId: string): Promise<SourceCheck> };
+  localOcr: {
+    availability(): SkillAvailability;
+    captureVersions(): Record<string, string | null>;
+    execute(context: TaskExecutionContext, input: LocalOcrInput): Promise<LocalOcrResult>;
+  };
   localTranscription: {
     availability(): SkillAvailability;
     captureVersions(action: 'audio.transcribe' | 'material.transcribe'): Record<string, string | null>;

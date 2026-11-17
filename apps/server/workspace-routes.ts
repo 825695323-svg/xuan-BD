@@ -82,6 +82,9 @@ export function createWorkspaceRouter(services: ApplicationServices): Router {
     router.get('/processing/plans/:id/outputs/:outputId/dependencies', (req, res) => {
       res.json(processing.fieldDependencies(req.params.id, req.params.outputId));
     });
+    router.post('/processing/plans/:id/outputs/:outputId/dependencies', (req, res) => {
+      res.json(processing.fieldDependencies(req.params.id, req.params.outputId, req.body ?? null));
+    });
     router.get('/processing/plans/:id/outputs/:outputId/artifact', (req, res) => {
       const artifact = processing.outputArtifact(req.params.id, req.params.outputId);
       res.type('application/json').send(artifact.bytes);
@@ -203,6 +206,7 @@ export function createWorkspaceRouter(services: ApplicationServices): Router {
     router.post('/r1/query/filter', async (req, res) => res.json(await r1.filterObjects(req.body)));
     router.post('/r1/query/context', async (req, res) => res.json(await r1.readContext(req.body)));
     router.post('/r1/products/coverage', async (req, res) => res.json(await r1.checkProductCoverage(req.body)));
+    router.post('/r1/records/evidence', async (req, res) => res.json(await r1.recordEvidence(req.body)));
     router.post('/r1/products/read', async (req, res) => res.json(await r1.readProduct(req.body)));
     router.get('/r1/requests', (_req, res) => res.json({ items: r1.list(), limit: 20, scope: 'recent_new_profile_requests_only' }));
     router.get('/r1/requests/:id', (req, res) => res.json(r1.get(id(req.params.id))));
@@ -330,6 +334,9 @@ export function createWorkspaceRouter(services: ApplicationServices): Router {
     router.get('/retrieval/segments/:id', (req, res) => res.json(segments.segment(req.params.id)));
     router.get('/retrieval/index-versions', (_req, res) => res.json({ items: segments.indexVersions() }));
     router.get('/retrieval/storage', (_req, res) => res.json(segments.storage()));
+    router.post('/retrieval/index/rebuild-fts', (req, res) => {
+      r1Body(req.body, []); res.json(segments.rebuildFts());
+    });
     router.post('/retrieval/index', (req, res) => {
       const body = r1Body(req.body, ['note']);
       res.status(201).json(segments.buildIndex(typeof body.note === 'string' ? body.note : undefined));
