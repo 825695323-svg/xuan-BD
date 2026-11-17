@@ -33,7 +33,7 @@ def item(meta, key):
         "row": {
             "relation_type": "synthetic_membership",
             "subject": {"kind": "entity", "id": "synthetic-subject"},
-            "object": {"kind": "theme", "id": key},
+            "object": {"kind": "entity", "id": key},
             "effective_period": {"status": "known", "earliest_utc": "2026-01-01T00:00:00Z",
                                  "latest_exclusive_utc": "2027-01-01T00:00:00Z"},
         },
