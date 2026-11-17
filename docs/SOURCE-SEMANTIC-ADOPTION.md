@@ -221,3 +221,11 @@ R1 返回 `R1_READ_HISTORY_METADATA_UNSUPPORTED`。这不是自动选择旧定�
 `POST /r1/products/coverage` 仅接收 `snapshotId`、`productId` 和最多 256 个唯一 `businessKeys`。复用绑定的 `read_product`，沿同一快照、连接与查询的原游标读取；扫描上限为 50 页、5,000 行、30 秒。只有完整扫描结束、总行数一致且没有读取诊断，才返回各键的 `observed` 或 `not_observed`。读取不完整、扫描预算耗尽或中止时，整份清单标为 `unknown`；权限、身份、重复键或游标损坏仍明确报错，不伪装来源无数据。返回已观察记录的固定引用，不返回金融值或原文。
 
 范围明确为**调用方指定业务键在所选产品固定快照中是否观察到**，不是数据正确性或世界完整性判断。调用方清单不是权威交易日历；空读与 `not_observed` 不能推出停牌、不存在、未上市或供应商确实无数据。`calendarQualification: not_asserted` 保留日历应有集合、证券生命周期及来源覆盖能力的未核实边界，本接口不自动补采、不写库、不换源。实际 HTTP/WFD 测试覆盖 105 行两页、缺键与重开一致；合成样本不是生产供应商覆盖证明。
+
+### 官方休市公告的有界证据试跑
+
+2026 年 SSE/SZSE 公开休市通知可作为指定年份、指定交易所的节假日来源证据（[SSE](https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml)、[SZSE](https://www.szse.cn/disclosure/notice/t20251222_618087.html)）。本机受限独立下载取得真实正文并保存 SHA；随后实际 `source.fetch` 因独立 DNS 返回特殊地址而被 `WEB_ADDRESS_BLOCKED` 拒绝，未改安全门禁，不能声称 BD 网络采集通过。
+
+显式提供既有原件目录的 `official-calendar-evidence.test.ts` 复用材料接收、HTML 原生转换、普通 JSON parse/clean/structure/check 与重开读回。候选保留 exchange、原URL/摘要、转换文本摘要、原样公告文字和 `2026_partial_holiday_notice_only` 范围，不推导开市日网格、个券挂牌停牌或供应商历史窗口。原件和验证产物只在隔离目录，不提交仓库；普通 CI 未取得真实原件时跳过，不计为实际源验收。
+
+这只是公告证据结构，不是已登记的权威日历产品或九字段固定 `calendar_ref`。完整交易会话、临时休市更正、证券生命周期和来源覆盖仍为 unknown；公告日期不补成精确公开时刻。不据未提及日期推导开市，不据行情缺键发起补采，不自动发布。候选与原件的关联须回查保留的来源/转换引用及 SHA，测试中的声明不替代正式日历契约。
