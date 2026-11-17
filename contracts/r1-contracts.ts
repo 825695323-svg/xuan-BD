@@ -128,11 +128,13 @@ export type R1ContextOperation = typeof R1_CONTEXT_OPERATIONS[number];
 export interface R1ContextReadInput {
   operation: R1ContextOperation; snapshotId: string; datasetId: string; subject: Record<string, unknown>;
   fields?: string[]; pageSize?: number; cursor?: string | null; maxDepth?: number;
+  /** Relation graph only: explicit market cutoff plus validity range; other contexts remain snapshot-only. */
+  historyMode?: 'snapshot_contents' | 'market_known_at'; at?: string;
   relationTypes?: string[]; eventTypes?: string[]; ruleCodes?: string[]; businessTimeRange?: Record<string, unknown> | null;
 }
 export interface R1ContextRead {
   operation: R1ContextOperation; snapshotId: string; datasetId: string; subject: Record<string, unknown>;
-  historyMode: 'snapshot_contents'; connection: R1ReadConnection; result: Record<string, unknown>; limits: R1ReadLimits;
+  historyMode: 'snapshot_contents' | 'market_known_at'; connection: R1ReadConnection; result: Record<string, unknown>; limits: R1ReadLimits;
 }
 
 export interface R1DefinitionIntent {

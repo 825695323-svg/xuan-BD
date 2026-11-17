@@ -1946,14 +1946,24 @@ class ProductQuery:
         entry = session["cache"].get(product_id)
         if not entry or entry.get("status") != "ok":
             return []
-        product = entry["product"]
-        business = self._business_definition(product)
         data_only = self._data_only_projection()
         edges = []
         for item in entry["result"].get("rows", []):
             row = item.get("row") or {}
             if "relation_type" not in row:
                 continue
+            # A product may expose several fixed contracts at this cutoff.
+            # Bind each edge to its own contract, never the first visible one.
+            product = entry.get("products", {}).get(_product_key(item))
+            if product is None:
+                session["gaps"].append({
+                    "code": "PRODUCT_METADATA_NOT_AVAILABLE",
+                    "product_id": item.get("product_id"),
+                    "contract_ref": copy.deepcopy(item.get("contract_ref")),
+                    "scope": "product",
+                })
+                continue
+            business = self._business_definition(product)
             effective_period = row.get("effective_period")
             effective_time, code, message = self._time_interval(effective_period)
             connectivity, reason = "confirmed", None
@@ -2262,6 +2272,10 @@ class ProductQuery:
             "dataset_id": request["dataset_id"],
             "snapshot_id": request["snapshot_id"],
             "history_mode": request["history_mode"],
+            "knowledge_cutoff": copy.deepcopy(request.get("knowledge_cutoff")),
+            "held_scope": request.get("held_scope"),
+            "usable_stage": request.get("usable_stage"),
+            "business_time_range": copy.deepcopy(request.get("business_time_range")),
             "subject": copy.deepcopy(focus),
             "max_depth": max_depth,
             "nodes": nodes,
