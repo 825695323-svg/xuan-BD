@@ -221,3 +221,20 @@ R1 返回 `R1_READ_HISTORY_METADATA_UNSUPPORTED`。这不是自动选择旧定�
 `POST /r1/products/coverage` 仅接收 `snapshotId`、`productId` 和最多 256 个唯一 `businessKeys`。复用绑定的 `read_product`，沿同一快照、连接与查询的原游标读取；扫描上限为 50 页、5,000 行、30 秒。只有完整扫描结束、总行数一致且没有读取诊断，才返回各键的 `observed` 或 `not_observed`。读取不完整、扫描预算耗尽或中止时，整份清单标为 `unknown`；权限、身份、重复键或游标损坏仍明确报错，不伪装来源无数据。返回已观察记录的固定引用，不返回金融值或原文。
 
 范围明确为**调用方指定业务键在所选产品固定快照中是否观察到**，不是数据正确性或世界完整性判断。调用方清单不是权威交易日历；空读与 `not_observed` 不能推出停牌、不存在、未上市或供应商确实无数据。`calendarQualification: not_asserted` 保留日历应有集合、证券生命周期及来源覆盖能力的未核实边界，本接口不自动补采、不写库、不换源。实际 HTTP/WFD 测试覆盖 105 行两页、缺键与重开一致；合成样本不是生产供应商覆盖证明。
+
+### 正式行的只读来源回查
+
+`POST /api/bd/r1/records/evidence` 仅接受 `datasetId/productId/recordId/recordVersion`，
+沿已固定读回的本地关联找到原请求，核对当前连接与该请求冻结身份，再实际读取关联快照的完整固定行及四合同。
+不使用 latest，不接受调用方提供材料或路径，不按相同摘要合并来源。发布集合只返回对应成员的原件。
+
+响应 `bd.record-evidence/1` 提供已复验字节 SHA 的材料和既有下载入口；无材料链接返回明确 gap，
+不建立新索引。加工与证据引用标为 `frozen_reference_not_revalidated`：它们是冻结引用，
+本入口没有重新执行加工或重新读取其所有产物。来源关联不构成事实核实或历史可知资格。
+读取沿已有私有资料代次门禁，不借用 current_publish 准入，也不宣称逐文档 ACL。
+
+实际验收：`apps/server/record-evidence-r1.test.ts` 使用隔离真实上传、加工、WFD 发布与 HTTP 读取，
+覆盖版本/连接/合同错配、去重来源归属、集合成员隔离、原件和持久摘要变化、私有门禁与重开无新任务。
+回查的 `sourceBytesStatus=verified` 只在至少一份冻结原件实际读取并核对后返回；原件身份空缺或字节损坏直接拒绝。
+`processingRefsStatus` 与 `evidenceRefsStatus` 独立标注冻结引用未重新验证。
+同一产品对应多个集合输出时当前安全拒绝，不任选 first；本地计划/来源不可用也不表示 WFD 正式记录失效。

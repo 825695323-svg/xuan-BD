@@ -1,3 +1,4 @@
+import { readRecordEvidence } from './r1-record-evidence.js';
 import type { R1CapabilitiesView, R1ConnectionIdentity, R1PrepareInput, R1RequestSummary, R1RequestView, R1RowSummary, R1ScalarMapping } from '../../contracts/r1-contracts.js';
 import { readPublicationGroups, type R1SetPrepareInput, type R1SetMemberView } from '../../contracts/r1-publication-set.js';
 import type { JsonValue } from '../../contracts/task-contracts.js';
@@ -81,6 +82,11 @@ export class R1WorkspaceService {
   snapshotStatus(signal?: AbortSignal) { return this.reader.snapshotStatus(signal); }
   discoverProducts(value: unknown, signal?: AbortSignal) { return this.reader.discoverProducts(value, signal); }
   checkProductCoverage(value: unknown, signal?: AbortSignal) { return checkR1ProductCoverage(value, (input, wait) => this.reader.readProduct(input, wait), signal); }
+  recordEvidence(value: unknown, signal?: AbortSignal) {
+    return readRecordEvidence(value, { ...this.options,
+      assertCurrent: requestId => { this.assertDispatch(); return this.assertBinding(this.requireRow(requestId)); },
+      control: () => this.tasks.getControl() }, signal);
+  }
   readProduct(value: unknown, signal?: AbortSignal) { return this.reader.readProduct(value, signal); }
   readContext(value: unknown, signal?: AbortSignal) { return this.reader.readContext(value, signal); }
   filterObjects(value: unknown, signal?: AbortSignal, contextDigest?: string) { return this.reader.filterObjects(value, signal, contextDigest); }

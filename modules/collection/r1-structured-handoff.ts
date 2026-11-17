@@ -775,7 +775,7 @@ export class R1HandoffService {
   }
 
   /** Exact, already verified row/version association; never caller-supplied evidence mapping. */
-  recordMaterials(input: { datasetId: string; productId: string; recordId: string; recordVersion: string }): {
+  recordMaterials(input: { datasetId: string; productId: string; recordId: string; recordVersion: string }, sourceCheck: 'publication' | 'read_only' = 'publication'): {
     requestId: string; snapshotId: string; materialIds: string[]; originalIds: string[];
   } | null {
     const row = this.db.prepare(`SELECT a.request_id,a.snapshot_id FROM r1_record_associations a JOIN r1_handoff_attempts h ON h.request_id=a.request_id
@@ -799,7 +799,7 @@ export class R1HandoffService {
     // exact material identity lives in the already verified processing plan.
     // Follow that explicit plan/output link; never merge materials by hash.
     if (!materialIds.size && refs.processRefs.length && this.options.processing) {
-      this.assertLocalRefs(refs, String(attempt.document_sha256));
+      if (sourceCheck === 'publication') this.assertLocalRefs(refs, String(attempt.document_sha256));
       for (const process of refs.processRefs) {
         const plan = asRecord(this.options.processing.get(process.plan_id!));
         const output = (Array.isArray(plan.outputs) ? plan.outputs : []).map(asRecord).find(item => item.outputId === process.output_id);
