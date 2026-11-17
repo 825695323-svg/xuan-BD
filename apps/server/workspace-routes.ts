@@ -202,6 +202,7 @@ export function createWorkspaceRouter(services: ApplicationServices): Router {
     router.post('/r1/products/discover', async (req, res) => res.json(await r1.discoverProducts(req.body)));
     router.post('/r1/query/filter', async (req, res) => res.json(await r1.filterObjects(req.body)));
     router.post('/r1/query/context', async (req, res) => res.json(await r1.readContext(req.body)));
+    router.post('/r1/products/coverage', async (req, res) => res.json(await r1.checkProductCoverage(req.body)));
     router.post('/r1/products/read', async (req, res) => res.json(await r1.readProduct(req.body)));
     router.get('/r1/requests', (_req, res) => res.json({ items: r1.list(), limit: 20, scope: 'recent_new_profile_requests_only' }));
     router.get('/r1/requests/:id', (req, res) => res.json(r1.get(id(req.params.id))));
