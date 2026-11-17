@@ -13,7 +13,7 @@ const subject = { kind: 'entity', namespace: 'full.chain.test', id: 'synthetic_a
 const datasetId = 'synthetic_official_event_lifecycle';
 const fields = ['occurrence_id', 'publication_id', 'publication_kind', 'independence_status', 'assertion_kind',
   'occurrence_identity_basis', 'text', 'content_sha256', 'public_time_status'];
-interface Publication { kind: 'planned' | 'revised' | 'actual'; file: string; url: string; sha256: string; quote: string; rootSelector: string;
+interface Publication { kind: 'planned' | 'revised' | 'actual'; file: string; url: string; sha256: string; bytes: number; quote: string; rootSelector: string;
   earliestUtc: string; latestExclusiveUtc: string; sourceTimezone: string; precision: string }
 const publications = (JSON.parse(readFileSync(new URL('./fixtures/official-event/nasa-artemis-provenance.json', import.meta.url), 'utf8')) as { sources: Publication[] }).sources;
 const definition = (nature: 'plan' | 'outcome') => ({ semantic_code: 'synthetic.artemis.statement.' + nature,
@@ -25,12 +25,13 @@ async function prepare(host: FullChainHost, publication: Publication, requestId:
   correction?: Correction, overwriteOriginal = false) {
   const bytes = readFileSync(new URL('./fixtures/official-event/' + publication.file, import.meta.url));
   assert.equal(wfdSha256(bytes), publication.sha256);
+  assert.equal(bytes.length, publication.bytes);
   const extraction = extractPublicWebHtml(bytes.toString('utf8'), { rootSelector: publication.rootSelector });
   const start = extraction.text.indexOf(publication.quote); assert.ok(start >= 0, 'Exact selected quotation must exist in the frozen HTML projection.');
   const readAt = new Date().toISOString().replace(/\.\d{3}Z$/u, 'Z');
-  const source = { source_id: 'official-nasa-public-fixture', provider: 'captured-official-nasa-fixture', requested_url: publication.url,
+  const source = { source_id: 'official-nasa-public-fixture', provider: 'local-import-of-captured-official-nasa-fixture', requested_url: publication.url,
     requested_at_utc: readAt, acquired_at_utc: readAt, usage_scope: 'Isolated official statement lifecycle regression; not production NASA authority',
-    authorization: { status: 'authorized', basis: 'Public official source captured for explicitly isolated source-excerpt regression' } };
+    authorization: { status: 'authorized', basis: 'Local fixture import for isolated regression; requested_at_utc and acquired_at_utc are this local read/import time, not a new NASA network acquisition. Original network capture time is provenance.captureCompletedAt.' } };
   const nature = publication.kind === 'actual' ? 'outcome' : 'plan', eventId = nature === 'plan' ? 'synthetic-artemis-plan' : 'synthetic-artemis-outcome';
   const mapping = { kind: 'event_records', eventId: 'event_id', eventType: 'event_type', assertionKind: 'event_nature', caseId: 'case_id',
     contentNature: nature, status: nature === 'outcome' ? 'completed' : correction ? 'changed' : 'planned',
