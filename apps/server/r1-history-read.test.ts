@@ -33,7 +33,8 @@ function document(requestId: string, rows: WfdRecord[], parent: string | null = 
   revision?: { mode: 'source_correction' | 'withdrawal'; definitionRef: WfdRecord; previous: WfdRecord; withdrawalPublicTime?: WfdRecord }) {
   return buildStructuredIngestDocument({ requestId, datasetId: 'synthetic_history', namespace, producerNamespace: namespace,
     submissionDigest: 'sha256:' + wfdSha256(canonicalWfdJson({ requestId, rows, parent, revision: revision ?? null })),
-    expectedParentSnapshotId: parent, outputKey: 'history', subject, definition,
+    definitionPublicTime: second('2024-01-01T00:00:00Z'),
+    expectedParentSnapshotId: parent, outputKey: 'history', subject, definition: structuredClone(definition),
     inputMode: revision?.mode ?? 'partial_observation',
     ...(revision ? { definitionMode: 'reuse' as const, definitionRef: revision.definitionRef,
       revisions: { [String(rows[0]!.business_key)]: { previous: revision.previous, reason: 'Explicit isolated history boundary fixture',
@@ -310,10 +311,93 @@ test('actual historical projection rejects future-added fields while preserving 
         historyMode: 'market_known_at', at: '2025-01-10T12:00:00Z' };
       const old = await host.call('/r1/products/read', { ...selected, fields: ['amount'] });
       assert.equal(values(old).old, '10');
+      assert.equal(JSON.stringify(old.result.product).includes('extra'), false,
+        'Historical product envelope must not expose the future row contract');
       const mixed = await host.call('/r1/products/read', selected, 409);
       assert.equal(mixed.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED');
       const explicitFuture = await host.call('/r1/products/read', { ...selected, fields: ['extra'] }, 409);
       assert.equal(explicitFuture.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED');
       assert.equal(values(await host.call('/r1/products/read', { ...selected, snapshotId: first.snapshotId })).old, '10');
+      const future = document('metadata-future-definition', [laterRow], secondPublication.snapshotId);
+      const futureOutput = (future.outputs as WfdRecord[])[0]!;
+      futureOutput.definition = structuredClone((later.outputs as WfdRecord[])[0]!.definition);
+      futureOutput.definition_public_time = second('2025-04-01T00:00:00Z');
+      (futureOutput.payload as WfdRecord).rows = [{ ...laterRow, business_key: 'future' }];
+      const futurePublished = await publish(host, future);
+      const refused = await host.call('/r1/products/read', { ...selected, snapshotId: futurePublished.snapshotId, fields: ['amount'] }, 409);
+      assert.equal(refused.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED');
+      assert.equal(refused.result, undefined);
+      assert.equal(values(await host.call('/r1/products/read', { ...selected, snapshotId: first.snapshotId })).old, '10');
+    } finally { await host.close(); }
+  });
+
+// Independent definition evidence is synthetic and explicit, never inferred from the row.
+for (const [name, time] of [
+  ['missing', undefined],
+  ['unknown', { status: 'unknown', precision: 'unknown', earliest_utc: null, latest_exclusive_utc: null, source_timezone: 'UTC' }],
+  ['future', second('2025-02-01T00:00:00Z')],
+  ['coarse', { status: 'known', earliest_utc: '2025-01-10T00:00:00Z',
+    latest_exclusive_utc: '2025-01-11T00:00:00Z', precision: 'day', source_timezone: 'UTC' }],
+] as const) {
+  test(`actual HTTP/WFD refuses ${name} definition history without leaking metadata or falling back`,
+    { skip: !enabled ? 'Requires isolated WFD_PYTHON and XUAN_FULL_CHAIN_ROOT.' : false, timeout: 180_000 }, async () => {
+      const fixture = createFullChainFixture({ name: `r1-definition-${name}`, machine: true });
+      let host = await openFullChainHost(fixture);
+      const oldTestMode = process.env.WFD_HOLDINGS_TEST_MODE;
+      process.env.WFD_HOLDINGS_TEST_MODE = '1';
+      try {
+        const doc = document(`definition-${name}`, [row('known', '10', second('2025-01-02T08:00:00Z'))]);
+        const output = (doc.outputs as WfdRecord[])[0]!;
+        if (time) output.definition_public_time = time;
+        else delete output.definition_public_time;
+        const published = await publish(host, doc);
+        const selected = { snapshotId: published.snapshotId, productId: published.productId };
+        assert.equal(values(await host.call('/r1/products/read', selected)).known, '10');
+        const denied = await host.call('/r1/products/read', { ...selected,
+          historyMode: 'market_known_at', at: '2025-01-10T12:00:00Z' }, 409);
+        assert.equal(denied.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED');
+        assert.equal(denied.result, undefined, 'Refusal must not attach future definition metadata');
+        hold(fixture, published, ['2025-01-05T09:00:00Z', '2025-01-05T10:00:00Z', '2025-01-06T09:00:00Z']);
+        assert.equal(values(await host.call('/r1/products/read', { ...selected,
+          historyMode: 'system_held_at', at: '2025-01-10T12:00:00Z',
+          heldScope: 'synthetic-history-instance', usableStage: 'published_readable' })).known, '10');
+        await host.close(); host = await openFullChainHost(fixture);
+        assert.equal((await host.call('/r1/products/read', { ...selected,
+          historyMode: 'market_known_at', at: '2025-01-10T12:00:00Z' }, 409)).code,
+        'R1_READ_HISTORY_METADATA_UNSUPPORTED');
+        if (name === 'future' || name === 'coarse') {
+          assert.equal(values(await host.call('/r1/products/read', { ...selected,
+            historyMode: 'market_known_at', at: '2025-03-01T12:00:00Z' })).known, '10');
+        }
+      } finally { await host.close(); if (oldTestMode === undefined) delete process.env.WFD_HOLDINGS_TEST_MODE;
+        else process.env.WFD_HOLDINGS_TEST_MODE = oldTestMode; }
+    });
+}
+
+test('actual WFD rejects invalid definition times and same-value retries cannot silently change time evidence',
+  { skip: !enabled ? 'Requires isolated WFD_PYTHON and XUAN_FULL_CHAIN_ROOT.' : false, timeout: 180_000 }, async () => {
+    const fixture = createFullChainFixture({ name: 'r1-definition-evidence', machine: true });
+    const host = await openFullChainHost(fixture);
+    try {
+      const rows = [row('known', '10', second('2025-01-02T08:00:00Z'))];
+      const first = await publish(host, document('definition-base', rows));
+      for (const [name, time] of [
+        ['invalid-date', { ...second('2025-01-02T08:00:00Z'), earliest_utc: '2025-02-30T08:00:00Z' }],
+        ['reversed', { ...second('2025-01-02T08:00:00Z'), latest_exclusive_utc: '2025-01-01T08:00:00Z' }],
+      ] as const) {
+        const doc = document(name, [row(name, '20', second('2025-01-02T08:00:00Z'))], first.snapshotId);
+        (doc.outputs as WfdRecord[])[0]!.definition_public_time = time;
+        const rejected = await host.services.r1Runtime!.client.submit(doc);
+        assert.equal(rejected.result.state, 'rejected');
+        assert.ok(JSON.stringify(rejected.result).includes('DEFINITION_PUBLIC_TIME_INVALID'));
+      }
+      const retry = document('definition-same-value', rows, first.snapshotId);
+      retry.duplicate_policy = 'skip_identical_append';
+      (retry.outputs as WfdRecord[])[0]!.definition_public_time = second('2024-02-01T00:00:00Z');
+      const rejected = await host.services.r1Runtime!.client.submit(retry);
+      assert.notEqual(rejected.result.state, 'published_formal');
+      assert.ok(JSON.stringify(rejected.result).includes('TIME_EVIDENCE_CHANGE_REQUIRES_EXPLICIT_REVISION'));
+      assert.equal(values(await host.call('/r1/products/read', { snapshotId: first.snapshotId,
+        productId: first.productId, historyMode: 'market_known_at', at: '2025-01-10T12:00:00Z' })).known, '10');
     } finally { await host.close(); }
   });

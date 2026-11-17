@@ -1117,6 +1117,9 @@ class ProductQuery:
             str(item.get("product_id") or ""),
             str(item.get("business_key") or ""),
             str(item.get("code") or item.get("reason") or "")))
+        if request.get("history_mode") != "snapshot_contents":
+            visible = {_product_key(item) for item in result.get("rows", [])}
+            all_products = {key: value for key, value in all_products.items() if key in visible}
         return projected_rows, diagnostics, all_products, units
 
     def _project_batch_window(self, request, batches, manifest_products, *,

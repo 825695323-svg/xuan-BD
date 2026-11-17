@@ -81,6 +81,8 @@ export interface R1StructuredRequest {
   /** 修订须复用原定义身份；不换语义码、单位或频率身份。 */
   definitionMode?: 'create' | 'reuse';
   definitionRef?: WfdRecord | null;
+  /** 本次确切定义的独立公开时间；不得由行公开时间或取得时间推定。 */
+  definitionPublicTime?: WfdRecord;
   consistencyGroups?: WfdRecord;
   /** Extra members share the real request identity and parent snapshot, never child submissions. */
   additionalOutputs?: R1StructuredRequest[];
@@ -1094,6 +1096,7 @@ export function buildStructuredIngestDocument(input: R1StructuredRequest): WfdRe
       coverage: member.coverage,
       payload: member.payload,
       ...(member.revisions ? { revisions: member.revisions } : {}),
+      ...(member.definitionPublicTime ? { definition_public_time: member.definitionPublicTime } : {}),
     })),
     ...(input.consistencyGroups ? { consistency_groups: input.consistencyGroups } : {}),
     ...(input.duplicatePolicy ? { duplicate_policy: input.duplicatePolicy } : {}),
