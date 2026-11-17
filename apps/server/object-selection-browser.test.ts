@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { Backend } from '../../contracts/backend.js';
 import type { HealthResponse } from '../../contracts/contracts.js';
 import { PersonalCore } from '../../modules/agent/runtime/core.js';
@@ -143,6 +144,38 @@ async function verifyCompactDetails(browser: Browser, kind: 'capture' | 'api' | 
   await browser.until("document.querySelector('.object-detail-diagnostics').open===false", 'Keyboard must close diagnostics');
 }
 
+async function agentPanel(browser: Browser, english = false) {
+  const show = english ? 'Show agent workspace' : '展开 Agent 工作台';
+  await browser.evaluate(`document.querySelector('button[aria-label='+${q(JSON.stringify(show))}+']')?.click()`);
+  await browser.until("!!document.querySelector('.workspace-agent .agent-context')", 'Actual Agent workspace did not open');
+}
+async function previewObject(browser: Browser, english = false) {
+  await agentPanel(browser, english);
+  const ask = english ? 'Ask about this' : '问一问', title = english ? 'Object reference preview' : '对象引用预览';
+  await browser.until(`[...document.querySelectorAll('.agent-context button')].some(e=>e.textContent===${q(ask)}&&!e.disabled)`, 'Explicit ask unavailable');
+  await browser.evaluate(`[...document.querySelectorAll('.agent-context button')].find(e=>e.textContent===${q(ask)}).click()`);
+  await browser.until(`!!document.querySelector('dialog[aria-label='+${q(JSON.stringify(title))}+']')`, 'Object reference preview unavailable');
+  const text = await browser.evaluate<string>("document.querySelector('pre.object-reference-preview').textContent");
+  assert.ok(text.startsWith('```json\n') && text.endsWith('\n```'));
+  const reference = JSON.parse(text.slice(8, -4));
+  assert.equal(reference.schema, 'bd.ui-object-reference/1'); assert.equal(reference.scope, 'display_reference_not_execution_authority');
+  assert.deepEqual(Object.keys(reference).sort(), ['schema', 'scope', 'page', 'kind', 'id', 'label', ...(reference.page === 'api-sources' ? ['market'] : [])].sort());
+  return { text, reference };
+}
+async function dialogAction(browser: Browser, label: string, twice = false) {
+  await browser.evaluate(`(()=>{const e=[...document.querySelectorAll('dialog[open] button')].find(e=>e.textContent===${q(label)});if(!e||e.disabled)throw Error('Dialog action unavailable');e.click();${twice ? 'e.click();' : ''}})()`);
+}
+async function dialogScreenshot(browser: Browser, root: string, name: string) {
+  await browser.page('Emulation.setDeviceMetricsOverride', { width: 390, height: 1000, deviceScaleFactor: 1, mobile: false });
+  const box = await browser.evaluate<{ left: number; right: number; top: number; bottom: number }>("(()=>{const r=document.querySelector('dialog[open]').getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};})()");
+  assert.ok(box.left >= -2 && box.right <= 392 && box.top >= -2 && box.bottom <= 1002, JSON.stringify(box));
+  writeFileSync(join(root, name + '.png'), Buffer.from((await browser.page('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+}
+async function hideAgent(browser: Browser, english = false) {
+  const label = english ? 'Hide agent workspace' : '收起 Agent 工作台';
+  await browser.evaluate(`document.querySelector('button[aria-label='+${q(JSON.stringify(label))}+']')?.click()`);
+}
+
 test('actual three-page selections preserve shared conversation and survive real catalogue read faults',
   { skip: !program || !digest || !webRoot || !parent ? 'Requires verified browser, built Web assets and isolated root; no mock browser substitute.' : false, timeout: 180000 }, async () => {
     assert.ok(isAbsolute(parent!)); assert.equal(createHash('sha256').update(readFileSync(program!)).digest('hex'), digest);
@@ -158,6 +191,12 @@ test('actual three-page selections preserve shared conversation and survive real
       browser = await openIsolatedBrowser(program!, root); await browser.page('Page.navigate', { url: host.url });
       await nav(browser, '采集源'); await card(browser, 'Synthetic selection A');
       assert.equal(await stored(browser), 'synthetic-selection-a');
+      const cancelledReference = await previewObject(browser);
+      assert.equal(cancelledReference.reference.id, 'synthetic-selection-a');
+      await dialogScreenshot(browser, visuals, 'object-preview-cancel-zh');
+      await dialogAction(browser, '取消');
+      assert.equal(host.core.getDraft(initial.conversationId, 'main', '', initial.branchId).text, draftText);
+      await hideAgent(browser);
       await fill(browser, '.data-nav input[type=search]', 'no-such-synthetic-source');
       assert.equal(await stored(browser), 'synthetic-selection-a');
       assert.match(await browser.evaluate<string>("document.querySelector('.object-detail')?.textContent ?? document.body.textContent"), /Synthetic selection A/u);
@@ -172,6 +211,9 @@ test('actual three-page selections preserve shared conversation and survive real
       assert.equal(await browser.evaluate("!!document.querySelector('.object-card[aria-current=true]')"), false, 'Incomplete catalogue must not select another object');
       assert.match(await browser.evaluate<string>("document.querySelector('.object-detail-title').textContent"), /正在读取/u);
       assert.match(await browser.evaluate<string>("document.querySelector('.object-detail-notices').textContent"), /自定义来源目录暂时无法读取/u);
+      await agentPanel(browser);
+      assert.equal(await browser.evaluate("[...document.querySelectorAll('.agent-context button')].find(e=>e.textContent==='问一问')?.disabled"), true, 'Pending catalogue cannot grant an object reference');
+      await hideAgent(browser);
       await browser.evaluate("window.__catalogMode='normal'"); await nav(browser, '算法'); await nav(browser, '采集源');
       await browser.until("[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.textContent.includes('Synthetic selection A'))", 'Recovery lost stored selection');
       await verifyCompactDetails(browser, 'capture');
@@ -258,6 +300,82 @@ test('actual three-page selections preserve shared conversation and survive real
       assert.equal(host.core.getState().branchId, initial.branchId);
       assert.deepEqual(host.services.tasks.list(), tasks);
       assert.deepEqual(host.workspaceServices.tasks.list(), workspaceTasks);
+      let expectedDraft = draftText;
+      for (const [pageLabel, page] of [['Capture sources', 'capture'], ['Algorithms', 'tools'], ['API sources', 'api-sources']] as const) {
+        await nav(browser, pageLabel);
+        await browser.until("!!document.querySelector('.object-card[aria-current=true]')", 'Object selection not restored for reference');
+        const preview = await previewObject(browser, true);
+        assert.equal(preview.reference.page, page);
+        if (page === 'api-sources') {
+          assert.deepEqual(Object.keys(preview.reference.market).sort(), ['id', 'label']);
+          assert.equal(preview.reference.market.id, Object.keys(apiSelections)[0]!.split(':')[1]);
+        }
+        await dialogScreenshot(browser, visuals, 'object-preview-' + page + '-en');
+        const selectedPage: string = await browser.evaluate<string>("document.querySelector('.app-shell').getAttribute('data-page')");
+        await dialogAction(browser, 'Add to current draft', true);
+        expectedDraft += '\n\n' + preview.text;
+        await browser.until(`document.querySelector('textarea.composer-input')?.value===${q(expectedDraft)}`, 'Reference must append once without replacing original draft');
+        assert.equal(await browser.evaluate("document.querySelector('.app-shell').getAttribute('data-page')"), selectedPage, 'Adding a reference must not navigate');
+        for (let attempt = 0; attempt < 100 && host.core.getDraft(initial.conversationId, 'main', '', initial.branchId).text !== expectedDraft; attempt++) await delay(50);
+        assert.equal(host.core.getDraft(initial.conversationId, 'main', '', initial.branchId).text, expectedDraft);
+        await browser.evaluate("document.querySelector('textarea.composer-input').scrollIntoView({block:'center'})");
+        writeFileSync(join(visuals, 'object-added-draft-' + page + '-en.png'), Buffer.from((await browser.page('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+        await hideAgent(browser, true);
+      }
+      // Genuine registry update while the preview is modal. This is an external
+      // fixture update, not a background click through the dialog's inert surface.
+      await nav(browser, 'Capture sources'); await previewObject(browser, true);
+      const beforeRegistry = readFileSync(host.registry.path, 'utf8'), changedRegistry = JSON.parse(beforeRegistry);
+      changedRegistry.sources.find((item: { id: string }) => item.id === 'synthetic-selection-a').label = 'Synthetic revised A'; changedRegistry.revision++;
+      writeFileSync(host.registry.path, JSON.stringify(changedRegistry));
+      await browser.until("[...document.querySelectorAll('dialog[open] button')].some(e=>e.textContent==='Add to current draft'&&e.disabled)", 'A changed real object must invalidate frozen intent', 25000);
+      assert.equal(host.core.getDraft(initial.conversationId, 'main', '', initial.branchId).text, expectedDraft);
+      await dialogAction(browser, 'Cancel'); writeFileSync(host.registry.path, beforeRegistry);
+      await hideAgent(browser, true); await nav(browser, 'Algorithms'); await nav(browser, 'Capture sources');
+      await browser.until("document.querySelector('.object-detail-title')?.textContent==='Synthetic selection A'", 'Registry recovery must restore actual object');
+      await agentPanel(browser, true);
+      assert.equal(await browser.evaluate("!!document.querySelector('dialog[open]')"), false, 'Recovered catalogue must not revive old preview');
+      assert.equal(host.core.getDraft(initial.conversationId, 'main', '', initial.branchId).text, expectedDraft);
+      assert.deepEqual(host.core.getState().messages, initial.messages);
+      assert.equal(host.core.getState().conversationId, initial.conversationId); assert.equal(host.core.getState().branchId, initial.branchId);
+      assert.deepEqual(host.services.tasks.list(), tasks); assert.deepEqual(host.workspaceServices.tasks.list(), workspaceTasks);
+      assert.deepEqual(host.services.sourceSettings.get(), settings); assert.deepEqual(host.workspaceServices.sourceSettings.get(), workspaceSettings);
+      assert.equal(browser.requests.filter(r => r.method === 'POST' && /\/api\/(conversations(?:$|\/[^/]+\/(?:send|send-requests))|tasks)/u.test(new URL(r.url).pathname)).length, 0,
+        'Explicit object references never create conversations, send messages or dispatch tasks');
+      // A real service-side visibility event invalidates the writable scope while
+      // the dialog remains modal. No synthetic click is sent through its inert backdrop.
+      await previewObject(browser, true);
+      host.core.setConversationVisibility(initial.conversationId, 'archived');
+      await browser.until("[...document.querySelectorAll('dialog[open] button')].some(e=>e.textContent==='Add to current draft'&&e.disabled)", 'Archived target must invalidate the frozen preview');
+      assert.equal(host.core.getDraft(initial.conversationId, 'main', '', initial.branchId).text, expectedDraft);
+      await dialogAction(browser, 'Cancel');
+      assert.equal(await browser.evaluate("[...document.querySelectorAll('.agent-context button')].find(e=>e.textContent==='Ask about this')?.disabled"), true,
+        'Read-only conversation cannot accept a reference');
+      await hideAgent(browser, true);
+      await browser.page('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+      await nav(browser, 'Conversations');
+      await browser.until("!!document.querySelector('button[aria-label=\"New conversation\"]:not([disabled])')", 'Real new-conversation control unavailable');
+      await browser.evaluate("document.querySelector('button[aria-label=\"New conversation\"]').click()");
+      await browser.until(`(()=>{const e=document.querySelector('.conversation-row[data-active=true]');return !!e&&e.getAttribute('data-conversation-id')!==${q(initial.conversationId)};})()`, 'Explicit new conversation must select a different real scope');
+      const secondId = await browser.evaluate<string>("document.querySelector('.conversation-row[data-active=true]').getAttribute('data-conversation-id')");
+      const second = host.core.getState(secondId), secondText = 'Synthetic second conversation draft; never send.';
+      await fill(browser, 'textarea.composer-input', secondText);
+      for (let attempt = 0; attempt < 100 && host.core.getDraft(secondId, 'main', '', second.branchId).text !== secondText; attempt++) await delay(50);
+      assert.equal(host.core.getDraft(secondId, 'main', '', second.branchId).text, secondText);
+      await nav(browser, 'Capture sources');
+      await browser.until("document.querySelector('.object-detail-title')?.textContent==='Synthetic selection A'", 'Selected real object must return');
+      const secondPreview = await previewObject(browser, true);
+      assert.match(await browser.evaluate<string>("document.querySelector('dialog[open]').textContent"), new RegExp(secondId));
+      await dialogAction(browser, 'Add to current draft');
+      const secondExpected = secondText + '\n\n' + secondPreview.text;
+      for (let attempt = 0; attempt < 100 && host.core.getDraft(secondId, 'main', '', second.branchId).text !== secondExpected; attempt++) await delay(50);
+      assert.equal(host.core.getDraft(secondId, 'main', '', second.branchId).text, secondExpected);
+      assert.equal(host.core.getDraft(initial.conversationId, 'main', '', initial.branchId).text, expectedDraft,
+        'A new scope must never overwrite the original archived conversation draft');
+      assert.deepEqual(host.core.getState(initial.conversationId).messages, initial.messages);
+      assert.deepEqual(host.core.getState(secondId).messages, second.messages);
+      assert.deepEqual(host.services.tasks.list(), tasks); assert.deepEqual(host.workspaceServices.tasks.list(), workspaceTasks);
+      assert.equal(browser.requests.filter(r => r.method === 'POST' && /\/api\/(conversations\/[^/]+\/(?:send|send-requests)|tasks)/u.test(new URL(r.url).pathname)).length, 0);
       assert.equal(browser.blockedRequests.length, 0);
     } finally { await browser?.close(); await host.close(); }
   });

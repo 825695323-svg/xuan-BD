@@ -263,11 +263,11 @@ export function ApiSourcesPage() {
     : [];
   // 只发布"当前在看什么"，不写会话、不触发任何 Agent 动作；读取中不冒充已选中总览。
   useEffect(() => {
-    if (selection.pending) return;
+    if (selection.pending || !sourceSettings || error) { setWorkspaceObject(null); return; }
     setWorkspaceObject(selectedConnection
-      ? { page: 'api-sources', kind: 'supplier', id: selectedConnection.id, label: sourceLabel(selectedConnection), detail: marketLabelOf(selected) }
-      : { page: 'api-sources', kind: 'market', id: selected, label: marketLabelOf(selected) });
-  }, [selectedConnection, selected, selection.pending]);
+      ? { page: 'api-sources', kind: 'supplier', id: selectedConnection.id, label: sourceLabel(selectedConnection), detail: marketLabelOf(selected), market: { id: selected, label: marketLabelOf(selected) } }
+      : { page: 'api-sources', kind: 'market', id: selected, label: marketLabelOf(selected), market: { id: selected, label: marketLabelOf(selected) } });
+  }, [selectedConnection, selected, selection.pending, sourceSettings, error]);
   useEffect(() => () => setWorkspaceObject(null), []);
   const supportsType = (connection: SourceConnection, operationId: SourceOperationId) =>
     pluginOf(connection)?.operations.some((operation) => operation.id === operationId) ?? false;

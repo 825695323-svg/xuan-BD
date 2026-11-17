@@ -3,6 +3,7 @@ import type { ChatMessage, ConversationAttachmentRef, ConversationDisplayMetadat
 import type { FileReference } from '../../../platform/resources/files';
 import * as api from './api';
 import { Drafts, draftContentSignature } from './drafts';
+import { appendObjectReference } from './object-reference';
 import { forgetSend, readRememberedSends, rememberSend } from './send-recovery';
 import { isAbsoluteFilePath, registerFile, uploadFile } from './platform-api';
 import { localDataGeneration, localDataRevision, notifyLocalDataRevoked } from './local-data-context';
@@ -10,6 +11,18 @@ import { localDataGeneration, localDataRevision, notifyLocalDataRevoked } from '
 export type ConnectionPhase = 'connecting' | 'connected' | 'reconnecting';
 export interface ActionIssue { title: string; detail: string }
 export interface ConversationAttachmentTarget { conversationId: string; branchId: string; generation: number; revision: number }
+/** Synchronous append into one frozen branch, using the live manager buffer, never a React render copy. */
+export function appendDraftReferenceAtTarget(drafts: Drafts, target: ConversationAttachmentTarget, text: string,
+  current: () => Pick<ConversationState, 'conversationId' | 'branchId'> | null): string {
+  assertAttachmentContext(target, '加入对象引用');
+  const state = current();
+  if (!state || state.conversationId !== target.conversationId || state.branchId !== target.branchId) throw new Error('OBJECT_REFERENCE_TARGET_CHANGED');
+  const scope = JSON.stringify([target.conversationId, target.branchId, 'main']);
+  const draft = drafts.get(scope);
+  if (!draft || draft.conflict || draft.error) throw new Error('OBJECT_REFERENCE_DRAFT_UNAVAILABLE');
+  drafts.edit(scope, appendObjectReference(draft.text, text));
+  return scope;
+}
 /** 本机桥确认的原文件绝对路径，或 null（无路径，走 File 流上传）。 */
 export interface ConversationAttachmentInput { file: File; path: string | null }
 export class AttachmentUploadError extends Error {
@@ -1059,6 +1072,15 @@ export function useConversation(pluginId: ConversationPlugin = 'pi') {
     canForkConversation, forkConversation,
     edit: (id: string, text: string) => mutateHistory('edit', id, text),
     retry: (id: string) => mutateHistory('retry', id),
+    appendDraftReference: (text: string, target: ConversationAttachmentTarget) => {
+      const scope = appendDraftReferenceAtTarget(drafts, target, text, () => {
+        if (pluginId !== 'pi' || creating.current || selectedRef.current !== target.conversationId) return null;
+        return getActive(false);
+      });
+      // Existing persistence owns errors/conflicts; a late receipt stays in this exact branch.
+      void drafts.persist(scope).catch(() => {});
+      return { accepted: true as const, conversationId: target.conversationId, branchId: target.branchId };
+    },
     setDraftText: (text: string) => { if (selectedId && !managementLock.current && cache.current.get(selectedId)?.visibility === 'active') drafts.edit(mainScope(selectedId), text); },
     removeDraftAttachment: (fileRefId: string, target?: ConversationAttachmentTarget) => {
       const id = target?.conversationId ?? selectedId;

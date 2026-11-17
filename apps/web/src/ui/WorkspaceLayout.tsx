@@ -3,7 +3,8 @@ import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Search } from 'lucid
 import type { TaskRecord } from '../../../../contracts/task-contracts';
 import { IconButton, useWords } from './Controls';
 import { TaskState } from './TaskResults';
-import { useWorkspaceObject } from './workspace-context';
+import { useWorkspaceObject, type WorkspaceObjectRef } from './workspace-context';
+import { PageButton } from './PageUI';
 import './WorkspaceLayout.css';
 
 /**
@@ -109,8 +110,9 @@ function TaskRow({ task }: { task: TaskRecord }) {
   </article>;
 }
 
-export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children, tasks = [], showDirectory = true, showAgent = true }: {
+export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children, tasks = [], showDirectory = true, showAgent = true, onAskObject, canAskObject = false }: {
   title: string; pageKey: string; contextLabel: string; agent: ReactNode; children: ReactNode;
+  onAskObject?(object: WorkspaceObjectRef): void; canAskObject?: boolean;
   tasks?: readonly TaskRecord[]; showDirectory?: boolean; showAgent?: boolean;
 }) {
   const words = useWords();
@@ -157,7 +159,7 @@ export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children,
         <span className="workspace-panel-title">{words('Agent 工作台', 'Agent workspace')}</span>
         <IconButton label={words('收起 Agent 工作台', 'Hide agent workspace')} onClick={() => setAgentOpen(false)}><ChevronRight size={15} /></IconButton>
       </header>
-      <p className="agent-context">{words('上下文', 'Context')} · {contextText}</p>
+      <div className="agent-context"><span>{words('当前浏览', 'Viewing')} · {contextText}</span>{onAskObject && <PageButton disabled={!object || !canAskObject} onClick={() => { if (object) onAskObject(object); }}>{words('问一问', 'Ask about this')}</PageButton>}</div>
       <div className="workspace-agent-body" ref={body}>
         <div className="agent-conversation" style={conversationStyle}>{agent}</div>
         {!layout.taskCollapsed && <Splitter axis="y" label={words('调整会话与任务中心高度', 'Resize conversation and task center')}
@@ -181,7 +183,6 @@ export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children,
       </div>
     </aside>}
     {showAgent && agentOpen && <button type="button" className="workspace-scrim" aria-label={words('关闭 Agent 工作台', 'Close agent workspace')} onClick={() => setAgentOpen(false)} />}
-    {/* 预留：右键「问一问」的全局挂载位置；本阶段不提取上下文、不提交任务。 */}
-    <div className="workspace-context-host" data-workspace-context-host hidden />
+
   </div>;
 }
