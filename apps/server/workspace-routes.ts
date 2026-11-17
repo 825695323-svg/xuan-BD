@@ -79,6 +79,9 @@ export function createWorkspaceRouter(services: ApplicationServices): Router {
       const artifact = processing.artifact(req.params.id, req.params.stepId);
       res.type('application/json').send(artifact.bytes);
     });
+    router.get('/processing/plans/:id/outputs/:outputId/dependencies', (req, res) => {
+      res.json(processing.fieldDependencies(req.params.id, req.params.outputId));
+    });
     router.get('/processing/plans/:id/outputs/:outputId/artifact', (req, res) => {
       const artifact = processing.outputArtifact(req.params.id, req.params.outputId);
       res.type('application/json').send(artifact.bytes);
