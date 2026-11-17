@@ -111,6 +111,8 @@ async function navigate(browser: Browser, host: FullChainHost, english = false) 
   await browser.page('Page.navigate', { url: host.base.replace('/api/bd', '/') });
   await browser.until(`(()=>{if(document.querySelector('[aria-label="${english ? 'Query kind' : '查询种类'}"]')&&document.querySelector('.r1-panel')?.getAttribute('aria-busy')==='false')return true;(document.querySelector('button[aria-label="数据库"]')||document.querySelector('button[aria-label="Database"]'))?.click();return false;})()`, 'Actual application query selector unavailable');
   await fill(browser, english ? 'Query kind' : '查询种类', 'read_relation_graph');
+  assert.equal(await browser.evaluate(`document.querySelectorAll('.r1-read-panel').length`), 1, 'The product reader remains unique beside context queries');
+  assert.equal(await browser.evaluate(`document.querySelectorAll(${q(root)}).length`), 1, 'The context reader remains unique');
 }
 async function select(browser: Browser, dataset = datasetId) {
   await click(browser, '载入当前快照主体');
