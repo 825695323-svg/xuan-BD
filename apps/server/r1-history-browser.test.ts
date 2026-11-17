@@ -161,7 +161,7 @@ test('actual React history reader preserves explicit modes, real holding stages 
       await browser.evaluate('window.fetch=window.__historyOriginalFetch');
       await browser.click('刷新状态');
       // Preference changes apply only to this disposable test host, not a user's settings.
-      await browser.evaluate(`(async()=>{const p=await(await fetch('/api/ui/preferences')).json();const r=await fetch('/api/ui/preferences',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,language:'en'})});if(!r.ok)throw Error('Isolated language change failed');})()`);
+      await browser.evaluate(`(async()=>{const session=JSON.parse(sessionStorage.getItem('mashiro.local-data-generation'));if(!Number.isSafeInteger(session?.generation))throw Error('Missing verified local-data session');const headers={'x-local-data-generation':String(session.generation),'x-mashiro-client':'web','Content-Type':'application/json'};const response=await fetch('/api/ui/preferences',{headers});if(!response.ok)throw Error('Isolated preference read failed: '+await response.text());const p=await response.json();const r=await fetch('/api/ui/preferences',{method:'PUT',headers,body:JSON.stringify({revision:p.revision,language:'en'})});if(!r.ok)throw Error('Isolated language change failed: '+await r.text());})()`);
       await navigate(browser, host);
       await browser.until(`!!document.querySelector('[aria-label="History perspective"]')`, 'English history label unavailable');
       await fill(browser, 'History perspective', 'system_held_at');
