@@ -613,7 +613,7 @@ class WFDDataOnlyService(WFDProductService):
             raise ValueError("DUPLICATE_POLICY_APPEND_ONLY")
         allowed_output = {"output_key", "logical_domain", "subject", "definition_mode",
                           "definition_ref", "definition", "input_mode", "coverage",
-                          "payload", "revisions"}
+                          "payload", "revisions", "definition_public_time"}
         for item in outputs:
             if not isinstance(item, dict):
                 raise ValueError("REQUEST_INVALID:output fields")
@@ -628,6 +628,8 @@ class WFDDataOnlyService(WFDProductService):
                 raise ValueError("LOGICAL_DOMAIN_INVALID")
             if not isinstance(item.get("subject"), dict):
                 raise ValueError("SUBJECT_INVALID")
+            if "definition_public_time" in item and self._time_errors(item["definition_public_time"]):
+                raise ValueError("DEFINITION_PUBLIC_TIME_INVALID")
             mode = item.get("definition_mode")
             if mode == "create":
                 if not isinstance(item.get("definition"), dict) or item.get("definition_ref") is not None:
@@ -1149,7 +1151,11 @@ class WFDDataOnlyService(WFDProductService):
             for _, product, row, result in candidates[1:]:
                 differences.update(self._difference_fields(projection, self._business_projection(product, row)))
             reason = None
-            if differences:
+            if any(canonical(candidate[0].get("_definition_public_time")) != canonical(first[0].get("_definition_public_time"))
+                   for candidate in candidates[1:]):
+                reason = "TIME_EVIDENCE_CHANGE_REQUIRES_EXPLICIT_REVISION"
+                differences.add("definition_public_time")
+            elif differences:
                 reason = "BATCH_BUSINESS_CONTENT_CONFLICT"
             elif (pid, key) in interval_conflicts:
                 reason = "CURRENT_ONLY_BUSINESS_KEY_CONFLICT"
@@ -1846,6 +1852,7 @@ class WFDDataOnlyService(WFDProductService):
                          "coverage_evidence": []},
             "payload": copy.deepcopy(item["payload"]),
             "evidence_refs": [],
+            "_definition_public_time": copy.deepcopy(item.get("definition_public_time")),
         }
 
     @staticmethod
@@ -2187,6 +2194,14 @@ class WFDDataOnlyService(WFDProductService):
                 outcome.update(product_id=product["product_id"],
                                definition_ref=copy.deepcopy(product.get("definition_ref")),
                                registration_state=state)
+                if dedupe and head:
+                    for prior_entry in head.get("files", []):
+                        prior_binding = ((prior_entry.get("source_bundle") or {}).get("_wfd_product_bindings") or {}).get(prior_entry.get("output_key")) or {}
+                        prior_definition = (prior_binding.get("product") or {}).get("definition_ref")
+                        if (prior_entry.get("product_id") == product["product_id"]
+                                and prior_definition == product.get("definition_ref")
+                                and canonical(prior_binding.get("definition_public_time")) != canonical(item.get("definition_public_time"))):
+                            raise ValueError("TIME_EVIDENCE_CHANGE_REQUIRES_EXPLICIT_REVISION")
                 prior_product = self._head_product_binding(product["product_id"], head)
                 product = self._bind_contract(product, extension, prior_product)
                 keys = {row.get("business_key", row.get("event_id"))
@@ -2213,11 +2228,13 @@ class WFDDataOnlyService(WFDProductService):
                 engine_out, versions = self._prepare_versions(
                     internal, product, extension, head_id, fingerprint,
                     {"_wfd_data_only": True})
+                engine_out.pop("_definition_public_time", None)
                 engine_out.update(definition_mode="create", definition_ref=None,
                                   new_definition_declaration=product["declaration"])
                 normalized_outputs.append(engine_out)
                 resolved[item["output_key"]] = product["product_id"]
                 bindings[item["output_key"]] = {"product": product,
+                                                "definition_public_time": copy.deepcopy(internal.get("_definition_public_time")),
                                                 "source_role_mode": "data_only",
                                                 "source_admission": {}}
                 row_versions[item["output_key"]] = versions
@@ -2247,11 +2264,13 @@ class WFDDataOnlyService(WFDProductService):
                 try:
                     engine_out, versions = self._prepare_versions(
                         internal, product, extension, head_id, fingerprint, {"_wfd_data_only": True})
+                    engine_out.pop("_definition_public_time", None)
                     engine_out.update(definition_mode="create", definition_ref=None,
                                       new_definition_declaration=product["declaration"])
                     normalized_outputs.append(engine_out)
                     resolved[internal["output_key"]] = product["product_id"]
                     bindings[internal["output_key"]] = {"product": product,
+                        "definition_public_time": copy.deepcopy(internal.get("_definition_public_time")),
                         "source_role_mode": "data_only", "source_admission": {}}
                     row_versions[internal["output_key"]] = versions
                     outcome["inserted_records"] = [{"record_id": value["logical_key"],
@@ -2689,6 +2708,31 @@ class WFDDataOnlyService(WFDProductService):
         remaining = [dep for dep in dependencies
                      if dep.get("role") not in {"calendar_ref", "accounting_calendar_ref"}]
         return super()._check_dependencies(remaining, dataset_id, checked)
+
+    @staticmethod
+    def _guard_definition_history(entries, *, perspective, at):
+        if perspective != "market_known_at":
+            return
+        for entry in entries:
+            binding = ((entry.get("source_bundle") or {}).get("_wfd_product_bindings") or {}).get(entry.get("output_key")) or {}
+            if current_only_business((binding.get("product") or {}).get("declaration")):
+                raise ValueError("CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED")
+            decision = eligibility_at(binding.get("definition_public_time"), at, mode=perspective)
+            if decision["decision"] != "eligible":
+                # Until temporal definition projection is supported, refuse the
+                # product rather than expose any future/unknown technical metadata.
+                raise ValueError("HISTORY_DEFINITION_TIME_UNSUPPORTED")
+
+    def _read(self, product_id=None, *, snapshot_id, perspective="snapshot_contents",
+              at=None, subject=None, include_history=False, verify_contract_files=True):
+        if perspective == "market_known_at":
+            snapshot = self.engine._valid_snapshot_exact(snapshot_id, verify_payloads=False)
+            entries = [entry for entry in snapshot.get("files", [])
+                       if product_id is None or entry.get("product_id") == product_id]
+            self._guard_definition_history(entries, perspective=perspective, at=at)
+        return super()._read(product_id, snapshot_id=snapshot_id, perspective=perspective,
+                             at=at, subject=subject, include_history=include_history,
+                             verify_contract_files=verify_contract_files)
 
     def read(self, product_id=None, *, snapshot_id, perspective="snapshot_contents",
              at=None, subject=None, include_history=False, verify_contract_files=True,
@@ -3347,6 +3391,8 @@ class WFDDataOnlyService(WFDProductService):
         visible = {(item.get("product_id"), (item.get("contract_ref") or {}).get("digest", "legacy"))
                    for item in selected + diagnostics}
         product_ids = {key[0] for key in visible}
+        selected_contracts = {(item.get("product_id"), (item.get("contract_ref") or {}).get("digest", "legacy"))
+                              for item in selected}
         result = dict(base)
         result.update({"perspective": "system_held_at", "at": at,
                        "held_scope": held_scope, "usable_stage": usable_stage,
@@ -3367,7 +3413,8 @@ class WFDDataOnlyService(WFDProductService):
                                                      if d.get("product_id") in product_ids
                                                      and d.get("calendar_status")],
                        "products": [p for p in base.get("products", [])
-                                    if p.get("product_id") in product_ids]})
+                                    if (p.get("product_id"), (p.get("contract_ref") or {}).get("digest", "legacy"))
+                                    in selected_contracts]})
         self._qualify_calendar(result, perspective="system_held_at", at=at,
                                held_scope=held_scope, usable_stage=usable_stage,
                                fields=fields, business_time_range=business_time_range)

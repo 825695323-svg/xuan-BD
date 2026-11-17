@@ -63,6 +63,7 @@ try {
         'modules/collection/processing-quality.test.ts',
         'modules/collection/processing-plan-request.test.ts',
         'apps/server/processing-quality.test.ts',
+        'apps/server/financial-compatible-inputs.test.ts',
         'apps/server/event-occurrence.test.ts',
         'apps/server/event-occurrence-r1.test.ts',
         'apps/server/event-records-r1.test.ts',
