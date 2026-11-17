@@ -659,6 +659,9 @@ export class PostPublicationCorrectionService {
 
   /** 只从当前计划已完成的固定结构产物取值；正文/摘要不能冒充实际加工。 */
   private repairOutputRows(planId: string, outputId: string): WfdRecord[] {
+    const quality = this.options.processing.get(planId).quality;
+    if (quality.revision.affectedOutputIds.includes(outputId))
+      fail('CORRECTION_REPAIR_QUALITY', '所选修复输出存在已报告的产物、执行或依赖缺口；未冻结更正文档。');
     let artifact: { bytes: Buffer; ref?: { sha256?: string } };
     try { artifact = this.options.processing.outputArtifact(planId, outputId); }
     catch { return fail('CORRECTION_REPAIR_OUTPUT_NOT_READY', '修复计划输出尚未完成结构化核对，不能准备更正。'); }

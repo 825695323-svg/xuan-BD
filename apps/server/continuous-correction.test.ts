@@ -92,6 +92,7 @@ test('continuous correction: synthetic source bytes traverse real publication, c
         outputs: [{ outputId: 'observations', materialIds: [repairMaterialId], intendedAction: 'inspect',
           stages: ['parse', 'clean', 'structure', 'annotate', 'check'],
           tables: [{ ...(originalTables[0] as WfdRecord), materialId: repairMaterialId }], target: originalTarget }] };
+      repairInput.outputs.push({ ...repairInput.outputs[0]!, outputId: 'unrelated' });
       const planned = await host.call('/processing/plans', { requestId: 'correction-repair-plan', input: repairInput }, 202);
       const planTask = await host.settled(planned.jobId, 120_000);
       assert.equal(planTask.status, 'succeeded', JSON.stringify(planTask.error));
@@ -121,7 +122,7 @@ test('continuous correction: synthetic source bytes traverse real publication, c
       assert.equal(suspended.state, 'suspended');
       const previousSha = host.services.materials!.readOriginal(String(firstItem.materialId)).sha256;
       const newSha = host.services.materials!.readOriginal(repairMaterialId).sha256;
-      const prepared = await host.call('/corrections/cases/case-continuous/prepare', { requestId: 'continuous-prepare',
+      const prepareCorrection = (requestId: string, status = 200) => host.call('/corrections/cases/case-continuous/prepare', { requestId,
         input: { planId: repairPlanId, outputId: 'observations', originalSha256: newSha,
           expectedParentSnapshotId: latestSnapshotId,
           reason: '供应商更正原件将 20260102 收盘价由 2 更正为 20，按原定义与字段映射重新交接。',
@@ -130,8 +131,36 @@ test('continuous correction: synthetic source bytes traverse real publication, c
             requestedAtUtc: new Date(Date.now() + 30 * 60_000).toISOString(),
             acquiredAtUtc: new Date(Date.now() + 60 * 60_000).toISOString(),
             revisionBasis: '供应商后续版本更正同一交易日收盘价', usageScope: 'isolated continuous correction verification',
-            originalSha256: newSha, previousOriginalSha256: previousSha } } }).catch((error: unknown) => error);
-      assert.ok(!(prepared instanceof Error), prepared instanceof Error ? prepared.message : '');
+            originalSha256: newSha, previousOriginalSha256: previousSha } } }, status);
+      // Only this isolated repair plan is fault-injected; real HTTP quality must block freezing.
+      const db = host.database.connection;
+      const savedParse = db.prepare("SELECT step_id,output_json FROM processing_plan_steps WHERE plan_id=? AND output_id='observations' AND kind='parse'")
+        .get(repairPlanId) as { step_id: string; output_json: string };
+      db.prepare('UPDATE processing_plan_steps SET output_json=NULL WHERE plan_id=? AND step_id=?')
+        .run(repairPlanId, savedParse.step_id);
+      const snapshotBefore = (await host.services.r1Runtime!.connection.client.snapshotStatus()).result;
+      const tasksBefore = db.prepare('SELECT count(*) AS n FROM tasks').get()!.n;
+      const blocked = await prepareCorrection('continuous-prepare-missing-reference', 409);
+      assert.equal(blocked.code, 'CORRECTION_REPAIR_QUALITY');
+      assert.ok(host.services.processing!.get(repairPlanId).quality.revision.affectedOutputIds.includes('observations'));
+      assert.equal((await host.call('/corrections/cases/case-continuous')).state, 'suspended');
+      const invalidAuthorization = await host.call('/corrections/cases/case-continuous/authorize',
+        { requestId: 'continuous-blocked-authorize', input: { frozenSha256: '0'.repeat(64), confirmationDigest: '0'.repeat(64) } }, 409);
+      assert.equal(invalidAuthorization.code, 'CORRECTION_STATE');
+      assert.equal(db.prepare('SELECT count(*) AS n FROM tasks').get()!.n, tasksBefore);
+      assert.deepEqual((await host.services.r1Runtime!.connection.client.snapshotStatus()).result, snapshotBefore);
+      assert.equal((db.prepare('SELECT plan_json FROM processing_plans WHERE plan_id=?').get(originalPlanId) as { plan_json: string }).plan_json,
+        originalPlanRow.plan_json);
+      assert.equal(db.prepare("SELECT count(*) AS n FROM r1_record_associations WHERE request_id='correction:case-continuous'").get()!.n, 0);
+      db.prepare('UPDATE processing_plan_steps SET output_json=? WHERE plan_id=? AND step_id=?')
+        .run(savedParse.output_json, repairPlanId, savedParse.step_id);
+      // Same material does not create an implicit dependency on another output.
+      db.prepare("UPDATE processing_plan_steps SET output_json=NULL WHERE plan_id=? AND output_id='unrelated' AND kind='parse'").run(repairPlanId);
+      const quality = host.services.processing!.get(repairPlanId).quality;
+      assert.ok(quality.revision.affectedOutputIds.includes('unrelated'));
+      assert.ok(!quality.revision.affectedOutputIds.includes('observations'));
+      assert.ok(quality.issues.some(issue => issue.kind === 'needs_evidence' && issue.outputId === 'observations'));
+      const prepared = await prepareCorrection('continuous-prepare');
       const authorized = await host.call('/corrections/cases/case-continuous/authorize', { requestId: 'continuous-authorize',
         input: { frozenSha256: prepared.frozenSha256, confirmationDigest: prepared.documentSha256 } }, 202);
       const waiting = await waitTask(host, authorized.id, ['waiting_approval'], 'continuous approval');
