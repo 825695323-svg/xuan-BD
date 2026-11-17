@@ -5,7 +5,7 @@ import type { CoreDatabase } from '../../platform/state/database.js';
 import { TaskError, type TaskExecutionContext, type TaskRecord, type TaskResult, type TaskRuntime, type TaskService } from '../../platform/jobs/tasks.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
-import { buildStructuredIngestDocument, type R1StructuredRequest } from './r1-structured-handoff.js';
+import { buildStructuredIngestDocument, parseR1Utc, type R1StructuredRequest } from './r1-structured-handoff.js';
 import type { ProcessingPlanService } from './processing-plan.js';
 import type { MaterialService } from './materials/service.js';
 import type { R1Runtime } from './r1-runtime.js';
@@ -199,15 +199,17 @@ export class PostPublicationCorrectionService {
       const entry = row as unknown as { plan_id: string; output_id: string; parameters_json: string };
       const key = entry.plan_id + '\u0000' + entry.output_id;
       if (seen.has(key)) continue;
-      seen.add(key);
       let parameters: WfdRecord;
       try { parameters = JSON.parse(entry.parameters_json) as WfdRecord; }
       catch { gaps.push(`plan:${entry.plan_id}:parse_parameters_unreadable`); continue; }
       const adapter = parameters.sourceAdapter;
       if (exact || (binding.adapter && isWfdRecord(adapter)
         && adapter.adapterId === binding.adapter.adapterId && adapter.version === binding.adapter.version
-        && sameAdapterDigest(adapter.configDigest, binding.adapter.configDigest)))
+        && sameAdapterDigest(adapter.configDigest, binding.adapter.configDigest))) {
+        // Only deduplicate a proven match; an unrelated earlier table cannot hide a later faulty adapter.
+        seen.add(key);
         matched.push({ planId: entry.plan_id, outputId: entry.output_id });
+      }
     }
     if (!matched.length) gaps.push('no_plan_matches_error_binding');
     return matched;
@@ -242,6 +244,8 @@ export class PostPublicationCorrectionService {
           .run(Date.now(), row.case_id);
       fail('CORRECTION_SUSPEND_SCOPE', '计划扫描超出预算，影响范围未完整核对，不能据此暂停。');
     }
+    if (!row.impact_sha256 || wfdSha256(canonicalWfdJson(impact as unknown as WfdRecord)) !== row.impact_sha256)
+      fail('CORRECTION_IMPACT_CHANGED', '持久冻结影响清单摘要不符；未登记或恢复用途暂停。');
     const scopes = new Map<string, { product_id: string; snapshot_id: string; record_versions: string[] }>();
     for (const item of impact.items) {
       if (!item.productId || !item.snapshotId || !item.recordVersion) {
@@ -618,6 +622,18 @@ export class PostPublicationCorrectionService {
       const approved = task?.status === 'succeeded' || (row.authorization_task_id
         && this.approvalWasApproved(row.authorization_task_id));
       if (!approved) fail('CORRECTION_AUTHORIZATION_NOT_APPROVED', '原审批没有批准记录；不能恢复签票。');
+      // 已正式发布的原号只做回执/关联恢复，不把临时处理产物绑定到正式数据寿命。
+      let known: WfdRecord;
+      try { known = (await this.client.requestStatus(document.request_identity as WfdRecord)).result as WfdRecord; }
+      catch (error) {
+        this.markUnknown(caseId, 'status_unavailable', error);
+        throw new TaskError('CORRECTION_OUTCOME_UNKNOWN', '原号状态不可查；未因恢复重新发送。');
+      }
+      if (known.state === 'published_formal' && Array.isArray(known.output_results) && known.output_results.length) {
+        this.db.prepare(`UPDATE correction_cases SET state='repairing',updated_at=? WHERE case_id=?`).run(Date.now(), caseId);
+        return this.commitRepair(caseId, row, frozen, document, undefined, known);
+      }
+      this.assertRepairQuality(frozen.planId, frozen.outputId);
       let ticket: WfdRecord;
       try { ticket = await this.authorizeFrozenTicket(caseId, row, frozen, document); }
       catch (error) {
@@ -658,7 +674,14 @@ export class PostPublicationCorrectionService {
   }
 
   /** 只从当前计划已完成的固定结构产物取值；正文/摘要不能冒充实际加工。 */
+  private assertRepairQuality(planId: string, outputId: string): void {
+    const quality = this.options.processing.get(planId).quality;
+    if (quality.revision.affectedOutputIds.includes(outputId))
+      fail('CORRECTION_REPAIR_QUALITY', '所选修复输出存在已报告的产物、执行或依赖缺口；未继续冻结或发布更正。');
+  }
+
   private repairOutputRows(planId: string, outputId: string): WfdRecord[] {
+    this.assertRepairQuality(planId, outputId);
     let artifact: { bytes: Buffer; ref?: { sha256?: string } };
     try { artifact = this.options.processing.outputArtifact(planId, outputId); }
     catch { return fail('CORRECTION_REPAIR_OUTPUT_NOT_READY', '修复计划输出尚未完成结构化核对，不能准备更正。'); }
@@ -893,6 +916,7 @@ export class PostPublicationCorrectionService {
       .filter(issue => issue.state === 'active').map(issue => String(issue.issue_id)));
     if (!activeIds.has(caseId))
       fail('CORRECTION_SUSPENSION_MISSING', 'WFD 当前持久事项中没有生效的原报/派生暂停；未发布。');
+    this.assertRepairQuality(frozen.planId, frozen.outputId);
     let ticket: WfdRecord;
     try { ticket = await this.authorizeFrozenTicket(caseId, row, frozen, document); }
     catch (error) {
@@ -946,6 +970,7 @@ export class PostPublicationCorrectionService {
     if (preloaded) {
       result = preloaded;
     } else {
+      this.assertRepairQuality(frozen.planId, frozen.outputId);
       // 原号提交；发送后结果未知沿同一 request_identity 查询，不换号、不重发。
       try { result = (await this.client.submit(document, signal)).result as WfdRecord; }
       catch (error) {
@@ -1294,9 +1319,9 @@ function readRepairInput(value: unknown, kind: CorrectionKind): {
     const revision = sourceRevision as WfdRecord;
     for (const key of ['sourceId', 'provider', 'requestedUrl', 'requestedAtUtc', 'acquiredAtUtc',
       'revisionBasis', 'usageScope'] as const) bounded(revision[key], 4096);
-    const requested = Date.parse(String(revision.requestedAtUtc)), acquired = Date.parse(String(revision.acquiredAtUtc));
+    const requested = parseR1Utc(revision.requestedAtUtc), acquired = parseR1Utc(revision.acquiredAtUtc);
     if (!Number.isFinite(requested) || !Number.isFinite(acquired) || acquired < requested)
-      fail('CORRECTION_SOURCE_REVISION_REQUIRED', '供应商更正须有明确请求/取得时间，且取得不早于请求。');
+      fail('CORRECTION_SOURCE_REVISION_REQUIRED', '供应商更正须有有效 UTC 请求/取得时间（最多三位小数），且取得不早于请求。');
     if (revision.license !== undefined) bounded(revision.license, 4096);
     if (revision.authorization !== undefined && !isWfdRecord(revision.authorization))
       fail('CORRECTION_SOURCE_REVISION_REQUIRED', '来源授权声明须为明确对象。');

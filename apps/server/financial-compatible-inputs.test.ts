@@ -104,3 +104,34 @@ test('actual HTTP financial processing reads one historical basis from WFD, keep
       assert.deepEqual(JSON.parse(host.services.processing!.artifact(completed.planId, completed.stepId).bytes.toString()), artifact);
     } finally { await host.close(); }
   });
+
+test('actual HTTP standardization rejects impossible financial periods without compatibility opt-in',
+  { skip: !enabled ? 'Requires explicit WFD_PYTHON and isolated full-chain root.' : false, timeout: 180_000 }, async () => {
+    const fixture = createFullChainFixture({ name: 'financial-period-quality', machine: true,
+      units: { cny: { dimension: 'money' }, text: { dimension: 'text' } } });
+    const host = await openFullChainHost(fixture);
+    try {
+      // These are valid text cells in WFD, not valid financial periods. No original/source timestamps are altered.
+      const cases = [
+        { key: 'impossible-end', changes: { end_date: '2024-02-30' } },
+        { key: 'impossible-start', changes: { start_date: '2024-02-30' } },
+        { key: 'reversed', changes: { start_date: '2024-04-01', end_date: '2024-03-31' } },
+        { key: 'instant-range', changes: { concept: '资产总计', period_type: 'instant', start_date: '2024-01-01', end_date: '2024-03-31' } },
+      ];
+      const published = await publish(host, doc('financial-period-source', [row('valid'), ...cases.map(item => row(item.key, item.changes))]));
+      const uploaded = await host.upload('synthetic-period-instruction.csv', 'data', Buffer.from('kind\nsynthetic period validation\n'), 'period-material');
+      const task = await host.settled(uploaded.jobId); assert.equal(task.status, 'succeeded');
+      const materialId = host.services.materials!.getByTask(task.id)!.envelope.materialId;
+      const selection = (key: string): FinancialCalculation => ({ version: 'bd-financial-fixed/1', operation: 'standardize',
+        inputs: [{ snapshotId: published.snapshotId, productId: String(published.output.product_id), businessKeys: [key] }] });
+      const valid = await prepare(host, materialId, selection('valid'), 'valid-period');
+      assert.equal(valid.execution.status, 'succeeded', JSON.stringify(valid.execution.error));
+      for (const item of cases) {
+        const invalid = await prepare(host, materialId, selection(item.key), item.key);
+        assert.equal(invalid.execution.status, 'failed', item.key + ' must not generate inferred or impossible timestamps');
+        assert.match(JSON.stringify(invalid.execution.error), /期间/u);
+      }
+      const read = await host.call('/r1/products/read', { snapshotId: published.snapshotId, productId: String(published.output.product_id) });
+      assert.equal(read.result.rows.length, cases.length + 1, 'Quality rejection must not delete or rewrite source claims');
+    } finally { await host.close(); }
+  });
