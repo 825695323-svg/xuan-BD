@@ -45,6 +45,10 @@ def additive_held_store(tmp_path, request):
     added["payload"]["rows"][0]["business_key"] = "later-row"
     added["payload"]["rows"][0]["values"]["synthetic_later_field"] = {
         "data_type": "text", "value_state": "valid_value", "value": "later"}
+    other = copy.deepcopy(added["payload"]["rows"][0])
+    other["business_key"] = "later-other-row"
+    other["subject"] = {"kind": "physical_object", "namespace": "wfd.local", "id": "other_synthetic_subject"}
+    added["payload"]["rows"].append(other)
     # Explicit host-only disabled mode models a publication with no local proof.
     service._local_holdings = request.param != "unknown"
     second = service.submit(ingest_request([added], "held-diagnostic-second", parent=first["snapshot_id"]))
@@ -66,7 +70,8 @@ def additive_held_store(tmp_path, request):
                  if product["product_id"] == pid and product["contract_ref"] != old_contract)
     assert later["contract_ref"]["digest"] not in json.dumps(held)
     assert held["diagnostics"][0]["holding_state"] == request.param
-    assert held["diagnostics"][0]["record_id"] == "later-row"
+    assert held["diagnostics"][0]["count"] == 2
+    assert "record_id" not in held["diagnostics"][0]
     end = (datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ") + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     query = query_request("wfd_r1_local", second["snapshot_id"], pid, ["amount"],
         history_mode="system_held_at", held_scope=scope, usable_stage="published_readable",
@@ -114,5 +119,86 @@ def test_machine_held_role_error_does_not_reintroduce_unheld_contract(tmp_path, 
     assert_minimal_error(reply["error"], later_contract)
     selected = machine_call(config, "read_product", {"request": dict(request_doc, business_time_range=None)})
     assert selected["ok"] is True, selected
+    assert selected["result"]["diagnostics"][0]["count"] == 2
+    assert "later-row" not in json.dumps(selected)
+    assert "later-other-row" not in json.dumps(selected)
     assert later_contract["digest"] not in json.dumps(selected)
     assert selected["result"]["rows"][0]["record_ref"]["logical_key"] == "old-row"
+
+
+@pytest.mark.parametrize("selected_subject", ["object_1", "other_synthetic_subject"])
+def test_aggregate_survives_subject_projection_without_claiming_subject_count(additive_held_store, selected_subject):
+    service, request_doc, _ = additive_held_store
+    subject = {"kind": "physical_object", "namespace": "wfd.local", "id": selected_subject}
+    result = ProductQuery(service).execute(dict(request_doc, subject=subject, business_time_range=None))
+    gap = next(item for item in result["diagnostics"] if item.get("code") == "INSTANCE_HOLDING_COVERAGE_GAP")
+    assert gap["scope"] == "product" and gap["count"] == 2
+    assert gap["count_basis"] == "current_fixed_snapshot_not_subject_filtered_not_historical_known_total"
+    assert not ({"subject", "object", "relation_type", "business_key", "record_id", "record_version",
+                 "observed_stage_at", "held_cutoff", "contract_ref", "eligibility"} & gap.keys())
+    assert "later-row" not in json.dumps(result)
+    assert "later-other-row" not in json.dumps(result)
+    if selected_subject == "object_1":
+        assert len(result["rows"]) == 1
+    else:
+        assert result["rows"] == []
+    if gap["holding_state"] == "unknown":
+        assert result["complete"] is False
+    # Arbitrary product-scoped or embellished diagnostics must not bypass
+    # subject checks merely by claiming to be aggregates.
+    pure = {k: v for k, v in gap.items() if k != "diagnostic_source"}
+    assert ProductQuery._product_holding_gap(pure)
+    assert not ProductQuery._product_holding_gap(dict(pure, subject=subject))
+    assert not ProductQuery._product_holding_gap(dict(pure, count=True))
+    assert not ProductQuery._product_holding_gap({"scope": "product"})
+
+
+def test_all_context_consumers_preserve_unknown_product_gaps(tmp_path):
+    from test_p4a1_data_only_public_read import _service, fixture_document, query_request as context_request
+    service = _service(tmp_path)
+    first_doc = fixture_document()
+    first = service.submit(first_doc)
+    assert first["state"] == "published_formal", first
+    second_doc = copy.deepcopy(first_doc)
+    second_doc["request_identity"]["request_id"] = "synthetic-context-unheld"
+    second_doc["expected_parent_snapshot_id"] = first["snapshot_id"]
+    for output in second_doc["outputs"]:
+        for row in output["payload"]["rows"]:
+            key = "event_id" if output["payload"]["kind"] == "event_records" else "business_key"
+            row[key] = "unheld-secret-" + row[key]
+    # Supported host-only mode intentionally leaves these new members without
+    # ordinary local stage proof. No existing ledger or receipt is rewritten.
+    service._local_holdings = False
+    second = service.submit(second_doc)
+    assert second["state"] == "published_formal", second
+    stamp = first["holding_status"]["published_readable_at"]
+    end = (datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ") + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cutoff = {"status": "known", "precision": "second", "earliest_utc": stamp,
+              "latest_exclusive_utc": end, "source_timezone": "UTC"}
+    for operation in ("read_company_context", "read_event_timeline", "read_relation_graph", "read_applicable_rules"):
+        query = context_request(second["snapshot_id"], operation, history_mode="system_held_at",
+                                cutoff=cutoff, held_scope=first["holding_status"]["instance_id"],
+                                usable_stage="published_readable", max_depth=1)
+        result = ProductQuery(service).execute(query)
+        gaps = result.get("eligibility_diagnostics", []) + result["gaps"]
+        aggregates = [item for item in gaps if item.get("code") == "INSTANCE_HOLDING_COVERAGE_GAP"]
+        assert aggregates, operation
+        assert all(item["holding_state"] == "unknown" and item["count"] > 0 for item in aggregates)
+        assert "unheld-secret-" not in json.dumps(result), operation
+
+
+def test_direct_subject_filtered_counts_are_labelled_and_read_permission_remains_first(tmp_path, additive_held_store):
+    service, request_doc, _ = additive_held_store
+    subject = {"kind": "physical_object", "namespace": "wfd.local", "id": "object_1"}
+    result = service.read(request_doc["product_id"], snapshot_id=request_doc["snapshot_id"],
+                          perspective="system_held_at", at=request_doc["knowledge_cutoff"]["earliest_utc"],
+                          held_scope=request_doc["held_scope"], usable_stage="published_readable", subject=subject)
+    assert result["diagnostics"][0]["count"] == 1
+    assert result["diagnostics"][0]["count_basis"] == "current_fixed_snapshot_subject_filtered_not_historical_known_total"
+    denied = make_data_service(tmp_path, roles=set())
+    with pytest.raises(PermissionError):
+        ProductQuery(denied).execute(dict(request_doc, business_time_range=None))
+    with pytest.raises(PermissionError):
+        denied.read(request_doc["product_id"], snapshot_id=request_doc["snapshot_id"],
+                    perspective="system_held_at", at=request_doc["knowledge_cutoff"]["earliest_utc"],
+                    held_scope=request_doc["held_scope"], usable_stage="published_readable")

@@ -1076,6 +1076,23 @@ class ProductQuery:
         return rows[left:left + page_size], len(rows) - left
 
     # ------------------------------------------------------------------ projection
+    @staticmethod
+    def _product_holding_gap(diagnostic):
+        # Only this exact aggregate schema may survive a row-subject filter.
+        # Its count is a product inspection gap, never a count for that subject.
+        state = diagnostic.get("holding_state")
+        return (set(diagnostic) == {"code", "scope", "aggregation", "product_id",
+                                    "holding_state", "decision", "reason", "count", "count_basis"}
+                and diagnostic.get("code") == "INSTANCE_HOLDING_COVERAGE_GAP"
+                and diagnostic.get("scope") == "product"
+                and diagnostic.get("aggregation") == "record_versions_by_holding_state"
+                and isinstance(diagnostic.get("product_id"), str)
+                and state in {"unknown", "not_yet_held"}
+                and diagnostic.get("decision") == ("indeterminate" if state == "unknown" else "ineligible")
+                and diagnostic.get("reason") == ("NO_HOLDING_FACT_FOR_RECORD_VERSION" if state == "unknown" else "HELD_STAGE_AFTER_CUTOFF")
+                and type(diagnostic.get("count")) is int and diagnostic["count"] > 0
+                and diagnostic.get("count_basis") == "current_fixed_snapshot_not_subject_filtered_not_historical_known_total")
+
     def _project(self, request, result, manifest_products, *, subject, fields,
                  business_range):
         service_products = {_product_key(product): product
@@ -1097,6 +1114,7 @@ class ProductQuery:
         diagnostics = []
         for diagnostic in result.get("diagnostics", []):
             if (subject is not None
+                    and not self._product_holding_gap(diagnostic)
                     and canonical(diagnostic.get("subject")) != canonical(subject)):
                 continue
             copied = copy.deepcopy(diagnostic)
@@ -2368,6 +2386,9 @@ class ProductQuery:
             read = self._read_context_product(session, product_id)
             if read.get("status") != "ok":
                 continue
+            session["gaps"].extend(copy.deepcopy(diagnostic)
+                                   for diagnostic in read["result"].get("diagnostics", [])
+                                   if self._product_holding_gap(diagnostic))
             product = read["product"]
             if session["business_range"] is not None:
                 try:
