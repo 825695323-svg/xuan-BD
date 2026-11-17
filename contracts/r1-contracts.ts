@@ -42,6 +42,8 @@ export interface R1PrepareInput {
   target: { datasetId: string; outputKey: string; expectedParentSnapshotId: string | null;
     subject: Record<string, unknown>; definition: Record<string, unknown>;
     inputMode: 'partial_observation' | 'complete_snapshot' | 'source_correction'; coverage: Record<string, unknown>;
+    /** Independent explicit definition availability; never inferred from row/source dates. */
+    definitionPublicTime?: Record<string, unknown>;
     definitionMode?: 'reuse'; definitionRef?: Record<string, unknown>;
     revisions?: Record<string, { previous: { product_id: string; snapshot_id: string; logical_key: string; revision_id: string }; reason: string }> };
 }

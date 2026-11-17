@@ -188,6 +188,21 @@ test('HTTP missing artifact and persisted rows remain visible after explicit int
     await complete(host, plan.planId, 'observed', 'quality-missing');
     const before = await query(host, plan.planId), parse = before.steps.find(step => step.kind === 'parse')!;
     assert.ok(parse.output);
+    // 成功步骤引用丢失：恢复报告和质量视图必须一致，不能以空 corrupt 宣称核查完成。
+    const savedReference = host.database.connection.prepare(
+      'SELECT output_json FROM processing_plan_steps WHERE plan_id=? AND step_id=?').get(plan.planId, parse.stepId)!.output_json;
+    host.database.connection.prepare('UPDATE processing_plan_steps SET output_json=NULL WHERE plan_id=? AND step_id=?')
+      .run(plan.planId, parse.stepId);
+    const missingRefRecovery = await host.call(`/processing/plans/${plan.planId}/recover`,
+      { requestId: 'quality-missing-reference-recovery' }, 202);
+    const missingRefResult = await host.settled(missingRefRecovery.jobId);
+    assert.equal(missingRefResult.status, 'succeeded');
+    const integrity = (missingRefResult.result!.data as unknown as { integrity: { corrupt: string[] } }).integrity;
+    assert.ok(integrity.corrupt.some(issue => issue.startsWith(parse.stepId + ':')));
+    assert.ok((await query(host, plan.planId)).quality.issues.some(issue =>
+      issue.kind === 'artifact_or_record_missing' && issue.stepId === parse.stepId));
+    host.database.connection.prepare('UPDATE processing_plan_steps SET output_json=? WHERE plan_id=? AND step_id=?')
+      .run(savedReference, plan.planId, parse.stepId);
     // Deliberate fault injection in this newly created synthetic state only. Queries and recovery still use real HTTP routes.
     const storage = host.database.connection.prepare("SELECT type FROM sqlite_master WHERE name='candidate_objects'").get()!.type;
     const objectTable = storage === 'view' ? 'candidate_object_layouts' : 'candidate_objects';
@@ -215,5 +230,46 @@ test('HTTP missing artifact and persisted rows remain visible after explicit int
     assert.equal(count(host, 'candidate_objects'), objectCount);
     assert.equal(count(host, 'r1_handoff_attempts'), 0);
     assert.deepEqual(host.services.materials!.readOriginal(materialId).bytes, samples.good);
+  } finally { await host.close(); }
+});
+
+test('HTTP revision drops stale normalization when an upstream artifact is missing, retaining unrelated output', isolated, async () => {
+  const fixture = createFullChainFixture({ name: 'quality-reuse-integrity' });
+  let host = await openFullChainHost(fixture);
+  try {
+    const first = await upload(host, 'affected.csv', Buffer.from('name,value\naffected,1.2300\n'), 'reuse-affected');
+    const second = await upload(host, 'retained.csv', Buffer.from('name,value\nretained,2.3400\n'), 'reuse-retained');
+    const input = planInput([{ outputId: 'affected', materialId: first, type: 'decimal_string' },
+      { outputId: 'retained', materialId: second, type: 'decimal_string' }]);
+    const original = (await prepare(host, input, 'reuse-original')).plan;
+    await complete(host, original.planId, 'affected', 'reuse-affected-run');
+    await complete(host, original.planId, 'retained', 'reuse-retained-run');
+    const completed = await query(host, original.planId);
+    const oldStructure = completed.steps.find(step => step.stepId === 'structure:affected:0')!;
+    assert.equal(oldStructure.normalization!.state, 'recorded');
+    const oldParse = completed.steps.find(step => step.stepId === 'parse:affected:0')!;
+    const storage = host.database.connection.prepare("SELECT type FROM sqlite_master WHERE name='candidate_objects'").get()!.type;
+    const objectTable = storage === 'view' ? 'candidate_object_layouts' : 'candidate_objects';
+    host.database.connection.prepare(`DELETE FROM ${objectTable} WHERE sha256=?`).run(oldParse.output!.sha256);
+    const objectCount = count(host, 'candidate_objects');
+    const revised = (await prepare(host, input, 'reuse-revision', original.planId)).plan;
+    assert.ok(revised.steps.filter(step => step.outputId === 'affected').every(step =>
+      step.state === 'pending' && step.reusedFrom === null && step.output === null));
+    const structure = revised.steps.find(step => step.stepId === 'structure:affected:0')!;
+    assert.equal(structure.normalization!.state, 'not_recorded', 'Old conversion evidence cannot describe a pending revised step');
+    assert.equal(structure.normalization!.type_changes_total, null);
+    assert.ok(revised.steps.filter(step => step.outputId === 'retained').every(step =>
+      step.state === 'succeeded' && step.reusedFrom?.planId === original.planId));
+    assert.equal(count(host, 'candidate_objects'), objectCount, 'Revision must not repair or execute missing artifacts');
+    assert.equal(count(host, 'r1_handoff_attempts'), 0);
+    assert.deepEqual((await query(host, original.planId)).steps.find(step => step.stepId === oldStructure.stepId)!.normalization,
+      oldStructure.normalization, 'Original historical execution evidence is retained');
+    await host.close(); host = await openFullChainHost(fixture);
+    assert.deepEqual((await query(host, revised.planId)).steps, revised.steps);
+    await complete(host, revised.planId, 'affected', 'reuse-explicit-reprocess');
+    const repaired = await query(host, revised.planId);
+    assert.equal(repaired.steps.find(step => step.stepId === structure.stepId)!.normalization!.state, 'recorded');
+    assert.ok(repaired.steps.filter(step => step.outputId === 'retained').every(step => step.reusedFrom?.planId === original.planId));
+    assert.equal(count(host, 'r1_handoff_attempts'), 0);
   } finally { await host.close(); }
 });
