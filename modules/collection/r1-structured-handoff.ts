@@ -497,7 +497,9 @@ export class R1HandoffService {
         .run(canonicalWfdJson(result), 1, canonicalWfdJson({ code: 'R1_REQUEST_IDENTITY_MISSING' }), Date.now(), requestId);
       return { state: 'pending_receipt', errors: ['R1_REQUEST_IDENTITY_MISSING'] };
     }
-    const requireContracts = ['tabular_rows', 'event_records'].includes(String(asRecord((Array.isArray(document.outputs) ? asRecord(document.outputs[0]) : {}).payload).kind))
+    const frozenResultOutput = Array.isArray(document.outputs)
+      ? document.outputs.map(asRecord).find(member => member.output_key === output.output_key) : undefined;
+    const requireContracts = ['tabular_rows', 'event_records'].includes(String(asRecord(frozenResultOutput?.payload).kind))
       || (JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences).contractBindingRequired === true;
     const contractBinding = requireContracts ? readR1ContractBinding(output, String(attempt.dataset_id), productId, true) : undefined;
     const receipt: R1Receipt = {
