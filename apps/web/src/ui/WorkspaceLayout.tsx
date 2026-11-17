@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Search } from 'lucide-react';
 import type { TaskRecord } from '../../../../contracts/task-contracts';
 import { IconButton, useWords } from './Controls';
-import { TaskState } from './TaskResults';
+import { TaskCenter, taskCenterGroup } from './TaskCenter';
+import type { ConversationTaskFeed } from '../useConversationTasks';
 import { useWorkspaceObject, type WorkspaceObjectRef } from './workspace-context';
 import { PageButton } from './PageUI';
 import './WorkspaceLayout.css';
@@ -100,20 +101,10 @@ function SubDirectoryPanel({ title, open, width, onToggle }: { title: string; op
   </aside>;
 }
 
-const ACTIVE_TASK_STATES = ['ready', 'running', 'waiting_approval', 'pausing', 'cancelling', 'blocked', 'needs_review'];
-
-function TaskRow({ task }: { task: TaskRecord }) {
-  const note = task.progress?.message ?? task.blockedReason ?? task.result?.summary ?? null;
-  return <article className="agent-task-row" data-state={task.status}>
-    <div className="agent-task-head"><span className="agent-task-title">{task.title}</span><TaskState task={task} /></div>
-    {note && <p className="agent-task-note">{note}</p>}
-  </article>;
-}
-
-export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children, tasks = [], showDirectory = true, showAgent = true, onAskObject, canAskObject = false }: {
+export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children, tasks = [], taskFeed, showDirectory = true, showAgent = true, onAskObject, canAskObject = false }: {
   title: string; pageKey: string; contextLabel: string; agent: ReactNode; children: ReactNode;
   onAskObject?(object: WorkspaceObjectRef): void; canAskObject?: boolean;
-  tasks?: readonly TaskRecord[]; showDirectory?: boolean; showAgent?: boolean;
+  tasks?: readonly TaskRecord[]; taskFeed?: ConversationTaskFeed; showDirectory?: boolean; showAgent?: boolean;
 }) {
   const words = useWords();
   const object = useWorkspaceObject(pageKey);
@@ -140,8 +131,7 @@ export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children,
   const conversationStyle = layout.taskCollapsed ? { flex: '1 1 auto' } : { flex: `0 0 ${(layout.agentSplit * 100).toFixed(2)}%` };
   // 只显示当前会话的真实任务；模型对话本身（runtimeId=pi）不算任务中心条目。
   const conversationTasks = tasks.filter((task) => task.runtimeId !== 'pi');
-  const activeTasks = conversationTasks.filter((task) => ACTIVE_TASK_STATES.includes(task.status));
-  const recentTasks = conversationTasks.filter((task) => !ACTIVE_TASK_STATES.includes(task.status)).slice(-6).reverse();
+  const activeTasks = conversationTasks.filter((task) => taskCenterGroup(task.status) === 'active');
   const contextText = [contextLabel, object?.detail, object?.label].filter(Boolean).join(' · ');
 
   return <div className="workspace" data-agent-open={showAgent && agentOpen}>
@@ -172,13 +162,7 @@ export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children,
               {layout.taskCollapsed ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
             </IconButton>
           </header>
-          {!layout.taskCollapsed && <div className="agent-tasks-list">
-            {!conversationTasks.length && <p className="workspace-empty">{words('当前会话还没有任务记录。', 'No tasks for this conversation yet.')}</p>}
-            {!!activeTasks.length && <p className="agent-tasks-group">{words(`运行中 ${activeTasks.length} 项`, `${activeTasks.length} active`)}</p>}
-            {activeTasks.map((task) => <TaskRow key={task.id} task={task} />)}
-            {!!recentTasks.length && <p className="agent-tasks-group">{words('最近任务', 'Recent')}</p>}
-            {recentTasks.map((task) => <TaskRow key={task.id} task={task} />)}
-          </div>}
+          {!layout.taskCollapsed && <TaskCenter tasks={conversationTasks} feed={taskFeed} />}
         </section>
       </div>
     </aside>}
