@@ -107,11 +107,43 @@ async function refresh(browser: Browser, english = false) {
   await browser.until(`[...document.querySelectorAll('.workspace-agent button')].some(e=>e.textContent===${q(label)}&&!e.disabled)`, 'Read-only refresh unavailable');
   await browser.evaluate(`[...document.querySelectorAll('.workspace-agent button')].find(e=>e.textContent===${q(label)}&&!e.disabled).click()`);
 }
-async function screenshot(browser: Browser, root: string, name: string, scheme: string) {
+async function screenshot(browser: Browser, root: string, name: string, scheme: string, detailId?: string) {
   await browser.page('Emulation.setDeviceMetricsOverride', { width: 390, height: 1000, deviceScaleFactor: 1, mobile: false });
   await browser.page('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }] });
+  // Responsive media effects can close the drawer. Let those effects settle
+  // before using the real toggle, then verify the live rendered state again.
+  await browser.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   await showTasks(browser, name.includes('-en'));
-  await browser.evaluate("(()=>{const list=document.querySelector('.agent-tasks-list');list.scrollTop=0;list.scrollIntoView({block:'center',inline:'nearest'});})()");
+  await browser.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  await browser.until("document.querySelector('.workspace-agent')?.dataset.open==='true'&&document.querySelector('.workspace-agent')?.getAttribute('aria-hidden')==='false'", 'Screenshot requires an actually open Agent drawer');
+  const target = detailId ? '[data-task-id=' + JSON.stringify(detailId) + '] .agent-task-details' : '.agent-tasks-list';
+  if (detailId) {
+    const splitter = name.includes('-en') ? 'Resize conversation and task center' : '调整会话与任务中心高度';
+    await browser.page('Page.bringToFront');
+    await browser.evaluate(`document.querySelector('[aria-label='+${q(JSON.stringify(splitter))}+']').focus()`);
+    assert.equal(await browser.evaluate(`document.hasFocus() && document.activeElement?.getAttribute('aria-label')===${q(splitter)}`), true, 'Task splitter must hold real keyboard focus');
+    for (let i = 0; i < 12; i++) {
+      await browser.page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38, modifiers: 8 });
+      await browser.page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38, modifiers: 8 });
+    }
+    await browser.evaluate(`(()=>{const d=document.querySelector(${q(target)});if(!d.open)d.querySelector('summary').click();})()`);
+    assert.equal(await browser.evaluate(`document.querySelector(${q(target)}).open`), true);
+  } else await browser.evaluate("document.querySelector('.agent-tasks-list').scrollTop=0");
+  const scrollTarget = detailId ? '[data-task-id=' + JSON.stringify(detailId) + ']' : target;
+  await browser.evaluate(`document.querySelector(${q(scrollTarget)}).scrollIntoView({block:'start',inline:'nearest'})`);
+  await browser.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  for (const selector of ['.agent-tasks-list', target, ...(detailId ? [scrollTarget + ' [role=note]'] : [])]) {
+    const visible = await browser.evaluate<boolean>(`(()=>{const e=document.querySelector(${q(selector)});if(!e||!e.getClientRects().length)return false;
+      const r=e.getBoundingClientRect();let left=Math.max(0,r.left),right=Math.min(innerWidth,r.right),top=Math.max(0,r.top),bottom=Math.min(innerHeight,r.bottom);
+      for(let p=e;p;p=p.parentElement){const s=getComputedStyle(p);if(s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0||p.getAttribute('aria-hidden')==='true')return false;
+        if(p!==e){const b=p.getBoundingClientRect();if(['auto','scroll','hidden','clip'].includes(s.overflowX)){left=Math.max(left,b.left+p.clientLeft);right=Math.min(right,b.left+p.clientLeft+p.clientWidth);}if(['auto','scroll','hidden','clip'].includes(s.overflowY)){top=Math.max(top,b.top+p.clientTop);bottom=Math.min(bottom,b.top+p.clientTop+p.clientHeight);}}}
+      return right>left&&bottom>top;})()`);
+    assert.equal(visible, true, 'Screenshot target must intersect viewport and all clipping ancestors: ' + selector);
+  }
+  const snapshot = await browser.evaluate<{ state: string; count: number; empty: boolean; alert: boolean }>("(()=>{const list=document.querySelector('.agent-tasks-list');return {state:list.dataset.feedStatus,count:list.querySelectorAll('.agent-task-row').length,empty:!!list.querySelector('.workspace-empty'),alert:!!list.querySelector('[role=alert]')};})()");
+  if (name.includes('error')) { assert.ok(['stale', 'error'].includes(snapshot.state)); assert.equal(snapshot.alert, true); assert.equal(snapshot.empty, false); }
+  else if (name.includes('empty')) { assert.equal(snapshot.state, 'ready'); assert.equal(snapshot.count, 0); assert.equal(snapshot.empty, true); }
+  else { assert.equal(snapshot.state, 'ready'); assert.equal(snapshot.count, 8); }
   const boxes = await browser.evaluate<Array<{ left: number; right: number; width: number }>>("[...document.querySelectorAll('.agent-task-row')].map(e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width};})");
   for (const box of boxes) assert.ok(box.width > 0 && box.left >= -2 && box.right <= 392, 'Unclipped task row overflow: ' + JSON.stringify(box));
   writeFileSync(join(root, name + '.png'), Buffer.from((await browser.page('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
@@ -150,6 +182,7 @@ test('actual task center shares real task feed, rejects stale replies and never 
       assert.equal(await browser.evaluate(`document.querySelectorAll(${q(failedSelector + ' button')}).length`), 0, 'Record viewing has no dispatch controls');
       await screenshot(browser, visual, 'task-center-zh-light', 'light');
       await screenshot(browser, visual, 'task-center-zh-dark', 'dark');
+      await screenshot(browser, visual, 'task-center-failure-zh-light', 'light', seeded.failed.id);
       // Hold an actual GET snapshot of running, then complete the actual runtime via SSE.
       await browser.evaluate("window.__taskGetMode='hold';window.__taskGetWaiting=false;window.__taskGetReleased=false"); await refresh(browser);
       await browser.until('window.__taskGetWaiting===true', 'Actual GET did not reach delay');
@@ -200,6 +233,7 @@ test('actual task center shares real task feed, rejects stale replies and never 
       await browser.until("document.querySelector('.agent-tasks-list')?.dataset.feedStatus==='ready'&&document.querySelectorAll('.agent-task-row').length===8", 'Original task scope must recover on actual selection');
       await screenshot(browser, visual, 'task-center-en-light', 'light');
       await screenshot(browser, visual, 'task-center-en-dark', 'dark');
+      await screenshot(browser, visual, 'task-center-failure-en-light', 'light', seeded.failed.id);
       assert.deepEqual(host.services.tasks.list().map(t => t.id).sort(), taskIds);
       assert.equal(host.core.getDraft(initial.conversationId, 'main', '', initial.branchId).text, draftText);
       assert.deepEqual(host.core.getState(initial.conversationId).messages, initial.messages);
