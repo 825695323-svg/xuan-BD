@@ -151,6 +151,13 @@ export class R1ProductReader {
         && result.diagnostics.some(item => isWfdRecord(item) && (item.reason === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED'
           || item.reason === 'WITHDRAWN_AT_PERSPECTIVE' && !isWfdRecord(item.withdrawal_public_time))))
         fail('R1_READ_REVISION_TIME_UNSUPPORTED', '撤销缺少可独立核验的公开时间，此历史查询未采用；可按明确持有阶段或固定快照核对。');
+      if (history.mode !== 'snapshot_contents' && Array.isArray(result.diagnostics)
+        && result.diagnostics.some(item => isWfdRecord(item) && [
+          'FIELD_NOT_DEFINED_IN_ROW_CONTRACT', 'PRODUCT_CONTRACT_UNAVAILABLE',
+        ].includes(String(item.code)))) {
+        fail('R1_READ_HISTORY_METADATA_UNSUPPORTED',
+          '历史记录的固定定义不支持所选字段或合同缺失；请显式选择该历史版本已有字段，不能用后续新增定义替代。');
+      }
       const page = isWfdRecord(result.page) ? result.page : {};
       if (result.format_version !== 'wfd.read-product-result/0.1' || result.operation !== 'read_product'
         || result.snapshot_id !== snapshotId || result.product_id !== productId || result.dataset_id !== product.datasetId

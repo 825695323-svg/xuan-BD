@@ -222,3 +222,18 @@ test('market reconstruction cannot reuse predecessor public time for a data-only
   const snapshot = await f.reader.readProduct({ snapshotId: 's_fixture', productId: 'p_fixture' });
   assert.equal(snapshot.historyMode, 'snapshot_contents', 'Fixed snapshot inspection remains available');
 });
+
+for (const code of ['FIELD_NOT_DEFINED_IN_ROW_CONTRACT', 'PRODUCT_CONTRACT_UNAVAILABLE']) {
+  test('history rejects unresolved fixed metadata: ' + code, async () => {
+    const f = fixture();
+    f.state.changeResult = result => { result.diagnostics = [{ decision: 'indeterminate', code }]; };
+    const base = { snapshotId: 's_fixture', productId: 'p_fixture' };
+    for (const history of [{ historyMode: 'market_known_at' },
+      { historyMode: 'system_held_at', heldScope: 'i', usableStage: 'published_readable' }]) {
+      await assert.rejects(f.reader.readProduct({ ...base, ...history, at: '2025-04-01T00:00:00Z' }),
+        isCode('R1_READ_HISTORY_METADATA_UNSUPPORTED'));
+    }
+    assert.equal((await f.reader.readProduct(base)).historyMode, 'snapshot_contents');
+    assert.equal(f.calls.filter(call => call.operation === 'read_product').length, 3, 'No fallback or retry');
+  });
+}
