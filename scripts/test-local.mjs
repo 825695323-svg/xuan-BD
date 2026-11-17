@@ -80,6 +80,8 @@ try {
         'modules/collection/r1-event.test.ts',
         'modules/collection/data-processing/event-text.test.ts',
         'apps/server/processing-dependencies.test.ts',
+        'apps/server/processing-record-dependencies.test.ts',
+        'modules/collection/processing-record-dependencies.test.ts',
         'apps/server/r1-dedup.test.ts',
         'apps/server/r1-coverage.test.ts',
         'modules/collection/r1-product-coverage.test.ts',
