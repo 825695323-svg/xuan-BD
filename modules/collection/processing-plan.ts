@@ -264,6 +264,8 @@ export class ProcessingPlanService {
         calculation: { version: 'bd-financial-fixed/1', operation: 'standardize', inputs: [{ snapshotId: 'exact fixed snapshot ID',
           productId: 'exact fixed product ID', businessKeys: ['exact logical key from fixed read'] }] },
         input: 'fixed snapshotId/productId/businessKeys only, read by bound host; no caller-supplied values',
+        history: 'optional explicit historyMode/at with system heldScope/usableStage; same selection for every fixed input, no latest fallback',
+        compatibleInputs: 'optional {periodType:duration|instant,periods:[{startDate,endDate}]}; requires fixed report_nature, fiscal_calendar and comparability_basis alongside subject/scope/dimension/currency/unit',
         scope: 'CAS/CNY registered primary-statement concept mapping with original values and dimensions',
         limits: 'Resolved numeric CNY cells and registered concepts only; unmapped concepts are recorded as evidence' },
       tableInputs: { common: ['materialId', 'format'], optional: ['fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations', 'numericFormats'],
