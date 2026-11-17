@@ -12,6 +12,12 @@ on:
       - 'modules/collection/data-processing/polars-structure-worker.py'
       - 'modules/collection/production-verifier*.ts'
       - 'modules/collection/processing-plan.ts'
+      - 'modules/collection/r1-auto-batch.ts'
+      - 'modules/collection/r1-structured-handoff.ts'
+      - 'modules/collection/post-publication-correction.ts'
+      - 'apps/server/continuous-correction.test.ts'
+      - 'apps/server/full-chain-test-support.ts'
+      - 'wfd/product/**'
       - 'modules/collection/candidate-pipeline.ts'
       - 'apps/server/services.ts'
       - '.github/workflows/bd-unified-polars-execution.yml'
@@ -26,6 +32,12 @@ on:
     paths:
       - 'modules/collection/production-verifier*.ts'
       - 'modules/collection/processing-plan.ts'
+      - 'modules/collection/r1-auto-batch.ts'
+      - 'modules/collection/r1-structured-handoff.ts'
+      - 'modules/collection/post-publication-correction.ts'
+      - 'apps/server/continuous-correction.test.ts'
+      - 'apps/server/full-chain-test-support.ts'
+      - 'wfd/product/**'
       - 'modules/collection/candidate-pipeline.ts'
       - 'apps/server/services.ts'
       - 'contracts/workspace-services.ts'
@@ -44,6 +56,34 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Select continuous correction impact
+        id: correction
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          # PR checkout is the merge commit; push selection must include every pushed commit.
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            echo 'selected=true' >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          base=HEAD^
+          if [ "$EVENT_NAME" = push ]; then
+            base="$PUSH_BEFORE"
+            if ! git fetch --no-tags --depth=1 origin "$base"; then
+              echo 'selected=true' >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          fi
+          if ! changed="$(git diff --name-only "$base" HEAD)"; then
+            echo 'selected=true' >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if grep -Eq '^(modules/collection/(processing-plan|r1-auto-batch|r1-structured-handoff|post-publication-correction)\.ts|apps/server/(continuous-correction\.test|full-chain-test-support|services)\.ts|wfd/product/|\.github/workflows/bd-unified-polars-execution\.yml)' <<< "$changed"; then
+            echo 'selected=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'selected=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.1'
@@ -79,6 +119,15 @@ jobs:
         run: |
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
           env -u WFD_PYTHON -u POLARS_PYTHON node --import tsx --test apps/server/r1-routes.test.ts
+      - name: Verify continuous publication and source correction with real WFD
+        if: steps.correction.outputs.selected == 'true'
+        env:
+          XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/bd-continuous-correction
+        run: |
+          test -n "$WFD_PYTHON" && test -x "$WFD_PYTHON"
+          mkdir -p "$XUAN_FULL_CHAIN_ROOT"
+          node --import tsx --test apps/server/continuous-correction.test.ts
+
       - name: Full native Node and TypeScript regression (failures remain visible)
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.full_regression }}
         env:
