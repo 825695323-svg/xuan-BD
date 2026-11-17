@@ -503,7 +503,7 @@ export class R1HandoffService {
     }
     const frozenResultOutput = Array.isArray(document.outputs)
       ? document.outputs.map(asRecord).find(member => member.output_key === output.output_key) : undefined;
-    const requireContracts = ['tabular_rows', 'event_records'].includes(String(asRecord(frozenResultOutput?.payload).kind))
+    const requireContracts = ['tabular_rows', 'event_records', 'relation_edges'].includes(String(asRecord(frozenResultOutput?.payload).kind))
       || (JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences).contractBindingRequired === true;
     const contractBinding = requireContracts ? readR1ContractBinding(output, String(attempt.dataset_id), productId, true) : undefined;
     const receipt: R1Receipt = {
@@ -1103,7 +1103,7 @@ export function buildStructuredIngestDocument(input: R1StructuredRequest): WfdRe
     expected_parent_snapshot_id: input.expectedParentSnapshotId,
     outputs: [input, ...(input.additionalOutputs ?? [])].map(member => ({
       output_key: member.outputKey,
-      logical_domain: member.payload.kind === 'event_records' ? 'events' : 'observations',
+      logical_domain: member.payload.kind === 'event_records' ? 'events' : member.payload.kind === 'relation_edges' ? 'foundation' : 'observations',
       subject: member.subject,
       definition_mode: member.definitionMode ?? 'create',
       definition_ref: member.definitionMode === 'reuse' ? member.definitionRef ?? null : null,

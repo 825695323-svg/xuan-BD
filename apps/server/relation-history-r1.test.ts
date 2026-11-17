@@ -26,8 +26,8 @@ function document(id: string, rows: WfdRecord[], definitionTime: WfdRecord) {
       field_definitions: [{ field_code: 'label', data_type: 'text', unit_code: 'text', measurement_nature: 'relation', time_role: 'validity' }] },
     inputMode: 'partial_observation', coverage: { scope: { synthetic: true }, basis: 'observed_partial', completeness: 'partial', absence_means: 'unknown' },
     payload: { kind: 'relation_edges', rows } });
-  // Existing R1 builder only routes event/observation. This explicit native WFD fixture is not a BD relation mapping API.
-  (doc.outputs as WfdRecord[])[0]!.logical_domain = 'foundation';
+  // Native WFD temporal fixture remains separate from the upload/prepare regression.
+  assert.equal((doc.outputs as WfdRecord[])[0]!.logical_domain, 'foundation');
   return doc;
 }
 async function publish(host: FullChainHost, doc: WfdRecord) {

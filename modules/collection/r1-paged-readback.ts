@@ -270,7 +270,7 @@ function verificationProjection(actual: WfdRecord, expected: WfdRecord): WfdReco
 function verifyContracts(input: R1ReadbackInput, result: WfdRecord): void {
   const first = selectedOutput(input.document, input.receipt.output_key);
   const binding = readR1ContractBinding(input.receipt as unknown as WfdRecord, input.receipt.dataset_id,
-    input.receipt.product_id, ['tabular_rows', 'event_records'].includes(String(object(first.payload).kind)));
+    input.receipt.product_id, ['tabular_rows', 'event_records', 'relation_edges'].includes(String(object(first.payload).kind)));
   if (!binding) return; // Original scalar contract doubles/tasks did not freeze four role refs.
   const products = Array.isArray(result.products) ? result.products.filter(isWfdRecord).filter(product => product.product_id === input.receipt.product_id
     && object(product.definition_ref).digest === input.receipt.definition_digest) : [];

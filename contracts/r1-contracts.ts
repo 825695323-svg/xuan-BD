@@ -26,7 +26,14 @@ export interface R1EventMapping {
   eventTime: R1EventTimeMapping; publicTime: R1EventTimeMapping; expectedTime?: R1EventTimeMapping;
   fields: { fieldCode: string; value: string; state: string }[];
 }
-export type R1Mapping = R1ScalarMapping | R1TabularMapping | R1EventMapping;
+/** Explicit source-claim relation; identity, validity and public time are independent. */
+export interface R1RelationMapping {
+  kind: 'relation_edges'; businessKey: string; relationType: string;
+  object: { kind: string; namespace: string; id: string };
+  effectivePeriod: R1EventTimeMapping; publicTime: R1EventTimeMapping;
+  fields: { fieldCode: string; value: string; state: string }[];
+}
+export type R1Mapping = R1ScalarMapping | R1TabularMapping | R1EventMapping | R1RelationMapping;
 export interface R1SourceDeclaration {
   source_id: string; provider: string; requested_url: string;
   requested_at_utc: string; acquired_at_utc: string; usage_scope: string;
@@ -81,7 +88,7 @@ export interface R1CapabilitiesView {
   protocol: 'wfd.structured-ingest/1.0'; profile: 'data_only';
   configuration: { state: string; reason: string | null }; connection: R1ConnectionIdentity | null;
   limits: { maxRows: number; maxDocumentBytes: number; maxMaterials: 1; payload: 'scalar_rows';
-    supportedPayloads?: readonly ('scalar_rows' | 'tabular_rows' | 'event_records')[] };
+    supportedPayloads?: readonly ('scalar_rows' | 'tabular_rows' | 'event_records' | 'relation_edges')[] };
   automaticSubmit: false; legacyReplay: false;
   publicationSets?: { prepareKind: 'publication_set'; maxOutputs: 16; membership: 'frozen_plan'; atomicity: 'declared_set' };
 }
