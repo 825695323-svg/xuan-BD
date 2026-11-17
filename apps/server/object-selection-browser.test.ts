@@ -28,14 +28,23 @@ async function hostFixture(root: string) {
   await registry.register({ id: 'synthetic-selection-b', label: 'Synthetic selection B', domain: 'fixture.example.test', cookieNames: '', operations: 'read-page' });
   const lifecycle = new LocalDataLifecycle({ controlDatabasePath: join(root, 'lifecycle.sqlite'), dataIdFromTask: () => 'selection-data' });
   lifecycle.register('selection-data'); lifecycle.bindIdentity('selection-data', database.path);
+  const workspaceDatabase = new CoreDatabase(join(root, 'workspace.sqlite'));
+  const workspaceCore = new PersonalCore(backend, { database: workspaceDatabase });
+  const workspaceServices = createApplicationServices(workspaceCore, workspaceDatabase, { role: 'service', health,
+    projectRoot: root, codeRoot: resolve(import.meta.dirname, '../..'), privateRoot: join(root, 'workspace-private') });
   const services = createApplicationServices(core, database, { health, projectRoot: root, codeRoot: resolve(import.meta.dirname, '../..'),
-    privateRoot: join(root, 'private'), customSources: registry, localData: { lifecycle, dataId: 'selection-data', verify: async () => { throw new Error('No lifecycle changes in selection fixture'); } } });
+    privateRoot: join(root, 'private'), workspaceServices, customSources: registry, localData: { lifecycle, dataId: 'selection-data', verify: async () => { throw new Error('No lifecycle changes in selection fixture'); } } });
   const server = createApp(core, health, services, { webRoot: webRoot! }).listen(0, '127.0.0.1');
   await once(server, 'listening'); const address = server.address(); assert.ok(address && typeof address === 'object');
-  return { core, services, registry, url: `http://127.0.0.1:${address.port}/`, async close() {
+  return { core, services, workspaceServices, registry, url: `http://127.0.0.1:${address.port}/`, async close() {
     server.closeAllConnections(); await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done()));
     services.segments?.close(); services.files.closeTemporaryRetention(); await services.r1Batches?.dispose(); await services.r1Auto?.dispose();
-    await services.tasks.dispose(); await core.dispose(); database.close(); await lifecycle.close();
+    await services.tasks.dispose(); await core.dispose(); database.close();
+    workspaceServices.segments?.close(); workspaceServices.files.closeTemporaryRetention();
+    workspaceServices.options.processRuntime?.closeTemporaryRetention();
+    await workspaceServices.r1Batches?.dispose(); await workspaceServices.r1Auto?.dispose();
+    await workspaceServices.tasks.dispose(); await workspaceCore.dispose(); workspaceDatabase.close();
+    await lifecycle.close();
   } };
 }
 async function nav(browser: Browser, name: string) {
@@ -56,6 +65,14 @@ const stored = (browser: Browser) => browser.evaluate<string | null>("sessionSto
 async function capture(browser: Browser, root: string, name: string, width: number, scheme: string) {
   await browser.page('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
   await browser.page('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }] });
+  const geometry = await browser.evaluate<Array<{ width: number; left: number; right: number; allowedLeft: number; allowedRight: number }>>(`(()=>{
+    return [...document.querySelectorAll('.data-nav input[type=search],.object-detail button,.object-detail input,.object-detail select')]
+      .filter(e=>e.getClientRects().length>0).map(e=>{const box=e.getBoundingClientRect();let left=0,right=innerWidth;
+        for(let p=e.parentElement;p;p=p.parentElement){const style=getComputedStyle(p);if(['auto','scroll'].includes(style.overflowX)){const r=p.getBoundingClientRect();left=Math.max(0,r.left);right=Math.min(innerWidth,r.right);return {width:box.width,left:Math.max(box.left,left),right:Math.min(box.right,right),allowedLeft:left,allowedRight:right};}}
+        return {width:box.width,left:box.left,right:box.right,allowedLeft:left,allowedRight:right};});})()`);
+  assert.ok(geometry.length > 0, 'Actual page must expose a visible search or detail control');
+  for (const box of geometry) assert.ok(box.width > 0 && box.left >= box.allowedLeft - 2 && box.right <= box.allowedRight + 2,
+    'Control must fit viewport or an actual horizontal scroll container: ' + JSON.stringify(box));
   writeFileSync(join(root, name + '.png'), Buffer.from((await browser.page('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
 }
 
@@ -70,6 +87,7 @@ test('actual three-page selections preserve shared conversation and survive real
       const draft = host.core.getDraft(initial.conversationId, 'main', '', initial.branchId);
       host.core.saveDraft(initial.conversationId, draftText, draft.revision, draft.key, []);
       const settings = host.services.sourceSettings.get(), tasks = host.services.tasks.list();
+      const workspaceTasks = host.workspaceServices.tasks.list(), workspaceSettings = host.workspaceServices.sourceSettings.get();
       browser = await openIsolatedBrowser(program!, root); await browser.page('Page.navigate', { url: host.url });
       await nav(browser, '采集源'); await card(browser, 'Synthetic selection A');
       assert.equal(await stored(browser), 'synthetic-selection-a');
@@ -136,6 +154,8 @@ test('actual three-page selections preserve shared conversation and survive real
       const current = host.core.getState(); assert.equal(current.conversationId, initial.conversationId); assert.equal(current.branchId, initial.branchId);
       assert.deepEqual(current.messages, initial.messages, 'Selection does not create or replace history');
       assert.equal(host.core.getDraft(initial.conversationId, 'main', '', initial.branchId).text, draftText);
+      assert.deepEqual(host.workspaceServices.tasks.list(), workspaceTasks);
+      assert.deepEqual(host.workspaceServices.sourceSettings.get(), workspaceSettings);
       assert.deepEqual(host.services.tasks.list(), tasks); assert.deepEqual(host.services.sourceSettings.get(), settings);
       assert.equal(browser.requests.filter(r => r.method !== 'GET' && /\/api\/(tasks|ui\/source-settings|capture-sources)/u.test(new URL(r.url).pathname)).length, 0);
       writeFileSync(join(root, 'selection-verification.json'), JSON.stringify({ conversationId: current.conversationId, branchId: current.branchId,
@@ -155,6 +175,13 @@ test('object selection HTTP fixture uses real registered catalogue and private c
       const headers = { 'x-local-data-generation': '1', 'x-mashiro-client': 'web' };
       const response = await fetch(host.url + 'api/ui/custom-sources', { headers }); assert.equal(response.status, 200);
       const value = await response.json(); assert.deepEqual(value.sources.map((s: { id: string }) => s.id), ['synthetic-selection-a', 'synthetic-selection-b']);
+      const toolsResponse = await fetch(host.url + 'api/ui/tool-library', { headers }); assert.equal(toolsResponse.status, 200);
+      const tools = await toolsResponse.json(); assert.ok(Array.isArray(tools.tools) && tools.tools.length > 0);
+      assert.ok(tools.tools.every((tool: { id?: string; title?: string }) => typeof tool.id === 'string' && typeof tool.title === 'string'));
+      const sourcesResponse = await fetch(host.url + 'api/ui/source-settings', { headers }); assert.equal(sourcesResponse.status, 200);
+      const sources = await sourcesResponse.json(); assert.ok(Array.isArray(sources.connections) && sources.connections.length > 0);
+      assert.ok(Array.isArray(sources.apiPlugins)); assert.ok(Array.isArray(sources.capturePlugins));
+      assert.equal(host.workspaceServices.tasks.list().length, 0);
       const stateResponse = await fetch(host.url + 'api/conversation', { headers }); assert.equal(stateResponse.status, 200);
       const state = await stateResponse.json(); assert.equal(state.conversationId, host.core.getState().conversationId);
       const draftResponse = await fetch(host.url + `api/conversations/${state.conversationId}/draft`, { headers }); assert.equal(draftResponse.status, 200);
