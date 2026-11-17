@@ -35,7 +35,8 @@ async function loadPageComponents() {
   try {
     const { PreferencesProvider } = await import('./Preferences.js');
     const { ToolsPage } = await import('./ToolsPage.js');
-    return { PreferencesProvider, ToolsPage };
+    const { CaptureSourcesPage } = await import('./CaptureSourcesPage.js');
+    return { PreferencesProvider, ToolsPage, CaptureSourcesPage };
   } finally { hooks.deregister(); }
 }
 
@@ -100,4 +101,54 @@ test('统一对象选择在所有目录就绪前既不清除已存选择，也�
     assert.equal(selection.id, 'source:a');
     assert.equal(env.storage.get(key), 'source:a');
   } finally { await act(() => root.unmount()); env.cleanup(); }
+});
+
+
+test('采集源自定义目录临时失败不是删除，恢复后仅完整成功目录可清选择', async () => {
+  const { PreferencesProvider, CaptureSourcesPage } = await loadPageComponents();
+  const env = browser(), previousFetch = globalThis.fetch;
+  const originalInterval = window.setInterval, originalClear = window.clearInterval;
+  let refresh: (() => void) | undefined;
+  window.setInterval = ((callback: () => void) => { refresh = callback; return 1; }) as typeof window.setInterval;
+  window.clearInterval = (() => {}) as typeof window.clearInterval;
+  const { createRoot } = await import('react-dom/client');
+  const root = createRoot(env.document.getElementById('root')!);
+  const key = 'xuan.capture.object'; env.storage.set(key, 'custom:fixture');
+  let mode: 'failure' | 'present' | 'deleted' | 'delayed' | 'invalid' = 'failure';
+  let finishDelayed: ((response: Response) => void) | undefined;
+  globalThis.fetch = async input => {
+    const url = String(input);
+    if (url === '/api/ui/preferences') return reply(preferences);
+    if (url === '/api/ui/source-settings') return reply({ capturePlugins: [{ sourceId: 'builtin', label: 'Builtin fixture', available: false }], capture: [], checks: [] });
+    if (url === '/api/capture-sources') return reply({ sources: [] });
+    if (url === '/api/skills') return reply([]);
+    assert.equal(url, '/api/ui/custom-sources');
+    if (mode === 'delayed') return new Promise<Response>(resolve => { finishDelayed = resolve; });
+    if (mode === 'invalid') return reply({});
+    return mode === 'failure' ? new Response('{}', { status: 503 }) : reply({ sources: mode === 'deleted' ? [] : [{ id: 'custom:fixture', label: 'Custom fixture', domain: 'example.invalid', operations: [], cookieNames: [] }] });
+  };
+  try {
+    await act(() => root.render(<PreferencesProvider><CaptureSourcesPage /></PreferencesProvider>));
+    assert.equal(env.storage.get(key), 'custom:fixture', '503 must not erase the stored source');
+    assert.match(env.document.querySelector('.object-detail-head')?.textContent ?? '', /正在读取/u);
+    mode = 'present'; await act(() => refresh!());
+    assert.match(env.document.querySelector('.object-detail-head')?.textContent ?? '', /Custom fixture/u);
+    mode = 'failure'; await act(() => refresh!());
+    assert.equal(env.storage.get(key), 'custom:fixture');
+    mode = 'present'; await act(() => refresh!());
+    assert.match(env.document.querySelector('.object-card[aria-current="true"]')?.textContent ?? '', /Custom fixture/u);
+    mode = 'delayed'; await act(() => refresh!());
+    mode = 'present'; await act(() => refresh!());
+    await act(() => finishDelayed!(reply({ sources: [] })));
+    assert.equal(env.storage.get(key), 'custom:fixture', 'Older empty response cannot erase the newer confirmed object');
+    mode = 'invalid'; await act(() => refresh!());
+    assert.equal(env.storage.get(key), 'custom:fixture', 'Malformed success is not a complete empty catalog');
+    assert.match(env.document.querySelector('[role="alert"]')?.textContent ?? '', /自定义来源目录暂时无法读取/u);
+    mode = 'deleted'; await act(() => refresh!());
+    assert.equal(env.storage.has(key), false);
+    assert.match(env.document.querySelector('.object-detail-head')?.textContent ?? '', /未选择来源/u);
+  } finally {
+    await act(() => root.unmount()); globalThis.fetch = previousFetch;
+    window.setInterval = originalInterval; window.clearInterval = originalClear; env.cleanup();
+  }
 });
