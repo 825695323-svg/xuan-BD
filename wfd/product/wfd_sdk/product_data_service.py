@@ -3390,7 +3390,8 @@ class WFDDataOnlyService(WFDProductService):
                 "subject": copy.deepcopy(item.get("subject")),
                 "object": (item.get("row") or {}).get("object"),
                 "relation_type": (item.get("row") or {}).get("relation_type"),
-                "contract_ref": copy.deepcopy(item.get("contract_ref")),
+                # An unqualified row is identified for coverage diagnostics,
+                # but its later/unknown contract is not historical metadata.
                 "decision": decision,
                 "holding_state": holding_state,
                 "reason": reason,
@@ -3501,6 +3502,36 @@ class WFDDataOnlyService(WFDProductService):
             ref = row.get("record_ref") or {}
             row["record_id"] = ref.get("logical_key")
             row["record_version"] = ref.get("revision_id")
+        # Excluded identities belong to the physical snapshot, not the held
+        # historical view. Publish only product-level gap counts; selection
+        # above continues to use the original internal record diagnostics.
+        aggregates = {}
+        retained = []
+        count_basis = ("current_fixed_snapshot_not_subject_filtered_not_historical_known_total"
+                       if subject is None else
+                       "current_fixed_snapshot_subject_filtered_not_historical_known_total")
+        holding_reasons = {"unknown": "NO_HOLDING_FACT_FOR_RECORD_VERSION",
+                           "not_yet_held": "HELD_STAGE_AFTER_CUTOFF"}
+        for diagnostic in public.get("diagnostics", []):
+            state = diagnostic.get("holding_state")
+            if (state not in holding_reasons
+                    or diagnostic.get("reason") != holding_reasons[state]):
+                retained.append(diagnostic)
+                continue
+            key = (diagnostic.get("product_id"), state)
+            if key not in aggregates:
+                aggregates[key] = {
+                    "code": "INSTANCE_HOLDING_COVERAGE_GAP",
+                    "scope": "product", "aggregation": "record_versions_by_holding_state",
+                    "product_id": key[0], "holding_state": state,
+                    "decision": "indeterminate" if state == "unknown" else "ineligible",
+                    "reason": "NO_HOLDING_FACT_FOR_RECORD_VERSION" if state == "unknown" else "HELD_STAGE_AFTER_CUTOFF",
+                    "count": 0,
+                    "count_basis": count_basis,
+                }
+            aggregates[key]["count"] += 1
+        public["diagnostics"] = retained + [aggregates[key] for key in sorted(aggregates)]
+        public["holding_coverage"]["count_basis"] = count_basis
         public["held_scope"] = held_scope
         public["usable_stage"] = usable_stage
         public["held_at"] = at

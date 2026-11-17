@@ -755,7 +755,7 @@ class ProductQuery:
             roles.add("session_date")
         return roles
 
-    def _validate_business_time_role(self, business_range, manifest_products):
+    def _validate_business_time_role(self, business_range, manifest_products, *, history_mode="snapshot_contents"):
         if business_range is None or business_range.get("role") == "declared":
             return
         requested = business_range["role"]
@@ -770,12 +770,14 @@ class ProductQuery:
                 "declared_roles": sorted(roles),
             })
         if not available or requested not in available:
+            # Historical preflight may inspect later fixed contracts. Their roles
+            # and references are not evidence qualified at the requested cutoff.
             raise ProductQueryError(
                 "BUSINESS_TIME_ROLE_MISMATCH",
                 "Requested business-time role is not declared by the fixed product contract",
                 {"requested_role": requested,
-                 "available_roles": sorted(available or []),
-                 "contracts": contracts,
+                 **({"available_roles": sorted(available or []), "contracts": contracts}
+                    if history_mode == "snapshot_contents" else {}),
                  "rule": "caller cannot rename observation_time to another role"})
 
     @staticmethod
@@ -1074,6 +1076,23 @@ class ProductQuery:
         return rows[left:left + page_size], len(rows) - left
 
     # ------------------------------------------------------------------ projection
+    @staticmethod
+    def _product_holding_gap(diagnostic):
+        # Only this exact aggregate schema may survive a row-subject filter.
+        # Its count is a product inspection gap, never a count for that subject.
+        state = diagnostic.get("holding_state")
+        return (set(diagnostic) == {"code", "scope", "aggregation", "product_id",
+                                    "holding_state", "decision", "reason", "count", "count_basis"}
+                and diagnostic.get("code") == "INSTANCE_HOLDING_COVERAGE_GAP"
+                and diagnostic.get("scope") == "product"
+                and diagnostic.get("aggregation") == "record_versions_by_holding_state"
+                and isinstance(diagnostic.get("product_id"), str)
+                and state in {"unknown", "not_yet_held"}
+                and diagnostic.get("decision") == ("indeterminate" if state == "unknown" else "ineligible")
+                and diagnostic.get("reason") == ("NO_HOLDING_FACT_FOR_RECORD_VERSION" if state == "unknown" else "HELD_STAGE_AFTER_CUTOFF")
+                and type(diagnostic.get("count")) is int and diagnostic["count"] > 0
+                and diagnostic.get("count_basis") == "current_fixed_snapshot_not_subject_filtered_not_historical_known_total")
+
     def _project(self, request, result, manifest_products, *, subject, fields,
                  business_range):
         service_products = {_product_key(product): product
@@ -1095,6 +1114,7 @@ class ProductQuery:
         diagnostics = []
         for diagnostic in result.get("diagnostics", []):
             if (subject is not None
+                    and not self._product_holding_gap(diagnostic)
                     and canonical(diagnostic.get("subject")) != canonical(subject)):
                 continue
             copied = copy.deepcopy(diagnostic)
@@ -2173,7 +2193,8 @@ class ProductQuery:
             if session["business_range"] is not None:
                 try:
                     self._validate_business_time_role(
-                        session["business_range"], read["products"])
+                        session["business_range"], read["products"],
+                        history_mode=session["request"]["history_mode"])
                 except ProductQueryError as exc:
                     session["gaps"].append(exc.as_dict())
                     continue
@@ -2302,7 +2323,8 @@ class ProductQuery:
             if session["business_range"] is not None:
                 try:
                     self._validate_business_time_role(
-                        session["business_range"], read["products"])
+                        session["business_range"], read["products"],
+                        history_mode=session["request"]["history_mode"])
                 except ProductQueryError as exc:
                     session["gaps"].append(exc.as_dict())
                     continue
@@ -2364,11 +2386,15 @@ class ProductQuery:
             read = self._read_context_product(session, product_id)
             if read.get("status") != "ok":
                 continue
+            session["gaps"].extend(copy.deepcopy(diagnostic)
+                                   for diagnostic in read["result"].get("diagnostics", [])
+                                   if self._product_holding_gap(diagnostic))
             product = read["product"]
             if session["business_range"] is not None:
                 try:
                     self._validate_business_time_role(
-                        session["business_range"], read["products"])
+                        session["business_range"], read["products"],
+                        history_mode=session["request"]["history_mode"])
                 except ProductQueryError as exc:
                     session["gaps"].append(exc.as_dict())
                     continue
@@ -2654,7 +2680,8 @@ class ProductQuery:
         self._current_business_policy(request, manifest_products)
 
         dependency_plan = self._dependency_plan(request, manifest_products)
-        self._validate_business_time_role(business_range, manifest_products)
+        self._validate_business_time_role(business_range, manifest_products,
+                                          history_mode=request["history_mode"])
         perspective = request["history_mode"]
         batch_gate = getattr(self.service, "_query_batches_supported", None)
         use_batches = self._data_only_projection() and callable(batch_gate) and batch_gate(
