@@ -120,12 +120,25 @@ async function verifyCompactDetails(browser: Browser, kind: 'capture' | 'api' | 
   }
   assert.equal(await browser.evaluate("document.querySelector('.object-detail-diagnostics').open"), false, 'Diagnostics start collapsed');
   assert.equal(await browser.evaluate("!!document.querySelector('.object-detail-scroll .object-detail-diagnostics')"), true);
+  await browser.page('Page.bringToFront');
   await browser.evaluate("document.querySelector('.object-detail-diagnostics > summary').scrollIntoView({block:'center'});document.querySelector('.object-detail-diagnostics > summary').focus()");
-  await browser.page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  assert.equal(await browser.evaluate('document.hasFocus()'), true, 'The actual page must have keyboard focus');
+  assert.equal(await browser.evaluate("document.activeElement===document.querySelector('.object-detail-diagnostics > summary')"), true,
+    'Native summary must hold keyboard focus before Enter');
+  // Supply Enter's character payload as well as its key identity. Native
+  // activation is verified below; the previous timeout's cause is not assumed.
+  await browser.page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    text: '\r', unmodifiedText: '\r' });
   await browser.page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
   await browser.until("document.querySelector('.object-detail-diagnostics').open===true", 'Keyboard must expand native diagnostics');
   assert.ok((await browser.evaluate<string>("document.querySelector('.object-detail-diagnostics-body').textContent")).trim());
-  await browser.page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  assert.equal(await browser.evaluate('document.hasFocus()'), true, 'The actual page must have keyboard focus');
+  assert.equal(await browser.evaluate("document.activeElement===document.querySelector('.object-detail-diagnostics > summary')"), true,
+    'Native summary must hold keyboard focus before Enter');
+  // Supply Enter's character payload as well as its key identity. Native
+  // activation is verified below; the previous timeout's cause is not assumed.
+  await browser.page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    text: '\r', unmodifiedText: '\r' });
   await browser.page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
   await browser.until("document.querySelector('.object-detail-diagnostics').open===false", 'Keyboard must close diagnostics');
 }
