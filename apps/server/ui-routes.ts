@@ -1,3 +1,5 @@
+import { readTranscriptionReviewPacket } from './transcription-review.js';
+import { readTranscriptionReviewHandoff } from './transcription-handoff.js';
 import { Router } from 'express';
 import { readOcrReviewPacket } from './ocr-review.js';
 import { readOcrReviewHandoff } from './ocr-handoff.js';
@@ -172,6 +174,15 @@ export function createUiRouter(services: ApplicationServices) {
   router.get('/materials/:id/ocr-review/:taskId', async (req, res) => {
     if (Object.keys(req.query).length) throw new CoreError('INVALID_QUERY', 'OCR review accepts only fixed material and task identifiers.', 400);
     res.json(await readOcrReviewPacket(services, req.params.id, req.params.taskId));
+  });
+  router.get(['/materials/:id/transcription-review/:taskId/handoff', '/materials/:id/transcription-review/:taskId/handoff/:questionId'], async (req, res) => {
+    if (Object.keys(req.query).length) throw new CoreError('INVALID_QUERY', 'Transcription handoff accepts only fixed identifiers.', 400);
+    if (typeof req.params.id !== 'string' || typeof req.params.taskId !== 'string' || (req.params.questionId !== undefined && typeof req.params.questionId !== 'string')) throw new CoreError('INVALID_QUERY', 'Invalid transcription handoff identifiers.', 400);
+    res.json(await readTranscriptionReviewHandoff(services, req.params.id, req.params.taskId, req.params.questionId));
+  });
+  router.get('/materials/:id/transcription-review/:taskId', async (req, res) => {
+    if (Object.keys(req.query).length) throw new CoreError('INVALID_QUERY', 'Transcription review accepts only fixed identifiers.', 400);
+    res.json(await readTranscriptionReviewPacket(services, req.params.id, req.params.taskId));
   });
   router.get('/materials/:id/draft-reference', (req, res) => {
     const link = materialLinksExist() ? services.core.store.one<{ file_ref_id: string; file_ref_version: number }>(

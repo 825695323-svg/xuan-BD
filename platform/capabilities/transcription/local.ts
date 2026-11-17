@@ -32,6 +32,8 @@ export interface LocalTranscriptionResult {
   source: TranscriptionReference;
   textReference: TranscriptionReference;
   evidenceReference: TranscriptionReference;
+  probeReference: TranscriptionReference;
+  recognition: { backend: 'whisper.cpp-local'; modelSha256: string; durationMs: number };
   text: string;
   segments: TranscriptionSegment[];
   backend: 'whisper.cpp-local';
@@ -175,6 +177,9 @@ export async function transcribeLocalFile(context: TaskExecutionContext, input: 
     const modelRef = options.files.register({ path: options.modelPath, source: 'user-selected', taskId: context.task.id });
     const model = await workspace.copyReference(modelRef, 'whisper-model.bin', 4 * 1024 * 1024 * 1024);
     options.validateModel(await workspace.readPrefix(model, 48));
+    const modelFingerprint = await workspace.fingerprint(model, 4 * 1024 * 1024 * 1024);
+    const probePath = await workspace.createText('media-probe.json', JSON.stringify({ schema: 'bd-local-transcription-probe/1',
+      sourceSha256: sourceFingerprint.sha256, modelSha256: modelFingerprint.sha256, probeOutput: probe.stdout }));
     const wav = join(workspace.path, 'audio.wav');
     await options.runTool(context, workspace, authority, 'ffmpeg', options.convert(staged, extension, wav, 'wav'), binaries.ffmpeg, 180_000);
     const wave = await workspace.fingerprint(wav, 512 * 1024 * 1024);
@@ -189,6 +194,9 @@ export async function transcribeLocalFile(context: TaskExecutionContext, input: 
     const segments = parseWhisperTranscription(native, text, Math.ceil(duration * 1000));
     authority.assert(); options.files.verify(reference.id); options.files.verify(modelRef.id);
     if ((await workspace.fingerprint(staged, MAX_SOURCE_BYTES)).sha256 !== sourceFingerprint.sha256) throw new DirectError('MATERIAL_SOURCE_MISMATCH', '暂存原件在转录期间已变化。');
+    const probeFingerprint = await workspace.fingerprint(probePath, MAX_TEXT_BYTES);
+    const publishedProbe = await workspace.publishFile(probePath, prepareDestination(join(options.artifactRoot, `transcript-probe-${randomUUID()}.json`)),
+      context.task.action, context.task.args, MAX_TEXT_BYTES);
     const textFingerprint = await workspace.fingerprint(prefix + '.txt', MAX_TEXT_BYTES);
     const evidenceFingerprint = await workspace.fingerprint(prefix + '.json', MAX_TEXT_BYTES);
     const evidence = await workspace.publishFile(prefix + '.json', prepareDestination(join(options.artifactRoot, `transcript-evidence-${randomUUID()}.json`)),
@@ -199,6 +207,8 @@ export async function transcribeLocalFile(context: TaskExecutionContext, input: 
     return { source: { fileRefId: reference.id, fileRefVersion: reference.version, sha256: sourceFingerprint.sha256 },
       textReference: { fileRefId: output.id, fileRefVersion: output.version, sha256: textFingerprint.sha256 },
       evidenceReference: { fileRefId: evidence.id, fileRefVersion: evidence.version, sha256: evidenceFingerprint.sha256 },
+      probeReference: { fileRefId: publishedProbe.id, fileRefVersion: publishedProbe.version, sha256: probeFingerprint.sha256 },
+      recognition: { backend: 'whisper.cpp-local', modelSha256: modelFingerprint.sha256, durationMs: Math.ceil(duration * 1000) },
       text, segments, backend: 'whisper.cpp-local' };
   } catch (error) {
     if (!(error instanceof DirectError && error.unknown) && !(error instanceof DirectProcessError && error.disposition === 'unknown')) {

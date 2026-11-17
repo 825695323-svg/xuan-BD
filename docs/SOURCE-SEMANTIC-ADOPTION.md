@@ -255,3 +255,11 @@ R1 返回 `R1_READ_HISTORY_METADATA_UNSUPPORTED`。这不是自动选择旧定�
 `/handoff/:questionId` 只读核原问题与实际 ask_user 调用、创建输入、分支祖先链、原回答命令及已有用户消息。排队回答可以尚无消息编号，返回真实投递状态；失败/取消/替换命令、跨分支、不同问题/选项、缺调用、指错回执或助手同文均拒绝。不会借用已结束任务的权限或凭一个 answered/confirmed 字段声称用户核实。
 
 状态仅有 `awaiting_question`、`awaiting_user`、`dismissed`、`user_statement_received`。最后一项保留用户原话与命令/消息身份，仍固定 `humanVerification=not_established`、`eventEligibility=not_established`；即使回答出现“确认”，也不自动判断已逐字核验，不授权发布或晋级永久事实审计。陈述的可追溯性依赖现有受信宿主与会话记录，不宣称抵抗任意数据库管理者篡改。正式 OCR 事件交接仍须后续独立契约，不将图像坐标转换成 UTF16 原文证据。
+
+### 本地转录复用待人工核对包
+
+转录沿既有 material.transcribe、ffprobe/ffmpeg/Whisper 与受控产物发布，增加执行时原件时长、实际暂存模型 SHA，以及包含原 ffprobe 输出/原件 SHA/模型 SHA 的同任务证据封套。核对包只读复验这些固定产物和完整原生转录时段，不从片段末端估算时长，不用当前模型替补旧任务；旧任务缺新增证据时明确不可生成核对包，不自动重跑。
+
+`transcription-review` 与原 OCR 共用既有任务/call-link/保管来源/产物授权及摘要核验，OCR 旧返回和问题摘要不变。转录给出原音频链接、完整文字和原件毫秒半开区间、模型摘要及当次时长。沿用原转录解析的行首尾空白/换行规范化比对和末端最多 1000 毫秒容差，不称严格逐字零超界认证。8MiB仍是每份产物上限，不是全核对包上限。
+
+转录 `/handoff` 复用同一会话问答来源核验，仅冻结转录专用问题和原件/模型/时段证据；真实用户回答也只是 user_statement，humanVerification/eventEligibility 始终 not_established。没有新增确认系统，不把模型文字当原件文本偏移或已核实事实，不自动发布事件。实测采用明确选择的既有模型与公开 JFK 短音频，不下载/安装组件；无网络模型传输替身不冒充真实语言模型调用，合成测试回答不冒充用户签认。

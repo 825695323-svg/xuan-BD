@@ -210,7 +210,7 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
         return result('本机音视频转录已完成；原件与时间段证据已保留。', {
           ...JSON.parse(JSON.stringify(extracted)), ...transcriptionSegmentPreview(extracted.segments), ...textPreview(extracted.text), fileRefId: extracted.textReference.fileRefId,
           sha256: extracted.textReference.sha256,
-        }, [extracted.textReference.fileRefId, extracted.evidenceReference.fileRefId]);
+        }, [extracted.textReference.fileRefId, extracted.evidenceReference.fileRefId, extracted.probeReference.fileRefId]);
       }
       if (routed.action === 'file.compare') return await compareRegisteredFiles(context, { leftFileRefId: String(args.leftFileRefId), rightFileRefId: String(args.rightFileRefId) }, options.files, artifactRoot);
       if (routed.action === 'file.glob' || routed.action === 'file.grep') return await searchTextFiles(context, routed.action, args, options.files, artifactRoot, path => protection.assertPath(path));

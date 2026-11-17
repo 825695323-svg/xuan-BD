@@ -17,7 +17,7 @@ export function createMaterialTranscriptionAdapter(executor: () => DirectRuntime
       try {
         const extracted = await selected.execute(context, { fileRefId: source.fileRefId, fileRefVersion: source.fileRefVersion, expectedSha256: source.sha256 });
         return { status: 'extracted', result: { source: { ...source }, plugin: { id: 'material.transcribe', version: '1' },
-          textReference: extracted.textReference, evidenceReference: extracted.evidenceReference, ...transcriptionSegmentPreview(extracted.segments) } };
+          textReference: extracted.textReference, evidenceReference: extracted.evidenceReference, probeReference: extracted.probeReference, recognition: extracted.recognition, ...transcriptionSegmentPreview(extracted.segments) } };
       } catch (error) {
         // 未确认副作用必须继续交给 TaskService 判为 needs_review，不能包装成普通失败。
         if (context.signal.aborted || error instanceof DirectError && error.unknown || error instanceof DirectProcessError && error.disposition === 'unknown') throw error;
