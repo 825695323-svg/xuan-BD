@@ -8,3 +8,5 @@
 *.ttf binary
 *.woff binary
 *.woff2 binary
+# Exact captured public HTML evidence: keep original bytes/whitespace, never normalize.
+apps/server/fixtures/official-event/*.html -text -whitespace

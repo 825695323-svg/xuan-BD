@@ -22,12 +22,12 @@ const isCode = (code: string) => (error: unknown) => !!error && typeof error ===
 function fixture() {
   const calls: { operation: string; input: unknown }[] = [];
   const state = { stopped: false, generation: 1, identity: structuredClone(identity), products: [structuredClone(product)] as WfdRecord[],
-    afterRead: () => {}, changeResult: (_result: WfdRecord) => {}, error: null as Error | null };
+    holding: undefined as unknown, afterRead: () => {}, changeResult: (_result: WfdRecord) => {}, error: null as Error | null };
   const client = {
     contractDiscovery: async (snapshotId: string) => { calls.push({ operation: 'contract_discovery', input: snapshotId });
       return reply({ snapshot_id: snapshotId, product_count: state.products.length, products: state.products }); },
     snapshotStatus: async () => reply({ format_version: 'wfd.snapshot-status/1', profile: 'data_only', authority: 'active_head',
-      snapshot_id: null, empty: true, connection_id: identity.connectionId, caller_id: identity.callerId,
+      ...(state.holding === undefined ? {} : { holding_instance: state.holding }), snapshot_id: null, empty: true, connection_id: identity.connectionId, caller_id: identity.callerId,
       trusted_actor_namespace: identity.namespace, caller_roles: ['read'], unit_definitions: {
         count: { definition: { dimension: 'quantity' }, digest: 'sha256:' + 'a'.repeat(64) } } }),
     readProduct: async (request: WfdRecord) => {
@@ -237,3 +237,16 @@ for (const code of ['FIELD_NOT_DEFINED_IN_ROW_CONTRACT', 'PRODUCT_CONTRACT_UNAVA
     assert.equal(f.calls.filter(call => call.operation === 'read_product').length, 3, 'No fallback or retry');
   });
 }
+
+test('snapshot status exposes only the actual bounded holding identity, never guessed stages', async () => {
+  const f = fixture();
+  assert.equal((await f.reader.snapshotStatus()).holdingInstance, undefined);
+  f.state.holding = null; assert.equal((await f.reader.snapshotStatus()).holdingInstance, null);
+  f.state.holding = { instance_id: 'wfi_explicit_fixture', source: 'target_instance' };
+  assert.deepEqual((await f.reader.snapshotStatus()).holdingInstance, { instanceId: 'wfi_explicit_fixture', bindingSource: 'target_instance' });
+  for (const holding of [{ instance_id: '/private/path', source: 'target_instance' }, { instance_id: 'x', source: 'guessed' },
+    { instance_id: 'x', source: 'target_instance', acquired_at: '2024-01-01T00:00:00Z' }]) {
+    f.state.holding = holding;
+    await assert.rejects(f.reader.snapshotStatus(), isCode('R1_READ_RESPONSE_INVALID'));
+  }
+});
