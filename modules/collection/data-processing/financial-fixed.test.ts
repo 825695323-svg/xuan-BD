@@ -72,3 +72,36 @@ test('financial mapping requires resolved numeric CNY cells with an exact base-m
   assert.equal(JSON.parse(standardized.jsonBytes.toString())[0].value_state, 'reported_zero');
   assert.deepEqual(standardized.evidence.unmapped, [{ record: unmapped.record_ref, concept: '未登记科目' }]);
 });
+
+const periods = [{ startDate: '2024-01-01', endDate: '2024-03-31' }, { startDate: '2024-01-01', endDate: '2024-06-30' }];
+const compatibleRows = (): WfdRecord[] => periods.map((period, i) => ({ ...row('quarter-' + i, String(i + 1), period.startDate, period.endDate,
+  { concept: '其中：营业收入', report_nature: 'formal', fiscal_calendar: 'declared-calendar-year', comparability_basis: 'same-reviewed-basis' }),
+subject: { kind: 'entity', namespace: 'synthetic', id: 'company' } }));
+async function compatible(rows: WfdRecord[], changes: Partial<FinancialCalculation> = {}) {
+  const { input, reader } = calculation(rows);
+  input.inputs.forEach(ref => { ref.snapshotId = 'fixed-catalog-snapshot'; });
+  return projectFinancialFixed({ ...input, compatibleInputs: { periodType: 'duration', periods }, ...changes }, reader, new AbortController().signal);
+}
+test('explicit compatible financial inputs reject mixed scope, calendar, unit, identity and missing periods without calculation', async () => {
+  const valid = await compatible(compatibleRows());
+  assert.equal(valid.evidence.compatibility?.calculation, 'not_requested');
+  assert.equal(valid.evidence.historicalQualification, 'not_asserted');
+  for (const [key, changed] of Object.entries({ subject_code: 'other-company', scope: 'parent_only', dimension: 'segment-other', currency: 'USD',
+    unit: 'cny_thousand', fiscal_calendar: 'noncalendar-fiscal-year', comparability_basis: 'different-correction-basis',
+    accounting_standard: 'IFRS', report_nature: 'forecast', concept: '资产总计', period_type: 'instant', start_date: '2024-02-30' })) {
+    const rows = compatibleRows();
+    ((rows[1]!.values as WfdRecord)[key] as WfdRecord).value = changed;
+    await assert.rejects(compatible(rows), key);
+  }
+  const changedSubject = compatibleRows(); (changedSubject[1]!.subject as WfdRecord).id = 'different-formal-entity';
+  await assert.rejects(compatible(changedSubject), /主体/u);
+  const missing = compatibleRows(); delete (missing[1]!.values as WfdRecord).fiscal_calendar;
+  await assert.rejects(compatible(missing), /fiscal_calendar/u);
+  const unknown = compatibleRows(); ((unknown[1]!.values as WfdRecord).comparability_basis as WfdRecord).value = 'unknown';
+  await assert.rejects(compatible(unknown), /未知/u);
+  await assert.rejects(compatible(compatibleRows().slice(0, 1)), /期间缺失/u);
+  await assert.rejects(compatible(compatibleRows(), { compatibleInputs: { periodType: 'duration', periods: [periods[0]!, periods[0]!] } }), /不能重复/u);
+  const { input, reader } = calculation(compatibleRows());
+  await assert.rejects(projectFinancialFixed({ ...input, compatibleInputs: { periodType: 'duration', periods } }, reader,
+    new AbortController().signal), /同一目录快照/u);
+});

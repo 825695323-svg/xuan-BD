@@ -1,3 +1,4 @@
+import { r1PayloadRowKey } from './r1-paged-readback.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
@@ -59,6 +60,8 @@ export interface R1LocalReferences {
   publicationSetId?: string;
   /** New workspace preparations pin four role refs; old scalar task JSON stays unchanged. */
   contractBindingRequired?: true;
+  /** Host-verified fixed definition for reuse; kept only in BD, never external lineage. */
+  reusedDefinition?: { definitionRef: WfdRecord; declaration: WfdRecord };
   /** 唯一 MACD 算法的受信独立核验证明；不经过原报加工计划。 */
   fixedAlgorithm?: { taskId: string; requestId: string; resultSha256: string;
     namespace: string; mode: 'production' | 'user_test'; expectedParentSnapshotId: string | null };
@@ -81,6 +84,8 @@ export interface R1StructuredRequest {
   /** 修订须复用原定义身份；不换语义码、单位或频率身份。 */
   definitionMode?: 'create' | 'reuse';
   definitionRef?: WfdRecord | null;
+  /** 本次确切定义的独立公开时间；不得由行公开时间或取得时间推定。 */
+  definitionPublicTime?: WfdRecord;
   consistencyGroups?: WfdRecord;
   /** Extra members share the real request identity and parent snapshot, never child submissions. */
   additionalOutputs?: R1StructuredRequest[];
@@ -313,7 +318,7 @@ export class R1HandoffService {
     if (!Array.isArray(receipt.rows) || expectedKeys.size > 0 && receipt.rows.length === 0) errors.push('missing:rows');
     const fixed = (Array.isArray(verifiedFixedRows) ? verifiedFixedRows : []).map(row => ({
       row,
-      businessKey: isWfdRecord(row.row) && typeof row.row.business_key === 'string' ? row.row.business_key : '',
+      businessKey: isWfdRecord(row.row) && typeof row.row[r1PayloadRowKey(output)] === 'string' ? row.row[r1PayloadRowKey(output)] : '',
       recordId: typeof row.record_id === 'string' ? row.record_id : '',
       recordVersion: typeof row.record_version === 'string' ? row.record_version : '',
       productId: typeof row.product_id === 'string' ? row.product_id : '',
@@ -496,7 +501,9 @@ export class R1HandoffService {
         .run(canonicalWfdJson(result), 1, canonicalWfdJson({ code: 'R1_REQUEST_IDENTITY_MISSING' }), Date.now(), requestId);
       return { state: 'pending_receipt', errors: ['R1_REQUEST_IDENTITY_MISSING'] };
     }
-    const requireContracts = asRecord((Array.isArray(document.outputs) ? asRecord(document.outputs[0]) : {}).payload).kind === 'tabular_rows'
+    const frozenResultOutput = Array.isArray(document.outputs)
+      ? document.outputs.map(asRecord).find(member => member.output_key === output.output_key) : undefined;
+    const requireContracts = ['tabular_rows', 'event_records'].includes(String(asRecord(frozenResultOutput?.payload).kind))
       || (JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences).contractBindingRequired === true;
     const contractBinding = requireContracts ? readR1ContractBinding(output, String(attempt.dataset_id), productId, true) : undefined;
     const receipt: R1Receipt = {
@@ -646,7 +653,9 @@ export class R1HandoffService {
 
   private async readConflictRows(document: WfdRecord, receipt: R1Receipt, client: WfdStructuredIngestClient, signal?: AbortSignal): Promise<WfdRecord[]> {
     const conflicts = (receipt.row_results ?? []).filter(row => row.state === 'conflict_pending');
-    const payloadRows = asRecord(asRecord((document.outputs as unknown[])[0]).payload).rows as WfdRecord[];
+    const frozenOutput = (document.outputs as WfdRecord[]).find(output => output.output_key === receipt.output_key);
+    if (!frozenOutput) fail('R1_CONFLICT_READBACK', '冲突输出不属于冻结文档。');
+    const payloadRows = asRecord(frozenOutput.payload).rows as WfdRecord[];
     const groups = new Map<string, { snapshot: string; product: string; refs: Map<string, WfdRecord>; history: boolean }>();
     for (const conflict of conflicts) for (const ref of conflict.existing_records) {
       const key = canonicalWfdJson([ref.snapshot_id, ref.product_id]);
@@ -677,7 +686,7 @@ export class R1HandoffService {
           const key = canonicalWfdJson([group.snapshot,group.product,row.record_id,row.record_version]);
           if (verified.has(key) || row.product_id !== group.product || asRecord(row.record_ref).snapshot_id !== group.snapshot
             || asRecord(row.record_ref).logical_key !== row.record_id || asRecord(row.record_ref).revision_id !== row.record_version
-            || asRecord(row.row).business_key !== row.record_id
+            || asRecord(row.row)[r1PayloadRowKey(frozenOutput)] !== row.record_id
             || ref.withdrawn === true && asRecord(row.revision).withdrawn !== true
             || asRecord(row.definition_ref).digest !== asRecord(ref.definition_ref).digest) fail('R1_CONFLICT_READBACK', '冲突旧值的固定身份、定义或唯一性不同。');
           verified.set(key, { ...ref, row: asRecord(row.row), ...(ref.withdrawn === true ? { revision: row.revision, revision_state: row.revision_state } : {}) }); count++;
@@ -892,6 +901,15 @@ export class R1HandoffService {
     }
     if (restrictionOverride && 'outputRestrictions' in restrictionOverride)
       fail('R1_SET_REFERENCE', '单输出不能采用未匹配的集合限制证明。');
+    const frozenOutput = Array.isArray(document?.outputs) ? asRecord(document!.outputs[0]) : {};
+    if (frozenOutput.definition_mode === 'reuse') {
+      const fixed = refs.reusedDefinition;
+      if (!fixed || !isWfdRecord(fixed.declaration) || canonicalWfdJson(fixed.definitionRef) !== canonicalWfdJson(frozenOutput.definition_ref)
+        || isWfdRecord(definition) && Object.keys(definition).length > 0 && canonicalWfdJson(definition) !== canonicalWfdJson(fixed.declaration))
+        fail('R1_REUSED_DEFINITION_REQUIRED', '复用定义须有宿主核定并冻结的原定义，不能按空定义跳过用途检查。');
+      definition = fixed.declaration;
+    }
+    if (!isWfdRecord(definition)) fail('R1_DEFINITION_REQUIRED', '用途核对缺少实际定义。');
     if (refs.fixedAlgorithm) {
       // 数值证明不能替代本次目标的用途限制；每次准备与实际发送都需受信宿主新读取。
       const output = Array.isArray(document?.outputs) ? document.outputs[0] : null;
@@ -1085,7 +1103,7 @@ export function buildStructuredIngestDocument(input: R1StructuredRequest): WfdRe
     expected_parent_snapshot_id: input.expectedParentSnapshotId,
     outputs: [input, ...(input.additionalOutputs ?? [])].map(member => ({
       output_key: member.outputKey,
-      logical_domain: 'observations',
+      logical_domain: member.payload.kind === 'event_records' ? 'events' : 'observations',
       subject: member.subject,
       definition_mode: member.definitionMode ?? 'create',
       definition_ref: member.definitionMode === 'reuse' ? member.definitionRef ?? null : null,
@@ -1094,6 +1112,7 @@ export function buildStructuredIngestDocument(input: R1StructuredRequest): WfdRe
       coverage: member.coverage,
       payload: member.payload,
       ...(member.revisions ? { revisions: member.revisions } : {}),
+      ...(member.definitionPublicTime ? { definition_public_time: member.definitionPublicTime } : {}),
     })),
     ...(input.consistencyGroups ? { consistency_groups: input.consistencyGroups } : {}),
     ...(input.duplicatePolicy ? { duplicate_policy: input.duplicatePolicy } : {}),

@@ -112,6 +112,8 @@ def output(key, subject, definition, payload, domain="observations"):
         "subject": subject,
         "definition_mode": "create",
         "definition_ref": None,
+        # Explicit synthetic definition evidence, independent of each row/publication.
+        "definition_public_time": day(2019, 1, 1),
         "definition": definition,
         "input_mode": "partial_observation",
         "coverage": {"scope": {"synthetic": True,

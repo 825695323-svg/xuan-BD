@@ -276,6 +276,8 @@ class ProductQuery:
                     "market_known_at": {
                         "supported": True,
                         "eligibility": "reuses WFDProductService eligibility before revision selection",
+                        "definition_metadata": ("every fixed binding requires independently qualified definition_public_time; otherwise reject product"
+                                                if data_only else "legacy technical metadata boundary"),
                         "knowledge_cutoff_rules": {
                             "second_precision_point": "one-second TimeWithPrecision interval; use earliest_utc",
                             "coarse_precision_conservative_lower_bound":
@@ -1117,6 +1119,9 @@ class ProductQuery:
             str(item.get("product_id") or ""),
             str(item.get("business_key") or ""),
             str(item.get("code") or item.get("reason") or "")))
+        if request.get("history_mode") != "snapshot_contents":
+            visible = {_product_key(item) for item in result.get("rows", [])}
+            all_products = {key: value for key, value in all_products.items() if key in visible}
         return projected_rows, diagnostics, all_products, units
 
     def _project_batch_window(self, request, batches, manifest_products, *,
@@ -1600,6 +1605,15 @@ class ProductQuery:
             self._decode_offset_cursor(request["cursor"], session["query_hash"])
         return session
 
+    def _guard_history_metadata(self, entries, request, at):
+        guard = getattr(self.service, "_guard_definition_history", None)
+        if callable(guard):
+            try:
+                guard(entries, perspective=request["history_mode"], at=at)
+            except ValueError as exc:
+                code = "CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED" if str(exc) == "CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED" else "HISTORY_DEFINITION_TIME_UNSUPPORTED"
+                raise ProductQueryError(code, "Fixed definition is not qualified at this market cutoff") from exc
+
     def _read_context_product(self, session, product_id):
         cache = session["cache"]
         if product_id in cache:
@@ -1620,6 +1634,7 @@ class ProductQuery:
             cache[product_id] = {"status": "permission_denied"}
             return cache[product_id]
         try:
+            self._guard_history_metadata(entries, request, session["cutoff_at"])
             self._current_business_policy(request, session["metas"][product_id])
         except ProductQueryError as exc:
             session["gaps"].append({"code": exc.code, "product_id": product_id, "scope": "product"})
@@ -1690,11 +1705,21 @@ class ProductQuery:
                 "product_id": product_id, "scope": "product"})
             cache[product_id] = {"status": "failed"}
             return cache[product_id]
+        visible_products = session["metas"][product_id]
+        if request["history_mode"] != "snapshot_contents":
+            visible_keys = {_product_key(item) for item in result.get("rows", [])}
+            visible_products = {key: product for key, product in visible_products.items() if key in visible_keys}
+            if not visible_products:
+                # Keep time/holding diagnostics, but do not select a definition
+                # from a contract that was never visible at this cutoff.
+                session["gaps"].extend(copy.deepcopy(result.get("diagnostics", [])))
+                cache[product_id] = {"status": "no_visible_records"}
+                return cache[product_id]
         cache[product_id] = {
             "status": "ok", "result": result,
-            "product": self._first_meta(session["metas"][product_id]),
-            "products": session["metas"][product_id],
-            "kind": self._product_kind(session["metas"][product_id]),
+            "product": self._first_meta(visible_products),
+            "products": visible_products,
+            "kind": self._product_kind(visible_products),
             "budget": budget,
         }
         return cache[product_id]
@@ -2606,6 +2631,7 @@ class ProductQuery:
         # available_fields list).  This does not read payloads.
         self._authorize_metadata_sources(
             self._source_ids_from_entries(entries), require_nonempty=True)
+        self._guard_history_metadata(entries, request, cutoff_at)
         manifest_products = self._manifest_products(entries)
         datasets = {product.get("dataset_id") for product in manifest_products.values()}
         if len(datasets) != 1:
@@ -2645,7 +2671,8 @@ class ProductQuery:
                 "Requested field is not a declared value field for this product",
                 {"product_id": request["product_id"],
                  "missing_fields": missing_fields,
-                 "available_fields": sorted(available)})
+                 **({"available_fields": sorted(available)}
+                    if request["history_mode"] == "snapshot_contents" else {})})
 
         if use_batches:
             batch_count = 0

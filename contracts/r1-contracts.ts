@@ -18,7 +18,15 @@ export interface R1TabularMapping extends R1TimeMapping {
   /** Absence preserves unknown historical availability; acquisition time is never substituted. */
   publicTime?: R1TimeMapping;
 }
-export type R1Mapping = R1ScalarMapping | R1TabularMapping;
+/** Explicit WFD event nature and distinct event/public/expected temporal roles. */
+export type R1EventTimeMapping = { status: 'unknown'; sourceTimezone: string } | ({ status: 'known' } & R1TimeMapping);
+export interface R1EventMapping {
+  kind: 'event_records'; eventId: string; eventType: string; assertionKind: string; caseId?: string;
+  contentNature: 'source_claim' | 'plan' | 'forecast' | 'observed_fact' | 'outcome'; status: string;
+  eventTime: R1EventTimeMapping; publicTime: R1EventTimeMapping; expectedTime?: R1EventTimeMapping;
+  fields: { fieldCode: string; value: string; state: string }[];
+}
+export type R1Mapping = R1ScalarMapping | R1TabularMapping | R1EventMapping;
 export interface R1SourceDeclaration {
   source_id: string; provider: string; requested_url: string;
   requested_at_utc: string; acquired_at_utc: string; usage_scope: string;
@@ -33,7 +41,9 @@ export interface R1PrepareInput {
   mapping: R1Mapping;
   target: { datasetId: string; outputKey: string; expectedParentSnapshotId: string | null;
     subject: Record<string, unknown>; definition: Record<string, unknown>;
-    inputMode: 'partial_observation' | 'complete_snapshot'; coverage: Record<string, unknown> };
+    inputMode: 'partial_observation' | 'complete_snapshot' | 'source_correction'; coverage: Record<string, unknown>;
+    definitionMode?: 'reuse'; definitionRef?: Record<string, unknown>;
+    revisions?: Record<string, { previous: { product_id: string; snapshot_id: string; logical_key: string; revision_id: string }; reason: string }> };
 }
 interface R1ConnectionIdentityBase {
   connectionId: string; protocol: 'wfd.structured-ingest/1.0'; profile: 'data_only';
@@ -69,7 +79,7 @@ export interface R1CapabilitiesView {
   protocol: 'wfd.structured-ingest/1.0'; profile: 'data_only';
   configuration: { state: string; reason: string | null }; connection: R1ConnectionIdentity | null;
   limits: { maxRows: number; maxDocumentBytes: number; maxMaterials: 1; payload: 'scalar_rows';
-    supportedPayloads?: readonly ('scalar_rows' | 'tabular_rows')[] };
+    supportedPayloads?: readonly ('scalar_rows' | 'tabular_rows' | 'event_records')[] };
   automaticSubmit: false; legacyReplay: false;
   publicationSets?: { prepareKind: 'publication_set'; maxOutputs: 16; membership: 'frozen_plan'; atomicity: 'declared_set' };
 }

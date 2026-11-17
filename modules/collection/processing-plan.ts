@@ -18,7 +18,8 @@ import { readEventTextSelection } from './data-processing/event-text.js';
 import { readNecessaryTextSelection } from './data-processing/necessary-text.js';
 import { readFinancialPdfSelection, projectFinancialPdf } from './data-processing/financial-pdf.js';
 import { readFinancialCalculation, projectFinancialFixed, type FinancialReader } from './data-processing/financial-fixed.js';
-import { R1_TABULAR_RULE_VERSION, checkR1TabularRows, compileR1TabularDeclaration, isR1TabularDeclaration, parseR1Utc } from './r1-tabular.js';
+import { R1_TABULAR_RULE_VERSION, parseR1Utc } from './r1-tabular.js';
+import { R1_EVENT_RULE_VERSION, checkR1MappedRows, compileR1MappedDeclaration, isR1MappedDeclaration } from './r1-event.js';
 import { r1SourceGaps } from './r1-source.js';
 import { adapterColumnType, adapterTypeCompatible, readAdapterSelection, type AdapterBindingRef, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import { decodeAdapterSource } from './endpoint-adapter.js';
@@ -252,7 +253,10 @@ export class ProcessingPlanService {
           output: 'candidate-ready {rows} object and structural evidence; business semantics remain explicit gaps' },
       ],
       notImplemented: ['business rule applicability and implementation coverage beyond the listed bindings are unverified', 'OCR/transcription semantic validation', 'binary/code execution', 'formal database admission', 'archive member expansion'],
-      semanticAdapters: [{ protocol: 'wfd.structured-ingest/1.0', mappingKind: 'tabular_rows', ruleVersion: R1_TABULAR_RULE_VERSION,
+      semanticAdapters: [{ protocol: 'wfd.structured-ingest/1.0', mappingKind: 'event_records', ruleVersion: R1_EVENT_RULE_VERSION,
+        scope: 'explicit source_claim/plan/forecast/observed_fact/outcome; event/public/expected times remain distinct; source correction pins prior definition/record; status is an explicit source declaration, not a verified state machine; no fact inference',
+        mappingShape: '{kind:"event_records",eventId,eventType,assertionKind,caseId?,contentNature,status,eventTime,publicTime,expectedTime?,fields:[{fieldCode,value,state}]}',
+        targetRule: 'definition measurement_nature=event,time_role=event,unit_code=not_applicable,content_nature matches row nature (outcome maps to actual_outcome); fixed field definitions; time mapping is explicit unknown+sourceTimezone or known+earliestUtc/latestExclusiveUtc/precision/sourceTimezone'  }, { protocol: 'wfd.structured-ingest/1.0', mappingKind: 'tabular_rows', ruleVersion: R1_TABULAR_RULE_VERSION,
         scope: 'explicit general table fields or declared daily/minute market roles; structural artifacts and per-output semantic quality remain separate',
         publication: 'only a matching pass permits this rule-qualified candidate; source authority and WFD admission remain separate' }],
       csvSelection: { predicate: 'exact original column/string equality', maxSourceBytes: CANDIDATE_LIMITS.maxObjectBytes,
@@ -269,6 +273,8 @@ export class ProcessingPlanService {
         calculation: { version: 'bd-financial-fixed/1', operation: 'standardize', inputs: [{ snapshotId: 'exact fixed snapshot ID',
           productId: 'exact fixed product ID', businessKeys: ['exact logical key from fixed read'] }] },
         input: 'fixed snapshotId/productId/businessKeys only, read by bound host; no caller-supplied values',
+        history: 'optional explicit historyMode/at with system heldScope/usableStage; same selection for every fixed input, no latest fallback',
+        compatibleInputs: 'optional {periodType:duration|instant,periods:[{startDate,endDate}]}; requires fixed report_nature, fiscal_calendar and comparability_basis alongside subject/scope/dimension/currency/unit',
         scope: 'CAS/CNY registered primary-statement concept mapping with original values and dimensions',
         limits: 'Resolved numeric CNY cells and registered concepts only; unmapped concepts are recorded as evidence' },
       tableInputs: { common: ['materialId', 'format'], optional: ['fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations', 'numericFormats'],
@@ -1120,8 +1126,8 @@ export class ProcessingPlanService {
     if (tables.length && selected('check')) {
       const checkId = `check:${outputId}`;
       const deps = lastBySource.map(stepId => steps.find(step => step.stepId === stepId)!);
-      const semantic = isR1TabularDeclaration(target?.declaration)
-        ? { ...compileR1TabularDeclaration(target!.declaration), declaration: target!.declaration!,
+      const semantic = isR1MappedDeclaration(target?.declaration)
+        ? { ...compileR1MappedDeclaration(target!.declaration), declaration: target!.declaration!,
           sourceDimensions: dimensions.filter(dimension => dimension.key === 'role' || dimension.key === 'informationNature')
             .map(({ key, status, value }) => ({ key, status, value })) } : null;
       const sourceGaps = semantic ? this.tabularSourceGaps(semantic.declaration, semantic.sourceDimensions) : [];
@@ -1413,7 +1419,7 @@ export class ProcessingPlanService {
   private checkSemantic(rows: WfdRecord[], parameters: WfdRecord): ProcessingSemanticEvidence | null {
     if (parameters.semantic === undefined) return null;
     const frozen = readRecord(parameters.semantic, ['applicable', 'ruleVersion', 'ruleDigest', 'checkScope', 'gaps', 'declaration', 'sourceDimensions'], 'PROCESSING_SEMANTIC_BINDING');
-    const compiled = compileR1TabularDeclaration(frozen.declaration);
+    const compiled = compileR1MappedDeclaration(frozen.declaration);
     const sourceGaps = this.tabularSourceGaps(frozen.declaration,
       Array.isArray(frozen.sourceDimensions) ? frozen.sourceDimensions as Pick<NormalizedDimension, 'key' | 'status' | 'value'>[] : []);
     const incomplete = { scope: 'processed_output_rows' as const, inputRows: rows.length, checkedRows: null, complete: false };
@@ -1422,7 +1428,7 @@ export class ProcessingPlanService {
         checkScope: [], gaps: ['原计划冻结的金融规则或目标摘要已变化；须形成关联新计划，未沿旧证明发布。'], coverage: incomplete };
     }
     try {
-      const checked = checkR1TabularRows(rows, frozen.declaration);
+      const checked = checkR1MappedRows(rows, frozen.declaration);
       const quality = checked.quality === 'pass' && sourceGaps.length === 0 ? 'pass' : 'indeterminate';
       return { quality, ruleVersion: checked.ruleVersion, ruleDigest: checked.ruleDigest,
         checkScope: [...checked.checkScope, 'operator_source_declaration_binding', 'source_acquisition_time_order',
@@ -1441,8 +1447,8 @@ export class ProcessingPlanService {
 
   private outputSemantic(target: ProcessingTargetInput | null, evidence: ProcessingSemanticEvidence | null,
     dimensions: Pick<NormalizedDimension, 'key' | 'status' | 'value'>[]): ProcessingSemanticEvidence | null {
-    if (!isR1TabularDeclaration(target?.declaration)) return null;
-    const binding = compileR1TabularDeclaration(target!.declaration);
+    if (!isR1MappedDeclaration(target?.declaration)) return null;
+    const binding = compileR1MappedDeclaration(target!.declaration);
     const sourceGaps = this.tabularSourceGaps(target!.declaration, dimensions);
     if (!evidence) return { quality: 'pending', ruleVersion: binding.ruleVersion, ruleDigest: binding.ruleDigest,
       checkScope: [], gaps: [...binding.gaps, ...sourceGaps, '本输出金融规则尚未执行；六维已知与结构完成不代替证明。'],
