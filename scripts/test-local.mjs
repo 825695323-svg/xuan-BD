@@ -65,6 +65,8 @@ try {
         'apps/server/processing-quality.test.ts',
         'apps/server/event-occurrence.test.ts',
         'apps/server/event-occurrence-r1.test.ts',
+        'apps/server/event-records-r1.test.ts',
+        'modules/collection/r1-event.test.ts',
         'modules/collection/data-processing/event-text.test.ts',
         'apps/server/processing-dependencies.test.ts',
         'apps/server/r1-dedup.test.ts',

@@ -6,6 +6,7 @@ import type { R1Receipt } from './r1-structured-handoff.js';
 import { assertR1ContractBinding, frozenR1RowMatches, readR1ContractBinding } from './r1-tabular.js';
 
 export const R1_READ_PAGE_FORMAT = 'wfd.fixed-read-page/1';
+export const r1PayloadRowKey = (output: WfdRecord): string => object(output.payload).kind === 'event_records' ? 'event_id' : 'business_key';
 const LEGACY_PAGE_SIZE = 256, PAGE_BYTES = 1_048_576, MAX_STATE_BYTES = 8_388_608;
 const sha = (value: unknown) => 'sha256:' + wfdSha256(canonicalWfdJson(value));
 const compare = (left: string, right: string) => Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
@@ -208,7 +209,7 @@ export function acceptedR1ReceiptRows(document: WfdRecord, receipt: R1Receipt): 
     || first.output_key !== receipt.output_key || canonicalWfdJson(document.request_identity) !== canonicalWfdJson(receipt.request_identity))
     fail('RECEIPT_INVALID', '原回执输出、请求身份或冻结行集合不符。');
   if (document.duplicate_policy !== 'skip_identical_append') {
-    const map = new Map(rows.map(value => [String(value.business_key), value]));
+    const map = new Map(rows.map(value => [String(value[r1PayloadRowKey(first)]), value]));
     if (rows.length !== receipt.rows.length || map.size !== receipt.rows.length
       || receipt.rows.some(ref => !map.has(ref.record_id))) fail('RECEIPT_INVALID', '原回执不是冻结文档的完整业务键集合。');
     return map;
@@ -219,7 +220,7 @@ export function acceptedR1ReceiptRows(document: WfdRecord, receipt: R1Receipt): 
   const counts = { inserted: 0, duplicate_skipped: 0, conflict_pending: 0 };
   for (const result of results) {
     const index = result.row_index, incoming = rows[index];
-    if (!Number.isSafeInteger(index) || index < 0 || seen.has(index) || !incoming || incoming.business_key !== result.business_key)
+    if (!Number.isSafeInteger(index) || index < 0 || seen.has(index) || !incoming || incoming[r1PayloadRowKey(first)] !== result.business_key)
       fail('RECEIPT_INVALID', '逐行回执的原行索引或业务键不符、缺失或重复。');
     seen.add(index);
     if (!['inserted','duplicate_skipped','conflict_pending'].includes(result.state)) fail('RECEIPT_INVALID', '逐行状态不是明确新增、跳过或待确认冲突。');
@@ -251,7 +252,7 @@ function validateRows(input: R1ReadbackInput, expected: Map<string, WfdRecord>, 
   for (const [index, actual] of rows.entries()) {
     const id = actual.record_id, value = object(actual.row), recordRef = object(actual.record_ref);
     if (typeof id !== 'string' || !expected.has(id) || (index > 0 && compare(previous, id) >= 0)
-      || actual.record_version !== versions.get(id) || value.business_key !== id || actual.product_id !== input.receipt.product_id
+      || actual.record_version !== versions.get(id) || value[r1PayloadRowKey(selectedOutput(input.document, input.receipt.output_key))] !== id || actual.product_id !== input.receipt.product_id
       || object(actual.definition_ref).digest !== input.receipt.definition_digest || recordRef.snapshot_id !== input.receipt.snapshot_id
       || recordRef.logical_key !== id || recordRef.revision_id !== actual.record_version) fail('ROW_IDENTITY', '页中记录不属于原回执的准确版本、顺序、定义或快照。');
     const wanted = expected.get(id)!;
@@ -260,7 +261,7 @@ function validateRows(input: R1ReadbackInput, expected: Map<string, WfdRecord>, 
   }
 }
 function verificationProjection(actual: WfdRecord, expected: WfdRecord): WfdRecord {
-  const observed = object(actual.row), recordRef = object(actual.record_ref), row: WfdRecord = { business_key: observed.business_key };
+  const observed = object(actual.row), recordRef = object(actual.record_ref), row: WfdRecord = {};
   for (const key of Object.keys(expected)) row[key] = observed[key];
   return { record_id: actual.record_id, record_version: actual.record_version, product_id: actual.product_id,
     definition_ref: { digest: object(actual.definition_ref).digest },
@@ -269,7 +270,7 @@ function verificationProjection(actual: WfdRecord, expected: WfdRecord): WfdReco
 function verifyContracts(input: R1ReadbackInput, result: WfdRecord): void {
   const first = selectedOutput(input.document, input.receipt.output_key);
   const binding = readR1ContractBinding(input.receipt as unknown as WfdRecord, input.receipt.dataset_id,
-    input.receipt.product_id, object(first.payload).kind === 'tabular_rows');
+    input.receipt.product_id, ['tabular_rows', 'event_records'].includes(String(object(first.payload).kind)));
   if (!binding) return; // Original scalar contract doubles/tasks did not freeze four role refs.
   const products = Array.isArray(result.products) ? result.products.filter(isWfdRecord).filter(product => product.product_id === input.receipt.product_id
     && object(product.definition_ref).digest === input.receipt.definition_digest) : [];
