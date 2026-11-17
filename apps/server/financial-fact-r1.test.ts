@@ -64,6 +64,13 @@ test('financial source correction verifies full actual identity and exact predec
     let host = await openFullChainHost(fixture);
     try {
       const initial = await publish(host, await prepare(host, 'original', row('10', 'v1'), null));
+      const holding = (await host.call('/r1/products/snapshot', {})).holdingInstance;
+      assert.equal(holding.bindingSource, 'target_instance');
+      const heldRequest = { historyMode: 'system_held_at', heldScope: holding.instanceId, usableStage: 'published_readable' };
+      const heldOriginal = await host.call('/r1/products/read', { snapshotId: initial.snapshot_id, productId: initial.product_id,
+        ...heldRequest, at: new Date().toISOString().replace(/\.\d{3}Z$/u, 'Z') });
+      const originalHeldAt = heldOriginal.result.rows[0].held_at;
+      assert.equal(heldOriginal.result.rows[0].values.value.value, '10');
       const fixed = (await host.services.r1Runtime!.client.fixedRead(initial.snapshot_id, initial.product_id)).result;
       const product = (fixed.products as WfdRecord[])[0]!, prior = (fixed.rows as WfdRecord[])[0]!;
       const correction = { previous: prior.record_ref as WfdRecord, definitionRef: product.definition_ref as WfdRecord, definition: product.declaration as WfdRecord };
@@ -98,11 +105,17 @@ test('financial source correction verifies full actual identity and exact predec
       assert.equal(stale.code, 'R1_CORRECTION_PREDECESSOR');
       const latest = await host.call('/r1/products/read', { snapshotId: revised.snapshot_id, productId: revised.product_id });
       assert.equal(latest.result.rows.length, 1); assert.equal(latest.result.rows[0].values.value.value, '12');
+      const atOriginalHolding = await host.call('/r1/products/read', { snapshotId: revised.snapshot_id, productId: revised.product_id,
+        ...heldRequest, at: originalHeldAt });
+      assert.equal(atOriginalHolding.result.rows[0].values.value.value, '10', 'Later correction must not replace the earlier actual holding');
+      assert.equal(atOriginalHolding.result.rows[0].held_at, originalHeldAt);
       const old = await host.call('/r1/products/read', { snapshotId: initial.snapshot_id, productId: initial.product_id });
       assert.equal(old.result.rows[0].values.value.value, '10');
       assert.equal(latest.result.rows[0].record_ref.logical_key, old.result.rows[0].record_ref.logical_key);
       assert.notEqual(latest.result.rows[0].record_ref.revision_id, old.result.rows[0].record_ref.revision_id);
       await host.close(); host = await openFullChainHost(fixture);
+      assert.equal((await host.call('/r1/products/snapshot', {})).holdingInstance.instanceId, holding.instanceId);
+      assert.deepEqual((await host.call('/r1/products/read', { snapshotId: revised.snapshot_id, productId: revised.product_id, ...heldRequest, at: originalHeldAt })).result.rows, atOriginalHolding.result.rows);
       assert.deepEqual((await host.call('/r1/products/read', { snapshotId: initial.snapshot_id, productId: initial.product_id })).result.rows, old.result.rows);
     } finally { await host.close(); }
   });
