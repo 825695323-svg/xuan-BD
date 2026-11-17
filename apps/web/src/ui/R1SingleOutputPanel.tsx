@@ -781,7 +781,7 @@ export function R1Panel() {
       {!recent.length && <p className="data-empty">{words('尚无新 R1 请求。', 'No new R1 requests yet.')}</p>}
       {recent.map(item => <button type="button" className="database-row database-row--button" key={item.requestId} disabled={busy} onClick={() => void action(async () => { showView(await r1Api.get(item.requestId)); setLookupId(item.requestId); setConfirmed(false); })}><span>{item.requestId}</span><span>{words(states[item.state] ?? item.state, item.state)}</span></button>)}
     </section>
-    <R1ReadPanel ready={ready} />
+    <R1ReadPanel key={JSON.stringify(caps?.connection ?? null)} ready={ready} />
     <StructuredQueryPanel ready={ready} />
   </div>;
 }

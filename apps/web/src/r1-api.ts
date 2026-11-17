@@ -3,6 +3,7 @@ import type { R1CapabilitiesView, R1PrepareInput, R1ProductDiscovery, R1ProductR
 import type { MaterialCategory } from '../../../modules/collection/materials/contracts';
 import { request, RequestError } from './api';
 import { readBdJob } from './bd-api';
+import { assertR1ReadHistoryEcho, isR1HoldingInstance, validateR1ReadHistoryInput } from './r1-read-history';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 function connection(value: unknown): boolean {
@@ -42,7 +43,8 @@ export const r1Api = {
     const value = await request('/api/bd/r1/products/snapshot', 'POST', {});
     if (!object(value) || value.authority !== 'active_head' || !(value.snapshotId === null || typeof value.snapshotId === 'string')
       || value.empty !== (value.snapshotId === null) || !object(value.connection) || value.connection.profile !== 'data_only'
-      || !Array.isArray(value.connection.roles) || !object(value.units)) throw new RequestError('WFD 当前固定快照状态无法核对；不能当作空库。');
+      || !Array.isArray(value.connection.roles) || !object(value.units)
+      || value.holdingInstance !== undefined && value.holdingInstance !== null && !isR1HoldingInstance(value.holdingInstance)) throw new RequestError('WFD 当前固定快照状态无法核对；不能当作空库。');
     return value as unknown as R1SnapshotStatus;
   },
   discoverProducts: async (snapshotId: string): Promise<R1ProductDiscovery> => {
@@ -58,11 +60,13 @@ export const r1Api = {
     return value as unknown as R1ProductDiscovery;
   },
   readProduct: async (input: R1ProductReadInput): Promise<R1ProductRead> => {
+    validateR1ReadHistoryInput(input);
     const value = await request('/api/bd/r1/products/read', 'POST', input);
+    assertR1ReadHistoryEcho(input, value);
     if (!object(value) || value.snapshotId !== input.snapshotId || value.productId !== input.productId
-      || value.historyMode !== 'snapshot_contents' || !object(value.connection) || value.connection.profile !== 'data_only'
+      || !object(value.connection) || value.connection.profile !== 'data_only'
       || !object(value.limits) || !object(value.result) || value.result.snapshot_id !== input.snapshotId
-      || value.result.product_id !== input.productId || value.result.history_mode !== 'snapshot_contents'
+      || value.result.product_id !== input.productId
       || !Array.isArray(value.result.rows) || !Array.isArray(value.result.fields) || !value.result.fields.every(field => typeof field === 'string')
       || input.fields !== undefined && JSON.stringify(value.result.fields) !== JSON.stringify([...input.fields].sort())
       || !Array.isArray(value.result.diagnostics)
