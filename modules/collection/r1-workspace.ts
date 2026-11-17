@@ -8,8 +8,8 @@ import { assertKnownR1Source, buildStructuredIngestDocument, parseR1Utc, validat
 import { PROCESSING_PLAN_VERSION, type ProcessingPlanService } from './processing-plan.js';
 import type { MaterialService } from './materials/service.js';
 import type { R1Runtime } from './r1-runtime.js';
-import { checkR1TabularRows, compileR1TabularDeclaration } from './r1-tabular.js';
 import { checkR1ProductCoverage } from './r1-product-coverage.js';
+import { checkR1MappedRows, compileR1EventDeclaration, compileR1MappedDeclaration } from './r1-event.js';
 import { R1ProductReader } from './r1-product-reader.js';
 import { publishRestrictionTarget, restrictionEvidenceFromUsageStatus, type PublishRestrictionTarget } from './wfd-publish-restriction.js';
 import type { RestrictionEvidence } from './purpose-eligibility.js';
@@ -17,7 +17,7 @@ import type { RestrictionEvidence } from './purpose-eligibility.js';
 export const R1_WORKSPACE_RUNTIME = 'bd.r1-structured-ingest';
 export const R1_WORKSPACE_VERSION = 'bd.r1-workspace/1';
 export const R1_WEB_LIMITS = Object.freeze({ maxRows: 5000, maxDocumentBytes: 786432, maxMaterials: 1 as const, payload: 'scalar_rows' as const,
-  supportedPayloads: ['scalar_rows', 'tabular_rows'] as const });
+  supportedPayloads: ['scalar_rows', 'tabular_rows', 'event_records'] as const });
 const UNKNOWN_STATES = new Set(['sending', 'pending_unknown', 'pending_receipt']);
 interface RequestRow { request_id: string; binding_json: string; binding_sha256: string; recipe_sha256: string;
   plan_id: string; output_id: string; submit_task_id: string | null }
@@ -262,7 +262,8 @@ export class R1WorkspaceService {
     if (!memberOfSet && Object.values(plan.consistencyGroups).some(members => members.includes(input.outputId)))
       fail('R1_SET_WHOLE_REQUIRED', '此输出属于已声明发布集合，不能从单输出入口拆开提交。');
     if (!fixedOutput || fixedOutput.publishEligible !== true || fixedOutput.routingState !== 'ready_candidate') fail('R1_PROCESS_NOT_READY', '原计划的六维、明确发布用途与目标尚未齐备；结构成功不能替代准入。');
-    const tabular = 'kind' in input.mapping && input.mapping.kind === 'tabular_rows';
+    const event = 'kind' in input.mapping && input.mapping.kind === 'event_records';
+    const tabular = event || 'kind' in input.mapping && input.mapping.kind === 'tabular_rows';
     const declaration = { protocol: 'wfd.structured-ingest/1.0', target: input.target, mapping: input.mapping,
       ...(tabular ? { source: input.source } : {}) };
     if (canonicalWfdJson(fixedOutput.target?.declaration ?? null) !== canonicalWfdJson(declaration)
@@ -276,11 +277,11 @@ export class R1WorkspaceService {
     let parsed: unknown;
     try { parsed = JSON.parse(actual.bytes.toString('utf8')); } catch { fail('R1_PROCESS_OUTPUT_FORMAT', '加工产物不是有效 JSON。'); }
     if (!isWfdRecord(parsed) || !Array.isArray(parsed.rows)) fail('R1_PROCESS_OUTPUT_FORMAT', '加工产物没有真实 rows。');
-    const checked = tabular ? checkR1TabularRows(parsed.rows, declaration) : null;
+    const checked = tabular ? checkR1MappedRows(parsed.rows, declaration) : null;
     if (checked && checked.quality !== 'pass') fail('R1_TABULAR_SEMANTICS', checked.gaps.join('；'));
     const rows = checked ? checked.rows : scalarRows(parsed.rows, input.mapping as R1ScalarMapping, input.target.inputMode === 'partial_observation');
     const structured: R1StructuredRequest = { ...input.target, namespace: identity.namespace, producerNamespace: identity.namespace,
-      requestId: input.requestId, ...(input.target.inputMode === 'partial_observation' ? { duplicatePolicy: 'skip_identical_append' as const } : {}), submissionDigest: 'sha256:' + '0'.repeat(64), payload: { kind: tabular ? 'tabular_rows' : 'scalar_rows', rows } };
+      requestId: input.requestId, ...(input.target.inputMode === 'partial_observation' ? { duplicatePolicy: 'skip_identical_append' as const } : {}), submissionDigest: 'sha256:' + '0'.repeat(64), payload: { kind: event ? 'event_records' : tabular ? 'tabular_rows' : 'scalar_rows', rows } };
     const unsigned = buildStructuredIngestDocument(structured);
     const digestInput = structuredClone(unsigned);
     delete (digestInput.request_identity as WfdRecord).submission_digest;
@@ -566,8 +567,9 @@ function readInput(value: unknown): R1PrepareInput {
   id(input.requestId); id(input.planId); id(input.outputId);
   const sourceFields = ['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope'];
   const source = object(input.source, [...sourceFields, 'license', 'authorization']);
-  const tabular = isWfdRecord(input.mapping) && input.mapping.kind === 'tabular_rows';
-  const mapping = object(input.mapping, tabular
+  const event = isWfdRecord(input.mapping) && input.mapping.kind === 'event_records';
+  const tabular = event || isWfdRecord(input.mapping) && input.mapping.kind === 'tabular_rows';
+  const mapping = object(input.mapping, event ? ['kind', 'eventId', 'eventType', 'assertionKind', 'contentNature', 'status', 'eventTime', 'publicTime', 'fields'] : tabular
     ? ['kind', 'businessKey', 'earliestUtc', 'latestExclusiveUtc', 'precision', 'sourceTimezone', 'fields', 'bar', 'publicTime']
     : ['businessKey', 'value', 'earliestUtc', 'latestExclusiveUtc', 'precision', 'sourceTimezone']);
   const target = object(input.target, ['datasetId', 'outputKey', 'expectedParentSnapshotId', 'subject', 'definition', 'inputMode', 'coverage']);
@@ -577,12 +579,13 @@ function readInput(value: unknown): R1PrepareInput {
   if (Object.keys(source).length !== sourceFields.length + Number(Object.hasOwn(source, 'license')) + Number(Object.hasOwn(source, 'authorization'))
     || !tabular && Object.keys(mapping).length !== 6 || Object.keys(target).length !== 7) fail('R1_WEB_INPUT', '来源、映射和目标必须逐项明确，不能补猜。');
   assertKnownR1Source(source as unknown as R1PrepareInput['source']);
-  for (const field of ['businessKey', ...(!tabular ? ['value'] : []), 'earliestUtc', 'latestExclusiveUtc', 'sourceTimezone']) boundedText(mapping[field], 128);
-  if (!['day', 'minute', 'second'].includes(String(mapping.precision))) fail('R1_WEB_TIME', '当前切片只支持显式 day/minute/second 时间精度。');
+  if (!event) for (const field of ['businessKey', ...(!tabular ? ['value'] : []), 'earliestUtc', 'latestExclusiveUtc', 'sourceTimezone']) boundedText(mapping[field], 128);
+  if (!event && !['day', 'minute', 'second'].includes(String(mapping.precision))) fail('R1_WEB_TIME', '当前切片只支持显式 day/minute/second 时间精度。');
   id(target.datasetId); id(target.outputKey);
   if (target.expectedParentSnapshotId !== null) id(target.expectedParentSnapshotId);
   if (!['partial_observation', 'complete_snapshot'].includes(String(target.inputMode)) || !isWfdRecord(target.subject) || !isWfdRecord(target.definition) || !isWfdRecord(target.coverage)) fail('R1_WEB_TARGET', '目标身份、定义、覆盖或输入模式无效。');
-  if (tabular) compileR1TabularDeclaration({ protocol: 'wfd.structured-ingest/1.0', mapping, target, source });
+  if (event) compileR1EventDeclaration({ protocol: 'wfd.structured-ingest/1.0', mapping, target, source });
+  else if (tabular) compileR1MappedDeclaration({ protocol: 'wfd.structured-ingest/1.0', mapping, target, source });
   return JSON.parse(canonicalWfdJson(input)) as R1PrepareInput;
 }
 function scalarRows(rows: unknown[], mapping: R1ScalarMapping, allowDuplicateKeys: boolean): WfdRecord[] {

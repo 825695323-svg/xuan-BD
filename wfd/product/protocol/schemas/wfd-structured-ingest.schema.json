@@ -712,6 +712,10 @@
         "subject": {
           "$ref": "#/$defs/identity"
         },
+        "definition_public_time": {
+          "type": "object",
+          "description": "Independent public time of this exact definition binding; validated as WFD TimeWithPrecision. Missing evidence does not qualify market history."
+        },
         "definition_mode": {
           "enum": [
             "create",

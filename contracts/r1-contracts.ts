@@ -18,7 +18,14 @@ export interface R1TabularMapping extends R1TimeMapping {
   /** Absence preserves unknown historical availability; acquisition time is never substituted. */
   publicTime?: R1TimeMapping;
 }
-export type R1Mapping = R1ScalarMapping | R1TabularMapping;
+/** First event bridge only admits source claims with explicitly unknown lifecycle/time. */
+export interface R1EventMapping {
+  kind: 'event_records'; eventId: string; eventType: string; assertionKind: string;
+  contentNature: 'source_claim'; status: 'unknown';
+  eventTime: { status: 'unknown'; sourceTimezone: string }; publicTime: { status: 'unknown'; sourceTimezone: string };
+  fields: { fieldCode: string; value: string; state: string }[];
+}
+export type R1Mapping = R1ScalarMapping | R1TabularMapping | R1EventMapping;
 export interface R1SourceDeclaration {
   source_id: string; provider: string; requested_url: string;
   requested_at_utc: string; acquired_at_utc: string; usage_scope: string;
@@ -69,7 +76,7 @@ export interface R1CapabilitiesView {
   protocol: 'wfd.structured-ingest/1.0'; profile: 'data_only';
   configuration: { state: string; reason: string | null }; connection: R1ConnectionIdentity | null;
   limits: { maxRows: number; maxDocumentBytes: number; maxMaterials: 1; payload: 'scalar_rows';
-    supportedPayloads?: readonly ('scalar_rows' | 'tabular_rows')[] };
+    supportedPayloads?: readonly ('scalar_rows' | 'tabular_rows' | 'event_records')[] };
   automaticSubmit: false; legacyReplay: false;
   publicationSets?: { prepareKind: 'publication_set'; maxOutputs: 16; membership: 'frozen_plan'; atomicity: 'declared_set' };
 }

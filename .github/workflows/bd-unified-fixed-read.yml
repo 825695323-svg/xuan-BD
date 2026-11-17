@@ -13,6 +13,7 @@ on:
       - 'contracts/r1-contracts.ts'
       - 'modules/collection/r1-product-reader*'
       - 'apps/server/r1-history-read.test.ts'
+      - 'apps/server/financial-compatible-inputs.test.ts'
       - '.github/workflows/bd-unified-fixed-read.yml'
 
 permissions:
@@ -36,7 +37,7 @@ jobs:
           else
             echo 'algorithm=false' >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -Eq '(r1-product-reader|r1-history-read|contracts/r1-contracts|product-machine-snapshot|bd-unified-fixed-read)'; then
+          if echo "$changed" | grep -Eq '(r1-product-reader|r1-history-read|financial-fixed|financial-compatible-inputs|wfd-fixed-selection|contracts/r1-contracts|product-machine-snapshot|bd-unified-fixed-read)'; then
             echo 'history=true' >> "$GITHUB_OUTPUT"
           else
             echo 'history=false' >> "$GITHUB_OUTPUT"
@@ -86,4 +87,5 @@ jobs:
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
           node --import tsx --test \
             modules/collection/r1-product-reader.test.ts \
-            apps/server/r1-history-read.test.ts
+            apps/server/r1-history-read.test.ts \
+            apps/server/financial-compatible-inputs.test.ts
