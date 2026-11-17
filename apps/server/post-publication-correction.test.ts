@@ -238,9 +238,37 @@ test('已发布错误更正：真实新加工产物、审批拒绝后重办、�
       assert.equal(impact.items.some((item: WfdRecord) => item.productId === b.product_id), false);
       assert.ok(impact.gaps.some((gap: string) => gap.startsWith('coverage:')));
 
+      // 冻结后持久清单损坏不得把未受影响系列送入暂停，也不得在恢复入口绕过。
+      const db = host.database.connection;
+      const savedImpact = (db.prepare('SELECT impact_json FROM correction_cases WHERE case_id=?')
+        .get('case-main') as { impact_json: string }).impact_json;
+      const changedImpact = JSON.parse(savedImpact);
+      changedImpact.items[0].productId = b.product_id;
+      changedImpact.items[0].recordVersion = (b.records as WfdRecord[])[0]!.record_version;
+      db.prepare('UPDATE correction_cases SET impact_json=? WHERE case_id=?')
+        .run(JSON.stringify(changedImpact), 'case-main');
+      const corruptSuspend = await host.call('/corrections/cases/case-main/suspend',
+        { requestId: 'correction-corrupt-suspend' }, 409);
+      assert.equal(corruptSuspend.code, 'CORRECTION_IMPACT_CHANGED');
+      assert.equal(host.services.corrections!.view('case-main').state, 'impact_frozen');
+      db.prepare("UPDATE correction_cases SET state='suspend_failed' WHERE case_id='case-main'").run();
+      const corruptRecovery = await host.call('/corrections/cases/case-main/recover',
+        { requestId: 'correction-corrupt-recovery' }, 409);
+      assert.equal(corruptRecovery.code, 'CORRECTION_IMPACT_CHANGED');
+      assert.equal(host.services.corrections!.view('case-main').state, 'suspend_failed');
+      const untouched = (await host.services.r1Runtime!.connection.client.usageStatus()).result as WfdRecord;
+      assert.equal((untouched.issues as WfdRecord[]).some(issue => issue.issue_id === 'case-main'), false);
+      db.prepare("UPDATE correction_cases SET impact_json=?,state='impact_frozen' WHERE case_id='case-main'")
+        .run(savedImpact);
+
       // 3) 正式暂停落盘 WFD；磁盘重开仍生效
       const suspended = await host.call('/corrections/cases/case-main/suspend', { requestId: 'correction-suspend' });
       assert.equal(suspended.state, 'suspended');
+      // 模拟本地暂停失败状态，真实 WFD 已有同声明；只恢复同事项，不另建暂停。
+      db.prepare("UPDATE correction_cases SET state='suspend_failed' WHERE case_id='case-main'").run();
+      const recoveredSuspension = await host.call('/corrections/cases/case-main/recover',
+        { requestId: 'correction-valid-recovery' });
+      assert.equal(recoveredSuspension.state, 'suspended');
       const status = (await host.services.r1Runtime!.connection.client.usageStatus()).result as WfdRecord;
       assert.equal((status.issues as WfdRecord[]).filter(issue => issue.issue_id === 'case-main' && issue.state === 'active').length, 1);
       await host.close();

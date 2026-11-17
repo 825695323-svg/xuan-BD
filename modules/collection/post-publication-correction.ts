@@ -244,6 +244,8 @@ export class PostPublicationCorrectionService {
           .run(Date.now(), row.case_id);
       fail('CORRECTION_SUSPEND_SCOPE', '计划扫描超出预算，影响范围未完整核对，不能据此暂停。');
     }
+    if (!row.impact_sha256 || wfdSha256(canonicalWfdJson(impact as unknown as WfdRecord)) !== row.impact_sha256)
+      fail('CORRECTION_IMPACT_CHANGED', '持久冻结影响清单摘要不符；未登记或恢复用途暂停。');
     const scopes = new Map<string, { product_id: string; snapshot_id: string; record_versions: string[] }>();
     for (const item of impact.items) {
       if (!item.productId || !item.snapshotId || !item.recordVersion) {
