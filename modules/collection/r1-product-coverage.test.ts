@@ -71,3 +71,14 @@ test('connection drift and repeated cursors are rejected rather than returning a
     result.connection.connectionId = String(calls); return result;
   }), { code: 'R1_COVERAGE_RESPONSE_INVALID' });
 });
+
+test('coverage only exposes whitelisted record identity, not future payload extensions', async () => {
+  const response = page(['one']);
+  const ref = (response.result.rows as WfdRecord[])[0]!.record_ref as WfdRecord;
+  ref.future_value = 'synthetic-secret-raw-text';
+  const result = await checkR1ProductCoverage(input, async () => response);
+  assert.equal(JSON.stringify(result).includes('synthetic-secret-raw-text'), false);
+  assert.deepEqual(Object.keys(result.keys[0]!.recordRef!).sort(), ['logical_key', 'product_id', 'revision_id', 'snapshot_id']);
+  delete ref.revision_id;
+  await assert.rejects(checkR1ProductCoverage(input, async () => response), { code: 'R1_COVERAGE_RESPONSE_INVALID' });
+});

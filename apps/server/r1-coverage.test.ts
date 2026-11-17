@@ -46,7 +46,8 @@ test('actual HTTP/WFD coverage reads all pages, reports requested missing keys o
     assert.equal(result.scan.complete, true); assert.equal(result.scan.pages, 2); assert.equal(result.scan.scannedRows, 105);
     assert.equal(result.calendarQualification, 'not_asserted');
     assert.equal(result.basis, 'caller_explicit_business_keys');
-    assert.ok(!JSON.stringify(result).includes('value_decimal'));
+    assert.ok(result.keys.every((item: WfdRecord) => item.recordRef === null ||
+      JSON.stringify(Object.keys(item.recordRef as WfdRecord).sort()) === JSON.stringify(['logical_key', 'product_id', 'revision_id', 'snapshot_id'])));
     await host.close(); host = await openFullChainHost(fixture);
     assert.deepEqual(await host.call('/r1/products/coverage', selection), result);
   } finally { await host.close(); }

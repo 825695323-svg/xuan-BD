@@ -45,11 +45,12 @@ export async function checkR1ProductCoverage(value: unknown, read: Reader, signa
       for (const row of result.rows) {
         if (!isWfdRecord(row) || !isWfdRecord(row.record_ref)) throw new TaskError('R1_COVERAGE_RESPONSE_INVALID', '固定行缺少可核对记录身份。');
         const ref = row.record_ref, key = ref.logical_key ?? ref.record_id;
-        if (!identifier(key) || ref.product_id !== productId || ref.snapshot_id !== snapshotId || seen.has(key)) {
+        if (!identifier(key) || !fixed(ref.revision_id) || ref.product_id !== productId || ref.snapshot_id !== snapshotId || seen.has(key)) {
           throw new TaskError('R1_COVERAGE_RESPONSE_INVALID', '固定行身份错误或业务键重复；不能任取一行证明覆盖。');
         }
         seen.add(key); scannedRows++;
-        if (businessKeys.includes(key)) refs.set(key, ref);
+        if (businessKeys.includes(key)) refs.set(key, { product_id: productId, snapshot_id: snapshotId,
+          logical_key: key, revision_id: ref.revision_id });
       }
       if (scannedRows > R1_COVERAGE_LIMITS.rows) { reason = 'scan_budget_exceeded'; break; }
       if (!page.has_more) {
