@@ -64,10 +64,14 @@ async function hostFixture(root: string) {
   services.permissions.grant({ capabilities: [{ action: 'read', target: { kind: 'file', path: join(root, 'never-authorized.txt') } }], effect: 'deny', label: 'Explicit synthetic fixture denial' });
   const server = createApp(core, health, services, { webRoot: webRoot! }).listen(0, '127.0.0.1');
   const streams = new Set<ServerResponse>();
-  server.on('request', (req, res) => { if (req.url?.startsWith('/api/tasks/events')) { streams.add(res); res.on('close', () => streams.delete(res)); } });
+  server.on('request', (req, res) => {
+    // Express may have stripped the mount prefix before this second listener runs.
+    const originalUrl = (req as { originalUrl?: string }).originalUrl ?? req.url;
+    if (originalUrl?.startsWith('/api/tasks/events')) { streams.add(res); res.on('close', () => streams.delete(res)); } });
   await once(server, 'listening'); const address = server.address(); assert.ok(address && typeof address === 'object');
   return { core, services, workspaceServices, releases, executions, invalidateTaskStreams() {
     // Explicit host lifecycle-notification fault, not a real user deactivation command.
+    assert.ok(streams.size > 0, 'Synthetic lifecycle notice requires an actual subscribed task stream');
     for (const stream of streams) stream.write('event: lifecycle\ndata: {"status":"unavailable"}\n\n');
   }, resolveEffects() { reconcile = true; }, url: `http://127.0.0.1:${address.port}/`, async close() {
     server.closeAllConnections(); await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done()));
@@ -108,6 +112,14 @@ test('task recovery HTTP uses actual original runs, versions and unknown-effect 
     const root = realpathSync(mkdtempSync(join(parent!, 'recovery-http-'))), host = await hostFixture(root);
     try {
       const s = await seedRecovery(host), tasks = host.services.tasks, ids = tasks.list().map(t => t.id).sort();
+      const eventResponse = await fetch(host.url + 'api/tasks/events?conversationId=' + s.state.conversationId, { headers: { 'x-local-data-generation': '1' }, signal: AbortSignal.timeout(5000) });
+      assert.equal(eventResponse.status, 200);
+      const reader = eventResponse.body!.getReader();
+      assert.match(new TextDecoder().decode((await reader.read()).value), /event: tasks/u);
+      host.invalidateTaskStreams();
+      assert.match(new TextDecoder().decode((await reader.read()).value), /event: lifecycle/u);
+      await reader.cancel();
+
       for (const [item, supported] of [[s.retry, true], [s.unsupported, false]] as const) {
         const detail = await request(host, 'tasks/' + item.id); assert.equal(detail.status, 200); assert.equal(detail.body.recoverySupported, supported);
       }
