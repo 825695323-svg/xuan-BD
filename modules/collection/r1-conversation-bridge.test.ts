@@ -558,7 +558,9 @@ test('processing financial-fixed selector survives personal tool schema and norm
   });
 
 test('F05 R1 UI invalidates confirmation on detail loads and gates recovery on original submission', () => {
-  const source = readFileSync(join(codeRoot, 'apps/web/src/ui/R1Panel.tsx'), 'utf8');
+  const entry = readFileSync(join(codeRoot, 'apps/web/src/ui/R1Panel.tsx'), 'utf8');
+  assert.ok(entry.includes("from './R1SingleOutputPanel'") && entry.includes('<SingleOutputPanel />'));
+  const source = readFileSync(join(codeRoot, 'apps/web/src/ui/R1SingleOutputPanel.tsx'), 'utf8');
   const show = /const showView = \(current: R1RequestView\) => \{([\s\S]*?)\n  \};/u.exec(source);
   assert.ok(show);
   assert.ok(show[1]!.includes('setConfirmed(false)'), 'Every detail load must invalidate prior human confirmation.');
