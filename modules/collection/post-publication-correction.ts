@@ -199,15 +199,17 @@ export class PostPublicationCorrectionService {
       const entry = row as unknown as { plan_id: string; output_id: string; parameters_json: string };
       const key = entry.plan_id + '\u0000' + entry.output_id;
       if (seen.has(key)) continue;
-      seen.add(key);
       let parameters: WfdRecord;
       try { parameters = JSON.parse(entry.parameters_json) as WfdRecord; }
       catch { gaps.push(`plan:${entry.plan_id}:parse_parameters_unreadable`); continue; }
       const adapter = parameters.sourceAdapter;
       if (exact || (binding.adapter && isWfdRecord(adapter)
         && adapter.adapterId === binding.adapter.adapterId && adapter.version === binding.adapter.version
-        && sameAdapterDigest(adapter.configDigest, binding.adapter.configDigest)))
+        && sameAdapterDigest(adapter.configDigest, binding.adapter.configDigest))) {
+        // Only deduplicate a proven match; an unrelated earlier table cannot hide a later faulty adapter.
+        seen.add(key);
         matched.push({ planId: entry.plan_id, outputId: entry.output_id });
+      }
     }
     if (!matched.length) gaps.push('no_plan_matches_error_binding');
     return matched;
@@ -242,6 +244,8 @@ export class PostPublicationCorrectionService {
           .run(Date.now(), row.case_id);
       fail('CORRECTION_SUSPEND_SCOPE', '计划扫描超出预算，影响范围未完整核对，不能据此暂停。');
     }
+    if (!row.impact_sha256 || wfdSha256(canonicalWfdJson(impact as unknown as WfdRecord)) !== row.impact_sha256)
+      fail('CORRECTION_IMPACT_CHANGED', '持久冻结影响清单摘要不符；未登记或恢复用途暂停。');
     const scopes = new Map<string, { product_id: string; snapshot_id: string; record_versions: string[] }>();
     for (const item of impact.items) {
       if (!item.productId || !item.snapshotId || !item.recordVersion) {
