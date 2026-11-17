@@ -121,12 +121,15 @@ async function navigate(browser: Browser, host: FullChainHost) {
   await browser.page('Page.navigate', { url: host.base.replace('/api/bd', '/') });
   await browser.until(`(()=>{if(document.querySelector(${q(root)})&&document.querySelector('.r1-panel')?.getAttribute('aria-busy')==='false')return true;(document.querySelector('button[aria-label="数据库"]')||document.querySelector('button[aria-label="Database"]'))?.click();return false;})()`, 'Actual filter panel unavailable');
 }
-async function setup(browser: Browser) {
-  await click(browser, '载入当前快照产品');
+async function setup(browser: Browser, english = false) {
+  await click(browser, english ? 'Load current snapshot products' : '载入当前快照产品');
   for (const id of ['a', 'b', 'c']) await browser.evaluate(`(()=>{const e=[...document.querySelector(${q(root)}).querySelectorAll('label')].find(e=>e.textContent.startsWith(${q('synthetic_filter_' + id + ' ·')}))?.querySelector('input[type=checkbox]');if(!e)throw Error('Missing synthetic product');e.click();})()`);
-  for (const [label, value] of Object.entries({ '业务日期起点': '2025-01-02', '业务日期终点（含当天）': '2025-01-02', '业务时区': 'UTC', '条件1原值': '0', '每页对象数': '1' })) await fill(browser, label, value);
-  const field = await browser.evaluate<string>(`[...document.querySelector(${q(root)}).querySelectorAll('label')].find(e=>e.textContent.startsWith('条件1字段')).querySelector('select option[value]:not([value=""])').value`);
-  await fill(browser, '条件1字段', field);
+  const entries = english ? { 'Business date start': '2025-01-02', 'Business date end (inclusive)': '2025-01-02', 'Business timezone': 'UTC', 'Condition 1 value': '0', 'Objects per page': '1' }
+    : { '业务日期起点': '2025-01-02', '业务日期终点（含当天）': '2025-01-02', '业务时区': 'UTC', '条件1原值': '0', '每页对象数': '1' };
+  for (const [label, value] of Object.entries(entries)) await fill(browser, label, value!);
+  const fieldLabel = english ? 'Condition 1 field' : '条件1字段';
+  const field = await browser.evaluate<string>(`[...document.querySelector(${q(root)}).querySelectorAll('label')].find(e=>e.textContent.startsWith(${q(fieldLabel)})).querySelector('select option[value]:not([value=""])').value`);
+  await fill(browser, fieldLabel, field);
 }
 async function result(browser: Browser): Promise<any> {
   return browser.evaluate(`JSON.parse([...document.querySelector(${q(root)}).querySelectorAll('.r1-read-result details')].at(-1).querySelector('pre').textContent)`);
@@ -207,11 +210,18 @@ test('actual React filter history keeps three perspectives explicit through pagi
       // Only the disposable host preferences are changed; session headers come from its real UI session.
       await browser.evaluate(`(async()=>{const session=JSON.parse(sessionStorage.getItem('mashiro.local-data-generation'));if(!Number.isSafeInteger(session?.generation))throw Error('Missing local session');const headers={'x-local-data-generation':String(session.generation),'x-mashiro-client':'web','Content-Type':'application/json'};const r=await fetch('/api/ui/preferences',{headers});if(!r.ok)throw Error('Preference read failed');const p=await r.json();const saved=await fetch('/api/ui/preferences',{method:'PUT',headers,body:JSON.stringify({revision:p.revision,language:'en'})});if(!saved.ok)throw Error('Preference update failed');})()`);
       await navigate(browser, host);
-      // English labels for newly exposed historical controls are checked after loading real discovery.
-      const loadLabel = await browser.evaluate<string>(`[...document.querySelector(${q(root)}).querySelectorAll('button')].find(e=>/Load current snapshot products|载入当前快照产品/.test(e.textContent)).textContent.trim()`);
-      await click(browser, loadLabel);
+      await setup(browser, true);
+      await click(browser, 'Run fixed filter');
+      assert.equal((await result(browser)).page.total_objects, 3);
+      assert.match(await browser.evaluate<string>(`document.querySelector(${q(root + ' .r1-read-result')}).textContent`), /Matching subjects found/u);
+      await fill(browser, 'Condition 1 value', 'not-a-decimal'); await click(browser, 'Run fixed filter');
+      assert.equal(await noResult(browser), true);
+      assert.match(await browser.evaluate<string>(`document.querySelector(${q(root)}).textContent`), /Enter an exact decimal threshold without thousands separators/u);
+      await capture(browser, visualRoot, 'filter-error-en', 1440, 'light');
+      await fill(browser, 'Condition 1 value', '0');
       await fill(browser, 'Time qualification', 'system_held_at');
-      assert.equal(await browser.evaluate(`!!document.querySelector(${q(root)}).querySelector('[aria-label="Holding stage"]')`), true);
+      await fill(browser, 'Knowledge cutoff (UTC)', state.cutoff); await fill(browser, 'Holding stage', 'published_readable');
+      await click(browser, 'Run fixed filter'); assert.equal((await result(browser)).page.total_objects, 3);
       await capture(browser, visualRoot, 'filter-light-en', 1440, 'light');
       assert.equal(browser.blockedRequests.length, 0);
     } finally { await browser?.close(); await host.close(); }
