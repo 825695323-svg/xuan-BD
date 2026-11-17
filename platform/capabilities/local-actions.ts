@@ -20,6 +20,7 @@ import { searchPublicWeb, validateSearchArgs } from './browser/search.js';
 import { transcribeVideo, validateVideoUrl } from './transcription/video.js';
 import { compareRegisteredFiles } from './files/compare.js';
 import { createTextFile, editTextFile, readTextPage, searchTextFiles } from './files/text.js';
+import { recognizeLocalImage } from './ocr/local.js';
 import { transcriptionSegmentPreview, transcribeLocalFile, type LocalTranscriptionInput, type LocalTranscriptionResult } from './transcription/local.js';
 import { directDependencyVersions, directFileVersion, directResourceVersions, guardDirectContext, type DirectImplementation } from '../plugins/direct-versions.js';
 import { BundledResources } from '../resources/bundled.js';
@@ -123,6 +124,7 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
     if (action === 'mac.shortcut') {
       programs.push('shortcuts'); configuration = shortcuts.find(shortcut => shortcut.id === args.shortcutId) ?? null;
     }
+    if (action === 'material.ocr') { implementation.push('localOcr'); programs.push('vision-ocr'); configuration = { platform: process.platform, backend: 'apple-vision-local' }; }
     if (action === 'image.ocr') {
       implementation.push('model', 'ocr');
       if (!options.agentImageOcrVersion) throw new DirectError('DIRECT_VERSION_UNAVAILABLE', '图片识字需要宿主提供当前实际模型与连接版本。');
@@ -144,6 +146,22 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
       protection.assertCapabilities(capabilities, capability => trustedRootFor(taskAction, capability));
       return await originalContext.requestApproval(operation, capabilities, approvalOptions);
     } };
+  };
+  const localOcr: DirectRuntimeBundle['localOcr'] = {
+    availability: () => {
+      if (process.platform !== 'darwin') return { available: false, reason: '本机 Vision OCR 仅支持 macOS；其他平台不自动替代。' };
+      try { const path = requireBinary('vision-ocr'); if (!options.resources?.document.resources.vision_ocr?.sha256 || directFileVersion(path).sha256 !== options.resources.document.resources.vision_ocr.sha256) throw Error();
+        return { available: true }; } catch { return { available: false, reason: '本机 Vision OCR 程序未显式登记摘要或身份已变化。' }; }
+    },
+    captureVersions: () => captureVersions('material.ocr'),
+    async execute(context, input) {
+      if (context.task.action !== 'material.ocr') throw new DirectError('RUNTIME_MISMATCH', '本机 OCR 仅供当前材料 OCR 任务。');
+      const availability = localOcr.availability();
+      if (!availability.available) throw new DirectError('TOOL_UNAVAILABLE', availability.reason!);
+      if (!samePathIdentity(inspectPath(artifactRoot), { ...artifactIdentity, invocationPath: artifactRoot, canonicalPath: artifactRoot, links: [] })) throw new DirectError('ARTIFACT_ROOT_CHANGED', '产物目录身份已变化。');
+      return recognizeLocalImage(protectedContext(context), input, { files: options.files, artifactRoot, binary: requireBinary('vision-ocr'),
+        assertPath: path => protection.assertPath(path), runTool: runStagedTool });
+    },
   };
   const transcriptionBinary = requireBinary;
   const localTranscription: DirectRuntimeBundle['localTranscription'] = {
@@ -372,7 +390,7 @@ export function createLocalActions(options: DirectRuntimeOptions, hostImplementa
       videoMaxMinutes = nextVideoMaxMinutes; videoMaxBytes = nextVideoMaxBytes;
     };
   };
-  return { runtime: reportedRuntime, registry, router, localTranscription,
+  return { runtime: reportedRuntime, registry, router, localTranscription, localOcr,
     prepareConfiguration,
     configuration: () => ({ whisperModelPath: configuredModelPath ?? null, shortcuts, videoMaxMinutes, videoMaxBytes }),
     configure(input) { prepareConfiguration(input)(); }, assertPublicPath(path, allowMissing = false) {

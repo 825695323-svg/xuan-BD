@@ -57,7 +57,8 @@ try {
     env.PYTHONNOUSERSITE = '1';
     // 在 JS 中枚举，避免 Windows shell 不展开通配符或空匹配导致 Node 自动发现其他测试。
     const files = pipelineOnly
-      ? ['modules/collection/source-field-profile.test.ts',
+      ? ['platform/capabilities/ocr/evidence.test.ts', 'apps/server/local-ocr-live.test.ts',
+        'modules/collection/source-field-profile.test.ts',
         'modules/collection/source-reported-table.test.ts',
         'modules/collection/semantic-dictionary-framework.test.ts',
         'modules/collection/processing-quality.test.ts',
@@ -92,7 +93,7 @@ try {
         'apps/server/endpoint-adapter-chain.test.ts',
         'apps/server/endpoint-adapter-r1.test.ts']
       : [...['modules/collection', 'modules/collection/data-processing', 'apps/server', 'platform/config', 'platform/resources',
-        'platform/capabilities/conversion', 'plugins/api-sources', 'plugins/api-sources/providers/werss', 'plugins/api-sources/providers/wechat'].flatMap(directory =>
+        'platform/capabilities/conversion', 'platform/capabilities/ocr', 'plugins/api-sources', 'plugins/api-sources/providers/werss', 'plugins/api-sources/providers/wechat'].flatMap(directory =>
         readdirSync(join(codeRoot, directory), { withFileTypes: true }).filter(entry => entry.isFile() && entry.name.endsWith('.test.ts'))
           .map(entry => join(directory, entry.name))),
         'scripts/adopt-product-machine-wiring.test.ts', 'scripts/adopt-polars-python.test.ts'].sort();

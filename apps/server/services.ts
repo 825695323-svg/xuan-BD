@@ -67,6 +67,7 @@ import { PostPublicationCorrectionService } from '../../modules/collection/post-
 import { acceptWorkspaceMaterial } from '../../modules/collection/accept-material.js';
 import { ConversationMaterialBridge } from '../../modules/collection/conversation-materials.js';
 import { mediaPluginCatalog, mediaPluginRegistrations } from '../../modules/collection/materials/plugins.js';
+import { createMaterialOcrAdapter } from '../../modules/collection/materials/ocr-adapter.js';
 import { createMaterialTranscriptionAdapter } from '../../modules/collection/materials/media-adapter.js';
 import { UiPreferenceService } from '../../platform/config/ui-preferences.js';
 import type { FrozenRunConfiguration } from '../../contracts/ui-contracts.js';
@@ -277,7 +278,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const artifactManifest = createArtifactManifestActions({ database, files, tasks: () => {
     if (!tasks) throw new TaskError('SERVICE_NOT_READY', '任务服务尚未准备好。'); return tasks;
   } });
-  const mediaAdapters = [createMaterialTranscriptionAdapter(() => direct?.localTranscription)];
+  const mediaAdapters = [createMaterialTranscriptionAdapter(() => direct?.localTranscription), createMaterialOcrAdapter(() => direct?.localOcr)];
   const conversationMaterials = options.workspaceServices ? new ConversationMaterialBridge({ database, core, files,
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
     assertPath: path => direct.assertPublicPath(path), mediaAdapters: () => mediaAdapters }) : undefined;
