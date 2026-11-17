@@ -441,6 +441,16 @@ test('actual HTTP held projection excludes later additive fields and rejects uns
       assert.ok(!JSON.stringify(historical).includes('future_note'));
       assert.ok(!JSON.stringify(historical).includes('later-only-note'));
       assert.ok(!JSON.stringify(historical).includes(String(laterContract.digest)), JSON.stringify(historical));
+      const excluded = historical.result.diagnostics.filter((item: WfdRecord) => item.holding_state === 'not_yet_held');
+      assert.equal(excluded.length, 1, 'Unqualified coverage remains visible rather than disappearing');
+      assert.equal(excluded[0].scope, 'product');
+      assert.equal(excluded[0].count, 1);
+      assert.equal(excluded[0].count_basis, 'current_fixed_snapshot_not_subject_filtered_not_historical_known_total');
+      for (const field of ['business_key', 'record_id', 'record_version', 'subject', 'object', 'relation_type',
+        'observed_stage_at', 'contract_ref', 'definition_ref']) assert.equal(field in excluded[0], false, field);
+      const laterVersion = String(((secondPublished.output.records as WfdRecord[])[0]!).record_version);
+      assert.ok(!JSON.stringify(historical).includes(laterVersion));
+
       const denied = await host.call('/r1/products/read', { ...selected, ...history, at,
         businessTimeRange: { role: 'event', start: '2024-01-01', end: '2025-01-01', timezone: 'UTC' } }, 409);
       assert.equal(denied.code, 'R1_READ_INPUT');
