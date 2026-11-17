@@ -233,10 +233,11 @@ async function result(browser: Browser): Promise<any> {
   return browser.evaluate(`JSON.parse([...document.querySelector(${q(root)}).querySelectorAll('.r1-read-result details')].at(-1).querySelector('pre').textContent)`);
 }
 const noResult = (browser: Browser) => browser.evaluate<boolean>(`!document.querySelector(${q(root + ' .r1-read-result')})`);
-async function capture(browser: Browser, visualRoot: string, name: string, width: number, theme: string) {
+async function capture(browser: Browser, visualRoot: string, name: string, width: number, theme: string, focus = root) {
   await browser.page('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
   await browser.page('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
-  await browser.evaluate(`document.querySelector(${q(root)}).scrollIntoView({block:'start'})`);
+  await browser.evaluate(`document.querySelector(${q(focus)}).scrollIntoView({block:'center'})`);
+  await browser.evaluate('new Promise(resolve=>requestAnimationFrame(resolve))');
   const boxes: Array<{ left: number; right: number; width: number; parentLeft: number; parentRight: number; viewport: number }> = await browser.evaluate(`(()=>{const r=document.querySelector(${q(root)}),p=r.getBoundingClientRect();return [...r.querySelectorAll('input,select')].map(e=>{const b=e.getBoundingClientRect();return {left:b.left,right:b.right,width:b.width,parentLeft:p.left,parentRight:p.right,viewport:innerWidth};});})()`);
   assert.ok(boxes.length > 4);
   for (const box of boxes) assert.ok(box.width > 0 && box.left >= Math.max(-2, box.parentLeft - 2) && box.right <= Math.min(box.viewport + 2, box.parentRight + 2), JSON.stringify(box));
@@ -278,8 +279,12 @@ test('actual React joint history retains fixed document scope and rejects invent
       const before = browser.requests.filter(r => r.url.endsWith('/retrieval/joint')).length;
       await click(browser, '执行固定筛选'); assert.equal(await noResult(browser), true);
       assert.equal(browser.requests.filter(r => r.url.endsWith('/retrieval/joint')).length, before);
-      await fill(browser, '时间资格', 'market_known_at'); await click(browser, '执行固定筛选');
+      await fill(browser, '时间资格', 'market_known_at');
+      await fill(browser, '知识截止（UTC，协调世界时）', early); await click(browser, '执行固定筛选');
+      assert.equal((await result(browser)).qualification.mode, 'market_known_at');
+      assert.equal((await result(browser)).objects[0].documents.qualification.reconstruction, 'post_hoc');
       await capture(browser, visualRoot, 'joint-light-zh', 1440, 'light'); await capture(browser, visualRoot, 'joint-dark-zh-narrow', 390, 'dark');
+      await capture(browser, visualRoot, 'joint-market-result-zh', 1440, 'light', root + ' .r1-read-result');
       await browser.close(); browser = undefined; await host.close(); host = await openFullChainHost(fixture, webRoot!);
       const reopened = join(fixture.root, 'r'); mkdirSync(reopened); browser = await openIsolatedBrowser(program!, reopened);
       await navigate(browser, host); await jointSetup(browser, state); await click(browser, '执行固定筛选');
@@ -296,10 +301,10 @@ test('actual React joint history retains fixed document scope and rejects invent
       await browser.evaluate(`(async()=>{const session=JSON.parse(sessionStorage.getItem('mashiro.local-data-generation'));if(!Number.isSafeInteger(session?.generation))throw Error('Missing local session');const headers={'x-local-data-generation':String(session.generation),'x-mashiro-client':'web','Content-Type':'application/json'};const r=await fetch('/api/ui/preferences',{headers});if(!r.ok)throw Error('Preference read failed');const p=await r.json();const saved=await fetch('/api/ui/preferences',{method:'PUT',headers,body:JSON.stringify({revision:p.revision,language:'en'})});if(!saved.ok)throw Error('Preference update failed');})()`);
       await navigate(browser, host); await jointSetup(browser, state, true); await click(browser, 'Run fixed filter');
       assert.equal((await result(browser)).objects[0].documents.citations[0].document_id, state.materials[0]);
-      await capture(browser, visualRoot, 'joint-light-en', 1440, 'light');
+      await capture(browser, visualRoot, 'joint-light-en', 1440, 'light', root + ' .r1-read-result');
       await fill(browser, 'Fixed document index', ''); await click(browser, 'Run fixed filter'); assert.equal(await noResult(browser), true);
       assert.match(await browser.evaluate<string>(`document.querySelector(${q(root)}).textContent`), /index/iu);
-      await capture(browser, visualRoot, 'joint-error-en', 1440, 'light');
+      await capture(browser, visualRoot, 'joint-error-en', 1440, 'light', root + ' .error-note');
       assert.equal(browser.blockedRequests.length, 0);
     } finally { await browser?.close(); await host.close(); }
   });
