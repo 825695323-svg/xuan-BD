@@ -79,6 +79,16 @@ test('financial source correction verifies full actual identity and exact predec
         const rejected = await host.call('/r1/prepare', await prepare(host, 'wrong-' + name, row('12', 'v2'), initial.snapshot_id, bad), 409);
         assert.equal(rejected.code, 'R1_CORRECTION_DEFINITION');
       }
+      const forgedInput = await prepare(host, 'forged-record-ref-product', row('12', 'v2'), initial.snapshot_id, correction);
+      const client = host.services.r1Runtime!.client, actualRead = client.fixedRead.bind(client);
+      client.fixedRead = async (...args: Parameters<typeof client.fixedRead>) => {
+        const reply = structuredClone(await actualRead(...args));
+        const first = (reply.result.rows as WfdRecord[])[0]!;
+        (first.record_ref as WfdRecord).product_id = 'forged-product-in-reference';
+        return reply;
+      };
+      try { assert.equal((await host.call('/r1/prepare', forgedInput, 409)).code, 'R1_CORRECTION_PREDECESSOR'); }
+      finally { client.fixedRead = actualRead; }
       const delayed = await host.call('/r1/prepare', await prepare(host, 'delayed', row('11', 'v2'), initial.snapshot_id, correction), 201);
       const revised = await publish(host, await prepare(host, 'revised', row('12', 'v2'), initial.snapshot_id, correction));
       const late = await host.call('/r1/requests/delayed/submit', { confirmationDigest: delayed.documentSha256 }, 202);

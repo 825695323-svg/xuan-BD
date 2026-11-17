@@ -152,7 +152,7 @@ export class R1WorkspaceService {
         const rows = result.rows.filter(isWfdRecord).filter(row => row.record_id === key && row.record_version === previous.revision_id);
         if (rows.length !== 1 || rows[0]!.product_id !== previous.product_id || !isWfdRecord(rows[0]!.row)
           || rows[0]!.row[rowKey] !== key || !isWfdRecord(rows[0]!.record_ref)
-          || rows[0]!.record_ref.logical_key !== key || rows[0]!.record_ref.revision_id !== previous.revision_id
+          || rows[0]!.record_ref.product_id !== previous.product_id || rows[0]!.record_ref.logical_key !== key || rows[0]!.record_ref.revision_id !== previous.revision_id
           || rows[0]!.record_ref.snapshot_id !== snapshot || isWfdRecord(rows[0]!.revision) && rows[0]!.revision.withdrawn === true)
           fail('R1_CORRECTION_PREDECESSOR', '前驱实际身份、版本或撤销状态不符。');
         if (!event && verifyFinancialFactRow(rows[0]!.row as WfdRecord) !== factIdentities.get(key))
