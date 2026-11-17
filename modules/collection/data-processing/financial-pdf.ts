@@ -1,12 +1,14 @@
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../../adapters/database/wfd-transport.js';
 import { openPdf } from '../../../platform/capabilities/conversion/pdf.js';
 import { TaskError } from '../../../platform/jobs/tasks.js';
+import { financialFactIdentity, readFinancialFactDeclaration, type FinancialFactDeclaration } from './financial-fact.js';
 import { normalizeNumericLexeme, readNumericFormat, type NumericFormat } from './numeric-format.js';
 
 export const FINANCIAL_PDF_VERSION = 'bd-financial-pdf-regions/1';
 export interface FinancialPdfSelection {
   version: typeof FINANCIAL_PDF_VERSION;
   sourceSha256: string;
+  factIdentity?: FinancialFactDeclaration;
   report: { id: string; version: string; subjectScheme: string; subjectCode: string; accountingStandard: string;
     currency: string; auditStatus: string };
   regions: { page: number; yMin: number; yMax: number; statement: string; scope: string; section: string;
@@ -22,11 +24,12 @@ const day = (value: string) => /^\d{4}-\d{2}-\d{2}$/u.test(value) && Number.isFi
 export function readFinancialPdfSelection(raw: unknown): FinancialPdfSelection {
   const value = raw as FinancialPdfSelection;
   if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).sort().join(',') !== 'regions,report,sourceSha256,version'
+    || Object.keys(value).filter(key => key !== 'factIdentity').sort().join(',') !== 'regions,report,sourceSha256,version'
     || value.version !== FINANCIAL_PDF_VERSION || !/^[a-f0-9]{64}$/u.test(value.sourceSha256)
     || !value.report || Object.keys(value.report).sort().join(',') !== 'accountingStandard,auditStatus,currency,id,subjectCode,subjectScheme,version'
     || Object.values(value.report).some(item => typeof item !== 'string' || !item.trim() || item.length > 256)
     || !Array.isArray(value.regions) || !value.regions.length || value.regions.length > 64) fail('PDF财报须有固定原件、报告身份和明确已核定表区；不按文件名或关键词补造。');
+  if (value.factIdentity !== undefined) readFinancialFactDeclaration(value.factIdentity);
   for (const region of value.regions) {
     if (!region || Object.keys(region).filter(key => key !== 'continuations').sort().join(',') !== 'columns,expectedLabels,label,page,rowBands,scope,section,statement,yMax,yMin'
       || !Number.isSafeInteger(region.page) || region.page < 1 || !Number.isFinite(region.yMin) || !Number.isFinite(region.yMax) || region.yMax <= region.yMin
@@ -112,13 +115,14 @@ export async function projectFinancialPdf(bytes: Buffer, raw: FinancialPdfSelect
             subject_code: selection.report.subjectCode, accounting_standard: selection.report.accountingStandard, currency: selection.report.currency,
             audit_status: selection.report.auditStatus, statement: region.statement, scope: region.scope, section: region.section,
             concept: row.label, dimension: column.dimension, period_type: column.periodType, start_date: column.startDate, end_date: column.endDate, unit: column.unit };
-          const businessKey = 'financial_' + wfdSha256(canonicalWfdJson(identity));
+          const fact = selection.factIdentity ? financialFactIdentity(identity, selection.factIdentity) : null;
+          const businessKey = fact?.businessKey ?? 'financial_' + wfdSha256(canonicalWfdJson(identity));
           if (seen.has(businessKey)) fail('报告、范围、期间、维度与科目存在重复身份；须核定真实层级，未按页号伪造唯一键。');
           seen.add(businessKey);
-          rows.push({ business_key: businessKey, ...identity, value, value_state: value === null ? 'unknown' : value === '0' ? 'reported_zero' : 'valid_value',
+          rows.push({ business_key: businessKey, ...identity, ...(fact ? { financial_fact_identity: fact.identity } : {}), value, value_state: value === null ? 'unknown' : value === '0' ? 'reported_zero' : 'valid_value',
             start_utc: column.startDate + 'T00:00:00Z', end_utc: new Date(Date.parse(column.endDate + 'T00:00:00Z') + 86_400_000).toISOString().replace('.000Z', 'Z') });
           const originalItems = row.line.filter(item => item.x >= region.label[0] && item.x < region.label[1] || item.x >= column.xMin && item.x < column.xMax);
-          evidence.push({ businessKey, page: region.page, originalLexeme: lexical, value, originalItems, continued,
+          evidence.push({ businessKey, ...(fact ? { financialFactIdentity: JSON.parse(fact.identity) } : {}), page: region.page, originalLexeme: lexical, value, originalItems, continued,
             coordinateSystem: 'PDF-user-space/origin-native/transform-retained', selection: { yMin: region.yMin, yMax: region.yMax,
               label: region.label, value: [column.xMin, column.xMax] } });
         }
