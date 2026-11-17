@@ -224,6 +224,9 @@ export class ProcessingPlanService {
       cleaningEngine: this.options.polarsCleaner?.capabilities() ?? {
         engine: 'typescript', status: 'legacy_compatibility', reason: '受信 Polars 未装配，沿原冻结处理契约执行。',
         methods: ['trim', 'empty_to_null'], noSilentFallback: true },
+      fieldDependencies: { route: '/processing/plans/:id/outputs/:outputId/dependencies', readOnly: true,
+        coverage: 'selected_processing_output_only', supported: ['plain_csv_json_mapping', 'constant_annotation'],
+        unknownTransforms: 'explicit_gaps', formalDownstreamImpact: false },
       calculationMethods: 'not_part_of_cleaning',
       custodyStates: ['inventoried', 'receiving', 'received'], routingStates: ['needs_classification', 'needs_adapter', 'needs_target', 'needs_review', 'ready_candidate', 'rejected'],
       dimensions: DIMENSION_KEYS.map(key => ({ key, label: dimensionLabel(key), statuses: ['known', 'unknown', 'conflict'] })),
@@ -443,6 +446,58 @@ export class ProcessingPlanService {
     const row = this.outputRow(planId, outputId); if (!row || row.state !== 'structured' || !row.structured_json) fail('PROCESSING_OUTPUT_NOT_READY', '该输出尚未形成完整结构产物。');
     const ref = this.ref(row.structured_json);
     return { outputId, ref, bytes: this.options.objects.get(ref), routingState: row.routing_state, gaps: parseJson(row.gaps_json) };
+  }
+  /** 从已核对步骤投影字段依赖；不另存血缘，也不外推全库影响范围。 */
+  fieldDependencies(planId: string, outputId: string) {
+    const candidate = this.candidateOutput(planId, outputId);
+    const finalArtifact = this.outputArtifact(planId, outputId);
+    if (wfdSha256(finalArtifact.bytes) !== candidate.ref.sha256)
+      fail('PROCESSING_ARTIFACT_CHANGED', '字段依赖所依据的最终结构产物摘要不符。');
+    const plan = this.planRow(planId)!;
+    const steps = this.stepRows(planId).filter(step => step.output_id === outputId).map(step => this.stepView(step));
+    const missingSteps = this.document(plan).steps.filter(step => step.outputId === outputId && !steps.some(item => item.stepId === step.stepId));
+    const dependencies: { outputField: string; materialId: string; sourceSha256: string;
+      inputField: string | null; kind: 'mapped_field' | 'constant'; stepId: string;
+      specDigest: string; sourceArtifactSha256: string }[] = [];
+    const gaps: string[] = missingSteps.map(step => `${step.stepId}:persisted_step_missing`);
+    const parses = steps.filter(step => step.kind === 'parse');
+    if (!parses.length) gaps.push('no_persisted_parse_steps');
+    const dependsOn = (stepId: string, inputId: string, visited = new Set<string>()): boolean => {
+      if (visited.has(stepId)) return false;
+      visited.add(stepId);
+      return (steps.find(step => step.stepId === stepId)?.dependsOn ?? [])
+        .some(id => id === inputId || dependsOn(id, inputId, visited));
+    };
+    for (const spec of parses) {
+      const params = spec.parameters;
+      // 专用投影、适配器和财务读取可能含复合依赖；不能猜成一对一原始字段。
+      if (!['csv', 'json'].includes(String(params.format)) || params.sourceProjection || params.sourceAdapter) {
+        gaps.push(`${spec.stepId}:unsupported_field_dependency_projection`);
+        continue;
+      }
+      const artifact = this.artifact(planId, spec.stepId);
+      if (wfdSha256(artifact.bytes) !== artifact.step.outputDigest)
+        fail('PROCESSING_ARTIFACT_CHANGED', '字段依赖所依据的解析产物摘要不符。');
+      const parsed = JSON.parse(artifact.bytes.toString('utf8')) as ParsedCandidateTable;
+      const material = candidate.materials.find(item => item.materialId === params.materialId);
+      if (!material || parsed.source_sha256 !== material.sha256 || parsed.kind !== 'parsed-table'
+        || parsed.source_columns.length !== parsed.columns.length)
+        fail('PROCESSING_LINEAGE_CHANGED', '字段依赖与冻结材料、解析列身份不一致。');
+      parsed.columns.forEach((outputField, index) => dependencies.push({ outputField,
+        materialId: material.materialId, sourceSha256: material.sha256, inputField: parsed.source_columns[index]!,
+        kind: 'mapped_field', stepId: spec.stepId, specDigest: spec.specDigest, sourceArtifactSha256: artifact.ref.sha256 }));
+      const annotation = steps.find(step => step.kind === 'annotate' && dependsOn(step.stepId, spec.stepId));
+      if (annotation && this.stepRow(planId, annotation.stepId)?.state === 'succeeded') {
+        for (const outputField of Object.keys(parsed.annotations)) dependencies.push({ outputField,
+          materialId: material.materialId, sourceSha256: material.sha256, inputField: null,
+          kind: 'constant', stepId: annotation.stepId, specDigest: annotation.specDigest, sourceArtifactSha256: artifact.ref.sha256 });
+      }
+      if (params.selection) gaps.push(`${spec.stepId}:row_selection_dependency_not_field_value_dependency`);
+    }
+    return { version: 'bd.field-dependencies/1', planId, outputId, planDigest: candidate.planDigest,
+      outputSha256: candidate.ref.sha256, coverage: 'selected_processing_output_only',
+      complete: gaps.length === 0, dependencies, gaps,
+      impact: 'Listed edges identify known direct field dependencies in this output, not an exhaustive affected-product set; downstream products and unknown transformations are not scanned.' };
   }
   /** 候选服务只从这里取已核对的受管引用；不读取客户端自带对象或路径。 */
   candidateOutput(planId: string, outputId: string) {
