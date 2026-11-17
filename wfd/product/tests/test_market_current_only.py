@@ -150,6 +150,8 @@ def test_current_business_scope_is_explicit_and_ordinary_history_is_unchanged(tm
         "snapshot_contents", "market_known_at", "system_held_at"]
     financial = scalar_output("financial", "test.financial.historical", "10")
     financial["subject"] = copy.deepcopy(old["subject"])
+    # Explicit synthetic definition evidence; never infer it from the row time.
+    financial["definition_public_time"] = known_second(2025, 12, 1)
     financial["payload"]["rows"][0]["public_time"] = known_second(2026, 1, 1)
     sid2, financial_pid = publish(service, financial, "ordinary-financial", sid2)
     sid2, current_pid = publish(service, bar_output(), "explicit-new-mode", sid2)

@@ -291,6 +291,8 @@ export class R1ProductReader {
       if (wait.aborted) fail('R1_READ_ABORTED', '本次只读等待已中止或超过 30 秒；没有自动重试。');
       if (error instanceof WfdProductMachineError) {
         const code = error.remoteCode ?? error.code;
+        if (code === 'HISTORY_DEFINITION_TIME_UNSUPPORTED') fail('R1_READ_HISTORY_METADATA_UNSUPPORTED',
+          '固定快照中的定义缺少已满足该市场截止的独立公开时间；本次历史读取拒绝，不回退最新定义。');
         fail(/^[A-Z][A-Z0-9_]{1,95}$/u.test(code) ? code : 'R1_READ_FAILED', 'WFD 读取未完成；请按错误编号核对权限、预算、绑定实例与固定快照。');
       }
       fail('R1_READ_FAILED', 'WFD 读取未完成；请核对绑定实例与固定快照。');
