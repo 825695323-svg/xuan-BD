@@ -226,6 +226,16 @@ R1 返回 `R1_READ_HISTORY_METADATA_UNSUPPORTED`。这不是自动选择旧定�
 
 已对原应用资源清单绑定的 ffmpeg、ffprobe、whisper-cli 和 whisper_base 模型核文件摘要，再复制至独立测试运行根。`local-transcription-live.test.ts` 用 whisper.cpp 官方公开 JFK 演示音频（`https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav`，SHA-256 `59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e`）实际经过材料保管、`audio.transcribe`、本地模型推理、原生JSON时间片段与文本产物、持久任务和重开读取。原音频未修改；文本和原生时间片段各自摘要校验，改写文字或越界时间反例拒绝。没有按字数补造时间轴、上传私有材料或调用外部识别服务。
 
-该转录文字是模型输出，不是逐字准确认证或原件事实；测试仅核对一个短语锚点及原生证据一致性。把识别文本声明为音频原件上的精确文本选录时，既有加工格式门禁拒绝，不能直接获事件发布资格。OCR材料适配器仍未装配，未用假识别器或替代模型宣称完成；带图像输入的模型配置只是声明，未在本次做外部OCR实调用。
+该转录文字是模型输出，不是逐字准确认证或原件事实；测试仅核对一个短语锚点及原生证据一致性。把识别文本声明为音频原件上的精确文本选录时，既有加工格式门禁拒绝，不能直接获事件发布资格。此转录验收没有装配OCR，未用假识别器或替代模型宣称完成；带图像输入的模型配置只是声明，未在本次做外部OCR实调用。
 
 此验收必须显式设置 `XUAN_TEST_TRANSCRIPTION_BUNDLE`（已有应用代码根，内含原资源清单）、`XUAN_TEST_TRANSCRIPTION_AUDIO`（上述已核摘要的本地音频）与独立 `XUAN_FULL_CHAIN_ROOT`，直接用 `node --import tsx --test apps/server/local-transcription-live.test.ts` 执行。不自动下载程序、模型或样本；默认未提供资源时跳过，不能将CI跳过计作真实语音验收。测试支撑只增加可选资源来源根，不改变生产绑定或用户配置。
+
+### 可选 macOS 本机 OCR（识别观察，不是原文事实）
+
+`material.ocr` 复用既有材料适配器、TaskService、权限核对、DirectWorkspace 和受控进程。受信宿主须显式登记 `vision_ocr` 程序（`kind: program`、绝对路径、SHA-256），程序须由仓库 `platform/capabilities/ocr/vision.swift` 用已有 macOS Swift 编译；正常启动不会编译、下载、安装或修改绑定。运行前核程序对象身份与摘要，缺绑定或其他平台明确不可用，不回退外部模型，也不改变独立 `image.ocr` 模型入口。
+
+只处理单张 upright PNG/JPEG，原件摘要和引用版本固定；PDF、多帧、需旋转的 EXIF 与超过预算输入拒绝。Vision 准确模式中英识别并禁语言纠正，保存本机识别修订号、系统版本、图像尺寸、每项置信度与左上归一化区域。输出文本须与完整原生结构逐项完全一致，缺字段、坐标越界或文字改写拒绝；空识别不补内容。产物独立保管摘要，不覆盖原件；只向模型分享有界前200条观察，完整证据仍留原任务。
+
+识别字串及检测框属于模型输出，**不是逐字核实、发生事实或自动事件资格**；本次不把它们改装成原始图片的UTF16选录。真实材料逐字/区域人工复核、OCR到正式事件的已审证据合同，以及 PDF页码与多页流程仍待独立完成。
+
+可选真实执行测试 `apps/server/local-ocr-live.test.ts` 须显式提供已编译 `XUAN_TEST_VISION_OCR` 和隔离 `XUAN_FULL_CHAIN_ROOT`，直接用 `node --import tsx --test` 运行。它只在新测试根登记该程序，不改变真实机器配置；不装配时默认跳过，CI不能据跳过声称实际OCR通过。采用标明合成的可见文字图像进行真实 Vision 识别；入口验证范围以测试回执为准，不冒称完整模型会话端到端或真实供应商材料验收。系统已有 Tesseract 在本机执行被以137终止，因此未采用、未重签或修改安全设置。
