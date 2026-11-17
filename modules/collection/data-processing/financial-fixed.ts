@@ -125,11 +125,19 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
     if (!mapping) { unmapped.push({ record: row.record_ref, concept: original }); return []; }
     if (field(row, 'accounting_standard') !== 'CAS' || field(row, 'currency') !== 'CNY' || field(row, 'unit') !== 'cny') fail('当前映射只对明确CAS、人民币元原值开放；其他币种、单位或准则须另有映射。');
     assertFinancialValueUnit(row);
+    const startDate = field(row, 'start_date'), endDate = field(row, 'end_date'), periodType = field(row, 'period_type');
+    if (!validDate(startDate) || !validDate(endDate) || startDate > endDate
+      || !['duration', 'instant'].includes(periodType) || (periodType === 'duration') !== mapping.additive
+      || periodType === 'instant' && startDate !== endDate) {
+      fail('财务固定映射期间须为实际有效日期、正确次序及相符时点/区间性质；不归一化不存在的日期或猜测期间。');
+    }
+    const endExclusive = nextDay(endDate);
+    if (!validDate(endExclusive)) fail('财务固定映射期间超出可表达的半开日期边界。');
     const values = Object.fromEntries(Object.entries(row.values as WfdRecord).map(([key, cell]) => [key, (cell as WfdRecord).value]));
     const identity = { snapshot: input.ref.snapshotId, product: input.ref.productId, record: row.record_ref, mapping: FINANCIAL_MAPPING_VERSION };
     const key = 'standardized_' + wfdSha256(canonicalWfdJson(identity));
     const result = { ...values, concept: mapping.code, original_concept: original, value_state: (row.values as any).value.value_state,
-      business_key: key, start_utc: field(row, 'start_date') + 'T00:00:00Z', end_utc: nextDay(field(row, 'end_date')) + 'T00:00:00Z' };
+      business_key: key, start_utc: startDate + 'T00:00:00Z', end_utc: endExclusive + 'T00:00:00Z' };
     lineage.push({ businessKey: key, source: identity, additive: mapping.additive, unitFactor: '1' });
     return [result];
   }));

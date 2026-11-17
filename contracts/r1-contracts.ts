@@ -42,6 +42,8 @@ export interface R1PrepareInput {
   target: { datasetId: string; outputKey: string; expectedParentSnapshotId: string | null;
     subject: Record<string, unknown>; definition: Record<string, unknown>;
     inputMode: 'partial_observation' | 'complete_snapshot' | 'source_correction'; coverage: Record<string, unknown>;
+    /** Independent explicit definition availability; never inferred from row/source dates. */
+    definitionPublicTime?: Record<string, unknown>;
     definitionMode?: 'reuse'; definitionRef?: Record<string, unknown>;
     revisions?: Record<string, { previous: { product_id: string; snapshot_id: string; logical_key: string; revision_id: string }; reason: string }> };
 }
@@ -89,6 +91,8 @@ export interface R1ReadConnection {
   runtimeIdentity: string; callerId: string; namespace: string;
 }
 export interface R1SnapshotStatus {
+  /** Actual bound WFD instance only; does not assert any usable stage or invent holding facts. */
+  holdingInstance?: { instanceId: string; bindingSource: 'volume_binding' | 'target_instance' } | null;
   snapshotId: string | null; empty: boolean; authority: 'active_head';
   connection: R1ReadConnection & { roles: string[] };
   units: Record<string, { definition: Record<string, unknown>; digest: string }>;

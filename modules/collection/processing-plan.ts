@@ -186,7 +186,7 @@ export class ProcessingPlanService {
     polarsCleaner?: PolarsSourceCleaner;
     /** Host-only module switches; cannot be changed by model tools or an existing plan. */
     modules?: Partial<Record<ProcessingStepKind, boolean>> }) {
-    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fixed.ts', './data-processing/wfd-fixed-selection.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
+    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fact.ts', './data-processing/financial-fixed.ts', './data-processing/wfd-fixed-selection.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
     this.versionBinding = Object.freeze({ processing: PROCESSING_PLAN_VERSION,
       implementation: wfdSha256(Buffer.concat(files)), policy: PROCESSING_POLICY_DIGEST,
       ...(options.modules ? { productionModules: wfdSha256(canonicalWfdJson(options.modules)) } : {}),
@@ -1151,7 +1151,7 @@ export class ProcessingPlanService {
       });
       if (!closed) {
         step.state = 'pending'; step.output = null; step.outputDigest = null; step.checkScope = []; step.reusedFrom = null;
-        step.semantic = null;
+        step.semantic = null; step.normalization = null;
         step.startedAt = null; step.completedAt = null;
         step.gaps = [...step.gaps, '前置阶段未复用或旧产物不可核；未借用旧步骤证明。'];
       }
@@ -1542,7 +1542,8 @@ export class ProcessingPlanService {
       }
     }
     for (const step of steps) {
-      if (step.state !== 'succeeded' || !step.output_json) continue;
+      if (step.state !== 'succeeded') continue;
+      if (!step.output_json) { corrupt.push(`${step.step_id}: 成功步骤缺少产物引用`); continue; }
       const ref = this.ref(step.output_json);
       if (!this.options.objects.verify(ref)) { corrupt.push(`${step.step_id}: 对象缺失或长度不符`); continue; }
       try {
