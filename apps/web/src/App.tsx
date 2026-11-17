@@ -15,10 +15,15 @@ import CaptureSourcesPage from './ui/CaptureSourcesPage';
 import ApiSourcesPage from './ui/ApiSourcesPage';
 import DatabasePage from './ui/DatabasePage';
 import ToolsPage from './ui/ToolsPage';
-import { Modal, errorDetail, useWords } from './ui/Controls';
+import { Modal, ErrorNote, errorDetail, useWords } from './ui/Controls';
 import { currentLocalData, type LocalDataRecord } from './local-data-api';
-import { forgetLocalDataSession, localDataRevision, setLocalDataSession, subscribeLocalDataRevoked } from './local-data-context';
+import { forgetLocalDataSession, localDataGeneration, localDataRevision, setLocalDataSession, subscribeLocalDataRevoked } from './local-data-context';
 
+import { PageActions, PageButton } from './ui/PageUI';
+import { currentWorkspaceObject, useWorkspaceObject, type WorkspaceObjectRef } from './ui/workspace-context';
+import { objectReferenceText, sameObjectReferenceTarget, type ObjectReferenceTarget } from './object-reference';
+
+type ObjectAskIntent = { text: string; target: ObjectReferenceTarget };
 type ReferenceIntent = { text: string; attachments: ConversationAttachmentRef[]; targetId: string | null; targetBranch: string | null; requireNew: boolean; ready: boolean; resolve(): void; reject(error: Error): void };
 
 const PAGES: readonly Page[] = ['conversations', 'capture', 'api-sources', 'database', 'tools', 'settings'];
@@ -36,6 +41,12 @@ function Application() {
   const tasks = useConversationTasks(chat.conversation?.conversationId);
   const [page, setPage] = useState<Page>(pageFromHash);
   const pageTitle = t(PAGE_TITLE_KEYS[page]);
+  const viewedObject = useWorkspaceObject(page);
+  const [objectAsk, setObjectAsk] = useState<ObjectAskIntent | null>(null);
+  const objectAskRef = useRef<ObjectAskIntent | null>(null);
+  const [objectAskError, setObjectAskError] = useState<string | null>(null);
+  const [objectAskNotice, setObjectAskNotice] = useState(false);
+  useEffect(() => { setObjectAskNotice(false); }, [page, chat.selectedId, chat.conversation?.branchId]);
   const [runtime, setRuntime] = useState<UiRuntimeView | null>(null), [runtimeError, setRuntimeError] = useState<string | null>(null), [controlBusy, setControlBusy] = useState(false), [feedback, setFeedback] = useState<{ message: string; issues: string[] } | null>(null), [dropNotice, setDropNotice] = useState<string | null>(null);
   const [referenceIntent, setReferenceIntent] = useState<ReferenceIntent | null>(null);
   const chatRef = useRef(chat); chatRef.current = chat;
@@ -71,8 +82,39 @@ function Application() {
     } catch (failure) { setFeedback({ message: words('控制结果尚未确认，请核对状态。', 'The control result is unconfirmed. Check status.'), issues: [errorDetail(failure)] }); }
     finally { setControlBusy(false); }
   }
+  const mayAddObject = (target: typeof chat) => target.canAttach && !target.draft?.conflict && !target.draft?.error
+    && !target.newPending && !!target.conversation && target.selectedId === target.conversation.conversationId;
+  const objectTarget = (target: typeof chat): ObjectReferenceTarget => ({ conversationId: target.conversation?.conversationId ?? '',
+    branchId: target.conversation?.branchId ?? '', objectRevision: currentWorkspaceObject().revision,
+    localRevision: localDataRevision(), generation: localDataGeneration() });
+  function askObject(object: WorkspaceObjectRef) {
+    if (objectAskRef.current || referenceLock.current) return;
+    const current = chatRef.current, live = currentWorkspaceObject().object;
+    if (!mayAddObject(current) || !live || live.page !== page || JSON.stringify(live) !== JSON.stringify(object)) return;
+    try {
+      const intent = { text: objectReferenceText(live), target: objectTarget(current) };
+      objectAskRef.current = intent; setObjectAsk(intent); setObjectAskError(null); setObjectAskNotice(false);
+    } catch { setObjectAskError(words('对象引用尚未确认，未加入草稿。', 'The object reference could not be verified and was not added.')); }
+  }
+  function cancelObjectAsk() { objectAskRef.current = null; setObjectAsk(null); setObjectAskError(null); }
+  function confirmObjectAsk() {
+    const intent = objectAskRef.current, current = chatRef.current;
+    if (!intent) return;
+    if (!mayAddObject(current) || !currentWorkspaceObject().object
+      || !sameObjectReferenceTarget(intent.target, objectTarget(current))) {
+      setObjectAskError(words('对象、会话或本地资料资格已变化；请取消后重新选择。', 'The object, conversation or local data eligibility changed. Cancel and select again.')); return;
+    }
+    try {
+      current.appendDraftReference(intent.text, { conversationId: intent.target.conversationId, branchId: intent.target.branchId,
+        generation: intent.target.generation!, revision: intent.target.localRevision });
+      // The manager synchronously confirmed the exact branch edit; persistence may still be pending.
+      objectAskRef.current = null; setObjectAsk(null); setObjectAskNotice(true); setObjectAskError(null);
+    } catch { setObjectAskError(words('草稿或目标资格尚未确认，引用未加入；请核对会话、保存状态与长度后重试。', 'The draft or target could not be confirmed. Nothing was added; check the conversation, save state and length before retrying.')); }
+  }
+  const objectAskValid = !!objectAsk && !!viewedObject && mayAddObject(chat)
+    && sameObjectReferenceTarget(objectAsk.target, objectTarget(chat));
   const bringToConversation = useCallback((text: string, attachments: ConversationAttachmentRef[] = []) => new Promise<void>((resolve, reject) => {
-    if (referenceLock.current) { reject(new Error('A reference is already being added.')); return; }
+    if (referenceLock.current || objectAskRef.current) { reject(new Error('A reference is already being added.')); return; }
     referenceLock.current = true; const current = chatRef.current;
     const intent: ReferenceIntent = { text, attachments, targetId: current.selectedId, targetBranch: current.conversation?.branchId ?? null, requireNew: !current.conversation || current.readOnly, ready: false, resolve, reject };
     setReferenceIntent(intent);
@@ -101,7 +143,10 @@ function Application() {
     hasActiveTasks={chat.isRunning || !!runtime?.control.activeCount || !!runtime?.activeRuns.length} globallyStopped={runtime?.control.stopped ?? false} stoppingAll={controlBusy} onStopAll={() => void control('stop')} onResume={() => void control('resume')} onRefresh={refreshRuntime}
     onRejectedDrop={(kind) => setDropNotice(kind === 'url' ? words('网址不会自动下载，请在会话中说明访问范围。', 'URLs are not downloaded on drop. Describe the intended access in a conversation.') : words('请把文件拖入会话输入框。', 'Drop files into the conversation composer.'))}>
     {dropNotice && <div className="page-notice" role="status">{dropNotice}<button type="button" className="text-button" onClick={() => setDropNotice(null)}>{words('关闭', 'Dismiss')}</button></div>}
-    <WorkspaceLayout title={pageTitle} pageKey={page} contextLabel={pageTitle} tasks={tasks}
+    {objectAskError && !objectAsk && <ErrorNote>{objectAskError}</ErrorNote>}
+    {objectAskNotice && <div className="page-notice" role="status">{words('引用已附加到草稿，尚未发送；保存状态请以输入框为准。', 'Reference added to the draft, not sent. Check the composer for save status.')}<PageButton onClick={() => setObjectAskNotice(false)}>{words('关闭', 'Dismiss')}</PageButton></div>}
+    <WorkspaceLayout onAskObject={['capture', 'api-sources', 'tools'].includes(page) ? askObject : undefined} canAskObject={mayAddObject(chat) && !objectAsk}
+      title={pageTitle} pageKey={page} contextLabel={pageTitle} tasks={tasks}
       showDirectory={!['capture', 'api-sources', 'tools', 'conversations', 'database'].includes(page)}
       showAgent={page !== 'conversations' && page !== 'database'}
       agent={<ConversationView chat={chat} hidden={false} dispatchBlocked={runtime?.control.stopped ?? false} controlUnconfirmed={!runtime || !!runtimeError} compact tasks={tasks} />}>
@@ -112,6 +157,14 @@ function Application() {
     {page === 'tools' && <ToolsPage />}
     {page === 'settings' && <SettingsPage />}
     </WorkspaceLayout>
+    {objectAsk && <Modal title={words('对象引用预览', 'Object reference preview')} onClose={cancelObjectAsk}>
+      <p>{words('仅把以下显示身份加入当前会话草稿，保留已有内容；不发送消息、不创建会话或任务，也不授予执行权限。', 'Add only this display reference to the current conversation draft, preserving existing text. No message, conversation or task is created, and no execution authority is granted.')}</p>
+      <p>{words('目标会话 / 分支', 'Target conversation / branch')}: <code>{objectAsk.target.conversationId} / {objectAsk.target.branchId}</code></p>
+      <pre className="object-reference-preview">{objectAsk.text}</pre>
+      {!objectAskValid && <ErrorNote>{words('对象、会话或本地资料资格已变化；请取消后重新选择。', 'The object, conversation or local data eligibility changed. Cancel and select again.')}</ErrorNote>}
+      {objectAskError && <ErrorNote>{objectAskError}</ErrorNote>}
+      <PageActions align="end"><PageButton onClick={cancelObjectAsk}>{words('取消', 'Cancel')}</PageButton><PageButton variant="primary" disabled={!objectAskValid} onClick={confirmObjectAsk}>{words('加入当前草稿', 'Add to current draft')}</PageButton></PageActions>
+    </Modal>}
     {feedback && <Modal title={words('运行控制', 'Run control')} onClose={() => setFeedback(null)}><p role="status">{feedback.message}</p><p className="subtle-text">{words('控制范围是本 xuan BD；外部已发生的结果仍按原记录核对。', 'This control applies to this xuan BD application. External effects are still checked against their original records.')}</p>{feedback.issues.length > 0 && <ul>{feedback.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul>}<div className="dialog-actions"><button type="button" className="text-button" onClick={refreshRuntime}>{words('核对状态', 'Check status')}</button><button type="button" className="primary-button" onClick={() => setFeedback(null)}>{words('关闭', 'Close')}</button></div></Modal>}
   </Shell>;
 }

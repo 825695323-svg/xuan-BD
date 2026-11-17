@@ -127,6 +127,7 @@
 }
 .workspace-agent[data-open="false"] { display: none; }
 .agent-context {
+  display: flex; align-items: center; gap: var(--ui-space-2);
   flex: 0 0 auto;
   overflow: hidden;
   padding: 0 14px 8px;
@@ -495,3 +496,8 @@
   .object-detail-content { padding: 12px; }
   .object-detail-facts > div { grid-template-columns: minmax(80px, .35fr) minmax(0, 1fr); }
 }
+
+/* Explicit display-reference preview uses existing dialog and semantic tokens. */
+.object-reference-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow-y: auto; font-size: var(--ui-meta-size); }
+.agent-context > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.agent-context > button { flex: 0 0 auto; margin-inline-start: auto; }
