@@ -1542,7 +1542,8 @@ export class ProcessingPlanService {
       }
     }
     for (const step of steps) {
-      if (step.state !== 'succeeded' || !step.output_json) continue;
+      if (step.state !== 'succeeded') continue;
+      if (!step.output_json) { corrupt.push(`${step.step_id}: 成功步骤缺少产物引用`); continue; }
       const ref = this.ref(step.output_json);
       if (!this.options.objects.verify(ref)) { corrupt.push(`${step.step_id}: 对象缺失或长度不符`); continue; }
       try {
