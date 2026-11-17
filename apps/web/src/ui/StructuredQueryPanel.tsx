@@ -1,12 +1,13 @@
 import { R1_CONTEXT_OPERATIONS, type R1ContextOperation, type R1ContextReadInput, type R1ContextRead } from '../../../../contracts/r1-contracts';
 import { useEffect, useRef, useState } from 'react';
-import type { R1ProductDiscovery } from '../../../../contracts/r1-contracts';
+import type { R1ProductDiscovery, R1SnapshotStatus } from '../../../../contracts/r1-contracts';
 import { r1Api } from '../r1-api';
 import { queryObject as object, structuredQueryApi, type QueryRecord } from '../structured-query-api';
 import { ErrorNote, errorDetail, useWords } from './Controls';
 import { PageField } from './PageUI';
 import { R1HistoryError, sameR1ReadConnection } from '../r1-read-history';
 import { buildR1ContextHistory } from '../r1-context-history';
+import { buildR1FilterHistory, assertR1FilterEcho } from '../r1-filter-history';
 
 interface Clause { field: string; operator: string; value: string; second: string; otherField: string;
   negate: boolean; includeLow: boolean; includeHigh: boolean }
@@ -163,6 +164,14 @@ function ContextQueryPanel({ ready, operation }: { ready: boolean; operation: R1
 
 /** Controls are populated from fixed public contracts; no hand-written product or field IDs. */
 function FilterQueryPanel({ ready }: { ready: boolean }) {
+  const words = useWords();
+  const outcomeEnglish: Record<string, string> = { matched: 'Matching subjects found', empty: 'No matching subjects after a complete scan', ambiguous: 'Record selection is ambiguous', coverage_insufficient: 'Data or evidence coverage is insufficient', budget_exceeded: 'The scan budget was exceeded' };
+  const stateEnglish: Record<string, string> = { valid_value: 'Valid value', reported_zero: 'Reported zero', unknown: 'Unknown' };
+  const [snapshotStatus, setSnapshotStatus] = useState<R1SnapshotStatus | null>(null);
+  const [stage, setStage] = useState('');
+  const epoch = useRef(0), active = useRef(false);
+  useEffect(() => { epoch.current++; active.current = false; setBusy(false); setDiscovery(null); setSnapshotStatus(null); setResult(null); setLastRequest(null);
+    return () => { epoch.current++; active.current = false; }; }, [ready]);
   const [discovery, setDiscovery] = useState<R1ProductDiscovery | null>(null);
   const [selected, setSelected] = useState<string[]>([]), [clauses, setClauses] = useState<Clause[]>([blank()]);
   const [combine, setCombine] = useState('and'), [start, setStart] = useState(''), [end, setEnd] = useState('');
@@ -191,30 +200,32 @@ function FilterQueryPanel({ ready }: { ready: boolean }) {
     }
   }
   const changed = () => { setResult(null); setLastRequest(null); setPageNumber(1); setError(null); };
-  const act = async (work: () => Promise<void>) => { if (busy) return; setBusy(true); setError(null);
-    try { await work(); } catch (caught) { setError(errorDetail(caught)); } finally { setBusy(false); } };
+  const act = async (work: (current: () => boolean) => Promise<void>) => { if (active.current || !ready) return;
+    active.current = true; const requestEpoch = ++epoch.current, current = () => epoch.current === requestEpoch; setBusy(true); setError(null);
+    try { await work(current); } catch (caught) { if (current()) setError(caught instanceof R1HistoryError ? `${caught.code}: ${words(caught.message, caught.english)}` : errorDetail(caught)); }
+    finally { if (current()) { active.current = false; setBusy(false); } } };
   const update = (index: number, patch: Partial<Clause>) => { setClauses(current => current.map((clause, i) => i === index ? { ...clause, ...patch } : clause)); changed(); };
-  const optionFields = () => <><option value="">选择已登记的数值字段</option>{fields.map(field => <option key={field.key} value={field.key}>{field.label}（{label(field.unit, 'srcunit_')}） · {label(field.semantic, 'source_report.')}</option>)}</>;
+  const optionFields = () => <><option value="">{words('选择已登记的数值字段', 'Select a registered numeric field')}</option>{fields.map(field => <option key={field.key} value={field.key}>{field.label}（{label(field.unit, 'srcunit_')}） · {label(field.semantic, 'source_report.')}</option>)}</>;
 
   const build = (): { structured: QueryRecord; documents?: QueryRecord } => {
-    if (!discovery || !products.length || !start || !end || !clauses.length) throw new Error('先载入并选择实际产品，再选择业务日期与筛选条件。');
-    if (new Set(products.map(p => p.dataset_id)).size !== 1) throw new Error('本次筛选须使用同一数据集中的产品。');
+    if (!discovery || !products.length || !start || !end || !clauses.length) throw new Error(words('先载入并选择实际产品，再选择业务日期与筛选条件。', 'Load and select actual products, then choose business dates and filter conditions.'));
+    if (new Set(products.map(p => p.dataset_id)).size !== 1) throw new Error(words('本次筛选须使用同一数据集中的产品。', 'Select products from the same dataset for this filter.'));
     const subjects = [...new Map(products.map(p => [JSON.stringify(p.subject), p.subject])).values()];
     const metrics: QueryRecord[] = [], aliases = new Map<string, string>();
     const metric = (key: string): { name: string; field: Field } => {
       const field = fields.find(f => f.key === key);
-      if (!field) throw new Error('请选择当前固定合同中的数值字段。');
+      if (!field) throw new Error(words('请选择当前固定合同中的数值字段。', 'Select a numeric field from the current fixed contracts.'));
       let name = aliases.get(key);
       if (!name) {
         name = 'field_' + aliases.size; aliases.set(key, name);
         const bound = products.filter(p => object(p.declaration).semantic_code === field.semantic);
-        if (new Set(bound.map(p => JSON.stringify(p.subject))).size !== bound.length) throw new Error('同一对象同一指标有多个产品候选；请先缩小产品选择。');
+        if (new Set(bound.map(p => JSON.stringify(p.subject))).size !== bound.length) throw new Error(words('同一对象同一指标有多个产品候选；请先缩小产品选择。', 'Multiple products match the same subject and metric; narrow the product selection first.'));
         metrics.push({ metric: name, field: field.code, bindings: bound.map(p => ({ subject: p.subject, product_id: p.product_id })) });
       }
       return { name, field };
     };
     const constant = (text: string, unit: string) => {
-      if (!/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/u.test(text)) throw new Error('阈值须为不含千分位的十进制原值，例如12.30。');
+      if (!/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/u.test(text)) throw new Error(words('阈值须为不含千分位的十进制原值，例如12.30。', 'Enter an exact decimal threshold without thousands separators, for example 12.30.'));
       return { data_type: 'decimal', value: text, unit_code: unit };
     };
     const nodes = clauses.map(clause => {
@@ -226,92 +237,101 @@ function FilterQueryPanel({ ready }: { ready: boolean }) {
       return clause.negate ? { not: node } : node;
     });
     const order = orderField ? [{ kind: 'metric', metric: metric(orderField).name, direction, nulls: 'last' }] : [{ kind: 'subject', direction: 'asc' }];
-    let knowledge: QueryRecord | null = null;
-    if (history !== 'snapshot_contents') {
-      const time = Date.parse(cutoff);
-      if (!cutoff.endsWith('Z') || !Number.isFinite(time)) throw new Error('历史知识截止须为明确UTC（协调世界时）时点，例如2026-11-05T00:00:00Z。');
-      knowledge = { status: 'known', precision: 'second', earliest_utc: new Date(time).toISOString().replace('.000Z', 'Z'),
-        latest_exclusive_utc: new Date(time + 1000).toISOString().replace('.000Z', 'Z'), source_timezone: 'UTC' };
-    }
-    const role = String(object(products[0]!.declaration).time_role ?? 'observation');
+    const historyInput = buildR1FilterHistory({ historyMode: history as 'snapshot_contents' | 'market_known_at' | 'system_held_at',
+      ...(history !== 'snapshot_contents' ? { at: cutoff } : {}), ...(history === 'system_held_at' ? { usableStage: stage } : {}) }, snapshotStatus);
+    const knowledge = historyInput.knowledge_cutoff as QueryRecord | null;
+    if (history === 'system_held_at' && documentQuery.trim()) throw new R1HistoryError('R1_FILTER_JOINT_HELD_UNAVAILABLE', '本轮仅支持结构化持有筛选；请清空资料检索词。', 'System-held filtering is supported here only without document retrieval; clear the document query.');
+    const roles = [...new Set(products.map(product => object(product.declaration).time_role))];
+    if (roles.length !== 1 || typeof roles[0] !== 'string') throw new Error(words('所选产品业务时间角色不一致或未知；不能推断。', 'The selected products have different or unknown business-time roles; these cannot be inferred.'));
+    const role = roles[0];
     const structured = { dataset_id: products[0]!.dataset_id, snapshot_id: discovery.snapshotId,
-      history_mode: history, knowledge_cutoff: knowledge, held_scope: null, usable_stage: null,
+      ...historyInput,
       universe: { kind: 'explicit_subjects', subjects }, metrics,
       business_time_range: { role, start, end, timezone }, predicate: nodes.length === 1 ? nodes[0] : { [combine]: nodes },
       order_by: order, page_size: pageSize, cursor: null };
-    if (documentQuery.trim() && !indexVersion) throw new Error('联合检索须选择一个已登记文档索引。');
+    if (documentQuery.trim() && !indexVersion) throw new Error(words('联合检索须选择一个已登记文档索引。', 'Select a registered document index for joint retrieval.'));
     return { structured, ...(documentQuery.trim() ? { documents: { method: 'keyword', query: documentQuery.trim(), limit: 20,
       indexVersion, mode: history === 'snapshot_contents' ? null : history, asOf: knowledge?.earliest_utc ?? null } } : {}) };
   };
-  const execute = (input: { structured: QueryRecord; documents?: QueryRecord }, page: number) => act(async () => {
+  const execute = (input: { structured: QueryRecord; documents?: QueryRecord }, page: number) => act(async current => {
+    const previousHash = page > 1 ? String(result?.query_hash) : undefined;
+    setResult(null); setLastRequest(null);
     const response = input.documents ? await structuredQueryApi.joint(input) : await structuredQueryApi.filter(input.structured);
+    if (!current()) return;
+    if (!input.documents) {
+      if (!discovery) throw new Error(words('固定产品发现已失效。', 'The fixed product discovery is no longer valid.'));
+      assertR1FilterEcho(input.structured, response, discovery, previousHash);
+    }
     setLastRequest(input); setResult(response); setPageNumber(page);
   });
   const structured = result?.schema === 'bd.structured-document-retrieval/1' ? object(result.structured) : result ?? {}, page = object(structured.page);
   const objects = Array.isArray(result?.objects) ? result.objects.map(object) : [];
 
-  return <section className="r1-stage structured-query-panel" aria-label="结构化筛选与联合检索" aria-busy={busy}>
-    <h3>结构化筛选与联合检索</h3>
-    <p className="r1-help">选择固定快照中的实际产品与字段，用原值条件筛选对象。业务日期内每个对象、指标须有唯一合格记录；多条记录会提示缩小期间。缺值保留未知。</p>
-    <div className="r1-actions"><button type="button" className="text-button" disabled={!ready || busy} onClick={() => void act(async () => {
+  return <section className="r1-stage structured-query-panel" aria-label={words('结构化筛选与联合检索', 'Structured filtering and joint retrieval')} aria-busy={busy}>
+    <h3>{words('结构化筛选与联合检索', 'Structured filtering and joint retrieval')}</h3>
+    <p className="r1-help">{words('选择固定快照中的实际产品与字段，用原值条件筛选对象。业务日期内每个对象、指标须有唯一合格记录；多条记录会提示缩小期间。缺值保留未知。', 'Select actual products and fields from a fixed snapshot and filter subjects using exact stored values. Each subject and metric needs one qualified record within the business dates; multiple records require a narrower period. Missing values remain unknown.')}</p>
+    <div className="r1-actions"><button type="button" className="text-button" disabled={!ready || busy} onClick={() => void act(async current => {
       changed(); setSelected([]); setClauses([blank()]);
       const snapshot = await r1Api.snapshotStatus();
-      if (!snapshot.snapshotId) { setDiscovery(null); throw new Error('绑定实例尚无已发布快照。'); }
+      if (!snapshot.snapshotId) { setDiscovery(null); throw new Error(words('绑定实例尚无已发布快照。', 'The bound instance has no published snapshot.')); }
       const [found, versions] = await Promise.all([r1Api.discoverProducts(snapshot.snapshotId), structuredQueryApi.indexes()]);
-      setDiscovery(found); setIndexes(versions); setIndexVersion(versions[0]?.index_version ?? '');
-    })}>载入当前快照产品</button><span className="r1-help">{discovery ? <>本次固定：<code>{discovery.snapshotId}</code></> : '先载入真实产品与固定合同。'}</span></div>
+      if (!current()) return;
+      if (!sameR1ReadConnection(snapshot.connection, found.connection) || found.snapshotId !== snapshot.snapshotId) throw new Error(words('固定快照与连接身份无法核对。', 'The fixed snapshot and connection identity could not be verified.'));
+      setSnapshotStatus(snapshot); setStage(''); setDiscovery(found); setIndexes(versions); setIndexVersion(versions[0]?.index_version ?? '');
+    })}>{words('载入当前快照产品', 'Load current snapshot products')}</button><span className="r1-help">{discovery ? <>{words('本次固定：', 'Fixed snapshot: ')}<code>{discovery.snapshotId}</code></> : words('先载入真实产品与固定合同。', 'Load actual products and fixed contracts first.')}</span></div>
     {discovery && <>
-      <fieldset className="r1-read-fields"><legend>选择对象产品</legend><div className="r1-read-field-options">{choices.map(product => {
+      <fieldset className="r1-read-fields"><legend>{words('选择对象产品', 'Select subject products')}</legend><div className="r1-read-field-options">{choices.map(product => {
         const id = String(product.product_id), declaration = object(product.declaration), subject = object(product.subject);
         return <label key={id}><input type="checkbox" disabled={busy} checked={selected.includes(id)} onChange={event => {
           setSelected(current => event.target.checked ? [...current, id] : current.filter(value => value !== id)); changed();
         }} /><span>{display(subject.id)} · {display(object(object(declaration.semantic_context).identity).alias_scope ?? declaration.semantic_code)}</span></label>;
-      })}</div>{!choices.length && <p className="r1-help">当前快照没有本入口支持的主体、证券、挂牌或地区产品。</p>}</fieldset>
-      <div className="r1-grid"><label>业务日期起点<input type="date" value={start} disabled={busy} onChange={e => { setStart(e.target.value); changed(); }} /></label>
-        <label>业务日期终点（含当天）<input type="date" value={end} disabled={busy} onChange={e => { setEnd(e.target.value); changed(); }} /></label>
-        <label>业务时区<input value={timezone} disabled={busy} onChange={e => { setTimezone(e.target.value); changed(); }} /></label>
-        <label>时间资格<select value={history} disabled={busy} onChange={e => { setHistory(e.target.value); changed(); }}><option value="snapshot_contents">固定快照内容</option><option value="market_known_at">市场当时已知（需公开资格）</option><option disabled value="system_held_at">系统当时持有（尚无可发现的持有范围）</option></select></label></div>
-      {history !== 'snapshot_contents' && <label>知识截止（UTC，协调世界时）<input value={cutoff} placeholder="2026-11-05T00:00:00Z" disabled={busy} onChange={e => { setCutoff(e.target.value); changed(); }} /></label>}
-      <p className="r1-help">快照内容不证明过去已公开或已持有。仅当前业务值产品只接受当前有效头；历史资格不足会返回具体缺口。</p>
-      <fieldset className="r1-read-fields"><legend>筛选条件</legend><label>多条件关系<select value={combine} disabled={busy} onChange={e => { setCombine(e.target.value); changed(); }}><option value="and">全部满足</option><option value="or">任一满足</option></select></label>
+      })}</div>{!choices.length && <p className="r1-help">{words('当前快照没有本入口支持的主体、证券、挂牌或地区产品。', 'This snapshot has no supported entity, instrument, listing or region products.')}</p>}</fieldset>
+      <div className="r1-grid"><label>{words('业务日期起点', 'Business date start')}<input type="date" value={start} disabled={busy} onChange={e => { setStart(e.target.value); changed(); }} /></label>
+        <label>{words('业务日期终点（含当天）', 'Business date end (inclusive)')}<input type="date" value={end} disabled={busy} onChange={e => { setEnd(e.target.value); changed(); }} /></label>
+        <label>{words('业务时区', 'Business timezone')}<input value={timezone} disabled={busy} onChange={e => { setTimezone(e.target.value); changed(); }} /></label>
+        <label>{words('时间资格', 'Time qualification')}<select value={history} disabled={busy} onChange={e => { setHistory(e.target.value); setCutoff(''); setStage(''); changed(); }}><option value="snapshot_contents">{words('固定快照内容', 'Snapshot contents')}</option><option value="market_known_at">{words('市场当时已知（需公开资格）', 'Market-known history (public eligibility required)')}</option><option value="system_held_at">{words('系统当时持有', 'System-held history')}</option></select></label></div>
+      {history !== 'snapshot_contents' && <label>{words('知识截止（UTC，协调世界时）', 'Knowledge cutoff (UTC)')}<input value={cutoff} placeholder="2026-11-05T00:00:00Z" disabled={busy} onChange={e => { setCutoff(e.target.value); changed(); }} /></label>}
+      {history === 'system_held_at' && <><p className="r1-help">{words('实际持有实例', 'Actual holding instance')}：{snapshotStatus?.holdingInstance?.instanceId ?? words('未知，拒绝推断', 'Unknown; not inferred')}</p><PageField label={words('持有阶段', 'Holding stage')}><select aria-label={words('持有阶段', 'Holding stage')} value={stage} disabled={busy} onChange={event => { setStage(event.target.value); changed(); }}><option value="">{words('明确选择阶段', 'Select an explicit stage')}</option><option value="acquired">acquired</option><option value="custodied">custodied</option><option value="published_readable">published_readable</option></select></PageField></>}
+      <p className="r1-help">{words('快照内容不证明过去已公开或已持有。仅当前业务值产品只接受当前有效头；历史资格不足会返回具体缺口。', 'Snapshot contents do not prove past publication or holding. Current-only products require the active head; insufficient historical eligibility returns explicit gaps.')}</p>
+      <fieldset className="r1-read-fields"><legend>{words('筛选条件', 'Filter conditions')}</legend><label>{words('多条件关系', 'Condition combination')}<select value={combine} disabled={busy} onChange={e => { setCombine(e.target.value); changed(); }}><option value="and">{words('全部满足', 'All conditions')}</option><option value="or">{words('任一满足', 'Any condition')}</option></select></label>
         {clauses.map((clause, index) => <div className="r1-proof" key={index}><div className="r1-grid">
-          <label>条件{index + 1}字段<select value={clause.field} disabled={busy} onChange={e => update(index, { field: e.target.value })}>{optionFields()}</select></label>
-          <label>条件{index + 1}比较<select value={clause.operator} disabled={busy} onChange={e => update(index, { operator: e.target.value })}>{[['>=', '大于或等于'], ['>', '大于'], ['=', '等于'], ['<=', '小于或等于'], ['<', '小于'], ['between', '在区间内'], ['in', '属于原值集合'], ['metric_gt', '大于同产品另一字段'], ['metric_lt', '小于同产品另一字段']].map(([value, text]) => <option key={value} value={value}>{text}</option>)}</select></label>
-          {clause.operator.startsWith('metric') ? <label>条件{index + 1}另一字段<select value={clause.otherField} disabled={busy} onChange={e => update(index, { otherField: e.target.value })}>{optionFields()}</select></label>
-            : <label>条件{index + 1}{clause.operator === 'between' ? '下界' : '原值'}<input value={clause.value} disabled={busy} placeholder={clause.operator === 'in' ? '10,12.30' : '12.30'} onChange={e => update(index, { value: e.target.value })} /></label>}
-          {clause.operator === 'between' && <label>条件{index + 1}上界<input value={clause.second} disabled={busy} onChange={e => update(index, { second: e.target.value })} /></label>}
-        </div><div className="r1-read-field-options"><label><input type="checkbox" disabled={busy} checked={clause.negate} onChange={e => update(index, { negate: e.target.checked })} />取此条件的否定（缺值仍未知）</label>
-          {clause.operator === 'between' && <><label><input type="checkbox" checked={clause.includeLow} disabled={busy} onChange={e => update(index, { includeLow: e.target.checked })} />包含下界</label><label><input type="checkbox" checked={clause.includeHigh} disabled={busy} onChange={e => update(index, { includeHigh: e.target.checked })} />包含上界</label></>}
-          {clauses.length > 1 && <button type="button" className="text-button" disabled={busy} onClick={() => { setClauses(current => current.filter((_, i) => i !== index)); changed(); }}>删除条件{index + 1}</button>}</div></div>)}
-        <button type="button" className="text-button" disabled={busy || clauses.length >= 8} onClick={() => { setClauses(current => [...current, blank()]); changed(); }}>添加条件</button>
+          <label>{words(`条件${index + 1}字段`, `Condition ${index + 1} field`)}<select value={clause.field} disabled={busy} onChange={e => update(index, { field: e.target.value })}>{optionFields()}</select></label>
+          <label>{words(`条件${index + 1}比较`, `Condition ${index + 1} comparison`)}<select value={clause.operator} disabled={busy} onChange={e => update(index, { operator: e.target.value })}>{[['>=', words('大于或等于', 'Greater than or equal to')], ['>', words('大于', 'Greater than')], ['=', words('等于', 'Equal to')], ['<=', words('小于或等于', 'Less than or equal to')], ['<', words('小于', 'Less than')], ['between', words('在区间内', 'Within range')], ['in', words('属于原值集合', 'In exact value set')], ['metric_gt', words('大于同产品另一字段', 'Greater than another field in the same product')], ['metric_lt', words('小于同产品另一字段', 'Less than another field in the same product')]].map(([value, text]) => <option key={value} value={value}>{text}</option>)}</select></label>
+          {clause.operator.startsWith('metric') ? <label>{words(`条件${index + 1}另一字段`, `Condition ${index + 1} other field`)}<select value={clause.otherField} disabled={busy} onChange={e => update(index, { otherField: e.target.value })}>{optionFields()}</select></label>
+            : <label>{words(`条件${index + 1}${clause.operator === 'between' ? '下界' : '原值'}`, `Condition ${index + 1} ${clause.operator === 'between' ? 'lower bound' : 'value'}`)}<input value={clause.value} disabled={busy} placeholder={clause.operator === 'in' ? '10,12.30' : '12.30'} onChange={e => update(index, { value: e.target.value })} /></label>}
+          {clause.operator === 'between' && <label>{words(`条件${index + 1}上界`, `Condition ${index + 1} upper bound`)}<input value={clause.second} disabled={busy} onChange={e => update(index, { second: e.target.value })} /></label>}
+        </div><div className="r1-read-field-options"><label><input type="checkbox" disabled={busy} checked={clause.negate} onChange={e => update(index, { negate: e.target.checked })} />{words('取此条件的否定（缺值仍未知）', 'Negate this condition (missing values remain unknown)')}</label>
+          {clause.operator === 'between' && <><label><input type="checkbox" checked={clause.includeLow} disabled={busy} onChange={e => update(index, { includeLow: e.target.checked })} />{words('包含下界', 'Include lower bound')}</label><label><input type="checkbox" checked={clause.includeHigh} disabled={busy} onChange={e => update(index, { includeHigh: e.target.checked })} />{words('包含上界', 'Include upper bound')}</label></>}
+          {clauses.length > 1 && <button type="button" className="text-button" disabled={busy} onClick={() => { setClauses(current => current.filter((_, i) => i !== index)); changed(); }}>{words(`删除条件${index + 1}`, `Remove condition ${index + 1}`)}</button>}</div></div>)}
+        <button type="button" className="text-button" disabled={busy || clauses.length >= 8} onClick={() => { setClauses(current => [...current, blank()]); changed(); }}>{words('添加条件', 'Add condition')}</button>
       </fieldset>
-      <div className="r1-grid"><label>排序字段<select value={orderField} disabled={busy} onChange={e => { setOrderField(e.target.value); changed(); }}><option value="">完整对象身份</option>{fields.map(field => <option key={field.key} value={field.key}>{field.label}</option>)}</select></label>
-        <label>数值排序<select value={direction} disabled={busy || !orderField} onChange={e => { setDirection(e.target.value); changed(); }}><option value="desc">从大到小</option><option value="asc">从小到大</option></select></label>
-        <label>每页对象数<input type="number" min={1} max={100} value={pageSize} disabled={busy} onChange={e => { setPageSize(Number(e.target.value)); changed(); }} /></label>
-        <label>关联资料检索词（可选）<input value={documentQuery} disabled={busy} onChange={e => { setDocumentQuery(e.target.value); changed(); }} /></label></div>
-      {documentQuery.trim() && <label>固定文档索引<select value={indexVersion} disabled={busy} onChange={e => { setIndexVersion(e.target.value); changed(); }}><option value="">选择已登记索引</option>{indexes.map(index => <option key={index.index_version} value={index.index_version}>{new Date(index.built_at).toLocaleString('zh-CN')} · {index.index_version}</option>)}</select></label>}
-      <p className="r1-help">资料只检索已核对回链的原材料；没有行版本关联、文档索引或历史公开证明时保留缺口。本地文档尚无逐文档权限模型。</p>
+      <div className="r1-grid"><label>{words('排序字段', 'Sort field')}<select value={orderField} disabled={busy} onChange={e => { setOrderField(e.target.value); changed(); }}><option value="">{words('完整对象身份', 'Full subject identity')}</option>{fields.map(field => <option key={field.key} value={field.key}>{field.label}</option>)}</select></label>
+        <label>{words('数值排序', 'Numeric ordering')}<select value={direction} disabled={busy || !orderField} onChange={e => { setDirection(e.target.value); changed(); }}><option value="desc">{words('从大到小', 'Descending')}</option><option value="asc">{words('从小到大', 'Ascending')}</option></select></label>
+        <label>{words('每页对象数', 'Objects per page')}<input type="number" min={1} max={100} value={pageSize} disabled={busy} onChange={e => { setPageSize(Number(e.target.value)); changed(); }} /></label>
+        <label>{words('关联资料检索词（可选）', 'Related document query (optional)')}<input value={documentQuery} disabled={busy} onChange={e => { setDocumentQuery(e.target.value); changed(); }} /></label></div>
+      {documentQuery.trim() && <label>{words('固定文档索引', 'Fixed document index')}<select value={indexVersion} disabled={busy} onChange={e => { setIndexVersion(e.target.value); changed(); }}><option value="">{words('选择已登记索引', 'Select a registered index')}</option>{indexes.map(index => <option key={index.index_version} value={index.index_version}>{new Date(index.built_at).toLocaleString(words('zh-CN', 'en'))} · {index.index_version}</option>)}</select></label>}
+      <p className="r1-help">{words('资料只检索已核对回链的原材料；没有行版本关联、文档索引或历史公开证明时保留缺口。本地文档尚无逐文档权限模型。', 'Document retrieval uses only originals with verified links. Missing record-version links, document indexes or historical public evidence remain gaps. Local documents do not yet have per-document permissions.')}</p>
       <button type="button" className="primary-button" disabled={busy || !selected.length || !fields.length || !start || !end} onClick={() => {
-        try { const input = build(); void execute(input, 1); } catch (caught) { setError(errorDetail(caught)); }
-      }}>执行固定筛选</button>
+        try { const input = build(); void execute(input, 1); } catch (caught) { setError(caught instanceof R1HistoryError ? `${caught.code}: ${words(caught.message, caught.english)}` : errorDetail(caught)); }
+      }}>{words('执行固定筛选', 'Run fixed filter')}</button>
     </>}
-    {busy && <p className="r1-help" role="status">正在查询固定产品与资格…</p>}{error && <ErrorNote>{error}</ErrorNote>}
-    {result && <div className="r1-read-result" aria-label="结构化筛选结果"><p role="status">{outcomes[String(result.status)] ?? display(result.status)}；第{pageNumber}页，本页{objects.length}个对象。</p>
-      <p className="r1-help">扫描完成：{object(structured.scan_receipt).scan_complete ? '是' : '否'}；已确认匹配{display(object(structured.scan_receipt).matched_objects)}个；未知或有覆盖缺口{Array.isArray(structured.indeterminate) ? structured.indeterminate.length : 0}个。</p>
-      {result.qualification ? <p className="r1-help">{display(object(result.qualification).note)} 文档索引：{display(object(result.qualification).document_index_version)}</p> : null}
+    {busy && <p className="r1-help" role="status">{words('正在查询固定产品与资格…', 'Querying fixed products and eligibility…')}</p>}{error && <ErrorNote>{error}</ErrorNote>}
+    {result && <div className="r1-read-result" aria-label={words('结构化筛选结果', 'Structured filter results')}><p role="status">{words(outcomes[String(result.status)] ?? display(result.status), outcomeEnglish[String(result.status)] ?? display(result.status))}{words(`；第${pageNumber}页，本页${objects.length}个对象。`, `; page ${pageNumber}, ${objects.length} subjects on this page.`)}</p>
+      <p className="r1-help">{words(`扫描完成：${object(structured.scan_receipt).scan_complete ? '是' : '否'}；已确认匹配${display(object(structured.scan_receipt).matched_objects)}个；未知或有覆盖缺口${Array.isArray(structured.indeterminate) ? structured.indeterminate.length : 0}个。`, `Scan complete: ${object(structured.scan_receipt).scan_complete ? 'yes' : 'no'}; confirmed matches: ${display(object(structured.scan_receipt).matched_objects)}; unknown or coverage gaps: ${Array.isArray(structured.indeterminate) ? structured.indeterminate.length : 0}.`)}</p>
+      {result.qualification ? <p className="r1-help">{display(object(result.qualification).note)} {words('文档索引：', 'Document index: ')}{display(object(result.qualification).document_index_version)}</p> : null}
       {objects.map((item, i) => <div className="r1-proof" key={i}><strong>{display(object(item.subject).id)}</strong>
-        <div className="r1-table-scroll"><table><thead><tr><th>字段</th><th>实际比较值</th><th>状态</th><th>单位</th></tr></thead><tbody>{Object.entries(object(item.values)).map(([name, raw]) => {
+        <div className="r1-table-scroll"><table><thead><tr><th>{words('字段', 'Field')}</th><th>{words('实际比较值', 'Compared value')}</th><th>{words('状态', 'State')}</th><th>{words('单位', 'Unit')}</th></tr></thead><tbody>{Object.entries(object(item.values)).map(([name, raw]) => {
           const cell = object(raw), ref = object(object(item.record_refs)[name]);
-          return <tr key={name}><td>{label(String(ref.field ?? name), 'src_')}</td><td>{display(cell.value)}</td><td>{valueStates[String(cell.value_state)] ?? display(cell.value_state)}</td><td>{label(String(object(cell.unit).unit_code ?? ''), 'srcunit_')}</td></tr>;
+          return <tr key={name}><td>{label(String(ref.field ?? name), 'src_')}</td><td>{display(cell.value)}</td><td>{words(valueStates[String(cell.value_state)] ?? display(cell.value_state), stateEnglish[String(cell.value_state)] ?? display(cell.value_state))}</td><td>{label(String(object(cell.unit).unit_code ?? ''), 'srcunit_')}</td></tr>;
         })}</tbody></table></div>
-        {Array.isArray(object(item.documents).citations) && (object(item.documents).citations as unknown[]).map((raw, n) => { const cite = object(raw); return <details key={n}><summary>关联资料 · 第{display(cite.page_number)}页 · {display(cite.document_id)}</summary><p className="r1-help">{display(cite.excerpt)}</p><small>文档版本：{display(cite.document_version)}；解析版本：{display(cite.parser_version)}</small></details>; })}
-        <details><summary>记录版本与资料资格</summary><pre className="database-text-preview">{JSON.stringify({ records: item.record_refs, qualification: object(item.documents).qualification, gaps: item.gaps }, null, 2)}</pre></details>
+        {Array.isArray(object(item.documents).citations) && (object(item.documents).citations as unknown[]).map((raw, n) => { const cite = object(raw); return <details key={n}><summary>{words(`关联资料 · 第${display(cite.page_number)}页 · ${display(cite.document_id)}`, `Related document · page ${display(cite.page_number)} · ${display(cite.document_id)}`)}</summary><p className="r1-help">{display(cite.excerpt)}</p><small>{words(`文档版本：${display(cite.document_version)}；解析版本：${display(cite.parser_version)}`, `Document version: ${display(cite.document_version)}; parser version: ${display(cite.parser_version)}`)}</small></details>; })}
+        <details><summary>{words('记录版本与资料资格', 'Record versions and document eligibility')}</summary><pre className="database-text-preview">{JSON.stringify({ records: item.record_refs, qualification: object(item.documents).qualification, gaps: item.gaps }, null, 2)}</pre></details>
       </div>)}
-      <p className="r1-help">{page.has_more ? '还有后续页；当前页不代表结果已穷尽。' : page.result_exhausted ? '已到固定查询末页；数据覆盖与证据缺口仍单独保留。' : '扫描或选择尚未完成，不能声明完整结果。'}</p>
+      <p className="r1-help">{page.has_more ? words('还有后续页；当前页不代表结果已穷尽。', 'More pages remain; this page does not exhaust the results.') : page.result_exhausted ? words('已到固定查询末页；数据覆盖与证据缺口仍单独保留。', 'The fixed query has reached its final page; coverage and evidence gaps remain separate.') : words('扫描或选择尚未完成，不能声明完整结果。', 'The scan or selection is incomplete; complete results cannot be claimed.')}</p>
       <button type="button" className="text-button" disabled={busy || page.has_more !== true || typeof page.next_cursor !== 'string' || !lastRequest} onClick={() => {
         if (lastRequest && typeof page.next_cursor === 'string') void execute({ ...lastRequest, structured: { ...lastRequest.structured, cursor: page.next_cursor } }, pageNumber + 1);
-      }}>继续下一页</button>
-      <details><summary>固定合同、未知值与执行缺口</summary><pre className="database-text-preview">{JSON.stringify(result, null, 2)}</pre></details>
+      }}>{words('继续下一页', 'Next page')}</button>
+      <details><summary>{words('固定合同、未知值与执行缺口', 'Fixed contracts, unknown values and execution gaps')}</summary><pre className="database-text-preview">{JSON.stringify(result, null, 2)}</pre></details>
     </div>}
   </section>;
 }

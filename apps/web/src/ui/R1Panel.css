@@ -45,9 +45,9 @@
 .r1-table-scroll { max-width: 100%; overflow: auto; }
 .r1-table-scroll table { border-collapse: collapse; min-width: max-content; font-size: .8rem; }
 .r1-table-scroll th, .r1-table-scroll td { max-width: 260px; padding: 7px 9px; border: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
-.r1-read-panel, .r1-context-panel { grid-template-columns: minmax(0, 1fr); }
-.r1-read-panel > *, .r1-context-panel > * { min-width: 0; }
-.r1-read-panel .r1-proof, .r1-context-panel .r1-proof { overflow-wrap: anywhere; }
+.r1-read-panel, .r1-context-panel, .structured-query-panel { grid-template-columns: minmax(0, 1fr); }
+.r1-read-panel > *, .r1-context-panel > *, .structured-query-panel > * { min-width: 0; }
+.r1-read-panel .r1-proof, .r1-context-panel .r1-proof, .structured-query-panel .r1-proof { overflow-wrap: anywhere; }
 .r1-read-result { display: grid; gap: 12px; min-width: 0; }
 .r1-read-result caption { text-align: left; padding-bottom: 8px; font-weight: 600; }
 .r1-read-result td small { display: block; margin-top: 5px; color: var(--muted); font-size: .74rem; }
