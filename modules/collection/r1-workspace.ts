@@ -9,6 +9,7 @@ import { PROCESSING_PLAN_VERSION, type ProcessingPlanService } from './processin
 import type { MaterialService } from './materials/service.js';
 import type { R1Runtime } from './r1-runtime.js';
 import { checkR1TabularRows, compileR1TabularDeclaration } from './r1-tabular.js';
+import { checkR1ProductCoverage } from './r1-product-coverage.js';
 import { R1ProductReader } from './r1-product-reader.js';
 import { publishRestrictionTarget, restrictionEvidenceFromUsageStatus, type PublishRestrictionTarget } from './wfd-publish-restriction.js';
 import type { RestrictionEvidence } from './purpose-eligibility.js';
@@ -79,6 +80,7 @@ export class R1WorkspaceService {
   }
   snapshotStatus(signal?: AbortSignal) { return this.reader.snapshotStatus(signal); }
   discoverProducts(value: unknown, signal?: AbortSignal) { return this.reader.discoverProducts(value, signal); }
+  checkProductCoverage(value: unknown, signal?: AbortSignal) { return checkR1ProductCoverage(value, (input, wait) => this.reader.readProduct(input, wait), signal); }
   readProduct(value: unknown, signal?: AbortSignal) { return this.reader.readProduct(value, signal); }
   readContext(value: unknown, signal?: AbortSignal) { return this.reader.readContext(value, signal); }
   filterObjects(value: unknown, signal?: AbortSignal, contextDigest?: string) { return this.reader.filterObjects(value, signal, contextDigest); }
