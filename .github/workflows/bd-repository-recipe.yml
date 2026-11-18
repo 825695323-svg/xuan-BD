@@ -5,7 +5,7 @@ on:
     branches: [main, fix/bd-reproducible-recipe-20261112]
     paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', '.gitattributes', 'AGENTS.md', 'LICENSE']
   pull_request:
-    paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', '.gitattributes', 'AGENTS.md', 'LICENSE', 'staging/**', 'wfd/product/**']
+    paths: ['.github/workflows/bd-repository-recipe.yml', 'scripts/**', 'config/**', 'resources/browser/**', 'package*.json', 'README.md', 'docs/**', '.gitignore', '.gitattributes', 'AGENTS.md', 'LICENSE', 'staging/**', 'wfd/product/**', 'apps/server/media-review*', 'apps/server/ocr-review*', 'apps/server/transcription-review*']
   workflow_dispatch:
     inputs:
       full_regression:

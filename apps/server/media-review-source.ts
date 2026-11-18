@@ -29,12 +29,21 @@ export function readMediaReviewSource(services: MediaReviewServices, materialId:
   const result = data.mediaResult;
   const expectedSource = { materialId, fileRefId: link.file_ref_id, fileRefVersion: link.file_ref_version, sha256: link.sha256 };
   if (!same(result.source, expectedSource) || !isWfdRecord(result.plugin) || result.plugin.id !== action || result.plugin.version !== '1') return unavailable();
-  // Only re-read the already-custodied original, not arbitrary external user paths.
-  const original = companion.materials.readOriginal(materialId);
-  if (original.sha256 !== link.sha256 || wfdSha256(original.bytes) !== link.sha256) return unavailable();
-  const sourceRef = services.files.verify(String(link.file_ref_id));
-  services.direct.assertPublicPath(sourceRef.invocationPath);
-  if (sourceRef.kind !== 'file' || sourceRef.version !== link.file_ref_version) return unavailable();
+  // The original is the already-custodied object, not an arbitrary external path.
+  // Reuse the same source gate before and after asynchronous artifact reads.
+  const assertSourceCurrent = () => {
+    const currentCustody = companion.tasks.get(String(link.service_task_id));
+    const currentMaterial = companion.materials!.getByTask(String(link.service_task_id));
+    if (currentCustody.status !== 'succeeded' || currentCustody.version !== custody.version
+      || !currentMaterial || !same(currentMaterial.envelope, material.envelope)) return unavailable();
+    const sourceRef = services.files.verify(String(link.file_ref_id));
+    services.direct.assertPublicPath(sourceRef.invocationPath);
+    if (sourceRef.kind !== 'file' || sourceRef.version !== link.file_ref_version) return unavailable();
+    const original = companion.materials!.readOriginal(materialId);
+    if (original.sha256 !== link.sha256 || original.bytes.length !== material.envelope.byteLength
+      || wfdSha256(original.bytes) !== link.sha256) return unavailable();
+  };
+  assertSourceCurrent();
   const artifact = async (raw: unknown) => {
     if (!isWfdRecord(raw) || Object.keys(raw).sort().join(',') !== 'fileRefId,fileRefVersion,sha256' || !id(raw.fileRefId)
       || !Number.isSafeInteger(raw.fileRefVersion) || typeof raw.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(raw.sha256)) return unavailable();
@@ -52,6 +61,7 @@ export function readMediaReviewSource(services: MediaReviewServices, materialId:
     if (services.tasks.get(taskId).version !== task.version
       || !same(link, services.database.connection.prepare('SELECT service_task_id,sha256,file_ref_id,file_ref_version FROM conversation_material_links WHERE material_id=?').get(materialId))
       || !same(call, services.database.connection.prepare('SELECT service_task_id,material_id,operation FROM conversation_material_calls WHERE local_task_id=?').get(taskId))) return unavailable();
+    assertSourceCurrent();
   };
   return { result, source: expectedSource, artifact, assertCurrent,
     original: { filename: material.envelope.filename, mediaType: material.envelope.mediaType, sha256: link.sha256,

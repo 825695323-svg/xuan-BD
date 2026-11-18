@@ -7,7 +7,7 @@ import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { createFullChainFixture } from './full-chain-test-support.js';
 import { readOcrReviewHandoff } from './ocr-handoff.js';
 import { readOcrReviewPacket } from './ocr-review.js';
-import { openMediaReviewHost as open, invokeMediaAction as invoke, model, unusedPiContext } from './media-review-test-support.js';
+import { assertLateMediaOriginalRejected, openMediaReviewHost as open, invokeMediaAction as invoke, model, unusedPiContext } from './media-review-test-support.js';
 const binary = process.env.XUAN_TEST_VISION_OCR;
 test('real conversation material read and Vision OCR produce a read-only, unreviewed evidence packet',
   { skip: process.platform !== 'darwin' || !binary || !process.env.XUAN_FULL_CHAIN_ROOT ? 'Requires macOS, explicit compiled helper and isolated full-chain root.' : false, timeout: 240000 }, async () => {
@@ -54,6 +54,8 @@ test('real conversation material read and Vision OCR produce a read-only, unrevi
       assert.equal(packet.textBasis, 'ocr_recognition');
       const count = () => host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get();
       // Synthetic HTTP answers below are test fixtures, never the owner's approval.
+      await assertLateMediaOriginalRejected(host.services, materialId, result.textReference.fileRefId, () => readOcrReviewPacket(host.services, materialId, ocrTask.id));
+      assert.deepEqual(await readOcrReviewPacket(host.services, materialId, ocrTask.id), packet);
       const handoffEndpoint = endpoint + '/handoff';
       const initialResponse = await fetch(host.base + handoffEndpoint); assert.equal(initialResponse.status, 200);
       const initial = await initialResponse.json();
