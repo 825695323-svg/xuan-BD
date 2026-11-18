@@ -106,7 +106,7 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
         'dimension', 'currency', 'unit', 'fiscal_calendar', 'comparability_basis'].map(key => [key, field(row, key)]));
       const formalSubject = row.subject;
       if (!isWfdRecord(formalSubject) || !['kind', 'namespace', 'id'].every(key => typeof formalSubject[key] === 'string' && formalSubject[key])
-        || Object.values(identity).some(value => /^(unknown|unresolved|unspecified)$/iu.test(value))) fail('相容输入缺少正式主体或明确财年/范围等依据，未知标签不能当相同口径。');
+        || Object.values(identity).some(value => /^(unknown|unresolved|unspecified)$/iu.test(value.trim()))) fail('相容输入缺少正式主体或明确财年/范围等依据，未知标签不能当相同口径。');
       const key = canonicalWfdJson({ subject: row.subject, ...identity, concept: mapping.code, periodType: spec.periodType });
       if (basis !== undefined && basis !== key) fail('主体、科目、准则、范围、维度、币种、单位、财年或修订相容依据不一致。');
       basis = key;

@@ -99,6 +99,11 @@ test('explicit compatible financial inputs reject mixed scope, calendar, unit, i
   await assert.rejects(compatible(missing), /fiscal_calendar/u);
   const unknown = compatibleRows(); ((unknown[1]!.values as WfdRecord).comparability_basis as WfdRecord).value = 'unknown';
   await assert.rejects(compatible(unknown), /未知/u);
+  for (const marker of [' unknown ', '\tUnresolved\n', '\u3000unspecified\u3000']) {
+    const padded = compatibleRows();
+    for (const item of padded) ((item.values as WfdRecord).comparability_basis as WfdRecord).value = marker;
+    await assert.rejects(compatible(padded), /未知/u);
+  }
   await assert.rejects(compatible(compatibleRows().slice(0, 1)), /期间缺失/u);
   await assert.rejects(compatible(compatibleRows(), { compatibleInputs: { periodType: 'duration', periods: [periods[0]!, periods[0]!] } }), /不能重复/u);
   const { input, reader } = calculation(compatibleRows());
