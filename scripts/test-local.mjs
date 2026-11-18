@@ -90,6 +90,7 @@ try {
         'modules/collection/data-processing/event-text.test.ts',
         'apps/server/processing-dependencies.test.ts',
         'apps/server/processing-record-dependencies.test.ts',
+        'apps/server/output-publication-dependencies.test.ts',
         'modules/collection/processing-record-dependencies.test.ts',
         'apps/server/r1-dedup.test.ts',
         'apps/server/r1-coverage.test.ts',
