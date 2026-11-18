@@ -139,7 +139,7 @@ export type R1ContextOperation = typeof R1_CONTEXT_OPERATIONS[number];
 export interface R1ContextReadInput {
   operation: R1ContextOperation; snapshotId: string; datasetId: string; subject: Record<string, unknown>;
   fields?: string[]; pageSize?: number; cursor?: string | null; maxDepth?: number;
-  /** Relation graph only: explicit market cutoff plus validity range; other contexts remain snapshot-only. */
+  /** Explicit market cutoff for event timelines; relation graphs additionally require validity range. Other contexts remain snapshot-only. */
   historyMode?: 'snapshot_contents' | 'market_known_at'; at?: string;
   relationTypes?: string[]; eventTypes?: string[]; ruleCodes?: string[]; businessTimeRange?: Record<string, unknown> | null;
 }

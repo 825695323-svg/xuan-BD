@@ -2333,7 +2333,6 @@ class ProductQuery:
             read = self._read_context_product(session, product_id)
             if read.get("status") != "ok":
                 continue
-            product = read["product"]
             if session["business_range"] is not None:
                 try:
                     self._validate_business_time_role(
@@ -2344,6 +2343,11 @@ class ProductQuery:
                     continue
             for item in read["result"].get("rows", []):
                 if canonical(item.get("subject")) != canonical(focus):
+                    continue
+                product = read["products"].get(_product_key(item))
+                if product is None:
+                    session["gaps"].append({"code": "PRODUCT_METADATA_NOT_AVAILABLE",
+                                            "product_id": product_id, "scope": "product"})
                     continue
                 row = item.get("row") or {}
                 if event_types and row.get("event_type") not in event_types:
@@ -2361,6 +2365,30 @@ class ProductQuery:
         rows.sort(key=lambda item: (
             str((item.get("times") or {}).get("event_time", {}).get("earliest_utc") or "~"),
             str((item.get("record_ref") or {}).get("logical_key") or "")))
+        if request["history_mode"] == "market_known_at":
+            # Do not expose future keys/contracts or another subject through diagnostics.
+            # Counts and details are deliberately omitted; this is a snapshot-level gap.
+            all_diagnostics = diagnostics + session["gaps"]
+            if any(item.get("reason") == "WITHDRAWAL_PUBLIC_TIME_UNRESOLVED"
+                   or item.get("code") == "WITHDRAWAL_PUBLIC_TIME_UNRESOLVED"
+                   for item in all_diagnostics):
+                raise ProductQueryError("WITHDRAWAL_PUBLIC_TIME_UNRESOLVED",
+                                        "Event withdrawal publication evidence is unresolved")
+            safe = []
+            for item in all_diagnostics:
+                decision = "ineligible" if item.get("decision") in ("ineligible", "not_yet") else "indeterminate"
+                projected = {"code": "EVENT_HISTORY_ELIGIBILITY_GAP", "scope": "fixed_snapshot",
+                             "decision": decision}
+                if projected not in safe:
+                    safe.append(projected)
+            diagnostics = safe
+            # Retain only fixed metadata refusal codes needed by BD; never pass
+            # arbitrary diagnostic details or future identifiers through gaps.
+            metadata_codes = {"HISTORY_DEFINITION_TIME_UNSUPPORTED", "CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED"}
+            session["gaps"] = [{"code": code, "scope": "fixed_snapshot"}
+                               for code in sorted({item.get("code") for item in session["gaps"]
+                                                   if item.get("code") in metadata_codes})]
+            session["gaps"].extend(copy.deepcopy(safe))
         query_hash = session["query_hash"]
         page = self._page_p4b(request, query_hash, rows)
         return {
@@ -2370,6 +2398,10 @@ class ProductQuery:
             "dataset_id": request["dataset_id"],
             "snapshot_id": request["snapshot_id"],
             "history_mode": request["history_mode"],
+            "knowledge_cutoff": copy.deepcopy(request.get("knowledge_cutoff")),
+            "held_scope": request.get("held_scope"),
+            "usable_stage": request.get("usable_stage"),
+            "business_time_range": copy.deepcopy(request.get("business_time_range")),
             "subject": copy.deepcopy(focus),
             "event_types": sorted(event_types),
             "rows": page["rows"],

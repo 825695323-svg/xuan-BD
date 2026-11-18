@@ -168,7 +168,7 @@ test('market relation graph preserves each visible row contract after an additiv
         const refused = await host.call('/r1/query/context', { ...query, ...changed, cursor: page.result.page.next_cursor }, 409);
         assert.ok(refused.code);
       }
-      assert.equal((await host.call('/r1/query/context', { ...query, operation: 'read_event_timeline' }, 409)).code, 'R1_CONTEXT_HISTORY_INPUT');
+      assert.equal((await host.call('/r1/query/context', { ...query, operation: 'read_company_context' }, 409)).code, 'R1_CONTEXT_HISTORY_INPUT');
       assert.equal((await host.call('/r1/query/context', { ...query, historyMode: 'system_held_at' }, 409)).code, 'R1_READ_INPUT');
     } finally { await host.close(); }
   });
