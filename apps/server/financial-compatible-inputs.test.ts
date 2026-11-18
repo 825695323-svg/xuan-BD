@@ -135,3 +135,42 @@ test('actual HTTP standardization rejects impossible financial periods without c
       assert.equal(read.result.rows.length, cases.length + 1, 'Quality rejection must not delete or rewrite source claims');
     } finally { await host.close(); }
   });
+
+test('actual HTTP compatible inputs reject whitespace-wrapped unknown declarations without rewriting source values',
+  { skip: !enabled ? 'Requires explicit WFD_PYTHON and isolated full-chain root.' : false, timeout: 180_000 }, async () => {
+    const fixture = createFullChainFixture({ name: 'financial-unknown-basis', machine: true,
+      units: { cny: { dimension: 'money' }, text: { dimension: 'text' } } });
+    const host = await openFullChainHost(fixture);
+    try {
+      // Explicit synthetic source claims: text is valid WFD data, not established financial comparability.
+      const cases = [
+        { key: 'unknown-scope', changes: { scope: ' unknown ' } },
+        { key: 'unknown-calendar', changes: { fiscal_calendar: '\tUnresolved\n' } },
+        { key: 'unknown-basis', changes: { comparability_basis: '\u3000unspecified\u3000' } },
+      ];
+      const published = await publish(host, doc('financial-unknown-source', [row('valid'), ...cases.map(item => row(item.key, item.changes))]));
+      const productId = String(published.output.product_id);
+      const before = await host.call('/r1/products/read', { snapshotId: published.snapshotId, productId });
+      const uploaded = await host.upload('synthetic-basis-instruction.csv', 'data', Buffer.from('kind\nsynthetic unknown basis validation\n'), 'basis-material');
+      const task = await host.settled(uploaded.jobId); assert.equal(task.status, 'succeeded');
+      const materialId = host.services.materials!.getByTask(task.id)!.envelope.materialId;
+      const selection = (key: string): FinancialCalculation => ({ version: 'bd-financial-fixed/1', operation: 'standardize',
+        inputs: [{ snapshotId: published.snapshotId, productId, businessKeys: [key] }],
+        compatibleInputs: { periodType: 'duration', periods: [{ startDate: '2024-01-01', endDate: '2024-03-31' }] } });
+      const valid = await prepare(host, materialId, selection('valid'), 'valid-basis');
+      assert.equal(valid.execution.status, 'succeeded', JSON.stringify(valid.execution.error));
+      for (const item of cases) {
+        const invalid = await prepare(host, materialId, selection(item.key), item.key);
+        assert.equal(invalid.execution.status, 'failed', item.key + ' must not be declared compatible');
+        assert.match(JSON.stringify(invalid.execution.error), /未知/u);
+      }
+      const ordinarySelection = selection('unknown-scope'); delete ordinarySelection.compatibleInputs;
+      const ordinary = await prepare(host, materialId, ordinarySelection, 'ordinary-unknown-scope');
+      assert.equal(ordinary.execution.status, 'succeeded', 'Ordinary mapping must not invent comparability requirements');
+      const artifact = JSON.parse(host.services.processing!.artifact(ordinary.planId, ordinary.stepId).bytes.toString());
+      assert.equal(artifact.rows[0][artifact.columns.indexOf('scope')].value, ' unknown ');
+      assert.equal(artifact.financial_evidence.compatibility, null);
+      const after = await host.call('/r1/products/read', { snapshotId: published.snapshotId, productId });
+      assert.deepEqual(after.result.rows, before.result.rows, 'Rejection must not trim or rewrite fixed source claims');
+    } finally { await host.close(); }
+  });
