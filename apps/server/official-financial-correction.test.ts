@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
@@ -9,6 +9,7 @@ import type { FinancialPdfSelection } from '../../modules/collection/data-proces
 import { createFullChainFixture, openFullChainHost, type FullChainHost } from './full-chain-test-support.js';
 
 const root = process.env.XUAN_OFFICIAL_FINANCIAL_ROOT;
+const stagedRoot = process.env.XUAN_OFFICIAL_CORRECTION_AFTER_PUBLICATION_ROOT;
 const enabled = !!root && !!process.env.WFD_PYTHON && !!process.env.XUAN_FULL_CHAIN_ROOT;
 const pinned = [
   { id: 'original-q1', url: 'https://static.cninfo.com.cn/finalpage/2024-04-27/1219876115.PDF',
@@ -51,8 +52,11 @@ async function execute(host: FullChainHost, id: string, input: any) {
   return { planId, done: { status: 'succeeded', error: null } };
 }
 
-for (const stable of [false, true]) test('official PDF fixed source pipeline: ' + (stable ? 'explicit selected fact correction' : 'independent editions'),
-  { skip: !enabled ? 'Requires downloaded official manifest, explicit WFD_PYTHON and isolated root; never fetches automatically.' : false, timeout: 300_000 }, async () => {
+for (const mode of ['independent', 'direct', 'quality'] as const) test('official PDF fixed source pipeline: ' + mode,
+  { skip: mode === 'quality' && !stagedRoot ? 'Requires explicit new post-publication capture directory; test never fetches.' : !enabled ? 'Requires downloaded official manifest, explicit WFD_PYTHON and isolated root; never fetches automatically.' : false, timeout: 300_000 }, async () => {
+    const stable = mode !== 'independent';
+    const qualityCase = 'official-selected-revenue';
+    let originalPlanId = '';
     const manifest = JSON.parse(readFileSync(join(root!, 'manifest.json'), 'utf8'));
     assert.equal(manifest.kind, 'official_financial_correction_probe'); assert.equal(manifest.synthetic, false);
     const fixture = createFullChainFixture({ name: 'official-financial-correction', machine: true,
@@ -69,9 +73,24 @@ for (const stable of [false, true]) test('official PDF fixed source pipeline: ' 
           const wait = Date.parse(heldTimes[0]) + 1100 - Date.now();
           if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
         }
-        const receipt = manifest.sources.find((entry: any) => entry.id === item.id);
+        let captureRoot = root!, captureManifest = manifest;
+        if (mode === 'quality' && item.id === 'corrected-q1') {
+          assert.notEqual(stagedRoot, root, 'Post-publication capture must not reuse the initial directory');
+          assert.equal(existsSync(join(stagedRoot!, 'manifest.json')), false,
+            'Start a new capture only after the original publication ready signal');
+          console.log('OFFICIAL_QUALITY_AWAITING_NEW_CAPTURE ' + stagedRoot);
+          const deadline = Date.now() + 90_000;
+          while (!existsSync(join(stagedRoot!, 'manifest.json')) && Date.now() < deadline)
+            await new Promise(resolve => setTimeout(resolve, 100));
+          assert.ok(existsSync(join(stagedRoot!, 'manifest.json')), 'New official capture did not arrive within 90 seconds');
+          captureRoot = stagedRoot!;
+          captureManifest = JSON.parse(readFileSync(join(captureRoot, 'manifest.json'), 'utf8'));
+          assert.equal(captureManifest.kind, 'official_financial_correction_probe');
+          assert.equal(captureManifest.synthetic, false);
+        }
+        const receipt = captureManifest.sources.find((entry: any) => entry.id === item.id);
         assert.equal(receipt.url, item.url); assert.equal(receipt.status, 200); assert.equal(receipt.sha256, item.sha256);
-        const bytes = readFileSync(join(root!, item.id + '.pdf'));
+        const bytes = readFileSync(join(captureRoot, item.id + '.pdf'));
         assert.equal(wfdSha256(bytes), item.sha256); assert.equal(bytes.length, receipt.bytes);
         const loading = await openPdf(bytes);
         try {
@@ -131,10 +150,56 @@ for (const stable of [false, true]) test('official PDF fixed source pipeline: ' 
           continue;
         }
         assert.equal(plan.outputs[0]!.publishEligible, true, JSON.stringify(plan.outputs[0]!.gaps));
-        const prepared = await host.call('/r1/prepare', { requestId: item.id, planId: work.planId, outputId: 'selected', source, target, mapping }, 201);
-        const submitted = await host.call(`/r1/requests/${item.id}/submit`, { confirmationDigest: prepared.documentSha256 }, 202);
-        assert.equal((await host.settled(submitted.jobId)).status, 'succeeded');
-        const view = await host.call(`/r1/requests/${item.id}`); assert.equal(view.state, 'associated');
+        let requestId = item.id;
+        if (mode === 'quality' && item.id === 'corrected-q1') {
+          const capabilities = await host.call('/corrections/capabilities');
+          await host.call('/corrections/cases', { requestId: 'official-register', input: {
+            caseId: qualityCase, kind: 'source_correction', errorType: 'source_content_correction',
+            discoveredAt: new Date().toISOString(),
+            evidence: 'Official notice SHA ' + pinned[2]!.sha256 + ' page 2: selected consolidated Q1 revenue 546936730.12 → 473861731.94; operator-declared complete fact axes only.',
+            binding: { planOutput: { planId: originalPlanId, outputId: 'selected' } },
+            connectionSha256: capabilities.connectionSha256 } }, 201);
+          const path = '/corrections/cases/' + qualityCase;
+          const impact = await host.call(path + '/impact', { requestId: 'official-impact' });
+          assert.equal(impact.state, 'impact_frozen', JSON.stringify(impact));
+          assert.equal(impact.coverage, 'proven_subset_only');
+          assert.equal(impact.items.length, 1);
+          assert.equal(impact.items[0].kind, 'original');
+          assert.equal(impact.items[0].recordVersion, correction.previous.revision_id);
+          assert.equal((await host.call(path + '/suspend', { requestId: 'official-suspend' })).state, 'suspended');
+          const prepared = await host.call(path + '/prepare', { requestId: 'official-prepare', input: {
+            planId: work.planId, outputId: 'selected', originalSha256: item.sha256,
+            expectedParentSnapshotId: snapshotId, reason: 'Official corrected PDF, same explicitly selected financial fact',
+            sourceRevision: { sourceId: source.source_id, provider: source.provider, requestedUrl: item.url,
+              requestedAtUtc: receipt.requestedAt, acquiredAtUtc: receipt.acquiredAt,
+              revisionBasis: 'New capture observation, not disclosure time; notice SHA ' + pinned[2]!.sha256 + ' page 2 before/after revenue',
+              usageScope: source.usage_scope, originalSha256: item.sha256, previousOriginalSha256: pinned[0]!.sha256 } } });
+          const authorized = await host.call(path + '/authorize', { requestId: 'official-authorize', input: {
+            frozenSha256: prepared.frozenSha256, confirmationDigest: prepared.documentSha256 } }, 202);
+          const waiting = await host.settled(authorized.id);
+          assert.equal(waiting.status, 'waiting_approval', JSON.stringify(waiting));
+          host.services.tasks.approve(waiting.approvalId!);
+          const done = await host.settled(authorized.id);
+          assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
+          const resolved = await host.call(path);
+          assert.equal(resolved.state, 'resolved', JSON.stringify(resolved));
+          assert.ok(resolved.items.every((entry: any) => entry.state === 'corrected'));
+          const publishedSnapshot = (await host.services.r1Runtime!.connection.client.snapshotStatus()).result;
+          // Explicit local receipt-loss fault injection, not an actual outage or source event.
+          host.database.connection.prepare("UPDATE correction_cases SET state='blocked',result_json=NULL WHERE case_id=?").run(qualityCase);
+          await host.call(path + '/recover', { requestId: 'official-same-identity-recovery' });
+          assert.equal((await host.call(path)).state, 'resolved');
+          assert.deepEqual((await host.services.r1Runtime!.connection.client.snapshotStatus()).result, publishedSnapshot);
+          assert.equal(host.database.connection.prepare('SELECT count(*) AS n FROM r1_record_associations WHERE request_id=?')
+            .get('correction:' + qualityCase)!.n, 1);
+          requestId = 'correction:' + qualityCase;
+        } else {
+          const prepared = await host.call('/r1/prepare', { requestId, planId: work.planId, outputId: 'selected', source, target, mapping }, 201);
+          const submitted = await host.call(`/r1/requests/${requestId}/submit`, { confirmationDigest: prepared.documentSha256 }, 202);
+          assert.equal((await host.settled(submitted.jobId)).status, 'succeeded');
+        }
+        if (item.id === 'original-q1') originalPlanId = work.planId;
+        const view = await host.call(`/r1/requests/${requestId}`); assert.equal(view.state, 'associated');
         const association = view.local.associations[0]; snapshotId = association.snapshot_id;
         const read = await host.call('/r1/products/read', { snapshotId, productId: association.product_id });
         const row = read.result.rows.find((row: any) => row.values.report_version.value === item.id);
@@ -165,9 +230,12 @@ for (const stable of [false, true]) test('official PDF fixed source pipeline: ' 
       assert.ok(Date.parse(heldTimes[1]!) > Date.parse(heldTimes[0]!));
       const heldInput = { snapshotId, productId: fixed[1].productId, historyMode: 'system_held_at',
         heldScope: holdingInstance, usableStage: 'published_readable' };
-      const beforeCorrection = await host.call('/r1/products/read', { ...heldInput, at: heldTimes[0] });
-      assert.equal(beforeCorrection.result.rows.length, 1);
-      assert.equal(beforeCorrection.result.rows[0].values.value.value, '546936730.12');
+      const beforeCorrection = await host.call('/r1/products/read', { ...heldInput, at: heldTimes[0] }, mode === 'quality' ? 409 : 200);
+      if (mode === 'quality') assert.equal(beforeCorrection.code, 'USAGE_KNOWN_ISSUE_LEGACY');
+      else {
+        assert.equal(beforeCorrection.result.rows.length, 1);
+        assert.equal(beforeCorrection.result.rows[0].values.value.value, '546936730.12');
+      }
       const afterCorrection = await host.call('/r1/products/read', { ...heldInput, at: heldTimes[1] });
       assert.equal(afterCorrection.result.rows.length, stable ? 1 : 2);
       assert.ok(afterCorrection.result.rows.some((row: any) => row.values.value.value === '473861731.94'));
@@ -181,6 +249,11 @@ for (const stable of [false, true]) test('official PDF fixed source pipeline: ' 
             tables: [{ materialId: materials[index], format: 'financial-fixed', financialCalculation: {
               version: 'bd-financial-fixed/1', operation: 'standardize', inputs: [ref],
               history: { historyMode: 'system_held_at', at: heldTimes[index], heldScope: holdingInstance, usableStage: 'published_readable' } } }] }] });
+        if (mode === 'quality' && index === 0) {
+          assert.equal(work.done.status, 'failed');
+          assert.match(JSON.stringify(work.done.error), /USAGE_KNOWN_ISSUE_LEGACY/u);
+          continue;
+        }
         assert.equal(work.done.status, 'succeeded', JSON.stringify(work.done.error));
         const artifact = JSON.parse(host.services.processing!.artifact(work.planId, 'parse:mapped:0').bytes.toString());
         assert.equal(artifact.financial_evidence.historicalQualification, 'system_held_at');
@@ -203,9 +276,26 @@ for (const stable of [false, true]) test('official PDF fixed source pipeline: ' 
       assert.equal(latest.result.rows.length, stable ? 1 : 2);
       assert.deepEqual(latest.result.rows.map((row: any) => row.values.value.value).sort(), stable ? ['473861731.94'] : ['473861731.94', '546936730.12']);
       await host.close(); host = await openFullChainHost(fixture);
+      if (mode === 'quality') assert.equal((await host.call('/corrections/cases/' + qualityCase)).state, 'resolved');
       assert.equal((await host.call('/r1/products/snapshot', {})).holdingInstance.instanceId, holdingInstance);
-      assert.deepEqual((await host.call('/r1/products/read', { ...heldInput, at: heldTimes[0] })).result.rows, beforeCorrection.result.rows);
+      const reopenedHistory = await host.call('/r1/products/read', { ...heldInput, at: heldTimes[0] }, mode === 'quality' ? 409 : 200);
+      if (mode === 'quality') assert.equal(reopenedHistory.code, 'USAGE_KNOWN_ISSUE_LEGACY');
+      else assert.deepEqual(reopenedHistory.result.rows, beforeCorrection.result.rows);
       for (const [index, ref] of fixed.entries()) {
+        if (mode === 'quality' && index === 0) {
+          const audit = await host.call(`/corrections/cases/${qualityCase}/audit?snapshotId=${ref.snapshotId}&productId=${ref.productId}`);
+          assert.equal(audit.publishable, false);
+          assert.equal(audit.rows.length, 1);
+          const original = originalRows[index];
+          // Audit returns raw payload; the public reader adds resolved unit/field metadata.
+          const rawValues = Object.fromEntries(Object.entries(original.values).map(([key, cell]) => {
+            const { unit: _unit, field_code: _fieldCode, ...raw } = cell as any;
+            return [key, raw];
+          }));
+          assert.deepEqual(audit.rows[0].row, { business_key: original.record_ref.logical_key,
+            observation_time: original.business_time, subject: original.subject, values: rawValues });
+          continue;
+        }
         const read = await host.call('/r1/products/read', { snapshotId: ref.snapshotId, productId: ref.productId });
         assert.deepEqual(read.result.rows.find((row: any) => row.record_ref.logical_key === ref.businessKeys[0]), originalRows[index]);
       }
