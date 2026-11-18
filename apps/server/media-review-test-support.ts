@@ -110,3 +110,27 @@ export async function invokeMediaAction(h: Host, input: BackendInput, action: st
   const task = h.services.tasks.get(String(row.task_id)); assert.equal(task.status, 'succeeded', JSON.stringify(task.error));
   return task;
 }
+
+/** Corrupt only already-custodied fixture bytes after a real artifact read has yielded.
+ * No task, recognizer result, source link or successful receipt is fabricated. */
+export async function assertLateMediaOriginalRejected(services: ReturnType<typeof createApplicationServices>, materialId: string,
+  textRef: string, read: () => Promise<unknown>) {
+  const companion = services.options.workspaceServices!, original = companion.materials!.readOriginal(materialId);
+  const verify = services.files.verify.bind(services.files); let checks = 0, injected = false;
+  services.files.verify = id => {
+    const ref = verify(id);
+    // artifact(), readArtifactForDownload(), its initial verify(), then readPinnedFile after await root/open.
+    if (id === textRef && ++checks === 4) {
+      companion.database.connection.prepare('UPDATE material_objects SET original_bytes=? WHERE material_id=?')
+        .run(Buffer.from('isolated late original corruption'), materialId);
+      injected = true;
+    }
+    return ref;
+  };
+  try { await assert.rejects(read(), 'A packet must reject a custodied original changed during its artifact await'); }
+  finally {
+    services.files.verify = verify;
+    companion.database.connection.prepare('UPDATE material_objects SET original_bytes=? WHERE material_id=?').run(original.bytes, materialId);
+  }
+  assert.ok(injected, 'The real pinned artifact read must reach the injected post-await check');
+}

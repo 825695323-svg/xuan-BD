@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import test from 'node:test';
 import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { createFullChainFixture } from './full-chain-test-support.js';
-import { openMediaReviewHost as open, invokeMediaAction as invoke, model, unusedPiContext } from './media-review-test-support.js';
+import { assertLateMediaOriginalRejected, openMediaReviewHost as open, invokeMediaAction as invoke, model, unusedPiContext } from './media-review-test-support.js';
 import { readTranscriptionReviewPacket } from './transcription-review.js';
 import { readTranscriptionReviewHandoff } from './transcription-handoff.js';
 const bundle = process.env.XUAN_TEST_TRANSCRIPTION_BUNDLE, audio = process.env.XUAN_TEST_TRANSCRIPTION_AUDIO;
@@ -40,6 +40,8 @@ test('real conversation local transcription preserves native evidence and litera
         const current = host.services.files.verify(ref.fileRefId); assert.equal(current.version, ref.fileRefVersion);
         assert.equal(wfdSha256(readFileSync(current.invocationPath)), ref.sha256);
       }
+      await assertLateMediaOriginalRejected(host.services, materialId, result.textReference.fileRefId, () => readTranscriptionReviewPacket(host.services, materialId, task.id));
+      assert.deepEqual(await readTranscriptionReviewPacket(host.services, materialId, task.id), packet);
       const handoffEndpoint = endpoint + '/handoff';
       const initialResponse = await fetch(host.base + handoffEndpoint); assert.equal(initialResponse.status, 200);
       const initial = await initialResponse.json(); assert.equal(initial.state, 'awaiting_question');
