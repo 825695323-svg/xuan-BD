@@ -5,6 +5,7 @@ import type { MaterialEnvelope, MaterialRecord } from '../../../../modules/colle
 import type { BdJob } from '../bd-api';
 import { dataBrowserApi, type MaterialProcessingOutput } from '../data-browser-api';
 import { ErrorNote, Modal, SelectMenu, errorDetail, useWords } from './Controls';
+import { CorrectionCasesPanel } from './CorrectionCasesPanel';
 import { R1Panel } from './R1Panel';
 import { PageButton, PageEmpty, PageHeading, PageSearch } from './PageUI';
 import { taskStateLabels, taskStateText } from './TaskResults';
@@ -12,7 +13,7 @@ import { taskStateLabels, taskStateText } from './TaskResults';
 export interface DatabasePageProps {
   onBringToConversation(text: string, attachments?: ConversationAttachmentRef[]): void | Promise<void>;
 }
-type Section = 'r1' | 'files' | 'materials' | 'jobs';
+type Section = 'r1' | 'files' | 'materials' | 'jobs' | 'corrections';
 type JobView = BdJob & { title?: string; progress?: { message: string; fraction: number | null; timestamp: string } | null; blockedReason?: string | null; createdAt?: number; approvalId?: string | null };
 
 const bytes = (value: number) => value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} MiB` : value >= 1024 ? `${(value / 1024).toFixed(1)} KiB` : `${value} B`;
@@ -55,6 +56,7 @@ export function DatabasePage({ onBringToConversation }: DatabasePageProps) {
     { id: 'r1', label: words('R1 结构化交接', 'R1 structured handoff'), icon: <GitBranch size={16} /> },
     { id: 'files', label: words('原件与产物', 'Files and outputs'), icon: <FileText size={16} /> },
     { id: 'materials', label: words('材料预览', 'Material previews'), icon: <Boxes size={16} /> },
+    { id: 'corrections', label: words('更正事项', 'Correction cases'), icon: <ListChecks size={16} /> },
     { id: 'jobs', label: words('工作台任务', 'Workbench tasks'), icon: <ListChecks size={16} /> },
   ];
   return <div className="data-page database-page">
@@ -66,6 +68,7 @@ export function DatabasePage({ onBringToConversation }: DatabasePageProps) {
       {section === 'r1' && <R1Panel />}
       {section === 'files' && <FileList />}
       {section === 'materials' && <MaterialList />}
+      {section === 'corrections' && <CorrectionCasesPanel />}
       {section === 'jobs' && <JobList />}
     </section>
   </div>;

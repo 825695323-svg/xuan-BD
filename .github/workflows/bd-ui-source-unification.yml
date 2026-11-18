@@ -18,6 +18,7 @@ on:
       - 'apps/server/object-selection-browser.test.ts'
       - 'apps/server/task-center-browser.test.ts'
       - 'apps/server/task-recovery-browser.test.ts'
+      - 'apps/server/correction-cases-browser.test.ts'
       - 'apps/server/r1-plan-review-http.test.ts'
       - 'apps/server/configured-app.ts'
       - 'apps/server/ui-routes.ts'
@@ -63,7 +64,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           changed="$(git diff --name-only HEAD^ HEAD)"
-          if [ "$EVENT_NAME" = workflow_dispatch ] || echo "$changed" | grep -Eq '(TaskRecovery|task-recovery|TaskCenter|useConversationTasks|task-center-browser|object-reference|workspace-context|App\.tsx|ObjectDetailPanel|WorkspaceLayout|ApiSourcesPage|ToolsPage|CaptureSourcesPage|useStoredSelection|object-selection-browser|r1-joint-history|joint-history-browser|r1-filter-history|filter-history-browser|r1-read-history|r1-context-history|StructuredQueryPanel|structured-query-api|R1ReadPanel|R1SingleOutputPanel|R1Panel\.css|r1-api|r1-history-browser|relation-history-browser|event-history-browser|bd-ui-source-unification)'; then
+          if [ "$EVENT_NAME" = workflow_dispatch ] || echo "$changed" | grep -Eq '(CorrectionCases|correction-cases|TaskRecovery|task-recovery|TaskCenter|useConversationTasks|task-center-browser|object-reference|workspace-context|App\.tsx|ObjectDetailPanel|WorkspaceLayout|ApiSourcesPage|ToolsPage|CaptureSourcesPage|useStoredSelection|object-selection-browser|r1-joint-history|joint-history-browser|r1-filter-history|filter-history-browser|r1-read-history|r1-context-history|StructuredQueryPanel|structured-query-api|R1ReadPanel|R1SingleOutputPanel|R1Panel\.css|r1-api|r1-history-browser|relation-history-browser|event-history-browser|bd-ui-source-unification)'; then
             echo 'history=true' >> "$GITHUB_OUTPUT"
           else
             echo 'history=false' >> "$GITHUB_OUTPUT"
@@ -100,6 +101,7 @@ jobs:
             apps/web/src/r1-joint-history.test.ts \
             apps/web/src/useConversationTasks.test.tsx \
             apps/web/src/task-recovery.test.ts \
+            apps/web/src/correction-cases-api.test.ts \
             apps/web/src/object-reference-evidence.test.ts \
             apps/web/src/object-reference.test.ts \
             apps/web/src/object-reference-draft.test.ts \
@@ -154,6 +156,7 @@ jobs:
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/h
           XUAN_TEST_ROOT: ${{ runner.temp }}/r1-history-tests
           XUAN_HISTORY_VISUAL_ROOT: ${{ runner.temp }}/xuan-bd-ui-visual/r1-history
+          XUAN_CORRECTION_VISUAL_ROOT: ${{ runner.temp }}/xuan-bd-ui-visual/correction-cases
           XUAN_TASK_VISUAL_ROOT: ${{ runner.temp }}/xuan-bd-ui-visual/task-center
           XUAN_OBJECT_VISUAL_ROOT: ${{ runner.temp }}/xuan-bd-ui-visual/object-selection
           XUAN_JOINT_VISUAL_ROOT: ${{ runner.temp }}/xuan-bd-ui-visual/joint-history
@@ -164,7 +167,7 @@ jobs:
           mkdir -p "$XUAN_FULL_CHAIN_ROOT" "$XUAN_TEST_ROOT"
           set -euo pipefail
           export XUAN_TEST_WEB_ROOT="$GITHUB_WORKSPACE/dist/web"
-          node --import tsx --test --test-concurrency=1 --test-reporter=tap apps/server/r1-history-browser.test.ts apps/server/relation-history-browser.test.ts apps/server/event-history-browser.test.ts apps/server/filter-history-browser.test.ts apps/server/joint-history-browser.test.ts apps/server/object-selection-browser.test.ts apps/server/task-center-browser.test.ts apps/server/task-recovery-browser.test.ts | tee "$RUNNER_TEMP/r1-history.tap"
+          node --import tsx --test --test-concurrency=1 --test-reporter=tap apps/server/r1-history-browser.test.ts apps/server/relation-history-browser.test.ts apps/server/event-history-browser.test.ts apps/server/filter-history-browser.test.ts apps/server/joint-history-browser.test.ts apps/server/object-selection-browser.test.ts apps/server/task-center-browser.test.ts apps/server/task-recovery-browser.test.ts apps/server/correction-cases-browser.test.ts | tee "$RUNNER_TEMP/r1-history.tap"
           grep -q '^# fail 0$' "$RUNNER_TEMP/r1-history.tap"
           grep -q '^# skipped 0$' "$RUNNER_TEMP/r1-history.tap"
       - name: Browser geometry and screenshot visual audit
