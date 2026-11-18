@@ -358,7 +358,7 @@ export class SegmentService {
       parser_version: parserVersion, artifact_ref: binding.artifactRef, artifact_sha256: ledger.artifact_sha256,
       origin_sha256: material.envelope.sha256, acquired_at: material.envelope.createdAt,
       event_time: binding.eventTime, disclosed_at: binding.disclosedAt, parsed_at: now,
-      page_count: new Set(built.segments.map(segment => segment.page_number)).size,
+      page_count: built.pageCount,
       segment_count: built.segments.length, issues: [...issues].sort() };
     let written = { inserted: 0, existing: 0 };
     let index: { indexVersion: string; reused: boolean } | null = null;
@@ -451,7 +451,14 @@ export class SegmentService {
     return { schema: SEGMENT_RETRIEVAL_SCHEMA, structured: null, status,
       query: { method, text: query, as_of: input.asOf ?? null },
       qualification: qualificationOf(mode, asOfMs, resolved.built_at),
-      citations: hits.map(hit => citation(hit.segment, indexVersion)), coverage, gaps };
+      citations: hits.map(hit => this.citationWithDocumentIssues(hit.segment, indexVersion)), coverage, gaps };
+  }
+
+  /** Persisted document gaps are separate from this exact segment's extraction issues.
+   * Missing legacy metadata is unknown, not complete; no artifact or source re-read here. */
+  private citationWithDocumentIssues(segment: DocSegment, indexVersion: string | null): RetrievalCitation {
+    const document = readDocumentVersion(this.connection, segment.document_id, segment.document_version, segment.parser_version);
+    return { ...citation(segment, indexVersion), document_issues: document?.issues ?? null };
   }
 
   /** Frozen local evidence binding, not historical qualification or source truth. */
@@ -460,19 +467,19 @@ export class SegmentService {
     if (!segment) throw new TaskError('SEGMENT_INDEX_MEMBERSHIP', '片段不属于指定固定索引，未回退。');
     const document = readDocumentVersion(this.connection, segment.document_id, segment.document_version, segment.parser_version);
     const artifact = findArtifactByRef(this.options.database, segment.document_id, segment.document_version, segment.source_ref);
-    return { segment, citation: citation(segment, indexVersion), document, artifact };
+    return { segment, citation: this.citationWithDocumentIssues(segment, indexVersion), document, artifact };
   }
 
   segment(segmentId: string): RetrievalCitation {
     const found = readSegment(this.connection, segmentId);
     if (!found) throw new TaskError('SEGMENT_NOT_FOUND', '没有该片段。');
-    return citation(found, null);
+    return this.citationWithDocumentIssues(found, null);
   }
 
   documents(): ReturnType<typeof listDocumentVersions> { return listDocumentVersions(this.connection); }
 
   segments(documentId: string, documentVersion?: string): RetrievalCitation[] {
-    return listSegments(this.connection, documentId, documentVersion).map(segment => citation(segment, null));
+    return listSegments(this.connection, documentId, documentVersion).map(segment => this.citationWithDocumentIssues(segment, null));
   }
 
   /** 产物发现：按“可进索引”优先列出该材料已登记的转换产物。 */
@@ -647,7 +654,7 @@ function citation(segment: DocSegment, indexVersion: string | null): RetrievalCi
     excerpt: segment.text.length > EXCERPT_LIMIT ? segment.text.slice(0, EXCERPT_LIMIT) : segment.text,
     excerpt_truncated: segment.text.length > EXCERPT_LIMIT,
     text_digest: segment.text_digest, char_start: segment.char_start, char_end: segment.char_end,
-    artifact_ref: segment.source_ref, index_version: indexVersion ?? '', issues: segment.issues };
+    artifact_ref: segment.source_ref, index_version: indexVersion ?? '', issues: segment.issues, document_issues: null };
 }
 
 function artifactResult(ledger: ConversionArtifactRecord, outcome: {

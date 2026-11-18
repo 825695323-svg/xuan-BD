@@ -194,6 +194,8 @@ export interface RetrievalCitation {
   char_end: number;
   artifact_ref: string;
   index_version: string;
+  /** Document-wide persisted gaps; null means metadata unavailable, never full-text assurance. */
+  document_issues: string[] | null;
   issues: string[];
 }
 

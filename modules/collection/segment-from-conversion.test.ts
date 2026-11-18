@@ -79,3 +79,15 @@ test('同一产物两次生成片段 id 完全一致', () => {
   const twice = segmentsFromConversionArtifact(envelope(), ref);
   assert.deepEqual(once.segments.map(segment => segment.segment_id), twice.segments.map(segment => segment.segment_id));
 });
+
+
+test('PDF page declaration must cover every native page exactly once', () => {
+  const valid = envelope();
+  assert.equal(segmentsFromConversionArtifact(valid, ref).pageCount, 1);
+  for (const content of [
+    { ...valid.content, pageCount: 2 },
+    { ...valid.content, pageCount: 0 },
+    { ...valid.content, pageCount: 2, pages: [valid.content.pages[0]!, valid.content.pages[0]!] },
+    { ...valid.content, pages: [{ ...valid.content.pages[0]!, page: 2 }] },
+  ]) assert.throws(() => segmentsFromConversionArtifact({ ...valid, content }, ref), /页数或逐页身份不完整/);
+});
