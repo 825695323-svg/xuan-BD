@@ -661,8 +661,11 @@ export interface SegmentStorageReport {
 }
 
 /** 检索区实际占用：容量与保留期由运营据此显式决定，程序不自动删除片段。 */
-export function segmentStorage(db: DatabaseSync): SegmentStorageReport {
-  ensureSegmentSchema(db);
+export function segmentStorage(db: DatabaseSync, readOnly = false): SegmentStorageReport {
+  if (readOnly) {
+    if (storageVersion(db) !== STORAGE_VERSION)
+      throw new TaskError('RETRIEVAL_STORAGE_SCHEMA_UNSUPPORTED', '检索库格式未就绪；容量读取不创建或迁移数据库。');
+  } else ensureSegmentSchema(db);
   const one = <T>(sql: string): T => db.prepare(sql).get() as T;
   const segments = Number(one<{ n: number }>('SELECT COUNT(*) AS n FROM doc_segments').n ?? 0);
   const documents = Number(one<{ n: number }>('SELECT COUNT(*) AS n FROM doc_document_versions').n ?? 0);

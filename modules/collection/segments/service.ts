@@ -490,9 +490,19 @@ export class SegmentService {
 
   /** 检索区实际占用与保存策略。程序不自动删除片段，容量与保留期由运营显式决定。 */
   storage(): JsonValue {
-    const report = segmentStorage(this.connection);
+    // Do not use the lazy writable connection: inspecting capacity must not create or migrate a store.
     const sizes = fileSizes(this.options.databasePath);
-    return { database: { file: this.options.databasePath.split('/').pop() ?? 'segments.sqlite', bytes: sizes.total, walBytes: sizes.wal,
+    let db: DatabaseSync | null = null;
+    let report: ReturnType<typeof segmentStorage>;
+    try {
+      db = this.options.databasePath === ':memory:' ? this.db : new DatabaseSync(this.options.databasePath, { readOnly: true });
+      if (!db) throw new TaskError('RETRIEVAL_STORAGE_UNAVAILABLE', '检索库尚未建立；未把未知容量显示为零。');
+      report = segmentStorage(db, true);
+    } catch (error) {
+      if (error instanceof TaskError) throw error;
+      throw new TaskError('RETRIEVAL_STORAGE_UNAVAILABLE', '检索容量暂不可读取；未创建、迁移或清理数据库。');
+    } finally { if (db && db !== this.db) db.close(); }
+    return { schema: 'bd.retrieval-storage/1', basis: 'sqlite_file_lengths_and_logical_contents', database: { file: this.options.databasePath.split('/').pop() ?? 'segments.sqlite', bytes: sizes.total, walBytes: sizes.wal,
         segments: report.segments, documents: report.documents, indexVersions: report.indexVersions,
         textBytes: report.textBytes, ftsTokenBytes: report.tokenBytes, ftsIndexBytes: report.ftsIndexBytes,
         indexMembershipRows: report.membershipRows, sharedIndexVersions: report.sharedIndexVersions, pages: report.pages,
@@ -637,8 +647,14 @@ function pdfjsOf(envelope: { content?: unknown; implementation?: { pdfjs?: strin
 
 function fileSizes(path: string): { total: number; wal: number } {
   if (path === ':memory:') return { total: 0, wal: 0 };
-  const size = (target: string) => { try { return statSync(target).size; } catch { return 0; } };
-  return { total: size(path), wal: size(`${path}-wal`) };
+  const size = (target: string, optional = false): number => {
+    try { const stat = statSync(target); if (!stat.isFile()) throw new Error('Not a file'); return stat.size; }
+    catch (error) {
+      if (optional && (error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+      throw new TaskError('RETRIEVAL_STORAGE_UNAVAILABLE', '检索文件大小未知；未用零替代读取失败。');
+    }
+  };
+  return { total: size(path), wal: size(`${path}-wal`, true) };
 }
 
 function citation(segment: DocSegment, indexVersion: string | null): RetrievalCitation {
