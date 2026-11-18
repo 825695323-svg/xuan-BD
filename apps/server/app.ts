@@ -148,7 +148,7 @@ export function createApp(core: PersonalCore, health: HealthResponse, services?:
   };
   app.use('/api', privateGuard);
   const bdServices = services?.bd ? services : services?.options.workspaceServices;
-  app.use('/api/bd', createBdApiRouter(bdServices, privateRecheck));
+  app.use('/api/bd', createBdApiRouter(bdServices, privateRecheck, req => { privateLifecycle?.assertPrivateAccess(generationOf(req)); }));
   if (services?.bd) {
     // 服务角色只保留自己的窄路由，不挂载个人会话、文件、权限或网页入口。
     app.use(serviceRouteUnavailable);
@@ -449,7 +449,7 @@ export function createApp(core: PersonalCore, health: HealthResponse, services?:
 }
 
 /** 两种宿主共用同一相对路由；只使用传入的服务实例和原状态，不经过回环代理。 */
-export function createBdApiRouter(services?: ApplicationServices, recheck?: express.RequestHandler) {
+export function createBdApiRouter(services?: ApplicationServices, recheck?: express.RequestHandler, assertReadAccess?: (req: express.Request) => void) {
   const router = express.Router();
   router.use((req, res, next) => {
     if (!['GET', 'HEAD', 'POST'].includes(req.method)) {
@@ -461,7 +461,7 @@ export function createBdApiRouter(services?: ApplicationServices, recheck?: expr
   if (recheck) router.use(recheck);
   if (services?.bd) {
     router.use(createApprovalRouter(services));
-    if (services.bd.isWorkspace) router.use(createWorkspaceRouter(services));
+    if (services.bd.isWorkspace) router.use(createWorkspaceRouter(services, assertReadAccess));
     router.use(createBdRouter(services.bd, () => services.segments?.reconcileConversions()));
   }
   // 未知工作台路径在此结束，不能继续匹配个人接口或网页回退。

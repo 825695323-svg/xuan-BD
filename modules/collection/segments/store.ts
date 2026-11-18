@@ -413,6 +413,14 @@ export function searchSegmentsExact(db: DatabaseSync, input: SearchInput): Searc
   return rows.map(row => ({ segment: toSegment(row), matched: 'exact' as const }));
 }
 
+/** Exact immutable index membership, including compact cutoff indexes; no current-index fallback. */
+export function readIndexedSegment(db: DatabaseSync, indexVersion: string, segmentId: string): DocSegment | null {
+  ensureSegmentSchema(db);
+  const row = db.prepare(`SELECT ${SEGMENT_COLUMNS} FROM doc_segments s ${INDEX_JOIN}
+    WHERE s.segment_id = ? ${INDEX_FILTER}`).get(indexVersion, segmentId) as unknown as SegmentRow | undefined;
+  return row ? toSegment(row) : null;
+}
+
 export function readSegment(db: DatabaseSync, segmentId: string): DocSegment | null {
   ensureSegmentSchema(db);
   const row = db.prepare(`SELECT ${SEGMENT_COLUMNS} FROM doc_segments s WHERE s.segment_id = ?`).get(segmentId) as unknown as SegmentRow | undefined;

@@ -1,3 +1,4 @@
+import { textPdf } from './retrieval-evidence-test-support.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -37,16 +38,6 @@ test('HTTP explicit FTS repair restores hit identity through reopen and obeys th
  }finally{db?.close();await h.close();}
 });
 
-function textPdf(): Buffer {
- const stream='BT /F1 18 Tf 50 700 Td (Isolated rebuild provenance sample) Tj ET';
- const objects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-  '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
-  '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`];
- let text='%PDF-1.4\n';const offsets=[0];
- objects.forEach((body,i)=>{offsets.push(Buffer.byteLength(text));text+=`${i+1} 0 obj\n${body}\nendobj\n`;});
- const xref=Buffer.byteLength(text);text+=`xref\n0 6\n0000000000 65535 f \n`+offsets.slice(1).map(n=>String(n).padStart(10,'0')+' 00000 n \n').join('')+`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
- return Buffer.from(text);
-}
 test('uploaded PDF runs real conversion and segment task before missing-cache repair',{skip:!process.env.XUAN_FULL_CHAIN_ROOT},async()=>{
  const f=createFullChainFixture({name:'fts-repair-real-pdf'}),h=await openFullChainHost(f);let db:DatabaseSync|undefined;
  try{

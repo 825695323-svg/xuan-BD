@@ -28,11 +28,11 @@ import {
   type SegmentRetrievalStatus, type TimeDimension, type TimePrecision,
 } from './contracts.js';
 import { segmentsFromConversionArtifact, type ConversionArtifactEnvelope } from './from-conversion.js';
-import { discoverArtifacts, ensureArtifactLedger, recordArtifact, setArtifactStatus } from './artifacts.js';
+import { discoverArtifacts, findArtifactByRef, ensureArtifactLedger, recordArtifact, setArtifactStatus } from './artifacts.js';
 import {
   rebuildSegmentFts, FTS_REBUILD_LIMITS, createCurrentIndexVersion, documentsWithoutTextLayer, ensureSegmentSchema, listDocumentVersions,
   listIndexVersions, listSegments, putDocumentSegments, putDocumentVersion, readDocumentVersion, readSegment,
-  resolveIndexVersion, resolveVisibleVersions, searchSegments, searchSegmentsExact, segmentStorage, upperOf,
+  readIndexedSegment, resolveIndexVersion, resolveVisibleVersions, searchSegments, searchSegmentsExact, segmentStorage, upperOf,
 } from './store.js';
 
 export const SEGMENT_RUNTIME = 'bd.doc-segment-runtime';
@@ -452,6 +452,15 @@ export class SegmentService {
       query: { method, text: query, as_of: input.asOf ?? null },
       qualification: qualificationOf(mode, asOfMs, resolved.built_at),
       citations: hits.map(hit => citation(hit.segment, indexVersion)), coverage, gaps };
+  }
+
+  /** Frozen local evidence binding, not historical qualification or source truth. */
+  evidenceBinding(indexVersion: string, segmentId: string) {
+    const segment = readIndexedSegment(this.connection, indexVersion, segmentId);
+    if (!segment) throw new TaskError('SEGMENT_INDEX_MEMBERSHIP', '片段不属于指定固定索引，未回退。');
+    const document = readDocumentVersion(this.connection, segment.document_id, segment.document_version, segment.parser_version);
+    const artifact = findArtifactByRef(this.options.database, segment.document_id, segment.document_version, segment.source_ref);
+    return { segment, citation: citation(segment, indexVersion), document, artifact };
   }
 
   segment(segmentId: string): RetrievalCitation {
