@@ -34,7 +34,7 @@ const CONVERSION_ISSUE_MAP: Record<string, string> = {
   PDF_READING_ORDER_UNVERIFIED: 'reading_order_unverified',
 };
 
-export function segmentsFromConversionArtifact(envelope: ConversionArtifactEnvelope, ref: SegmentSourceRef): SegmentBuildResult {
+export function segmentsFromConversionArtifact(envelope: ConversionArtifactEnvelope, ref: SegmentSourceRef): SegmentBuildResult & { pageCount: number } {
   if (!ref.artifactRef.trim()) throw new Error('缺少产物引用：片段化必须指向已登记的转换产物。');
   if (!ref.documentId.trim()) throw new Error('缺少原件身份 documentId。');
   if (!ref.documentVersion.trim()) throw new Error('缺少原件版本 documentVersion。');
@@ -47,6 +47,11 @@ export function segmentsFromConversionArtifact(envelope: ConversionArtifactEnvel
     ?? envelope.implementation?.pdfjs;
   const parserVersion = pdfjs ? `${SEGMENTER_VERSION}+pdfjs-${pdfjs}` : SEGMENTER_VERSION;
   const pages = pdfPagesFromConversion(envelope.content);
+  const pageCount = (envelope.content as { pageCount?: unknown }).pageCount;
+  if (!Number.isSafeInteger(pageCount) || Number(pageCount) < 1 || pageCount !== pages.length
+    || pages.some((page, index) => page.page !== index + 1)) {
+    throw new Error('PDF 转换页数或逐页身份不完整，未把部分页面视作完整文档。');
+  }
   const built = buildDocumentSegments({ documentId: ref.documentId, documentVersion: ref.documentVersion,
     parserVersion, sourceRef: ref.artifactRef, pages });
 
@@ -66,5 +71,5 @@ export function segmentsFromConversionArtifact(envelope: ConversionArtifactEnvel
       if (!segment.issues.includes(issue)) segment.issues.push(issue);
     }
   }
-  return built;
+  return { ...built, pageCount: Number(pageCount) };
 }
