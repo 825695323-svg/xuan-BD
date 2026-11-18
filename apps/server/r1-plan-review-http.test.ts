@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -199,9 +200,9 @@ test('HTTP multi-output review retains failed peer; selected confirmation publis
 
 /** Fresh synthetic inputs, real host processing, no fabricated WFD records or receipts. */
 async function preparedSetPlan(host: Awaited<ReturnType<typeof openFullChainHost>>, prefix: string,
-  options: { badMember?: boolean; unknownUnit?: boolean } = {}) {
+  options: { badMember?: boolean; unknownUnit?: boolean; setId?: string; thirdOutput?: boolean } = {}) {
   const materials: { outputId: string; materialId: string }[] = [];
-  for (const outputId of ['left', 'right']) {
+  for (const outputId of (options.thirdOutput ? ['left', 'right', 'other'] : ['left', 'right'])) {
     const raw = Buffer.from('key,start,end,open,high,low,close,volume,amount,state\n'
       + `${prefix}-${outputId},2026-01-04T16:00:00Z,2026-01-05T16:00:00Z,11.42,${options.badMember && outputId === 'right' ? '10' : '11.51'},11.41,11.50,100,1145,valid_value\n`);
     const uploaded = await host.upload(outputId + '.csv', 'data', raw, prefix + '-upload-' + outputId);
@@ -221,7 +222,7 @@ async function preparedSetPlan(host: Awaited<ReturnType<typeof openFullChainHost
     }
     return draft;
   });
-  const input = { consistencyGroups: { pair: ['left','right'] },
+  const input = { consistencyGroups: { [options.setId ?? 'pair']: ['left','right'] },
     routing: { materials: materials.map((item, index) => ({ materialId: item.materialId, intendedAction: 'publish',
       dimensions: Object.fromEntries(DIMENSION_KEYS.map(key => [key, { status: 'known', value: facts[key],
         evidence: [{ source: 'operator', field: `routing.materials.${index}.dimensions.${key}`, quote: facts[key] }] }])) })) },
@@ -478,4 +479,90 @@ test('HTTP incomplete, mixed-snapshot and half-group receipts remain unassociate
       assert.equal(sends,1);
     } finally {await host.close();}
   }
+});
+
+for (const setId of ['pair', 'left', 'other']) test(`HTTP correction impact refuses single-member correction of published set (${setId})`, isolated, async () => {
+  const fixture = setFixture('r1-set-impact');
+  const host = await openFullChainHost(fixture);
+  const port = reviewPort(() => host);
+  try {
+    const built = await preparedSetPlan(host, 'set-impact', { setId, thirdOutput: setId === 'other' });
+    const selectedOutput = setId === 'other' ? 'other' : 'left';
+    const plan = reviewR1Plan(await port.plan(built.planId));
+    const prepared = await prepareReviewedR1Set(port, plan.sets[0]!, 'set-impact-whole');
+    const accepted = await submitReviewedR1Request(port, prepared) as { jobId: string };
+    const done = await host.settled(accepted.jobId);
+    assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
+    const fixed = await port.get(prepared.requestId);
+    assert.equal(fixed.state, 'associated', JSON.stringify(fixed.error));
+    const left = fixed.publicationSet!.members.find(member => member.outputId === 'left')!;
+    const right = fixed.publicationSet!.members.find(member => member.outputId === 'right')!;
+    assert.equal(left.state, 'published'); assert.equal(right.state, 'published');
+    assert.notEqual(left.productId, right.productId);
+    const associations = fixed.local.associations as Record<string, unknown>[];
+    const leftLinks = associations.filter(link => link.product_id === left.productId);
+    assert.equal(leftLinks.length, 1);
+    assert.equal(associations.length, 2);
+    // Every association above comes from the actual whole-set publication, not inserted fixture rows.
+    const capabilities = await host.call('/corrections/capabilities');
+    await host.call('/corrections/cases', { requestId: 'set-impact-register', input: {
+      caseId: 'case-set-left', kind: 'processing_repair', errorType: 'mapping_error',
+      discoveredAt: '2026-11-07T02:00:00Z',
+      evidence: 'Synthetic test declaration: selected left output requires mapping review; right member is unrelated.',
+      binding: { planOutput: { planId: built.planId, outputId: selectedOutput } },
+      connectionSha256: capabilities.connectionSha256,
+    } }, 201);
+    const impact = await host.call('/corrections/cases/case-set-left/impact', { requestId: 'set-impact-freeze' });
+    assert.equal(impact.state, 'impact_incomplete', JSON.stringify(impact));
+    assert.equal(impact.itemCount, 0);
+    assert.deepEqual(impact.items, []);
+    assert.ok(impact.gaps.includes(setId === 'other'
+      ? `publication_set_request_unsupported:${prepared.requestId}:other`
+      : `publication_set_correction_unsupported:${built.planId}:${setId}:left`), JSON.stringify(impact.gaps));
+    assert.ok(!impact.gaps.some((gap: string) => gap.endsWith(':no_persisted_request')));
+    const refused = await host.call('/corrections/cases/case-set-left/suspend', { requestId: 'set-impact-suspend' }, 409);
+    assert.equal(refused.code, 'CORRECTION_STATE');
+    assert.equal((await host.call('/corrections/cases/case-set-left')).suspension, null);
+    assert.deepEqual((await port.get(prepared.requestId)).local.associations, associations);
+    if (setId === 'left') {
+      // Explicit upgrade fault fixture: the old implementation froze both real set members.
+      // Only the correction snapshot is injected; records and publication links are real.
+      const db = host.database.connection;
+      const legacyImpact = { version: 'bd.post-publication-correction/1', caseId: 'case-set-left',
+        frozenAt: '2026-11-07T02:00:01Z', coverage: 'proven_subset_only', gaps: [],
+        items: associations.map(link => ({
+          itemId: `original:${link.request_id}:${link.record_id}:${link.record_version}`,
+          kind: 'original', productId: link.product_id, snapshotId: link.snapshot_id,
+          definitionDigest: link.definition_digest, businessKey: link.record_id,
+          recordVersion: link.record_version, requestId: link.request_id, gaps: [],
+        })) };
+      const json = canonicalWfdJson(legacyImpact as WfdRecord);
+      const sha = wfdSha256(json);
+      db.prepare("UPDATE correction_cases SET impact_json=?,impact_sha256=?,state='impact_frozen',gaps_json='[]' WHERE case_id='case-set-left'").run(json, sha);
+      const client = host.services.r1Runtime!.connection.client;
+      const usageBefore = (await client.usageStatus()).result;
+      const tasksBefore = db.prepare('SELECT * FROM tasks ORDER BY rowid').all();
+      const originalSuspend = client.usageSuspend;
+      let suspendCalls = 0;
+      client.usageSuspend = async (...args) => { suspendCalls++; return originalSuspend.apply(client, args); };
+      try {
+        for (const [state, route] of [['impact_frozen', 'suspend'], ['suspend_failed', 'recover']]) {
+          db.prepare('UPDATE correction_cases SET state=? WHERE case_id=?').run(state!, 'case-set-left');
+          const before = db.prepare('SELECT * FROM correction_cases WHERE case_id=?').get('case-set-left');
+          const denied = await host.call(`/corrections/cases/case-set-left/${route}`, { requestId: `legacy-${route}` }, 409);
+          assert.equal(denied.code, 'CORRECTION_PUBLICATION_SET_UNSUPPORTED');
+          assert.deepEqual(db.prepare('SELECT * FROM correction_cases WHERE case_id=?').get('case-set-left'), before,
+            'Unsupported legacy scope must not rewrite stored impact, SHA, state or timestamps');
+        }
+        assert.equal(suspendCalls, 0);
+        assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY rowid').all(), tasksBefore);
+        assert.deepEqual((await client.usageStatus()).result, usageBefore);
+      } finally { client.usageSuspend = originalSuspend; }
+    }
+
+    for (const member of [left, right]) {
+      const read = await host.services.r1Runtime!.client.fixedRead(member.snapshotId!, member.productId!);
+      assert.equal((read.result.rows as unknown[]).length, 1, 'Neither member is suspended by the unsupported single-member correction');
+    }
+  } finally { await host.close(); }
 });

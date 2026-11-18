@@ -10,6 +10,7 @@ import type { ProcessingPlanService } from './processing-plan.js';
 import type { MaterialService } from './materials/service.js';
 import type { R1Runtime } from './r1-runtime.js';
 import type { OperatorContext } from './processing-plan.js';
+import { readPublicationGroups } from '../../contracts/r1-publication-set.js';
 
 /**
  * 已发布成功、固定读回一致后才发现映射/语义错误的更正闭环的 BD 编排。
@@ -140,12 +141,20 @@ export class PostPublicationCorrectionService {
     const scanned = this.scanPlans(binding, gaps);
     if (scanned === null) return this.storeImpact(row, [], gaps);
     for (const plan of scanned) {
+      // A set id shares the workspace output_id column with single-output ids.
+      // Never interpret that id as a member: doing so can pause unrelated peers.
+      // Set-level correction is not implemented by this single-output workflow.
+      if (this.declaredSetGap(plan.planId, plan.outputId, gaps)) continue;
       const requests = this.db.prepare(`SELECT request_id,state,document_json,receipt_json,local_refs_json
         FROM r1_handoff_attempts WHERE request_id IN (SELECT request_id FROM r1_workspace_requests WHERE plan_id=? AND output_id=?)
         ORDER BY created_at,rowid`).all(plan.planId, plan.outputId) as unknown as {
           request_id: string; state: string; document_json: string; receipt_json: string | null; local_refs_json: string }[];
       if (!requests.length) { gaps.push(`plan:${plan.planId}:${plan.outputId}:no_persisted_request`); continue; }
       for (const attempt of requests) {
+        if (this.groupedRequest(attempt.local_refs_json)) {
+          gaps.push(`publication_set_request_unsupported:${attempt.request_id}:${plan.outputId}`);
+          continue;
+        }
         if (UNKNOWN_SEND_STATES.has(attempt.state)) {
           gaps.push(`request:${attempt.request_id}:unknown_send_state:${attempt.state}`);
           continue; // 未知结果必须原号核状态，不能当无影响
@@ -178,6 +187,37 @@ export class PostPublicationCorrectionService {
     // 已有关联也不能证明"本应存在但漏发"的全集；第三项批次应到对账不在本轮。
     gaps.push('coverage:proven_associations_only;missing_or_unsent_products_not_provable_in_this_scope');
     return this.storeImpact(row, items, gaps);
+  }
+
+  private groupedRequest(raw: string): boolean {
+    let refs: unknown;
+    try { refs = JSON.parse(raw); } catch { return fail('CORRECTION_ASSOCIATION', '冻结来源引用不可读，未推断为单输出请求。'); }
+    if (!isWfdRecord(refs)) fail('CORRECTION_ASSOCIATION', '冻结来源引用不可读，未推断为单输出请求。');
+    return refs.publicationSetId !== undefined || refs.outputs !== undefined;
+  }
+
+  private declaredSetGap(planId: string, outputId: string, gaps: string[]): boolean {
+    const row = this.db.prepare('SELECT plan_json,plan_digest FROM processing_plans WHERE plan_id=?')
+      .get(planId) as { plan_json: string; plan_digest: string } | undefined;
+    try {
+      const document: unknown = row ? JSON.parse(row.plan_json) : null;
+      if (!isWfdRecord(document)) throw new Error('Missing plan document');
+      // Existing ungrouped records retain their original scan semantics.
+      if (document.consistencyGroups === undefined) return false;
+      if (wfdSha256(row!.plan_json) !== row!.plan_digest || !Array.isArray(document.outputs))
+        throw new Error('Invalid frozen set evidence');
+      const outputs = document.outputs.map(output => {
+        if (!isWfdRecord(output) || typeof output.outputId !== 'string') throw new Error('Invalid output');
+        return output.outputId;
+      });
+      const group = Object.entries(readPublicationGroups(document.consistencyGroups, outputs))
+        .find(([, members]) => members.includes(outputId));
+      if (!group) return false;
+      gaps.push(`publication_set_correction_unsupported:${planId}:${group[0]}:${outputId}`);
+    } catch {
+      gaps.push(`publication_set_evidence_unreadable:${planId}:${outputId}`);
+    }
+    return true;
   }
 
   private scanPlans(binding: CorrectionBinding, gaps: string[]): { planId: string; outputId: string }[] | null {
@@ -221,6 +261,7 @@ export class PostPublicationCorrectionService {
     const digest = wfdSha256(canonicalWfdJson(impact as unknown as WfdRecord));
     const state: CorrectionState = items.length && !gaps.some(gap =>
       gap.startsWith('scan_budget_exceeded') || gap.startsWith('no_plan_matches')
+      || gap.startsWith('publication_set_')
       || gap === 'no_proven_impact')
       ? 'impact_frozen' : 'impact_incomplete';
     this.options.database.transaction(() => {
@@ -237,6 +278,14 @@ export class PostPublicationCorrectionService {
 
   /** 暂停声明由已冻结影响清单确定性重建；恢复只重用同一声明，不新增范围。 */
   private suspensionDeclaration(row: CaseRow, impact: { items: ImpactItem[]; gaps: string[] }): WfdRecord {
+    // Also protect pre-upgrade frozen scopes; do not rewrite their identity or
+    // automatically undo any already recorded WFD suspension.
+    for (const requestId of new Set(impact.items.map(item => item.requestId).filter(Boolean))) {
+      const attempt = this.db.prepare('SELECT local_refs_json FROM r1_handoff_attempts WHERE request_id=?')
+        .get(requestId!) as { local_refs_json: string } | undefined;
+      if (!attempt || this.groupedRequest(attempt.local_refs_json))
+        fail('CORRECTION_PUBLICATION_SET_UNSUPPORTED', '原请求属于发布集合或来源证据不可读，当前单输出更正不能暂停该冻结范围。');
+    }
     if (impact.gaps.includes('plan_scan_over_budget')) {
       // Older versions could freeze a partial scan. An unsent case may be scanned again.
       if (row.state === 'impact_frozen')
