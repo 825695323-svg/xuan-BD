@@ -1,0 +1,3 @@
+/* Fixed opaque references can exceed the viewport; retain shared button and detail primitives. */
+.correction-cases-panel .text-button { max-width: 100%; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.correction-cases-panel .object-detail-section { min-width: 0; }
