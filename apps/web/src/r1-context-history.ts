@@ -8,18 +8,22 @@ const equalObject = (left: unknown, right: unknown): boolean => object(left) && 
   && Object.keys(left).length === Object.keys(right).length
   && Object.keys(right).every(key => Object.hasOwn(left, key) && left[key] === right[key]);
 function fail(): never {
-  throw new R1HistoryError('R1_CONTEXT_HISTORY_INPUT', '关系历史须分别明确公开截止与有效期起止，终点包含该秒；不推断其它历史视角。',
-    'Relation history requires separate public cutoff and validity bounds; the ending second is inclusive. Other historical perspectives are not inferred.');
+  throw new R1HistoryError('R1_CONTEXT_HISTORY_INPUT', '事件历史只输入公开截止；关系历史另需独立有效期，终点包含该秒。不推断其它历史视角。',
+    'Event history takes only the public cutoff. Relation history additionally requires separate inclusive validity bounds. Other historical perspectives are not inferred.');
 }
 
 /** UI UTC instants are converted to the existing WFD local-time + timezone contract.
  * WFD includes the ending second. This does not introduce half-open range semantics. */
-export function buildR1ContextHistory(selection: { historyMode?: R1ContextReadInput['historyMode']; at?: string; start?: string; end?: string }): History {
+export function buildR1ContextHistory(selection: { operation?: 'read_relation_graph' | 'read_event_timeline'; historyMode?: R1ContextReadInput['historyMode']; at?: string; start?: string; end?: string }): History {
   const historyMode = selection.historyMode ?? 'snapshot_contents';
   validateR1ReadHistoryInput({ historyMode, ...(selection.at !== undefined ? { at: selection.at } : {}) });
   if (historyMode === 'snapshot_contents') {
     if (selection.start !== undefined || selection.end !== undefined) fail();
     return { historyMode };
+  }
+  if (selection.operation === 'read_event_timeline') {
+    if (historyMode !== 'market_known_at' || selection.start !== undefined || selection.end !== undefined) fail();
+    return { historyMode, at: selection.at, businessTimeRange: null };
   }
   if (historyMode !== 'market_known_at' || !isExplicitUtcInstant(selection.start) || selection.start.length !== 20
     || !isExplicitUtcInstant(selection.end) || selection.end.length !== 20 || selection.start > selection.end
@@ -31,8 +35,11 @@ export function buildR1ContextHistory(selection: { historyMode?: R1ContextReadIn
 export function validateR1ContextHistoryInput(input: R1ContextReadInput): void {
   validateR1ReadHistoryInput(input);
   const mode = input.historyMode ?? 'snapshot_contents';
-  if (mode !== 'snapshot_contents' && (mode !== 'market_known_at' || input.operation !== 'read_relation_graph')) fail();
-  if (mode === 'market_known_at') {
+  if (mode !== 'snapshot_contents' && (mode !== 'market_known_at' || !['read_relation_graph', 'read_event_timeline'].includes(input.operation))) fail();
+  if (mode === 'market_known_at' && input.operation === 'read_event_timeline') {
+    if (input.businessTimeRange !== null && input.businessTimeRange !== undefined) fail();
+  }
+  if (mode === 'market_known_at' && input.operation === 'read_relation_graph') {
     const range = input.businessTimeRange;
     if (!object(range) || Object.keys(range).sort().join(',') !== 'end,role,start,timezone' || range.role !== 'validity'
       || !['start', 'end', 'timezone'].every(key => typeof range[key] === 'string' && !!range[key])) fail();
@@ -48,10 +55,10 @@ export function assertR1ContextHistoryEcho(input: R1ContextReadInput, response: 
     || !equalObject(input.subject, response.subject) || !equalObject(input.subject, result.subject)
     || response.historyMode !== (input.historyMode ?? 'snapshot_contents') || result.history_mode !== (input.historyMode ?? 'snapshot_contents'))
     throw new R1HistoryError('R1_CONTEXT_ECHO_MISMATCH', '上下文固定身份、主体或视角回显不符。', 'The returned fixed context identity, subject or perspective does not match.');
-  if (input.operation === 'read_relation_graph') {
+  if (input.operation === 'read_relation_graph' || input.operation === 'read_event_timeline') {
     assertR1ReadHistoryEcho(input, response);
     const expected = input.businessTimeRange ?? null;
     if (expected === null ? result.business_time_range !== null : !equalObject(result.business_time_range, expected))
-      throw new R1HistoryError('R1_CONTEXT_ECHO_MISMATCH', '关系有效期回显与原请求不符。', 'The returned relation validity range does not match the request.');
+      throw new R1HistoryError('R1_CONTEXT_ECHO_MISMATCH', '上下文业务时间范围回显与原请求不符。', 'The returned context business-time range does not match the request.');
   }
 }

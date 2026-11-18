@@ -30,7 +30,7 @@ test('missing, invalid, mixed or reversed axes fail without defaults', () => {
   }
   assert.throws(() => buildR1ContextHistory({ historyMode: 'snapshot_contents', at }));
   assert.throws(() => buildR1ContextHistory({ historyMode: 'snapshot_contents', start, end }));
-  for (const operation of ['read_company_context', 'read_event_timeline', 'read_applicable_rules'] as const) {
+  for (const operation of ['read_company_context', 'read_applicable_rules'] as const) {
     assert.throws(() => validateR1ContextHistoryInput({ ...input(), operation }));
   }
   assert.throws(() => validateR1ContextHistoryInput({ ...input(), businessTimeRange: null }));
@@ -60,9 +60,21 @@ test('snapshot graph expects null history and range; other snapshot contexts ret
   assertR1ContextHistoryEcho(graph, response(graph));
   const bad = response(graph); delete bad.result.knowledge_cutoff;
   assert.throws(() => assertR1ContextHistoryEcho(graph, bad));
-  for (const operation of ['read_company_context', 'read_event_timeline', 'read_applicable_rules'] as const) {
+  for (const operation of ['read_company_context', 'read_applicable_rules'] as const) {
     const request = { ...graph, operation }, value = response(request);
     for (const key of ['knowledge_cutoff', 'held_scope', 'usable_stage', 'business_time_range']) delete value.result[key];
     assertR1ContextHistoryEcho(request, value);
+  }
+});
+
+ test('event market UI keeps cutoff separate, accepts no validity range and strictly checks history echo', () => {
+  const history = buildR1ContextHistory({ operation: 'read_event_timeline', historyMode: 'market_known_at', at });
+  assert.deepEqual(history, { historyMode: 'market_known_at', at, businessTimeRange: null });
+  const request = { ...input(), operation: 'read_event_timeline' as const, ...history };
+  validateR1ContextHistoryInput(request); assertR1ContextHistoryEcho(request, response(request));
+  for (const extra of [{ start, end }, { at: '2025-02-30T00:00:00Z' }]) assert.throws(() => buildR1ContextHistory({ operation: 'read_event_timeline', historyMode: 'market_known_at', at, ...extra }));
+  assert.throws(() => validateR1ContextHistoryInput({ ...request, businessTimeRange: input().businessTimeRange }));
+  for (const key of ['knowledge_cutoff', 'business_time_range', 'held_scope', 'usable_stage']) {
+    const bad = response(request); bad.result[key] = { wrong: true }; assert.throws(() => assertR1ContextHistoryEcho(request, bad));
   }
 });

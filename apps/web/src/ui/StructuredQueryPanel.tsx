@@ -36,14 +36,14 @@ export function StructuredQueryPanel({ ready }: { ready: boolean }) {
   return <>
     <section className="r1-stage"><label>{words('查询种类', 'Query kind')}<select aria-label={words('查询种类', 'Query kind')} value={kind} onChange={event => setKind(event.target.value as typeof kind)}>
       <option value="filter">{words('结构化筛选与联合检索', 'Structured filtering and joint retrieval')}</option>
-      {R1_CONTEXT_OPERATIONS.map(operation => <option value={operation} key={operation}>{words(contextLabels[operation], contextEnglish[operation])}{operation === 'read_relation_graph' ? words('（快照 / 市场历史）', ' (snapshot / market history)') : words('（固定快照）', ' (snapshot)')}</option>)}
+      {R1_CONTEXT_OPERATIONS.map(operation => <option value={operation} key={operation}>{words(contextLabels[operation], contextEnglish[operation])}{['read_relation_graph', 'read_event_timeline'].includes(operation) ? words('（快照 / 市场历史）', ' (snapshot / market history)') : words('（固定快照）', ' (snapshot)')}</option>)}
     </select></label></section>
     {kind === 'filter' ? <FilterQueryPanel ready={ready} /> : <ContextQueryPanel key={kind} ready={ready} operation={kind} />}
   </>;
 }
 
 function ContextQueryPanel({ ready, operation }: { ready: boolean; operation: R1ContextOperation }) {
-  const words = useWords(), graph = operation === 'read_relation_graph';
+  const words = useWords(), graph = operation === 'read_relation_graph', timeline = operation === 'read_event_timeline', historical = graph || timeline;
   const name = words(contextLabels[operation], contextEnglish[operation]);
   const [discovery, setDiscovery] = useState<R1ProductDiscovery | null>(null), [focus, setFocus] = useState('');
   const [depth, setDepth] = useState(1), [pageSize, setPageSize] = useState(20), [filter, setFilter] = useState('');
@@ -85,7 +85,8 @@ function ContextQueryPanel({ ready, operation }: { ready: boolean; operation: R1
     if (!discovery || !selected) throw new Error(words('先载入固定快照，并选择真实数据集及完整主体。', 'Load a fixed snapshot and select an actual dataset and full subject identity.'));
     const names = filter.split(/[,，]/u).map(value => value.trim()).filter(Boolean);
     return { operation, snapshotId: discovery.snapshotId, datasetId: selected.datasetId, subject: selected.subject, pageSize,
-      ...(graph ? buildR1ContextHistory({ historyMode, ...(historyMode === 'market_known_at' ? { at, start, end } : {}) }) : {}),
+      ...(historical ? buildR1ContextHistory({ operation: graph ? 'read_relation_graph' : 'read_event_timeline', historyMode,
+        ...(historyMode === 'market_known_at' ? { at, ...(graph ? { start, end } : {}) } : {}) }) : {}),
       ...(fields.length ? { fields: fields.slice() } : {}),
       ...(['read_company_context', 'read_relation_graph'].includes(operation) ? { maxDepth: depth } : {}),
       ...(names.length && graph ? { relationTypes: names } : {}),
@@ -100,6 +101,7 @@ function ContextQueryPanel({ ready, operation }: { ready: boolean; operation: R1
     <h3>{name} · {words('固定快照读取', 'Fixed snapshot read')}</h3>
     <p className="r1-help">{graph ? words('固定快照是读取范围。市场公开截止与关系有效期分别填写：已公告不等于在所选区间生效，连通也不证明来源声明已经核实。未知时间保留缺口或拒绝，不自动补当前时间。',
       'The fixed snapshot bounds the read. Enter market knowledge cutoff and relation validity separately: announced does not mean effective for that interval, and connectivity does not verify a source claim. Unknown times remain gaps or refusals; the current time is never filled in.')
+      : timeline ? words('事件市场视角只限制公开知识截止，不筛选发生时间或预期时间。计划不等于已发生；未知公告保留缺口，固定目录不是当时可知目录。', 'Event market history limits public knowledge only, not occurrence or expected dates. Plans are not outcomes; unknown announcements remain gaps. Fixed discovery is not a historical catalog.')
       : words('此上下文仍只支持固定快照；不证明市场当时已知或系统当时持有。完整主体身份、记录、合同和缺口分别显示。', 'This context remains snapshot-only; it does not establish historical market knowledge or system holding. Full subject identities, records, contracts and gaps remain separate.')}</p>
     <div className="r1-actions"><button type="button" className="text-button" disabled={!ready || busy} onClick={() => void act(async current => {
       changed(); setFocus(''); setFields([]); setDiscovery(null);
@@ -110,17 +112,17 @@ function ContextQueryPanel({ ready, operation }: { ready: boolean; operation: R1
       setDiscovery(found);
     })}>{words('载入当前快照主体', 'Load current snapshot subjects')}</button>
       <span className="r1-help">{discovery ? <>{words('本次固定', 'Pinned snapshot')}：<code>{discovery.snapshotId}</code></> : words('先载入真实产品和主体。', 'Load actual products and subjects first.')}</span></div>
-    {graph && <div className="r1-grid">
-      <PageField label={words('关系图时间视角', 'Relation graph perspective')}><select aria-label={words('关系图时间视角', 'Relation graph perspective')} value={historyMode} disabled={!ready || busy} onChange={event => {
+    {historical && <div className="r1-grid">
+      <PageField label={words(graph ? '关系图时间视角' : '事件时间线视角', graph ? 'Relation graph perspective' : 'Event timeline perspective')}><select aria-label={words(graph ? '关系图时间视角' : '事件时间线视角', graph ? 'Relation graph perspective' : 'Event timeline perspective')} value={historyMode} disabled={!ready || busy} onChange={event => {
         setHistoryMode(event.target.value as typeof historyMode); setAt(''); setStart(''); setEnd(''); changed();
       }}><option value="snapshot_contents">{words('固定快照内容', 'Snapshot contents')}</option><option value="market_known_at">{words('市场当时已知', 'Market known at')}</option></select></PageField>
       {historyMode === 'market_known_at' && <>
-        <PageField label={words('公开知识截止（秒级 UTC）', 'Knowledge cutoff (UTC seconds)')} hint={words('YYYY-MM-DDTHH:mm:ssZ；与有效期分开。', 'YYYY-MM-DDTHH:mm:ssZ; independent of validity.')}>
+        <PageField label={words('公开知识截止（秒级 UTC）', 'Knowledge cutoff (UTC seconds)')} hint={words('YYYY-MM-DDTHH:mm:ssZ；不是发生或预期时间。', 'YYYY-MM-DDTHH:mm:ssZ; not an occurrence or expected time.')}>
           <input aria-label={words('公开知识截止（秒级 UTC）', 'Knowledge cutoff (UTC seconds)')} value={at} maxLength={20} disabled={busy || !ready} placeholder="YYYY-MM-DDTHH:mm:ssZ" onChange={e => { setAt(e.target.value); changed(); }} /></PageField>
-        <PageField label={words('有效期起点（秒级 UTC）', 'Validity start (UTC seconds)')}>
+        {graph && <><PageField label={words('有效期起点（秒级 UTC）', 'Validity start (UTC seconds)')}>
           <input aria-label={words('有效期起点（秒级 UTC）', 'Validity start (UTC seconds)')} value={start} maxLength={20} disabled={busy || !ready} placeholder="YYYY-MM-DDTHH:mm:ssZ" onChange={e => { setStart(e.target.value); changed(); }} /></PageField>
         <PageField label={words('有效期终点（含该秒，UTC）', 'Validity end (inclusive UTC second)')} hint={words('遵循既有 WFD 区间合同，终点包含该秒；不以公开截止补全。', 'The existing WFD interval includes the end second; the knowledge cutoff never fills this value.')}>
-          <input aria-label={words('有效期终点（含该秒，UTC）', 'Validity end (inclusive UTC second)')} value={end} maxLength={20} disabled={busy || !ready} placeholder="YYYY-MM-DDTHH:mm:ssZ" onChange={e => { setEnd(e.target.value); changed(); }} /></PageField>
+          <input aria-label={words('有效期终点（含该秒，UTC）', 'Validity end (inclusive UTC second)')} value={end} maxLength={20} disabled={busy || !ready} placeholder="YYYY-MM-DDTHH:mm:ssZ" onChange={e => { setEnd(e.target.value); changed(); }} /></PageField></>}
       </>}
     </div>}
     {discovery && <>
@@ -142,7 +144,7 @@ function ContextQueryPanel({ ready, operation }: { ready: boolean; operation: R1
     {view && <div className="r1-read-result" aria-label={words('上下文读取结果', 'Context read result')}>
       <p role="status">{name} · {words(`第${pageNumber}页，本页${rows.length}条。`, `Page ${pageNumber}, ${rows.length} entries.`)} {page.has_more ? words('还有后续页。', 'More pages remain.') : words('当前末页；覆盖与缺口仍须核对。', 'Last page; inspect coverage and gaps.')}</p>
       <p className="r1-help">{words('固定快照', 'Fixed snapshot')}：<code>{view.snapshotId}</code> · {display(view.subject)}</p>
-      {graph && <p className="r1-help">{words('已核对查询参数', 'Verified query parameters')}：{view.historyMode} · {display(result.knowledge_cutoff)} · {display(result.business_time_range)}</p>}
+      {historical && <p className="r1-help">{words('已核对查询参数', 'Verified query parameters')}：{view.historyMode} · {display(result.knowledge_cutoff)} · {display(result.business_time_range)}</p>}
       {result.truncated === true && <p className="danger-text">{words('图预算已截断，不是完整关系图。', 'The graph budget truncated this result; it is not complete.')}</p>}
       {conflicts.length > 0 && <p className="danger-text">{words('冲突依据并列，未作最终裁决。', 'Conflicting bases remain parallel; no final decision was made.')}</p>}
       {rows.map((row, index) => <div className="r1-proof" key={index}>
