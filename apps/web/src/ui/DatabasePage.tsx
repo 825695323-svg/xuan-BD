@@ -1,3 +1,4 @@
+import { RetrievalStoragePanel } from './RetrievalStoragePanel';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Boxes, CheckCircle2, ChevronRight, ShieldAlert, FileText, GitBranch, ListChecks, RefreshCw } from 'lucide-react';
 import type { ConversationAttachmentRef } from '../../../../contracts/contracts';
@@ -13,7 +14,7 @@ import { taskStateLabels, taskStateText } from './TaskResults';
 export interface DatabasePageProps {
   onBringToConversation(text: string, attachments?: ConversationAttachmentRef[]): void | Promise<void>;
 }
-type Section = 'r1' | 'files' | 'materials' | 'jobs' | 'corrections';
+type Section = 'r1' | 'files' | 'materials' | 'jobs' | 'corrections' | 'storage';
 type JobView = BdJob & { title?: string; progress?: { message: string; fraction: number | null; timestamp: string } | null; blockedReason?: string | null; createdAt?: number; approvalId?: string | null };
 
 const bytes = (value: number) => value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} MiB` : value >= 1024 ? `${(value / 1024).toFixed(1)} KiB` : `${value} B`;
@@ -57,6 +58,7 @@ export function DatabasePage({ onBringToConversation }: DatabasePageProps) {
     { id: 'files', label: words('原件与产物', 'Files and outputs'), icon: <FileText size={16} /> },
     { id: 'materials', label: words('材料预览', 'Material previews'), icon: <Boxes size={16} /> },
     { id: 'corrections', label: words('更正事项', 'Correction cases'), icon: <ListChecks size={16} /> },
+    { id: 'storage', label: words('检索容量', 'Retrieval storage'), icon: <Boxes size={16} /> },
     { id: 'jobs', label: words('工作台任务', 'Workbench tasks'), icon: <ListChecks size={16} /> },
   ];
   return <div className="data-page database-page">
@@ -69,6 +71,7 @@ export function DatabasePage({ onBringToConversation }: DatabasePageProps) {
       {section === 'files' && <FileList />}
       {section === 'materials' && <MaterialList />}
       {section === 'corrections' && <CorrectionCasesPanel />}
+      {section === 'storage' && <RetrievalStoragePanel />}
       {section === 'jobs' && <JobList />}
     </section>
   </div>;
