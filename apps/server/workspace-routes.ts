@@ -1,3 +1,4 @@
+import { readRetrievalEvidence } from './retrieval-evidence.js';
 import express, { Router } from 'express';
 import { userInfo } from 'node:os';
 import { basename } from 'node:path';
@@ -13,7 +14,7 @@ import { R1_CHUNKED_CSV_LIMITS } from '../../modules/collection/r1-chunked-csv.j
 
 
 /** 上传日志只追踪原件发布与任务绑定；执行、停止、恢复仍由唯一 TaskService 持有。 */
-export function createWorkspaceRouter(services: ApplicationServices): Router {
+export function createWorkspaceRouter(services: ApplicationServices, assertReadAccess?: (req: express.Request) => void): Router {
   const router = Router(), { bd, materials, tasks, files, processing } = services;
   if (!bd) throw new TaskError('SERVICE_ROLE_REQUIRED', '材料入口需要服务身份。');
   router.get('/workspace', (_req, res) => res.json({ mode: 'bd-workspace', version: bd.versions.bd,
@@ -331,6 +332,7 @@ export function createWorkspaceRouter(services: ApplicationServices): Router {
       const version = typeof req.query.version === 'string' ? req.query.version : undefined;
       res.json({ documentId: req.params.id, items: segments.segments(req.params.id, version) });
     });
+    router.post('/retrieval/evidence', async (req, res) => res.json(await readRetrievalEvidence(services, req.body, () => assertReadAccess?.(req))));
     router.get('/retrieval/segments/:id', (req, res) => res.json(segments.segment(req.params.id)));
     router.get('/retrieval/index-versions', (_req, res) => res.json({ items: segments.indexVersions() }));
     router.get('/retrieval/storage', (_req, res) => res.json(segments.storage()));
