@@ -118,7 +118,7 @@ test('actual React event history isolates cutoff, pages, unknown definitions and
       assert.equal(browser.requests.filter(r => r.url.endsWith('/r1/query/context')).length, invalidBefore);
       await select(browser, unknownDataset); await fill(browser, '公开知识截止（秒级 UTC）', early);
       await click(browser, '读取固定快照上下文'); assert.equal(await noResult(browser), true);
-      assert.match(await browser.evaluate<string>(`document.querySelector(${q(root)}).textContent`), /R1_READ_HISTORY_METADATA_UNSUPPORTED/u);
+      assert.match(await browser.evaluate<string>(`document.querySelector(${q(root)}).textContent`), /历史定义资格不足，未以当前元数据替代。/u);
       await select(browser); await fill(browser, '公开知识截止（秒级 UTC）', early); await click(browser, '读取固定快照上下文');
       // A held real response plus capabilities transport drift, not a real second store.
       await browser.evaluate(`(()=>{const original=window.fetch.bind(window);window.__eventOriginal=original;window.fetch=async(...args)=>{const url=String(args[0]);const response=await original(...args);if(url.endsWith('/r1/query/context')){window.__eventWaiting=true;await new Promise(resolve=>window.__eventRelease=resolve);window.__eventReleased=true;}if(url.endsWith('/r1/capabilities')){const body=await response.json();body.connection={...body.connection,connectionId:body.connection.connectionId+'-event-drift'};return new Response(JSON.stringify(body),{status:response.status,headers:response.headers});}return response;};})()`);
