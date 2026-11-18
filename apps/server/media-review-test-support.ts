@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
@@ -115,22 +116,53 @@ export async function invokeMediaAction(h: Host, input: BackendInput, action: st
  * No task, recognizer result, source link or successful receipt is fabricated. */
 export async function assertLateMediaOriginalRejected(services: ReturnType<typeof createApplicationServices>, materialId: string,
   textRef: string, read: () => Promise<unknown>) {
+  const baseline = await read();
   const companion = services.options.workspaceServices!, original = companion.materials!.readOriginal(materialId);
-  const verify = services.files.verify.bind(services.files); let checks = 0, injected = false;
-  services.files.verify = id => {
-    const ref = verify(id);
-    // artifact(), readArtifactForDownload(), its initial verify(), then readPinnedFile after await root/open.
-    if (id === textRef && ++checks === 4) {
-      companion.database.connection.prepare('UPDATE material_objects SET original_bytes=? WHERE material_id=?')
-        .run(Buffer.from('isolated late original corruption'), materialId);
-      injected = true;
+  const link = services.database.connection.prepare('SELECT * FROM conversation_material_links WHERE material_id=?').get(materialId)!;
+  const custody = companion.tasks.get(String(link.service_task_id));
+  const file = services.database.connection.prepare('SELECT metadata,version FROM file_references WHERE id=?').get(link.file_ref_id)!;
+  const record = companion.database.connection.prepare('SELECT envelope_json,envelope_digest FROM material_object_records WHERE material_id=?').get(materialId)!;
+  const verify = services.files.verify.bind(services.files), assertPath = services.direct.assertPublicPath.bind(services.direct);
+  const sourcePath = services.files.verify(String(link.file_ref_id)).invocationPath;
+  const cases = ['bytes', 'custody', 'file-version', 'material', 'source-path-denied'] as const;
+  for (const fault of cases) {
+    let checks = 0, injected = false;
+    services.files.verify = id => {
+      const ref = verify(id);
+      // artifact(), readArtifactForDownload(), initial verify(), then pinned read after await root/open.
+      if (id === textRef && ++checks === 4) {
+        if (fault === 'bytes') companion.database.connection.prepare('UPDATE material_objects SET original_bytes=? WHERE material_id=?')
+          .run(Buffer.from('isolated late original corruption'), materialId);
+        if (fault === 'custody') companion.database.connection.prepare('UPDATE tasks SET version=version+1 WHERE id=?').run(custody.id);
+        if (fault === 'file-version') {
+          const metadata = JSON.parse(String(file.metadata)); metadata.version++;
+          services.database.connection.prepare('UPDATE file_references SET metadata=?,version=version+1 WHERE id=?').run(JSON.stringify(metadata), link.file_ref_id);
+        }
+        if (fault === 'material') {
+          const envelope = JSON.parse(String(record.envelope_json)); envelope.filename = 'changed-fixture-name';
+          const json = JSON.stringify(envelope);
+          companion.database.connection.prepare('UPDATE material_object_records SET envelope_json=?,envelope_digest=? WHERE material_id=?')
+            .run(json, createHash('sha256').update(json).digest('hex'), materialId);
+        }
+        injected = true;
+      }
+      return ref;
+    };
+    // Explicit host-path gate fault, not a claim of user revocation or changed account permissions.
+    services.direct.assertPublicPath = (path, allowMissing) => {
+      if (injected && fault === 'source-path-denied' && path === sourcePath) throw new Error('ISOLATED_SOURCE_PATH_DENIED');
+      return assertPath(path, allowMissing);
+    };
+    try { await assert.rejects(read(), `Late media source ${fault} must reject the packet`); }
+    finally {
+      services.files.verify = verify; services.direct.assertPublicPath = assertPath;
+      companion.database.connection.prepare('UPDATE material_objects SET original_bytes=? WHERE material_id=?').run(original.bytes, materialId);
+      companion.database.connection.prepare('UPDATE tasks SET version=? WHERE id=?').run(custody.version, custody.id);
+      services.database.connection.prepare('UPDATE file_references SET metadata=?,version=? WHERE id=?').run(file.metadata, file.version, link.file_ref_id);
+      companion.database.connection.prepare('UPDATE material_object_records SET envelope_json=?,envelope_digest=? WHERE material_id=?')
+        .run(record.envelope_json, record.envelope_digest, materialId);
     }
-    return ref;
-  };
-  try { await assert.rejects(read(), 'A packet must reject a custodied original changed during its artifact await'); }
-  finally {
-    services.files.verify = verify;
-    companion.database.connection.prepare('UPDATE material_objects SET original_bytes=? WHERE material_id=?').run(original.bytes, materialId);
+    assert.ok(injected, 'The real pinned artifact read must reach the injected post-await check');
+    assert.deepEqual(await read(), baseline, `Restored ${fault} fixture must return the original packet`);
   }
-  assert.ok(injected, 'The real pinned artifact read must reach the injected post-await check');
 }
