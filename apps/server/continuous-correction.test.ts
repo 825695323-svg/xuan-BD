@@ -39,7 +39,7 @@ function csv(rows: string[][]): Buffer {
 }
 
 // 合成 CSV 原件经真实 BD/R1/WFD 连续发布与更正；不代表供应商真实性或现场业务验收。
-test('continuous correction: synthetic source bytes traverse real publication, correction and reopening',
+for (const kind of ['source_correction', 'processing_repair'] as const) test('continuous correction: real BD publication and reopening, ' + kind,
   { skip: !enabled, timeout: 240_000 }, async () => {
     const fixture = createFullChainFixture({ name: 'continuous-correction', machine: true,
       units: { date: { dimension: 'date' }, cny_per_share: { dimension: 'money_per_share' } } });
@@ -61,7 +61,7 @@ test('continuous correction: synthetic source bytes traverse real publication, c
         });
         return { bytes, view };
       };
-      const first = await runBatch(0, [['20260101', '000001', '原报证券', '1'], ['20260102', '000001', '原报证券', '2']]);
+      const first = await runBatch(0, [['20260101', '000001', kind === 'processing_repair' ? '1' : '原报证券', '1'], ['20260102', '000001', kind === 'processing_repair' ? '20' : '原报证券', '2']]);
       const second = await runBatch(1, [['20260103', '000001', '原报证券', '3'], ['20260104', '000001', '原报证券', '4']]);
       const firstItem = first.view.items[0]!;
       assert.ok(firstItem.auto?.planIds?.length);
@@ -74,11 +74,28 @@ test('continuous correction: synthetic source bytes traverse real publication, c
       const originalOutput = (JSON.parse(originalPlanRow.plan_json) as WfdRecord).outputs as WfdRecord[];
       const originalTarget = (originalOutput.find(item => item.outputId === originalOutputId)!.target) as WfdRecord;
       const originalTables = (originalOutput.find(item => item.outputId === originalOutputId)!.tables) as WfdRecord[];
-      const corrected = csv([['20260102', '000001', '原报证券', '20']]);
-      const upload = await host.upload('part-2.csv', 'data', corrected, 'correction-material');
-      const intake = await host.settled(upload.jobId);
-      assert.equal(intake.status, 'succeeded', JSON.stringify(intake.error));
-      const repairMaterialId = host.services.materials!.getByTask(intake.id)!.envelope.materialId;
+      // processing_repair deliberately uses numeric synthetic names as the correct source column.
+      // The original mapping selected close instead; neither original bytes nor original plan are edited.
+      const corrected = kind === 'processing_repair' ? first.bytes : csv([['20260102', '000001', '原报证券', '20']]);
+      let repairMaterialId = String(firstItem.materialId);
+      if (kind === 'source_correction') {
+        const upload = await host.upload('part-2.csv', 'data', corrected, 'correction-material');
+        const intake = await host.settled(upload.jobId);
+        assert.equal(intake.status, 'succeeded', JSON.stringify(intake.error));
+        repairMaterialId = host.services.materials!.getByTask(intake.id)!.envelope.materialId;
+      }
+      const repairTarget = structuredClone(originalTarget);
+      if (kind === 'processing_repair') {
+        const declaration = repairTarget.declaration as WfdRecord;
+        const mapping = declaration.mapping as WfdRecord;
+        const fields = mapping.fields as WfdRecord[];
+        const definition = (declaration.target as WfdRecord).definition as WfdRecord;
+        const decimal = (definition.field_definitions as WfdRecord[]).find(field => field.data_type === 'decimal')!;
+        const numericMapping = fields.find(field => field.fieldCode === decimal.field_code)!;
+        const nameMapping = fields.find(field => String(field.value).includes('名称'))!;
+        assert.ok(numericMapping); assert.ok(nameMapping, JSON.stringify(mapping));
+        numericMapping.value = nameMapping.value;
+      }
       const quote = '交易日期,股票代码,股票名称,收盘价（元）';
       const known = { status: 'known', value: '原件表头可核的 CSV 表格；本次仅检查结构',
         evidence: [{ source: 'material', materialId: repairMaterialId, quote, start: 0, end: quote.length }] };
@@ -91,7 +108,7 @@ test('continuous correction: synthetic source bytes traverse real publication, c
             objectTime: unknown, purpose, structureGranularity: known }, intendedAction: 'inspect' }] },
         outputs: [{ outputId: 'observations', materialIds: [repairMaterialId], intendedAction: 'inspect',
           stages: ['parse', 'clean', 'structure', 'annotate', 'check'],
-          tables: [{ ...(originalTables[0] as WfdRecord), materialId: repairMaterialId }], target: originalTarget }] };
+          tables: [{ ...(originalTables[0] as WfdRecord), materialId: repairMaterialId }], target: repairTarget }] };
       repairInput.outputs.push({ ...repairInput.outputs[0]!, outputId: 'unrelated' });
       const planned = await host.call('/processing/plans', { requestId: 'correction-repair-plan', input: repairInput }, 202);
       const planTask = await host.settled(planned.jobId, 120_000);
@@ -106,12 +123,13 @@ test('continuous correction: synthetic source bytes traverse real publication, c
       }
       const capabilities = await host.call('/corrections/capabilities');
       const registered = await host.call('/corrections/cases', { requestId: 'continuous-register', input: {
-        caseId: 'case-continuous', kind: 'source_correction', errorType: 'source_content_correction',
+        caseId: 'case-continuous', kind, errorType: kind === 'processing_repair' ? 'mapping_error' : 'source_content_correction',
         discoveredAt: '2026-11-08T08:00:00Z',
-        evidence: '供应商后续发布更正原件，20260102 收盘价由 2 更正为 20；通过正式更正入口处理。',
+        evidence: kind === 'processing_repair' ? '明确合成：数值名称列是选定值，原映射误选收盘价列；仅修正映射，复用原件。' : '明确合成：后续版本将20260102值由2改20，不代表供应商更正实证。',
         binding: { planOutput: { planId: originalPlanId, outputId: originalOutputId } },
         connectionSha256: capabilities.connectionSha256 } }, 201);
       const impact = await host.call('/corrections/cases/case-continuous/impact', { requestId: 'continuous-impact' });
+      assert.equal(impact.coverage, 'proven_subset_only');
       assert.equal(impact.state, 'impact_frozen', JSON.stringify(impact.gaps));
       const impactItems = impact.items as WfdRecord[];
       assert.equal(impactItems.length, 2, JSON.stringify(impactItems));
@@ -122,18 +140,23 @@ test('continuous correction: synthetic source bytes traverse real publication, c
       assert.equal(suspended.state, 'suspended');
       const previousSha = host.services.materials!.readOriginal(String(firstItem.materialId)).sha256;
       const newSha = host.services.materials!.readOriginal(repairMaterialId).sha256;
+      if (kind === 'processing_repair') {
+        assert.equal(newSha, previousSha);
+        assert.equal(repairMaterialId, String(firstItem.materialId));
+        assert.notDeepEqual(repairTarget, originalTarget);
+      }
       const prepareCorrection = (requestId: string, status = 200, times?: { requestedAtUtc?: string; acquiredAtUtc?: string }) => host.call('/corrections/cases/case-continuous/prepare', { requestId,
         input: { planId: repairPlanId, outputId: 'observations', originalSha256: newSha,
           expectedParentSnapshotId: latestSnapshotId,
-          reason: '供应商更正原件将 20260102 收盘价由 2 更正为 20，按原定义与字段映射重新交接。',
-          sourceRevision: { sourceId: 'continuous-correction-fixture', provider: 'isolated fixture',
+          reason: kind === 'processing_repair' ? '合成同原件列映射修复：实际数值名称列20替代误取收盘价列2。' : '合成后续原件版本由2改20，按原定义重新交接。',
+          ...(kind === 'source_correction' ? { sourceRevision: { sourceId: 'continuous-correction-fixture', provider: 'isolated fixture',
             requestedUrl: 'file:///explicit-selected-observations/part-2.csv',
             requestedAtUtc: times?.requestedAtUtc ?? new Date(Date.now() + 30 * 60_000).toISOString(),
             acquiredAtUtc: times?.acquiredAtUtc ?? new Date(Date.now() + 60 * 60_000).toISOString(),
             revisionBasis: '供应商后续版本更正同一交易日收盘价', usageScope: 'isolated continuous correction verification',
-            originalSha256: newSha, previousOriginalSha256: previousSha } } }, status);
+            originalSha256: newSha, previousOriginalSha256: previousSha } } : {}) } }, status);
       // Source revision input uses the same explicit UTC contract as ordinary R1 originals.
-      for (const value of ['2030-01-02T00:00:00', '2030-02-30T00:00:00Z', '2030-02-29T00:00:00Z',
+      if (kind === 'source_correction') for (const value of ['2030-01-02T00:00:00', '2030-02-30T00:00:00Z', '2030-02-29T00:00:00Z',
         '2030-01-02T24:00:00Z', '2030-01-02T00:00:00.0001Z', '2030-01-02T00:00:00+00:00']) {
         for (const field of ['requestedAtUtc', 'acquiredAtUtc'] as const) {
           const invalid = await prepareCorrection('continuous-invalid-time-' + field, 409,
@@ -170,7 +193,7 @@ test('continuous correction: synthetic source bytes traverse real publication, c
       assert.ok(quality.revision.affectedOutputIds.includes('unrelated'));
       assert.ok(!quality.revision.affectedOutputIds.includes('observations'));
       assert.ok(quality.issues.some(issue => issue.kind === 'needs_evidence' && issue.outputId === 'observations'));
-      for (const fraction of ['', '.0', '.00', '.000', '.1', '.12', '.123']) {
+      if (kind === 'source_correction') for (const fraction of ['', '.0', '.00', '.000', '.1', '.12', '.123']) {
         const valid = await prepareCorrection('continuous-valid-time-' + fraction, 200,
           { requestedAtUtc: `2030-01-02T00:00:00${fraction}Z`, acquiredAtUtc: `2030-01-02T00:00:01${fraction}Z` });
         assert.equal(valid.view.state, 'prepared');
