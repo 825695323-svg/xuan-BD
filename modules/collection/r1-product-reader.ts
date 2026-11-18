@@ -155,7 +155,7 @@ export class R1ProductReader {
       active(); const result = reply.result; boundedResult(result);
       // 撤销保留原行，市场资格仅采用独立公告时间；旧记录或时间精度缺口不降级采用。
       if (history.mode === 'market_known_at' && Array.isArray(result.diagnostics)
-        && result.diagnostics.some(item => isWfdRecord(item) && (item.reason === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED'
+        && result.diagnostics.some(item => isWfdRecord(item) && ((item.reason === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED' || item.code === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED')
           || item.reason === 'WITHDRAWN_AT_PERSPECTIVE' && !isWfdRecord(item.withdrawal_public_time))))
         fail('R1_READ_REVISION_TIME_UNSUPPORTED', '撤销缺少可独立核验的公开时间，此历史查询未采用；可按明确持有阶段或固定快照核对。');
       if (history.mode !== 'snapshot_contents' && Array.isArray(result.diagnostics)
@@ -190,8 +190,8 @@ export class R1ProductReader {
     const input = body(value, ['operation', 'snapshotId', 'datasetId', 'subject', 'fields', 'pageSize', 'cursor',
       'maxDepth', 'relationTypes', 'eventTypes', 'ruleCodes', 'businessTimeRange', 'historyMode', 'at']);
     const history = readHistorySelection(input);
-    if (history.mode !== 'snapshot_contents' && (input.operation !== 'read_relation_graph' || history.mode !== 'market_known_at'))
-      fail('R1_CONTEXT_HISTORY_INPUT', '当前仅关系图支持明确市场公开截止；其他上下文仍为固定快照。');
+    if (history.mode !== 'snapshot_contents' && (!['read_relation_graph', 'read_event_timeline'].includes(String(input.operation)) || history.mode !== 'market_known_at'))
+      fail('R1_CONTEXT_HISTORY_INPUT', '当前仅关系图与事件时间线支持明确市场公开截止；其他上下文仍为固定快照。');
     if (!R1_CONTEXT_OPERATIONS.includes(input.operation as R1ContextOperation) || !fixed(input.snapshotId)
       || !identifier(input.datasetId) || !isWfdRecord(input.subject)
       || Object.keys(input.subject).length !== 3 || Object.keys(input.subject).some(key => !['kind', 'namespace', 'id'].includes(key))
@@ -222,7 +222,7 @@ export class R1ProductReader {
       || !['role', 'start', 'end', 'timezone'].every(key => typeof range[key] === 'string' && String(range[key]).length > 0 && String(range[key]).length <= 128))) {
       fail('R1_CONTEXT_INPUT', '业务时间区间须明确角色、起止和时区；它不能覆盖固定快照时间视角。');
     }
-    if (history.mode === 'market_known_at' && (!isWfdRecord(range) || range.role !== 'validity'))
+    if (history.mode === 'market_known_at' && graph && (!isWfdRecord(range) || range.role !== 'validity'))
       fail('R1_CONTEXT_HISTORY_INPUT', '历史关系图须同时给出明确有效期范围；可知时间不等于关系已生效。');
     return this.run(async (runtime, identity, active, wait) => {
       const discovered = await this.discover(runtime, snapshotId, active, wait);
@@ -245,12 +245,12 @@ export class R1ProductReader {
       if (history.mode === 'market_known_at') {
         if (canonicalWfdJson(result.knowledge_cutoff) !== canonicalWfdJson(history.cutoff)
           || result.held_scope !== null || result.usable_stage !== null
-          || canonicalWfdJson(result.business_time_range) !== canonicalWfdJson(range)) fail('R1_CONTEXT_RESPONSE_INVALID', '历史关系图返回的公开截止或有效期范围与原请求不符。');
+          || canonicalWfdJson(result.business_time_range) !== canonicalWfdJson(range)) fail('R1_CONTEXT_RESPONSE_INVALID', '历史上下文返回的公开截止或业务范围与原请求不符。');
         if (!Array.isArray(result.eligibility_diagnostics) || (Array.isArray(result.gaps) && result.gaps.some(item => isWfdRecord(item)
           && ['HISTORY_DEFINITION_TIME_UNSUPPORTED', 'CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED'].includes(String(item.code)))))
-          fail('R1_READ_HISTORY_METADATA_UNSUPPORTED', '关系历史定义资格不足，未以当前关系元数据替代。');
-        if (result.eligibility_diagnostics.some(item => isWfdRecord(item) && item.reason === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED'))
-          fail('R1_READ_REVISION_TIME_UNSUPPORTED', '关系撤销缺少独立公开时间，历史图未采用。');
+          fail('R1_READ_HISTORY_METADATA_UNSUPPORTED', '历史定义资格不足，未以当前元数据替代。');
+        if ([...result.eligibility_diagnostics, ...(Array.isArray(result.gaps) ? result.gaps : [])].some(item => isWfdRecord(item) && (item.reason === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED' || item.code === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED')))
+          fail('R1_READ_REVISION_TIME_UNSUPPORTED', '撤销缺少独立公开时间，历史上下文未采用。');
       }
       const rows = graph ? result.edges : result.rows, page = isWfdRecord(result.page) ? result.page : {};
       if (result.protocol_version !== request.protocol_version || result.format_version !== formats[operation] || result.operation !== operation

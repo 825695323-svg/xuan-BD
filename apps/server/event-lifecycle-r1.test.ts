@@ -101,6 +101,14 @@ test('actual R1 event lifecycle keeps changed expected date, historical plan, an
       const fixedActual = (await host.services.r1Runtime!.client.fixedRead(actual.snapshot_id, actual.product_id)).result;
       const fixedPlan = (await host.services.r1Runtime!.client.fixedRead(actual.snapshot_id, revised.product_id)).result;
       assert.equal(((fixedActual.rows as WfdRecord[])[0]!.row as WfdRecord).case_id, ((fixedPlan.rows as WfdRecord[])[0]!.row as WfdRecord).case_id);
+      const historicalTimelineRequest = { operation: 'read_event_timeline', datasetId: 'synthetic_event_lifecycle', snapshotId: actual.snapshot_id, subject,
+        historyMode: 'market_known_at', at: '2026-02-01T00:00:00Z', fields: ['statement'] };
+      const timelineHistory = await host.call('/r1/query/context', historicalTimelineRequest);
+      assert.equal(timelineHistory.result.rows.length, 1);
+      assert.deepEqual(timelineHistory.result.rows[0].record_ref, historical.result.rows[0].record_ref);
+      assert.equal(timelineHistory.result.rows[0].times.expected_time.earliest_utc, '2026-06-01T00:00:00Z');
+      assert.equal(timelineHistory.result.rows[0].times.event_time.status, 'unknown');
+      const tasksBeforeRead = host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get();
       const old = await host.call('/r1/query/context', { operation: 'read_event_timeline', datasetId: 'synthetic_event_lifecycle', snapshotId: initial.snapshot_id, subject });
       assert.equal(old.result.rows.length, 1); assert.equal(old.result.rows[0].event.content_nature, 'plan');
       assert.equal(old.result.rows[0].times.expected_time.earliest_utc, '2026-06-01T00:00:00Z');
@@ -115,5 +123,7 @@ test('actual R1 event lifecycle keeps changed expected date, historical plan, an
       await host.close(); host = await openFullChainHost(fixture);
       const reopened = await host.call('/r1/query/context', { operation: 'read_event_timeline', datasetId: 'synthetic_event_lifecycle', snapshotId: actual.snapshot_id, subject });
       assert.deepEqual(reopened.result.rows, latest.result.rows);
+      assert.deepEqual((await host.call('/r1/query/context', historicalTimelineRequest)).result, timelineHistory.result);
+      assert.deepEqual(host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get(), tasksBeforeRead);
     } finally { await host.close(); }
   });

@@ -77,6 +77,34 @@ test('event market history separates future expected dates, announced plan revis
         'Elapsed expected date and another outcome with the same case_id do not establish an unknown announcement');
       assert.deepEqual(statements(await read(actual.productId, '2025-07-03T23:00:00Z')), {}, 'An event date is not its announcement date');
       assert.deepEqual(statements(await read(actual.productId, '2025-07-05T00:00:00Z')), { actual: 'Actual July 3, announced July 4' });
+      const timelineQuery = { operation: 'read_event_timeline', datasetId, snapshotId: actual.snapshotId, subject,
+        fields: ['statement'], historyMode: 'market_known_at', at: '2025-02-01T00:00:00Z', pageSize: 1 };
+      const historic = await host.call('/r1/query/context', timelineQuery);
+      assert.deepEqual(statements(historic), { plan: 'Expected June, not occurred' });
+      assert.equal(historic.result.knowledge_cutoff.earliest_utc, timelineQuery.at);
+      assert.equal(historic.result.held_scope, null); assert.equal(historic.result.usable_stage, null);
+      assert.equal(historic.result.business_time_range, null);
+      assert.ok(historic.result.eligibility_diagnostics.some((item: any) => item.decision === 'indeterminate'));
+      const hidden = JSON.stringify({ gaps: historic.result.gaps, diagnostics: historic.result.eligibility_diagnostics });
+      for (const secret of ['unannounced', 'Unknown announcement stays unknown', 'contract_ref', 'revision_id', 'expected_time']) assert.ok(!hidden.includes(secret));
+      const laterQuery = { ...timelineQuery, at: '2025-08-01T00:00:00Z' };
+      const page = await host.call('/r1/query/context', laterQuery);
+      assert.equal(page.result.page.has_more, true);
+      const nextPage = await host.call('/r1/query/context', { ...laterQuery, cursor: page.result.page.next_cursor });
+      assert.equal(nextPage.result.page.has_more, false);
+      assert.deepEqual({ ...statements(page), ...statements(nextPage) }, { plan: 'Rescheduled July, still not occurred', actual: 'Actual July 3, announced July 4' });
+      for (const drift of [{ at: timelineQuery.at }, { fields: undefined }, { businessTimeRange: { role: 'event', start: '2025-07-01', end: '2025-08-01', timezone: 'UTC' } }]) {
+        assert.ok((await host.call('/r1/query/context', { ...laterQuery, ...drift, cursor: page.result.page.next_cursor }, 409)).code);
+      }
+      for (const operation of ['read_company_context', 'read_applicable_rules']) assert.equal((await host.call('/r1/query/context', { ...timelineQuery, operation }, 409)).code, 'R1_CONTEXT_HISTORY_INPUT');
+      const client = host.services.r1Runtime!.client, nativeRead = client.readContext.bind(client);
+      client.readContext = async (...args) => { const reply = await nativeRead(...args); return { ...reply, result: { ...reply.result, knowledge_cutoff: null } }; };
+      assert.equal((await host.call('/r1/query/context', timelineQuery, 409)).code, 'R1_CONTEXT_RESPONSE_INVALID');
+      client.readContext = async (...args) => { const reply = await nativeRead(...args); return { ...reply, result: { ...reply.result,
+        eligibility_diagnostics: [], gaps: [{ reason: 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED', business_key: 'private-injected-marker' }] } }; };
+      const gapRefused = await host.call('/r1/query/context', timelineQuery, 409);
+      assert.equal(gapRefused.code, 'R1_READ_REVISION_TIME_UNSUPPORTED'); assert.ok(!JSON.stringify(gapRefused).includes('private-injected-marker'));
+      client.readContext = nativeRead;
       const timeline = await host.call('/r1/query/context', { operation: 'read_event_timeline', datasetId, snapshotId: actual.snapshotId, subject });
       const plan = timeline.result.rows.find((row: any) => row.record_ref.logical_key === 'plan');
       const outcome = timeline.result.rows.find((row: any) => row.record_ref.logical_key === 'actual');
@@ -99,6 +127,7 @@ test('event market history separates future expected dates, announced plan revis
       const requests = host.database.connection.prepare('SELECT count(*) AS n FROM r1_handoff_attempts').get();
       await host.close(); host = await openFullChainHost(fixture);
       assert.deepEqual((await read(first.productId, '2025-02-01T00:00:00Z')).result.rows, announced.result.rows);
+      assert.deepEqual((await host.call('/r1/query/context', timelineQuery)).result, historic.result);
       assert.deepEqual(host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get(), tasks);
       assert.deepEqual(host.database.connection.prepare('SELECT count(*) AS n FROM r1_handoff_attempts').get(), requests);
       assert.equal((await host.call('/r1/products/snapshot', {})).snapshotId, actual.snapshotId);
@@ -118,5 +147,65 @@ test('event with unknown definition public time is snapshot-readable but refuses
       const refused = await host.call('/r1/products/read', { ...selection, historyMode: 'market_known_at', at: '2025-02-01T00:00:00Z' }, 409);
       assert.equal(refused.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED');
       assert.equal(refused.result, undefined, 'No current metadata is attached to a failed history response');
+      const timeline = await host.call('/r1/query/context', { operation: 'read_event_timeline', datasetId, snapshotId: published.snapshotId, subject, historyMode: 'market_known_at', at: '2025-02-01T00:00:00Z' }, 409);
+      assert.equal(timeline.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED'); assert.equal(timeline.result, undefined);
+    } finally { await host.close(); }
+  });
+
+test('event timeline binds each historical event to its own additive contract',
+  { skip: !enabled, timeout: 180000 }, async () => {
+    const fixture = createFullChainFixture({ name: 'event-timeline-contract', machine: true, units: { text: { dimension: 'text' } } });
+    const host = await openFullChainHost(fixture);
+    try {
+      const first = await publish(host, document('timeline-original', 'plan', [event('plan', 'old', 'old declaration', second('2025-01-02T00:00:00Z'), '2025-06-01T00:00:00Z')], null, second('2025-01-01T00:00:00Z')));
+      const next = event('plan', 'new', 'new declaration', second('2025-02-02T00:00:00Z'), '2025-07-01T00:00:00Z');
+      (next.values as WfdRecord).extra = { data_type: 'text', value_state: 'valid_value', value: 'additive statement' };
+      const doc = document('timeline-additive', 'plan', [next], first.snapshotId, second('2025-01-01T00:00:00Z'));
+      const def = (doc.outputs as WfdRecord[])[0]!.definition as WfdRecord;
+      (def.field_definitions as WfdRecord[]).push({ field_code: 'extra', data_type: 'text', unit_code: 'text', measurement_nature: 'event', time_role: 'event' });
+      const latest = await publish(host, doc); assert.equal(latest.productId, first.productId);
+      const direct = await host.call('/r1/products/read', { snapshotId: latest.snapshotId, productId: first.productId, fields: ['statement'], historyMode: 'market_known_at', at: '2025-03-01T00:00:00Z' });
+      const raw = (await host.services.r1Runtime!.client.readContext('read_event_timeline', {
+        protocol_version: 'wfd.read/1.3-product1b', operation: 'read_event_timeline', dataset_id: datasetId,
+        snapshot_id: latest.snapshotId, subject, history_mode: 'snapshot_contents', knowledge_cutoff: null,
+        held_scope: null, usable_stage: null, fields: ['statement'], page_size: 100, max_nodes: 10000, max_scan_bytes: 64 * 1024 * 1024,
+        cursor: null, business_time_range: null,
+      })).result;
+      assert.equal((raw.rows as any[]).length, 2);
+      const history = await host.call('/r1/query/context', { operation: 'read_event_timeline', datasetId, snapshotId: latest.snapshotId, subject, fields: ['statement'], historyMode: 'market_known_at', at: '2025-03-01T00:00:00Z' });
+      assert.deepEqual(history.result.rows.map((row: any) => row.contract_refs), (raw.rows as any[]).map(row => row.contract_refs));
+      const defaults = await host.call('/r1/query/context', { operation: 'read_event_timeline', datasetId, snapshotId: latest.snapshotId, subject,
+        historyMode: 'market_known_at', at: '2025-03-01T00:00:00Z' });
+      assert.equal(defaults.result.rows.find((row: any) => row.record_ref.logical_key === 'old').values.extra, undefined);
+      assert.equal(defaults.result.rows.find((row: any) => row.record_ref.logical_key === 'new').values.extra.value, 'additive statement');
+      const manifest = (await host.services.r1Runtime!.client.fixedRead(latest.snapshotId, first.productId)).result;
+      for (const row of raw.rows as any[]) {
+        const fixed = direct.result.rows.find((item: any) => item.record_ref.logical_key === row.record_ref.logical_key);
+        const meta = (manifest.products as any[]).find(item => canonicalWfdJson(item.contract_ref) === canonicalWfdJson(fixed.contract_ref));
+        assert.ok(meta);
+        assert.deepEqual(row.contract_refs, meta.contract_refs);
+        assert.deepEqual(row.contract_bundle_ref, meta.contract_bundle_ref);
+        assert.deepEqual(row.definition_ref, meta.definition_ref);
+      }
+    } finally { await host.close(); }
+  });
+
+test('event market timeline refuses unresolved withdrawal even when no visible row remains',
+  { skip: !enabled, timeout: 180000 }, async () => {
+    const fixture = createFullChainFixture({ name: 'event-timeline-withdrawal', machine: true, units: { text: { dimension: 'text' } } });
+    const host = await openFullChainHost(fixture);
+    try {
+      const row = event('plan', 'private-withdrawn-key', 'private withdrawn wording', second('2025-01-02T00:00:00Z'), '2025-06-01T00:00:00Z');
+      const first = await publish(host, document('withdraw-event-first', 'plan', [row], null, second('2025-01-01T00:00:00Z')));
+      const fixed = (await host.services.r1Runtime!.client.fixedRead(first.snapshotId, first.productId)).result;
+      const doc = document('withdraw-event-next', 'plan', [row], first.snapshotId, second('2025-01-01T00:00:00Z'), {
+        previous: (fixed.rows as any[])[0].record_ref, definitionRef: first.output.definition_ref as WfdRecord });
+      (doc.outputs as WfdRecord[])[0]!.input_mode = 'withdrawal';
+      const withdrawn = await publish(host, doc);
+      const refused = await host.call('/r1/query/context', { operation: 'read_event_timeline', datasetId, snapshotId: withdrawn.snapshotId, subject,
+        historyMode: 'market_known_at', at: '2025-03-01T00:00:00Z' }, 409);
+      assert.ok(refused.code); assert.equal(refused.result, undefined);
+      assert.ok(!JSON.stringify(refused).includes('private-withdrawn-key'));
+      assert.ok(!JSON.stringify(refused).includes('private withdrawn wording'));
     } finally { await host.close(); }
   });
