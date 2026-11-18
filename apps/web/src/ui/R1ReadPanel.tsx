@@ -4,6 +4,8 @@ import { RequestError } from '../api';
 import { r1Api } from '../r1-api';
 import { buildR1ReadHistory, R1HistoryError, sameR1ReadConnection } from '../r1-read-history';
 import { PageField } from './PageUI';
+import { recordIdentity, type RecordIdentity } from '../record-evidence-api';
+import { RecordEvidencePanel } from './RecordEvidencePanel';
 import { ErrorNote, errorDetail, useWords } from './Controls';
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -39,6 +41,8 @@ export function R1ReadPanel({ ready }: { ready: boolean }) {
   const [productId, setProductId] = useState('');
   const [projection, setProjection] = useState<string[]>([]);
   const [result, setResult] = useState<R1ProductRead | null>(null);
+  const [evidenceRun, setEvidenceRun] = useState(0);
+  const [evidenceIdentity, setEvidenceIdentity] = useState<RecordIdentity | null>(null);
   const [pageIndex, setPageIndex] = useState(1);
   const [historyMode, setHistoryMode] = useState<NonNullable<R1ProductReadInput['historyMode']>>('snapshot_contents');
   const [at, setAt] = useState(''), [usableStage, setUsableStage] = useState('');
@@ -60,7 +64,7 @@ export function R1ReadPanel({ ready }: { ready: boolean }) {
   const fieldGaps = diagnostics.filter(item => object(item).code === 'FIELD_NOT_DEFINED_IN_ROW_CONTRACT');
   const fieldsReady = !!selected?.readable && projection.length > 0 && projection.length <= (discovery?.limits.maxFields ?? 64);
 
-  const changed = () => { setResult(null); setLastRequest(null); setPageIndex(1); setError(null); };
+  const changed = () => { setEvidenceIdentity(null); setResult(null); setLastRequest(null); setPageIndex(1); setError(null); };
   const clear = () => { setDiscovery(null); setProductId(''); setProjection([]); changed(); };
   const act = async (work: (current: () => boolean) => Promise<void>) => {
     if (active.current || !ready) return;
@@ -73,7 +77,7 @@ export function R1ReadPanel({ ready }: { ready: boolean }) {
   };
   const read = (cursor: string | null, nextPage: number) => act(async current => {
     if (!discovery || !fieldsReady) return;
-    setResult(null);
+    setEvidenceIdentity(null); setResult(null);
     if (historyMode === 'system_held_at' && (!status || !sameR1ReadConnection(status.connection, discovery.connection)))
       throw new RequestError(words('持有实例与产品发现的绑定不一致；请重新取得当前固定快照并发现产品。',
         'The holding instance and discovery bindings differ; reload the current snapshot and rediscover products.'));
@@ -186,12 +190,16 @@ export function R1ReadPanel({ ready }: { ready: boolean }) {
       {rows.length > 0 && <div className="r1-table-scroll"><table><caption>{words('持久字段值与状态', 'Persisted field values and states')}</caption>
         <thead><tr><th>{words('业务键与版本', 'Business key and version')}</th><th>{words('业务时间与状态', 'Business time and status')}</th>{fields.map(field => <th key={field} title={field}>{reportField(field)}</th>)}</tr></thead>
         <tbody>{rows.map((row, index) => { const ref = object(row.record_ref), time = object(row.business_time), values = object(row.values); return <tr key={index}>
-          <td>{display(ref.logical_key ?? ref.record_id)}<small>{display(ref.revision_id ?? ref.record_version)}</small></td>
+          <td>{display(ref.logical_key ?? ref.record_id)}<small>{display(ref.revision_id ?? ref.record_version)}</small>{historyMode === 'snapshot_contents' && selected && (() => {
+            const identity = recordIdentity(selected.datasetId, result.productId, result.snapshotId, ref);
+            return identity && <button type="button" className="text-button" data-record-id={identity.recordId} onClick={() => { setEvidenceRun(value => value + 1); setEvidenceIdentity(identity); }}>{words('核对原件', 'Verify original')}</button>;
+          })()}</td>
           <td>{time.status === 'known' ? <>{display(time.earliest_utc)}<br />{words('至（不含）', 'until (exclusive)')} {display(time.latest_exclusive_utc)}<small>{display(time.precision)} · {display(time.source_timezone)}</small></>
             : <>{display(time.status)}{typeof time.status === 'string' && states[time.status] ? `（${states[time.status]}）` : ''}</>}</td>
           {fields.map(field => { const cell = object(values[field]), state = display(cell.value_state); return <td key={field}><span>{display(cell.value)}</span>
             <small>{state}{states[state] ? `（${states[state]}）` : ''}</small><small>{words('单位', 'Unit')}：{seriesById.get(productId) ? sourceLabel(display(object(cell.unit).unit_code), 'srcunit_') : display(object(cell.unit).unit_code)}</small></td>; })}
         </tr>; })}</tbody></table></div>}
+      {historyMode === 'snapshot_contents' && evidenceIdentity && <RecordEvidencePanel key={JSON.stringify([result.snapshotId, result.productId, evidenceIdentity, evidenceRun])} identity={evidenceIdentity} snapshotId={result.snapshotId} connection={result.connection} />}
       <p className="r1-help">{page.has_more ? words('还有后续页；本页不代表全部数据已读完。', 'More pages remain; this page does not mean all data was read.')
         : words('当前固定查询已到末页。完整性与被排除的记录仍以 WFD 诊断为准。', 'This fixed query has reached its final page. Completeness and excluded records are still governed by WFD diagnostics.')}</p>
       {fieldGaps.length > 0 && <p className="r1-help danger-text">{words(`WFD 返回 ${fieldGaps.length} 条字段覆盖诊断：对应记录的固定合同未声明全部所选字段，未计入本次返回行。可改选共有字段读取已有值；准确记录与缺字段见下方诊断。`,
