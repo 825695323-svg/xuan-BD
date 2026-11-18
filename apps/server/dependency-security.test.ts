@@ -83,3 +83,40 @@ test('patched undici request and Agent retain streaming bytes, headers and abort
     await assert.rejects(request(url, { dispatcher, signal: controller.signal }), /abort/iu);
   } finally { await dispatcher.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+
+test('patched Zod rejects oversized constrained arrays before per-item validation', { timeout: 10_000 }, () => {
+  // A bounded synthetic sample in a separate process; never exhaust host memory.
+  const script = `
+    import assert from 'node:assert/strict';
+    import { createRequire } from 'node:module';
+    import { z } from 'zod';
+    import { zodResponseFormat } from 'openai/helpers/zod';
+    const require = createRequire(import.meta.url);
+    assert.equal(require('zod/package.json').version, '4.6.6');
+    let calls = 0;
+    const item = z.preprocess(value => { calls++; return value; }, z.string());
+    const schema = z.array(item).max(4);
+    const result = schema.safeParse(Array(20000).fill(0));
+    assert.equal(result.success, false);
+    assert.equal(calls, 0);
+    assert.equal(result.error.issues.length, 1);
+    assert.equal(result.error.issues[0].code, 'too_big');
+    assert.deepEqual(schema.parse(['a','b']), ['a','b']);
+    assert.equal(schema.safeParse([0]).success, false);
+    calls = 0;
+    const asyncResult = await schema.safeParseAsync(Array(20000).fill(0));
+    assert.equal(asyncResult.success, false); assert.equal(calls, 0);
+    // Optional SDK helper compatibility only: no account, model, or network call.
+    const format = zodResponseFormat(z.object({values:z.array(z.number()).max(4)}), 'bounded');
+    assert.deepEqual(format.$parseRaw('{"values":[1,2]}'), {values:[1,2]});
+    assert.throws(() => format.$parseRaw('{"values":[1,2,3,4,5]}'));
+    console.log('ZOD_CONSTRAINED_ARRAY_REJECTED');
+  `;
+  const child = spawnSync(process.execPath, ['--max-old-space-size=96', '--input-type=module', '-e', script], {
+    encoding: 'utf8', timeout: 5_000, maxBuffer: 1024 * 1024,
+  });
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 0, child.stderr + child.stdout);
+  assert.match(child.stdout, /ZOD_CONSTRAINED_ARRAY_REJECTED/u);
+});
