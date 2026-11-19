@@ -1,3 +1,4 @@
+import type { OcrClaimSelection } from './data-processing/ocr-claim.js';
 import { readFileSync } from 'node:fs';
 import { DEFAULT_MATERIAL_ADAPTERS } from './data-processing/material-inspector/index.js';
 import type { MaterialCell, MaterialLimits, MaterialLocation, MaterialScalar, MaterialTable } from './materials/contracts.js';
@@ -26,7 +27,7 @@ export const CANDIDATE_SELECTION_LIMITS = Object.freeze({ maxSelectedRows: 5000,
 export function candidateImplementationDigest(): string {
   const files = ['./candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts',
     './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts',
-    './data-processing/necessary-text.ts', './data-processing/event-text.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fact.ts', './data-processing/financial-fixed.ts',
+    './data-processing/necessary-text.ts', './data-processing/event-text.ts', './data-processing/ocr-claim.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fact.ts', './data-processing/financial-fixed.ts',
     './materials/contracts.ts', '../../platform/capabilities/browser/html-extraction.ts', '../../adapters/database/wfd-transport.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
   return wfdSha256(Buffer.concat(files));
 }
@@ -42,7 +43,7 @@ export interface CandidateCsvSelectionEvidence extends CandidateCsvSelection {
   sourceBytes: number; sourceSha256: string;
 }
 export interface CandidateTablePlan {
-  materialId: string; format: 'csv' | 'json' | 'xlsx' | 'xbrl' | 'text' | 'pdf' | 'financial-fixed';
+  materialId: string; format: 'csv' | 'json' | 'xlsx' | 'xbrl' | 'text' | 'pdf' | 'financial-fixed' | 'ocr-review';
   /** 已采用端点适配：请求只提供引用，宿主在规范化时解析并冻结完整配置。 */
   sourceAdapter?: AdapterBindingRef | FrozenAdapterBinding;
   /** 本材料实际取得回执摘要；规范化时用于匹配核对，不原样持久化。 */
@@ -55,6 +56,7 @@ export interface CandidateTablePlan {
   xbrlSelection?: XbrlSelection;
   necessaryTextSelection?: NecessaryTextSelection;
   eventTextSelection?: EventTextSelection;
+  ocrClaimSelection?: OcrClaimSelection;
   pdfSelection?: import('./data-processing/financial-pdf.js').FinancialPdfSelection;
   numericFormats?: Record<string, NumericFormat>;
   xlsxSelection?: XlsxTableSelection;
@@ -80,6 +82,7 @@ export interface ParsedCandidateTable {
   financial_evidence?: WfdRecord;
   necessary_text_evidence?: WfdRecord;
   event_text_evidence?: WfdRecord;
+  ocr_claim_evidence?: WfdRecord;
   /** 端点适配身份、载体、字符集、单位换算依据与缺口；随步骤产物持久化。 */
   adapter_evidence?: WfdRecord;
   source_projection?: { kind: 'xlsx-explicit-selection'; json_sha256: string; location_scope: 'derived-json-utf16'; evidence: XlsxSelectionEvidence };
@@ -134,8 +137,8 @@ export function parseTableSource(bytes: Uint8Array, plan: CandidateTablePlan): P
         : plan.eventTextSelection ? { event_text_evidence: projection.evidence as unknown as WfdRecord }
           : { necessary_text_evidence: projection.evidence as unknown as WfdRecord }) };
   }
-  if (plan.format === 'pdf' || plan.format === 'financial-fixed') fail('CANDIDATE_PDF_ASYNC', 'PDF财报/固定财务变换须由受管处理计划异步读取；不通过同步表解析绕过。');
-  if (plan.xbrlSelection || plan.necessaryTextSelection || plan.eventTextSelection || plan.pdfSelection) fail('CANDIDATE_RULES', '专用投影规则与表源格式不一致。');
+  if (plan.format === 'pdf' || plan.format === 'financial-fixed' || plan.format === 'ocr-review') fail('CANDIDATE_PDF_ASYNC', 'PDF财报/固定财务变换须由受管处理计划异步读取；不通过同步表解析绕过。');
+  if (plan.xbrlSelection || plan.necessaryTextSelection || plan.eventTextSelection || plan.pdfSelection || plan.ocrClaimSelection) fail('CANDIDATE_RULES', '专用投影规则与表源格式不一致。');
   if (plan.format === 'xlsx') {
     if (!plan.xlsxSelection || plan.selection) fail('XLSX_SELECTION_REQUIRED', '工作簿须明确工作表、表头、行列范围；不接受 CSV 选件规则。');
     if (bytes.byteLength > MAX_SOURCE) fail('CANDIDATE_PARSE_BUDGET', '工作簿超过原生转换原件预算；未放大转换保护。');
@@ -351,6 +354,14 @@ export function checkCandidateTables(tables: (AnnotatedCandidateTable | Structur
       fail('NECESSARY_TEXT_REVIEW', '必要条件标签不是选择证明；须核定原文版本、完整段范围、用途和发布内容摘要。');
     if ((role >= 0 && table.rows.some(row => row[role]?.value === 'source_excerpt') || enabledAnnotations(table).text_role === 'source_excerpt') && !table.event_text_evidence)
       fail('EVENT_TEXT_REVIEW', '事件原文标签不是选择证明；须保留冻结原文、传播身份与选录内容摘要。');
+    const basis = table.columns.indexOf('text_basis');
+    if ((basis >= 0 && table.rows.some(row => row[basis]?.value === 'ocr_recognition') || enabledAnnotations(table).text_basis === 'ocr_recognition') && !table.ocr_claim_evidence)
+      fail('OCR_CLAIM_EVIDENCE', '识别标签不是固定媒体证据，不能冒充原件或核实事实。');
+    if (table.ocr_claim_evidence) {
+      const contents = table.rows.map(row => Object.fromEntries(table.columns.map((name, index) => [name, row[index]!.value])));
+      if (wfdSha256(canonicalWfdJson(contents)) !== table.ocr_claim_evidence.publishedContentSha256
+        || Object.keys(enabledAnnotations(table)).length) fail('OCR_CLAIM_EVIDENCE', '识别派生行或证据字段被改变，未准予发布。');
+    }
     if (table.event_text_evidence) {
       const contents = table.rows.map(row => Object.fromEntries(table.columns.map((name, index) => [name, row[index]!.value])));
       if (wfdSha256(canonicalWfdJson(contents)) !== table.event_text_evidence.publishedContentSha256

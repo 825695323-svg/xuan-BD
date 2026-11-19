@@ -1,3 +1,4 @@
+import { readOcrReviewPacket } from './ocr-review.js';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { PersonalCore } from '../../modules/agent/runtime/core.js';
@@ -630,7 +631,11 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     receive: (origin, completion) => core.acceptTaskCompletion(origin, completion),
     afterCommit: () => core.dispatchTaskCompletions() }) : undefined;
   queueMicrotask(() => core.dispatchTaskCompletions());
-  return { core, database, permissions, files, tasks: runningTasks, memory, agentSkills, questions, toolSettings, sourceSettings, personalResources, uiPreferences, contextLedger, inputRules, inputRouter, directConversations, direct, modelTools,
+  const assembled = { core, database, permissions, files, tasks: runningTasks, memory, agentSkills, questions, toolSettings, sourceSettings, personalResources, uiPreferences, contextLedger, inputRules, inputRouter, directConversations, direct, modelTools,
     ...(options.localData ? { localData: options.localData.lifecycle, localDataId: options.localData.dataId } : {}),
     artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, productionModuleSwitches: options.productionModuleSwitches, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, sourceFieldProfiles, semanticProducts, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
+  if (options.role !== 'service' && options.workspaceServices?.processing) {
+    options.workspaceServices.processing.bindOcrClaimReader((materialId, taskId) => readOcrReviewPacket(assembled, materialId, taskId));
+  }
+  return assembled;
 }
