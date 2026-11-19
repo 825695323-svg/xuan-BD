@@ -117,6 +117,23 @@ def test_opt_in_preserves_default_rows_and_binds_cursors(tmp_path):
             query.execute({**base, 'include_definition_publication': True, 'history_mode': mode})
     with pytest.raises(ProductQueryError):
         query.execute({**base, 'include_definition_publication': 'true'})
+    cutoff_request = {**base, 'include_definition_publication': True, 'definition_publication_at': '2024-01-01T00:00:01Z'}
+    qualified = query.execute(cutoff_request)
+    ev = qualified['rows'][0]['source_binding']['definition_publication']
+    assert ev['public_time_eligibility']['decision'] == 'eligible'
+    assert ev['qualification'] == 'not_asserted'
+    early = query.execute({**cutoff_request, 'definition_publication_at': '2023-12-31T23:59:59Z'})
+    ev = early['rows'][0]['source_binding']['definition_publication']
+    assert set(ev) == {'status', 'qualification', 'public_time_eligibility'}
+    assert ev['public_time_eligibility']['decision'] == 'ineligible'
+    for changed in ({'definition_publication_at': '2024-01-02T00:00:00Z'}, {'definition_publication_at': None}):
+        with pytest.raises(ProductQueryError):
+            query.execute({**cutoff_request, 'cursor': qualified['page']['next_cursor'], **changed})
+    with pytest.raises(ProductQueryError):
+        query.execute({**base, 'definition_publication_at': '2024-01-01T00:00:01Z'})
+    for invalid in ('2025-02-30T00:00:00Z', '2024-01-01', '2024-01-01T00:00:00.001Z'):
+        with pytest.raises(ProductQueryError):
+            query.execute({**cutoff_request, 'definition_publication_at': invalid})
     # Existing direct fixed and machine-page reads remain opt-out too.
     assert all('definition_publication' not in row['source_binding']
                for row in service.read(pid, snapshot_id=sid)['rows'])
@@ -127,3 +144,28 @@ def test_opt_in_preserves_default_rows_and_binds_cursors(tmp_path):
     with pytest.raises(ValueError, match='PAGE_CURSOR_INVALID'):
         service.read_product_page(pid, snapshot_id=sid, page_size=1,
                                   cursor=opted['pagination']['next_cursor'])
+
+
+def test_cutoff_hides_unknown_and_imprecise_binding_details(tmp_path):
+    from test_r1_data_only import request, scalar_output
+    from test_product_query import request as query_request
+    from wfd_sdk.product_query import ProductQuery
+    for label, time in [('missing', None), ('coarse', {
+        'status': 'known', 'precision': 'day', 'earliest_utc': '2024-01-01T00:00:00Z',
+        'latest_exclusive_utc': '2024-01-02T00:00:00Z', 'source_timezone': 'UTC'})]:
+        service = make_data_service(tmp_path / label)
+        output = scalar_output('one', 'test.cutoff.' + label, '10')
+        if time is not None:
+            output['definition_public_time'] = time
+        published = service.submit(request([output], 'cutoff-' + label))
+        assert published['state'] == 'published_formal'
+        query = ProductQuery(service)
+        selected = query_request('wfd_r1_local', published['snapshot_id'],
+                                 published['output_results'][0]['product_id'], ['value_decimal'],
+                                 include_definition_publication=True,
+                                 definition_publication_at='2024-01-01T12:00:00Z')
+        result = query.execute(selected)
+        evidence = result['rows'][0]['source_binding']['definition_publication']
+        assert set(evidence) == {'status', 'qualification', 'public_time_eligibility'}
+        assert evidence['public_time_eligibility']['decision'] == 'indeterminate'
+        assert evidence['status'] == 'not_qualified'
