@@ -72,3 +72,58 @@ def test_binding_validation_cache_is_request_local(tmp_path):
     assert len(calls) == 1
     assert first == service._record_definition_publication(item, source, 'output', 'physical', {})
     assert len(calls) == 2
+
+
+def test_opt_in_preserves_default_rows_and_binds_cursors(tmp_path):
+    import pytest
+    from test_r1_data_only import request, scalar_output
+    from test_product_query import request as query_request
+    from wfd_sdk.product_query import ProductQuery, ProductQueryError
+    from wfd_sdk.duckdb_sdk import canonical, sha
+    service = make_data_service(tmp_path)
+    output = scalar_output('first', 'test.definition.option', '10')
+    output['definition_public_time'] = known_second(2024, 1, 1)
+    other = copy.deepcopy(output['payload']['rows'][0])
+    other['business_key'] = 'row-second'
+    output['payload']['rows'].append(other)
+    published = service.submit(request([output], 'definition-option'))
+    assert published['state'] == 'published_formal'
+    sid, pid = published['snapshot_id'], published['output_results'][0]['product_id']
+    query = ProductQuery(service)
+    base = query_request('wfd_r1_local', sid, pid, ['value_decimal'], page_size=1)
+    original_projection = service._record_definition_publication
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Default read must not compute opt-in evidence")
+    service._record_definition_publication = forbidden
+    plain = query.execute(base)
+    service.read(pid, snapshot_id=sid)
+    service.read_product_page(pid, snapshot_id=sid, page_size=1)
+    service._record_definition_publication = original_projection
+    explicit = query.execute({**base, 'include_definition_publication': True})
+    stripped = copy.deepcopy(explicit['rows'])
+    for row in stripped:
+        assert row['source_binding'].pop('definition_publication')['status'] == 'bound'
+    assert canonical(stripped) == canonical(plain['rows'])
+    assert sha(canonical(stripped)) == sha(canonical(plain['rows']))
+    assert query.execute(base) == plain
+    assert query.execute({**base, 'include_definition_publication': False}) == plain
+    for source, target in ((plain, True), (explicit, False)):
+        cursor = source['page']['next_cursor']
+        assert cursor
+        with pytest.raises(ProductQueryError):
+            query.execute({**base, 'cursor': cursor, 'include_definition_publication': target})
+    for mode in ('market_known_at', 'system_held_at'):
+        with pytest.raises(ProductQueryError, match='snapshot-only'):
+            query.execute({**base, 'include_definition_publication': True, 'history_mode': mode})
+    with pytest.raises(ProductQueryError):
+        query.execute({**base, 'include_definition_publication': 'true'})
+    # Existing direct fixed and machine-page reads remain opt-out too.
+    assert all('definition_publication' not in row['source_binding']
+               for row in service.read(pid, snapshot_id=sid)['rows'])
+    page = service.read_product_page(pid, snapshot_id=sid, page_size=1)
+    opted = service.read_product_page(pid, snapshot_id=sid, page_size=1, include_definition_publication=True)
+    assert 'definition_publication' not in page['rows'][0]['source_binding']
+    assert opted['rows'][0]['source_binding']['definition_publication']['status'] == 'bound'
+    with pytest.raises(ValueError, match='PAGE_CURSOR_INVALID'):
+        service.read_product_page(pid, snapshot_id=sid, page_size=1,
+                                  cursor=opted['pagination']['next_cursor'])

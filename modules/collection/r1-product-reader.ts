@@ -117,8 +117,9 @@ export class R1ProductReader {
   }
 
   async readProduct(value: unknown, signal?: AbortSignal): Promise<R1ProductRead> {
-    const input = body(value, ['snapshotId', 'productId', 'fields', 'cursor', 'historyMode', 'at', 'heldScope', 'usableStage']);
+    const input = body(value, ['snapshotId', 'productId', 'fields', 'cursor', 'historyMode', 'at', 'heldScope', 'usableStage', 'includeDefinitionPublication']);
     const history = readHistorySelection(input);
+    if (input.includeDefinitionPublication !== undefined && (typeof input.includeDefinitionPublication !== 'boolean' || input.includeDefinitionPublication && history.mode !== 'snapshot_contents')) fail('R1_READ_INPUT', '定义公开证据仅允许显式固定快照读取。');
     if (!fixed(input.snapshotId) || !identifier(input.productId) || input.cursor !== undefined && input.cursor !== null
       && (typeof input.cursor !== 'string' || !input.cursor || input.cursor.length > 8192 || /[\u0000-\u001f]/u.test(input.cursor))) {
       fail('R1_READ_INPUT', '读取需要固定快照、实际产品及有界原游标；不接受路径或查询覆盖。');
@@ -149,6 +150,7 @@ export class R1ProductReader {
       active();
       const reply = await runtime.client.readProduct({ protocol_version: 'wfd.read/1.3-product1', operation: 'read_product',
         dataset_id: product.datasetId, snapshot_id: snapshotId, product_id: productId, fields,
+        ...(input.includeDefinitionPublication === true ? { include_definition_publication: true } : {}),
         history_mode: history.mode, knowledge_cutoff: history.cutoff, held_scope: history.heldScope, usable_stage: history.usableStage, subject: null,
         business_time_range: null, page_size: R1_READ_LIMITS.pageSize, max_nodes: R1_READ_LIMITS.maxScanRows,
         max_scan_bytes: R1_READ_LIMITS.maxScanBytes, cursor: input.cursor ?? null }, wait);

@@ -1,3 +1,4 @@
+import { readPublicationSetEvidence } from './r1-publication-set-evidence.js';
 import { readOutputDependencies } from './r1-output-dependencies.js';
 import { readRecordEvidence } from './r1-record-evidence.js';
 import { verifyFinancialFactRow } from './data-processing/financial-fact.js';
@@ -95,6 +96,15 @@ export class R1WorkspaceService {
         return this.assertBinding(row);
       }, control: () => this.tasks.getControl() }, checkAccess, signal, mode);
   }
+  publicationSetEvidence(requestId: string, value: unknown, checkAccess: () => void, signal?: AbortSignal) {
+    return readPublicationSetEvidence(requestId, value, { ...this.options,
+      current: (planId, setId) => {
+        this.assertDispatch();
+        const row = this.requireRow(requestId);
+        if (row.plan_id !== planId || row.output_id !== setId) fail('R1_SET_EVIDENCE_REQUEST', '请求不属于指定原计划和发布集合。');
+        return { runtime: this.assertBinding(row), inputs: this.setInputs(planId, setId, requestId) };
+      }, generation: () => this.tasks.getControl().generation }, checkAccess, signal);
+  }
   recordEvidence(value: unknown, signal?: AbortSignal) {
     return readRecordEvidence(value, { ...this.options,
       assertCurrent: requestId => { this.assertDispatch(); return this.assertBinding(this.requireRow(requestId)); },
@@ -128,6 +138,7 @@ export class R1WorkspaceService {
   prepare(value: unknown): R1RequestView {
     if (isWfdRecord(value) && value.kind === 'publication_set') fail('R1_SET_HOST_CHECK', '集合准备须经过受信异步限制核验。');
     const input = readInput(value), runtime = this.requireRuntime(); this.assertDispatch();
+    if (this.options.processing.hasOcrClaims(input.planId, input.outputId)) fail('OCR_CLAIM_HOST_CHECK', 'OCR派生主张须异步复验冻结媒体包。');
     if (input.target.inputMode === 'source_correction') fail('R1_CORRECTION_HOST_CHECK', '来源修订须经过异步固定前驱与定义核对。');
     return this.prepareInternal(input, runtime, null);
   }
@@ -143,6 +154,7 @@ export class R1WorkspaceService {
     const fixedOutput = plan.outputs.find(item => item.outputId === input.outputId);
     const restriction = await this.verifyPublishRestriction(input, fixedOutput, runtime, signal);
     await this.verifyCorrection(input, runtime, signal);
+    await this.options.processing.verifyOcrClaims(input.planId, input.outputId);
     signal?.throwIfAborted();
     this.assertDispatch();
     if (generation !== this.tasks.getControl().generation) fail('TASK_NOT_ACTIVE', '核对期间停止代次已改变，未准备交接。');
@@ -282,6 +294,7 @@ export class R1WorkspaceService {
       fail('R1_LEGACY_REQUEST', '原请求身份已被占用，不能绑定为新的发布集合。');
     const generation = this.tasks.getControl().generation, identity = runtime.currentIdentity();
     const inputs = this.setInputs(input.planId, input.setId, input.requestId), plan = this.options.processing.get(input.planId);
+    if (inputs.some(member => this.options.processing.hasOcrClaims(member.planId, member.outputId))) fail('OCR_CLAIM_SET_UNSUPPORTED', '当前OCR派生主张仅单输出确认，不支持集合发布。');
     const outputRestrictions: Record<string, RestrictionEvidence | null> = Object.create(null);
     for (const member of inputs) outputRestrictions[member.target.outputKey] = await this.verifyPublishRestriction(member,
       plan.outputs.find(output => output.outputId === member.outputId), runtime, signal);
@@ -535,6 +548,7 @@ export class R1WorkspaceService {
     const refs = JSON.parse(String(aggregate.local_refs_json)) as R1LocalReferences;
     if (refs.outputs) {
       const inputs = this.setInputs(plan.planId, refs.publicationSetId!, requestId);
+      if (inputs.some(member => this.options.processing.hasOcrClaims(member.planId, member.outputId))) fail('OCR_CLAIM_SET_UNSUPPORTED', '当前OCR派生主张仅单输出确认，不支持集合发布。');
       const outputRestrictions: Record<string, RestrictionEvidence | null> = Object.create(null);
       for (const input of inputs) {
         const selected = plan.outputs.find(output => output.outputId === input.outputId);
@@ -602,6 +616,8 @@ export class R1WorkspaceService {
     await context.emit({ type: 'checkpoint', checkpoint: { requestId, bindingSha256: row.binding_sha256, documentSha256: String(attempt.document_sha256) } });
     // 首次发送的全部用途/限制证据必须在任何外部副作用标记前完成；失败不进入 unknown 提交恢复。
     const restriction = await this.verifyRestrictionForRequest(requestId, runtime);
+    if (this.options.processing.hasOcrClaims(row.plan_id, row.output_id)) await this.options.processing.verifyOcrClaims(row.plan_id, row.output_id);
+    this.assertActive(context); this.assertBinding(row);
     this.options.handoff.assertPublicationReadyToSend(requestId, restriction);
     await context.emit({ type: 'side_effect_started', effectId, description: '向冻结 data_only 连接提交原 request_identity',
       operation: { protocol: 'wfd.structured-ingest/1.0', requestId, bindingSha256: row.binding_sha256 } });

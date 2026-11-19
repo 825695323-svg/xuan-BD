@@ -377,6 +377,8 @@ class ProductQuery:
                                     "Read request must be a JSON object",
                                     {"schema_id": self.schema_id})
         operation = request.get("operation")
+        if request.get("include_definition_publication") and (request.get("operation") != "read_product" or request.get("history_mode") != "snapshot_contents"):
+            raise ProductQueryError("DEFINITION_PUBLICATION_MODE_UNSUPPORTED", "Explicit definition evidence is snapshot-only")
         errors = sorted(self.validator.iter_errors(request),
                         key=lambda exc: list(exc.absolute_path))
         if errors:
@@ -540,6 +542,8 @@ class ProductQuery:
             "usable_stage": request.get("usable_stage"),
             "sort": list(SORT_KEYS),
         }
+        if request.get("include_definition_publication") is True:
+            body["include_definition_publication"] = True
         return "sha256:" + sha(canonical(body))
 
     # ------------------------------------------------------------------ cursor
@@ -2786,7 +2790,8 @@ class ProductQuery:
                 reduced = self._project_batch_window(
                     request, self.service._iter_query_batches(
                         request["product_id"], snapshot_id=request["snapshot_id"],
-                        before_batch=reserve_batch),
+                        before_batch=reserve_batch,
+                        include_definition_publication=request.get("include_definition_publication") is True),
                     manifest_products, subject=request.get("subject"),
                     fields=sorted(request["fields"]), business_range=business_range,
                     last=tuple(cursor["last"]) if cursor is not None else None)
@@ -2815,6 +2820,7 @@ class ProductQuery:
                                "perspective": perspective, "at": cutoff_at,
                                "verify_contract_files": False}
                 if self._data_only_projection():
+                    read_kwargs["include_definition_publication"] = request.get("include_definition_publication") is True
                     read_kwargs["fields"] = sorted(request["fields"])
                     read_kwargs["business_time_range"] = business_range
                     if perspective == "system_held_at":

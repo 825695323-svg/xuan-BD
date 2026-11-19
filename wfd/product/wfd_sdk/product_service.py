@@ -3126,7 +3126,7 @@ class WFDProductService:
                 "record_ref": copy.deepcopy(ref), "definition_ref": copy.deepcopy(item["definition_ref"]),
                 "contract_ref": copy.deepcopy(item["contract_ref"]), **copy.deepcopy(cached)}
 
-    def _public_read_result(self, result):
+    def _public_read_result(self, result, *, include_definition_publication=False):
         # 正式用途治理的唯一共用闸口：data_only.fixed_read、固定分页、
         # system_held、整产品页与 ProductQuery 的批次优化路径都汇于此。
         # 每次调用都从 catalog 重读当前事项，不缓存到进程启动时。
@@ -3162,7 +3162,7 @@ class WFDProductService:
                 source_binding["source_conflicts"] = copy.deepcopy(item["source_conflicts"])
             if item.get("derived_lineage_digest"):
                 source_binding["derived_lineage_digest"] = item["derived_lineage_digest"]
-            if result.get("perspective") == "snapshot_contents" and "_definition_publication" in item:
+            if include_definition_publication and result.get("perspective") == "snapshot_contents" and "_definition_publication" in item:
                 source_binding["definition_publication"] = copy.deepcopy(item["_definition_publication"])
             item_public["source_binding"] = source_binding
             rows.append(item_public)
@@ -3292,7 +3292,7 @@ class WFDProductService:
         self._authorize_sources(result.get("source_ids", []))
         return self._public_read_result(result)
 
-    def _read(self, product_id=None, *, snapshot_id, perspective="snapshot_contents", at=None, subject=None, include_history=False, verify_contract_files=True):
+    def _read(self, product_id=None, *, snapshot_id, perspective="snapshot_contents", at=None, subject=None, include_history=False, verify_contract_files=True, include_definition_publication=False):
         definition_publication_cache = {}
         if not snapshot_id:
             raise ValueError("FIXED_SNAPSHOT_REQUIRED")
@@ -3388,7 +3388,7 @@ class WFDProductService:
                         "revision": copy.deepcopy(version),
                         "record_ref": {"product_id": product["product_id"], "snapshot_id": snapshot_id,
                                        "logical_key": business_key, "revision_id": version["revision_id"]}}
-                if perspective == "snapshot_contents" and source.get("_wfd_data_only") is True:
+                if include_definition_publication and perspective == "snapshot_contents" and source.get("_wfd_data_only") is True:
                     item["_definition_publication"] = self._record_definition_publication(
                         item, source, entry["output_key"], physical_key, definition_publication_cache)
                 attribution = (source.get("_wfd_source_attribution") or {}).get(entry["output_key"])

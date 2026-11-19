@@ -262,6 +262,9 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 3
+    },
+    "include_definition_publication": {
+      "type": "boolean"
     }
   },
   "required": [

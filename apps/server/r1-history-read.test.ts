@@ -488,7 +488,17 @@ test('same fixed definition can carry different publication evidence and must no
         assert.equal(denied.result, undefined, 'Do not choose earliest evidence or substitute an older snapshot');
         const fixed = await host.call('/r1/products/read', { snapshotId: later.snapshotId, productId: first.productId });
         assert.deepEqual(values(fixed), { old: '10', later: '20' }, 'Refusal must not rewrite either source record');
-        const evidence = Object.fromEntries(fixed.result.rows.map((item: WfdRecord) => {
+        assert.ok(fixed.result.rows.every((item: WfdRecord) => !('definition_publication' in (item.source_binding as WfdRecord))));
+        const opted = await host.call('/r1/products/read', { snapshotId: later.snapshotId, productId: first.productId, includeDefinitionPublication: true });
+        const legacyRows = structuredClone(opted.result.rows);
+        for (const item of legacyRows) delete item.source_binding.definition_publication;
+        assert.equal(canonicalWfdJson(legacyRows), canonicalWfdJson(fixed.result.rows), 'Default row bytes and selectedRowsSha256 input must not change');
+        assert.equal(wfdSha256(canonicalWfdJson(legacyRows)), wfdSha256(canonicalWfdJson(fixed.result.rows)));
+        const afterDefault = await host.call('/r1/products/read', { snapshotId: later.snapshotId, productId: first.productId });
+        assert.deepEqual(afterDefault, fixed, 'Opt-in must not change the following default response');
+        await host.call('/r1/products/read', { ...historical, snapshotId: first.snapshotId, includeDefinitionPublication: true }, 409);
+        await host.call('/r1/products/read', { snapshotId: first.snapshotId, productId: first.productId, includeDefinitionPublication: 'true' }, 409);
+        const evidence = Object.fromEntries(opted.result.rows.map((item: WfdRecord) => {
           const ref = item.record_ref as WfdRecord;
           const publication = (item.source_binding as WfdRecord).definition_publication as WfdRecord;
           assert.equal(publication.status, 'bound');

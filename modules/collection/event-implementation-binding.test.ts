@@ -36,3 +36,23 @@ test('both candidate and processing bindings change when only HTML or event proj
     assert.equal(processingDigest(), baseline.processing);
   }
 });
+
+
+test('processing binding includes the trusted OCR packet reader and native evidence validation', () => {
+  const baseline = processingDigest(), original = fs.readFileSync;
+  for (const suffix of ['/data-processing/ocr-claim.ts', '/apps/server/ocr-review.ts', '/apps/server/media-review-source.ts', '/ocr/evidence.ts']) {
+    let hits = 0;
+    try {
+      fs.readFileSync = ((...args: any[]) => {
+        const result = (original as any)(...args);
+        if (args[0] instanceof URL && args[0].pathname.endsWith(suffix)) {
+          hits++; return Buffer.concat([result, Buffer.from('\n// synthetic reader binding perturbation')]);
+        }
+        return result;
+      }) as typeof fs.readFileSync;
+      syncBuiltinESMExports();
+      assert.notEqual(processingDigest(), baseline, suffix); assert.equal(hits, 1);
+    } finally { fs.readFileSync = original; syncBuiltinESMExports(); }
+    assert.equal(processingDigest(), baseline);
+  }
+});
