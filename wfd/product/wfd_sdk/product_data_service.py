@@ -3228,6 +3228,7 @@ class WFDDataOnlyService(WFDProductService):
         fetched = selected_rows_page(parts, selected, after_position=after_position,
                                      row_limit=page_size + 1, max_row_bytes=max_page_bytes)
         raw_rows = []
+        definition_publication_cache = {}
         for chosen in fetched:
             part = parts[chosen["part_index"]]
             product, source = part["product"], part["source_bundle"]
@@ -3245,6 +3246,8 @@ class WFDDataOnlyService(WFDProductService):
                              "record_ref": {"product_id": product_id, "snapshot_id": snapshot_id,
                                             "logical_key": version["logical_key"],
                                             "revision_id": version["revision_id"]}})
+            raw_rows[-1]["_definition_publication"] = self._record_definition_publication(
+                raw_rows[-1], source, part["output_key"], chosen["physical_key"], definition_publication_cache)
         for part in parts:
             stat = part["path"].stat()
             if (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns) != part["file_stat"]:

@@ -3089,6 +3089,43 @@ class WFDProductService:
             "contract_bundle_refs": [copy.deepcopy(product.get("contract_bundle_ref")) for product in products],
         }
 
+    def _record_definition_publication(self, item, source, output_key, physical_key, cache=None):
+        """Evidence from this exact persisted row binding, never a definition-wide time."""
+        unknown = {"status": "unknown", "qualification": "not_asserted"}
+        if source.get("_wfd_data_only") is not True:
+            return unknown
+        binding = (source.get("_wfd_product_bindings") or {}).get(output_key)
+        version = ((source.get("_wfd_row_versions") or {}).get(output_key) or {}).get(physical_key)
+        if not isinstance(binding, dict) or not isinstance(version, dict):
+            return unknown
+        product, ref = binding.get("product"), item.get("record_ref")
+        if (not isinstance(product, dict) or not isinstance(ref, dict)
+                or not all(isinstance(ref.get(k), str) and ref[k] for k in
+                           ("snapshot_id", "product_id", "logical_key", "revision_id"))
+                or product.get("product_id") != ref["product_id"]
+                or version.get("logical_key") != ref["logical_key"]
+                or version.get("revision_id") != ref["revision_id"]
+                or canonical(version) != canonical(item.get("revision"))
+                or not isinstance(item.get("definition_ref"), dict)
+                or not isinstance(item.get("contract_ref"), dict)
+                or canonical(product.get("definition_ref")) != canonical(item["definition_ref"])
+                or canonical(product.get("contract_ref")) != canonical(item["contract_ref"])):
+            return unknown
+        cached = cache.get(id(binding)) if cache is not None else None
+        if cached is None:
+            time = binding.get("definition_public_time")
+            if not isinstance(time, dict) or self._time_errors(time) or time.get("status") != "known":
+                return unknown
+            # Request-local reuse only; no persistence or cache across snapshot/instance changes.
+            cached = {"binding_digest": "sha256:" + sha(canonical(binding)),
+                      "public_time": {k: copy.deepcopy(time.get(k)) for k in
+                                      ("status", "precision", "earliest_utc", "latest_exclusive_utc", "source_timezone")}}
+            if cache is not None:
+                cache[id(binding)] = cached
+        return {"status": "bound", "qualification": "not_asserted",
+                "record_ref": copy.deepcopy(ref), "definition_ref": copy.deepcopy(item["definition_ref"]),
+                "contract_ref": copy.deepcopy(item["contract_ref"]), **copy.deepcopy(cached)}
+
     def _public_read_result(self, result):
         # 正式用途治理的唯一共用闸口：data_only.fixed_read、固定分页、
         # system_held、整产品页与 ProductQuery 的批次优化路径都汇于此。
@@ -3112,7 +3149,7 @@ class WFDProductService:
             item_public = {key: copy.deepcopy(value) for key, value in item.items()
                            if key not in {"source", "evidence_refs", "source_ids",
                                           "source_attribution", "source_conflicts",
-                                          "derived_lineage_digest"}}
+                                          "derived_lineage_digest", "_definition_publication"}}
             item_public["evidence_refs"] = [self._public_evidence_ref(ref)
                                             for ref in item.get("evidence_refs", [])]
             source_binding = {
@@ -3125,6 +3162,8 @@ class WFDProductService:
                 source_binding["source_conflicts"] = copy.deepcopy(item["source_conflicts"])
             if item.get("derived_lineage_digest"):
                 source_binding["derived_lineage_digest"] = item["derived_lineage_digest"]
+            if result.get("perspective") == "snapshot_contents" and "_definition_publication" in item:
+                source_binding["definition_publication"] = copy.deepcopy(item["_definition_publication"])
             item_public["source_binding"] = source_binding
             rows.append(item_public)
         public["rows"] = rows
@@ -3254,6 +3293,7 @@ class WFDProductService:
         return self._public_read_result(result)
 
     def _read(self, product_id=None, *, snapshot_id, perspective="snapshot_contents", at=None, subject=None, include_history=False, verify_contract_files=True):
+        definition_publication_cache = {}
         if not snapshot_id:
             raise ValueError("FIXED_SNAPSHOT_REQUIRED")
         if perspective not in {"snapshot_contents", "market_known_at", "system_held_at"}:
@@ -3348,6 +3388,9 @@ class WFDProductService:
                         "revision": copy.deepcopy(version),
                         "record_ref": {"product_id": product["product_id"], "snapshot_id": snapshot_id,
                                        "logical_key": business_key, "revision_id": version["revision_id"]}}
+                if perspective == "snapshot_contents" and source.get("_wfd_data_only") is True:
+                    item["_definition_publication"] = self._record_definition_publication(
+                        item, source, entry["output_key"], physical_key, definition_publication_cache)
                 attribution = (source.get("_wfd_source_attribution") or {}).get(entry["output_key"])
                 if attribution:
                     item["source_attribution"] = copy.deepcopy(attribution)
