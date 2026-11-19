@@ -210,7 +210,7 @@ test('event market timeline refuses unresolved withdrawal even when no visible r
     } finally { await host.close(); }
   });
 
-test('event timeline separates a revised plan withdrawal announcement from independent same-case outcome',
+test('event timeline keeps withdrawal and explicit reannouncement separate from independent same-case outcome',
   { skip: !enabled, timeout: 180000 }, async () => {
     // Native data-only submissions exercise the existing withdrawal contract, not a BD upload/withdrawal UI.
     const fixture = createFullChainFixture({ name: 'event-known-withdrawal', machine: true, units: { text: { dimension: 'text' } } });
@@ -260,7 +260,42 @@ test('event timeline separates a revised plan withdrawal announcement from indep
       assert.equal(after.result.rows[0].times.event_time.earliest_utc, '2025-07-03T00:00:00Z');
       const fixedOld = await host.call('/r1/query/context', { ...query, snapshotId: actual.snapshotId, at: afterRequest.at });
       assert.equal(fixedOld.result.rows.length, 2, 'Later withdrawal cannot mutate the prior fixed snapshot.');
+      // A new announcement must explicitly follow the tombstone, never silently revive its old row.
+      const history = (await host.services.r1Runtime!.client.fixedReadHistory(withdrawn.snapshotId, revised.productId)).result;
+      const tombstone = (history.rows as WfdRecord[]).find(item => (item.revision as WfdRecord)?.withdrawn === true)!;
+      assert.ok(tombstone, 'Read the actual committed withdrawal revision, not a manufactured predecessor.');
+      const renewedRow = event('plan', 'plan-withdrawn', 'Synthetic newly announced September plan', second('2025-08-10T00:00:00Z'), '2025-09-01T00:00:00Z');
+      const renewedDeclaration = (requestId: string, previous: WfdRecord) => document(requestId, 'plan', [renewedRow], withdrawn.snapshotId, definitionTime,
+        { previous, definitionRef: revised.output.definition_ref as WfdRecord });
+      const silentRevival = renewedDeclaration('silent-plan-revival', tombstone.record_ref as WfdRecord);
+      const silentOutput = (silentRevival.outputs as WfdRecord[])[0]!;
+      silentOutput.input_mode = 'partial_observation'; delete silentOutput.revisions;
+      const staleRevival = renewedDeclaration('stale-plan-revival', (prior.rows as WfdRecord[])[0]!.record_ref as WfdRecord);
+      for (const [invalid, code] of [[silentRevival, 'DUPLICATE_LOGICAL_KEY_REQUIRES_REVISION'], [staleRevival, 'REVISION_STALE_PREDECESSOR']] as const) {
+        const rejected = await host.services.r1Runtime!.client.submit(invalid);
+        assert.notEqual(rejected.result.state, 'published_formal');
+        assert.match(JSON.stringify(rejected.result), new RegExp(code));
+        assert.equal((await host.call('/r1/products/snapshot', {})).snapshotId, withdrawn.snapshotId);
+      }
+      const renewed = await publish(host, renewedDeclaration('explicit-plan-reannouncement', tombstone.record_ref as WfdRecord));
+      const renewedQuery = { ...query, snapshotId: renewed.snapshotId };
+      const oldAnnouncement = await host.call('/r1/query/context', { ...renewedQuery, at: '2025-02-01T00:00:00Z' });
+      assert.equal(oldAnnouncement.result.rows.length, 1);
+      assert.equal(oldAnnouncement.result.rows[0].times.expected_time.earliest_utc, '2025-06-01T00:00:00Z');
+      assert.equal((await host.call('/r1/query/context', { ...renewedQuery, at: '2025-08-01T12:00:00Z' }, 409)).code, 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED');
+      const withdrawalGap = await host.call('/r1/query/context', { ...renewedQuery, at: '2025-08-05T00:00:00Z' });
+      assert.equal(withdrawalGap.result.rows.length, 1);
+      assert.equal(withdrawalGap.result.rows[0].event.content_nature, 'outcome', 'Reannouncement cannot fill the earlier withdrawn interval.');
+      const reannouncedRequest = { ...renewedQuery, at: '2025-08-11T00:00:00Z' };
+      const reannounced = await host.call('/r1/query/context', reannouncedRequest);
+      assert.equal(reannounced.result.rows.length, 2);
+      const renewedPlan = reannounced.result.rows.find((item: any) => item.event.content_nature === 'plan');
+      assert.equal(renewedPlan.times.expected_time.earliest_utc, '2025-09-01T00:00:00Z');
+      assert.equal(renewedPlan.times.event_time.status, 'unknown');
+      assert.notEqual(renewedPlan.record_ref.revision_id, plan.record_ref.revision_id);
+      assert.equal((await host.call('/r1/query/context', afterRequest)).result.rows.length, 1, 'Reannouncement cannot mutate the fixed withdrawn snapshot.');
       await host.close(); host = await openFullChainHost(fixture);
+      assert.deepEqual((await host.call('/r1/query/context', reannouncedRequest)).result, reannounced.result);
       assert.deepEqual((await host.call('/r1/query/context', afterRequest)).result, after.result);
       assert.deepEqual((await host.call('/r1/query/context', { ...query, at: '2025-07-31T23:59:59Z' })).result, before.result);
       assert.deepEqual(host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get(), taskCount);
