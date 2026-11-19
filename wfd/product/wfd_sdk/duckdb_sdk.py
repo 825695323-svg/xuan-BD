@@ -334,7 +334,8 @@ class WFDDuckDBPrototype:
     @classmethod
     def initialize_new(cls, root: Path, validator: Draft202012Validator, *,
                        runtime_root: Path, sandbox=True,
-                       writer_host: str | None = None, writer_epoch: int | None = None):
+                       writer_host: str | None = None, writer_epoch: int | None = None,
+                       storage_format: str = "legacy"):
         """Explicit provisioning only, after the owner authorizes a new store.
 
         This storage API does not grant caller roles and is not a machine
@@ -343,13 +344,28 @@ class WFDDuckDBPrototype:
         root = Path(root)
         if root.exists() and (not root.is_dir() or any(root.iterdir())):
             raise ValueError("STORE_INITIALIZATION_REQUIRES_EMPTY_DIRECTORY")
+        if storage_format not in {"legacy", "joint_experimental"}:
+            raise ValueError("STORE_FORMAT_UNSUPPORTED")
+        if storage_format == "joint_experimental":
+            from .joint_state import FORMAT, MARKER
+            from .writerlock import writer_lock
+            with writer_lock(root):
+                # The lock is the only file this explicit initializer may find.
+                existing = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
+                if existing != ["catalog/.writer.lock"]:
+                    raise ValueError("STORE_INITIALIZATION_REQUIRES_EMPTY_DIRECTORY")
+                marker = StateStore(root); marker.path = root / MARKER
+                marker._write_atomic({"format": FORMAT})
+                return cls(root, validator, runtime_root=runtime_root, sandbox=sandbox,
+                           writer_host=writer_host, writer_epoch=writer_epoch,
+                           initialize=True, read_only=False, _joint_initialization=True)
         return cls(root, validator, runtime_root=runtime_root, sandbox=sandbox,
                    writer_host=writer_host, writer_epoch=writer_epoch,
                    initialize=True, read_only=False)
 
     def __init__(self,root: Path,validator: Draft202012Validator, *, runtime_root:Path, sandbox=True,
                  writer_host:str|None=None, writer_epoch:int|None=None,
-                 initialize:bool=True, read_only:bool=False):
+                 initialize:bool=True, read_only:bool=False, _joint_initialization:bool=False):
         # The legacy constructor still supports explicit test/provisioning
         # callers. Machine connections must use open_existing, not its defaults.
         require_duckdb()  # fail-fast instead of silently using the legacy writer
@@ -364,10 +380,16 @@ class WFDDuckDBPrototype:
         self.read_only=bool(read_only)
         self.writer_host=writer_host
         self.writer_epoch=writer_epoch
-        self.state=StateStore(self.root)
+        from .joint_state import is_joint, JointStateStore
+        joint = is_joint(self.root)
+        if joint and initialize and not _joint_initialization:
+            raise ValueError("JOINT_EXPLICIT_INITIALIZATION_REQUIRED")
+        self.state=JointStateStore(self.root) if joint else StateStore(self.root)
         if not initialize:
             if not self.root.is_dir() or not self.state.path.is_file():
                 raise FileNotFoundError("FORMAL_VOLUME_NOT_INITIALIZED:" + str(self.root))
+        if joint and not initialize:
+            self.state.view()
         if self.read_only:
             return
         if self.runtime_root.resolve()==self.root.resolve() or self.root.resolve() in self.runtime_root.resolve().parents:
@@ -969,6 +991,8 @@ class WFDDuckDBPrototype:
         原文件不覆盖、旧快照引用不变；同一产品只登记一条输出（ENG-06）。
         products: {product_id: rows[]}
         """
+        from .joint_state import reject_unsupported
+        reject_unsupported(self.root, "compaction")
         snaps=self._valid_snapshots()
         st=self.state.resolve(snaps)
         if not st['ok']:

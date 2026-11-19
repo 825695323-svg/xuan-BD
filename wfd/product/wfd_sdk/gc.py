@@ -72,6 +72,8 @@ class GC:
     def __init__(self, store: Path, *, cooldown_seconds: int = 0, keep_metadata: bool = True):
         # keep_metadata=True 表示：只退出保留集合、删数据文件，但保留 snapshot/commit/manifest 记录，
         # 配合 lineage 检查点，使祖先关系在数据被回收后仍可验证（三分动作独立）。
+        from .joint_state import reject_unsupported as reject_joint_operation
+        reject_joint_operation(store, "gc")
         self.store = Path(store)
         self.keep_metadata = keep_metadata
         self.cooldown = cooldown_seconds
@@ -139,6 +141,8 @@ class GC:
         被误判为新根，出现双 HEAD（实测过）。协议本就有 CURRENT_HEAD 指针，候选引擎缺失，
         这里由 WFD 控制层提供；没有指针时才回退到图推导。
         """
+        from .joint_state import reject_unsupported as reject_joint_operation
+        reject_joint_operation(self.store, "gc")
         st_path = self.state / "state.json"
         if st_path.is_file():
             try:
@@ -259,6 +263,8 @@ class GC:
         return out
 
     def plan(self) -> dict:
+        from .joint_state import reject_unsupported as reject_joint_operation
+        reject_joint_operation(self.store, "gc")
         roots = self.build_roots()
         data = self.scan_data_files()
         protected = roots["protected_files"]
@@ -317,6 +323,8 @@ class GC:
         —— 反过来会让孩子快照的 parent 指向消失的祖先，HEAD 推导出现双头（GC08 实测到过）。
         中断只发生在删文件阶段；重跑时未删完的文件仍是候选，可幂等续做。
         """
+        from .joint_state import reject_unsupported as reject_joint_operation
+        reject_joint_operation(self.store, "gc")
         if not plan.get("lineage_check", {}).get("ok", False):
             raise ClosureError("GC_WOULD_BREAK_LINEAGE")
         self.gc_dir.mkdir(parents=True, exist_ok=True)

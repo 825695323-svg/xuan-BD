@@ -47,6 +47,9 @@ def _path(root) -> Path:
 
 def load(root) -> dict:
     """每次调用都重读磁盘；从未登记为空，已登记后丢失必须显式报错。"""
+    from .joint_state import is_joint, current_usage
+    if is_joint(root):
+        return current_usage(root)
     path = _path(root)
     initialized = Path(root) / INITIALIZED
     if not path.is_file():
@@ -288,6 +291,8 @@ def _assert_complete_scope(issue: dict, ticket_revisions: list) -> None:
 
 def suspend(root, declaration) -> dict:
     """登记一个明确用途暂停事项；与 submit 共用 writer_lock。"""
+    from .joint_state import reject_unsupported
+    reject_unsupported(root, "usage_suspend")
     if not isinstance(declaration, dict):
         raise ValueError("USAGE_DECLARATION_INVALID")
     allowed = {"issue_id", "error_type", "reason", "evidence_digest", "error_binding_digest",
@@ -358,6 +363,8 @@ def authorize_repair(root, declaration) -> dict:
     ``authorized`` 取得票据。票据不因失败而失效，原号恢复由 WFD 既有
     request_identity 幂等状态保证，不会因暂停创建新提交身份。
     """
+    from .joint_state import reject_unsupported
+    reject_unsupported(root, "usage_authorize_repair")
     if not isinstance(declaration, dict):
         raise ValueError("USAGE_TICKET_INVALID")
     allowed = {"ticket_id", "issue_id", "document_digest", "request_identity", "revisions",
@@ -432,6 +439,8 @@ def authorize_repair(root, declaration) -> dict:
 
 def resolve(root, declaration) -> dict:
     """按已核验的新版本追加解决说明；旧错误版本的已知问题与限制永久保留。"""
+    from .joint_state import reject_unsupported
+    reject_unsupported(root, "usage_resolve")
     if not isinstance(declaration, dict):
         raise ValueError("USAGE_RESOLUTION_INVALID")
     allowed = {"issue_id", "ticket_id", "document_digest", "replacement_snapshot_id",

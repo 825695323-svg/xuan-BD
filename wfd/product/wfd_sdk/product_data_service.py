@@ -394,6 +394,8 @@ def validate_data_only_metadata(declaration):
     return True
 
 
+from .joint_state import read_guard as joint_read_guard
+
 class WFDDataOnlyService(WFDProductService):
     """Structured-data profile with no source/evidence/lineage persistence."""
 
@@ -468,10 +470,11 @@ class WFDDataOnlyService(WFDProductService):
         }
         caps["usage_governance"] = {
             "format_version": "wfd.usage-suspension/1",
-            "catalog_file": "catalog/usage_suspensions.json",
+            "catalog_file": ("catalog/joint-current.json" if "joint_commit_id" in self.engine.state.read()
+                                     else "catalog/usage_suspensions.json"),
             "writer_lock": "shared with submit",
-            "operations": ["usage_status", "usage_audit_read", "usage_suspend",
-                           "usage_authorize_repair", "usage_resolve"],
+            "operations": (["usage_status", "usage_audit_read"] if "joint_commit_id" in self.engine.state.read()
+                           else ["usage_status", "usage_audit_read", "usage_suspend", "usage_authorize_repair", "usage_resolve"]),
             "default_business_read": "denied_when_suspended",
             "audit_reproduction": "explicit issue_id required; result is publishable=false and compute_eligible=false",
             "legacy_restrictions_retained": True,
@@ -518,10 +521,18 @@ class WFDDataOnlyService(WFDProductService):
             {"operation": "packages", "reason": "P5 package contract remains separate"},
             {"operation": "external_source_permissions", "reason": "source/evidence permissions belong to BD"},
         ]
+        if "joint_commit_id" in self.engine.state.read():
+            caps["joint_storage"] = {"format": "wfd.joint-volume.experimental/1", "experimental": True,
+                "machine_connection_supported": False, "governance": "initialized_empty_inherited_only",
+                "submit_requires": "explicit expected_commit_id", "group_correction_supported": False}
+            caps["operations"]["register_write_target"]["supported"] = False
+            caps["operations"]["register_adjustment_anchor"]["supported"] = False
+            caps["operations"]["snapshot_status"]["authority"] = "joint_commit"
         caps.pop("source_permissions", None)
         caps.pop("source_role_governance", None)
         return caps
 
+    @joint_read_guard
     def snapshot_status(self):
         """Resolve the already-open instance's authoritative head without repair.
 
@@ -572,10 +583,12 @@ class WFDDataOnlyService(WFDProductService):
             holding_instance = None
         return {"format_version": "wfd.snapshot-status/1", "profile": DATA_ONLY_PROFILE,
                 "snapshot_id": head["snapshot_id"] if head is not None else None,
-                "empty": head is None, "authority": "active_head",
+                "empty": head is None, "authority": "joint_commit" if "joint_commit_id" in before else "active_head",
                 "caller_id": self.caller_id, "caller_roles": sorted(self.caller_roles),
                 "holding_instance": holding_instance,
-                "unit_definitions": self._public_unit_definitions(units)}
+                "unit_definitions": self._public_unit_definitions(units),
+                **({"joint_commit_id": before["joint_commit_id"], "storage_format": "wfd.joint-volume.experimental/1"}
+                   if "joint_commit_id" in before else {})}
 
     # ---------------------------------------------------------------- validation
     def _validate_document(self, doc):
@@ -1275,9 +1288,26 @@ class WFDDataOnlyService(WFDProductService):
                              "errors": [{"code": code} for code in codes]})
         return outcomes
 
-    def submit(self, doc):
+    def submit(self, doc, *, expected_commit_id=None):
+        from .joint_state import JointStateStore
         with writer_lock(self.root):
-            return self._submit_data(doc)
+            if not isinstance(self.engine.state, JointStateStore):
+                if expected_commit_id is not None:
+                    raise ValueError("JOINT_TOKEN_ON_LEGACY_VOLUME")
+                return self._submit_data(doc)
+            self.require_permission("submit")
+            if not isinstance(expected_commit_id, str):
+                raise ValueError("JOINT_PREDECESSOR_REQUIRED")
+            fingerprint = sha(canonical(doc))
+            identity = doc.get("request_identity") if isinstance(doc, dict) else None
+            known = self.engine.state.find_request(identity, fingerprint)
+            if known is not None:
+                if known["predecessor_commit"] != expected_commit_id:
+                    raise ValueError("JOINT_REQUEST_PREDECESSOR_CHANGED")
+            elif self.engine.state.view()["commit_id"] != expected_commit_id:
+                raise ValueError("JOINT_CAS_CONFLICT")
+            with self.engine.state.submission(expected_commit_id, identity, fingerprint):
+                return self._submit_data(doc)
 
     def _validate_calendar_main_rows(self, internal, declaration, rule, info):
         """Admission-time completeness against the full retained fixed calendar.
@@ -1656,6 +1686,8 @@ class WFDDataOnlyService(WFDProductService):
     def register_write_target(self, dataset_id, product_id, definition_ref=None,
                               reason="explicit registration", snapshot_id=None):
         """Explicit first-bind / rebind of one formal write target."""
+        from .joint_state import reject_unsupported
+        reject_unsupported(self.root, "register_write_target")
         self.require_permission("register")
         self.require_permission("publish")
         if getattr(self.engine, "read_only", False):
@@ -1748,6 +1780,8 @@ class WFDDataOnlyService(WFDProductService):
                                    status=adjustment_anchors.STATUS_ACTIVE,
                                    supersedes=None, reason="explicit registration"):
         """Explicit append-only registration of one adjustment-anchor version."""
+        from .joint_state import reject_unsupported
+        reject_unsupported(self.root, "register_adjustment_anchor")
         self.require_permission("register")
         self.require_permission("publish")
         if getattr(self.engine, "read_only", False):
@@ -2814,6 +2848,7 @@ class WFDDataOnlyService(WFDProductService):
                              verify_contract_files=verify_contract_files,
                              include_definition_publication=include_definition_publication)
 
+    @joint_read_guard
     def read(self, product_id=None, *, snapshot_id, perspective="snapshot_contents",
              at=None, subject=None, include_history=False, verify_contract_files=True,
              held_scope=None, usable_stage=None, fields=None, business_time_range=None,
@@ -3092,6 +3127,7 @@ class WFDDataOnlyService(WFDProductService):
             options["_current_rows"] = current
         return super()._prepare_versions(out, product, extension, head_id, fingerprint, source, **options)
 
+    @joint_read_guard
     def read_page(self, product_id, *, snapshot_id, record_refs,
                   page_size=FIXED_PAGE_DEFAULT_SIZE, max_page_bytes=FIXED_PAGE_DEFAULT_BYTES,
                   cursor=None, _machine_result_fields=None, _result_budget=None):
@@ -3172,6 +3208,7 @@ class WFDDataOnlyService(WFDProductService):
             if cursor is None:
                 break
 
+    @joint_read_guard
     def read_product_page(self, product_id, *, snapshot_id,
                           page_size=FIXED_PAGE_DEFAULT_SIZE, max_page_bytes=FIXED_PAGE_DEFAULT_BYTES,
                           cursor=None, _machine_result_fields=None, _result_budget=None,

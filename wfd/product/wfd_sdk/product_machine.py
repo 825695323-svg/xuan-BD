@@ -415,6 +415,10 @@ def _build_service(config, *, operation=None):
         from wfd_sdk.product_data_service import WFDDataOnlyService
     except Exception as exc:
         raise RuntimeError("SERVICE_IMPORT_FAILED:" + type(exc).__name__ + ": " + str(exc)) from exc
+    # Experimental joint volumes are SDK-only until governed group operations
+    # are integrated; BD cannot select one as an active machine connection.
+    from wfd_sdk.joint_state import reject_unsupported
+    reject_unsupported(Path(config["store"]), "experimental_machine_connection")
     if config.get("volume"):
         from wfd_sdk.product_volume_service import WFDVolumeService
         from wfd_sdk.volume_publication import VolumeBinding
