@@ -13,6 +13,9 @@ test('real local Vision observation becomes only a confirmed unverified source c
   { skip: process.platform !== 'darwin' || !binary || !process.env.WFD_PYTHON || !process.env.XUAN_FULL_CHAIN_ROOT
     ? 'Requires actual macOS Vision, explicit helper, locked WFD and isolated runtime.' : false, timeout: 240000 }, async () => {
     const fixture = createFullChainFixture({ name: 'ocr-claim-live', machine: true, units: { text: { dimension: 'text' } } });
+    // Explicit isolated fixture selection; no implicit singleton/latest connection fallback.
+    const registry = JSON.parse(readFileSync(fixture.registryPath, 'utf8')); registry.manual_ingest_connection_id = 'full-chain-test';
+    writeFileSync(fixture.registryPath, JSON.stringify(registry));
     const bindingPath = join(fixture.runtime, 'config/machine.bindings.json'), bindings = JSON.parse(readFileSync(bindingPath, 'utf8'));
     bindings.resources.vision_ocr = { path: realpathSync(binary!), kind: 'program', sha256: wfdSha256(readFileSync(binary!)) };
     writeFileSync(bindingPath, JSON.stringify(bindings));
