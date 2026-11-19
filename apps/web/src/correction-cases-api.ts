@@ -54,7 +54,7 @@ async function capabilities() {
   return raw.connectionSha256;
 }
 /** Same bound connection and local qualification before/after each existing read. No corrective commands here. */
-async function readBound<T>(read: () => Promise<T>, expected?: string) {
+export async function readBound<T>(read: () => Promise<T>, expected?: string) {
   const generation = localDataGeneration(), revision = localDataRevision();
   const connection = await capabilities();
   if (expected !== undefined && expected !== connection) throw new RequestError('CORRECTION_SCOPE_CHANGED', null, 'CORRECTION_SCOPE_CHANGED');

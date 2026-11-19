@@ -1,93 +1,19 @@
+import { prepareOutputFixture, publish, doc, row, values } from './output-publication-test-support.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
-import { DIMENSION_KEYS } from '../../modules/collection/processing-routing.js';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
-import { buildStructuredIngestDocument } from '../../modules/collection/r1-structured-handoff.js';
-import { createFullChainFixture, openFullChainHost, type FullChainHost } from './full-chain-test-support.js';
+import { createFullChainFixture, openFullChainHost } from './full-chain-test-support.js';
 
 const enabled = !!process.env.WFD_PYTHON && !!process.env.XUAN_FULL_CHAIN_ROOT;
-const namespace = 'full.chain.test';
-const subject = { kind: 'entity', namespace, id: 'synthetic_financial_subject' };
-const second = (at: string) => ({ status: 'known', precision: 'second', earliest_utc: at,
-  latest_exclusive_utc: new Date(Date.parse(at) + 1000).toISOString().replace('.000Z', 'Z'), source_timezone: 'UTC' });
-const values = { subject_scheme: 'synthetic', subject_code: 'company', accounting_standard: 'CAS', currency: 'CNY', scope: 'consolidated',
-  unit: 'cny', concept: '其中：营业收入', report_id: 'synthetic-report', report_version: 'v1', dimension: 'group', period_type: 'duration',
-  start_date: '2024-01-01', end_date: '2024-03-31', value: '9007199254740993.1200',
-  report_nature: 'formal', fiscal_calendar: 'declared-calendar-year', comparability_basis: 'synthetic-same-accounting-basis' };
-const definition = { semantic_code: 'synthetic.financial.compatible', measurement_nature: 'mixed_observation', unit_code: 'per_field',
-  definition_authority: namespace, time_role: 'observation',
-  semantic_context: { version: 'wfd.semantic-context/1.0', content_nature: 'source_claim',
-    time: { period_type: 'natural', frequency: 'year', interval: 'half_open', timezone: 'UTC' } },
-  field_definitions: Object.keys(values).map(field_code => ({ field_code, data_type: field_code === 'value' ? 'decimal' : 'text',
-    unit_code: field_code === 'value' ? 'cny' : 'text', measurement_nature: 'flow', time_role: 'observation' })) };
-function row(key: string, changes: Partial<typeof values> = {}, at = '2025-01-02T00:00:00Z') {
-  return { business_key: key, subject, public_time: second(at), observation_time: { status: 'known', precision: 'day',
-    earliest_utc: '2024-01-01T00:00:00Z', latest_exclusive_utc: '2025-01-01T00:00:00Z', source_timezone: 'UTC' },
-  values: Object.fromEntries(Object.entries({ ...values, ...changes }).map(([key, value]) => [key,
-    { data_type: key === 'value' ? 'decimal' : 'text', value_state: 'valid_value', value }])) };
-}
-function doc(requestId: string, rows: WfdRecord[], parent: string | null = null, revision?: { previous: WfdRecord; definitionRef: WfdRecord }) {
-  return buildStructuredIngestDocument({ requestId, datasetId: 'synthetic_financial', namespace, producerNamespace: namespace,
-    submissionDigest: 'sha256:' + wfdSha256(canonicalWfdJson({ requestId, rows, parent })), expectedParentSnapshotId: parent,
-    outputKey: 'financial', subject, definition,
-    inputMode: revision ? 'source_correction' : 'partial_observation',
-    ...(revision ? { definitionMode: 'reuse', definitionRef: revision.definitionRef,
-      revisions: { q1: { previous: revision.previous, reason: 'Explicit synthetic corrected report' } } } : {}),
-    coverage: { scope: { synthetic: true }, basis: 'observed_partial', completeness: 'partial', absence_means: 'unknown' },
-    payload: { kind: 'tabular_rows', rows } });
-}
-async function publish(host: FullChainHost, document: WfdRecord) {
-  const result = (await host.services.r1Runtime!.client.submit(document)).result;
-  assert.equal(result.state, 'published_formal', JSON.stringify(result));
-  return { snapshotId: String(result.snapshot_id), output: (result.output_results as WfdRecord[])[0]! };
-}
 test('selected fixed input observations link to an actual BD output publication, never row-level causation',
   { skip: !enabled, timeout: 180_000 }, async () => {
   const fixture = createFullChainFixture({ name: 'output-publication-dependencies', machine: true,
     units: { cny: { dimension: 'money' }, text: { dimension: 'text' } } });
   let host = await openFullChainHost(fixture, fixture.root);
   try {
-    const initial = await publish(host, doc('input', [row('q1')]));
-    const sourceProduct = String(initial.output.product_id);
-    const fixed = await host.call('/r1/products/read', { snapshotId: initial.snapshotId, productId: sourceProduct });
-    const sourceRef = fixed.result.rows[0].record_ref;
-    const bytes = Buffer.from('instruction\nexplicit synthetic financial selection\n');
-    const upload = await host.upload('selection.csv', 'data', bytes, 'selected-material');
-    assert.equal((await host.settled(upload.jobId)).status, 'succeeded');
-    const materialId = host.services.materials!.getByTask(upload.jobId)!.envelope.materialId;
-    const source = { source_id: 'synthetic-selection', provider: 'isolated synthetic fixture',
-      requested_url: 'file:///explicit-synthetic-selection', requested_at_utc: '2026-01-01T00:00:00Z', acquired_at_utc: '2026-01-01T00:00:01Z',
-      usage_scope: 'isolated standardization provenance test, not supplier evidence',
-      authorization: { status: 'authorized', basis: 'explicit isolated fixture' } };
-    const target = { datasetId: 'standardized_fixture', outputKey: 'standardized', expectedParentSnapshotId: initial.snapshotId,
-      subject, definition: { ...definition, semantic_code: 'synthetic.standardized', field_definitions: definition.field_definitions.filter(f => ['value', 'concept'].includes(f.field_code)) },
-      inputMode: 'partial_observation', coverage: { scope: { selected: 'q1' }, basis: 'observed_partial', completeness: 'partial', absence_means: 'unknown' } };
-    const mapping = { kind: 'tabular_rows', businessKey: 'business_key', earliestUtc: 'start_utc', latestExclusiveUtc: 'end_utc',
-      precision: 'day', sourceTimezone: 'UTC', fields: [{ fieldCode: 'value', value: 'value', state: 'value_state' },
-        { fieldCode: 'concept', value: 'concept', state: 'metadata_state' }] };
-    const dimensions = Object.fromEntries(DIMENSION_KEYS.map(key => [key, { status: 'known', value: key === 'informationNature' ? 'source_claim' : key === 'role' ? 'financial-record' : 'explicit synthetic selected financial source claim',
-      evidence: [{ source: 'operator', field: key, quote: 'explicit synthetic selected financial source claim' }] }]));
-    const creation = await host.call('/processing/plans', { requestId: 'standardized-plan', input: {
-      routing: { materials: [{ materialId, dimensions, intendedAction: 'publish' }] },
-      outputs: [{ outputId: 'financial', materialIds: [materialId], intendedAction: 'publish', stages: ['parse', 'structure', 'annotate', 'check'],
-        tables: [{ materialId, format: 'financial-fixed', types: { value: 'decimal_string' }, annotations: { metadata_state: 'valid_value' },
-          financialCalculation: { version: 'bd-financial-fixed/1', operation: 'standardize',
-            inputs: [{ snapshotId: initial.snapshotId, productId: sourceProduct, businessKeys: ['q1'] }] } }],
-        target: { declaration: { protocol: 'wfd.structured-ingest/1.0', source, target, mapping }, expectedSnapshotId: initial.snapshotId } }] } }, 202);
-    const task = await host.settled(creation.jobId); assert.equal(task.status, 'succeeded', JSON.stringify(task.error));
-    const planId = host.services.processing!.getByTask(task.id)!.plan!.planId;
-    for (const step of host.services.processing!.get(planId).steps) {
-      const run = await host.call(`/processing/plans/${planId}/steps/${step.stepId}/execute`, { requestId: 'execute-' + step.stepId }, 202);
-      const done = await host.settled(run.jobId); assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
-    }
-    const candidate = host.services.processing!.get(planId).outputs[0]!;
-    assert.equal(candidate.publishEligible, true, JSON.stringify(candidate));
-    const requestId = 'selected-publication';
-    const prepared = await host.call('/r1/prepare', { requestId, planId, outputId: 'financial', source, target, mapping }, 201);
-    const path = `/r1/requests/${requestId}/output-dependencies`;
-    const input = { planId, outputId: 'financial', recordRefs: [sourceRef] };
+    const { initial,sourceProduct,sourceRef,planId,requestId,path,input,prepared } = await prepareOutputFixture(host);
     assert.equal((await host.call(path, input, 409)).code, 'R1_OUTPUT_DEPENDENCIES_NOT_ASSOCIATED');
     const submitted = await host.call(`/r1/requests/${requestId}/submit`, { confirmationDigest: prepared.documentSha256 }, 202);
     const done = await host.settled(submitted.jobId); assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
@@ -133,6 +59,12 @@ test('selected fixed input observations link to an actual BD output publication,
     host.database.connection.prepare("UPDATE r1_handoff_attempts SET state='associated' WHERE request_id=?").run(requestId);
     await host.close(); host = await openFullChainHost(fixture, fixture.root);
     assert.deepEqual(await host.call(path, input), result);
+    // Reopening does not promote a corrected input revision into the persisted consumer's old input.
+    const mixed = await host.call(path, { ...input, recordRefs: [sourceRef, newer.result.rows[0].record_ref] });
+    assert.deepEqual(mixed.inputObservations.results.map((entry: WfdRecord) => entry.status), ['observed', 'not_observed']);
+    assert.deepEqual(mixed.publication, result.publication);
+    assert.equal(mixed.rowAttribution, 'unknown');
+    assert.equal(mixed.fullDownstreamImpact, 'unknown');
     // Scoped generation change during the real fixed read rejects the late result.
     const client = host.services.r1Runtime!.client, originalRead = client.fixedReadHistory.bind(client);
     const control = host.services.tasks.getControl.bind(host.services.tasks);
@@ -172,5 +104,10 @@ test('selected fixed input observations link to an actual BD output publication,
     db.prepare('UPDATE processing_plan_steps SET output_json=NULL WHERE plan_id=? AND step_id=?').run(planId, step.step_id);
     const failed = await host.call(path, input, 409); assert.equal(failed.code, 'PROCESSING_STEP_NOT_READY');
     assert.equal(db.prepare('SELECT count(*) AS n FROM r1_record_associations WHERE request_id=?').get(requestId)!.n, 1);
+    await host.close(); host = await openFullChainHost(fixture, fixture.root);
+    const reopenedMissing = await host.call(path, input, 409);
+    assert.equal(reopenedMissing.code, 'PROCESSING_STEP_NOT_READY');
+    assert.ok(!('publication' in reopenedMissing));
+    assert.equal(host.database.connection.prepare('SELECT count(*) AS n FROM r1_record_associations WHERE request_id=?').get(requestId)!.n, 1);
   } finally { await host.close(); }
 });

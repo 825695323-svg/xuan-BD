@@ -6,6 +6,7 @@ import { PageActions, PageButton, PageEmpty, PageHeading, PageSearch } from './P
 import { DetailFacts, DetailSection } from './ObjectDetailPanel';
 import { taskStateText } from './TaskResults';
 import './CorrectionCasesPanel.css';
+import { CorrectionDownstreamPanel } from './CorrectionDownstreamPanel';
 
 const labels: Record<CorrectionState, [string, string]> = {
   registered: ['已登记', 'Registered'], impact_incomplete: ['影响范围不完整', 'Impact incomplete'], impact_frozen: ['影响已冻结', 'Impact frozen'],
@@ -81,6 +82,7 @@ export function CorrectionCasesPanel() {
           { label: words('当前任务状态', 'Current task state'), value: taskStateText(task.status, words) },
         ]} />{task.requiresReview && <p>{words('原任务仍需核对。', 'The original task still requires review.')}</p>}</div>}
       </DetailSection>
+      {connection && <CorrectionDownstreamPanel key={JSON.stringify([detail,connection])} detail={detail} connection={connection} />}
       <DetailSection title={words('固定记录与摘要', 'Fixed records and digests')}>
         <p className="database-scope">{words('条目状态是本地登记值，不证明当前限制已生效。现接口无独立 WFD 请求字段，不拼造。', 'Item states are local records, not proof of currently effective restrictions. No separate WFD request field is available; none is synthesized.')}</p>
         <details className="result-details"><summary>{words('展开固定引用', 'Show fixed references')}</summary>
