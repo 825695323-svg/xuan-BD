@@ -85,7 +85,7 @@ jobs:
           XUAN_FULL_CHAIN_ROOT: ${{ runner.temp }}/history-wfd-tests
         run: |
           mkdir -p "$XUAN_TEST_ROOT" "$XUAN_FULL_CHAIN_ROOT"
-          PYTHONPATH=wfd/product python -m pytest -q wfd/product/tests/test_definition_publication_binding.py
+          PYTHONPATH=wfd/product python -m pytest -q wfd/product/tests/test_definition_publication_binding.py wfd/product/tests/test_definition_replacement_candidates.py wfd/product/tests/test_definition_replacement_registry.py
           node --import tsx --test \
             modules/collection/r1-product-reader.test.ts \
             apps/server/r1-history-read.test.ts \

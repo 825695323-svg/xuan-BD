@@ -406,8 +406,11 @@ class WFDDataOnlyService(WFDProductService):
     def __init__(self, engine, *, caller_roles=None, caller_id="local",
                  unit_registry=None, trusted_actor_namespaces=None,
                  write_targets_document=None, write_target_reserved_families=None,
-                 adjustment_anchors_document=None, basis_price_catalog=None, local_holdings=True):
+                 adjustment_anchors_document=None, basis_price_catalog=None, local_holdings=True,
+                 definition_replacement_access=None):
         # Host-only preparation switch: R2 observes its stages on the target.
+        from .definition_replacement_registry import access
+        self._definition_replacement_access = access(definition_replacement_access)
         self._local_holdings = bool(local_holdings)
         self._write_targets_document = (copy.deepcopy(write_targets_document)
                                         if write_targets_document is not None else None)
@@ -1721,6 +1724,18 @@ class WFDDataOnlyService(WFDProductService):
                             "product_id": prior.get("product_id"),
                             "definition_ref": copy.deepcopy(prior.get("definition_ref"))}),
         }
+
+    def approve_definition_replacement(self, command):
+        from .definition_replacement_registry import mutate
+        return mutate(self, 'approve_definition_replacement', command)
+
+    def disable_definition_replacement(self, command):
+        from .definition_replacement_registry import mutate
+        return mutate(self, 'disable_definition_replacement', command)
+
+    def resolve_definition_replacement(self, request):
+        from .definition_replacement_registry import resolve
+        return resolve(self, request)
 
     # ---------------------------------------------------- adjustment anchors (P2)
     # An anchor is a formal, versioned catalog object.  It is created only by the
