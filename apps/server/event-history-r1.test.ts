@@ -248,6 +248,7 @@ test('event timeline separates a revised plan withdrawal announcement from indep
       assert.equal(original.result.rows.length, 1);
       assert.equal(original.result.rows[0].times.expected_time.earliest_utc, '2025-06-01T00:00:00Z');
       const ambiguous = await host.call('/r1/query/context', { ...query, at: '2025-08-01T12:00:00Z' }, 409);
+      assert.equal(ambiguous.code, 'R1_READ_REVISION_TIME_UNSUPPORTED');
       assert.equal(ambiguous.result, undefined, 'Day precision cannot establish an intraday withdrawal cutoff.');
       assert.ok(!JSON.stringify(ambiguous).includes('plan-withdrawn'));
       const afterRequest = { ...query, at: '2025-08-02T00:00:00Z' };
