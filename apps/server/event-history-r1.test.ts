@@ -209,3 +209,58 @@ test('event market timeline refuses unresolved withdrawal even when no visible r
       assert.ok(!JSON.stringify(refused).includes('private withdrawn wording'));
     } finally { await host.close(); }
   });
+
+test('event timeline separates a revised plan withdrawal announcement from independent same-case outcome',
+  { skip: !enabled, timeout: 180000 }, async () => {
+    // Native data-only submissions exercise the existing withdrawal contract, not a BD upload/withdrawal UI.
+    const fixture = createFullChainFixture({ name: 'event-known-withdrawal', machine: true, units: { text: { dimension: 'text' } } });
+    let host = await openFullChainHost(fixture);
+    try {
+      const definitionTime = second('2025-01-01T00:00:00Z');
+      const originalRow = event('plan', 'plan-withdrawn', 'Synthetic June plan', second('2025-01-02T00:00:00Z'), '2025-06-01T00:00:00Z');
+      const first = await publish(host, document('known-withdraw-first', 'plan', [originalRow], null, definitionTime));
+      const firstRead = (await host.services.r1Runtime!.client.fixedRead(first.snapshotId, first.productId)).result;
+      const revisedRow = event('plan', 'plan-withdrawn', 'Synthetic July revision', second('2025-03-01T00:00:00Z'), '2025-07-01T00:00:00Z');
+      revisedRow.status = 'changed';
+      const revised = await publish(host, document('known-withdraw-revised', 'plan', [revisedRow], first.snapshotId, definitionTime,
+        { previous: (firstRead.rows as WfdRecord[])[0]!.record_ref as WfdRecord, definitionRef: first.output.definition_ref as WfdRecord }));
+      const actualRow = event('outcome', 'independent-outcome', 'Synthetic independent source outcome', second('2025-07-04T00:00:00Z'), '2025-07-03T00:00:00Z');
+      const actual = await publish(host, document('known-withdraw-actual', 'outcome', [actualRow], revised.snapshotId, definitionTime));
+      const prior = (await host.services.r1Runtime!.client.fixedRead(actual.snapshotId, revised.productId)).result;
+      const withdrawal = document('known-withdraw-plan', 'plan', [revisedRow], actual.snapshotId, definitionTime,
+        { previous: (prior.rows as WfdRecord[])[0]!.record_ref as WfdRecord, definitionRef: revised.output.definition_ref as WfdRecord });
+      const output = (withdrawal.outputs as WfdRecord[])[0]!;
+      output.input_mode = 'withdrawal';
+      const change = (output.revisions as Record<string, WfdRecord>)['plan-withdrawn']!;
+      change.reason = 'Synthetic explicit withdrawal of the plan only, not its independent same-case outcome.';
+      change.withdrawal_public_time = { status: 'known', earliest_utc: '2025-08-01T00:00:00Z',
+        latest_exclusive_utc: '2025-08-02T00:00:00Z', precision: 'day', source_timezone: 'UTC' };
+      const withdrawn = await publish(host, withdrawal);
+      const taskCount = host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get();
+      const query = { operation: 'read_event_timeline', datasetId, snapshotId: withdrawn.snapshotId, subject,
+        historyMode: 'market_known_at', fields: ['statement'] };
+      const before = await host.call('/r1/query/context', { ...query, at: '2025-07-31T23:59:59Z' });
+      assert.equal(before.result.rows.length, 2);
+      const plan = before.result.rows.find((item: any) => item.event.content_nature === 'plan');
+      assert.equal(plan.times.expected_time.earliest_utc, '2025-07-01T00:00:00Z');
+      assert.equal(plan.times.event_time.status, 'unknown', 'Elapsed expected date and same-case outcome do not establish occurrence.');
+      const original = await host.call('/r1/query/context', { ...query, at: '2025-02-01T00:00:00Z' });
+      assert.equal(original.result.rows.length, 1);
+      assert.equal(original.result.rows[0].times.expected_time.earliest_utc, '2025-06-01T00:00:00Z');
+      const ambiguous = await host.call('/r1/query/context', { ...query, at: '2025-08-01T12:00:00Z' }, 409);
+      assert.equal(ambiguous.result, undefined, 'Day precision cannot establish an intraday withdrawal cutoff.');
+      assert.ok(!JSON.stringify(ambiguous).includes('plan-withdrawn'));
+      const afterRequest = { ...query, at: '2025-08-02T00:00:00Z' };
+      const after = await host.call('/r1/query/context', afterRequest);
+      assert.equal(after.result.rows.length, 1);
+      assert.equal(after.result.rows[0].event.content_nature, 'outcome');
+      assert.equal(after.result.rows[0].record_ref.product_id, actual.productId);
+      assert.equal(after.result.rows[0].times.event_time.earliest_utc, '2025-07-03T00:00:00Z');
+      const fixedOld = await host.call('/r1/query/context', { ...query, snapshotId: actual.snapshotId, at: afterRequest.at });
+      assert.equal(fixedOld.result.rows.length, 2, 'Later withdrawal cannot mutate the prior fixed snapshot.');
+      await host.close(); host = await openFullChainHost(fixture);
+      assert.deepEqual((await host.call('/r1/query/context', afterRequest)).result, after.result);
+      assert.deepEqual((await host.call('/r1/query/context', { ...query, at: '2025-07-31T23:59:59Z' })).result, before.result);
+      assert.deepEqual(host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get(), taskCount);
+    } finally { await host.close(); }
+  });
