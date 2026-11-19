@@ -460,3 +460,33 @@ test('actual HTTP held projection excludes later additive fields and rejects uns
       assert.deepEqual(values(snapshot), { old: '10', new: '20' });
     } finally { await host.close(); }
   });
+
+test('same fixed definition can carry different publication evidence and must not imply automatic historical selection',
+  { skip: !enabled ? 'Requires isolated WFD_PYTHON and XUAN_FULL_CHAIN_ROOT.' : false, timeout: 180_000 }, async () => {
+    const fixture = createFullChainFixture({ name: 'definition-ref-time-ambiguity', machine: true });
+    let host = await openFullChainHost(fixture);
+    try {
+      const first = await publish(host, document('definition-ref-original', [row('old', '10', second('2025-01-02T00:00:00Z'))]));
+      const next = document('definition-ref-next', [row('later', '20', second('2025-02-02T00:00:00Z'))], first.snapshotId);
+      (next.outputs as WfdRecord[])[0]!.definition_public_time = second('2025-04-01T00:00:00Z');
+      const later = await publish(host, next);
+      assert.equal(later.productId, first.productId);
+      assert.ok(first.output.definition_ref && later.output.definition_ref);
+      assert.equal(typeof (first.output.definition_ref as WfdRecord).digest, 'string');
+      assert.ok(String((first.output.definition_ref as WfdRecord).digest).length > 0);
+      assert.deepEqual(later.output.definition_ref, first.output.definition_ref,
+        'Definition identity is not a unique publication-time assertion');
+      const historical = { productId: first.productId, historyMode: 'market_known_at', at: '2025-01-10T12:00:00Z' };
+      const verify = async () => {
+        assert.equal(values(await host.call('/r1/products/read', { ...historical, snapshotId: first.snapshotId })).old, '10');
+        const denied = await host.call('/r1/products/read', { ...historical, snapshotId: later.snapshotId }, 409);
+        assert.equal(denied.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED');
+        assert.equal(denied.result, undefined, 'Do not choose earliest evidence or substitute an older snapshot');
+        const fixed = await host.call('/r1/products/read', { snapshotId: later.snapshotId, productId: first.productId });
+        assert.deepEqual(values(fixed), { old: '10', later: '20' }, 'Refusal must not rewrite either source record');
+      };
+      await verify();
+      await host.close(); host = await openFullChainHost(fixture);
+      await verify();
+    } finally { await host.close(); }
+  });
