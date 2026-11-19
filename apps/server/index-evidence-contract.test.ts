@@ -43,6 +43,9 @@ test('healthy index rebuild preserves fixed PDF evidence across incremental inde
       assert.notEqual(second.material.materialId, first.material.materialId);
       assert.notEqual(second.result.coverage.index_version, fixedQuery.indexVersion);
       assert.equal(second.result.citations.length, 2);
+      assert.deepEqual(second.result.citations.map((entry: any) => entry.excerpt), [before.citations[0].excerpt, before.citations[0].excerpt]);
+      const latestQuery = { ...query, indexVersion: second.result.coverage.index_version };
+      const latest = await host.call('/retrieval/search', latestQuery);
       assert.deepEqual(await host.call('/retrieval/search', fixedQuery), before);
       const versions = await host.call('/retrieval/index-versions');
       const taskRows = tasks(host);
@@ -51,11 +54,13 @@ test('healthy index rebuild preserves fixed PDF evidence across incremental inde
       assert.deepEqual(await host.call('/retrieval/index-versions'), versions);
       assert.deepEqual(await host.call('/retrieval/search', fixedQuery), before);
       assert.deepEqual(await host.call('/retrieval/evidence', input), evidence);
+      assert.deepEqual(await host.call('/retrieval/search', latestQuery), latest);
       assert.deepEqual(tasks(host), taskRows, 'Maintenance/read must not dispatch conversion or publication');
       await host.close(); host = await openFullChainHost(fixture, fixture.root);
       assert.deepEqual(await host.call('/retrieval/index-versions'), versions);
       assert.deepEqual(await host.call('/retrieval/search', fixedQuery), before);
       assert.deepEqual(await host.call('/retrieval/evidence', input), evidence);
+      assert.deepEqual(await host.call('/retrieval/search', latestQuery), latest);
       assert.deepEqual(tasks(host), taskRows);
       assert.deepEqual(host.services.materials!.readOriginal(first.material.materialId).bytes, original);
       assert.deepEqual(host.services.materials!.readOriginal(second.material.materialId).bytes, otherBytes);
