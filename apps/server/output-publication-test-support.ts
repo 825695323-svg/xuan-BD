@@ -23,10 +23,10 @@ export function row(key: string, changes: Partial<typeof values> = {}, at = '202
   values: Object.fromEntries(Object.entries({ ...values, ...changes }).map(([key, value]) => [key,
     { data_type: key === 'value' ? 'decimal' : 'text', value_state: 'valid_value', value }])) };
 }
-export function doc(requestId: string, rows: WfdRecord[], parent: string | null = null, revision?: { previous: WfdRecord; definitionRef: WfdRecord }) {
+export function doc(requestId: string, rows: WfdRecord[], parent: string | null = null, revision?: { previous: WfdRecord; definitionRef: WfdRecord }, semanticCode = definition.semantic_code) {
   return buildStructuredIngestDocument({ requestId, datasetId: 'synthetic_financial', namespace, producerNamespace: namespace,
     submissionDigest: 'sha256:' + wfdSha256(canonicalWfdJson({ requestId, rows, parent })), expectedParentSnapshotId: parent,
-    outputKey: 'financial', subject, definition,
+    outputKey: 'financial', subject, definition: { ...definition, semantic_code: semanticCode },
     inputMode: revision ? 'source_correction' : 'partial_observation',
     ...(revision ? { definitionMode: 'reuse', definitionRef: revision.definitionRef,
       revisions: { q1: { previous: revision.previous, reason: 'Explicit synthetic corrected report' } } } : {}),

@@ -1,4 +1,5 @@
-import { canonicalWfdJson, isWfdRecord, type WfdRecord } from '../../adapters/database/wfd-transport.js';
+import { fixedRowConsumption } from './r1-fixed-row-consumption.js';
+import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
 import type { ProcessingPlanService } from './processing-plan.js';
@@ -13,7 +14,7 @@ export async function readOutputDependencies(requestId: string, value: unknown, 
   database: CoreDatabase; processing: ProcessingPlanService; handoff: R1HandoffService;
   assertCurrent(planId: string, outputId: string): R1Runtime;
   control(): { generation: number; stopped: boolean };
-}, checkAccess: () => void, signal?: AbortSignal) {
+}, checkAccess: () => void, signal?: AbortSignal, mode: 'output' | 'fixed_rows' = 'output') {
   if (!isWfdRecord(value) || Object.keys(value).sort().join(',') !== 'outputId,planId,recordRefs'
     || !identifier(value.planId) || !identifier(value.outputId)) fail('INPUT', '须明确单一加工计划、输出及完整固定输入引用。');
   const planId = value.planId, outputId = value.outputId;
@@ -35,6 +36,7 @@ export async function readOutputDependencies(requestId: string, value: unknown, 
   const output = outputs[0]!, expected = records(object(output.payload).rows);
   if (!expected.length || expected.length > 128 || !Array.isArray(receipt.rows) || receipt.rows.length !== expected.length
     || receipt.output_key !== output.output_key) fail('BUDGET_OR_MEMBER', '本查询最多核对128个正式记录且必须完整匹配单一冻结成员。');
+  const rowProof = mode === 'fixed_rows' ? fixedRowConsumption(options.processing, planId, outputId, runtime.currentIdentity(), expected) : null;
   const snapshotId = String(receipt.snapshot_id), productId = String(receipt.product_id), datasetId = String(receipt.dataset_id);
   const binding = readR1ContractBinding(receipt, datasetId, productId, true)!;
   const associations = () => options.database.connection.prepare(`SELECT snapshot_id,product_id,dataset_id,record_id,record_version,definition_digest
@@ -47,6 +49,8 @@ export async function readOutputDependencies(requestId: string, value: unknown, 
       || canonicalWfdJson(associations()) !== localFrozen
       || canonicalWfdJson(options.processing.fieldDependencies(planId, outputId, { recordRefs })) !== canonicalWfdJson(dependency))
       fail('CHANGED', '读取期间身份、冻结请求、关联或加工证据变化，未返回旧关联。');
+    if (rowProof && canonicalWfdJson(fixedRowConsumption(options.processing, planId, outputId, runtime.currentIdentity(), expected)) !== canonicalWfdJson(rowProof))
+      fail('CHANGED', '逐行消费证据在读取期间变化。');
   };
   current();
   const { result } = await runtime.client.fixedReadHistory(snapshotId, productId, signal);
@@ -70,6 +74,20 @@ export async function readOutputDependencies(requestId: string, value: unknown, 
     return expectedRef;
   });
   current();
+  if (rowProof) return { schema: 'bd.fixed-row-consumption/1', requestId, planId, outputId,
+    outputSha256: dependency.outputSha256, coverage: 'selected_request_output_only',
+    transformation: 'financial_standardize_unchanged_rows', fullDownstreamImpact: 'unknown',
+    inputInstance: rowProof.status === 'verified' ? { connectionId: runtime.currentIdentity().connectionId,
+      runtimeIdentity: runtime.currentIdentity().runtimeIdentity, bindingSha256: wfdSha256(canonicalWfdJson(runtime.currentIdentity())) } : null,
+    publication: { status: 'fixed_output_publication_verified', snapshotId, productId, datasetId, records: published },
+    results: recordRefs.map(sourceRecordRef => {
+      const matches = rowProof.edges.filter(e => canonicalWfdJson(e.source) === canonicalWfdJson(sourceRecordRef));
+      return { sourceRecordRef, status: rowProof.status === 'unknown' ? 'unknown' : matches.length ? 'consumed' : 'not_observed',
+        reason: rowProof.reason, outputRecords: matches.flatMap(e => published.filter(p => p.logical_key === e.outputKey)) };
+    }), limitations: ['only this fixed output; no full downstream absence claim',
+      'unchanged applies only to parsed rows through final structure; frozen R1 mapping may project source fields',
+      'consumption is not numerical-change or complete financial-semantic preservation',
+      'no current-use, historical-knowledge or independent source-truth qualification', 'no new ACL or write action'] };
   return { schema: 'bd.output-publication-dependencies/1', requestId, planId, outputId,
     outputSha256: dependency.outputSha256, inputObservations: dependency.recordImpact,
     publication: { status: 'fixed_output_publication_verified', snapshotId, productId, datasetId, records: published },
