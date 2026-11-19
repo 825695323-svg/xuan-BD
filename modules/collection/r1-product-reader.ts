@@ -117,9 +117,13 @@ export class R1ProductReader {
   }
 
   async readProduct(value: unknown, signal?: AbortSignal): Promise<R1ProductRead> {
-    const input = body(value, ['snapshotId', 'productId', 'fields', 'cursor', 'historyMode', 'at', 'heldScope', 'usableStage', 'includeDefinitionPublication']);
+    const input = body(value, ['snapshotId', 'productId', 'fields', 'cursor', 'historyMode', 'at', 'heldScope', 'usableStage', 'includeDefinitionPublication', 'definitionPublicationAt']);
     const history = readHistorySelection(input);
     if (input.includeDefinitionPublication !== undefined && (typeof input.includeDefinitionPublication !== 'boolean' || input.includeDefinitionPublication && history.mode !== 'snapshot_contents')) fail('R1_READ_INPUT', '定义公开证据仅允许显式固定快照读取。');
+    if (input.definitionPublicationAt !== undefined) {
+      if (input.includeDefinitionPublication !== true) fail('R1_READ_INPUT', '定义公开截止需要显式开启绑定证据读取。');
+      readHistorySelection({ historyMode: 'market_known_at', at: input.definitionPublicationAt });
+    }
     if (!fixed(input.snapshotId) || !identifier(input.productId) || input.cursor !== undefined && input.cursor !== null
       && (typeof input.cursor !== 'string' || !input.cursor || input.cursor.length > 8192 || /[\u0000-\u001f]/u.test(input.cursor))) {
       fail('R1_READ_INPUT', '读取需要固定快照、实际产品及有界原游标；不接受路径或查询覆盖。');
@@ -151,10 +155,14 @@ export class R1ProductReader {
       const reply = await runtime.client.readProduct({ protocol_version: 'wfd.read/1.3-product1', operation: 'read_product',
         dataset_id: product.datasetId, snapshot_id: snapshotId, product_id: productId, fields,
         ...(input.includeDefinitionPublication === true ? { include_definition_publication: true } : {}),
+        ...(input.definitionPublicationAt !== undefined ? { definition_publication_at: input.definitionPublicationAt } : {}),
         history_mode: history.mode, knowledge_cutoff: history.cutoff, held_scope: history.heldScope, usable_stage: history.usableStage, subject: null,
         business_time_range: null, page_size: R1_READ_LIMITS.pageSize, max_nodes: R1_READ_LIMITS.maxScanRows,
         max_scan_bytes: R1_READ_LIMITS.maxScanBytes, cursor: input.cursor ?? null }, wait);
       active(); const result = reply.result; boundedResult(result);
+      if (input.definitionPublicationAt !== undefined && result.definition_publication_at !== input.definitionPublicationAt)
+        fail('R1_READ_RESPONSE_INVALID', '定义公开证据截止回显不符，未采用该结果。');
+
       // 撤销保留原行，市场资格仅采用独立公告时间；旧记录或时间精度缺口不降级采用。
       if (history.mode === 'market_known_at' && Array.isArray(result.diagnostics)
         && result.diagnostics.some(item => isWfdRecord(item) && ((item.reason === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED' || item.code === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED')
