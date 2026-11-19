@@ -386,7 +386,7 @@ def _load_config(path):
             ("max_evidence_bytes", max_evidence, 1, 67_108_864)):
         if not isinstance(value, int) or not (low <= value <= high):
             raise ValueError("CONFIG_INVALID:" + label)
-    from .definition_replacement_registry import access
+    from wfd_sdk.definition_replacement_registry import access
     replacement_access = access(config.get("definition_replacement_access"))
     if replacement_access and (profile != "data_only" or volume is not None):
         raise ValueError("DEFINITION_REPLACEMENT_LOCAL_ONLY")

@@ -52,8 +52,8 @@ def call(tmp_path, service, action, payload, grants=(), roles=('read', 'register
     path.write_text(json.dumps(config))
     doc = {'protocol_version': 'wfd.product-machine/0.1', 'request_id': 'replacement', 'operation': action,
            'arguments': {'request' if action == 'resolve_definition_replacement' else 'command': payload}}
-    code = 'import sys;sys.path.insert(0,' + repr(str(HERE)) + ');from wfd_sdk.product_machine import main;main()'
-    done = subprocess.run([sys.executable, '-I', '-B', '-c', code, '--config', str(path)],
+    # Match BD's actual absolute-script entry, not only package-import startup.
+    done = subprocess.run([sys.executable, '-I', '-B', str(HERE / 'wfd_sdk/product_machine.py'), '--config', str(path)],
                           input=json.dumps(doc), text=True, capture_output=True, timeout=60)
     assert done.stdout, done.stderr
     return json.loads(done.stdout)
@@ -166,3 +166,21 @@ def test_volume_on_disk_cannot_omit_volume_config_to_gain_approval(tmp_path):
         denied = call(tmp_path, service, operation, payload, grants)
         assert not denied['ok'] and 'LOCAL_ONLY' in str(denied), denied
     assert not (service.root / FILE).exists()
+
+
+def test_absolute_script_default_capabilities_preserves_response_identity(tmp_path):
+    from test_fixed_read_pages import inventory
+    service, _, _, _ = seed(tmp_path)
+    before = inventory(service.root)
+    path = machine_config(tmp_path, service.root, 'data_only', ['read'], caller_id='r1-test')
+    doc = {'protocol_version': 'wfd.product-machine/0.1', 'request_id': 'script-capabilities',
+           'operation': 'capabilities', 'arguments': {}}
+    completed = subprocess.run([sys.executable, '-I', '-B', str(HERE / 'wfd_sdk/product_machine.py'),
+                                '--config', str(path)], input=json.dumps(doc), text=True,
+                               capture_output=True, timeout=60)
+    response = json.loads(completed.stdout)
+    assert response['ok'], response
+    assert response['request_id'] == 'script-capabilities'
+    assert response['operation'] == 'capabilities'
+    assert response['protocol_version'] == doc['protocol_version']
+    assert inventory(service.root) == before
