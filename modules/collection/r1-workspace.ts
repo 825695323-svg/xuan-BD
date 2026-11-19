@@ -138,7 +138,7 @@ export class R1WorkspaceService {
   prepare(value: unknown): R1RequestView {
     if (isWfdRecord(value) && value.kind === 'publication_set') fail('R1_SET_HOST_CHECK', '集合准备须经过受信异步限制核验。');
     const input = readInput(value), runtime = this.requireRuntime(); this.assertDispatch();
-    if (this.options.processing.hasOcrClaims(input.planId, input.outputId)) fail('OCR_CLAIM_HOST_CHECK', 'OCR派生主张须异步复验冻结媒体包。');
+    if (this.options.processing.hasMediaClaims(input.planId, input.outputId)) fail('OCR_CLAIM_HOST_CHECK', '媒体识别派生主张须异步复验冻结媒体包。');
     if (input.target.inputMode === 'source_correction') fail('R1_CORRECTION_HOST_CHECK', '来源修订须经过异步固定前驱与定义核对。');
     return this.prepareInternal(input, runtime, null);
   }
@@ -154,7 +154,7 @@ export class R1WorkspaceService {
     const fixedOutput = plan.outputs.find(item => item.outputId === input.outputId);
     const restriction = await this.verifyPublishRestriction(input, fixedOutput, runtime, signal);
     await this.verifyCorrection(input, runtime, signal);
-    await this.options.processing.verifyOcrClaims(input.planId, input.outputId);
+    await this.options.processing.verifyMediaClaims(input.planId, input.outputId);
     signal?.throwIfAborted();
     this.assertDispatch();
     if (generation !== this.tasks.getControl().generation) fail('TASK_NOT_ACTIVE', '核对期间停止代次已改变，未准备交接。');
@@ -294,7 +294,7 @@ export class R1WorkspaceService {
       fail('R1_LEGACY_REQUEST', '原请求身份已被占用，不能绑定为新的发布集合。');
     const generation = this.tasks.getControl().generation, identity = runtime.currentIdentity();
     const inputs = this.setInputs(input.planId, input.setId, input.requestId), plan = this.options.processing.get(input.planId);
-    if (inputs.some(member => this.options.processing.hasOcrClaims(member.planId, member.outputId))) fail('OCR_CLAIM_SET_UNSUPPORTED', '当前OCR派生主张仅单输出确认，不支持集合发布。');
+    if (inputs.some(member => this.options.processing.hasMediaClaims(member.planId, member.outputId))) fail('OCR_CLAIM_SET_UNSUPPORTED', '当前媒体识别派生主张仅单输出确认，不支持集合发布。');
     const outputRestrictions: Record<string, RestrictionEvidence | null> = Object.create(null);
     for (const member of inputs) outputRestrictions[member.target.outputKey] = await this.verifyPublishRestriction(member,
       plan.outputs.find(output => output.outputId === member.outputId), runtime, signal);
@@ -548,7 +548,7 @@ export class R1WorkspaceService {
     const refs = JSON.parse(String(aggregate.local_refs_json)) as R1LocalReferences;
     if (refs.outputs) {
       const inputs = this.setInputs(plan.planId, refs.publicationSetId!, requestId);
-      if (inputs.some(member => this.options.processing.hasOcrClaims(member.planId, member.outputId))) fail('OCR_CLAIM_SET_UNSUPPORTED', '当前OCR派生主张仅单输出确认，不支持集合发布。');
+      if (inputs.some(member => this.options.processing.hasMediaClaims(member.planId, member.outputId))) fail('OCR_CLAIM_SET_UNSUPPORTED', '当前媒体识别派生主张仅单输出确认，不支持集合发布。');
       const outputRestrictions: Record<string, RestrictionEvidence | null> = Object.create(null);
       for (const input of inputs) {
         const selected = plan.outputs.find(output => output.outputId === input.outputId);
@@ -616,7 +616,7 @@ export class R1WorkspaceService {
     await context.emit({ type: 'checkpoint', checkpoint: { requestId, bindingSha256: row.binding_sha256, documentSha256: String(attempt.document_sha256) } });
     // 首次发送的全部用途/限制证据必须在任何外部副作用标记前完成；失败不进入 unknown 提交恢复。
     const restriction = await this.verifyRestrictionForRequest(requestId, runtime);
-    if (this.options.processing.hasOcrClaims(row.plan_id, row.output_id)) await this.options.processing.verifyOcrClaims(row.plan_id, row.output_id);
+    if (this.options.processing.hasMediaClaims(row.plan_id, row.output_id)) await this.options.processing.verifyMediaClaims(row.plan_id, row.output_id);
     this.assertActive(context); this.assertBinding(row);
     this.options.handoff.assertPublicationReadyToSend(requestId, restriction);
     await context.emit({ type: 'side_effect_started', effectId, description: '向冻结 data_only 连接提交原 request_identity',
