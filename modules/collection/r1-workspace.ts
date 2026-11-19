@@ -85,7 +85,7 @@ export class R1WorkspaceService {
   snapshotStatus(signal?: AbortSignal) { return this.reader.snapshotStatus(signal); }
   discoverProducts(value: unknown, signal?: AbortSignal) { return this.reader.discoverProducts(value, signal); }
   checkProductCoverage(value: unknown, signal?: AbortSignal) { return checkR1ProductCoverage(value, (input, wait) => this.reader.readProduct(input, wait), signal); }
-  outputDependencies(requestId: string, value: unknown, checkAccess: () => void, signal?: AbortSignal) {
+  outputDependencies(requestId: string, value: unknown, checkAccess: () => void, signal?: AbortSignal, mode: 'output' | 'fixed_rows' = 'output') {
     return readOutputDependencies(requestId, value, { ...this.options,
       assertCurrent: (planId, outputId) => {
         this.assertDispatch();
@@ -93,7 +93,7 @@ export class R1WorkspaceService {
         if (row.plan_id !== planId || row.output_id !== outputId)
           fail('R1_OUTPUT_DEPENDENCIES_REQUEST', '请求不属于指定加工输出，未搜索或回退其他请求。');
         return this.assertBinding(row);
-      }, control: () => this.tasks.getControl() }, checkAccess, signal);
+      }, control: () => this.tasks.getControl() }, checkAccess, signal, mode);
   }
   recordEvidence(value: unknown, signal?: AbortSignal) {
     return readRecordEvidence(value, { ...this.options,

@@ -210,6 +210,8 @@ export function createWorkspaceRouter(services: ApplicationServices, assertReadA
     router.post('/r1/records/evidence', async (req, res) => res.json(await r1.recordEvidence(req.body)));
     router.post('/r1/products/read', async (req, res) => res.json(await r1.readProduct(req.body)));
     router.get('/r1/requests', (_req, res) => res.json({ items: r1.list(), limit: 20, scope: 'recent_new_profile_requests_only' }));
+    router.post('/r1/requests/:id/fixed-row-consumption', async (req, res) =>
+      res.json(await r1.outputDependencies(id(req.params.id), req.body, () => assertReadAccess?.(req), undefined, 'fixed_rows')));
     router.post('/r1/requests/:id/output-dependencies', async (req, res) =>
       res.json(await r1.outputDependencies(id(req.params.id), req.body, () => assertReadAccess?.(req))));
     router.get('/r1/requests/:id', (req, res) => res.json(r1.get(id(req.params.id))));
