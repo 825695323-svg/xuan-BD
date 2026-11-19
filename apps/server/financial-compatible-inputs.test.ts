@@ -144,6 +144,8 @@ test('actual HTTP compatible inputs reject whitespace-wrapped unknown declaratio
     try {
       // Explicit synthetic source claims: text is valid WFD data, not established financial comparability.
       const cases = [
+        { key: 'unknown-report-id', changes: { report_id: ' unknown ' } },
+        { key: 'unknown-report-version', changes: { report_version: '\tUnresolved\n' } },
         { key: 'unknown-scope', changes: { scope: ' unknown ' } },
         { key: 'unknown-calendar', changes: { fiscal_calendar: '\tUnresolved\n' } },
         { key: 'unknown-basis', changes: { comparability_basis: '\u3000unspecified\u3000' } },
