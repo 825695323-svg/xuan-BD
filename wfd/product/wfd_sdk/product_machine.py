@@ -34,7 +34,9 @@ CONTEXT_QUERY_OPERATIONS = ("read_company_context", "read_relation_graph",
                             "read_applicable_rules", "read_event_timeline")
 QUERY_MACHINE_OPERATIONS = ("read_product",) + CONTEXT_QUERY_OPERATIONS
 FIXED_PAGE_OPERATIONS = {"fixed_read_page", "fixed_read_product_page"}
-DATA_ONLY_OPERATIONS = {"capabilities", "service_capabilities", "schema",
+DEFINITION_REPLACEMENT_OPERATIONS = {"approve_definition_replacement", "disable_definition_replacement", "resolve_definition_replacement"}
+DEFINITION_REPLACEMENT_WRITES = DEFINITION_REPLACEMENT_OPERATIONS - {"resolve_definition_replacement"}
+DATA_ONLY_OPERATIONS = {*DEFINITION_REPLACEMENT_OPERATIONS, "capabilities", "service_capabilities", "schema",
                         "contract_discovery", "snapshot_status", "review_definition", "fixed_read", "fixed_read_page", "fixed_read_product_page", "submit",
                         "request_status", "recovery", "query_capabilities",
                         "resolve_write_target", "register_write_target",
@@ -58,7 +60,7 @@ MACHINE_ROLES = {"read", "read_evidence", "evidence_write", "register", "submit"
 BATCH_PHASES = {"collecting", "ready", "finalizing", "finalized",
                 "finalized_pending", "finalized_partial", "finalized_sandbox",
                 "submit_unknown", "rejected"}
-WRITE_OPERATIONS = {"submit", "recovery", "evidence_ingest",
+WRITE_OPERATIONS = {*DEFINITION_REPLACEMENT_WRITES, "submit", "recovery", "evidence_ingest",
                     "batch_begin", "batch_put_chunk", "batch_finalize",
                     "register_write_target", "register_adjustment_anchor",
                     *USAGE_WRITE_OPERATIONS}
@@ -71,6 +73,9 @@ MAX_OUTPUT_PAGE = 200
 EXPOSED_INNER_QUERY_OPERATIONS = QUERY_MACHINE_OPERATIONS
 
 SUPPORTED = {
+    "approve_definition_replacement": "本机操作者对固定定义替代独立确认；专用动作与精确范围授权，不接受普通发布批准。",
+    "disable_definition_replacement": "显式停用精确批准记录；同作用域目录前驱核对。",
+    "resolve_definition_replacement": "仅查询已显式批准的固定定义替代；不改默认历史读取。",
     "capabilities": "机器入口、服务、查询与批处理能力；版本字段取自当前运行服务。",
     "service_capabilities": "原样返回当前 WFDProductService.capabilities()，含真实 schema 闭包。",
     "schema": "返回当前 ingest/query schema 身份与摘要，不返回未完成的规则。",
@@ -381,8 +386,13 @@ def _load_config(path):
             ("max_evidence_bytes", max_evidence, 1, 67_108_864)):
         if not isinstance(value, int) or not (low <= value <= high):
             raise ValueError("CONFIG_INVALID:" + label)
+    from .definition_replacement_registry import access
+    replacement_access = access(config.get("definition_replacement_access"))
+    if replacement_access and (profile != "data_only" or volume is not None):
+        raise ValueError("DEFINITION_REPLACEMENT_LOCAL_ONLY")
     return {
         **config,
+        "definition_replacement_access": replacement_access,
         "store": str(store),
         "runtime": str(runtime),
         "project_root": str(project_root),
@@ -415,6 +425,9 @@ def _build_service(config, *, operation=None):
         from wfd_sdk.product_data_service import WFDDataOnlyService
     except Exception as exc:
         raise RuntimeError("SERVICE_IMPORT_FAILED:" + type(exc).__name__ + ": " + str(exc)) from exc
+    if operation in DEFINITION_REPLACEMENT_OPERATIONS:
+        if config.get("volume") or not any(g["operation"] == operation for g in config.get("definition_replacement_access", [])):
+            raise PermissionError("DEFINITION_REPLACEMENT_ACTION_DENIED")
     if config.get("volume"):
         from wfd_sdk.product_volume_service import WFDVolumeService
         from wfd_sdk.volume_publication import VolumeBinding
@@ -428,13 +441,13 @@ def _build_service(config, *, operation=None):
             trusted_actor_namespaces={config["caller"]["trusted_actor_namespace"]},
         )
     role = ("evidence_write" if operation == "evidence_ingest"
-            else "register" if operation in {"register_write_target",
+            else "register" if operation in DEFINITION_REPLACEMENT_WRITES | {"register_write_target",
                                              "register_adjustment_anchor"} else "submit")
     store_write = operation in WRITE_OPERATIONS
     if config.get("profile") == "data_only":
         # Collecting chunks writes only the native batch ledger.  Even a
         # submit-capable caller must not touch the official store until finalize.
-        store_write = operation in {"submit", "recovery", "batch_finalize",
+        store_write = operation in DEFINITION_REPLACEMENT_WRITES | {"submit", "recovery", "batch_finalize",
                                     "register_write_target",
                                     "register_adjustment_anchor"}
     writable = store_write and role in config["caller"]["roles"]
@@ -453,6 +466,7 @@ def _build_service(config, *, operation=None):
             caller_id=config["caller"]["caller_id"],
             unit_registry=config["units"],
             trusted_actor_namespaces={config["caller"]["trusted_actor_namespace"]},
+            definition_replacement_access=config.get("definition_replacement_access"),
         )
     return WFDProductService(
         engine,
@@ -1409,6 +1423,10 @@ def _handle(service, config, request):
         result = service.resolve_write_target(
             arguments["dataset_id"], arguments.get("snapshot_id"))
         result["service_identity"] = service_identity
+    elif operation in DEFINITION_REPLACEMENT_OPERATIONS:
+        key = "request" if operation == "resolve_definition_replacement" else "command"
+        _exact(arguments, {key}, {key})
+        result = getattr(service, operation)(arguments[key])
     elif operation == "register_write_target":
         _exact(arguments, {"dataset_id", "product_id", "definition_ref", "reason",
                            "snapshot_id"}, {"dataset_id", "product_id"})
@@ -1701,7 +1719,7 @@ def _capabilities(service, config, identity, service_identity):
     else:
         operations = {
             name: {"supported": True, "description": SUPPORTED[name]}
-            for name in sorted(set(SUPPORTED) - set(CONTEXT_QUERY_OPERATIONS) - FIXED_PAGE_OPERATIONS - {"batch_read_page"})
+            for name in sorted(set(SUPPORTED) - set(CONTEXT_QUERY_OPERATIONS) - FIXED_PAGE_OPERATIONS - DEFINITION_REPLACEMENT_OPERATIONS - {"batch_read_page"})
         }
         unsupported = (
             [{"operation": name,
@@ -1713,6 +1731,11 @@ def _capabilities(service, config, identity, service_identity):
     for name in sorted(FIXED_PAGE_OPERATIONS - page_available):
         unsupported.append({"operation": name,
                             "reason": "requires a data_only service with " + name + " capability"})
+    for name in DEFINITION_REPLACEMENT_OPERATIONS & set(operations):
+        operations[name].update({"requires_explicit_host_action_scope_grant": True,
+                                "default_authorized": False,
+                                "local_data_only_store": True,
+                                "caller_authorized": any(g["operation"] == name for g in config.get("definition_replacement_access", []))})
     operations["filter_objects"].update(filter_capabilities(config["protocol_root"]))
     return {
         "machine_protocol": MACHINE_PROTOCOL,

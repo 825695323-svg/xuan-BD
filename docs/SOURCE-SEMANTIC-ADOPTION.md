@@ -231,13 +231,19 @@ R1 返回 `R1_READ_HISTORY_METADATA_UNSUPPORTED`。这不是自动选择旧定�
 自动替代选择仍缺：有权批准替代的主体及业务作用域、明确旧/新定义引用、独立业务有效区间、冲突/撤回的处置合同。现有 TaskService 能审批已登记动作，但没有定义替代动作或这些冻结输入；不把普通加工审批升级为定义替代授权，也不借 relation_edges 主体关系替代定义谱系。补齐这些合同前，不按发布时间、注册顺序或同定义引用自动挑选。
 
 
-### 显式定义替代候选契约（条件判定，尚无可信登记）
+### 显式定义替代：条件判定与独立本机批准
 
-`wfd_sdk.definition_replacement_candidates.evaluate_replacement_candidates` 是独立、无副作用的单跳候选函数，不是机器接口或历史读取策略。调用方必须显式提供固定实例、快照、产品、业务作用域、旧定义、业务时点和公开截止，以及完整候选边集合和逐端点固定记录绑定证据。替代边冻结旧/新定义、原记录版本与绑定摘要，区分公开时间与业务半开有效区间 `[valid_from, valid_until)`；摘要只验证内容一致，不证明授权。两端和边的公开证据均通过既有公开截止规则后，才计算该区间内的唯一候选；缺证据、错作用域、同记录多绑定、篡改、重复边、多个适用边或时间精度不明均返回 unknown。不做跨边递推，不按时间最大值、登记顺序或同 ref 推断替代。
+`wfd_sdk.definition_replacement_candidates.evaluate_replacement_candidates` 保留为无副作用的单跳候选合同。调用方提供固定实例、快照、产品、命名业务作用域、旧定义、业务时点、公开截止、完整候选边及双端固定记录证据；它只返回 `caller_supplied_candidate_set_only/not_asserted`，不能以摘要或调用方声明证明批准。公开时间和业务半开区间 `[valid_from, valid_until)` 独立，未知/冲突拒绝，不按最新、登记顺序或同 ref 猜选。
 
-即使唯一，结果始终 `qualification=not_asserted`、`scope=caller_supplied_candidate_set_only`，不是正式资格。无候选和未来边不返回定义/绑定详情。没有改默认响应、选集摘要、旧历史门禁或任何库写入。合成替代边仅验证候选合同全链；另以真实隔离 WFD 发布/固定读证据验证“已有旧绑定不能凭空补出新绑定”，并确认默认读与重开不变，不能称真实替代关系端到端验收。
+本机 data_only 机器入口另有三个独立动作：`approve_definition_replacement`（批准）、`disable_definition_replacement`（停用）和 `resolve_definition_replacement`（只读选择）。宿主受信配置必须显式给出 `definition_replacement_access` 列表，每项精确指定 operation、instance_id、product_id、business_scope；缺省为空，普通 read/register/publish 权限、加工批准、计划或备注均不能隐式获得此权。写动作还要求 read+register+publish，读动作要求 read。只支持既有本机实例；旧卷不迁移、不补实例，volume 配置拒绝。
 
-启用生产自动选择前仍缺一个独立可信、持久且能证明集合完整的替代关系来源：需明确谁能声明/撤销、业务作用域含义、旧新版本固定引用、有效期及撤销/冲突规则。现有 TaskService 审批可复用执行机制，但普通加工批准不等于定义替代授权，不能据此新开广泛审批或向真实库自动登记。
+写动作 `command` 必须携带 scope、approver、expected_catalog_digest、statement（或停用的 approval_digest）及 confirmation_digest。approver 必须等于宿主绑定 caller_id；confirmation_digest 为 `sha256:` 加 canonical({operation, ...除确认摘要外的command}) 摘要。这代表受信本机操作者会话明确确认，不是不可否认的人类签名。statement 精确固定旧新 record_ref/definition_ref/binding_digest、snapshot_id、同产品/命名作用域、public_time、valid_from、valid_until；作用域名称是操作者显式批准的业务范围，不由模型推断。
+
+登记前从当前实例实际固定读取两端全部绑定，验证同产品、同快照、同主体、各自原记录版本与摘要。固定产品超过1000行拒绝，不扫描全库。写入复用 writer_lock、目录摘要前驱 CAS 和原子替换，目录事件带逐项前驱摘要，独立尾部标记固定完整目录摘要；恢复单个旧目录前缀会拒绝，目录/尾部双文件全部被管理员回滚不在此保证内。服务自行记录批准时间，等值秒截止需等待该秒结束才可见。初次写中断或既有目录丢失保持拒绝，不自动重建；普通读取不创建目录。已登记关系的任一端定义再出现于新边均拒绝，防止隐式复合前驱、覆盖或停用后自动复活；不支持自动串联替代链。
+
+只读选择读取该精确作用域完整有界登记集，复核固定绑定，仅在批准时刻及边/两端公开时间均不晚于截止、业务区间覆盖且候选唯一时返回 `explicit_local_operator_approved`。这是显式替代资格，不是事实真实性或完整历史数据资格；默认历史数据读取、市场公开门禁和原选集摘要不变。停用后保守拒绝，包括请求旧截止时，也不据旧批准偷偷恢复。查询首尾复核目录摘要和实例身份，变更期间拒绝；返回的 catalog_digest 是当前目录 CAS 令牌，会随未来批准/停用改变，不是历史证据；目录上限1000事件/4MiB，超预算不返回部分候选。
+
+隔离实证包含真实同产品两个兼容定义发布→固定绑定→机器显式批准→新进程选择→停用→重开；权限不足/无专用动作授权、错身份/范围/绑定、确认和前驱冲突、未知时间、目录损坏/缺失拒绝。合成业务范围和替代决定不证明供应商事实。没有向用户库登记，没有新增广泛审批，不建设时钟/投放、MACD/TTM，也不声称支持多用户不可否认签名、恶意管理员重写全部目录或设备断电耐久。
 
 ### 财报固定输入相容声明（整理，不是新算法）
 
