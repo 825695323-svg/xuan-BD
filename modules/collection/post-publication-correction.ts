@@ -10,6 +10,7 @@ import type { ProcessingPlanService } from './processing-plan.js';
 import type { MaterialService } from './materials/service.js';
 import type { R1Runtime } from './r1-runtime.js';
 import type { OperatorContext } from './processing-plan.js';
+import { readR1ContractBinding } from './r1-tabular.js';
 import { readPublicationGroups } from '../../contracts/r1-publication-set.js';
 
 /**
@@ -31,6 +32,7 @@ export interface CorrectionBinding {
   /** 错误适配三元组（精确版本）或精确加工计划/输出；两者只能选一。 */
   adapter?: { adapterId: string; version: string; configDigest: string };
   planOutput?: { planId: string; outputId: string };
+  publicationSet?: { requestId: string; planId: string; setId: string; expectedCommitId: string };
 }
 export interface CorrectionInput {
   caseId: string; kind: CorrectionKind; errorType: string; discoveredAt: string;
@@ -83,7 +85,8 @@ const MAX_SCAN_ROWS = 20_000;
 export class PostPublicationCorrectionService {
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService;
     runtime: R1Runtime; processing: ProcessingPlanService; materials: MaterialService;
-    adapters: { resolve(ref: unknown): { configDigest: string } } }) {
+    adapters: { resolve(ref: unknown): { configDigest: string } };
+    publicationSetEvidence?(requestId: string, value: unknown, check: () => void): Promise<unknown> }) {
     options.database.migrate('post-publication-correction', 1, SCHEMA);
   }
   private row(caseId: string): CaseRow | undefined {
@@ -108,6 +111,7 @@ export class PostPublicationCorrectionService {
         'real TaskService/PermissionService approval', 'frozen confirmation digest',
         'reasoned precise-predecessor revisions', 'fixed readback and old/new substitution'],
       coverage: 'proven_subset_only', automaticRepair: false, automaticResolve: false,
+      completeGroupRepair: { storageFormat: 'joint_experimental', explicitOriginalSet: true, maxMembers: 16, maxRows: 128, approval: 'existing_TaskService' },
       maxScanRows: MAX_SCAN_ROWS, maxDocumentBytes: 786432 };
   }
 
@@ -129,13 +133,14 @@ export class PostPublicationCorrectionService {
   /**
    * 影响圈定沿持久计划、R1 请求和逐行关联核对。证据不足、未知发送状态与超预算均记录为缺口。
    */
-  freezeImpact(caseId: string, operator: OperatorContext): CorrectionView {
+  freezeImpact(caseId: string, operator: OperatorContext): CorrectionView | Promise<CorrectionView> {
     assertOperator(operator);
     const row = this.require(caseId);
     if (!['registered', 'impact_incomplete'].includes(row.state))
       fail('CORRECTION_STATE', '影响清单只能在登记后冻结；已冻结或已暂停的事项不重扫。');
     this.assertConnection(row);
     const binding = JSON.parse(row.binding_json) as CorrectionBinding;
+    if (binding.publicationSet) return this.freezeGroupImpact(row, binding.publicationSet);
     const gaps: string[] = [];
     const items: ImpactItem[] = [];
     const scanned = this.scanPlans(binding, gaps);
@@ -187,6 +192,37 @@ export class PostPublicationCorrectionService {
     // 已有关联也不能证明"本应存在但漏发"的全集；第三项批次应到对账不在本轮。
     gaps.push('coverage:proven_associations_only;missing_or_unsent_products_not_provable_in_this_scope');
     return this.storeImpact(row, items, gaps);
+  }
+
+  private async freezeGroupImpact(row: CaseRow, group: NonNullable<CorrectionBinding['publicationSet']>) {
+    const status = (await this.machine.snapshotStatus()).result as WfdRecord;
+    if (status.storage_format !== 'wfd.joint-volume.experimental/1' || status.joint_commit_id !== group.expectedCommitId)
+      fail('CORRECTION_JOINT_BASELINE', '整组更正须显式选择新卷和固定联合提交，不能自动补当前版本。');
+    if (!this.options.publicationSetEvidence) fail('CORRECTION_GROUP_EVIDENCE', '没有完整原组证据读取能力。');
+    const evidence = await this.options.publicationSetEvidence!(group.requestId,
+      { planId: group.planId, setId: group.setId }, () => this.assertConnection(row));
+    this.assertConnection(row);
+    if (!isWfdRecord(evidence) || evidence.status !== 'complete_fixed_set_verified'
+      || evidence.publicationState !== 'published_formal' || !Array.isArray(evidence.members))
+      fail('CORRECTION_GROUP_EVIDENCE', '原组没有完整正式发布证据。');
+    const original = this.originalDocument(group.requestId);
+    const outcomes = JSON.parse(String((this.db.prepare('SELECT receipt_json FROM r1_handoff_attempts WHERE request_id=?')
+      .get(group.requestId) as {receipt_json: string}).receipt_json)) as WfdRecord;
+    const items: ImpactItem[] = [];
+    for (const member of (evidence.members as WfdRecord[])) {
+      const outcome = (outcomes.output_results as WfdRecord[]).find(o => o.output_key === member.outputKey);
+      if (!outcome || !isWfdRecord(outcome.definition_ref) || !Array.isArray(member.records))
+        fail('CORRECTION_GROUP_EVIDENCE', '原组成员合同或记录缺失。');
+      for (const ref of member.records as WfdRecord[]) items.push({
+        itemId: `original:${group.requestId}:${String(ref.product_id)}:${String(ref.logical_key)}:${String(ref.revision_id)}`,
+        kind: 'original', productId: String(ref.product_id), snapshotId: String(ref.snapshot_id),
+        definitionDigest: String((outcome.definition_ref as WfdRecord).digest),
+        businessKey: String(ref.logical_key), recordVersion: String(ref.revision_id), requestId: group.requestId, gaps: [] });
+    }
+    if (!items.length || items.length > 128 || (original.outputs as WfdRecord[]).length !== evidence.members.length)
+      fail('CORRECTION_GROUP_EVIDENCE', '原组范围不完整或超出边界。');
+    if (this.require(row.case_id).state !== row.state) fail('CORRECTION_STATE', '冻结期间事项已变化，未覆盖后续状态。');
+    return this.storeImpact(row, items, ['coverage:selected_complete_group_only;downstream_unknown']);
   }
 
   private groupedRequest(raw: string): boolean {
@@ -283,7 +319,8 @@ export class PostPublicationCorrectionService {
     for (const requestId of new Set(impact.items.map(item => item.requestId).filter(Boolean))) {
       const attempt = this.db.prepare('SELECT local_refs_json FROM r1_handoff_attempts WHERE request_id=?')
         .get(requestId!) as { local_refs_json: string } | undefined;
-      if (!attempt || this.groupedRequest(attempt.local_refs_json))
+      if (!attempt || (this.groupedRequest(attempt.local_refs_json)
+        && !(JSON.parse(row.binding_json) as CorrectionBinding).publicationSet))
         fail('CORRECTION_PUBLICATION_SET_UNSUPPORTED', '原请求属于发布集合或来源证据不可读，当前单输出更正不能暂停该冻结范围。');
     }
     if (impact.gaps.includes('plan_scan_over_budget')) {
@@ -326,14 +363,19 @@ export class PostPublicationCorrectionService {
     const declaration: WfdRecord = this.suspensionDeclaration(row, impact);
     let receipt: WfdRecord | null = null;
     try {
-      receipt = (await this.machine.usageSuspend(declaration)).result as WfdRecord;
-      if (!isWfdRecord(receipt) || receipt.state !== 'active' || typeof receipt.issue_digest !== 'string')
+      receipt = (await this.machine.usageSuspend(declaration, undefined, this.groupSuspendToken(row))).result as WfdRecord;
+      if (!isWfdRecord(receipt) || receipt.state !== 'active' || typeof receipt.issue_digest !== 'string'
+        || this.groupSuspendToken(row) && typeof receipt.joint_commit_id !== 'string')
         fail('CORRECTION_WFD_SUSPEND_RECEIPT', 'WFD 暂停回执不完整；未声称暂停成功。');
       const status = (await this.machine.usageStatus()).result as WfdRecord;
       const active = (Array.isArray(status.issues) ? status.issues.filter(isWfdRecord) : [])
         .filter(issue => issue.issue_id === caseId && issue.state === 'active');
       if (active.length !== 1) fail('CORRECTION_WFD_SUSPEND_VERIFY', '暂停未在当前持久事项中核到，保持未完成。');
     } catch (error) {
+      if (this.groupSuspendToken(row) && typeof receipt?.joint_commit_id !== 'string') {
+        this.db.prepare("UPDATE correction_cases SET state='suspend_failed',updated_at=? WHERE case_id=?").run(Date.now(), caseId);
+        throw error;
+      }
       // 响应已收到但随后状态核验失败：以正式回执为准，不用通用失败覆盖。
       if (receipt && isWfdRecord(receipt) && receipt.state === 'active'
         && typeof receipt.issue_digest === 'string') {
@@ -400,10 +442,77 @@ export class PostPublicationCorrectionService {
     if (!['suspended', 'prepared'].includes(row.state))
       fail('CORRECTION_STATE', '只有暂停生效且尚未授权时才可准备/重新冻结修复。');
     this.assertConnection(row);
+    if ((JSON.parse(row.binding_json) as CorrectionBinding).publicationSet)
+      return this.prepareGroupRepair(row, value);
     const input = readRepairInput(value, row.kind);
     const impact = JSON.parse(row.impact_json!) as { items: ImpactItem[]; gaps: string[] };
     const originals = impact.items.filter(item => item.kind === 'original');
     if (!originals.length) fail('CORRECTION_IMPACT_EMPTY', '没有已证明的原报记录版本。');
+    const frozen = this.buildRepairMember(row, input, originals);
+    return this.persistRepair(caseId, frozen);
+  }
+
+  private prepareGroupRepair(row: CaseRow, value: unknown) {
+    const group = (JSON.parse(row.binding_json) as CorrectionBinding).publicationSet!;
+    const body = object(value, ['members', 'expectedParentSnapshotId', 'expectedCommitId']);
+    const expectedCommitId = digestHex(body.expectedCommitId).replace(/^sha256:/u, '');
+    const suspension = JSON.parse(row.suspension_json!) as WfdRecord;
+    if (suspension.joint_commit_id !== expectedCommitId)
+      fail('CORRECTION_JOINT_BASELINE', '修复前驱须为已保存的原暂停联合提交。');
+    if (!Array.isArray(body.members) || body.members.length < 2 || body.members.length > 16)
+      fail('CORRECTION_GROUP_MEMBERS', '须逐一指定完整原组修复输出。');
+    const impact = JSON.parse(row.impact_json!) as { items: ImpactItem[] };
+    const original = this.originalDocument(group.requestId);
+    const originalOutputs = original.outputs as WfdRecord[];
+    const keys = originalOutputs.map(o => String(o.output_key));
+    const supplied = body.members.map(m => object(m, ['outputKey', 'planId', 'outputId', 'originalSha256', 'reason', 'sourceRevision', 'correctedRows']));
+    if (canonicalWfdJson(supplied.map(m => m.outputKey).sort()) !== canonicalWfdJson([...keys].sort()))
+      fail('CORRECTION_GROUP_MEMBERS', '成员不得缺失、重复或扩展。');
+    const members = supplied.map(member => {
+      const {outputKey, ...input} = member;
+      const originals = impact.items.filter(item => String(this.originalOutputForItem(original, item).output_key) === outputKey);
+      if (!originals.length) fail('CORRECTION_GROUP_MEMBERS', '成员没有冻结原记录。');
+      return { outputKey: String(outputKey), repair: this.buildRepairMember(row,
+        readRepairInput({...input, expectedParentSnapshotId: body.expectedParentSnapshotId}, row.kind), originals) };
+    });
+    const document: WfdRecord = { ...members[0]!.repair.document,
+      outputs: members.map(m => (m.repair.document.outputs as WfdRecord[])[0]!),
+      consistency_groups: { [group.setId]: keys } };
+    const unsigned = structuredClone(document);
+    delete (unsigned.request_identity as WfdRecord).submission_digest;
+    document.request_identity = { ...(document.request_identity as WfdRecord), submission_digest: 'sha256:' + wfdSha256(canonicalWfdJson(unsigned)) };
+    if (Buffer.byteLength(canonicalWfdJson(document)) > this.capabilities().maxDocumentBytes)
+      fail('CORRECTION_DOCUMENT_BUDGET', '完整组文档超预算，不截断。');
+    const frozen: FrozenRepair = { ...members[0]!.repair, document,
+      documentSha256: wfdSha256(canonicalWfdJson(document)),
+      group: { setId: group.setId, expectedCommitId, members },
+      budget: { max_rows: impact.items.length, max_document_bytes: this.capabilities().maxDocumentBytes, series_count: members.length } };
+    return this.persistRepair(row.case_id, frozen);
+  }
+
+  private assertFrozenQuality(frozen: FrozenRepair) {
+    for (const {repair} of frozen.group?.members ?? [{repair: frozen}]) {
+      this.assertRepairQuality(repair.planId, repair.outputId);
+      const artifact = this.verifiedRepairArtifact(repair.planId, repair.outputId);
+      if (repair.outputSha256 && wfdSha256(artifact.bytes) !== repair.outputSha256)
+        fail('CORRECTION_REPAIR_OUTPUT_CHANGED', '修复产物与冻结字节不同，未发送。');
+      if (frozen.group && !repair.outputSha256)
+        fail('CORRECTION_REPAIR_OUTPUT_CHANGED', '整组成员缺冻结产物摘要，未发送。');
+      if (repair.materialId) {
+        const original = this.options.materials.readOriginal(repair.materialId);
+        if (wfdSha256(original.bytes) !== repair.originalSha256.replace(/^sha256:/u, ''))
+          fail('CORRECTION_ORIGINAL_CHANGED', '修复原件实际字节与冻结摘要不同，未发送。');
+      }
+    }
+  }
+
+  private groupSuspendToken(row: CaseRow): string | undefined {
+    return (JSON.parse(row.binding_json) as CorrectionBinding).publicationSet?.expectedCommitId;
+  }
+
+  private buildRepairMember(row: CaseRow, input: ReturnType<typeof readRepairInput>, originals: ImpactItem[]): FrozenRepair {
+    const caseId = row.case_id;
+    const impact = JSON.parse(row.impact_json!) as { items: ImpactItem[]; gaps: string[] };
     const originalDocument = this.originalDocument(originals[0]!.requestId!);
     const output = this.originalOutputForItem(originalDocument, originals[0]!);
     if (originals.some(item => item.requestId !== originals[0]!.requestId
@@ -499,6 +608,11 @@ export class PostPublicationCorrectionService {
     let originalRefs: WfdRecord = {};
     try { originalRefs = originalAttempt ? JSON.parse(originalAttempt.local_refs_json) as WfdRecord : {}; }
     catch { originalRefs = {}; }
+    if ((JSON.parse(row.binding_json) as CorrectionBinding).publicationSet) {
+      const memberRefs = isWfdRecord(originalRefs.outputs) ? originalRefs.outputs[String(output.output_key)] : undefined;
+      if (!isWfdRecord(memberRefs)) fail('CORRECTION_GROUP_ORIGINAL_LINK', '原组成员缺少独立原件关联。');
+      originalRefs = memberRefs;
+    }
     const refMaterialIds = Array.isArray(originalRefs.materialIds) ? originalRefs.materialIds.map(String) : [];
     const refOriginalIds = Array.isArray(originalRefs.originalIds) ? originalRefs.originalIds.map(String) : [];
     const refShaMatches = (sha: string) => {
@@ -553,10 +667,12 @@ export class PostPublicationCorrectionService {
       fail('CORRECTION_DOCUMENT_BUDGET', '修复文档超过预算；未截断提交。');
     const documentSha256 = wfdSha256(canonicalWfdJson(document));
     const frozen = { version: POST_PUBLICATION_CORRECTION_VERSION, caseId, kind: row.kind,
-      impactSha256: row.impact_sha256, errorBindingDigest: wfdSha256(canonicalWfdJson(
+      impactSha256: row.impact_sha256!, errorBindingDigest: wfdSha256(canonicalWfdJson(
         JSON.parse(row.binding_json) as WfdRecord)),
       connectionSha256: row.connection_sha256, adapterConfigDigest: isWfdRecord(newAdapter) ? String(newAdapter.configDigest ?? '') : '',
       planId: input.planId, outputId: input.outputId, originalSha256: input.originalSha256,
+      outputSha256: wfdSha256(this.verifiedRepairArtifact(input.planId, input.outputId).bytes),
+      planVersion: String(this.options.processing.get(input.planId).version), originalBytes: original.bytes.length,
       materialId, originalRequestId: String(originals[0]!.requestId),
       sourceRevision: input.sourceRevision ?? null, expectedParentSnapshotId: input.expectedParentSnapshotId,
       document, documentSha256, requestIdentity: document.request_identity, valueFields,
@@ -565,6 +681,11 @@ export class PostPublicationCorrectionService {
       budget: { max_rows: Math.max(1, originals.length),
         max_document_bytes: this.capabilities().maxDocumentBytes,
         series_count: (document.outputs as WfdRecord[]).length } };
+    return frozen;
+  }
+
+  private persistRepair(caseId: string, frozen: FrozenRepair) {
+    const documentSha256 = frozen.documentSha256;
     const frozenSha256 = wfdSha256(canonicalWfdJson(frozen as unknown as WfdRecord));
     this.db.prepare(`UPDATE correction_cases SET state='prepared',frozen_json=?,frozen_sha256=?,confirmation_digest=?,updated_at=? WHERE case_id=?`)
       .run(canonicalWfdJson(frozen as unknown as WfdRecord), frozenSha256, documentSha256, Date.now(), caseId);
@@ -625,8 +746,9 @@ export class PostPublicationCorrectionService {
     const declaration = this.suspensionDeclaration(row, impact);
     let receipt: WfdRecord;
     try {
-      receipt = (await this.machine.usageSuspend(declaration)).result as WfdRecord;
-      if (!isWfdRecord(receipt) || receipt.state !== 'active' || typeof receipt.issue_digest !== 'string')
+      receipt = (await this.machine.usageSuspend(declaration, undefined, this.groupSuspendToken(row))).result as WfdRecord;
+      if (!isWfdRecord(receipt) || receipt.state !== 'active' || typeof receipt.issue_digest !== 'string'
+        || this.groupSuspendToken(row) && typeof receipt.joint_commit_id !== 'string')
         fail('CORRECTION_WFD_SUSPEND_RECEIPT', 'WFD 暂停恢复回执不完整；保持未完成。');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -678,11 +800,16 @@ export class PostPublicationCorrectionService {
         this.markUnknown(caseId, 'status_unavailable', error);
         throw new TaskError('CORRECTION_OUTCOME_UNKNOWN', '原号状态不可查；未因恢复重新发送。');
       }
+      if (frozen.group && !['unknown', 'rejected'].includes(String(known.state)) && known.state !== 'published_formal') {
+        // Explicit recover action only. The machine refuses absent original state.
+        known = (await this.machine.recovery(document, undefined, this.frozenTicketToken(caseId, frozen))).result as WfdRecord;
+        if (known.state !== 'published_formal') fail('CORRECTION_RECEIPT_PENDING', '原号恢复未正式完成，不新发请求。');
+      }
       if (known.state === 'published_formal' && Array.isArray(known.output_results) && known.output_results.length) {
         this.db.prepare(`UPDATE correction_cases SET state='repairing',updated_at=? WHERE case_id=?`).run(Date.now(), caseId);
         return this.commitRepair(caseId, row, frozen, document, undefined, known);
       }
-      this.assertRepairQuality(frozen.planId, frozen.outputId);
+      this.assertFrozenQuality(frozen);
       let ticket: WfdRecord;
       try { ticket = await this.authorizeFrozenTicket(caseId, row, frozen, document); }
       catch (error) {
@@ -729,11 +856,18 @@ export class PostPublicationCorrectionService {
       fail('CORRECTION_REPAIR_QUALITY', '所选修复输出存在已报告的产物、执行或依赖缺口；未继续冻结或发布更正。');
   }
 
-  private repairOutputRows(planId: string, outputId: string): WfdRecord[] {
-    this.assertRepairQuality(planId, outputId);
-    let artifact: { bytes: Buffer; ref?: { sha256?: string } };
+  private verifiedRepairArtifact(planId: string, outputId: string) {
+    let artifact: ReturnType<ProcessingPlanService['outputArtifact']>;
     try { artifact = this.options.processing.outputArtifact(planId, outputId); }
     catch { return fail('CORRECTION_REPAIR_OUTPUT_NOT_READY', '修复计划输出尚未完成结构化核对，不能准备更正。'); }
+    if (wfdSha256(artifact.bytes) !== artifact.ref.sha256.replace(/^sha256:/u, ''))
+      fail('CORRECTION_REPAIR_OUTPUT_CHANGED', '修复结构产物实际字节与登记摘要不同，未发送。');
+    return artifact;
+  }
+
+  private repairOutputRows(planId: string, outputId: string): WfdRecord[] {
+    this.assertRepairQuality(planId, outputId);
+    const artifact = this.verifiedRepairArtifact(planId, outputId);
     let parsed: WfdRecord;
     try { parsed = JSON.parse(artifact.bytes.toString('utf8')) as WfdRecord; }
     catch { return fail('CORRECTION_REPAIR_OUTPUT_UNREADABLE', '修复计划结构产物不可读。'); }
@@ -965,7 +1099,7 @@ export class PostPublicationCorrectionService {
       .filter(issue => issue.state === 'active').map(issue => String(issue.issue_id)));
     if (!activeIds.has(caseId))
       fail('CORRECTION_SUSPENSION_MISSING', 'WFD 当前持久事项中没有生效的原报/派生暂停；未发布。');
-    this.assertRepairQuality(frozen.planId, frozen.outputId);
+    this.assertFrozenQuality(frozen);
     let ticket: WfdRecord;
     try { ticket = await this.authorizeFrozenTicket(caseId, row, frozen, document); }
     catch (error) {
@@ -1004,11 +1138,28 @@ export class PostPublicationCorrectionService {
       return { product_id: String(previous.product_id), snapshot_id: String(previous.snapshot_id),
         logical_key: String(previous.logical_key), revision_id: String(previous.revision_id) };
     });
-    return (await this.machine.usageAuthorizeRepair({ ticket_id: `ticket:${caseId}`, issue_id: caseId,
+    const ticket = (await this.machine.usageAuthorizeRepair({ ticket_id: `ticket:${caseId}`, issue_id: caseId,
       document_digest: frozen.documentSha256, request_identity: document.request_identity,
       revisions: predecessorRefs, confirmation_digest: frozen.documentSha256, repair_mode: row.kind,
       error_binding_digest: frozen.errorBindingDigest, impact_digest: frozen.impactSha256,
-      budget: frozen.budget })).result as WfdRecord;
+      budget: frozen.budget }, undefined, frozen.group?.expectedCommitId)).result as WfdRecord;
+    if (frozen.group) {
+      if (typeof ticket.joint_commit_id !== 'string') fail('CORRECTION_JOINT_TICKET', '票据缺原联合提交身份。');
+      const prior = JSON.parse(this.require(caseId).suspension_json!) as WfdRecord;
+      if (isWfdRecord(prior.repairTicket) && prior.repairTicket.joint_commit_id !== ticket.joint_commit_id)
+        fail('CORRECTION_JOINT_TICKET', '原票据联合提交发生变化。');
+      this.db.prepare('UPDATE correction_cases SET suspension_json=?,updated_at=? WHERE case_id=?')
+        .run(canonicalWfdJson({...prior, repairTicket: ticket}), Date.now(), caseId);
+    }
+    return ticket;
+  }
+
+  private frozenTicketToken(caseId: string, frozen: FrozenRepair): string | undefined {
+    if (!frozen.group) return undefined;
+    const suspension = JSON.parse(this.require(caseId).suspension_json!) as WfdRecord;
+    if (!isWfdRecord(suspension.repairTicket) || typeof suspension.repairTicket.joint_commit_id !== 'string')
+      fail('CORRECTION_JOINT_TICKET', '缺原票据联合提交，不能补当前版本。');
+    return suspension.repairTicket.joint_commit_id as string;
   }
 
   private async commitRepair(caseId: string, row: CaseRow, frozen: FrozenRepair,
@@ -1019,9 +1170,9 @@ export class PostPublicationCorrectionService {
     if (preloaded) {
       result = preloaded;
     } else {
-      this.assertRepairQuality(frozen.planId, frozen.outputId);
+      this.assertFrozenQuality(frozen);
       // 原号提交；发送后结果未知沿同一 request_identity 查询，不换号、不重发。
-      try { result = (await this.client.submit(document, signal)).result as WfdRecord; }
+      try { result = (await this.client.submit(document, signal, this.frozenTicketToken(caseId, frozen))).result as WfdRecord; }
       catch (error) {
         let state: WfdRecord | undefined;
         try {
@@ -1085,7 +1236,7 @@ export class PostPublicationCorrectionService {
         if (isWfdRecord(wanted.values)) {
           const actualValues = actualRow.values;
           if (!isWfdRecord(actualValues)) fail('CORRECTION_READBACK_VALUE', `第 ${key} 行固定读回缺表格 values。`);
-          const fields = (frozen.valueFields?.[key] as unknown) ?? Object.keys(wanted.values);
+          const fields = ((frozen.group?.members.find(m => m.outputKey === docOutput.output_key)?.repair ?? frozen).valueFields?.[key] as unknown) ?? Object.keys(wanted.values);
           if (!Array.isArray(fields)) fail('CORRECTION_READBACK_VALUE', `第 ${key} 行更正字段记录不可读。`);
           for (const field of fields.map(String)) {
             const expectedCell = wanted.values[field], actualCell = actualValues[field];
@@ -1147,11 +1298,22 @@ export class PostPublicationCorrectionService {
     // 原报通过固定读回后正式解决；旧错误版本限制永久保留。
     let resolvedReceipt: WfdRecord | null = null;
     try {
-      resolvedReceipt = (await this.machine.usageResolve({ issue_id: caseId, ticket_id: `ticket:${caseId}`,
+      if (frozen.group) {
+        const status = (await this.machine.usageStatus()).result as WfdRecord;
+        const issue = (status.issues as WfdRecord[]).find(i => i.issue_id === caseId);
+        const resolution = issue?.resolution as WfdRecord | undefined;
+        if (issue?.state !== 'resolved' || resolution?.replacement_snapshot_id !== newSnapshotId
+          || resolution?.document_digest !== frozen.documentSha256
+          || canonicalWfdJson([...(resolution?.replacement_record_versions as string[] ?? [])].sort())
+            !== canonicalWfdJson(allRecords.map(r => String(r.record_version)).sort()))
+          fail('CORRECTION_JOINT_RESOLUTION', '联合提交未核到完整原组解决凭据。');
+        resolvedReceipt = {state: 'resolved'};
+      } else resolvedReceipt = (await this.machine.usageResolve({ issue_id: caseId, ticket_id: `ticket:${caseId}`,
         document_digest: frozen.documentSha256, replacement_snapshot_id: newSnapshotId,
         replacement_record_versions: allRecords.map(item => String(item.record_version)),
         verification_digest: verificationDigest, verified_at_utc: new Date().toISOString() })).result as WfdRecord;
     } catch (error) {
+      if (frozen.group) { this.markUnknown(caseId, 'joint_resolution_unverified', error); throw error; }
       const status = (await this.machine.usageStatus()).result as WfdRecord;
       const issue = (Array.isArray(status.issues) ? status.issues.filter(isWfdRecord) : [])
         .find(entry => entry.issue_id === caseId);
@@ -1180,7 +1342,44 @@ export class PostPublicationCorrectionService {
    * 使后续扫描、谱系和固定读回沿正式关联找到新版本，而不是只留客户端回执。
    */
   private recordCorrectionAssociations(caseId: string, document: WfdRecord, verifiedOutputs: WfdRecord[],
-    frozen: FrozenRepair, result: WfdRecord): void {
+    frozen: FrozenRepair, result: WfdRecord, inGroupTransaction = false): void {
+    if (frozen.group) {
+      const requestId = String((document.request_identity as WfdRecord).request_id);
+      this.options.database.transaction(() => {
+        const outputs: Record<string, WfdRecord> = {};
+        for (const member of frozen.group!.members) {
+          this.recordCorrectionAssociations(caseId, document,
+            verifiedOutputs.filter(o => o.outputKey === member.outputKey), member.repair, result, true);
+          const stored = this.db.prepare('SELECT local_refs_json FROM r1_handoff_attempts WHERE request_id=?')
+            .get(requestId) as {local_refs_json: string};
+          outputs[member.outputKey] = JSON.parse(stored.local_refs_json) as WfdRecord;
+        }
+        const refs: WfdRecord = { publicationSetId: frozen.group!.setId, outputs };
+        for (const key of ['originalIds','materialIds','sourceRefs','processRefs','evidenceRefs']) {
+          const unique = new Map<string, unknown>();
+          for (const member of Object.values(outputs)) for (const value of (member[key] as unknown[] ?? []))
+            unique.set(canonicalWfdJson(value), value);
+          refs[key] = [...unique.values()];
+        }
+        const identity = document.request_identity as WfdRecord;
+        const outcomes = (result.output_results as WfdRecord[]);
+        const members = verifiedOutputs.map(verified => {
+          const outcome = outcomes.find(item => item.output_key === verified.outputKey)!;
+          return { dataset_id: String(identity.dataset_id), output_key: verified.outputKey,
+            product_id: verified.productId, definition_digest: verified.definitionDigest,
+            snapshot_id: verified.snapshotId, request_identity: identity,
+            ...readR1ContractBinding(outcome, String(identity.dataset_id), String(verified.productId), true),
+            rows: (verified.records as WfdRecord[]).map(record => ({ business_key: String(record.record_id),
+              record_id: String(record.record_id), record_version: String(record.record_version) })) };
+        });
+        const receipt = { kind: 'publication_set', request_identity: identity,
+          snapshot_id: result.snapshot_id, wfd_state: result.state, output_results: outcomes,
+          members, failed_outputs: [] };
+        this.db.prepare('UPDATE r1_handoff_attempts SET local_refs_json=?,local_refs_sha256=?,receipt_json=? WHERE request_id=?')
+          .run(canonicalWfdJson(refs), wfdSha256(canonicalWfdJson(refs)), canonicalWfdJson(receipt), requestId);
+      });
+      return;
+    }
     const identity = document.request_identity as WfdRecord;
     const requestId = String(identity.request_id ?? '');
     const datasetId = String(identity.dataset_id ?? '');
@@ -1193,6 +1392,11 @@ export class PostPublicationCorrectionService {
     let originalRefs: WfdRecord = {};
     try { originalRefs = originalAttempt ? JSON.parse(originalAttempt.local_refs_json) as WfdRecord : {}; }
     catch { originalRefs = {}; }
+    if (isWfdRecord(originalRefs.outputs)) {
+      const memberRefs = originalRefs.outputs[String(verifiedOutputs[0]?.outputKey)];
+      if (!isWfdRecord(memberRefs)) fail('CORRECTION_GROUP_ORIGINAL_LINK', '缺原成员原件关联。');
+      originalRefs = memberRefs;
+    }
     const sourceCorrection = isWfdRecord(frozen.sourceRevision);
     let originalIds = Array.isArray(originalRefs.originalIds) ? originalRefs.originalIds.map(String) : [];
     let materialIds = Array.isArray(originalRefs.materialIds) ? originalRefs.materialIds.map(String) : [];
@@ -1200,13 +1404,13 @@ export class PostPublicationCorrectionService {
     const newMaterialId = String(frozen.materialId ?? '');
     if (sourceCorrection) {
       const revision = frozen.sourceRevision as WfdRecord;
-      const material = this.options.materials.readOriginal(newMaterialId);
+      const originalBytes = frozen.originalBytes ?? this.options.materials.readOriginal(newMaterialId).bytes.length;
       originalIds = [];
       materialIds = [newMaterialId];
       sourceRefs = [{ source_id: String(revision.sourceId), provider: String(revision.provider),
         requested_url: String(revision.requestedUrl), requested_at_utc: String(revision.requestedAtUtc),
         acquired_at_utc: String(revision.acquiredAtUtc), sha256: String(frozen.originalSha256).replace(/^sha256:/u, ''),
-        bytes: material.bytes.length, usage_scope: String(revision.usageScope),
+        bytes: originalBytes, usage_scope: String(revision.usageScope),
         ...(revision.license !== undefined ? { license: String(revision.license) } : {}),
         ...(isWfdRecord(revision.authorization) ? { authorization: revision.authorization } : {}) }];
     }
@@ -1214,18 +1418,23 @@ export class PostPublicationCorrectionService {
     const originalId = sourceCorrection ? newMaterialId
       : originalIds[0] ?? materialIds[0] ?? newMaterialId;
     if (!originalId) fail('CORRECTION_ASSOCIATION_ORIGINAL', '原发布请求没有原件/材料身份；未写虚构 original_id。');
-    let plan: WfdRecord;
-    try { plan = this.options.processing.get(String(frozen.planId)) as WfdRecord; }
-    catch { return fail('CORRECTION_ASSOCIATION_PLAN', '新加工计划不可读，不能建立 R1 来源关联。'); }
-    const output = (Array.isArray(plan.outputs) ? plan.outputs.filter(isWfdRecord) : [])
-      .find(item => String(item.outputId) === String(frozen.outputId));
-    if (!output) fail('CORRECTION_ASSOCIATION_PLAN', '新加工计划没有冻结输出。');
-    const artifact = this.options.processing.outputArtifact(String(frozen.planId), String(frozen.outputId));
-    const artifactSha256 = wfdSha256(artifact.bytes);
+    // Formal receipt recovery uses the evidence frozen before the original send.
+    // Temporary artifacts are not a new prerequisite for an already published result.
+    let artifactSha256 = frozen.outputSha256, planVersion = frozen.planVersion;
+    if (!artifactSha256 || !planVersion) {
+      let plan: WfdRecord;
+      try { plan = this.options.processing.get(String(frozen.planId)) as WfdRecord; }
+      catch { return fail('CORRECTION_ASSOCIATION_PLAN', '新加工计划不可读，不能建立 R1 来源关联。'); }
+      const output = (Array.isArray(plan.outputs) ? plan.outputs.filter(isWfdRecord) : [])
+        .find(item => String(item.outputId) === String(frozen.outputId));
+      if (!output) fail('CORRECTION_ASSOCIATION_PLAN', '新加工计划没有冻结输出。');
+      artifactSha256 = wfdSha256(this.verifiedRepairArtifact(frozen.planId, frozen.outputId).bytes);
+      planVersion = String(plan.version ?? '');
+    }
     const source = sourceRefs[0]!;
     const processRef = { process_id: `correction:${caseId}`,
       plan_id: String(frozen.planId), output_id: String(frozen.outputId),
-      version: String(plan.version ?? ''), input_sha256: 'sha256:' + String(frozen.originalSha256).replace(/^sha256:/u, ''),
+      version: planVersion, input_sha256: 'sha256:' + String(frozen.originalSha256).replace(/^sha256:/u, ''),
       output_sha256: 'sha256:' + artifactSha256,
       evidence_sha256: 'sha256:' + artifactSha256, document_sha256: 'sha256:' + documentSha256 };
     if (!processRef.version) fail('CORRECTION_ASSOCIATION_PLAN', '新加工计划缺少冻结版本。');
@@ -1236,10 +1445,10 @@ export class PostPublicationCorrectionService {
         content_sha256: String((frozen.sourceRevision as WfdRecord).previousOriginalSha256).replace(/^sha256:/u, ''),
         kind: 'predecessor_original' }] : []),
     ];
-    const refs = { originalIds, materialIds: materialIds.length ? materialIds : [originalId],
+    const refs = { originalIds, materialIds,
       sourceRefs: [source], processRefs: [processRef], evidenceRefs };
     const now = Date.now();
-    this.options.database.transaction(() => {
+    const writeMember = () => {
       this.db.prepare(`INSERT INTO r1_handoff_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(request_id) DO UPDATE SET document_json=excluded.document_json,
         document_sha256=excluded.document_sha256,local_refs_json=excluded.local_refs_json,
@@ -1276,7 +1485,9 @@ export class PostPublicationCorrectionService {
             canonicalWfdJson([processRef] as unknown as WfdRecord), canonicalWfdJson(evidenceRefs as unknown as WfdRecord), now);
         }
       }
-    });
+    };
+    if (inGroupTransaction) writeMember();
+    else this.options.database.transaction(writeMember);
   }
 
   /** 审批通过后失败必须留下具体原因，不能只显示通用 RUNTIME_FAILED。 */
@@ -1312,8 +1523,9 @@ export class PostPublicationCorrectionService {
 }
 
 interface FrozenRepair {
+  group?: { setId: string; expectedCommitId: string; members: {outputKey: string; repair: FrozenRepair}[] };
   caseId: string; impactSha256: string; errorBindingDigest: string; document: WfdRecord;
-  documentSha256: string; planId: string; outputId: string; originalSha256: string;
+  documentSha256: string; planId: string; outputId: string; originalSha256: string; outputSha256?: string; planVersion?: string; originalBytes?: number;
   valueFields?: WfdRecord; materialId?: string; originalRequestId?: string; sourceRevision?: WfdRecord | null;
   budget: { max_rows: number; max_document_bytes: number; series_count: number };
   /** 旧冻结文档的复算字段仅用于判断退役范围及保留原报核验摘要。 */
@@ -1321,7 +1533,7 @@ interface FrozenRepair {
 }
 
 function assertRepairScope(frozen: FrozenRepair, document: WfdRecord): void {
-  if (frozen.recompute?.length || Array.isArray(document.outputs) && document.outputs.length > 1)
+  if (frozen.recompute?.length || !frozen.group && Array.isArray(document.outputs) && document.outputs.length > 1)
     fail('CORRECTION_MANUAL_DERIVED_REQUIRED', '旧更正文档包含已退出的派生复算；原请求和用途暂停记录可继续查阅。');
 }
 
@@ -1331,11 +1543,14 @@ function readCorrectionInput(value: unknown): CorrectionInput {
   const discoveredAt = bounded(body.discoveredAt, 64);
   if (!Number.isFinite(Date.parse(discoveredAt))) fail('CORRECTION_INPUT', '发现时间不是明确 UTC 时间。');
   if (!['processing_repair', 'source_correction'].includes(String(body.kind))) fail('CORRECTION_INPUT', '更正类型无效。');
-  const raw = object(body.binding, ['adapter', 'planOutput']);
+  const raw = object(body.binding, ['adapter', 'planOutput', 'publicationSet']);
   const keys = Object.keys(raw).length;
   if (keys !== 1) fail('CORRECTION_INPUT', '错误绑定必须且只能指定适配三元组或精确计划/输出。');
   let binding: CorrectionBinding;
-  if (raw.adapter !== undefined) {
+  if (raw.publicationSet !== undefined) {
+    const group = object(raw.publicationSet, ['requestId', 'planId', 'setId', 'expectedCommitId']);
+    binding = { publicationSet: { requestId: id(group.requestId), planId: id(group.planId), setId: id(group.setId), expectedCommitId: digestHex(group.expectedCommitId).replace(/^sha256:/u, '') } };
+  } else if (raw.adapter !== undefined) {
     const adapter = object(raw.adapter, ['adapterId', 'version', 'configDigest']);
     binding = { adapter: { adapterId: id(adapter.adapterId), version: id(adapter.version),
       configDigest: adapterDigestHex(adapter.configDigest) } };

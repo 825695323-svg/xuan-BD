@@ -521,7 +521,8 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     accept: input => acceptWorkspaceMaterial(batchCustody, input) }) : undefined;
   const corrections = r1Runtime && processing && materials && endpointAdapters && r1Auto
     ? new PostPublicationCorrectionService({ database, tasks: currentTasks, runtime: r1Runtime,
-      processing, materials, adapters: endpointAdapters }) : undefined;
+      processing, materials, adapters: endpointAdapters,
+      publicationSetEvidence: r1Workspace ? (requestId, value, check) => r1Workspace!.publicationSetEvidence(requestId, value, check) : undefined }) : undefined;
   // 运行时注册可晚于 TaskService 构造：TaskService 持有同一个 registry 引用。
   if (corrections) runtimes.register(corrections.runtime);
   segments?.attach();

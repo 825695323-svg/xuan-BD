@@ -25,7 +25,7 @@ export function recipe(outputId: string): Omit<R1PrepareInput, 'requestId' | 'pl
 
 /** Fresh synthetic inputs, real host processing, no fabricated WFD records or receipts. */
 export async function preparedSetPlan(host: Awaited<ReturnType<typeof openFullChainHost>>, prefix: string,
-  options: { badMember?: boolean; unknownUnit?: boolean; setId?: string; thirdOutput?: boolean } = {}) {
+  options: { badMember?: boolean; unknownUnit?: boolean; setId?: string; thirdOutput?: boolean; expectedCommitId?: string } = {}) {
   const materials: { outputId: string; materialId: string }[] = [];
   for (const outputId of (options.thirdOutput ? ['left', 'right', 'other'] : ['left', 'right'])) {
     const raw = Buffer.from('key,start,end,open,high,low,close,volume,amount,state\n'
@@ -39,6 +39,7 @@ export async function preparedSetPlan(host: Awaited<ReturnType<typeof openFullCh
     objectTime: 'synthetic set objects; explicit intervals', purpose: 'isolated-test', structureGranularity: 'table' };
   const drafts = materials.map(({ outputId }) => {
     const draft = recipe(outputId);
+    if (options.expectedCommitId !== undefined) draft.target.expectedCommitId = options.expectedCommitId;
     draft.source.source_id = prefix + '-' + outputId;
     if (options.unknownUnit && outputId === 'left') {
       const fields = draft.target.definition.field_definitions as { field_code: string; unit_code: string }[];

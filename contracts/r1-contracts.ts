@@ -46,7 +46,7 @@ export interface R1PrepareInput {
   requestId: string; planId: string; outputId: string;
   source: R1SourceDeclaration;
   mapping: R1Mapping;
-  target: { datasetId: string; outputKey: string; expectedParentSnapshotId: string | null;
+  target: { datasetId: string; outputKey: string; expectedParentSnapshotId: string | null; expectedCommitId?: string;
     subject: Record<string, unknown>; definition: Record<string, unknown>;
     inputMode: 'partial_observation' | 'complete_snapshot' | 'source_correction'; coverage: Record<string, unknown>;
     /** Independent explicit definition availability; never inferred from row/source dates. */
@@ -100,7 +100,7 @@ export interface R1ReadConnection {
 export interface R1SnapshotStatus {
   /** Actual bound WFD instance only; does not assert any usable stage or invent holding facts. */
   holdingInstance?: { instanceId: string; bindingSource: 'volume_binding' | 'target_instance' } | null;
-  snapshotId: string | null; empty: boolean; authority: 'active_head';
+  snapshotId: string | null; empty: boolean; authority: 'active_head' | 'joint_commit'; jointCommitId?: string;
   connection: R1ReadConnection & { roles: string[] };
   units: Record<string, { definition: Record<string, unknown>; digest: string }>;
 }

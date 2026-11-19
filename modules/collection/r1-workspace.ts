@@ -154,6 +154,10 @@ export class R1WorkspaceService {
     const fixedOutput = plan.outputs.find(item => item.outputId === input.outputId);
     const restriction = await this.verifyPublishRestriction(input, fixedOutput, runtime, signal);
     await this.verifyCorrection(input, runtime, signal);
+    if (input.target.expectedCommitId !== undefined) {
+      const snapshot = await this.snapshotStatus(signal);
+      if (snapshot.jointCommitId !== input.target.expectedCommitId || snapshot.snapshotId !== input.target.expectedParentSnapshotId) fail('R1_SET_PARENT_CHANGED', 'joint 基线改变，未自动补新令牌。');
+    }
     await this.options.processing.verifyMediaClaims(input.planId, input.outputId);
     signal?.throwIfAborted();
     this.assertDispatch();
@@ -273,7 +277,8 @@ export class R1WorkspaceService {
     if (inputs.some(input => input.target.inputMode === 'source_correction')) fail('R1_SET_CORRECTION_UNSUPPORTED', '首批来源修订仅支持单输出固定前驱核对，不在集合中跳过核对。');
     const first = inputs[0]!;
     if (inputs.some(input => input.target.datasetId !== first.target.datasetId
-      || input.target.expectedParentSnapshotId !== first.target.expectedParentSnapshotId)
+      || input.target.expectedParentSnapshotId !== first.target.expectedParentSnapshotId
+      || input.target.expectedCommitId !== first.target.expectedCommitId)
       || new Set(inputs.map(input => input.target.outputKey)).size !== inputs.length)
       fail('R1_SET_TARGET', '整组须使用同一数据集和父快照，且输出键必须唯一。');
     return inputs;
@@ -299,7 +304,7 @@ export class R1WorkspaceService {
     for (const member of inputs) outputRestrictions[member.target.outputKey] = await this.verifyPublishRestriction(member,
       plan.outputs.find(output => output.outputId === member.outputId), runtime, signal);
     const snapshot = await this.snapshotStatus(signal);
-    if (snapshot.snapshotId !== inputs[0]!.target.expectedParentSnapshotId) fail('R1_SET_PARENT_CHANGED', 'WFD 基线变化，需重新修订并确认，不能自动换父快照。');
+    if (snapshot.snapshotId !== inputs[0]!.target.expectedParentSnapshotId || snapshot.jointCommitId !== inputs[0]!.target.expectedCommitId) fail('R1_SET_PARENT_CHANGED', 'WFD 基线变化，需重新修订并确认，不能自动换父快照。');
     signal?.throwIfAborted(); this.assertDispatch();
     if (generation !== this.tasks.getControl().generation || canonicalWfdJson(identity) !== canonicalWfdJson(runtime.currentIdentity()))
       fail('R1_CONNECTION_BINDING_CHANGED', '集合核对期间运行代次或连接变化，未准备提交。');
@@ -328,6 +333,7 @@ export class R1WorkspaceService {
       processRefs: member.localRefs.processRefs.map(ref => ({ ...ref, document_sha256: documentSha256 })) };
     const refs = Object.keys(outputs).sort().map(key => outputs[key]!);
     const localRefs: R1LocalReferences = { publicationSetId: input.setId, outputs, contractBindingRequired: true,
+      ...(inputs[0]!.target.expectedCommitId !== undefined ? { expectedCommitId: inputs[0]!.target.expectedCommitId } : {}),
       originalIds: refs.flatMap(ref => ref.originalIds), materialIds: refs.flatMap(ref => ref.materialIds),
       sourceRefs: refs.flatMap(ref => ref.sourceRefs), processRefs: refs.flatMap(ref => ref.processRefs), evidenceRefs: refs.flatMap(ref => ref.evidenceRefs) };
     const binding = canonicalWfdJson(identity);
@@ -399,7 +405,7 @@ export class R1WorkspaceService {
     const source: R1SourceRef = { ...input.source, sha256: original.sha256, bytes: original.bytes.byteLength };
     const acquisition = this.options.handoff.registerOriginal({ bytes: original.bytes, originalName: material.envelope.filename,
       mediaType: material.envelope.mediaType, source });
-    const localRefs: R1LocalReferences = { originalIds: [acquisition.originalId], materialIds: [], sourceRefs: [source], contractBindingRequired: true,
+    const localRefs: R1LocalReferences = { ...(input.target.expectedCommitId !== undefined ? { expectedCommitId: input.target.expectedCommitId } : {}), originalIds: [acquisition.originalId], materialIds: [], sourceRefs: [source], contractBindingRequired: true,
       processRefs: [{ process_id: `${input.planId}:${input.outputId}`, plan_id: input.planId, output_id: input.outputId,
         version: PROCESSING_PLAN_VERSION, input_sha256: original.sha256, output_sha256: output.ref.sha256,
         evidence_sha256: output.ref.sha256, document_sha256: wfdSha256(canonicalWfdJson(document)) }],
@@ -684,17 +690,18 @@ function readInput(value: unknown): R1PrepareInput {
   const mapping = object(input.mapping, relation ? ['kind', 'businessKey', 'relationType', 'object', 'effectivePeriod', 'publicTime', 'fields'] : event ? ['kind', 'eventId', 'eventType', 'assertionKind', 'caseId', 'contentNature', 'status', 'eventTime', 'publicTime', 'expectedTime', 'fields'] : tabular
     ? ['kind', 'businessKey', 'earliestUtc', 'latestExclusiveUtc', 'precision', 'sourceTimezone', 'fields', 'bar', 'publicTime']
     : ['businessKey', 'value', 'earliestUtc', 'latestExclusiveUtc', 'precision', 'sourceTimezone']);
-  const target = object(input.target, ['datasetId', 'outputKey', 'expectedParentSnapshotId', 'subject', 'definition', 'inputMode', 'coverage', 'definitionMode', 'definitionRef', 'revisions', 'definitionPublicTime']);
+  const target = object(input.target, ['datasetId', 'outputKey', 'expectedParentSnapshotId', 'subject', 'definition', 'inputMode', 'coverage', 'definitionMode', 'definitionRef', 'revisions', 'definitionPublicTime', 'expectedCommitId']);
   for (const field of sourceFields) boundedText(source[field], 4096);
   if (Object.hasOwn(source, 'license') && (typeof source.license !== 'string' || source.license.length > 4096
     || /[\u0000-\u001f]/u.test(source.license))) fail('R1_WEB_INPUT', '旧来源许可文字格式无效。');
   if (Object.keys(source).length !== sourceFields.length + Number(Object.hasOwn(source, 'license')) + Number(Object.hasOwn(source, 'authorization'))
-    || !tabular && Object.keys(mapping).length !== 6 || Object.keys(target).length !== (target.inputMode === 'source_correction' ? 10 : 7) + Number(Object.hasOwn(target, 'definitionPublicTime'))) fail('R1_WEB_INPUT', '来源、映射和目标必须逐项明确，不能补猜。');
+    || !tabular && Object.keys(mapping).length !== 6 || Object.keys(target).length !== (target.inputMode === 'source_correction' ? 10 : 7) + Number(Object.hasOwn(target, 'definitionPublicTime')) + Number(Object.hasOwn(target, 'expectedCommitId'))) fail('R1_WEB_INPUT', '来源、映射和目标必须逐项明确，不能补猜。');
   if (Object.hasOwn(target, 'definitionPublicTime') && !isWfdRecord(target.definitionPublicTime)) fail('R1_WEB_TIME', '定义公开时间必须是显式 WFD 时间对象；未从行或来源时间补推。');
   assertKnownR1Source(source as unknown as R1PrepareInput['source']);
   if (!event && !relation) for (const field of ['businessKey', ...(!tabular ? ['value'] : []), 'earliestUtc', 'latestExclusiveUtc', 'sourceTimezone']) boundedText(mapping[field], 128);
   if (!event && !relation && !['day', 'minute', 'second'].includes(String(mapping.precision))) fail('R1_WEB_TIME', '当前切片只支持显式 day/minute/second 时间精度。');
   id(target.datasetId); id(target.outputKey);
+  if (Object.hasOwn(target, 'expectedCommitId') && (typeof target.expectedCommitId !== 'string' || !/^[0-9a-f]{64}$/u.test(target.expectedCommitId))) fail('R1_WEB_INPUT', 'joint 提交必须显式提供固定提交令牌。');
   if (target.expectedParentSnapshotId !== null) id(target.expectedParentSnapshotId);
   if (!(relation ? ['partial_observation'] : ['partial_observation', 'complete_snapshot', ...(tabular ? ['source_correction'] : [])]).includes(String(target.inputMode)) || !isWfdRecord(target.subject) || !isWfdRecord(target.definition) || !isWfdRecord(target.coverage)) fail('R1_WEB_TARGET', '目标身份、定义、覆盖或输入模式无效。');
   if (target.inputMode === 'source_correction') readCorrection(target);

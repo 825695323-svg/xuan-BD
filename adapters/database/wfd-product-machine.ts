@@ -350,22 +350,22 @@ export class WfdProductMachineClient {
     return this.request('schema', {}, signal);
   }
 
-  submit(document: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+  submit(document: WfdRecord, signal?: AbortSignal, expectedCommitId?: string): Promise<WfdProductMachineReply> {
     if (!isWfdRecord(document)) {
       return Promise.reject(new WfdProductMachineError('WFD_PRODUCT_MACHINE_REQUEST', 'submit 需要完整文档对象。', {
         operation: 'submit', requestId: 'request',
       }));
     }
-    return this.request('submit', { document }, signal);
+    return this.request('submit', { document, ...(expectedCommitId !== undefined ? { expected_commit_id: expectedCommitId } : {}) }, signal);
   }
 
-  recovery(document: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+  recovery(document: WfdRecord, signal?: AbortSignal, expectedCommitId?: string): Promise<WfdProductMachineReply> {
     if (!isWfdRecord(document)) {
       return Promise.reject(new WfdProductMachineError('WFD_PRODUCT_MACHINE_REQUEST', 'recovery 需要原文档对象。', {
         operation: 'recovery', requestId: 'request',
       }));
     }
-    return this.request('recovery', { document }, signal);
+    return this.request('recovery', { document, ...(expectedCommitId !== undefined ? { expected_commit_id: expectedCommitId } : {}) }, signal);
   }
 
   evidenceIngest(content: Uint8Array, originalName?: string, signal?: AbortSignal): Promise<WfdProductMachineReply> {
@@ -460,11 +460,11 @@ export class WfdProductMachineClient {
     return this.request('usage_audit_read', { snapshot_id: snapshotId, issue_id: issueId,
       ...(productId ? { product_id: productId } : {}) }, signal);
   }
-  usageSuspend(declaration: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
-    return this.request('usage_suspend', { declaration }, signal);
+  usageSuspend(declaration: WfdRecord, signal?: AbortSignal, expectedCommitId?: string): Promise<WfdProductMachineReply> {
+    return this.request('usage_suspend', { declaration, ...(expectedCommitId !== undefined ? { expected_commit_id: expectedCommitId } : {}) }, signal);
   }
-  usageAuthorizeRepair(declaration: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
-    return this.request('usage_authorize_repair', { declaration }, signal);
+  usageAuthorizeRepair(declaration: WfdRecord, signal?: AbortSignal, expectedCommitId?: string): Promise<WfdProductMachineReply> {
+    return this.request('usage_authorize_repair', { declaration, ...(expectedCommitId !== undefined ? { expected_commit_id: expectedCommitId } : {}) }, signal);
   }
   usageResolve(declaration: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
     return this.request('usage_resolve', { declaration }, signal);
