@@ -477,13 +477,42 @@ test('same fixed definition can carry different publication evidence and must no
       assert.deepEqual(later.output.definition_ref, first.output.definition_ref,
         'Definition identity is not a unique publication-time assertion');
       const historical = { productId: first.productId, historyMode: 'market_known_at', at: '2025-01-10T12:00:00Z' };
+      let frozenEvidence: unknown;
       const verify = async () => {
-        assert.equal(values(await host.call('/r1/products/read', { ...historical, snapshotId: first.snapshotId })).old, '10');
+        const oldHistory = await host.call('/r1/products/read', { ...historical, snapshotId: first.snapshotId });
+        assert.equal(values(oldHistory).old, '10');
+        assert.equal(oldHistory.result.rows[0].source_binding?.definition_publication, undefined,
+          'Historical views must not expose unqualified binding times');
         const denied = await host.call('/r1/products/read', { ...historical, snapshotId: later.snapshotId }, 409);
         assert.equal(denied.code, 'R1_READ_HISTORY_METADATA_UNSUPPORTED');
         assert.equal(denied.result, undefined, 'Do not choose earliest evidence or substitute an older snapshot');
         const fixed = await host.call('/r1/products/read', { snapshotId: later.snapshotId, productId: first.productId });
         assert.deepEqual(values(fixed), { old: '10', later: '20' }, 'Refusal must not rewrite either source record');
+        assert.ok(fixed.result.rows.every((item: WfdRecord) => !('definition_publication' in (item.source_binding as WfdRecord))));
+        const opted = await host.call('/r1/products/read', { snapshotId: later.snapshotId, productId: first.productId, includeDefinitionPublication: true });
+        const legacyRows = structuredClone(opted.result.rows);
+        for (const item of legacyRows) delete item.source_binding.definition_publication;
+        assert.equal(canonicalWfdJson(legacyRows), canonicalWfdJson(fixed.result.rows), 'Default row bytes and selectedRowsSha256 input must not change');
+        assert.equal(wfdSha256(canonicalWfdJson(legacyRows)), wfdSha256(canonicalWfdJson(fixed.result.rows)));
+        const afterDefault = await host.call('/r1/products/read', { snapshotId: later.snapshotId, productId: first.productId });
+        assert.deepEqual(afterDefault, fixed, 'Opt-in must not change the following default response');
+        await host.call('/r1/products/read', { ...historical, snapshotId: first.snapshotId, includeDefinitionPublication: true }, 409);
+        await host.call('/r1/products/read', { snapshotId: first.snapshotId, productId: first.productId, includeDefinitionPublication: 'true' }, 409);
+        const evidence = Object.fromEntries(opted.result.rows.map((item: WfdRecord) => {
+          const ref = item.record_ref as WfdRecord;
+          const publication = (item.source_binding as WfdRecord).definition_publication as WfdRecord;
+          assert.equal(publication.status, 'bound');
+          assert.equal(publication.qualification, 'not_asserted');
+          assert.deepEqual(publication.record_ref, ref);
+          assert.deepEqual(publication.definition_ref, first.output.definition_ref);
+          assert.match(String(publication.binding_digest), /^sha256:[0-9a-f]{64}$/u);
+          assert.equal((publication.public_time as WfdRecord).earliest_utc,
+            ref.logical_key === 'old' ? '2024-01-01T00:00:00Z' : '2025-04-01T00:00:00Z');
+          return [String(ref.logical_key), publication];
+        }));
+        assert.notEqual(evidence.old.binding_digest, evidence.later.binding_digest);
+        if (frozenEvidence) assert.deepEqual(evidence, frozenEvidence);
+        frozenEvidence = evidence;
       };
       await verify();
       await host.close(); host = await openFullChainHost(fixture);

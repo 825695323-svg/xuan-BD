@@ -2802,7 +2802,8 @@ class WFDDataOnlyService(WFDProductService):
                 raise ValueError("HISTORY_DEFINITION_TIME_UNSUPPORTED")
 
     def _read(self, product_id=None, *, snapshot_id, perspective="snapshot_contents",
-              at=None, subject=None, include_history=False, verify_contract_files=True):
+              at=None, subject=None, include_history=False, verify_contract_files=True,
+              include_definition_publication=False):
         if perspective == "market_known_at":
             snapshot = self.engine._valid_snapshot_exact(snapshot_id, verify_payloads=False)
             entries = [entry for entry in snapshot.get("files", [])
@@ -2810,11 +2811,17 @@ class WFDDataOnlyService(WFDProductService):
             self._guard_definition_history(entries, perspective=perspective, at=at)
         return super()._read(product_id, snapshot_id=snapshot_id, perspective=perspective,
                              at=at, subject=subject, include_history=include_history,
-                             verify_contract_files=verify_contract_files)
+                             verify_contract_files=verify_contract_files,
+                             include_definition_publication=include_definition_publication)
 
     def read(self, product_id=None, *, snapshot_id, perspective="snapshot_contents",
              at=None, subject=None, include_history=False, verify_contract_files=True,
-             held_scope=None, usable_stage=None, fields=None, business_time_range=None):
+             held_scope=None, usable_stage=None, fields=None, business_time_range=None,
+             include_definition_publication=False):
+        if type(include_definition_publication) is not bool:
+            raise ValueError("DEFINITION_PUBLICATION_INPUT_INVALID")
+        if include_definition_publication and perspective != "snapshot_contents":
+            raise ValueError("DEFINITION_PUBLICATION_MODE_UNSUPPORTED")
         self.require_permission("read")
         if perspective != "snapshot_contents" or at is not None or include_history:
             snapshot = self.engine._valid_snapshot_exact(snapshot_id, verify_payloads=False)
@@ -2832,12 +2839,13 @@ class WFDDataOnlyService(WFDProductService):
                 fields=fields, business_time_range=business_time_range)
         result = self._read(product_id, snapshot_id=snapshot_id, perspective=perspective,
                             at=at, subject=subject, include_history=include_history,
-                            verify_contract_files=verify_contract_files)
+                            verify_contract_files=verify_contract_files,
+                            include_definition_publication=include_definition_publication)
         self._assert_selected_declarations(result)
         self._qualify_calendar(result, perspective=perspective, at=at,
                                held_scope=held_scope, usable_stage=usable_stage,
                                fields=fields, business_time_range=business_time_range)
-        public = self._public_read_result(result)
+        public = self._public_read_result(result, include_definition_publication=include_definition_publication)
         for row in public.get("rows", []):
             record_ref = row.get("record_ref") or {}
             row["record_id"] = record_ref.get("logical_key")
@@ -3137,7 +3145,7 @@ class WFDDataOnlyService(WFDProductService):
     def _iter_query_batches(self, product_id, *, snapshot_id,
                             batch_size=FIXED_PAGE_DEFAULT_SIZE,
                             max_batch_bytes=FIXED_PAGE_DEFAULT_BYTES,
-                            before_batch=None):
+                            before_batch=None, include_definition_publication=False):
         """Internal current-leaf batches, not generic query order or history.
 
         Each page retains the existing service admission/integrity checks.
@@ -3150,7 +3158,8 @@ class WFDDataOnlyService(WFDProductService):
                 before_batch()
             page = self.read_product_page(
                 product_id, snapshot_id=snapshot_id, page_size=batch_size,
-                max_page_bytes=max_batch_bytes, cursor=cursor)
+                max_page_bytes=max_batch_bytes, cursor=cursor,
+                include_definition_publication=include_definition_publication)
             current = (page["snapshot_id"], page["product_id"],
                        page["dataset_id"], page["integrity"]["manifest_digest"],
                        page["integrity"]["view_digest"],
@@ -3165,12 +3174,15 @@ class WFDDataOnlyService(WFDProductService):
 
     def read_product_page(self, product_id, *, snapshot_id,
                           page_size=FIXED_PAGE_DEFAULT_SIZE, max_page_bytes=FIXED_PAGE_DEFAULT_BYTES,
-                          cursor=None, _machine_result_fields=None, _result_budget=None):
+                          cursor=None, _machine_result_fields=None, _result_budget=None,
+                          include_definition_publication=False):
         """Complete current-leaf view; no external record_refs or selected-page limit.
 
         Version/view metadata remains O(N). Only bounded business row JSON is
         materialized; all target part hashes are still streamed on every page.
         """
+        if type(include_definition_publication) is not bool:
+            raise ValueError("DEFINITION_PUBLICATION_INPUT_INVALID")
         self._page_validate_request(product_id, snapshot_id, page_size, max_page_bytes)
         snapshot = self.engine._valid_snapshot_exact(snapshot_id, verify_payloads=False)
         prepared = self._page_parts(snapshot, product_id)
@@ -3181,6 +3193,8 @@ class WFDDataOnlyService(WFDProductService):
                  "view_digest": "sha256:" + sha(canonical(selection)), "page_size": page_size,
                  "max_page_bytes": max_page_bytes, "perspective": "snapshot_contents",
                  "include_history": False}
+        if include_definition_publication is True:
+            query["include_definition_publication"] = True
         return self._read_fixed_page(product_id, snapshot=snapshot, query=query, selection=selection,
                                      cursor=cursor, _machine_result_fields=_machine_result_fields,
                                      _result_budget=_result_budget, _prepared=prepared)
@@ -3228,6 +3242,7 @@ class WFDDataOnlyService(WFDProductService):
         fetched = selected_rows_page(parts, selected, after_position=after_position,
                                      row_limit=page_size + 1, max_row_bytes=max_page_bytes)
         raw_rows = []
+        definition_publication_cache = {}
         for chosen in fetched:
             part = parts[chosen["part_index"]]
             product, source = part["product"], part["source_bundle"]
@@ -3245,6 +3260,9 @@ class WFDDataOnlyService(WFDProductService):
                              "record_ref": {"product_id": product_id, "snapshot_id": snapshot_id,
                                             "logical_key": version["logical_key"],
                                             "revision_id": version["revision_id"]}})
+            if query.get("include_definition_publication") is True:
+                raw_rows[-1]["_definition_publication"] = self._record_definition_publication(
+                    raw_rows[-1], source, part["output_key"], chosen["physical_key"], definition_publication_cache)
         for part in parts:
             stat = part["path"].stat()
             if (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns) != part["file_stat"]:
@@ -3254,7 +3272,7 @@ class WFDDataOnlyService(WFDProductService):
                "diagnostics": [], "products": list(products.values()), "source_ids": []}
         self._qualify_calendar(raw, perspective="snapshot_contents", at=None, held_scope=None,
                                usable_stage=None, fields=None, business_time_range=None)
-        public = self._public_read_result(raw)
+        public = self._public_read_result(raw, include_definition_publication=query.get("include_definition_publication") is True)
         for row in public["rows"]:
             row["record_id"] = row["record_ref"]["logical_key"]
             row["record_version"] = row["record_ref"]["revision_id"]
