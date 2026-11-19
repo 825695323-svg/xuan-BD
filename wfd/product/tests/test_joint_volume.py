@@ -48,6 +48,8 @@ def test_joint_volume_real_publish_reopen_and_original_receipt(tmp_path):
         reopened.submit(second, expected_commit_id=initial['joint_commit_id'])
     published = reopened.submit(second, expected_commit_id=view['commit_id'])
     assert published['state'] == 'published_formal', published
+    assert reopened.read(member['product_id'], snapshot_id=sid)['rows'][0]['row']['value_decimal'] == '10'
+    assert reopened.discover_products(snapshot_id=sid)['products']
     assert reopened.engine.state.view()['record']['usage_ref'] == view['record']['usage_ref']
     for action in (gov.suspend, gov.authorize_repair, gov.resolve):
         with pytest.raises(StateError, match='JOINT_OPERATION_UNSUPPORTED'):
@@ -76,6 +78,22 @@ def test_original_request_recovers_pointer_failure_without_new_identity(tmp_path
     after_fault = service.engine.state.view()
     assert (after_fault['commit_id'] == token) == (stage == 'before')
     reopened = open_service(tmp_path)
+    # A complete candidate file is not public until the authoritative flip.
+    candidates = list((service.root / 'catalog/snapshots').glob('*.json'))
+    assert len(candidates) == 1
+    candidate_sid = candidates[0].stem
+    candidate = service.engine.read_snapshot(candidate_sid)
+    pid = candidate['files'][0]['product_id']
+    reads = [lambda: reopened.read(pid, snapshot_id=candidate_sid),
+             lambda: reopened.read_page(pid, snapshot_id=candidate_sid, record_refs=[]),
+             lambda: reopened.read_product_page(pid, snapshot_id=candidate_sid),
+             lambda: reopened.discover_products(snapshot_id=candidate_sid)]
+    if stage == 'before':
+        for read in reads:
+            with pytest.raises(StateError, match='JOINT_SNAPSHOT_NOT_ACTIVATED'):
+                read()
+    else:
+        assert reopened.read(pid, snapshot_id=candidate_sid)['rows']
     result = reopened.submit(doc, expected_commit_id=token)
     assert result['state'] == 'published_formal', result
     pointer = reopened.engine.state.path.read_bytes()
@@ -131,10 +149,16 @@ def test_experimental_machine_selection_and_live_marker_rejection(tmp_path):
     with pytest.raises(StateError, match='experimental_machine_connection'):
         product_machine._build_service(config, operation='capabilities')
     assert service.engine.state.path.read_bytes() == before
+    from wfd_sdk.product_query import ProductQuery
+    with pytest.raises(StateError, match="experimental_product_query"):
+        ProductQuery(service).execute({})
+    with pytest.raises(StateError, match="resolve_write_target"):
+        service.resolve_write_target("synthetic")
     caps = service.capabilities()
     assert caps['joint_storage']['machine_connection_supported'] is False
     assert caps['usage_governance']['operations'] == ['usage_status', 'usage_audit_read']
     assert not caps['operations']['register_write_target']['supported']
+    assert not caps['operations']['resolve_write_target']['supported']
     marker = service.root/'catalog/volume-format.json'; original = marker.read_bytes()
     for content in [None, b'{}']:
         if content is None: marker.unlink()

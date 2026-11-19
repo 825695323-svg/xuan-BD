@@ -526,6 +526,7 @@ class WFDDataOnlyService(WFDProductService):
                 "machine_connection_supported": False, "governance": "initialized_empty_inherited_only",
                 "submit_requires": "explicit expected_commit_id", "group_correction_supported": False}
             caps["operations"]["register_write_target"]["supported"] = False
+            caps["operations"]["resolve_write_target"]["supported"] = False
             caps["operations"]["register_adjustment_anchor"]["supported"] = False
             caps["operations"]["snapshot_status"]["authority"] = "joint_commit"
         caps.pop("source_permissions", None)
@@ -1623,6 +1624,8 @@ class WFDDataOnlyService(WFDProductService):
 
     def resolve_write_target(self, dataset_id, snapshot_id=None):
         """Read-only: is this dataset bound to a formal write target here?"""
+        from .joint_state import reject_unsupported
+        reject_unsupported(self.root, "resolve_write_target")
         if not isinstance(dataset_id, str) or not dataset_id:
             raise ValueError("WRITE_TARGET_DATASET_REQUIRED")
         try:
@@ -3592,6 +3595,7 @@ class WFDDataOnlyService(WFDProductService):
         public["held_at"] = at
         return public
 
+    @joint_read_guard
     def discover_products(self, *, snapshot_id, subject=None):
         self.require_permission("read")
         result = self._discover_products(snapshot_id=snapshot_id, subject=subject)

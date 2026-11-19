@@ -51,6 +51,8 @@ def read_guard(function):
         if not isinstance(state, JointStateStore):
             return function(service, *args, **kwargs)
         view = state.view()
+        if "snapshot_id" in kwargs:
+            state.require_activated_snapshot(view, kwargs["snapshot_id"])
         token = _read_view.set((str(service.root.resolve()), view))
         try:
             result = function(service, *args, **kwargs)
@@ -107,6 +109,22 @@ class JointStateStore(StateStore):
             # First slice only inherits initialized governance; no unsupported policies.
             raise StateError('JOINT_GOVERNANCE_UNSUPPORTED')
         return {'commit_id': pointer['commit'], 'record': record, 'usage': usage}
+
+    def require_activated_snapshot(self, view, snapshot_id):
+        """Only the captured authority ancestry makes a fixed snapshot visible.
+
+        Immutable candidate files and engine receipts are not activation proof.
+        Candidate verification deliberately uses the engine's private fixed read.
+        """
+        record = view["record"]
+        for _ in range(1024):
+            if record["state"].get("active_head") == snapshot_id and snapshot_id is not None:
+                return
+            predecessor = record.get("predecessor_commit")
+            if predecessor is None:
+                raise StateError("JOINT_SNAPSHOT_NOT_ACTIVATED")
+            record = self._object("commit", digest=predecessor)
+        raise StateError("JOINT_ANCESTRY_BUDGET")
 
     def find_request(self, identity, document_digest):
         view = self.view()
