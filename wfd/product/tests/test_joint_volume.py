@@ -30,6 +30,20 @@ def test_joint_volume_real_publish_reopen_and_original_receipt(tmp_path):
     first = service.submit(doc, expected_commit_id=initial['joint_commit_id'])
     assert first['state'] == 'published_formal', first
     sid = first['snapshot_id']; member = first['output_results'][0]
+    from wfd_sdk.product_holdings import resolve_target_instance
+    from wfd_sdk.definition_replacement_registry import access
+    instance = resolve_target_instance(service.root, create=False)['instance_id']
+    scope = {'instance_id': instance, 'product_id': member['product_id'], 'business_scope': 'synthetic'}
+    actions = ('approve_definition_replacement', 'disable_definition_replacement', 'resolve_definition_replacement')
+    service._definition_replacement_access = access([{'operation': action, **scope} for action in actions])
+    before_registry = {str(path.relative_to(service.root)): path.read_bytes()
+                       for path in service.root.rglob('*') if path.is_file()}
+    for action in actions:
+        with pytest.raises(StateError, match='JOINT_OPERATION_UNSUPPORTED'):
+            getattr(service, action)(scope)
+    assert before_registry == {str(path.relative_to(service.root)): path.read_bytes()
+                               for path in service.root.rglob('*') if path.is_file()}
+
     view = service.engine.state.view()
     assert view['record']['state']['active_head'] == sid
     assert view['record']['predecessor_commit'] == initial['joint_commit_id']
@@ -154,6 +168,9 @@ def test_experimental_machine_selection_and_live_marker_rejection(tmp_path):
         ProductQuery(service).execute({})
     with pytest.raises(StateError, match="resolve_write_target"):
         service.resolve_write_target("synthetic")
+    for method in (service.approve_definition_replacement, service.disable_definition_replacement, service.resolve_definition_replacement):
+        with pytest.raises(StateError, match="JOINT_OPERATION_UNSUPPORTED"):
+            method({})
     caps = service.capabilities()
     assert caps['joint_storage']['machine_connection_supported'] is False
     assert caps['usage_governance']['operations'] == ['usage_status', 'usage_audit_read']
