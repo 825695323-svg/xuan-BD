@@ -425,6 +425,10 @@ def _build_service(config, *, operation=None):
         from wfd_sdk.product_data_service import WFDDataOnlyService
     except Exception as exc:
         raise RuntimeError("SERVICE_IMPORT_FAILED:" + type(exc).__name__ + ": " + str(exc)) from exc
+    # Experimental joint volumes are SDK-only until governed group operations
+    # are integrated; BD cannot select one as an active machine connection.
+    from wfd_sdk.joint_state import reject_unsupported
+    reject_unsupported(Path(config["store"]), "experimental_machine_connection")
     if operation in DEFINITION_REPLACEMENT_OPERATIONS:
         if config.get("volume") or not any(g["operation"] == operation for g in config.get("definition_replacement_access", [])):
             raise PermissionError("DEFINITION_REPLACEMENT_ACTION_DENIED")

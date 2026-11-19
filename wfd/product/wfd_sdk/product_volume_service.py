@@ -43,6 +43,8 @@ class WFDVolumeService:
                  unit_registry: Mapping[str, Any] | None = None,
                  trusted_actor_namespaces=("wfd.local",),
                  detector=None, fault_injector=None):
+        from .joint_state import reject_unsupported as reject_joint_operation
+        reject_joint_operation(binding.mount_point, "volume_service")
         self.binding = binding
         self.root = Path(binding.mount_point)
         self.runtime_root = Path(runtime_root)
@@ -64,6 +66,8 @@ class WFDVolumeService:
         self.last_hydration = None
 
     def _verify_volume(self, *, write=False):
+        from .joint_state import reject_unsupported as reject_joint_operation
+        reject_joint_operation(self.root, "volume_service")
         detector = self.detector
         if detector is None:
             from .volume_publication import SystemVolumeDetector

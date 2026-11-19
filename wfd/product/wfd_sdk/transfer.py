@@ -47,6 +47,8 @@ class StorageTierUnavailable(RuntimeError):
 # ---------------------------------------------------------------- 内容清单
 def object_manifest(store: Path, snapshot_id: str, *, include_ancestor_data: bool = False) -> dict:
     """列出该快照（及其祖先闭包）需要传输的对象与元数据。"""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(store, "transfer")
     store = Path(store)
     lineage = Lineage(store)
     snap_path = store / f"catalog/snapshots/{snapshot_id}.json"
@@ -112,6 +114,8 @@ def object_manifest(store: Path, snapshot_id: str, *, include_ancestor_data: boo
 
 
 def export_package(store: Path, snapshot_id: str, pkg_dir: Path, *, include_ancestor_data: bool = False) -> dict:
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(store, "transfer")
     store, pkg_dir = Path(store), Path(pkg_dir)
     man = object_manifest(store, snapshot_id, include_ancestor_data=include_ancestor_data)
     if pkg_dir.exists():
@@ -200,6 +204,8 @@ def verify_package(pkg_dir: Path) -> dict:
 @guarded_store_arg(1)
 def import_package(pkg_dir: Path, store: Path, *, interrupt_after: int | None = None) -> dict:
     """把包导入目标库。只拷缺失对象；已有对象必须哈希一致才复用。"""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(store, "transfer")
     pkg_dir, store = Path(pkg_dir), Path(store)
     v = verify_package(pkg_dir)
     if not v["ok"]:
@@ -265,6 +271,8 @@ def import_package(pkg_dir: Path, store: Path, *, interrupt_after: int | None = 
 
 # ---------------------------------------------------------------- 快进 / 分叉 / 接管
 def host_state(store: Path) -> dict:
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(store, "transfer")
     p = Path(store) / "catalog/state.json"
     if not p.is_file():
         return {"format_version": "wfd.host/1.0", "writer_host": None, "writer_epoch": 0, "active_head": None}
@@ -275,6 +283,8 @@ def write_host_state(store: Path, *, writer_host: str, writer_epoch: int, active
                      note: str = "", imported_head: str | None = None,
                      prev_head: str | None = None, update_seq: int | None = None) -> dict:
     """active_head=None 表示"已导入但尚未激活"；imported_head 记录导入来源版本（不等于激活）。"""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(store, "transfer")
     st = {"format_version": "wfd.host/1.0", "writer_host": writer_host, "writer_epoch": writer_epoch,
           "active_head": active_head, "imported_head": imported_head,
           "prev_head": prev_head, "update_seq": int(update_seq or 0),
@@ -285,6 +295,8 @@ def write_host_state(store: Path, *, writer_host: str, writer_epoch: int, active
 
 def check_fast_forward(store: Path, incoming_sid: str) -> dict:
     """完整祖先验证：local active head 必须位于 incoming 的已验证祖先链上。"""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(store, "transfer")
     store = Path(store)
     lin = Lineage(store)
     st = host_state(store)
@@ -318,6 +330,8 @@ def check_fast_forward(store: Path, incoming_sid: str) -> dict:
 
 def activate(store: Path, incoming_sid: str, *, writer_host: str, writer_epoch: int,
              handover: dict | None = None) -> dict:
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(store, "transfer")
     store = Path(store)
     st = host_state(store)
     ff = check_fast_forward(store, incoming_sid)
@@ -430,6 +444,8 @@ def activate(store: Path, incoming_sid: str, *, writer_host: str, writer_epoch: 
 
 
 def publish_guard(store: Path, *, host: str, epoch: int) -> dict:
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(store, "transfer")
     st = host_state(store)
     ok = st.get("writer_host") == host and int(st.get("writer_epoch") or 0) == epoch
     return {"ok": ok, "code": "OK" if ok else "WRITER_NOT_AUTHORIZED",
@@ -439,6 +455,8 @@ def publish_guard(store: Path, *, host: str, epoch: int) -> dict:
 # ---------------------------------------------------------------- 冷热层
 def read_guarded(store: Path, snapshot_id: str, rows_loader) -> dict:
     """读前检查对象所在存储层是否可用；冷层未挂载必须显式报错。"""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(store, "transfer")
     store = Path(store)
     mm_path = store / "catalog/mount_map.json"
     tiers = {}

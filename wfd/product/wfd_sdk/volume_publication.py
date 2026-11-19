@@ -623,6 +623,8 @@ class LocalMirrorStateStore(StateStore):
     """StateStore 的 activation_history 留在 state.json；镜像日志写本机。"""
 
     def __init__(self, root: str | Path, runtime_root: str | Path):
+        from .joint_state import reject_unsupported as reject_joint_operation
+        reject_joint_operation(root, "volume_publication")
         super().__init__(Path(root))
         self.activation_log = Path(runtime_root) / "state" / "activation_log.jsonl"
 
@@ -716,6 +718,8 @@ class VolumePublisher:
     def __init__(self, *, binding: VolumeBinding, runtime_root: str | Path,
                  detector: VolumeDetector | None = None, fault_injector=None,
                  prep_writer_host: str = "volume-prep-read"):
+        from .joint_state import reject_unsupported as reject_joint_operation
+        reject_joint_operation(binding.mount_point, "volume_publication")
         if not isinstance(binding, VolumeBinding):
             raise TypeError("binding must be VolumeBinding")
         self.binding = binding
@@ -735,12 +739,15 @@ class VolumePublisher:
 
     # ------------------------------------------------------------------ 本机准备复核
     def prepare(self, instance: PreparationInstance) -> PreparationSummary:
+        from .joint_state import reject_unsupported as reject_joint_operation
+        reject_joint_operation(self.root, "volume_publication")
         if not isinstance(instance, PreparationInstance):
             raise TypeError("instance must be PreparationInstance")
         from wfd_sdk.duckdb_sdk import WFDDuckDBPrototype, load_protocol_validator
         from wfd_sdk.product_data_service import WFDDataOnlyService
 
         prep_root = Path(instance.prep_root)
+        reject_joint_operation(prep_root, "volume_publication")
         if prep_root.is_symlink() or not prep_root.is_dir():
             raise PreparationError("PREP_ROOT_INVALID", str(prep_root))
         if _path_within(prep_root, self.root):
@@ -993,6 +1000,8 @@ class VolumePublisher:
         return self.publish_prepared(summary)
 
     def publish_prepared(self, summary: PreparationSummary) -> dict:
+        from .joint_state import reject_unsupported as reject_joint_operation
+        reject_joint_operation(self.root, "volume_publication")
         if not isinstance(summary, PreparationSummary):
             raise TypeError("summary must be PreparationSummary")
         try:

@@ -2669,6 +2669,8 @@ class ProductQuery:
         # inspection, and again on every cursor page because this method runs
         # per request.
         self.service.require_permission("read")
+        from .joint_state import reject_unsupported
+        reject_unsupported(self.service.root, "experimental_product_query")
         if (isinstance(request, dict)
                 and request.get("operation") == "trace_evidence"
                 and getattr(self.service, "profile", None) == "data_only"):

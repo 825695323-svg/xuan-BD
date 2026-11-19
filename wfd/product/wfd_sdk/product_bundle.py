@@ -1336,6 +1336,8 @@ def export_financial_bundle(service, product_ids, destination, *, snapshot_id,
     snapshot.  The source snapshot is not copied wholesale and is not reused as
     the target identity.
     """
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(service.root, "bundle")
     service.require_permission("export")
     if redistribution_requested:
         service.require_permission("redistribute")
@@ -1797,6 +1799,8 @@ class BundledProductService(WFDProductService):
 
 
 def _legacy_import(bundle, destination, runtime_root, protocol_root=None):
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(destination, "bundle")
     bundle, destination = Path(bundle), Path(destination)
     descriptor = _verify_bundle_legacy(bundle)
     if destination.exists():
@@ -1849,6 +1853,8 @@ def import_financial_bundle(bundle, destination, *, runtime_root, protocol_root=
     The package's own source names never grant read or redistribution rights.
     Legacy ``0.1`` bundles keep their original local-use compatibility path.
     """
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(destination, "bundle")
     bundle, destination = Path(bundle), Path(destination)
     descriptor = _verify_bundle(bundle)
     if descriptor.get("format_version") == LEGACY_FORMAT:
@@ -2125,6 +2131,9 @@ def export_delta_bundle(service, product_ids, destination, *, snapshot_id,
                         perspective="snapshot_contents", dataset_services=None,
                         read_limits=None, redistribution_requested=False):
     """Export a delta over an existing target baseline; only missing objects travel."""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(service.root, "bundle")
+    reject_joint_operation(baseline_store, "bundle")
     service.require_permission("export")
     baseline_store = Path(baseline_store)
     if not baseline_store.is_dir():
@@ -2296,6 +2305,8 @@ def export_delta_bundle(service, product_ids, destination, *, snapshot_id,
 def apply_delta_bundle(bundle, target_store, *, runtime_root, allowed_sources,
                        protocol_root=None, interrupt_after=None):
     """Validate a delta, stage/commit it atomically, and keep the baseline readable."""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(target_store, "bundle")
     bundle, target_store = Path(bundle), Path(target_store)
     descriptor = _verify_delta_bundle(bundle, _json(bundle / "financial_bundle.json"))
     if not target_store.is_dir():
@@ -2492,6 +2503,8 @@ def export_reference_bundle(service, product_ids, destination, *, snapshot_id,
                             selection=None, dataset_services=None,
                             read_limits=None, perspective="snapshot_contents"):
     """Export a metadata-only reference manifest; no business data or original travels."""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(service.root, "bundle")
     service.require_permission("export")
     service.require_permission("read")
     destination = Path(destination)
@@ -2612,6 +2625,8 @@ def export_reference_bundle(service, product_ids, destination, *, snapshot_id,
 def register_reference_bundle(bundle, target_store, *, resolvers, allowed_sources=None,
                               runtime_root=None, protocol_root=None):
     """Register a reference manifest and prove reachable/unreachable external objects."""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(target_store, "bundle")
     bundle, target_store = Path(bundle), Path(target_store)
     descriptor = _verify_reference_bundle(bundle, _json(bundle / "financial_bundle.json"))
     target_store.mkdir(parents=True, exist_ok=True)
@@ -3058,6 +3073,8 @@ def _structured_rows(service, product, rows, fields, business_range, source_prod
 def export_structured_bundle(service, product_ids, destination, *, snapshot_id,
                              selection=None, perspective="snapshot_contents"):
     """Export only WFD structured records plus internal definitions/contracts."""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(service.root, "bundle")
     if service.has_permission("export") is not True:
         raise PermissionError("WFD_EXPORT_PERMISSION_REQUIRED")
     if perspective != "snapshot_contents":
@@ -4014,6 +4031,8 @@ def import_structured_bundle(bundle, destination, *, runtime_root,
     only when its WFD import marker proves the same package identity, so retries
     recover the same instance instead of trusting an arbitrary directory.
     """
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(destination, "bundle")
     bundle, destination = Path(bundle), Path(destination)
     descriptor = _verify_structured_bundle(bundle)
     roles = set(["read", "read_evidence"] if caller_roles is None else caller_roles)
@@ -4596,6 +4615,9 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
                                    baseline_store, baseline_snapshot_id,
                                    selection=None, perspective="snapshot_contents"):
     """Export only missing WFD structured objects over an existing target baseline."""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(service.root, "bundle")
+    reject_joint_operation(baseline_store, "bundle")
     if service.has_permission("export") is not True:
         raise PermissionError("WFD_EXPORT_PERMISSION_REQUIRED")
     if perspective != "snapshot_contents":
@@ -5017,6 +5039,8 @@ def apply_structured_delta_bundle(bundle, target_store, *, runtime_root,
                                   caller_roles=None, protocol_root=None,
                                   interrupt_after=None):
     """Apply a structured delta to an existing target; old snapshot remains readable."""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(target_store, "bundle")
     bundle, target_store = Path(bundle), Path(target_store)
     descriptor = _verify_structured_delta_bundle(bundle)
     roles = set(["read", "read_evidence"] if caller_roles is None else caller_roles)
@@ -5328,6 +5352,8 @@ def _structured_reference_path(root, rel):
 def export_structured_reference_bundle(service, product_ids, destination, *, snapshot_id,
                                        selection=None, perspective="snapshot_contents"):
     """Export metadata-only reference to fixed external WFD structured product(s)."""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(service.root, "bundle")
     if service.has_permission("read") is not True:
         raise PermissionError("WFD_READ_PERMISSION_REQUIRED")
     if perspective != "snapshot_contents":
@@ -5810,6 +5836,8 @@ def register_structured_reference_bundle(bundle, target_store, *, resolvers,
                                          runtime_root, protocol_root=None,
                                          caller_roles=None):
     """Register a reference record; target store holds metadata only, no snapshot."""
+    from .joint_state import reject_unsupported as reject_joint_operation
+    reject_joint_operation(target_store, "bundle")
     bundle, target_store = Path(bundle), Path(target_store)
     descriptor = _verify_structured_reference_bundle(bundle)
     roles = set(["read", "read_evidence"] if caller_roles is None else caller_roles)
