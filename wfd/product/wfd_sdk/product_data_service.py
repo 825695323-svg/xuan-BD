@@ -476,7 +476,7 @@ class WFDDataOnlyService(WFDProductService):
             "catalog_file": ("catalog/joint-current.json" if "joint_commit_id" in self.engine.state.read()
                                      else "catalog/usage_suspensions.json"),
             "writer_lock": "shared with submit",
-            "operations": (["usage_status", "usage_audit_read"] if "joint_commit_id" in self.engine.state.read()
+            "operations": (["usage_status", "usage_audit_read", "usage_suspend", "usage_authorize_repair"] if "joint_commit_id" in self.engine.state.read()
                            else ["usage_status", "usage_audit_read", "usage_suspend", "usage_authorize_repair", "usage_resolve"]),
             "default_business_read": "denied_when_suspended",
             "audit_reproduction": "explicit issue_id required; result is publishable=false and compute_eligible=false",
@@ -526,8 +526,9 @@ class WFDDataOnlyService(WFDProductService):
         ]
         if "joint_commit_id" in self.engine.state.read():
             caps["joint_storage"] = {"format": "wfd.joint-volume.experimental/1", "experimental": True,
-                "machine_connection_supported": False, "governance": "initialized_empty_inherited_only",
-                "submit_requires": "explicit expected_commit_id", "group_correction_supported": False}
+                "machine_connection_supported": False, "governance": "joint_cas_pause_ticket_and_complete_group_resolution",
+                "submit_requires": "explicit expected_commit_id", "group_correction_supported": False,
+                "sdk_complete_original_group_repair": True}
             caps["operations"]["register_write_target"]["supported"] = False
             caps["operations"]["resolve_write_target"]["supported"] = False
             caps["operations"]["register_adjustment_anchor"]["supported"] = False
@@ -1310,8 +1311,45 @@ class WFDDataOnlyService(WFDProductService):
                     raise ValueError("JOINT_REQUEST_PREDECESSOR_CHANGED")
             elif self.engine.state.view()["commit_id"] != expected_commit_id:
                 raise ValueError("JOINT_CAS_CONFLICT")
-            with self.engine.state.submission(expected_commit_id, identity, fingerprint):
+            frozen_document = copy.deepcopy(doc)
+            verifier = None
+            if any(item.get("input_mode") in {"source_correction", "processing_repair"}
+                   for item in frozen_document.get("outputs", [])):
+                verifier = lambda sid, view: self._verify_joint_repair_candidate(
+                    frozen_document, fingerprint, sid, view)
+            with self.engine.state.submission(expected_commit_id, identity, fingerprint,
+                                              candidate_verifier=verifier):
                 return self._submit_data(doc)
+
+    def _verify_joint_repair_candidate(self, document, fingerprint, snapshot_id, view):
+        """Host-only pre-flip validation, shared by initial submit and same-ID recovery."""
+        self.require_permission("submit")
+        self.require_permission("publish")
+        if self.engine.sandbox or sha(canonical(document)) != fingerprint:
+            raise ValueError("JOINT_REPAIR_CANDIDATE_INVALID")
+        key = self.engine._request_key(document)
+        plan = self._load_plan(key)
+        if (not plan or plan.get("request_identity") != document.get("request_identity")
+                or plan.get("input_fingerprint") != fingerprint):
+            raise ValueError("JOINT_REPAIR_PLAN_MISMATCH")
+        snapshot = self.engine.read_snapshot(snapshot_id)
+        receipt = snapshot.get("receipt") or {}
+        expected = {item["output_key"] for item in document["outputs"]}
+        if (receipt.get("outputs_rejected") or set(receipt.get("outputs_success") or []) != expected
+                or len(expected) != len(document["outputs"])):
+            raise ValueError("JOINT_REPAIR_INCOMPLETE_GROUP")
+        results = self._records_from_snapshot(snapshot, plan=plan)
+        if {item["output_key"] for item in results} != expected or len(results) != len(expected):
+            raise ValueError("JOINT_REPAIR_INCOMPLETE_PLAN")
+        for item in results:
+            item["publication_state"] = "published_sandbox"
+            item["snapshot_id"] = snapshot_id
+        checks, outputs = self._verify_candidate_fixed_outputs(snapshot, snapshot_id, results)
+        if not all(checks.values()) or len(outputs) != len(expected):
+            raise ValueError("JOINT_REPAIR_FIXED_VERIFICATION_FAILED")
+        from .usage_suspension import _prepare_joint_resolution
+        return _prepare_joint_resolution(self.root, joint_state=self.engine.state,
+            captured_view=view, snapshot=snapshot, document=document, output_records=outputs)
 
     def _validate_calendar_main_rows(self, internal, declaration, rule, info):
         """Admission-time completeness against the full retained fixed calendar.
@@ -1995,58 +2033,17 @@ class WFDDataOnlyService(WFDProductService):
         except (OSError, ValueError, HoldingError, KeyError):
             return {"state": "pending", "reason": "holding_ledger_unavailable"}
 
-    def _formalize(self, request_key, identity, fingerprint, results, publication,
-                   historically_activated=False, record_holdings=False, recover_holdings=False):
-        duplicate_policy = any("row_results" in item for item in results)
-        unpublished = self._unpublished_outputs(results)
-        if not unpublished:
-            # Recovery may only have successful rows from the fixed snapshot.
-            # The existing pre-commit plan retains the other requested members.
-            unpublished = copy.deepcopy((self._load_plan(request_key) or {}).get("unpublished_outputs", []))
-        results = self._publication_results(results)
-        sid = publication.get("snapshot_id")
-        if not sid:
-            return None, None, "registered_not_published"
-        snapshot = self.engine.read_snapshot(sid)
-        formal_path = f"catalog/product_service/data_only_formal_publications/{request_key}.json"
-        existing_path = self.root / formal_path
-        if existing_path.is_file():
-            existing = json.loads(existing_path.read_text("utf-8"))
-            if (existing.get("request_key") == request_key
-                    and existing.get("snapshot_id") == sid
-                    and existing.get("formal_publication_state") == "published_formal"):
-                if (self._formal_outputs_match(existing, results)
-                        and existing.get("unpublished_outputs", []) == unpublished):
-                    if record_holdings or recover_holdings:
-                        self._record_formal_holdings(existing)
-                    return formal_path, copy.deepcopy(existing.get("checks")), "published_formal"
-                return None, {"formal_receipt_matches": False,
-                              "recovery_error": "FORMAL_RECEIPT_OUTPUT_CONFLICT"}, "formal_receipt_conflict"
-        checks = {
-            "caller_publish_role": self.has_permission("publish"),
-            "engine_not_sandbox": self.engine.sandbox is False,
-            "snapshot_present": (self.root / f"catalog/snapshots/{sid}.json").is_file(),
-            "commit_marker_present": (self.root / f"catalog/commits/{sid}.json").is_file(),
-            # read_snapshot above has already verified this exact commit,
-            # manifest and every declared file. Historical commits add no
-            # authority to this fixed publication.
-            "valid_commit": snapshot.get("snapshot_id") == sid,
-            "contracts_verified": True,
-            "record_identity_verified": True,
-            "fixed_readback_verified": True,
-            "active_head_matches": False,
-        }
-        try:
-            active = self.engine.head()
-        except Exception:
-            active = None
-        checks["active_head_matches"] = bool(
-            active and active.get("snapshot_id") == sid)
-        checks["historically_activated"] = bool(historically_activated)
-        if not checks["active_head_matches"] and not checks["historically_activated"]:
-            checks["record_identity_verified"] = False
-            checks["fixed_readback_verified"] = False
-            return None, checks, "published_commit_pending_head"
+    def _verify_candidate_fixed_outputs(self, snapshot, snapshot_id, results):
+        """Read-only content checks, not activation or formal-publication proof.
+
+        The internal caller supplies the exact engine-verified snapshot and the
+        publication results to check. This helper neither grants permission nor
+        writes receipts/holdings; activation and final publication remain the
+        caller's separate responsibility.
+        """
+        sid = snapshot_id
+        checks = {"contracts_verified": True, "record_identity_verified": True,
+                  "fixed_readback_verified": True}
         output_records = []
         bindings = snapshot.get("files", [])
         for item in results:
@@ -2107,6 +2104,62 @@ class WFDDataOnlyService(WFDProductService):
                 "contract_bundle_ref": copy.deepcopy(product.get("contract_bundle_ref")),
                 "records": copy.deepcopy(item.get("records", [])),
             })
+        return checks, output_records
+
+    def _formalize(self, request_key, identity, fingerprint, results, publication,
+                   historically_activated=False, record_holdings=False, recover_holdings=False):
+        duplicate_policy = any("row_results" in item for item in results)
+        unpublished = self._unpublished_outputs(results)
+        if not unpublished:
+            # Recovery may only have successful rows from the fixed snapshot.
+            # The existing pre-commit plan retains the other requested members.
+            unpublished = copy.deepcopy((self._load_plan(request_key) or {}).get("unpublished_outputs", []))
+        results = self._publication_results(results)
+        sid = publication.get("snapshot_id")
+        if not sid:
+            return None, None, "registered_not_published"
+        snapshot = self.engine.read_snapshot(sid)
+        formal_path = f"catalog/product_service/data_only_formal_publications/{request_key}.json"
+        existing_path = self.root / formal_path
+        if existing_path.is_file():
+            existing = json.loads(existing_path.read_text("utf-8"))
+            if (existing.get("request_key") == request_key
+                    and existing.get("snapshot_id") == sid
+                    and existing.get("formal_publication_state") == "published_formal"):
+                if (self._formal_outputs_match(existing, results)
+                        and existing.get("unpublished_outputs", []) == unpublished):
+                    if record_holdings or recover_holdings:
+                        self._record_formal_holdings(existing)
+                    return formal_path, copy.deepcopy(existing.get("checks")), "published_formal"
+                return None, {"formal_receipt_matches": False,
+                              "recovery_error": "FORMAL_RECEIPT_OUTPUT_CONFLICT"}, "formal_receipt_conflict"
+        checks = {
+            "caller_publish_role": self.has_permission("publish"),
+            "engine_not_sandbox": self.engine.sandbox is False,
+            "snapshot_present": (self.root / f"catalog/snapshots/{sid}.json").is_file(),
+            "commit_marker_present": (self.root / f"catalog/commits/{sid}.json").is_file(),
+            # read_snapshot above has already verified this exact commit,
+            # manifest and every declared file. Historical commits add no
+            # authority to this fixed publication.
+            "valid_commit": snapshot.get("snapshot_id") == sid,
+            "contracts_verified": True,
+            "record_identity_verified": True,
+            "fixed_readback_verified": True,
+            "active_head_matches": False,
+        }
+        try:
+            active = self.engine.head()
+        except Exception:
+            active = None
+        checks["active_head_matches"] = bool(
+            active and active.get("snapshot_id") == sid)
+        checks["historically_activated"] = bool(historically_activated)
+        if not checks["active_head_matches"] and not checks["historically_activated"]:
+            checks["record_identity_verified"] = False
+            checks["fixed_readback_verified"] = False
+            return None, checks, "published_commit_pending_head"
+        content_checks, output_records = self._verify_candidate_fixed_outputs(snapshot, sid, results)
+        checks.update(content_checks)
         activation_ok = checks.get("active_head_matches") or checks.get("historically_activated")
         remaining = {key: value for key, value in checks.items()
                      if key not in {"active_head_matches", "historically_activated"}}

@@ -65,9 +65,11 @@ def test_joint_volume_real_publish_reopen_and_original_receipt(tmp_path):
     assert reopened.read(member['product_id'], snapshot_id=sid)['rows'][0]['row']['value_decimal'] == '10'
     assert reopened.discover_products(snapshot_id=sid)['products']
     assert reopened.engine.state.view()['record']['usage_ref'] == view['record']['usage_ref']
-    for action in (gov.suspend, gov.authorize_repair, gov.resolve):
-        with pytest.raises(StateError, match='JOINT_OPERATION_UNSUPPORTED'):
+    for action in (gov.suspend, gov.authorize_repair):
+        with pytest.raises(StateError, match='JOINT_PREDECESSOR_REQUIRED'):
             action(reopened.root, {})
+    with pytest.raises(StateError, match='JOINT_OPERATION_UNSUPPORTED'):
+        gov.resolve(reopened.root, {})
     assert not (service.root / 'catalog/usage_suspensions.json').exists()
 
 @pytest.mark.parametrize('stage', ['before', 'after'])
@@ -173,7 +175,7 @@ def test_experimental_machine_selection_and_live_marker_rejection(tmp_path):
             method({})
     caps = service.capabilities()
     assert caps['joint_storage']['machine_connection_supported'] is False
-    assert caps['usage_governance']['operations'] == ['usage_status', 'usage_audit_read']
+    assert caps['usage_governance']['operations'] == ['usage_status', 'usage_audit_read', 'usage_suspend', 'usage_authorize_repair']
     assert not caps['operations']['register_write_target']['supported']
     assert not caps['operations']['resolve_write_target']['supported']
     marker = service.root/'catalog/volume-format.json'; original = marker.read_bytes()

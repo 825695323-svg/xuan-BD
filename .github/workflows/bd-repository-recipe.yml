@@ -115,6 +115,7 @@ jobs:
           "$WFD_PYTHON" -m pytest -q --tb=short -p no:cacheprovider \
             wfd/product/tests/test_publication_sets.py \
             wfd/product/tests/test_joint_volume.py \
+            wfd/product/tests/test_joint_governance.py \
             wfd/product/tests/test_joint_unsupported.py \
             wfd/product/tests/test_market_current_only.py::test_current_business_replacement_contracts_and_pinned_technical_read \
             wfd/product/tests/test_market_current_only.py::test_current_business_scope_is_explicit_and_ordinary_history_is_unchanged \
