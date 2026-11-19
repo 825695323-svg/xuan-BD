@@ -91,6 +91,7 @@ try {
         'apps/server/processing-dependencies.test.ts',
         'apps/server/processing-record-dependencies.test.ts',
         'apps/server/output-publication-dependencies.test.ts',
+        'apps/server/publication-set-evidence.test.ts',
         'apps/server/fixed-row-consumption.test.ts',
         'modules/collection/processing-record-dependencies.test.ts',
         'apps/server/r1-dedup.test.ts',

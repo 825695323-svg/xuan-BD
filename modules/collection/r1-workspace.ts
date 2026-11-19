@@ -1,3 +1,4 @@
+import { readPublicationSetEvidence } from './r1-publication-set-evidence.js';
 import { readOutputDependencies } from './r1-output-dependencies.js';
 import { readRecordEvidence } from './r1-record-evidence.js';
 import { verifyFinancialFactRow } from './data-processing/financial-fact.js';
@@ -94,6 +95,15 @@ export class R1WorkspaceService {
           fail('R1_OUTPUT_DEPENDENCIES_REQUEST', '请求不属于指定加工输出，未搜索或回退其他请求。');
         return this.assertBinding(row);
       }, control: () => this.tasks.getControl() }, checkAccess, signal, mode);
+  }
+  publicationSetEvidence(requestId: string, value: unknown, checkAccess: () => void, signal?: AbortSignal) {
+    return readPublicationSetEvidence(requestId, value, { ...this.options,
+      current: (planId, setId) => {
+        this.assertDispatch();
+        const row = this.requireRow(requestId);
+        if (row.plan_id !== planId || row.output_id !== setId) fail('R1_SET_EVIDENCE_REQUEST', '请求不属于指定原计划和发布集合。');
+        return { runtime: this.assertBinding(row), inputs: this.setInputs(planId, setId, requestId) };
+      }, generation: () => this.tasks.getControl().generation }, checkAccess, signal);
   }
   recordEvidence(value: unknown, signal?: AbortSignal) {
     return readRecordEvidence(value, { ...this.options,

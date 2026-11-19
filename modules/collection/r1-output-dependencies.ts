@@ -38,7 +38,6 @@ export async function readOutputDependencies(requestId: string, value: unknown, 
     || receipt.output_key !== output.output_key) fail('BUDGET_OR_MEMBER', '本查询最多核对128个正式记录且必须完整匹配单一冻结成员。');
   const rowProof = mode === 'fixed_rows' ? fixedRowConsumption(options.processing, planId, outputId, runtime.currentIdentity(), expected) : null;
   const snapshotId = String(receipt.snapshot_id), productId = String(receipt.product_id), datasetId = String(receipt.dataset_id);
-  const binding = readR1ContractBinding(receipt, datasetId, productId, true)!;
   const associations = () => options.database.connection.prepare(`SELECT snapshot_id,product_id,dataset_id,record_id,record_version,definition_digest
     FROM r1_record_associations WHERE request_id=? ORDER BY product_id,record_id,record_version LIMIT 129`).all(requestId) as unknown as WfdRecord[];
   const local = associations(), localFrozen = canonicalWfdJson(local);
@@ -55,24 +54,7 @@ export async function readOutputDependencies(requestId: string, value: unknown, 
   current();
   const { result } = await runtime.client.fixedReadHistory(snapshotId, productId, signal);
   current();
-  if (Buffer.byteLength(canonicalWfdJson(result)) > 8 * 1024 * 1024 || result.snapshot_id !== snapshotId)
-    fail('READBACK', '固定读回快照或预算不符。');
-  const products = records(result.products).filter(p => p.product_id === productId && p.dataset_id === datasetId
-    && object(p.definition_ref).digest === receipt.definition_digest);
-  if (products.length !== 1) fail('READBACK', '固定产品合同不唯一或不符。');
-  assertR1ContractBinding(products[0]!, binding);
-  const published = local.map(a => {
-    if (a.snapshot_id !== snapshotId || a.product_id !== productId || a.dataset_id !== datasetId
-      || a.definition_digest !== receipt.definition_digest) fail('ASSOCIATION', '正式关联属于另一快照、产品或合同。');
-    const input = expected.filter(r => r[r1PayloadRowKey(output)] === a.record_id);
-    const members = records(receipt.rows).filter(r => r.record_id === a.record_id && r.record_version === a.record_version);
-    const rows = records(result.rows).filter(r => r.product_id === productId && r.record_id === a.record_id && r.record_version === a.record_version);
-    if (input.length !== 1 || members.length !== 1 || rows.length !== 1 || !frozenR1RowMatches(input[0]!, object(rows[0]!.row)))
-      fail('READBACK', '正式行、内容或版本与冻结成员不符。');
-    const expectedRef = { snapshot_id: snapshotId, product_id: productId, logical_key: a.record_id, revision_id: a.record_version };
-    if (canonicalWfdJson(rows[0]!.record_ref) !== canonicalWfdJson(expectedRef)) fail('READBACK', '正式记录四元组不符。');
-    return expectedRef;
-  });
+  const published = verifyFixedPublishedRows(output, receipt, local, result);
   current();
   if (rowProof) return { schema: 'bd.fixed-row-consumption/1', requestId, planId, outputId,
     outputSha256: dependency.outputSha256, coverage: 'selected_request_output_only',
@@ -99,3 +81,30 @@ function identifier(value: unknown): value is string { return typeof value === '
 function records(value: unknown): WfdRecord[] { return Array.isArray(value) ? value.filter(isWfdRecord) : []; }
 function object(value: unknown): WfdRecord { return isWfdRecord(value) ? value : {}; }
 function fail(code: string, message: string): never { throw new TaskError('R1_OUTPUT_DEPENDENCIES_' + code, message); }
+
+/** Shared complete fixed-member verification; callers own await scope and aggregate budgets. */
+export function verifyFixedPublishedRows(output: WfdRecord, receipt: WfdRecord, local: WfdRecord[], result: WfdRecord) {
+  const expected = records(object(output.payload).rows);
+  const snapshotId = String(receipt.snapshot_id), productId = String(receipt.product_id), datasetId = String(receipt.dataset_id);
+  const binding = readR1ContractBinding(receipt, datasetId, productId, true)!;
+  if (!expected.length || expected.length !== local.length || !Array.isArray(receipt.rows) || receipt.rows.length !== expected.length
+    || receipt.output_key !== output.output_key) fail('BUDGET_OR_MEMBER', '完整固定成员数量或输出键不符。');
+  if (Buffer.byteLength(canonicalWfdJson(result)) > 8 * 1024 * 1024 || result.snapshot_id !== snapshotId)
+    fail('READBACK', '固定读回快照或预算不符。');
+  const products = records(result.products).filter(p => p.product_id === productId && p.dataset_id === datasetId
+    && object(p.definition_ref).digest === receipt.definition_digest);
+  if (products.length !== 1) fail('READBACK', '固定产品合同不唯一或不符。');
+  assertR1ContractBinding(products[0]!, binding);
+  return local.map(a => {
+    if (a.snapshot_id !== snapshotId || a.product_id !== productId || a.dataset_id !== datasetId
+      || a.definition_digest !== receipt.definition_digest) fail('ASSOCIATION', '正式关联属于另一快照、产品或合同。');
+    const input = expected.filter(r => r[r1PayloadRowKey(output)] === a.record_id);
+    const members = records(receipt.rows).filter(r => r.record_id === a.record_id && r.record_version === a.record_version);
+    const rows = records(result.rows).filter(r => r.product_id === productId && r.record_id === a.record_id && r.record_version === a.record_version);
+    if (input.length !== 1 || members.length !== 1 || rows.length !== 1 || !frozenR1RowMatches(input[0]!, object(rows[0]!.row)))
+      fail('READBACK', '正式行、内容或版本与冻结成员不符。');
+    const expectedRef = { snapshot_id: snapshotId, product_id: productId, logical_key: a.record_id, revision_id: a.record_version };
+    if (canonicalWfdJson(rows[0]!.record_ref) !== canonicalWfdJson(expectedRef)) fail('READBACK', '正式记录四元组不符。');
+    return expectedRef;
+  });
+}
