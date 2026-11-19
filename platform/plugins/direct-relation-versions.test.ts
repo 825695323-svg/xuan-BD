@@ -4,9 +4,10 @@ import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 import { directImplementationVersion } from './direct-versions.js';
 
-test('Direct R1 implementation binding rejects changed relation code and its existing identity schema', () => {
+test('Direct R1 implementation binding rejects changed relation, OCR claim/provenance code and existing identity schema', () => {
   const baseline = directImplementationVersion(['r1']), read = fs.readFileSync;
-  for (const suffix of ['modules/collection/r1-relation.ts', 'wfd/product/protocol/schemas/wfd-common.schema.json']) {
+  for (const suffix of ['modules/collection/r1-relation.ts', 'wfd/product/protocol/schemas/wfd-common.schema.json',
+    'modules/collection/data-processing/ocr-claim.ts', 'apps/server/ocr-review.ts', 'apps/server/media-review-source.ts', 'platform/capabilities/ocr/evidence.ts']) {
     let matched = 0;
     fs.readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => {
       const original = read(...args);
