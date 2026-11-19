@@ -134,3 +134,20 @@ test('ordinary standardization validates source period dates and nature without 
     assert.equal(result.evidence.compatibility, null);
   }
 });
+
+test('compatible inputs require explicit report identities and versions but allow distinct known editions', async () => {
+  for (const key of ['report_id', 'report_version']) {
+    for (const marker of ['unknown', ' unresolved ', '\tUnspecified\n']) {
+      const rows = compatibleRows();
+      ((rows[1]!.values as WfdRecord)[key] as WfdRecord).value = marker;
+      await assert.rejects(compatible(rows), /未知/u, key + ': ' + JSON.stringify(marker));
+    }
+  }
+  const rows = compatibleRows();
+  ((rows[1]!.values as WfdRecord).report_version as WfdRecord).value = 'v2';
+  ((rows[1]!.values as WfdRecord).report_nature as WfdRecord).value = 'correction';
+  const result = await compatible(rows);
+  assert.equal(result.evidence.compatibility?.status, 'declared_basis_compatible');
+  assert.equal(result.evidence.compatibility?.calculation, 'not_requested');
+  assert.deepEqual(JSON.parse(result.jsonBytes.toString()).map((item: WfdRecord) => item.report_version), ['v1', 'v2']);
+});
