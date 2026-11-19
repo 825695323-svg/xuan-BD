@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
-from .duckdb_sdk import canonical, sha
+from .duckdb_sdk import canonical, sha, eligibility_at
 from .product_governance import NULL_STATES
 from . import product_calendar
 from .product_service import SERVICE_VERSION, current_only_business
@@ -379,6 +379,15 @@ class ProductQuery:
         operation = request.get("operation")
         if request.get("include_definition_publication") and (request.get("operation") != "read_product" or request.get("history_mode") != "snapshot_contents"):
             raise ProductQueryError("DEFINITION_PUBLICATION_MODE_UNSUPPORTED", "Explicit definition evidence is snapshot-only")
+        if "definition_publication_at" in request:
+            if request.get("include_definition_publication") is not True:
+                raise ProductQueryError("DEFINITION_PUBLICATION_INPUT_INVALID", "Cutoff requires explicit binding evidence")
+            try:
+                cutoff = request["definition_publication_at"]
+                if not isinstance(cutoff, str) or len(cutoff) != 20 or _utc_text(_utc(cutoff)) != cutoff:
+                    raise ValueError()
+            except (TypeError, ValueError):
+                raise ProductQueryError("DEFINITION_PUBLICATION_INPUT_INVALID", "Cutoff requires a valid second-precision UTC instant")
         errors = sorted(self.validator.iter_errors(request),
                         key=lambda exc: list(exc.absolute_path))
         if errors:
@@ -544,6 +553,8 @@ class ProductQuery:
         }
         if request.get("include_definition_publication") is True:
             body["include_definition_publication"] = True
+            if "definition_publication_at" in request:
+                body["definition_publication_at"] = request["definition_publication_at"]
         return "sha256:" + sha(canonical(body))
 
     # ------------------------------------------------------------------ cursor
@@ -1136,6 +1147,19 @@ class ProductQuery:
                 business_range=business_range, field_maps=field_maps,
                 diagnostics=diagnostics, units=units)
             if projected is not None:
+                if "definition_publication_at" in request:
+                    evidence = (projected.get("source_binding") or {}).get("definition_publication") or {}
+                    decision = eligibility_at(evidence.get("public_time") if evidence.get("status") == "bound" else None,
+                                              request["definition_publication_at"], mode="market_known_at")
+                    result = {"cutoff": request["definition_publication_at"], **decision,
+                              "scope": "selected_record_definition_publication_only"}
+                    if decision["decision"] == "eligible":
+                        evidence["public_time_eligibility"] = result
+                    else:
+                        # The supplementary cutoff must not reveal future or uncertain binding metadata.
+                        evidence = {"status": "not_qualified", "qualification": "not_asserted",
+                                    "public_time_eligibility": result}
+                    projected.setdefault("source_binding", {})["definition_publication"] = evidence
                 projected_rows.append(projected)
 
         projected_rows.sort(key=self._sort_key)
@@ -2910,6 +2934,8 @@ class ProductQuery:
             "subject": copy.deepcopy(request.get("subject")),
             "fields": sorted(request["fields"]),
             "business_time_range": copy.deepcopy(business_range),
+            **({"definition_publication_at": request["definition_publication_at"]}
+               if "definition_publication_at" in request else {}),
             "query_hash": query_hash,
             "sort": list(SORT_KEYS),
             "product": product_envelope,

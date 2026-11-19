@@ -490,6 +490,28 @@ test('same fixed definition can carry different publication evidence and must no
         assert.deepEqual(values(fixed), { old: '10', later: '20' }, 'Refusal must not rewrite either source record');
         assert.ok(fixed.result.rows.every((item: WfdRecord) => !('definition_publication' in (item.source_binding as WfdRecord))));
         const opted = await host.call('/r1/products/read', { snapshotId: later.snapshotId, productId: first.productId, includeDefinitionPublication: true });
+        const cutoffRead = await host.call('/r1/products/read', { snapshotId: later.snapshotId, productId: first.productId,
+          includeDefinitionPublication: true, definitionPublicationAt: '2025-01-10T12:00:00Z' });
+        assert.equal(cutoffRead.result.definition_publication_at, '2025-01-10T12:00:00Z');
+        assert.deepEqual(values(cutoffRead), values(fixed), 'Supplementary cutoff never changes snapshot record selection');
+        for (const item of cutoffRead.result.rows) {
+          const evidence = item.source_binding.definition_publication;
+          assert.equal(evidence.public_time_eligibility.cutoff, '2025-01-10T12:00:00Z');
+          assert.equal(evidence.qualification, 'not_asserted');
+          if (item.record_ref.logical_key === 'old') {
+            assert.equal(evidence.public_time_eligibility.decision, 'eligible');
+            assert.equal(evidence.public_time.earliest_utc, '2024-01-01T00:00:00Z');
+          } else {
+            assert.deepEqual(Object.keys(evidence).sort(), ['public_time_eligibility', 'qualification', 'status']);
+            assert.equal(evidence.public_time_eligibility.decision, 'ineligible');
+            assert.equal(JSON.stringify(evidence).includes('2025-04-01'), false);
+          }
+        }
+        await host.call('/r1/products/read', { snapshotId: later.snapshotId, productId: first.productId,
+          definitionPublicationAt: '2025-01-10T12:00:00Z' }, 409);
+        for (const bad of ['2025-02-30T12:00:00Z', '2025-01-10', '2025-01-10T12:00:00.001Z'])
+          await host.call('/r1/products/read', { snapshotId: later.snapshotId, productId: first.productId,
+            includeDefinitionPublication: true, definitionPublicationAt: bad }, 409);
         const legacyRows = structuredClone(opted.result.rows);
         for (const item of legacyRows) delete item.source_binding.definition_publication;
         assert.equal(canonicalWfdJson(legacyRows), canonicalWfdJson(fixed.result.rows), 'Default row bytes and selectedRowsSha256 input must not change');
