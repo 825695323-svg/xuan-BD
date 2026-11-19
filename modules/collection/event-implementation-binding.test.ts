@@ -40,7 +40,7 @@ test('both candidate and processing bindings change when only HTML or event proj
 
 test('processing binding includes the trusted OCR packet reader and native evidence validation', () => {
   const baseline = processingDigest(), original = fs.readFileSync;
-  for (const suffix of ['/data-processing/ocr-claim.ts', '/apps/server/ocr-review.ts', '/apps/server/media-review-source.ts', '/ocr/evidence.ts']) {
+  for (const suffix of ['/data-processing/ocr-claim.ts', '/apps/server/ocr-review.ts', '/apps/server/media-review-source.ts', '/ocr/evidence.ts', '/apps/server/transcription-review.ts', '/transcription/local.ts']) {
     let hits = 0;
     try {
       fs.readFileSync = ((...args: any[]) => {

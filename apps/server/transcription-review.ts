@@ -1,3 +1,4 @@
+import { mediaPacketDigest } from '../../modules/collection/data-processing/ocr-claim.js';
 import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import { parseWhisperTranscription } from '../../platform/capabilities/transcription/local.js';
 import { CoreError } from '../../platform/runtime/errors.js';
@@ -29,6 +30,8 @@ export function parseTranscriptionReviewEvidence(recognition: unknown, probeJson
 }
 
 export async function readTranscriptionReviewPacket(services: MediaReviewServices, materialId: string, taskId: string) {
+  const lifecycle = services.options.localData;
+  const accessBinding = lifecycle ? { dataId: lifecycle.dataId, generation: lifecycle.lifecycle.assertActive().generation } : null;
   const source = readMediaReviewSource(services, materialId, taskId, 'material.transcribe', unavailable);
   const { result, artifact } = source;
   // Missing historical execution metadata is never filled from current bindings or segment ends.
@@ -38,12 +41,14 @@ export async function readTranscriptionReviewPacket(services: MediaReviewService
     || result.segmentsTruncated !== (result.segments.length !== evidence.segments.length)
     || !sameMediaEvidence(result.segments, evidence.segments.slice(0, result.segments.length))) return unavailable();
   source.assertCurrent();
-  return { schema: 'bd-transcription-review-packet/1', taskId, source: source.source, original: source.original,
+  if (accessBinding) lifecycle!.lifecycle.assertPrivateAccess(accessBinding.generation);
+  const packet = { accessBinding, taskVersions: services.tasks.get(taskId).versions, schema: 'bd-transcription-review-packet/1', taskId, source: source.source, original: source.original,
     textReference: result.textReference, evidenceReference: result.evidenceReference, probeReference: result.probeReference,
     text, segments: evidence.segments, recognizer: evidence.recognizer,
     coordinateUnit: 'original_media_milliseconds_half_open', textBasis: 'transcription_recognition',
     reviewStatus: 'not_recorded', eventEligibility: 'not_established',
     limitations: ['转录文字及原生时段尚未逐字核对，不是已核实事实或原件文本偏移。',
       '沿用既有转录校验：文本换行和行首尾空白规范化比对，末端允许最多1000毫秒识别容差；不据字数推算位置。',
-      '不记录人工确认、不建立事件候选资格、不创建任务或修改原件。'] };
+      '不记录人工确认、不自行建立事件候选资格、不创建任务或修改原件。'] };
+  return { ...packet, packetSha256: mediaPacketDigest(packet) };
 }
