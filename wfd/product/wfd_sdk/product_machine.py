@@ -46,6 +46,9 @@ DATA_ONLY_OPERATIONS = {*DEFINITION_REPLACEMENT_OPERATIONS, "capabilities", "ser
                         "usage_status", "usage_audit_read", "usage_suspend",
                         "usage_authorize_repair", "usage_resolve",
                         *CONTEXT_QUERY_OPERATIONS}
+JOINT_MACHINE_OPERATIONS = {"capabilities", "service_capabilities", "schema", "contract_discovery",
+    "snapshot_status", "fixed_read", "fixed_read_page", "fixed_read_product_page", "submit",
+    "recovery", "request_status", "usage_status", "usage_audit_read", "usage_suspend", "usage_authorize_repair"}
 # 正式用途治理：只暴露给 data_only；写操作要求 publish 且复用 WFD writer_lock。
 USAGE_OPERATIONS = {"usage_status", "usage_audit_read", "usage_suspend",
                     "usage_authorize_repair", "usage_resolve"}
@@ -235,6 +238,7 @@ def _caller_identity(config, service):
         "trusted_actor_namespace": config["caller"]["trusted_actor_namespace"],
         "caller_roles": sorted(service.caller_roles),
         "connection_id": config["connection_id"],
+        **({"storage_format": config["storage_format"]} if config.get("storage_format") else {}),
         "source_binding": "trusted constructor configuration; request cannot grant permissions",
     }
 
@@ -378,6 +382,11 @@ def _load_config(path):
         if Path(binding.mount_point).resolve() != store:
             raise ValueError("CONFIG_INVALID:volume mount_point must equal store")
         volume = binding.to_dict()
+    storage_format = config.get("storage_format")
+    if storage_format not in (None, "joint_experimental"):
+        raise ValueError("CONFIG_INVALID:storage_format")
+    if storage_format and (profile != "data_only" or volume is not None):
+        raise ValueError("CONFIG_INVALID:joint format requires local data_only")
     max_evidence = limits.get("max_evidence_bytes", 8_388_608)
     for label, value, low, high in (
             ("max_batch_chunks", max_batch_chunks, 1, 512),
@@ -425,10 +434,17 @@ def _build_service(config, *, operation=None):
         from wfd_sdk.product_data_service import WFDDataOnlyService
     except Exception as exc:
         raise RuntimeError("SERVICE_IMPORT_FAILED:" + type(exc).__name__ + ": " + str(exc)) from exc
-    # Experimental joint volumes are SDK-only until governed group operations
-    # are integrated; BD cannot select one as an active machine connection.
-    from wfd_sdk.joint_state import reject_unsupported
-    reject_unsupported(Path(config["store"]), "experimental_machine_connection")
+    # Connection probing never provisions or migrates a volume. Both the
+    # trusted opt-in and the on-disk fresh-volume marker must agree.
+    from wfd_sdk.joint_state import is_joint, reject_unsupported
+    joint = is_joint(Path(config["store"]))
+    if config.get("storage_format") == "joint_experimental":
+        if not joint or config.get("profile") != "data_only" or config.get("volume"):
+            raise ValueError("JOINT_CONFIG_FORMAT_MISMATCH")
+        if operation not in JOINT_MACHINE_OPERATIONS:
+            raise ValueError("JOINT_OPERATION_UNSUPPORTED:" + str(operation))
+    elif joint:
+        reject_unsupported(Path(config["store"]), "experimental_machine_connection")
     if operation in DEFINITION_REPLACEMENT_OPERATIONS:
         if config.get("volume") or not any(g["operation"] == operation for g in config.get("definition_replacement_access", [])):
             raise PermissionError("DEFINITION_REPLACEMENT_ACTION_DENIED")
@@ -454,6 +470,9 @@ def _build_service(config, *, operation=None):
         store_write = operation in DEFINITION_REPLACEMENT_WRITES | {"submit", "recovery", "batch_finalize",
                                     "register_write_target",
                                     "register_adjustment_anchor"}
+    if joint and operation in {"usage_suspend", "usage_authorize_repair"}:
+        store_write = True
+        role = "publish"
     writable = store_write and role in config["caller"]["roles"]
     engine = WFDDuckDBPrototype.open_existing(
         Path(config["store"]), load_protocol_validator(
@@ -481,6 +500,40 @@ def _build_service(config, *, operation=None):
         unit_registry=config["units"],
         trusted_actor_namespaces={config["caller"]["trusted_actor_namespace"]},
     )
+
+
+def _joint_token_arguments(arguments):
+    if "expected_commit_id" not in arguments:
+        return {}
+    token = arguments["expected_commit_id"]
+    if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{64}", token):
+        raise ValueError("REQUEST_INVALID:expected_commit_id")
+    return {"expected_commit_id": token}
+
+
+def _joint_operation_commit(service, operation, arguments):
+    """Original activated operation token, never a later current-head fallback."""
+    state = service.engine.state
+    view = state.view()
+    digest = view["commit_id"]
+    for _ in range(1024):
+        record = state._object("commit", digest=digest)
+        if operation in {"usage_suspend", "usage_authorize_repair"}:
+            wanted = {"kind": "suspend" if operation == "usage_suspend" else "authorize_repair",
+                      "digest": _canonical_digest(arguments["declaration"])[7:],
+                      "predecessor_commit": arguments.get("expected_commit_id")}
+            matched = record.get("governance_operation") == wanted
+        else:
+            document = arguments["document"]
+            matched = (record.get("request_identity") == document.get("request_identity")
+                       and record.get("document_digest") == _canonical_digest(document)[7:]
+                       and record.get("predecessor_commit") == arguments.get("expected_commit_id"))
+        if matched:
+            return digest
+        digest = record.get("predecessor_commit")
+        if digest is None:
+            return None
+    raise ValueError("JOINT_ANCESTRY_BUDGET")
 
 
 def _request_object(value):
@@ -1468,10 +1521,10 @@ def _handle(service, config, request):
             reason=arguments.get("reason") or "explicit registration")
         result["service_identity"] = service_identity
     elif operation == "submit":
-        _exact(arguments, {"document"}, {"document"})
+        _exact(arguments, {"document", "expected_commit_id"}, {"document"})
         document = arguments["document"]
         request_identity = _document_identity(document)
-        result = service.submit(document)
+        result = service.submit(document, **_joint_token_arguments(arguments))
         result = {**result, "request_identity": request_identity,
                   "document_sha256": _canonical_digest(document),
                   "service_identity": service_identity}
@@ -1499,13 +1552,13 @@ def _handle(service, config, request):
             result = {**status, "service_identity": service_identity,
                       "recovery_action": _recovery_action(status.get("state"))}
     elif operation == "recovery":
-        _exact(arguments, {"document"}, {"document"})
+        _exact(arguments, {"document", "expected_commit_id"}, {"document"})
         document = arguments["document"]
         request_identity = _document_identity(document)
         prior = service.request_status(request_identity)
         if prior.get("state") == "unknown":
             raise ValueError("RECOVERY_NOT_FOUND:no persisted state for this request_identity")
-        result = service.submit(document)
+        result = service.submit(document, **_joint_token_arguments(arguments))
         result = {**result, "request_identity": request_identity,
                   "document_sha256": _canonical_digest(document),
                   "recovery": {"prior_state": prior.get("state"),
@@ -1548,9 +1601,11 @@ def _handle(service, config, request):
             result["compute_eligible"] = False
             result["service_identity"] = service_identity
         elif operation == "usage_suspend":
-            result = usage_suspension.suspend(service.root, arguments.get("declaration"))
+            _exact(arguments, {"declaration", "expected_commit_id"}, {"declaration"})
+            result = usage_suspension.suspend(service.root, arguments["declaration"], **_joint_token_arguments(arguments))
         elif operation == "usage_authorize_repair":
-            result = usage_suspension.authorize_repair(service.root, arguments.get("declaration"))
+            _exact(arguments, {"declaration", "expected_commit_id"}, {"declaration"})
+            result = usage_suspension.authorize_repair(service.root, arguments["declaration"], **_joint_token_arguments(arguments))
         else:
             result = usage_suspension.resolve(service.root, arguments.get("declaration"))
         result = {**result, "service_identity": service_identity}
@@ -1608,6 +1663,11 @@ def _handle(service, config, request):
         _exact(arguments, {"product_id", "snapshot_id"}, {"product_id", "snapshot_id"})
         result = service.trace(arguments["product_id"], snapshot_id=arguments["snapshot_id"])
         result = {**result, "service_identity": service_identity}
+    if config.get("storage_format") == "joint_experimental" and operation in {
+            "submit", "recovery", "usage_suspend", "usage_authorize_repair"}:
+        result = {**result, "operation_commit_id": (result.get("joint_commit_id")
+                  if operation in {"usage_suspend", "usage_authorize_repair"}
+                  else _joint_operation_commit(service, operation, arguments))}
     response = {
         "protocol_version": MACHINE_PROTOCOL,
         "request_id": request_id,
@@ -1741,6 +1801,12 @@ def _capabilities(service, config, identity, service_identity):
                                 "local_data_only_store": True,
                                 "caller_authorized": any(g["operation"] == name for g in config.get("definition_replacement_access", []))})
     operations["filter_objects"].update(filter_capabilities(config["protocol_root"]))
+    if config.get("storage_format") == "joint_experimental":
+        unsupported.extend({"operation": name, "reason": "joint format not adapted"}
+                           for name in sorted(set(operations) - JOINT_MACHINE_OPERATIONS))
+        operations = {key: value for key, value in operations.items() if key in JOINT_MACHINE_OPERATIONS}
+        query_scope = {"supported_operations": [], "reason": "joint format not adapted"}
+
     return {
         "machine_protocol": MACHINE_PROTOCOL,
         "service_identity": service_identity,

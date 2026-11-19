@@ -90,6 +90,7 @@ def governance_write(function):
             view = state.view()
             if view['commit_id'] != expected_commit_id:
                 record = view['record']
+                operation_commit_id = view['commit_id']
                 for _ in range(1024):
                     if record.get('governance_operation') == operation:
                         break
@@ -97,6 +98,7 @@ def governance_write(function):
                     if predecessor is None:
                         raise StateError('JOINT_CAS_CONFLICT')
                     record = state._object('commit', digest=predecessor)
+                    operation_commit_id = predecessor
                 else:
                     raise StateError('JOINT_ANCESTRY_BUDGET')
                 # Existing domain idempotency revalidates declaration. No new write.
@@ -105,7 +107,9 @@ def governance_write(function):
                 replay = False
             token = _governance.set((str(Path(root).resolve()), operation, replay))
             try:
-                return function(root, declaration)
+                result = function(root, declaration)
+                committed = operation_commit_id if replay else state.view()['commit_id']
+                return {**result, 'joint_commit_id': committed}
             finally:
                 _governance.reset(token)
     return guarded

@@ -33,7 +33,9 @@ export async function readRecordEvidence(value: unknown, options: {
   if (expected.length !== 1) fail('ROW', '冻结输入没有唯一对应行。');
   const binding = readR1ContractBinding(member, identity.datasetId, identity.productId, true)!;
   signal?.throwIfAborted();
-  const { result } = await runtime.client.fixedReadHistory(found.snapshotId, identity.productId, signal);
+  // Recheck the exact publication snapshot leaf, not its superseded predecessors.
+  // The exact version check below still rejects any absent or different row.
+  const { result } = await runtime.client.fixedRead(found.snapshotId, identity.productId, signal);
   signal?.throwIfAborted();
   const checkCurrent = () => {
     options.assertCurrent(found.requestId);

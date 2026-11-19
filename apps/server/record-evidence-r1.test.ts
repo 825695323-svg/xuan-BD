@@ -59,9 +59,9 @@ test('formal record evidence fixes exact identity, current binding and original 
       .run(seed.currentRequest!.requestId,identity.productId,identity.recordId,identity.recordVersion);
     assert.deepEqual(await host.call('/r1/records/evidence',identity),packet);
 
-    const client=host.services.r1Runtime!.client, read=client.fixedReadHistory.bind(client);
-    client.fixedReadHistory=async(...args)=>{const reply=await read(...args);return {...reply,result:{...reply.result,rows:[]}};};
-    await reject(identity);client.fixedReadHistory=read;
+    const client=host.services.r1Runtime!.client, read=client.fixedRead.bind(client);
+    client.fixedRead=async(...args)=>{const reply=await read(...args);return {...reply,result:{...reply.result,rows:[]}};};
+    await reject(identity);client.fixedRead=read;
     const runtime=host.services.r1Runtime!, current=runtime.currentIdentity.bind(runtime);
     runtime.currentIdentity=()=>({...current(),namespace:'different-bound-database'});
     await reject(identity);runtime.currentIdentity=current;
@@ -188,10 +188,10 @@ test('record evidence isolates the second publication-set member and refuses con
       const packet=await host.call('/r1/records/evidence',identity);
       assert.equal(packet.materials.length,1);assert.equal(packet.materials[0].materialId,built.materials.find(item=>item.outputId===member.outputId)!.materialId);
       assert.equal(packet.source.source_id,'evidence-set-'+member.outputId);
-      const read=host.services.r1Runtime!.client.fixedReadHistory.bind(host.services.r1Runtime!.client);
-      host.services.r1Runtime!.client.fixedReadHistory=async(...args)=>{const response=await read(...args);const result=structuredClone(response.result);for(const product of result.products as WfdRecord[]) delete product.contract_refs;return {...response,result};};
+      const read=host.services.r1Runtime!.client.fixedRead.bind(host.services.r1Runtime!.client);
+      host.services.r1Runtime!.client.fixedRead=async(...args)=>{const response=await read(...args);const result=structuredClone(response.result);for(const product of result.products as WfdRecord[]) delete product.contract_refs;return {...response,result};};
       await host.call('/r1/records/evidence',identity,409);
-      host.services.r1Runtime!.client.fixedReadHistory=read;
+      host.services.r1Runtime!.client.fixedRead=read;
     }
   }finally{await host.close();}
 });

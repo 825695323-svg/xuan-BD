@@ -50,6 +50,8 @@ export interface R1ProcessRef {
 }
 export interface R1EvidenceRef { ref_id: string; content_sha256: string; kind: string }
 export interface R1LocalReferences {
+  /** Explicit original joint CAS token; not part of the WFD document schema. */
+  expectedCommitId?: string;
   originalIds: string[];
   materialIds: string[];
   sourceRefs: R1SourceRef[];
@@ -428,7 +430,7 @@ export class R1HandoffService {
     this.markSending(requestId);
     let reply: WfdProductMachineReply;
     try {
-      reply = await client.submit(document, signal);
+      reply = await client.submit(document, signal, (JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences).expectedCommitId);
     } catch (error) {
       const accepted = (error as { mayHaveBeenAccepted?: boolean }).mayHaveBeenAccepted === true;
       const state = accepted ? 'pending_unknown' : 'send_failed';
@@ -724,7 +726,7 @@ export class R1HandoffService {
     if(R1_SETTLED_STATES.has(String(attempt.state)))return this.localExplanation(requestId);
     this.assertSourceAuthorized(requestId);
     const document=JSON.parse(String(attempt.document_json)) as WfdRecord;
-    const reply=await client.resumeAccepted(document,signal);
+    const reply=await client.resumeAccepted(document,signal,(JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences).expectedCommitId);
     try{return await this.consumeResult(requestId,reply.result,client,signal);}
     catch(error){
       this.db.prepare("UPDATE r1_handoff_attempts SET state='pending_receipt',receipt_json=?,error_json=?,updated_at=? WHERE request_id=?")
@@ -989,10 +991,11 @@ export class R1HandoffService {
   }
 
   private assertLocalRefs(refs: R1LocalReferences, documentSha256: string): void {
+    if (refs.expectedCommitId !== undefined && !/^[0-9a-f]{64}$/u.test(refs.expectedCommitId)) fail('R1_LOCAL_REFS', 'joint 原提交令牌无效。');
     if (refs?.outputs) {
       const members = Object.values(refs.outputs);
       if (members.length < 2 || members.length > 16 || refs.fixedAlgorithm || !refs.publicationSetId
-        || members.some(member => member.outputs || member.fixedAlgorithm)) fail('R1_SET_REFERENCE', '集合来源引用结构无效。');
+        || members.some(member => member.outputs || member.fixedAlgorithm || member.expectedCommitId !== refs.expectedCommitId)) fail('R1_SET_REFERENCE', '集合来源引用结构无效。');
       for (const field of ['originalIds','materialIds','sourceRefs','processRefs','evidenceRefs'] as const) {
         const expected: unknown[] = [];
         for (const member of members) expected.push(...member[field]);
@@ -1168,7 +1171,7 @@ export class WfdStructuredIngestClient {
         fixed_read_page: isWfdRecord(serviceCaps.operations) && isWfdRecord(serviceCaps.operations.fixed_read_page)
           ? serviceCaps.operations.fixed_read_page : null } };
   }
-  async submit(document: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
+  async submit(document: WfdRecord, signal?: AbortSignal, expectedCommitId?: string): Promise<WfdProductMachineReply> {
     assertDataOnly(document);
     if (document.protocol_version !== R1_PROTOCOL) fail('R1_PROTOCOL', '新 data-only 流程只接受 wfd.structured-ingest/1.0。');
     if (!this.checker || !this.schemaSha256) fail('R1_SCHEMA_REQUIRED', 'data-only 客户端必须绑定公开 structured-ingest schema。');
@@ -1178,7 +1181,7 @@ export class WfdStructuredIngestClient {
       'WFD 尚未公开 data_only/structured-ingest profile；未发送提交，不假称成功。', {
         operation: 'submit', requestId: 'r1-profile', remoteCode: 'WFD_STRUCTURED_PROFILE_UNAVAILABLE',
       });
-    return this.client.submit(document, signal);
+    return this.client.submit(document, signal, expectedCommitId);
   }
   async pageReadSupport(document: WfdRecord, signal?: AbortSignal): Promise<boolean> {
     const probe = await this.probeProfile(signal), page = asRecord(probe.advertised.fixed_read_page);
@@ -1199,7 +1202,7 @@ export class WfdStructuredIngestClient {
       || ['trading', 'accounting'].includes(String(time.period_type)));
   }
   pageReadSize():number { return this.negotiatedReadPageSize; }
-  async resumeAccepted(document:WfdRecord,signal?:AbortSignal):Promise<WfdProductMachineReply> {
+  async resumeAccepted(document:WfdRecord,signal?:AbortSignal,expectedCommitId?:string):Promise<WfdProductMachineReply> {
     assertDataOnly(document);
     const identity=asRecord(document.request_identity),status=(await this.client.requestStatusPage(identity,
       {outputOffset:0,outputLimit:50,outputDetail:'full'},signal)).result;
@@ -1207,8 +1210,8 @@ export class WfdStructuredIngestClient {
       ||status.input_fingerprint!==wfdSha256(canonicalWfdJson(document)))
       fail('R1_ORIGINAL_NOT_ACCEPTED','只有受信原intent已持久受理且文档摘要完全一致，才可明确续办；未知不重投。');
     const head=(await this.client.snapshotStatus(signal)).result;
-    if(head.snapshot_id!==document.expected_parent_snapshot_id)fail('R1_RESUME_PARENT_CHANGED','当前HEAD与原文档冻结的父快照不同，未改父版本续办。');
-    return this.client.recovery(document,signal);
+    if(head.snapshot_id!==document.expected_parent_snapshot_id || head.joint_commit_id!==expectedCommitId)fail('R1_RESUME_PARENT_CHANGED','当前HEAD与原文档冻结的父快照不同，未改父版本续办。');
+    return this.client.recovery(document,signal,expectedCommitId);
   }
   fixedReadPage(options: WfdProductMachineReadPageOptions, signal?: AbortSignal) { return this.client.readPage(options, signal); }
   fixedReadHistory(snapshotId: string, productId: string, signal?: AbortSignal) {

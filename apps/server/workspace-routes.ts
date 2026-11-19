@@ -159,9 +159,9 @@ export function createWorkspaceRouter(services: ApplicationServices, assertReadA
       const body = requestBody(req, ['requestId', 'operatorId', 'input']);
       res.status(201).json(corrections.register(body.input, operator(req, body)));
     });
-    router.post('/corrections/cases/:caseId/impact', (req, res) => {
+    router.post('/corrections/cases/:caseId/impact', async (req, res) => {
       const body = requestBody(req, ['requestId', 'operatorId']);
-      res.json(corrections.freezeImpact(id(req.params.caseId), operator(req, body)));
+      res.json(await corrections.freezeImpact(id(req.params.caseId), operator(req, body)));
     });
     router.post('/corrections/cases/:caseId/suspend', async (req, res) => {
       const body = requestBody(req, ['requestId', 'operatorId']);

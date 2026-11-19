@@ -84,7 +84,8 @@ export class R1ProductReader {
   snapshotStatus(signal?: AbortSignal): Promise<R1SnapshotStatus> {
     return this.run(async (runtime, identity, active, wait) => {
       const { result } = await runtime.client.snapshotStatus(wait); active(); boundedResult(result);
-      if (result.format_version !== 'wfd.snapshot-status/1' || result.profile !== 'data_only' || result.authority !== 'active_head'
+      if (result.format_version !== 'wfd.snapshot-status/1' || result.profile !== 'data_only' || !['active_head', 'joint_commit'].includes(String(result.authority))
+        || (result.authority === 'joint_commit' ? (typeof result.joint_commit_id !== 'string' || !/^[0-9a-f]{64}$/u.test(result.joint_commit_id) || result.storage_format !== 'wfd.joint-volume.experimental/1') : result.joint_commit_id !== undefined)
         || !(result.snapshot_id === null || fixed(result.snapshot_id)) || result.empty !== (result.snapshot_id === null)
         || result.connection_id !== identity.connectionId || result.caller_id !== identity.callerId
         || result.trusted_actor_namespace !== identity.namespace || !Array.isArray(result.caller_roles)
@@ -98,7 +99,8 @@ export class R1ProductReader {
         || Object.keys(holding).sort().join(',') !== 'instance_id,source' || !identifier(holding.instance_id)
         || !['volume_binding', 'target_instance'].includes(String(holding.source))))
         fail('R1_READ_RESPONSE_INVALID', '实例持有身份不是当前WFD提供的固定绑定。');
-      return { snapshotId: result.snapshot_id as string | null, empty: result.empty as boolean, authority: 'active_head',
+      return { snapshotId: result.snapshot_id as string | null, empty: result.empty as boolean, authority: result.authority as R1SnapshotStatus['authority'],
+        ...(result.authority === 'joint_commit' ? { jointCommitId: result.joint_commit_id as string } : {}),
         connection: { ...connection(identity), roles: result.caller_roles as string[] },
         units: result.unit_definitions as R1SnapshotStatus['units'],
         ...(holding === undefined ? {} : { holdingInstance: holding === null ? null : { instanceId: (holding as WfdRecord).instance_id as string,
