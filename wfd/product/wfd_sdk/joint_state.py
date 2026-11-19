@@ -14,6 +14,7 @@ MARKER = 'catalog/volume-format.json'
 CURRENT = 'catalog/joint-current.json'
 _submission = ContextVar('wfd_joint_submission', default=None)
 _read_view = ContextVar('wfd_joint_read', default=None)
+_governance = ContextVar('wfd_joint_governance', default=None)
 
 
 def is_joint(root):
@@ -71,6 +72,45 @@ def current_usage(root):
     return copy.deepcopy(JointStateStore(root).view()["usage"])
 
 
+def governance_write(function):
+    """Host governance methods retain validation; fresh volumes add explicit CAS."""
+    @functools.wraps(function)
+    def guarded(root, declaration, *, expected_commit_id=None):
+        if not is_joint(root):
+            if expected_commit_id is not None:
+                raise StateError('JOINT_TOKEN_ON_LEGACY_VOLUME')
+            return function(root, declaration)
+        if not isinstance(expected_commit_id, str) or not expected_commit_id:
+            raise StateError('JOINT_PREDECESSOR_REQUIRED')
+        from .duckdb_sdk import canonical, sha
+        operation = {'kind': function.__name__, 'digest': sha(canonical(declaration)),
+                     'predecessor_commit': expected_commit_id}
+        state = JointStateStore(root)
+        with writer_lock(root):
+            view = state.view()
+            if view['commit_id'] != expected_commit_id:
+                record = view['record']
+                for _ in range(1024):
+                    if record.get('governance_operation') == operation:
+                        break
+                    predecessor = record.get('predecessor_commit')
+                    if predecessor is None:
+                        raise StateError('JOINT_CAS_CONFLICT')
+                    record = state._object('commit', digest=predecessor)
+                else:
+                    raise StateError('JOINT_ANCESTRY_BUDGET')
+                # Existing domain idempotency revalidates declaration. No new write.
+                replay = True
+            else:
+                replay = False
+            token = _governance.set((str(Path(root).resolve()), operation, replay))
+            try:
+                return function(root, declaration)
+            finally:
+                _governance.reset(token)
+    return guarded
+
+
 class JointStateStore(StateStore):
     def __init__(self, root):
         super().__init__(Path(root))
@@ -105,9 +145,10 @@ class JointStateStore(StateStore):
         if record.get('format') != FORMAT or not isinstance(record.get('state'), dict):
             raise StateError('JOINT_COMMIT_INVALID')
         usage = self._object('usage', digest=record.get('usage_ref'))
-        if usage != {'format_version': 'wfd.usage-suspension/1', 'issues': [], 'tickets': []}:
-            # First slice only inherits initialized governance; no unsupported policies.
-            raise StateError('JOINT_GOVERNANCE_UNSUPPORTED')
+        if (usage.get('format_version') != 'wfd.usage-suspension/1'
+                or not isinstance(usage.get('issues'), list)
+                or not isinstance(usage.get('tickets'), list)):
+            raise StateError('JOINT_GOVERNANCE_INVALID')
         return {'commit_id': pointer['commit'], 'record': record, 'usage': usage}
 
     def require_activated_snapshot(self, view, snapshot_id):
@@ -159,9 +200,27 @@ class JointStateStore(StateStore):
         StateStore._write_atomic(self, {'format': FORMAT, 'commit': digest})
         return self.read()
 
+    def commit_governance(self, usage):
+        context = _governance.get()
+        if not context or context[0] != str(self.root.resolve()) or context[2]:
+            raise StateError('JOINT_GOVERNANCE_CONTEXT_REQUIRED')
+        with writer_lock(self.root):
+            view = self.view()
+            if view['commit_id'] != context[1]['predecessor_commit']:
+                raise StateError('JOINT_CAS_CONFLICT')
+            state = copy.deepcopy(view['record']['state'])
+            state['update_seq'] += 1
+            state['updated_at_utc'] = _now()
+            record = {'format': FORMAT, 'predecessor_commit': view['commit_id'],
+                      'state': state, 'usage_ref': self._object('usage', usage),
+                      'request_identity': None, 'document_digest': None,
+                      'governance_operation': copy.deepcopy(context[1])}
+            digest = self._object('commit', record)
+            StateStore._write_atomic(self, {'format': FORMAT, 'commit': digest})
+
     @contextmanager
-    def submission(self, expected_commit_id, identity, document_digest):
-        token = _submission.set((str(self.root.resolve()), expected_commit_id, copy.deepcopy(identity), document_digest))
+    def submission(self, expected_commit_id, identity, document_digest, *, candidate_verifier=None):
+        token = _submission.set((str(self.root.resolve()), expected_commit_id, copy.deepcopy(identity), document_digest, candidate_verifier))
         try:
             yield
         finally:
@@ -182,6 +241,13 @@ class JointStateStore(StateStore):
                 return {'ok': False, 'code': 'WRITER_NOT_AUTHORIZED'}
             if writer_epoch is not None and writer_epoch != st['writer_epoch']:
                 return {'ok': False, 'code': 'WRITER_EPOCH_MISMATCH'}
+            usage_ref = view['record']['usage_ref']
+            verification = None
+            if context[4] is not None:
+                usage, verification = context[4](snapshot_id, copy.deepcopy(view))
+                if self.view()['commit_id'] != context[1]:
+                    return {'ok': False, 'code': 'JOINT_CAS_CONFLICT'}
+                usage_ref = self._object('usage', usage)
             sequence = st['update_seq'] + 1
             state = {**st, 'active_head': snapshot_id, 'head_snapshot_sha256': 'sha256:' + _sha_file(Path(snapshot_path)),
                      'prev_head': expected_prev, 'update_seq': sequence, 'updated_at_utc': _now(),
@@ -189,7 +255,8 @@ class JointStateStore(StateStore):
                      'activation_history': (st['activation_history'] + [{'snapshot_id': snapshot_id,
                         'prev_head': expected_prev, 'update_seq': sequence, 'at_utc': _now()}])[-200:]}
             record = {'format': FORMAT, 'predecessor_commit': view['commit_id'], 'state': state,
-                      'usage_ref': view['record']['usage_ref'], 'request_identity': context[2], 'document_digest': context[3]}
+                      'usage_ref': usage_ref, 'request_identity': context[2], 'document_digest': context[3],
+                      'verification': verification}
             digest = self._object('commit', record)
             self._object('commit', digest=digest)
             StateStore._write_atomic(self, {'format': FORMAT, 'commit': digest})

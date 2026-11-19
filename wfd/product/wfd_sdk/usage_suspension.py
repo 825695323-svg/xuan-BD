@@ -28,6 +28,7 @@ from pathlib import Path
 from . import row_version_objects
 from .duckdb_sdk import canonical, sha
 from .writerlock import writer_lock
+from .joint_state import governance_write
 
 FORMAT = "wfd.usage-suspension/1"
 FILENAME = "catalog/usage_suspensions.json"
@@ -68,6 +69,10 @@ def load(root) -> dict:
 
 
 def _atomic(root, data) -> None:
+    from .joint_state import is_joint, JointStateStore
+    if is_joint(root):
+        JointStateStore(root).commit_governance(data)
+        return
     path = _path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
@@ -289,10 +294,9 @@ def _assert_complete_scope(issue: dict, ticket_revisions: list) -> None:
         raise ValueError("USAGE_RESOLUTION_SCOPE_INCOMPLETE")
 
 
+@governance_write
 def suspend(root, declaration) -> dict:
     """登记一个明确用途暂停事项；与 submit 共用 writer_lock。"""
-    from .joint_state import reject_unsupported
-    reject_unsupported(root, "usage_suspend")
     if not isinstance(declaration, dict):
         raise ValueError("USAGE_DECLARATION_INVALID")
     allowed = {"issue_id", "error_type", "reason", "evidence_digest", "error_binding_digest",
@@ -356,6 +360,7 @@ def status(root) -> dict:
                                              for issue in data["issues"] for scope in issue.get("scopes", []))}
 
 
+@governance_write
 def authorize_repair(root, declaration) -> dict:
     """签发一次精确修复票据：绑定不可变文档摘要、原请求身份、精确前驱集合与确认摘要。
 
@@ -363,8 +368,6 @@ def authorize_repair(root, declaration) -> dict:
     ``authorized`` 取得票据。票据不因失败而失效，原号恢复由 WFD 既有
     request_identity 幂等状态保证，不会因暂停创建新提交身份。
     """
-    from .joint_state import reject_unsupported
-    reject_unsupported(root, "usage_authorize_repair")
     if not isinstance(declaration, dict):
         raise ValueError("USAGE_TICKET_INVALID")
     allowed = {"ticket_id", "issue_id", "document_digest", "request_identity", "revisions",
@@ -511,6 +514,190 @@ def resolve(root, declaration) -> dict:
         _atomic(root, data)
     return {"issue_id": issue_id, "state": "resolved", "idempotent": False,
             "resolution": copy.deepcopy(resolution), "legacy_restrictions_retained": True}
+
+
+def _verify_original_joint_group(root, document, revisions):
+    """Narrow repair boundary: one complete group in one activated predecessor.
+
+    The caller separately checks activation. Stored member bindings and row
+    versions, not the new declaration alone, establish original membership.
+    Cross-snapshot or overlapping-group composition remains unsupported.
+    """
+    snapshots = {item["snapshot_id"] for item in revisions}
+    groups = document.get("consistency_groups")
+    if len(snapshots) != 1 or not isinstance(groups, dict) or len(groups) != 1:
+        raise ValueError("USAGE_JOINT_ORIGINAL_GROUP_REQUIRED")
+    group_id, members = next(iter(groups.items()))
+    keys = [item["output_key"] for item in document["outputs"]]
+    if (not isinstance(group_id, str) or not group_id or not isinstance(members, list)
+            or not members or any(not isinstance(key, str) for key in members)
+            or len(set(members)) != len(members) or set(members) != set(keys)):
+        raise ValueError("USAGE_JOINT_ORIGINAL_GROUP_INCOMPLETE")
+    sid = next(iter(snapshots))
+    original = _read_snapshot(root, sid)
+    request_key = original.get("request_key")
+    if not isinstance(request_key, str) or re.fullmatch(r"[0-9a-f]{64}", request_key) is None:
+        raise ValueError("USAGE_JOINT_ORIGINAL_FORMAL_MISSING")
+    formal = _read_json(Path(root) / "catalog/product_service/data_only_formal_publications" / f"{request_key}.json",
+                        "USAGE_JOINT_ORIGINAL_FORMAL_MISSING")
+    identity = formal.get("request_identity")
+    fingerprint = formal.get("input_fingerprint")
+    if (not isinstance(identity, dict) or set(identity) != {"dataset_id", "trusted_actor_namespace", "request_id", "submission_digest"}
+            or not isinstance(fingerprint, str) or _request_key(identity) != request_key):
+        raise ValueError("USAGE_JOINT_ORIGINAL_FORMAL_MISMATCH")
+    _formal_publication(root, {"request_identity": identity, "document_digest": fingerprint}, sid)
+    if any((formal.get("checks") or {}).get(name) is not True
+           for name in ("caller_publish_role", "contracts_verified")):
+        raise ValueError("USAGE_JOINT_ORIGINAL_FORMAL_MISMATCH")
+    formal_outputs = formal.get("outputs")
+    if not isinstance(formal_outputs, list):
+        raise ValueError("USAGE_JOINT_ORIGINAL_FORMAL_MISMATCH")
+    original_refs = []
+    products = set()
+    for key in members:
+        entries = [entry for entry in original.get("files", []) if entry.get("output_key") == key]
+        if len(entries) != 1:
+            raise ValueError("USAGE_JOINT_ORIGINAL_GROUP_AMBIGUOUS")
+        entry = entries[0]
+        bundle = entry.get("source_bundle") or {}
+        stored_groups = (bundle.get("product_service") or {}).get("consistency_groups")
+        if not isinstance(stored_groups, dict):
+            raise ValueError("USAGE_JOINT_ORIGINAL_GROUP_REQUIRED")
+        stored_members = stored_groups.get(group_id)
+        if (not isinstance(stored_members, list) or any(not isinstance(k, str) for k in stored_members)
+                or len(stored_members) != len(members) or set(stored_members) != set(members)):
+            raise ValueError("USAGE_JOINT_ORIGINAL_GROUP_INCOMPLETE")
+        for other_id, other_members in stored_groups.items():
+            if (not isinstance(other_members, list)
+                    or any(not isinstance(k, str) for k in other_members)
+                    or (other_id != group_id and set(other_members) & set(members))):
+                raise ValueError("USAGE_JOINT_ORIGINAL_GROUP_AMBIGUOUS")
+        binding = (bundle.get("_wfd_product_bindings") or {}).get(key) or {}
+        product_id = (binding.get("product") or {}).get("product_id")
+        if not product_id or product_id != entry.get("product_id") or product_id in products:
+            raise ValueError("USAGE_JOINT_ORIGINAL_GROUP_BINDING")
+        products.add(product_id)
+        versions = bundle.get("_wfd_row_versions")
+        if isinstance(versions, str):
+            versions = row_version_objects.load_versions(root, versions)
+        rows = versions.get(key) if isinstance(versions, dict) else None
+        if not isinstance(rows, dict) or not rows:
+            raise ValueError("USAGE_JOINT_ORIGINAL_GROUP_ROWS")
+        for logical_key, row in rows.items():
+            if (not isinstance(row, dict) or row.get("logical_key") != logical_key
+                    or row.get("withdrawn") is not False):
+                raise ValueError("USAGE_JOINT_ORIGINAL_GROUP_ROWS")
+            original_refs.append({"product_id": product_id, "snapshot_id": sid,
+                                  "logical_key": logical_key, "revision_id": row.get("revision_id")})
+        formal_members = [item for item in formal_outputs if item.get("output_key") == key]
+        expected_records = sorted((logical_key, row["revision_id"], False) for logical_key, row in rows.items())
+        if (len(formal_members) != 1 or formal_members[0].get("product_id") != product_id
+                or formal_members[0].get("snapshot_id") != sid
+                or sorted((item.get("record_id"), item.get("record_version"), item.get("withdrawn"))
+                          for item in formal_members[0].get("records", [])) != expected_records):
+            raise ValueError("USAGE_JOINT_ORIGINAL_FORMAL_MISMATCH")
+        submitted = next(item for item in document["outputs"] if item["output_key"] == key)
+        if any(change["previous"].get("product_id") != product_id
+               for change in submitted["revisions"].values()):
+            raise ValueError("USAGE_JOINT_ORIGINAL_GROUP_BINDING")
+    if _validate_revisions(original_refs) != revisions:
+        raise ValueError("USAGE_JOINT_ORIGINAL_GROUP_INCOMPLETE")
+    return {"snapshot_id": sid, "group_id": group_id, "members": sorted(members)}
+
+
+def _prepare_joint_resolution(root, *, joint_state, captured_view, snapshot, document, output_records):
+    """Build, but never persist, a complete candidate governance transition.
+
+    Private pre-activation helper: the caller holds writer_lock, has checked
+    publish permission/non-sandbox mode and every fixed-output content check.
+    Its result is candidate evidence, NOT an activated/formal receipt. The
+    caller must bind both returned usage and snapshot in the same joint CAS.
+    """
+    current = joint_state.view()
+    if canonical(current) != canonical(captured_view):
+        raise ValueError("USAGE_JOINT_AUTHORITY_CHANGED")
+    data = copy.deepcopy(captured_view["usage"])
+    sid = snapshot.get("snapshot_id")
+    if canonical(_read_snapshot(root, sid)) != canonical(snapshot):
+        raise ValueError("USAGE_RESOLUTION_SNAPSHOT_MISMATCH")
+    head = captured_view["record"]["state"].get("active_head")
+    if (not head or snapshot.get("parent_snapshot_id") != head or sid == head
+            or document.get("expected_parent_snapshot_id") != head):
+        raise ValueError("USAGE_RESOLUTION_NOT_DIRECT_CHILD")
+    outputs = document.get("outputs")
+    if not isinstance(outputs, list) or not outputs or not isinstance(output_records, list):
+        raise ValueError("USAGE_RESOLUTION_OUTPUTS_INVALID")
+    keys = [item.get("output_key") for item in outputs]
+    actual_keys = [item.get("output_key") for item in output_records]
+    if (any(not isinstance(key, str) or not key for key in keys)
+            or len(set(keys)) != len(keys) or len(set(actual_keys)) != len(actual_keys)
+            or set(keys) != set(actual_keys)):
+        raise ValueError("USAGE_RESOLUTION_OUTPUTS_INCOMPLETE")
+    authorization = _enforce_submit_data(root, document, data)
+    if authorization is None:
+        raise ValueError("USAGE_SUSPENDED_REPAIR_NOT_AUTHORIZED:no matching issue")
+    # Every output row must be an explicit replacement; a ticket cannot carry
+    # extra unrelated rows/outputs through an otherwise valid repair group.
+    revisions = []
+    versions = []
+    actual = {item["output_key"]: item for item in output_records}
+    for output in outputs:
+        changes = output.get("revisions")
+        verified = actual[output["output_key"]]
+        records = verified.get("records")
+        if (output.get("input_mode") not in REPAIR_MODES or not isinstance(changes, dict)
+                or not changes or verified.get("snapshot_id") != sid
+                or not isinstance(records, list) or len(records) != len(changes)):
+            raise ValueError("USAGE_RESOLUTION_OUTPUTS_INCOMPLETE")
+        if {item.get("record_id") for item in records} != set(changes):
+            raise ValueError("USAGE_RESOLUTION_OUTPUTS_INCOMPLETE")
+        for record in records:
+            previous = changes[record["record_id"]].get("previous", {})
+            if (verified.get("product_id") != previous.get("product_id")
+                    or previous.get("logical_key") != record["record_id"]
+                    or record.get("withdrawn") is not False):
+                raise ValueError("USAGE_RESOLUTION_PREDECESSOR_MISMATCH")
+            revisions.append({key: previous.get(key) for key in
+                              ("product_id", "snapshot_id", "logical_key", "revision_id")})
+            versions.append(_text(record.get("record_version"), "record_version", 256))
+    revisions = _validate_revisions(revisions)
+    original_group = _verify_original_joint_group(root, document, revisions)
+    actual_versions = _replacement_versions(root, snapshot, revisions, versions)
+    fingerprint = sha(canonical(document))
+    verified_at = _now()
+    proof = {"kind": "joint_candidate_resolution", "original_group": original_group,
+             "predecessor_commit": captured_view["commit_id"],
+             "snapshot_id": sid, "document_digest": fingerprint,
+             "request_identity": copy.deepcopy(document.get("request_identity")),
+             "output_records_digest": sha(canonical(output_records)),
+             "ticket_ids": authorization["ticket_ids"], "issue_ids": authorization["issue_ids"],
+             "replacement_record_versions": actual_versions, "verified_at_utc": verified_at}
+    verification_digest = sha(canonical(proof))
+    for ticket_id in authorization["ticket_ids"]:
+        ticket = next(item for item in data["tickets"] if item["ticket_id"] == ticket_id)
+        issue = next(item for item in data["issues"] if item["issue_id"] == ticket["issue_id"])
+        if (ticket.get("repair_mode") not in {item["input_mode"] for item in outputs}
+                or any(item["input_mode"] != ticket.get("repair_mode") for item in outputs)
+                or ticket.get("error_binding_digest") != issue.get("error_binding_digest")
+                or ticket.get("impact_digest") != issue.get("impact_digest")
+                or not ticket.get("confirmation_digest")
+                or ticket.get("revisions") != revisions):
+            raise ValueError("USAGE_TICKET_FROZEN_CHANGED")
+        if ticket.get("ticket_digest") != sha(canonical({key: value for key, value in ticket.items()
+                                                        if key != "ticket_digest"})):
+            raise ValueError("USAGE_TICKET_FROZEN_CHANGED")
+        _assert_complete_scope(issue, revisions)
+        for scope in issue["scopes"]:
+            joint_state.require_activated_snapshot(captured_view, scope["snapshot_id"])
+        resolution = {"ticket_id": ticket_id, "document_digest": fingerprint,
+                      "replacement_snapshot_id": sid, "replacement_record_versions": actual_versions,
+                      "verification_digest": verification_digest, "verified_at_utc": verified_at}
+        issue["state"] = ticket["state"] = "resolved"
+        issue["resolution"] = copy.deepcopy(resolution)
+        ticket["resolution"] = copy.deepcopy(resolution)
+    if canonical(joint_state.view()) != canonical(captured_view):
+        raise ValueError("USAGE_JOINT_AUTHORITY_CHANGED")
+    return data, {**proof, "verification_digest": verification_digest}
 
 
 def _scope_matches(scope, snapshot_id, product_ids, rows) -> bool:
@@ -670,7 +857,11 @@ def enforce_read(root, result, audit_issue_id=None) -> dict | None:
 
 def enforce_submit(root, doc) -> dict | None:
     """新发布 / 计算取数边界；只在 writer_lock 内由 submit 调用。"""
-    data = load(root)
+    return _enforce_submit_data(root, doc, load(root))
+
+
+def _enforce_submit_data(root, doc, data):
+    """Internal captured-view variant; caller retains the writer lock."""
     if not data["issues"]:
         return None
     outputs = doc.get("outputs") if isinstance(doc, dict) else None
