@@ -4,7 +4,7 @@ import { CoreDatabase } from '../../platform/state/database.js';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { WfdProductMachineClient, WfdProductMachineReply, WfdProductMachineReadPageOptions } from '../../adapters/database/wfd-product-machine.js';
 import { WfdStructuredIngestClient } from './r1-structured-handoff.js';
-import { R1PagedReadback, type R1ReadbackClient, type R1ReadbackInput } from './r1-paged-readback.js';
+import { acceptedR1ReceiptRows, R1PagedReadback, type R1ReadbackClient, type R1ReadbackInput } from './r1-paged-readback.js';
 
 // Explicit page-contract doubles only; real Python/HTTP coverage is in r1-routes.test.ts.
 const sha = (value: unknown) => 'sha256:' + wfdSha256(canonicalWfdJson(value));
@@ -239,4 +239,19 @@ test('original version one checkpoints keep their exact 256 query after new 1000
     }}));
     assert.equal(rows.length,300);assert.deepEqual(seen,[256]);
   }finally{database.close();}
+});
+
+test('complete_snapshot receipts accept disjoint withdrawn_rows and reject overlapping or non-complete withdrawals',()=>{
+  const base=input(),out=(base.document.outputs as WfdRecord[])[0]!;
+  out.input_mode='complete_snapshot';
+  const ok=acceptedR1ReceiptRows(base.document,{...base.receipt,
+    withdrawn_rows:[{business_key:'removed-member',record_id:'removed-member',record_version:'rev-w1'}]});
+  assert.equal(ok.size,300);
+  assert.throws(()=>acceptedR1ReceiptRows(base.document,{...base.receipt,
+    withdrawn_rows:[{business_key:refs[0]!.record_id,record_id:refs[0]!.record_id,record_version:'rev-w2'}]}),
+    {code:'R1_READBACK_RECEIPT_INVALID'});
+  out.input_mode='partial_observation';
+  assert.throws(()=>acceptedR1ReceiptRows(base.document,{...base.receipt,
+    withdrawn_rows:[{business_key:'removed-member',record_id:'removed-member',record_version:'rev-w1'}]}),
+    {code:'R1_READBACK_RECEIPT_INVALID'});
 });

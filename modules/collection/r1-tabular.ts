@@ -1,10 +1,30 @@
 import { readFileSync } from 'node:fs';
-import type { R1PrepareInput, R1SourceDeclaration, R1TabularMapping, R1TimeMapping } from '../../contracts/r1-contracts.js';
+import type { R1PrepareInput, R1SourceDeclaration, R1SupplyTradeMapping, R1TabularMapping, R1TimeMapping } from '../../contracts/r1-contracts.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
+import {
+  assertTradeAggregationNoOverlap,
+  validateGeoCommodityObservation,
+  validateGeoRegionHierarchy,
+  type CapacityOrFacilityStatus,
+  type CommodityQuantityBasis,
+  type GeoCommodityObservation,
+  type GeoObservationCategory,
+  type GeoRegionMaster,
+  type TradeFlowDirection,
+  type TradeObservation,
+  type TradeOrObservationValueState,
+  type TradeValuationBasis,
+} from './data-processing/global-supply-trade.js';
 
 export const R1_TABULAR_RULE_VERSION = 'bd.r1-tabular/3';
-const IMPLEMENTATION_SHA256 = wfdSha256(readFileSync(new URL(import.meta.url)));
+const IMPLEMENTATION_SHA256 = wfdSha256(Buffer.concat([
+  readFileSync(new URL(import.meta.url)),
+  readFileSync(new URL('./data-processing/global-supply-trade.ts', import.meta.url)),
+]));
+const SUPPLY_TRADE_BASE_KEYS = ['regionId', 'commodityId', 'stageCode', 'quantityBasis', 'unitCode', 'periodBasis', 'periodLabel', 'value'] as const;
+const SUPPLY_TRADE_OPT_KEYS = ['category', 'capacityStatus', 'inventoryScope', 'partnerRegionId', 'flow', 'isSubFlowOf',
+  'valuationBasis', 'currencyCode', 'primaryValue', 'externalScheme', 'externalVersion', 'externalCode', 'externalParentCode', 'externalMappingQuality'] as const;
 const PRICE_ROLES = ['open', 'high', 'low', 'close'] as const;
 const QUANTITY_ROLES = ['volume', 'amount'] as const;
 const MARKET_ROLES = [...PRICE_ROLES, ...QUANTITY_ROLES] as const;
@@ -59,6 +79,11 @@ export function compileR1TabularDeclaration(value: unknown): R1TabularCompilatio
     || mapping.fields.length !== definitions.length || mapping.fields.some(field => !byCode.has(field.fieldCode))) fail('FIELDS', '映射字段集合必须与逐字段合同完全相同，不能丢列、补列或重复。');
   const roleCodes = bar ? MARKET_ROLES.flatMap(role => bar[role] ? [bar[role]] : []) : [];
   if (new Set(roleCodes).size !== roleCodes.length || roleCodes.some(code => !byCode.has(code))) fail('FIELDS', '行情角色必须引用不同的实际合同字段。');
+  if (mapping.supplyTrade) {
+    const stCodes = [...SUPPLY_TRADE_BASE_KEYS, ...SUPPLY_TRADE_OPT_KEYS]
+      .flatMap(key => mapping.supplyTrade![key] ? [mapping.supplyTrade![key]!] : []);
+    if (stCodes.some(code => !byCode.has(code))) fail('FIELDS', '全球供需与贸易角色必须引用已声明的实际合同字段。');
+  }
   const priceCodes = bar ? PRICE_ROLES.flatMap(role => bar[role] ? [bar[role]] : []) : [];
   const quantityCodes = bar ? QUANTITY_ROLES.flatMap(role => bar[role] ? [bar[role]] : []) : [];
   const overrides = object(definition.field_semantic_context);
@@ -134,7 +159,7 @@ export function compileR1TabularDeclaration(value: unknown): R1TabularCompilatio
     if (measurements.get(code)!.measurement_nature !== (priceCodes.includes(code) ? 'stock' : 'flow')) gaps.push(`${code}: 价格与量额的有效存量/期间流量性质未明确。`);
   }
   result.checkScope = ['explicit_contract_fields', 'effective_field_measurement',
-    market ? 'declared_market_bar_semantics' : 'general_tabular_semantics'];
+    market ? 'declared_market_bar_semantics' : mapping.supplyTrade ? 'declared_global_supply_trade_semantics' : 'general_tabular_semantics'];
   if (target.coverage !== undefined && !gaps.some(gap => gap.startsWith('目标覆盖范围'))) result.checkScope.push('explicit_coverage_declaration');
   result.gaps = [...new Set(gaps)];
   return result;
@@ -179,7 +204,9 @@ export function checkR1TabularRows(rows: readonly unknown[], declaration: unknow
     }
     return row;
   });
-  const checkScope = [...compiled.checkScope, ...(allowDuplicateKeys ? ['business_keys_for_authoritative_duplicate_review'] : ['unique_business_keys']), 'explicit_utc_intervals'];
+  if (mapping.supplyTrade) checkSupplyTradeRows(mapped, mapping.supplyTrade, source?.source_id ?? 'declared');
+  const checkScope = [...compiled.checkScope, ...(allowDuplicateKeys ? ['business_keys_for_authoritative_duplicate_review'] : ['unique_business_keys']), 'explicit_utc_intervals',
+    ...(mapping.supplyTrade ? ['validated_global_supply_trade_rows'] : [])];
   if (mapping.fields.every(field => !!field.state)) checkScope.push('explicit_value_states');
   if (bar && PRICE_ROLES.every(role => !!bar[role]) && checkedOhlc) checkScope.push('exact_decimal_ohlc');
   else if (bar && anyPartialBound && checkedPartialBounds) checkScope.push('partial_decimal_price_bounds');
@@ -196,9 +223,10 @@ export function checkR1TabularRows(rows: readonly unknown[], declaration: unknow
 function readDeclaration(value: unknown): Declaration {
   if (!isWfdRecord(value) || !isWfdRecord(value.target) || !isWfdRecord(value.mapping)) fail('DECLARATION', '表格映射与目标声明必须完整冻结。');
   const mapping = value.mapping;
-  exact(mapping, ['kind', 'businessKey', 'earliestUtc', 'latestExclusiveUtc', 'precision', 'sourceTimezone', 'fields', 'bar', 'publicTime']);
+  exact(mapping, ['kind', 'businessKey', 'earliestUtc', 'latestExclusiveUtc', 'precision', 'sourceTimezone', 'fields', 'bar', 'supplyTrade', 'publicTime']);
   if (mapping.kind !== 'tabular_rows' || !Array.isArray(mapping.fields) || mapping.fields.length < 1 || mapping.fields.length > 256) fail('MAPPING', '需要 1–256 个逐字段映射。');
   text(mapping.businessKey, 128); checkTimeMapping(mapping);
+  if (mapping.bar !== undefined && mapping.supplyTrade !== undefined) fail('MAPPING', '行情 bar 角色与全球供需贸易 supplyTrade 角色不能混用。');
   if (mapping.bar !== undefined) {
     const bar = mapping.bar;
     if (!isWfdRecord(bar)) fail('MAPPING', '行情角色必须是明确对象。');
@@ -206,6 +234,17 @@ function readDeclaration(value: unknown): Declaration {
     if (!['day', 'minute'].includes(String(bar.frequency))) fail('MAPPING', '本批只支持明确日线或分钟行情。');
     if (!MARKET_ROLES.some(role => bar[role] !== undefined)) fail('MAPPING', '部分行情至少须显式声明一个实际角色。');
     for (const role of MARKET_ROLES) if (bar[role] !== undefined) text(bar[role], 128);
+  }
+  if (mapping.supplyTrade !== undefined) {
+    const st = mapping.supplyTrade;
+    if (!isWfdRecord(st)) fail('MAPPING', '全球供需与贸易角色必须是明确对象。');
+    exact(st, ['kind', ...SUPPLY_TRADE_BASE_KEYS, ...SUPPLY_TRADE_OPT_KEYS]);
+    if (!['geo_commodity_observation', 'bilateral_trade_observation'].includes(String(st.kind)))
+      fail('MAPPING', 'supplyTrade.kind 须为 geo_commodity_observation 或 bilateral_trade_observation。');
+    for (const key of SUPPLY_TRADE_BASE_KEYS) text(st[key], 128);
+    if (st.kind === 'geo_commodity_observation') text(st.category, 128);
+    else for (const key of ['partnerRegionId', 'flow', 'valuationBasis', 'currencyCode', 'primaryValue', 'externalScheme', 'externalVersion', 'externalCode'] as const) text(st[key], 128);
+    for (const key of SUPPLY_TRADE_OPT_KEYS) if (st[key] !== undefined) text(st[key], 128);
   }
   for (const field of mapping.fields) {
     if (!isWfdRecord(field)) fail('MAPPING', '逐字段映射必须为对象。');
@@ -312,6 +351,114 @@ function checkBar(values: WfdRecord, bar: NonNullable<R1TabularMapping['bar']>, 
     if (String(cell.value).startsWith('-') && /[1-9]/u.test(String(cell.value))) fail('QUANTITY', `${code}: 行情成交量/成交额不能为负。`);
   }
   return { ohlc, partialBounds, anyPartialBound: checkedPairs > 0, positivePrices, quantities };
+}
+function checkSupplyTradeRows(rows: readonly WfdRecord[], st: R1SupplyTradeMapping, sourceId: string): void {
+  const cellOf = (row: WfdRecord, code?: string): { value: string | null; state: string } => {
+    if (!code) return { value: null, state: 'not_applicable' };
+    const values = object(row.values);
+    const cell = object(values[code]);
+    const state = String(cell.value_state ?? 'unknown');
+    const val = cell.value === null || cell.value === undefined ? null : String(cell.value);
+    return { value: val, state };
+  };
+  const mapValueState = (state: string): TradeOrObservationValueState => (
+    state === 'valid_value' || state === 'reported_zero'
+      ? state
+      : state === 'not_reported' || state === 'unknown' ? 'unreported_missing' : 'not_covered'
+  );
+  if (st.kind === 'geo_commodity_observation') {
+    for (const row of rows) {
+      const obsTime = object(row.observation_time);
+      const valCell = cellOf(row, st.value);
+      const obs: GeoCommodityObservation = {
+        observationKey: String(row.business_key),
+        regionId: cellOf(row, st.regionId).value ?? '',
+        commodityId: cellOf(row, st.commodityId).value ?? '',
+        stageCode: cellOf(row, st.stageCode).value ?? '',
+        category: (cellOf(row, st.category).value ?? '') as GeoObservationCategory,
+        metricCode: st.value,
+        periodBasis: (cellOf(row, st.periodBasis).value ?? 'calendar_year') as GeoCommodityObservation['periodBasis'],
+        periodLabel: cellOf(row, st.periodLabel).value ?? '',
+        quantityBasis: (cellOf(row, st.quantityBasis).value ?? 'net_weight') as CommodityQuantityBasis,
+        unitCode: cellOf(row, st.unitCode).value ?? '',
+        value: valCell.value,
+        valueState: mapValueState(valCell.state),
+        ...(st.capacityStatus ? { capacityStatus: (cellOf(row, st.capacityStatus).value ?? undefined) as CapacityOrFacilityStatus | undefined } : {}),
+        ...(st.inventoryScope ? { inventoryScope: (cellOf(row, st.inventoryScope).value ?? undefined) as GeoCommodityObservation['inventoryScope'] } : {}),
+        temporal: {
+          effectiveStartUtc: String(obsTime.earliest_utc ?? ''),
+          effectiveEndExclusiveUtc: String(obsTime.latest_exclusive_utc ?? ''),
+          publicTimeUtc: isWfdRecord(row.public_time) && typeof row.public_time.earliest_utc === 'string' ? row.public_time.earliest_utc : null,
+          systemHeldAtUtc: null,
+          usableStage: 'published_readable',
+          revisionArchivePolicy: 'versioned_archive',
+          revisionId: String(row.business_key),
+        },
+        sourceId,
+      };
+      validateGeoCommodityObservation(obs);
+    }
+    return;
+  }
+  const regionIds = new Set<string>();
+  const trades: TradeObservation[] = rows.map(row => {
+    const obsTime = object(row.observation_time);
+    const reporterRegionId = cellOf(row, st.regionId).value ?? '';
+    const partnerRegionId = cellOf(row, st.partnerRegionId).value ?? '';
+    if (reporterRegionId) regionIds.add(reporterRegionId);
+    if (partnerRegionId) regionIds.add(partnerRegionId);
+    const valCell = cellOf(row, st.value);
+    const primaryCell = cellOf(row, st.primaryValue);
+    const extCode = cellOf(row, st.externalCode).value ?? '';
+    return {
+      observationKey: String(row.business_key),
+      reporterRegionId,
+      reporterStatisticalScheme: 'declared',
+      partnerRegionId,
+      partnerRole: 'origin',
+      flow: (cellOf(row, st.flow).value ?? 'export') as TradeFlowDirection,
+      ...(st.isSubFlowOf ? { isSubFlowOf: (cellOf(row, st.isSubFlowOf).value ?? null) as TradeFlowDirection | null } : {}),
+      commodityId: cellOf(row, st.commodityId).value ?? '',
+      stageCode: cellOf(row, st.stageCode).value ?? '',
+      externalClassification: {
+        scheme: (cellOf(row, st.externalScheme).value ?? 'HS') as 'HS' | 'CPC' | 'SITC' | 'CUSTOM',
+        version: cellOf(row, st.externalVersion).value ?? 'HS2022',
+        code: extCode,
+        aggrLevel: extCode.length,
+        ...(st.externalParentCode ? { parentCode: cellOf(row, st.externalParentCode).value } : {}),
+        mappingQuality: (cellOf(row, st.externalMappingQuality).value ?? 'exact') as 'exact' | 'broader_narrower' | 'partial_overlap' | 'pending_review',
+      },
+      periodBasis: (cellOf(row, st.periodBasis).value ?? 'calendar_year') as TradeObservation['periodBasis'],
+      periodLabel: cellOf(row, st.periodLabel).value ?? '',
+      primaryValue: primaryCell.value,
+      currencyCode: cellOf(row, st.currencyCode).value ?? 'USD',
+      valuationBasis: (cellOf(row, st.valuationBasis).value ?? 'FOB') as TradeValuationBasis,
+      valueState: mapValueState(primaryCell.state),
+      quantity: valCell.value,
+      quantityBasis: (cellOf(row, st.quantityBasis).value ?? 'net_weight') as CommodityQuantityBasis,
+      quantityUnitCode: cellOf(row, st.unitCode).value ?? '',
+      quantityState: mapValueState(valCell.state),
+      temporal: {
+        effectiveStartUtc: String(obsTime.earliest_utc ?? ''),
+        effectiveEndExclusiveUtc: String(obsTime.latest_exclusive_utc ?? ''),
+        publicTimeUtc: isWfdRecord(row.public_time) && typeof row.public_time.earliest_utc === 'string' ? row.public_time.earliest_utc : null,
+        systemHeldAtUtc: null,
+        usableStage: 'published_readable',
+        revisionArchivePolicy: 'versioned_archive',
+        revisionId: String(row.business_key),
+      },
+      sourceId,
+    };
+  });
+  const regions = validateGeoRegionHierarchy([...regionIds].map<GeoRegionMaster>(regionId => ({
+    regionId,
+    namespace: 'declared',
+    code: regionId,
+    name: regionId,
+    kind: regionId === 'WORLD' || regionId === 'W00' ? 'regional_bloc' : 'country_or_region',
+    statisticalScheme: 'declared',
+  })));
+  assertTradeAggregationNoOverlap(trades, regions);
 }
 function compareDecimal(left: string, right: string): number {
   const scale = Math.max(left.split('.')[1]?.length ?? 0, right.split('.')[1]?.length ?? 0);

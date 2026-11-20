@@ -151,3 +151,70 @@ test('compatible inputs require explicit report identities and versions but allo
   assert.equal(result.evidence.compatibility?.calculation, 'not_requested');
   assert.deepEqual(JSON.parse(result.jsonBytes.toString()).map((item: WfdRecord) => item.report_version), ['v1', 'v2']);
 });
+
+test('legacy not_reported nulls remain compatible while unit conflicts, cross-company articulation and unlabelled restatements are rejected', async () => {
+  // 1. Legacy v1 & v2 preserve legitimate not_reported null values
+  const missingRow = row('missing-val', '1', '2025-01-01', '2025-03-31', { concept: '其中：营业收入' });
+  Object.assign((missingRow.values as WfdRecord).value as WfdRecord, { value: null, value_state: 'not_reported' });
+  const legacyRes = await project([missingRow]);
+  const [legacyOut] = JSON.parse(legacyRes.jsonBytes.toString());
+  assert.equal(legacyOut.value_state, 'not_reported');
+  assert.equal(legacyOut.value, null);
+
+  // 2. Row unit vs numeric cell unit mismatch must be rejected under allowUnitScale
+  const conflictRow = row('unit-conflict', '12', '2025-01-01', '2025-03-31', { concept: '营业收入', unit: 'cny_million' });
+  Object.assign((conflictRow.values as WfdRecord).value as WfdRecord, {
+    unit: valueUnit('cny_thousand', { dimension: 'money', scale_factor: '1000', currency: 'CNY' }),
+  });
+  const { input: cIn, reader: cRd } = calculation([conflictRow]);
+  await assert.rejects(
+    projectFinancialFixed({ ...cIn, mappingProfile: 'cas-primary-statements/2', allowUnitScale: true }, cRd, new AbortController().signal),
+    /冲突/u,
+  );
+
+  // 3. Default v2 EPS rejects money unit cny and accepts money_per_share unit cny_per_share
+  const epsWrong = row('eps-wrong', '1.25', '2025-01-01', '2025-03-31', { concept: '基本每股收益', unit: 'cny' });
+  const { input: ewIn, reader: ewRd } = calculation([epsWrong]);
+  await assert.rejects(
+    projectFinancialFixed({ ...ewIn, mappingProfile: 'cas-primary-statements/2' }, ewRd, new AbortController().signal),
+    /量纲|单位/u,
+  );
+  const epsRight = row('eps-right', '1.25', '2025-01-01', '2025-03-31', { concept: '基本每股收益', unit: 'cny_per_share' });
+  Object.assign((epsRight.values as WfdRecord).value as WfdRecord, { unit: valueUnit('cny_per_share', { dimension: 'money_per_share' }) });
+  const { input: erIn, reader: erRd } = calculation([epsRight]);
+  const epsOk = await projectFinancialFixed({ ...erIn, mappingProfile: 'cas-primary-statements/2' }, erRd, new AbortController().signal);
+  assert.equal(JSON.parse(epsOk.jsonBytes.toString())[0].unit, 'cny_per_share');
+
+  // 4. Cross-company BS-01 (A assets 100, B liabilities 30, C equity 70) must NEVER balance as exact_match
+  const mixed = [
+    { ...row('a', '100', '2025-12-31', '2025-12-31', { concept: '资产总计', period_type: 'instant', subject_code: 'A' }), subject: { kind: 'entity', namespace: 'sse', id: 'A' } },
+    { ...row('b', '30', '2025-12-31', '2025-12-31', { concept: '负债合计', period_type: 'instant', subject_code: 'B' }), subject: { kind: 'entity', namespace: 'sse', id: 'B' } },
+    { ...row('c', '70', '2025-12-31', '2025-12-31', { concept: '所有者权益（或股东权益）合计', period_type: 'instant', subject_code: 'C' }), subject: { kind: 'entity', namespace: 'sse', id: 'C' } },
+  ];
+  const { input: mIn, reader: mRd } = calculation(mixed);
+  const mixedRes = await projectFinancialFixed({ ...mIn, mappingProfile: 'cas-primary-statements/2', articulationCheck: true }, mRd, new AbortController().signal);
+  const bs01Results = mixedRes.evidence.articulation?.filter(item => item.ruleId === 'BS-01') ?? [];
+  assert.ok(bs01Results.length === 3 && bs01Results.every(item => item.status === 'indeterminate'));
+
+  // Duplicate concept in same subject/period must report duplicateConcepts and indeterminate
+  const dup = [
+    row('a1', '100', '2025-12-31', '2025-12-31', { concept: '资产总计', period_type: 'instant' }),
+    row('a2', '100', '2025-12-31', '2025-12-31', { concept: '资产总计', period_type: 'instant' }),
+    row('l1', '30', '2025-12-31', '2025-12-31', { concept: '负债合计', period_type: 'instant' }),
+    row('e1', '70', '2025-12-31', '2025-12-31', { concept: '所有者权益（或股东权益）合计', period_type: 'instant' }),
+  ];
+  const { input: dIn, reader: dRd } = calculation(dup);
+  const dupRes = await projectFinancialFixed({ ...dIn, mappingProfile: 'cas-primary-statements/2', articulationCheck: true }, dRd, new AbortController().signal);
+  const dupBs01 = dupRes.evidence.articulation?.find(item => item.ruleId === 'BS-01');
+  assert.equal(dupBs01?.status, 'indeterminate');
+  assert.deepEqual(dupBs01?.duplicateConcepts, ['total_assets']);
+
+  // 5. restatement_carrier without explicit column_role must be rejected
+  const carrierRows = compatibleRows();
+  ((carrierRows[0]!.values as WfdRecord).column_role = { value: 'current_period', value_state: 'valid_value', data_type: 'text', unit: { unit_code: 'text' } });
+  ((carrierRows[1]!.values as WfdRecord).report_nature as WfdRecord).value = 'restatement_carrier';
+  await assert.rejects(
+    compatible(carrierRows, { mappingProfile: 'cas-primary-statements/2' }),
+    /列角色|column_role/u,
+  );
+});

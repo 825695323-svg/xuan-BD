@@ -598,15 +598,17 @@ def test_c07_b1_b2_b3_commodity_and_relation_shapes_and_trade_completeness_guard
     validated = f.validate_pack(pack)
     assert len(validated["commodities"]) == 2
 
-    # Trade or supply chain relations must never claim complete_snapshot (absence != exit)
-    bad_trade = copy.deepcopy(pack)
-    bad_trade["relations"].append({
-        "id": "rel_trade_complete", "subject": {"kind": "region", "id": "region_wa"},
-        "object": {"kind": "region", "id": "region_r"},
-        "relation_type": "trade_flow_projection", "set_id": "trade_set",
-        "set_completeness": "complete", "set_absence_means": "explicitly_absent",
-        "definition_authority": "fixture", "evidence_labels": ["e"],
-    })
-    with pytest.raises(f.FoundationInputError, match="TRADE_OR_SUPPLY_RELATION_CANNOT_CLAIM_COMPLETE_SNAPSHOT"):
-        f.validate_pack(bad_trade)
-
+    # Trade, supply chain, or open-world relations (including competes_with) must never claim complete_snapshot
+    for bad_rel_type, subj, obj in (
+        ("trade_flow_projection", {"kind": "region", "id": "region_wa"}, {"kind": "region", "id": "region_r"}),
+        ("competes_with", {"kind": "entity", "id": "entity_e1"}, {"kind": "entity", "id": "entity_e2"}),
+    ):
+        bad_trade = copy.deepcopy(pack)
+        bad_trade["relations"].append({
+            "id": "rel_trade_complete", "subject": subj, "object": obj,
+            "relation_type": bad_rel_type, "set_id": "trade_set",
+            "set_completeness": "complete", "set_absence_means": "explicitly_absent",
+            "definition_authority": "fixture", "evidence_labels": ["e"],
+        })
+        with pytest.raises(f.FoundationInputError, match="TRADE_OR_SUPPLY_RELATION_CANNOT_CLAIM_COMPLETE_SNAPSHOT"):
+            f.validate_pack(bad_trade)

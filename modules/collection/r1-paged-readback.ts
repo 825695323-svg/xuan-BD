@@ -70,7 +70,9 @@ export class R1PagedReadback {
     const refs = normalizedRefs(input.receipt);
     const selectionDigest = sha(refs);
     const binding = sha({ document_sha256: input.documentSha256, receipt: { ...input.receipt,
-      rows: [...input.receipt.rows].sort((a, b) => compare(a.record_id, b.record_id) || compare(a.record_version, b.record_version)) } });
+      rows: [...input.receipt.rows].sort((a, b) => compare(a.record_id, b.record_id) || compare(a.record_version, b.record_version)),
+      ...(input.receipt.withdrawn_rows ? { withdrawn_rows: [...input.receipt.withdrawn_rows]
+        .sort((a, b) => compare(a.record_id, b.record_id) || compare(a.record_version, b.record_version)) } : {}) } });
     const checkpointId=this.continuation(input.requestId)?.phaseRequestId ?? input.requestId;
     let loaded = this.load(checkpointId);
     if (loaded && loaded.state.binding !== binding) fail('BINDING_CHANGED', '原请求的文档或正式行回执与分页检查点不同。');
@@ -210,10 +212,26 @@ export function acceptedR1ReceiptRows(document: WfdRecord, receipt: R1Receipt): 
     fail('RECEIPT_INVALID', '原回执输出、请求身份或冻结行集合不符。');
   if (document.duplicate_policy !== 'skip_identical_append') {
     const map = new Map(rows.map(value => [String(value[r1PayloadRowKey(first)]), value]));
+    if (receipt.withdrawn_rows !== undefined) {
+      if (first.input_mode !== 'complete_snapshot') fail('RECEIPT_INVALID', '仅 complete_snapshot 回执允许包含缺席撤回记录。');
+      if (!Array.isArray(receipt.withdrawn_rows) || receipt.withdrawn_rows.length === 0) {
+        fail('RECEIPT_INVALID', 'complete_snapshot 撤回记录列表不能为空或非数组。');
+      }
+      const seenWithdrawn = new Set<string>();
+      for (const ref of receipt.withdrawn_rows) {
+        if (!ref || typeof ref.record_id !== 'string' || !ref.record_id || ref.record_id !== ref.business_key
+          || typeof ref.record_version !== 'string' || !ref.record_version
+          || seenWithdrawn.has(ref.record_id) || map.has(ref.record_id)) {
+          fail('RECEIPT_INVALID', 'complete_snapshot 撤回记录身份无效、重复或与本次保留业务键重叠。');
+        }
+        seenWithdrawn.add(ref.record_id);
+      }
+    }
     if (rows.length !== receipt.rows.length || map.size !== receipt.rows.length
       || receipt.rows.some(ref => !map.has(ref.record_id))) fail('RECEIPT_INVALID', '原回执不是冻结文档的完整业务键集合。');
     return map;
   }
+  if (receipt.withdrawn_rows !== undefined) fail('RECEIPT_INVALID', '去重追加模式不允许包含缺席撤回记录。');
   const results = receipt.row_results, summary = receipt.row_summary;
   if (!Array.isArray(results) || results.length !== rows.length || !summary) fail('RECEIPT_INVALID', '去重回执必须逐原行列出完整结果与计数。');
   const seen = new Set<number>(), accepted = new Map<string, WfdRecord>(), versions = new Map<string, string>();

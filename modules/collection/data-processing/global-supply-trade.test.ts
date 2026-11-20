@@ -79,13 +79,20 @@ test('验收场景2（数量口径与阶段错配拦截）：秘鲁铜三量分�
     ]),
     (err: { code?: string }) => err.code === 'GLOBAL_SUPPLY_TRADE_QUANTITY_BASIS_MISMATCH',
   );
-  // 秘鲁开采的铜精矿与另一地区冶炼的精炼铜（不同阶段）即使都是金属吨，也不能相加称为全球新增铜供给
+  // 秘鲁开采的铜精矿与另一地区冶炼的精炼铜（同商品不同阶段 / 不同商品）即使都是金属吨，也不能相加称为全球新增铜供给
+  assert.throws(
+    () => assertCommodityQuantityCompatibility([
+      { commodityId: 'copper', stageCode: 'mine_concentrate_cu', quantityBasis: 'metal_content', unitCode: 'metric_ton' },
+      { commodityId: 'copper', stageCode: 'smelting_refined_cu', quantityBasis: 'metal_content', unitCode: 'metric_ton' },
+    ]),
+    (err: { code?: string }) => err.code === 'GLOBAL_SUPPLY_TRADE_STAGE_MISMATCH',
+  );
   assert.throws(
     () => assertCommodityQuantityCompatibility([
       { commodityId: 'copper_concentrate', stageCode: 'mine_concentrate_cu', quantityBasis: 'metal_content', unitCode: 'metric_ton' },
       { commodityId: 'refined_copper_cathode', stageCode: 'smelting_refined_cu', quantityBasis: 'metal_content', unitCode: 'metric_ton' },
     ]),
-    (err: { code?: string }) => err.code === 'GLOBAL_SUPPLY_TRADE_STAGE_MISMATCH',
+    (err: { code?: string }) => err.code === 'GLOBAL_SUPPLY_TRADE_COMMODITY_MISMATCH',
   );
   // 澳大利亚铁矿石：干吨（dry_weight）与湿吨（wet_weight）不能混算
   assert.throws(
@@ -98,8 +105,8 @@ test('验收场景2（数量口径与阶段错配拦截）：秘鲁铜三量分�
   // 澳大利亚牛肉：活牛头数（head_count）、胴体重量（carcass_weight）、商品肉装运重量（shipped_weight）不能混算
   assert.throws(
     () => assertCommodityQuantityCompatibility([
-      { commodityId: 'live_cattle', stageCode: 'live_cattle_export', quantityBasis: 'head_count', unitCode: 'head' },
-      { commodityId: 'chilled_boneless_beef', stageCode: 'primal_cuts_export', quantityBasis: 'shipped_weight', unitCode: 'metric_ton' },
+      { commodityId: 'beef', stageCode: 'slaughter', quantityBasis: 'head_count', unitCode: 'head' },
+      { commodityId: 'beef', stageCode: 'slaughter', quantityBasis: 'shipped_weight', unitCode: 'metric_ton' },
     ]),
     (err: { code?: string }) => err.code === 'GLOBAL_SUPPLY_TRADE_QUANTITY_BASIS_MISMATCH',
   );
@@ -542,4 +549,187 @@ test('财报录入四行业科目表（cas-primary-statements/2）、单位显�
     () => validateGeoCommodityObservation({ ...validObs, category: 'inventory', inventoryScope: 'port_annual_throughput' }),
     (err: { code?: string }) => err.code === 'GLOBAL_SUPPLY_TRADE_THROUGHPUT_AS_INVENTORY',
   );
+});
+
+test('返修阻断反例核验：跨商品/跨期镜像、同伙伴HHI合并、缺阶段时点/重复修订、资产误作采购、跨源缺证门禁、受控字典与字段移植', async () => {
+  const regionMap = validateGeoRegionHierarchy(REGIONS);
+  const ironExport2025 = makeTradeObs({
+    observationKey: 'AUS-CHN-iron-2025',
+    reporterRegionId: 'AUS',
+    partnerRegionId: 'CHN',
+    partnerRole: 'last_known_destination',
+    flow: 'export',
+    commodityId: 'iron_ore',
+    stageCode: 'ore',
+    periodLabel: '2025',
+    quantity: '60',
+    primaryValue: '100',
+    valuationBasis: 'FOB',
+    externalClassification: { scheme: 'HS', version: 'HS2017', code: '2601', aggrLevel: 4, mappingQuality: 'exact' },
+  });
+  const copperImport2024 = makeTradeObs({
+    ...ironExport2025,
+    observationKey: 'CHN-AUS-copper-2024',
+    reporterRegionId: 'CHN',
+    partnerRegionId: 'AUS',
+    partnerRole: 'origin',
+    flow: 'import',
+    commodityId: 'copper_concentrate',
+    periodLabel: '2024',
+    externalClassification: { scheme: 'HS', version: 'HS2017', code: '2603', aggrLevel: 4, mappingQuality: 'exact' },
+  });
+  // 1. 跨商品、跨期、跨分类镜像必须拒绝，绝不能判为 exact_match
+  assert.throws(
+    () => diagnoseBilateralTradeMirror(ironExport2025, copperImport2024),
+    (err: { code?: string }) => err.code === 'GLOBAL_SUPPLY_TRADE_COMMODITY_MISMATCH',
+  );
+  assert.throws(
+    () => diagnoseBilateralTradeMirror(ironExport2025, { ...copperImport2024, commodityId: 'iron_ore' }),
+    (err: { code?: string }) => err.code === 'GLOBAL_SUPPLY_TRADE_MIRROR_PERIOD_MISMATCH',
+  );
+  assert.throws(
+    () => diagnoseBilateralTradeMirror(ironExport2025, { ...copperImport2024, commodityId: 'iron_ore', periodLabel: '2025' }),
+    (err: { code?: string }) => err.code === 'GLOBAL_SUPPLY_TRADE_MIRROR_CLASSIFICATION_MISMATCH',
+  );
+
+  // 2. 同一伙伴拆成 60 和 40 两笔时，必须先按伙伴合并再算 HHI = 1（绝不是 0.52）
+  const hhiMerged = computeSharesAndHhi({
+    measureKind: 'quantity',
+    totalDenominator: '100',
+    partners: [{ partnerRegionId: 'AUS', amount: '60' }, { partnerRegionId: 'AUS', amount: '40' }],
+  });
+  assert.equal(hhiMerged.coverageComplete, true);
+  assert.equal(hhiMerged.shares.length, 1);
+  assert.equal(hhiMerged.shares[0]?.amount, '100');
+  assert.equal(hhiMerged.hhi, '1');
+
+  // 3. 历史筛选：非法业务生效时点拦截、同键多版仅保留最新生效修订、聚合拒绝重复修订、阶段时间戳防提前可见
+  const cutoffUtc = '2026-03-01T00:00:00Z';
+  const malformed = filterTemporalRecordsAtPerspective([ironExport2025], {
+    historyMode: 'market_known_at',
+    cutoffUtc,
+    businessEffectiveAtUtc: 'invalid',
+  });
+  assert.equal(malformed.visible.length, 0);
+  assert.equal(malformed.gaps[0]?.code, 'BUSINESS_EFFECTIVE_TIME_INVALID');
+
+  const r1 = { ...ironExport2025, temporal: { ...baseTemporal, revisionId: 'r1', publicTimeUtc: '2026-02-10T00:00:00Z' } };
+  const r2 = { ...ironExport2025, temporal: { ...baseTemporal, revisionId: 'r2', publicTimeUtc: '2026-02-28T00:00:00Z' } };
+  const dedup = filterTemporalRecordsAtPerspective([r1, r2], { historyMode: 'market_known_at', cutoffUtc });
+  assert.deepEqual(dedup.visible.map(v => v.temporal.revisionId), ['r2']);
+  assert.throws(
+    () => assertTradeAggregationNoOverlap([r1, r2], regionMap),
+    (err: { code?: string }) => err.code === 'GLOBAL_SUPPLY_TRADE_AGGREGATION_DUPLICATE_OBSERVATION',
+  );
+
+  const laterPublished = {
+    ...ironExport2025,
+    temporal: { ...baseTemporal, systemHeldAtUtc: '2026-02-12T00:00:00Z', usableStage: 'published_readable' as const },
+    publishedAtUtc: '2026-10-01T00:00:00Z',
+  };
+  const marchView = filterTemporalRecordsAtPerspective([laterPublished], {
+    historyMode: 'system_held_at',
+    cutoffUtc,
+    usableStage: 'published_readable',
+  });
+  assert.equal(marchView.visible.length, 0);
+  const novView = filterTemporalRecordsAtPerspective([laterPublished], {
+    historyMode: 'system_held_at',
+    cutoffUtc: '2026-11-01T00:00:00Z',
+    usableStage: 'published_readable',
+  });
+  assert.equal(novView.visible.length, 1);
+
+  // 4. 仅设施资产披露不能把企业直接采购敞口标为 verified_direct_exposure
+  const procurementWithAssetEvidence = evaluateEnterpriseRegionalExposure({
+    entityId: 'synthetic-company',
+    exposureKind: 'procurement',
+    disclosedRegionId: 'AUS',
+    targetQueryRegionId: 'AUS',
+    disclosedAmount: '40',
+    entityTotalAmount: '100',
+    evidenceKind: 'facility_asset_disclosure',
+  }, regionMap);
+  assert.equal(procurementWithAssetEvidence.status, 'unknown_direct_exposure');
+  assert.equal(procurementWithAssetEvidence.exposureRatio, null);
+
+  // 5. 跨源门禁：仅填领域的商品档案必须判为 needs_evidence；冲突与缺证并存时即使 allowNewDefinitionVersion:true 也必须阻断
+  const makeGeoProfile = (sourceId: string, domainScope: Record<string, unknown>) => readSourceFieldProfile({
+    version: 'bd.source-field-profile/1',
+    sourceId,
+    profileId: sourceId,
+    series: 'quantity',
+    fields: [{ originalHeader: 'v', fieldCode: 'v', dataType: 'decimal', unitCode: 'count', role: 'value', measurement: 'verified measured quantity' }],
+    frequency: 'other',
+    timeBucket: { labelSemantics: 'start', interval: 'closed_open', lengthMinutes: 525600, timezone: 'UTC' },
+    adjustment: { status: 'raw' },
+    domainScope,
+    confirmation: { status: 'operator_confirmed', basis: 'reviewed source report annex', confirmedAtUtc: '2025-01-01T00:00:00Z' },
+  }, sourceId);
+  const incompleteCmp = compareProfileSemantics(makeGeoProfile('A', { domain: 'geo_commodity' }), makeGeoProfile('B', { domain: 'geo_commodity' }));
+  assert.equal(incompleteCmp.status, 'needs_evidence');
+  assert.equal(incompleteCmp.sameProduct, false);
+  assert.ok(incompleteCmp.gaps.length >= 4);
+
+  const dryComplete = makeGeoProfile('Dry', {
+    domain: 'geo_commodity',
+    statisticalAreaScheme: 'ISO_3166_1',
+    processingStage: 'ore',
+    quantityBasis: 'dry_weight',
+    periodBasis: 'calendar_year',
+    commodityClassification: { scheme: 'HS', version: 'HS2017', mappingQuality: 'exact' },
+  });
+  const wetWithGap = makeGeoProfile('Wet', {
+    domain: 'geo_commodity',
+    statisticalAreaScheme: 'ISO_3166_1',
+    processingStage: 'ore',
+    quantityBasis: 'wet_weight',
+    periodBasis: 'calendar_year',
+    commodityClassification: { scheme: 'HS', version: 'HS2022', mappingQuality: 'partial_overlap' },
+  });
+  assert.throws(
+    () => assertCrossSourceProductAdmission(wetWithGap, [dryComplete], { allowNewDefinitionVersion: true }),
+    { code: 'G5_CROSS_SOURCE_EVIDENCE_REQUIRED' },
+  );
+
+  // 6. §19.6 第 5 项受控字典映射 & 第 7 项字段身份跨版本移植核对
+  const { parseTableSource, structureCandidateTable, annotateCandidateTable } = await import('../candidate-pipeline.js');
+  const { verifySourceFieldIdentityPortability } = await import('../tabular-bulk-profile.js');
+  const parsedTable = parseTableSource(Buffer.from('country_raw,qty\n秘鲁,100\n'), { materialId: 'm1', format: 'csv' });
+  const structuredTable = structureCandidateTable(parsedTable, { country_raw: 'string', qty: 'decimal_string' });
+  const annotated = annotateCandidateTable(structuredTable, { source_batch: 'b1' }, {
+    region_code: { sourceColumn: 'country_raw', dictionaryId: 'iso-3166-1', version: '2025.1', entries: { '秘鲁': 'PER' } },
+  });
+  assert.deepEqual(annotated.columns, ['country_raw', 'qty', 'region_code']);
+  assert.equal(annotated.rows[0]?.[2]?.value, 'PER');
+  assert.equal(annotated.rows[0]?.[2]?.original, '秘鲁');
+  assert.throws(
+    () => annotateCandidateTable(structuredTable, {}, {
+      region_code: { sourceColumn: 'country_raw', dictionaryId: 'iso-3166-1', version: '2025.1', entries: { '智利': 'CHL' }, unmappedPolicy: 'fail' },
+    }),
+    { code: 'CANDIDATE_DICTIONARY_UNMAPPED' },
+  );
+
+  const v1Prof = makeGeoProfile('S1', {
+    domain: 'geo_commodity',
+    statisticalAreaScheme: 'ISO_3166_1',
+    processingStage: 'ore',
+    quantityBasis: 'dry_weight',
+    periodBasis: 'calendar_year',
+  });
+  const v2AddCol = readSourceFieldProfile({
+    ...v1Prof,
+    profileId: 'S1-v2',
+    fields: [...v1Prof.fields, { originalHeader: 'grade', fieldCode: 'grade', dataType: 'text', unitCode: 'text', role: 'commodity_stage' }],
+  }, 'S1-v2');
+  const portable = verifySourceFieldIdentityPortability(v1Prof, v2AddCol);
+  assert.deepEqual(portable.preservedFieldCodes, ['v']);
+  assert.deepEqual(portable.addedFieldCodes, ['grade']);
+  assert.equal(portable.requiresSupersedes, false);
+  const v2Incompatible = readSourceFieldProfile({
+    ...v1Prof,
+    profileId: 'S1-bad',
+    fields: [{ originalHeader: 'v', fieldCode: 'v', dataType: 'decimal', unitCode: 'metric_ton', role: 'value', measurement: 'verified measured quantity' }],
+  }, 'S1-bad');
+  assert.throws(() => verifySourceFieldIdentityPortability(v1Prof, v2Incompatible), { code: 'TABULAR_BULK_PROFILE' });
 });

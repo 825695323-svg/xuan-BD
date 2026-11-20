@@ -415,3 +415,17 @@ test('only the trusted initial bulk commit budget survives a 150 second machine 
   } finally { machineCompleted(); }
   assert.equal((await tasks.wait(accepted.task.id)).status, 'succeeded');
 });
+
+test('cross-source bulk admission blocks conflicting or evidence-incomplete peer profiles sharing the same series', async t => {
+  const f = setup(t);
+  const peerPath = join(f.profilePath, '..', 'peer-source.json');
+  writeFileSync(peerPath, JSON.stringify({
+    ...profile,
+    profileId: 'bulk.peer',
+    sourceId: 'second-synthetic-source',
+  }));
+  await assert.rejects(
+    f.chunked.startAny(bulkInput('cross-source-blocked'), operator('cross-source-blocked')),
+    { code: 'G5_CROSS_SOURCE_EVIDENCE_REQUIRED' },
+  );
+});

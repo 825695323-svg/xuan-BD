@@ -8,6 +8,31 @@ export interface R1TimeMapping {
   precision: 'day' | 'minute' | 'second'; sourceTimezone: string;
 }
 export interface R1ScalarMapping extends R1TimeMapping { businessKey: string; value: string }
+export interface R1SupplyTradeMapping {
+  kind: 'geo_commodity_observation' | 'bilateral_trade_observation';
+  regionId: string;
+  commodityId: string;
+  stageCode: string;
+  quantityBasis: string;
+  unitCode: string;
+  periodBasis: string;
+  periodLabel: string;
+  value: string;
+  category?: string;
+  capacityStatus?: string;
+  inventoryScope?: string;
+  partnerRegionId?: string;
+  flow?: string;
+  isSubFlowOf?: string;
+  valuationBasis?: string;
+  currencyCode?: string;
+  primaryValue?: string;
+  externalScheme?: string;
+  externalVersion?: string;
+  externalCode?: string;
+  externalParentCode?: string;
+  externalMappingQuality?: string;
+}
 export interface R1TabularMapping extends R1TimeMapping {
   kind: 'tabular_rows';
   businessKey: string;
@@ -15,6 +40,8 @@ export interface R1TabularMapping extends R1TimeMapping {
   fields: { fieldCode: string; value: string; state?: string }[];
   /** Explicit market roles only. A table without market roles omits bar. */
   bar?: { frequency: 'day' | 'minute'; open?: string; high?: string; low?: string; close?: string; volume?: string; amount?: string };
+  /** Explicit global supply & bilateral trade roles; mutually exclusive with bar. */
+  supplyTrade?: R1SupplyTradeMapping;
   /** Absence preserves unknown historical availability; acquisition time is never substituted. */
   publicTime?: R1TimeMapping;
 }
@@ -139,13 +166,15 @@ export type R1ContextOperation = typeof R1_CONTEXT_OPERATIONS[number];
 export interface R1ContextReadInput {
   operation: R1ContextOperation; snapshotId: string; datasetId: string; subject: Record<string, unknown>;
   fields?: string[]; pageSize?: number; cursor?: string | null; maxDepth?: number;
-  /** Explicit market cutoff for event timelines; relation graphs additionally require validity range. Other contexts remain snapshot-only. */
-  historyMode?: 'snapshot_contents' | 'market_known_at'; at?: string;
+  /** Explicit market cutoff for event timelines; relation graphs additionally support system_held_at and require validity range. Other contexts remain snapshot-only. */
+  historyMode?: EligibilityHistoryMode; at?: string;
+  heldScope?: string;
+  usableStage?: 'acquired' | 'custodied' | 'published_readable';
   relationTypes?: string[]; eventTypes?: string[]; ruleCodes?: string[]; businessTimeRange?: Record<string, unknown> | null;
 }
 export interface R1ContextRead {
   operation: R1ContextOperation; snapshotId: string; datasetId: string; subject: Record<string, unknown>;
-  historyMode: 'snapshot_contents' | 'market_known_at'; connection: R1ReadConnection; result: Record<string, unknown>; limits: R1ReadLimits;
+  historyMode: EligibilityHistoryMode; connection: R1ReadConnection; result: Record<string, unknown>; limits: R1ReadLimits;
 }
 
 export interface R1DefinitionIntent {

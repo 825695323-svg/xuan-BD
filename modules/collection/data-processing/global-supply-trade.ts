@@ -1,6 +1,7 @@
 import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../../platform/jobs/tasks.js';
-import { parseR1Utc } from '../r1-tabular.js';
+import { isExplicitUtcInstant } from '../../../contracts/financial-value.js';
+const parseR1Utc = (value: unknown): number => isExplicitUtcInstant(value) ? Date.parse(value) : NaN;
 
 export const GLOBAL_SUPPLY_TRADE_VERSION = 'bd-global-supply-trade/1';
 
@@ -117,9 +118,15 @@ export interface TemporalQualification {
   effectiveEndExclusiveUtc: string;
   publicTimeUtc: string | null;
   systemHeldAtUtc: string | null;
+  acquiredAtUtc?: string | null;
+  custodiedAtUtc?: string | null;
+  publishedAtUtc?: string | null;
+  publishedReadableAtUtc?: string | null;
+  stageTimestamps?: Partial<Record<'acquired' | 'custodied' | 'published_readable', string | null>>;
   usableStage: 'acquired' | 'custodied' | 'published_readable';
   revisionArchivePolicy: 'versioned_archive' | 'current_revision_only';
   revisionId: string;
+  supersedesRevisionId?: string | null;
 }
 
 export interface GeoCommodityObservation {
@@ -248,6 +255,10 @@ export function assertCommodityQuantityCompatibility(
   if (items.length < 2) return;
   const first = items[0]!;
   for (const item of items.slice(1)) {
+    if (item.commodityId !== first.commodityId) {
+      fail('COMMODITY_MISMATCH',
+        `商品身份不同（${first.commodityId} ≠ ${item.commodityId}）：不同商品（如铁矿石与铜）严禁直接相加或作为同一商品镜像对比。`);
+    }
     if (item.quantityBasis !== first.quantityBasis) {
       fail('QUANTITY_BASIS_MISMATCH',
         `数量计量基础不相容（${first.quantityBasis} ≠ ${item.quantityBasis}）：精矿实物重与金属含量、干吨与湿吨、活牛头数与胴体/商品肉重量严禁直接相加或混算。`);
@@ -528,6 +539,21 @@ export function assertTradeAggregationNoOverlap(
       fail('AGGREGATION_BLOC_MEMBER_OVERLAP', `禁止将区域集团（${meta.regionId}）与其已包含的成员地区同时相加。`);
     }
   }
+  // 6. 同一观测键的多版本或同维度重复记录禁止同时相加
+  const seenObsKeys = new Set<string>();
+  const seenTuples = new Set<string>();
+  for (const obs of observations) {
+    const tuple = [
+      obs.reporterRegionId, obs.partnerRegionId, obs.flow, obs.commodityId, obs.stageCode,
+      obs.periodBasis, obs.periodLabel, obs.externalClassification.scheme,
+      obs.externalClassification.version, obs.externalClassification.code,
+    ].join('|');
+    if (seenObsKeys.has(obs.observationKey) || seenTuples.has(tuple)) {
+      fail('AGGREGATION_DUPLICATE_OBSERVATION', `禁止将同一贸易观测（${obs.observationKey}）的多个修订版本或同维度重复记录同时相加。`);
+    }
+    seenObsKeys.add(obs.observationKey);
+    seenTuples.add(tuple);
+  }
 }
 
 export interface MirrorDiscrepancyDiagnosis {
@@ -582,7 +608,23 @@ export function diagnoseBilateralTradeMirror(
     { commodityId: exportObs.commodityId, stageCode: exportObs.stageCode, quantityBasis: exportObs.quantityBasis, unitCode: exportObs.quantityUnitCode },
     { commodityId: importObs.commodityId, stageCode: importObs.stageCode, quantityBasis: importObs.quantityBasis, unitCode: importObs.quantityUnitCode },
   ]);
+  if (exportObs.periodBasis !== importObs.periodBasis || exportObs.periodLabel !== importObs.periodLabel) {
+    fail('MIRROR_PERIOD_MISMATCH',
+      `镜像对比的统计期间口径或期间标签不一致（${exportObs.periodBasis}:${exportObs.periodLabel} ≠ ${importObs.periodBasis}:${importObs.periodLabel}），严禁跨期对比。`);
+  }
+  if (exportObs.currencyCode !== importObs.currencyCode) {
+    fail('MIRROR_CURRENCY_MISMATCH', `镜像对比的计价币种不一致（${exportObs.currencyCode} ≠ ${importObs.currencyCode}）。`);
+  }
+  if (exportObs.externalClassification.scheme === importObs.externalClassification.scheme
+    && exportObs.externalClassification.version === importObs.externalClassification.version
+    && exportObs.externalClassification.code !== importObs.externalClassification.code) {
+    fail('MIRROR_CLASSIFICATION_MISMATCH',
+      `镜像对比的商品外部分类代码不一致（${exportObs.externalClassification.code} ≠ ${importObs.externalClassification.code}）。`);
+  }
   const reasons: MirrorDiscrepancyDiagnosis['plausibleReasons'] = [];
+  if (!checkHsClassificationContinuity(exportObs.externalClassification, importObs.externalClassification).continuous) {
+    reasons.push('statistical_system_difference');
+  }
   if (exportObs.valuationBasis !== importObs.valuationBasis) reasons.push('cif_vs_fob_valuation');
   if (exportObs.secondPartnerRegionId || importObs.secondPartnerRegionId
     || exportObs.partnerRole !== 'last_known_destination' || importObs.partnerRole !== 'origin') {
@@ -632,26 +674,51 @@ export function filterTemporalRecordsAtPerspective<T extends { temporal: Tempora
     businessEffectiveAtUtc?: string;
   },
 ): { visible: T[]; gaps: { code: string; revisionId: string; reason: string }[] } {
-  const visible: T[] = [];
   const gaps: { code: string; revisionId: string; reason: string }[] = [];
   const cutoffMs = perspective.cutoffUtc ? parseR1Utc(perspective.cutoffUtc) : NaN;
   if (perspective.historyMode !== 'snapshot_contents' && !Number.isFinite(cutoffMs)) {
     fail('HISTORY_CUTOFF_REQUIRED', `${perspective.historyMode} 必须提供有效的秒级 UTC 截止时间。`);
   }
-  const businessMs = perspective.businessEffectiveAtUtc ? parseR1Utc(perspective.businessEffectiveAtUtc) : NaN;
+  const hasBusinessFilter = perspective.businessEffectiveAtUtc !== undefined;
+  const businessMs = hasBusinessFilter ? parseR1Utc(perspective.businessEffectiveAtUtc) : NaN;
+  if (hasBusinessFilter && !Number.isFinite(businessMs)) {
+    return {
+      visible: [],
+      gaps: records.map(r => ({
+        code: 'BUSINESS_EFFECTIVE_TIME_INVALID',
+        revisionId: r.temporal.revisionId,
+        reason: `显式传入的业务生效时点（${String(perspective.businessEffectiveAtUtc)}）不是有效秒级 UTC 时刻，未放行任何记录。`,
+      })),
+    };
+  }
   const stageRank = { acquired: 1, custodied: 2, published_readable: 3 } as const;
+  const candidates: { record: T; orderMs: number; key: string | null }[] = [];
 
   for (const record of records) {
     const t = record.temporal;
-    if (Number.isFinite(businessMs)) {
-      const startMs = parseR1Utc(t.effectiveStartUtc);
-      const endMs = parseR1Utc(t.effectiveEndExclusiveUtc);
-      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || businessMs < startMs || businessMs >= endMs) {
-        continue;
-      }
+    const recAny = record as Record<string, unknown>;
+    const logicalKey = typeof recAny.observationKey === 'string'
+      ? recAny.observationKey
+      : typeof recAny.relationKey === 'string'
+        ? recAny.relationKey
+        : typeof recAny.businessKey === 'string'
+          ? recAny.businessKey
+          : null;
+    const startMs = parseR1Utc(t.effectiveStartUtc);
+    const endMs = parseR1Utc(t.effectiveEndExclusiveUtc);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      gaps.push({
+        code: 'RECORD_EFFECTIVE_PERIOD_INVALID',
+        revisionId: t.revisionId,
+        reason: '记录的业务有效期区间（effectiveStartUtc / effectiveEndExclusiveUtc）无效。',
+      });
+      continue;
+    }
+    if (hasBusinessFilter && (businessMs < startMs || businessMs >= endMs)) {
+      continue;
     }
     if (perspective.historyMode === 'snapshot_contents') {
-      visible.push(record);
+      candidates.push({ record, orderMs: 0, key: logicalKey });
       continue;
     }
     if (perspective.historyMode === 'market_known_at') {
@@ -668,18 +735,71 @@ export function filterTemporalRecordsAtPerspective<T extends { temporal: Tempora
         gaps.push({ code: 'PUBLIC_TIME_UNKNOWN', revisionId: t.revisionId, reason: '缺少可核对的历史首次公开时间。' });
         continue;
       }
-      if (pubMs <= cutoffMs) visible.push(record);
+      if (pubMs <= cutoffMs) candidates.push({ record, orderMs: pubMs, key: logicalKey });
       continue;
     }
     // system_held_at
     const requiredStage = perspective.usableStage ?? 'published_readable';
-    const heldMs = t.systemHeldAtUtc ? parseR1Utc(t.systemHeldAtUtc) : NaN;
-    if (!Number.isFinite(heldMs)) {
-      gaps.push({ code: 'SYSTEM_HELD_TIME_UNKNOWN', revisionId: t.revisionId, reason: '缺少本系统实际持有该版本的时间戳。' });
+    if (stageRank[t.usableStage] < stageRank[requiredStage]) {
       continue;
     }
-    if (heldMs <= cutoffMs && stageRank[t.usableStage] >= stageRank[requiredStage]) {
-      visible.push(record);
+    const explicitStageTime =
+      requiredStage === 'published_readable'
+        ? (t.stageTimestamps?.published_readable ?? t.publishedReadableAtUtc ?? t.publishedAtUtc
+          ?? (typeof recAny.publishedReadableAtUtc === 'string' ? recAny.publishedReadableAtUtc : undefined)
+          ?? (typeof recAny.publishedAtUtc === 'string' ? recAny.publishedAtUtc : undefined))
+        : requiredStage === 'custodied'
+          ? (t.stageTimestamps?.custodied ?? t.custodiedAtUtc
+            ?? (typeof recAny.custodiedAtUtc === 'string' ? recAny.custodiedAtUtc : undefined))
+          : (t.stageTimestamps?.acquired ?? t.acquiredAtUtc
+            ?? (typeof recAny.acquiredAtUtc === 'string' ? recAny.acquiredAtUtc : undefined));
+    const stageUtc = explicitStageTime !== undefined ? explicitStageTime : t.systemHeldAtUtc;
+    const heldMs = stageUtc ? parseR1Utc(stageUtc) : NaN;
+    if (!Number.isFinite(heldMs)) {
+      gaps.push({ code: 'SYSTEM_HELD_TIME_UNKNOWN', revisionId: t.revisionId, reason: `缺少本系统在 ${requiredStage} 阶段实际持有该版本的时间戳。` });
+      continue;
+    }
+    if (heldMs <= cutoffMs) {
+      candidates.push({ record, orderMs: heldMs, key: logicalKey });
+    }
+  }
+
+  const visible: T[] = [];
+  const byKey = new Map<string, { record: T; orderMs: number }[]>();
+  for (const item of candidates) {
+    if (item.key === null) {
+      visible.push(item.record);
+      continue;
+    }
+    const list = byKey.get(item.key) ?? [];
+    list.push({ record: item.record, orderMs: item.orderMs });
+    byKey.set(item.key, list);
+  }
+  for (const group of byKey.values()) {
+    if (group.length === 1) {
+      visible.push(group[0]!.record);
+      continue;
+    }
+    const supersededIds = new Set(
+      group.map(g => g.record.temporal.supersedesRevisionId).filter((id): id is string => typeof id === 'string' && id.length > 0),
+    );
+    const leaves = group.filter(g => !supersededIds.has(g.record.temporal.revisionId));
+    if (leaves.length === 1) {
+      visible.push(leaves[0]!.record);
+      continue;
+    }
+    const pool = leaves.length > 0 ? leaves : group;
+    pool.sort((a, b) => b.orderMs - a.orderMs);
+    if (perspective.historyMode !== 'snapshot_contents' && pool[0]!.orderMs > pool[1]!.orderMs) {
+      visible.push(pool[0]!.record);
+    } else {
+      for (const item of pool) {
+        gaps.push({
+          code: 'MULTIPLE_ACTIVE_REVISIONS_CONFLICT',
+          revisionId: item.record.temporal.revisionId,
+          reason: '同一逻辑观测键在截止时点存在多个无法判定唯一生效版本的修订记录，未重复放行。',
+        });
+      }
     }
   }
   return { visible, gaps };
@@ -729,16 +849,22 @@ export function computeSharesAndHhi(input: {
   const total = toScaledBigInt(input.totalDenominator);
   if (total <= 0n) fail('NONPOSITIVE_DENOMINATOR', '份额计算的分母必须大于零。');
   let sum = 0n;
-  const shares = input.partners.map(p => {
+  const mergedByPartner = new Map<string, bigint>();
+  for (const p of input.partners) {
+    const partnerId = p.partnerRegionId.trim();
+    if (!partnerId) fail('PARTNER_ID_REQUIRED', '伙伴地区标识不能为空。');
     const amt = toScaledBigInt(p.amount);
     if (amt < 0n) fail('NEGATIVE_PARTNER_AMOUNT', '伙伴产量或贸易量不能为负。');
     sum += amt;
-    const s = (amt * SCALE) / total;
-    return { partnerRegionId: p.partnerRegionId, amount: p.amount, shareScaled: s, share: fromScaledBigInt(s) };
-  });
+    mergedByPartner.set(partnerId, (mergedByPartner.get(partnerId) ?? 0n) + amt);
+  }
   if (sum > total) {
     fail('PARTNER_SUM_EXCEEDS_TOTAL', '各伙伴明细之和超过同口径总分母，存在重复计数或口径混加。');
   }
+  const shares = [...mergedByPartner.entries()].map(([partnerRegionId, amt]) => {
+    const s = (amt * SCALE) / total;
+    return { partnerRegionId, amount: fromScaledBigInt(amt), shareScaled: s, share: fromScaledBigInt(s) };
+  });
   const coverageScaled = (sum * SCALE) / total;
   const coverageComplete = sum === total;
   const gaps: string[] = [];
@@ -860,6 +986,16 @@ export interface EnterpriseRegionalExposureClaim {
  * 1. 严禁把国家双边贸易关系（macro_trade_share_inference）直接当成企业采购（supplies_to）或地区收入证据；
  * 2. “海外收入”只支持海外范围，“亚太收入”只支持亚太范围，严禁按某国宏观贸易份额将企业未披露的具体国家比例自动分摊出来。
  */
+const ALLOWED_EXPOSURE_EVIDENCE: Record<
+  EnterpriseRegionalExposureClaim['exposureKind'],
+  readonly EnterpriseRegionalExposureClaim['evidenceKind'][]
+> = {
+  production: ['facility_asset_disclosure'],
+  procurement: ['top5_counterparty_disclosure'],
+  revenue: ['financial_report_segment', 'top5_counterparty_disclosure'],
+  logistics: ['facility_asset_disclosure'],
+};
+
 export function evaluateEnterpriseRegionalExposure(
   claim: EnterpriseRegionalExposureClaim,
   regions: ReadonlyMap<string, GeoRegionMaster>,
@@ -875,6 +1011,13 @@ export function evaluateEnterpriseRegionalExposure(
   const disclosedRegion = regions.get(claim.disclosedRegionId);
   const targetRegion = regions.get(claim.targetQueryRegionId);
   if (!disclosedRegion || !targetRegion) return fail('GEO_NOT_FOUND', '敞口核对涉及的地理区域未登记。');
+  if (!ALLOWED_EXPOSURE_EVIDENCE[claim.exposureKind].includes(claim.evidenceKind)) {
+    return {
+      status: 'unknown_direct_exposure',
+      exposureRatio: null,
+      reason: `证据类型 ${claim.evidenceKind} 不能核实企业直接 ${claim.exposureKind} 敞口；不得将设施资产披露或收入分部冒充采购敞口证据。`,
+    };
+  }
   if (disclosedRegion.regionId !== targetRegion.regionId) {
     // Например,财报只披露了“海外”或“亚太”（regional_bloc），而查询的是具体国家（如秘鲁 PER 或澳大利亚 AUS）
     return {

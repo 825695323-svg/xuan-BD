@@ -1276,7 +1276,14 @@ class WFDProductService:
                 scoped = set(scope_keys)
             else:
                 scoped = None
-            unsupported_scope = set(scope) - {"product", "business_keys"}
+            allowed_scope = {"product", "business_keys"}
+            if out["payload"].get("kind") == "relation_edges":
+                for row in out["payload"].get("rows", []):
+                    rtype = row.get("relation_type")
+                    if rtype not in {"classified_as", "member_of_theme", "parent_theme_of",
+                                     "cross_market_theme_map", "commodity_industry_map", "listed_as"}:
+                        raise ValueError("RELATION_COMPLETE_SNAPSHOT_UNSUPPORTED:" + str(rtype))
+            unsupported_scope = set(scope) - allowed_scope
             if unsupported_scope:
                 raise ValueError("SCOPE_UNSUPPORTED:" + sorted(unsupported_scope)[0])
             existing = {key: items[0] for key, items in leaves.items()

@@ -8,10 +8,15 @@ const implementation = wfdSha256(readFileSync(new URL(import.meta.url)));
 const commonSchema = readFileSync(new URL('../../wfd/product/protocol/schemas/wfd-common.schema.json', import.meta.url));
 const identityKinds: readonly string[] = JSON.parse(commonSchema.toString('utf8')).$defs.IdentityRef.properties.kind.enum;
 const cellRules = compileR1TabularDeclaration(null).ruleDigest;
+const COMPLETE_SNAPSHOT_ALLOWED_RELATIONS = new Set([
+  'classified_as', 'member_of_theme', 'parent_theme_of',
+  'cross_market_theme_map', 'commodity_industry_map', 'listed_as',
+]);
 const NON_COMPLETE_RELATION_TYPES = new Set([
-  'trade_flow_projection', 'supplies_to', 'purchases_from',
+  'trade_flow_projection', 'supplies_to', 'purchases_from', 'competes_with',
   'logistics_connected_via', 'process_input_to', 'conditionally_substitutable_by',
 ]);
+const NON_COMPLETE_DOMAINS = new Set(['bilateral_trade', 'supply_chain_observation', 'trade_observation']);
 const fail = (message: string): never => { throw new TaskError('R1_RELATION_MAPPING', message); };
 const object = (value: unknown): WfdRecord => isWfdRecord(value) ? value : fail('关系合同及实际行必须是明确对象。');
 const identifier = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(value);
@@ -75,10 +80,15 @@ function read(value: unknown) {
       fail('complete_snapshot 关系切片不携带单行修订映射。');
     }
     const scope = object(coverage.scope);
-    const domain = String(scope.domain ?? '');
-    if (scope.membership_set !== true || ['bilateral_trade', 'supply_chain_observation', 'trade_observation'].includes(domain)
+    const scopeKeys = Object.keys(scope);
+    const domain = String(scope.domain ?? scope.product ?? '');
+    const validWfdScope = scopeKeys.length > 0 && scopeKeys.every(k => ['product', 'business_keys'].includes(k))
+      && (scope.product === undefined || identifier(scope.product))
+      && (scope.business_keys === undefined || (Array.isArray(scope.business_keys) && scope.business_keys.length > 0 && scope.business_keys.every(identifier)));
+    const validMembershipScope = scope.membership_set === true;
+    if ((!validWfdScope && !validMembershipScope) || NON_COMPLETE_DOMAINS.has(domain)
       || coverage.basis !== 'declared_full' || coverage.completeness !== 'complete' || coverage.absence_means !== 'explicitly_absent') {
-      fail('完整关系快照仅允许显式声明 membership_set:true 的板块或分类成分集（declared_full / complete / explicitly_absent）；贸易缺报或供应链观测不能声称未出现即关系终止。');
+      fail('完整关系快照仅允许显式声明 product/business_keys 或 membership_set:true 的板块或分类成分集（declared_full / complete / explicitly_absent）；贸易缺报或供应链观测不能声称未出现即关系终止。');
     }
   } else {
     if (target.definitionMode !== 'reuse' || !isWfdRecord(target.definitionRef) || !isWfdRecord(target.revisions)
@@ -87,10 +97,13 @@ function read(value: unknown) {
     }
     const revisions = target.revisions as WfdRecord;
     for (const [revKey, revVal] of Object.entries(revisions)) {
-      if (!identifier(revKey) || !isWfdRecord(revVal) || !isWfdRecord(revVal.previous)
-        || !['product_id', 'logical_key', 'revision_id'].every(k => identifier((revVal.previous as WfdRecord)[k]))
+      const prev = isWfdRecord(revVal) && isWfdRecord(revVal.previous) ? revVal.previous : null;
+      if (!identifier(revKey) || !isWfdRecord(revVal) || !prev
+        || !['product_id', 'logical_key', 'revision_id'].every(k => identifier(prev[k]))
+        || (prev.snapshot_id !== undefined && !identifier(prev.snapshot_id))
+        || prev.logical_key !== revKey
         || typeof revVal.reason !== 'string' || revVal.reason.trim().length < 4) {
-        fail('关系修订须逐键绑定前驱记录身份（product_id/logical_key/revision_id）及明确修订原因。');
+        fail('关系修订须逐键绑定前驱记录身份（product_id/snapshot_id/logical_key/revision_id 且键一致）及明确修订原因。');
       }
     }
     if (coverage.basis !== 'observed_partial' || coverage.completeness !== 'partial' || coverage.absence_means !== 'unknown') {
@@ -128,8 +141,8 @@ export function checkR1RelationRows(rows: unknown[], value: unknown) {
     const row = object(raw), key = row[String(mapping.businessKey)], type = row[String(mapping.relationType)];
     if (!identifier(key) || !identifier(type)) fail('实际关系键或类型缺失，不自动生成。');
     if (target.inputMode === 'complete_snapshot') {
-      if (NON_COMPLETE_RELATION_TYPES.has(String(type))) {
-        fail(`关系类型 ${String(type)} 属于贸易或供应链观测，不能作为 complete_snapshot 推断未出现即关系终止。`);
+      if (NON_COMPLETE_RELATION_TYPES.has(String(type)) || !COMPLETE_SNAPSHOT_ALLOWED_RELATIONS.has(String(type))) {
+        fail(`关系类型 ${String(type)} 不属于可证明完整性的分类或成分集关系，不能作为 complete_snapshot 推断未出现即关系终止。`);
       }
       if (seenKeys.has(String(key))) fail(`完整关系快照中业务键 ${String(key)} 重复。`);
       seenKeys.add(String(key));

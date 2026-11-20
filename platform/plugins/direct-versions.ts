@@ -58,7 +58,7 @@ const groups = {
     'contracts/workspace-services.ts', 'contracts/r1-contracts.ts', 'adapters/database/wfd-product-machine.ts', 'adapters/database/wfd-transport.ts',
     'adapters/database/wfd-product-connection.ts', 'platform/config/connections.ts', 'platform/resources/bindings.ts',
     'modules/collection/r1-paged-readback.ts', 'modules/collection/r1-event.ts', 'modules/collection/r1-relation.ts',
-    'wfd/product/protocol/schemas/wfd-common.schema.json', 'modules/collection/r1-tabular.ts', 'modules/collection/candidate-service.ts', 'modules/collection/candidate-object-storage.ts'],
+    'wfd/product/protocol/schemas/wfd-common.schema.json', 'modules/collection/r1-tabular.ts', 'modules/collection/data-processing/global-supply-trade.ts', 'modules/collection/data-processing/financial-fixed.ts', 'modules/collection/candidate-service.ts', 'modules/collection/candidate-object-storage.ts'],
 } as const;
 export type DirectImplementation = keyof typeof groups;
 const packageGroups: Partial<Record<DirectImplementation | 'common', readonly string[]>> = {

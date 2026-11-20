@@ -7,7 +7,7 @@ import { readXlsxTableSelection, type XlsxTableSelection } from './data-processi
 import { DIMENSION_KEYS } from './processing-routing.js';
 import type { OperatorContext, ProcessingDimensionInput, ProcessingPlanInput, ProcessingPlanService, ProcessingStepKind } from './processing-plan.js';
 import { declaredSourceSeries, resolveR1Evidence, type R1EvidenceFact, type R1EvidenceProposal, type R1EvidenceQuestion } from './r1-evidence.js';
-import { profileFingerprint, sourceFieldProfileDigest, type FrozenSourceFieldProfile, type SourceFieldProfileStore,
+import { assertCrossSourceProductAdmission, profileFingerprint, sourceFieldProfileDigest, type FrozenSourceFieldProfile, type SourceFieldProfileStore,
   type SemanticProductRegistryStore } from './source-field-profile.js';
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import type { R1WorkspaceService } from './r1-workspace.js';
@@ -131,6 +131,13 @@ export class R1AutoService {
       const registered = this.options.semanticProducts?.datasetFor(frozenProfile.fingerprint) ?? null;
       if (registered && registered !== input.datasetId) fail('R1_SEMANTIC_PRODUCT_CONFLICT',
         `该来源的语义指纹已登记为数据集 ${registered}；本次请求用 ${input.datasetId}，等于另立家族。请复用已登记数据集，或由操作者显式登记新语义。`);
+      const peerProfiles = (this.options.fieldProfiles?.list?.() ?? []).filter(peer =>
+        peer.sourceId !== fieldProfile!.sourceId
+        && ((peer.series !== '' && peer.series === fieldProfile!.series)
+          || this.options.semanticProducts?.datasetFor(profileFingerprint(peer)) === input.datasetId));
+      if (peerProfiles.length) {
+        assertCrossSourceProductAdmission(fieldProfile!, peerProfiles);
+      }
     }
     const payload = { input, ...(frozenProfile ? { sourceFieldProfileSha256: frozenProfile.digest } : {}) };
     const digest = wfdSha256(canonicalWfdJson(selectedKeyReplacement ? { payload, selectedKeyReplacement } : payload));
@@ -442,6 +449,13 @@ export class R1AutoService {
     item.evidence.push({ key: 'definition_predecessor', value: canonicalWfdJson({ productId: product.product_id,
       definitionRef: product.definition_ref, snapshotId: item.snapshot!.snapshotId }), origin: 'contract' });
     if (comparableDefinition(old) === comparableDefinition(proposed)) {
+      if (item.fieldProfile && this.options.fieldProfiles) {
+        const peers = (this.options.fieldProfiles.list?.() ?? []).filter(peer =>
+          peer.sourceId !== item.fieldProfile!.profile.sourceId
+          && ((peer.series !== '' && peer.series === item.fieldProfile!.profile.series)
+            || this.options.semanticProducts?.datasetFor(profileFingerprint(peer)) === item.input.datasetId));
+        if (peers.length) assertCrossSourceProductAdmission(item.fieldProfile.profile, peers);
+      }
       proposal.target.definition = old; item.definitionAction = 'reuse_same_definition'; return;
     }
     const oldFields = fields(old), newFields = fields(proposed);

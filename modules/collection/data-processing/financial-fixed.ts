@@ -203,6 +203,17 @@ export interface ArticulationTermInput {
   concept: string;
   scaledValue: string;
   declaredPrecisionHalfUlp: string;
+  subjectKey?: string;
+  periodKey?: string;
+  startDate?: string;
+  endDate?: string;
+  scope?: string;
+  dimension?: string;
+  currency?: string;
+  accountingStandard?: string;
+  comparabilityBasis?: string;
+  reportVersion?: string;
+  columnRole?: string;
 }
 export interface ArticulationCheckResult {
   ruleId: 'BS-01' | 'BS-02-ASSETS' | 'BS-02-LIABILITIES' | 'BS-03' | 'IS-01' | 'IS-02' | 'CF-01' | 'CF-02';
@@ -211,6 +222,8 @@ export interface ArticulationCheckResult {
   residual: string | null;
   toleranceRadius: string | null;
   missingConcepts: string[];
+  duplicateConcepts?: string[];
+  groupKey?: string;
 }
 
 const ARTICULATION_RULES: readonly {
@@ -254,44 +267,91 @@ function formatFixedDecimal(val: bigint, scale: number): string {
   return (negative ? '-' : '') + (fraction ? `${whole}.${fraction}` : whole);
 }
 
+function articulationGroupKey(item: ArticulationTermInput): string {
+  return canonicalWfdJson({
+    subjectKey: item.subjectKey ?? '',
+    periodKey: item.periodKey ?? '',
+    scope: item.scope ?? '',
+    dimension: item.dimension ?? '',
+    currency: item.currency ?? '',
+    accountingStandard: item.accountingStandard ?? '',
+    comparabilityBasis: item.comparabilityBasis ?? '',
+    reportVersion: item.reportVersion ?? '',
+    columnRole: item.columnRole ?? '',
+  });
+}
+
 /**
  * C09 财报三表表内与跨表线性勾稽区间容限校验：
- * 按 Σ(c_i * v_i) 计算残差 Δ，按 Σ(|c_i| * r_i) 计算量化容限半径 T，
+ * 先按主体、期间、报表合并范围、维度、币种、准则、可比口径、报告版本与列角色严格分组隔离（严禁跨企业或跨期拼凑“平衡”），
+ * 并检测同组重复科目；再按 Σ(c_i * v_i) 计算残差 Δ，按 Σ(|c_i| * r_i) 计算量化容限半径 T，
  * 区分 exact_match（Δ=0）、within_declared_quantization_tolerance（0 < |Δ| <= T）、discrepancy（|Δ| > T）和 indeterminate。
  */
 export function verifyFinancialStatementArticulation(items: readonly ArticulationTermInput[]): ArticulationCheckResult[] {
-  const byConcept = new Map(items.map(item => [item.concept, item]));
-  return ARTICULATION_RULES.map(rule => {
-    const missing = rule.terms.filter(t => !t.optional && !byConcept.has(t.concept)).map(t => t.concept);
-    if (missing.length) {
-      return { ruleId: rule.ruleId, formula: rule.formula, status: 'indeterminate', residual: null, toleranceRadius: null, missingConcepts: missing };
+  const groups = new Map<string, ArticulationTermInput[]>();
+  for (const item of items) {
+    const key = articulationGroupKey(item);
+    const list = groups.get(key) ?? [];
+    list.push(item);
+    groups.set(key, list);
+  }
+  if (!groups.size) {
+    groups.set(articulationGroupKey({ concept: '', scaledValue: '0', declaredPrecisionHalfUlp: '0' }), []);
+  }
+  const multiGroup = groups.size > 1;
+  const results: ArticulationCheckResult[] = [];
+  for (const [groupKey, groupItems] of groups.entries()) {
+    const byConcept = new Map<string, ArticulationTermInput>();
+    const counts = new Map<string, number>();
+    for (const item of groupItems) {
+      counts.set(item.concept, (counts.get(item.concept) ?? 0) + 1);
+      byConcept.set(item.concept, item);
     }
-    const activeTerms = rule.terms.filter(t => byConcept.has(t.concept));
-    const maxScale = Math.max(0, ...activeTerms.flatMap(t => {
-      const entry = byConcept.get(t.concept)!;
-      return [entry.scaledValue.split('.')[1]?.length ?? 0, entry.declaredPrecisionHalfUlp.split('.')[1]?.length ?? 0];
-    }));
-    let residualInt = 0n, toleranceInt = 0n;
-    for (const term of activeTerms) {
-      const entry = byConcept.get(term.concept)!;
-      const val = parseFixedDecimal(entry.scaledValue, maxScale);
-      const rad = parseFixedDecimal(entry.declaredPrecisionHalfUlp, maxScale);
-      residualInt += BigInt(term.weight) * val;
-      toleranceInt += rad < 0n ? -rad : rad;
+    for (const rule of ARTICULATION_RULES) {
+      const missing = rule.terms.filter(t => !t.optional && !byConcept.has(t.concept)).map(t => t.concept);
+      const duplicates = rule.terms.filter(t => (counts.get(t.concept) ?? 0) > 1).map(t => t.concept);
+      if (missing.length || duplicates.length) {
+        results.push({
+          ruleId: rule.ruleId,
+          formula: rule.formula,
+          status: 'indeterminate',
+          residual: null,
+          toleranceRadius: null,
+          missingConcepts: missing,
+          ...(duplicates.length ? { duplicateConcepts: duplicates } : {}),
+          ...(multiGroup ? { groupKey } : {}),
+        });
+        continue;
+      }
+      const activeTerms = rule.terms.filter(t => byConcept.has(t.concept));
+      const maxScale = Math.max(0, ...activeTerms.flatMap(t => {
+        const entry = byConcept.get(t.concept)!;
+        return [entry.scaledValue.split('.')[1]?.length ?? 0, entry.declaredPrecisionHalfUlp.split('.')[1]?.length ?? 0];
+      }));
+      let residualInt = 0n, toleranceInt = 0n;
+      for (const term of activeTerms) {
+        const entry = byConcept.get(term.concept)!;
+        const val = parseFixedDecimal(entry.scaledValue, maxScale);
+        const rad = parseFixedDecimal(entry.declaredPrecisionHalfUlp, maxScale);
+        residualInt += BigInt(term.weight) * val;
+        toleranceInt += rad < 0n ? -rad : rad;
+      }
+      const absResidual = residualInt < 0n ? -residualInt : residualInt;
+      const status: ArticulationCheckResult['status'] = absResidual === 0n
+        ? 'exact_match'
+        : absResidual <= toleranceInt ? 'within_declared_quantization_tolerance' : 'discrepancy';
+      results.push({
+        ruleId: rule.ruleId,
+        formula: rule.formula,
+        status,
+        residual: formatFixedDecimal(residualInt, maxScale),
+        toleranceRadius: formatFixedDecimal(toleranceInt, maxScale),
+        missingConcepts: [],
+        ...(multiGroup ? { groupKey } : {}),
+      });
     }
-    const absResidual = residualInt < 0n ? -residualInt : residualInt;
-    const status: ArticulationCheckResult['status'] = absResidual === 0n
-      ? 'exact_match'
-      : absResidual <= toleranceInt ? 'within_declared_quantization_tolerance' : 'discrepancy';
-    return {
-      ruleId: rule.ruleId,
-      formula: rule.formula,
-      status,
-      residual: formatFixedDecimal(residualInt, maxScale),
-      toleranceRadius: formatFixedDecimal(toleranceInt, maxScale),
-      missingConcepts: [],
-    };
-  });
+  }
+  return results;
 }
 const validDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(value) && isExplicitUtcInstant(value + 'T00:00:00Z');
 const COLUMN_ROLES: readonly FinancialColumnRole[] = ['current_period', 'prior_period_comparative_unchanged', 'prior_period_restated'];
@@ -340,17 +400,26 @@ const optionalField = (row: WfdRecord, key: string): string | null => {
   return cell.value;
 };
 function assertFinancialValueUnit(row: WfdRecord, allowScale = false, expectedDimension: 'money' | 'money_per_share' | 'ratio' = 'money'): void {
+  const rowUnit = field(row, 'unit');
   const cell = isWfdRecord(row.values) && isWfdRecord(row.values.value) ? row.values.value : null;
   const unit = cell && isWfdRecord(cell.unit) ? cell.unit : null;
   const unitCode = unit ? String(unit.unit_code ?? '') : '';
+  if (rowUnit !== unitCode) {
+    fail(`财务行内声明单位（${rowUnit}）与数值单元已解析单位（${unitCode || 'missing'}）冲突；拒绝换算。`);
+  }
   const scaleRule = UNIT_SCALE_POWERS[unitCode];
-  const validCode = allowScale ? !!scaleRule && scaleRule.dimension === expectedDimension : unitCode === 'cny';
-  const validDim = allowScale ? unit?.definition && isWfdRecord(unit.definition) && unit.definition.dimension === expectedDimension
-    : unit?.definition && isWfdRecord(unit.definition) && Object.keys(unit.definition).length === 1 && unit.definition.dimension === 'money';
+  const validCode = !!scaleRule && scaleRule.dimension === expectedDimension && (allowScale ? true : scaleRule.power10 === 0);
+  const def = unit?.definition && isWfdRecord(unit.definition) ? unit.definition : null;
+  const validDim = !!def && def.dimension === expectedDimension && (allowScale
+    ? Object.keys(def).every(k => ['dimension', 'scale_factor', 'currency', 'base_unit'].includes(k))
+      && (def.scale_factor === undefined || String(def.scale_factor) === scaleRule?.factor)
+      && (def.currency === undefined || String(def.currency) === 'CNY')
+      && (def.base_unit === undefined || String(def.base_unit) === scaleRule?.baseUnit)
+    : Object.keys(def).length === 1);
   if (!cell || (cell.data_type !== 'decimal' && cell.data_type !== 'integer') || !unit || !validCode || unit.resolved !== true
     || !validDim
     || unit.digest !== 'sha256:' + wfdSha256(canonicalWfdJson({ code: unit.unit_code, definition: unit.definition }))) {
-    fail('财务数值单元须为十进制或整数，并具有已解析的人民币元基本金额单位及相符定义摘要；未知尺度或其他单位不能按行内标签参与变换。');
+    fail('财务数值单元须为十进制或整数，并具有与科目量纲及行内单位一致的已解析单位定义及摘要；未知尺度或冲突单位不能按行内标签参与变换。');
   }
 }
 const nextDay = (date: string) => new Date(Date.parse(date + 'T00:00:00Z') + 86_400_000).toISOString().slice(0, 10);
@@ -393,6 +462,8 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
       const colRole = optionalField(row, 'column_role');
       if (colRole !== null && !COLUMN_ROLES.includes(colRole as FinancialColumnRole))
         fail(`未知财报列角色 ${colRole}；须明确区分当期初报列与上年同期重述比较列。`);
+      if (reportNature === 'restatement_carrier' && (colRole === null || colRole === 'current_period'))
+        fail('重述比较列载体（restatement_carrier）必须显式声明比较列角色（prior_period_restated 或 prior_period_comparative_unchanged），不得缺省列角色或冒充当期列。');
       const start = field(row, 'start_date'), end = field(row, 'end_date');
       const period = start + '/' + end;
       if (!validDate(start) || !validDate(end) || !expected.has(period) || seen.has(period)) fail('财报期间不符、重复或存在混合版本；不任取最新报告。');
@@ -419,12 +490,19 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
     const mapping = resolveFinancialConceptRule(original, mappingProfile, industryTemplate);
     if (!mapping) { unmapped.push({ record: row.record_ref, concept: original }); return []; }
     const rowUnit = field(row, 'unit');
+    const expectedDim = mapping.unitDimension ?? 'money';
+    const scaleRule = UNIT_SCALE_POWERS[rowUnit];
     if (field(row, 'accounting_standard') !== 'CAS' || field(row, 'currency') !== 'CNY'
-      || (!allowUnitScale && rowUnit !== 'cny')
-      || (allowUnitScale && !Object.hasOwn(UNIT_SCALE_POWERS, rowUnit))) {
-      fail('当前映射只对明确CAS、人民币元（或显式启用 allowUnitScale 的受控倍率单位）原值开放；其他币种、未知单位或准则须另有映射。');
+      || !scaleRule || scaleRule.dimension !== expectedDim
+      || (!allowUnitScale && scaleRule.power10 !== 0)) {
+      fail('当前映射只对明确CAS、人民币对应科目量纲基本单位（或显式启用 allowUnitScale 的受控倍率单位）原值开放；其他币种、未知单位或准则须另有映射。');
     }
-    assertFinancialValueUnit(row, allowUnitScale, mapping.unitDimension ?? 'money');
+    assertFinancialValueUnit(row, allowUnitScale, expectedDim);
+    const colRole = optionalField(row, 'column_role');
+    if (colRole !== null && !COLUMN_ROLES.includes(colRole as FinancialColumnRole))
+      fail(`未知财报列角色 ${colRole}；须明确区分当期初报列与上年同期重述比较列。`);
+    if (optionalField(row, 'report_nature') === 'restatement_carrier' && (colRole === null || colRole === 'current_period'))
+      fail('重述比较列载体（restatement_carrier）必须显式声明比较列角色（prior_period_restated 或 prior_period_comparative_unchanged）。');
     const startDate = field(row, 'start_date'), endDate = field(row, 'end_date'), periodType = field(row, 'period_type');
     const expectedPeriodType = mapping.periodType ?? (mapping.additive ? 'duration' : 'instant');
     if (!validDate(startDate) || !validDate(endDate) || startDate > endDate
@@ -435,24 +513,58 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
     const endExclusive = nextDay(endDate);
     if (!validDate(endExclusive)) fail('财务固定映射期间超出可表达的半开日期边界。');
     const values = Object.fromEntries(Object.entries(row.values as WfdRecord).map(([key, cell]) => [key, (cell as WfdRecord).value]));
-    const scaled = scaleFinancialUnitValue(String(values.value), rowUnit);
+    const valueCell = (row.values as WfdRecord).value as WfdRecord;
+    const valueState = String(valueCell.value_state);
+    const hasNumericValue = valueState === 'valid_value' || valueState === 'reported_zero';
+    if (hasNumericValue && (typeof values.value !== 'string' || !values.value.trim())) {
+      fail('有效财务数值状态缺少十进制字符串原值。');
+    }
+    if (!hasNumericValue && values.value !== null) {
+      fail(`非数值状态 ${valueState} 的财务单元值须为 null，不得夹带数值。`);
+    }
+    const scaled = hasNumericValue ? scaleFinancialUnitValue(String(values.value), rowUnit) : null;
     const identity = { snapshot: input.ref.snapshotId, product: input.ref.productId, record: row.record_ref, mapping: mappingProfile };
     const key = 'standardized_' + wfdSha256(canonicalWfdJson(identity));
     const result: WfdRecord = {
       ...values,
-      ...(allowUnitScale ? { value: scaled.scaledValue, unit: scaled.baseUnit, source_unit: scaled.sourceUnit,
-        unit_scale_factor: scaled.scaleFactor, declared_precision_half_ulp: scaled.declaredPrecisionHalfUlp } : {}),
+      ...(allowUnitScale ? {
+        value: scaled ? scaled.scaledValue : null,
+        unit: scaleRule.baseUnit,
+        source_unit: rowUnit,
+        unit_scale_factor: scaleRule.factor,
+        declared_precision_half_ulp: scaled ? scaled.declaredPrecisionHalfUlp : null,
+      } : {}),
       concept: mapping.code,
       original_concept: original,
-      value_state: (row.values as any).value.value_state,
+      value_state: valueState,
       business_key: key,
       start_utc: startDate + 'T00:00:00Z',
       end_utc: endExclusive + 'T00:00:00Z',
     };
-    lineage.push({ businessKey: key, source: identity, additive: mapping.additive, unitFactor: allowUnitScale ? scaled.scaleFactor : '1',
-      ...(allowUnitScale ? { sourceUnit: scaled.sourceUnit, declaredPrecisionHalfUlp: scaled.declaredPrecisionHalfUlp } : {}) });
-    if ((mapping.unitDimension ?? 'money') === 'money') {
-      articulationTerms.push({ concept: mapping.code, scaledValue: scaled.scaledValue, declaredPrecisionHalfUlp: scaled.declaredPrecisionHalfUlp });
+    lineage.push({ businessKey: key, source: identity, additive: mapping.additive, unitFactor: allowUnitScale ? scaleRule.factor : '1',
+      ...(allowUnitScale ? { sourceUnit: rowUnit, declaredPrecisionHalfUlp: scaled ? scaled.declaredPrecisionHalfUlp : null } : {}) });
+    if (scaled && expectedDim === 'money') {
+      const subjectKey = canonicalWfdJson({
+        subject: row.subject ?? null,
+        subject_scheme: optionalField(row, 'subject_scheme'),
+        subject_code: optionalField(row, 'subject_code'),
+      });
+      articulationTerms.push({
+        concept: mapping.code,
+        scaledValue: scaled.scaledValue,
+        declaredPrecisionHalfUlp: scaled.declaredPrecisionHalfUlp,
+        subjectKey,
+        periodKey: `${startDate}/${endDate}`,
+        startDate,
+        endDate,
+        scope: optionalField(row, 'scope') ?? '',
+        dimension: optionalField(row, 'dimension') ?? '',
+        currency: optionalField(row, 'currency') ?? '',
+        accountingStandard: optionalField(row, 'accounting_standard') ?? '',
+        comparabilityBasis: optionalField(row, 'comparability_basis') ?? '',
+        reportVersion: optionalField(row, 'report_version') ?? '',
+        columnRole: colRole ?? '',
+      });
     }
     return [result];
   }));

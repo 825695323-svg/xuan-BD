@@ -1,5 +1,5 @@
 import { TaskError } from '../../platform/jobs/tasks.js';
-import { FINANCIAL_MAPPING_VERSION } from './data-processing/financial-fixed.js';
+import { FINANCIAL_MAPPING_VERSION, FINANCIAL_MAPPING_V2_VERSION } from './data-processing/financial-fixed.js';
 import { canonicalWfdJson, isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { ParsedCandidateTable } from './candidate-pipeline.js';
 
@@ -14,12 +14,18 @@ function record(value: unknown): ParsedRecordDependency['sourceRecordRef'] | nul
   return { snapshot_id: String(value.snapshot_id), product_id: String(value.product_id),
     logical_key: String(value.logical_key), revision_id: String(value.revision_id) };
 }
+const SUPPORTED_FINANCIAL_MAPPINGS = new Set<string>([FINANCIAL_MAPPING_VERSION, FINANCIAL_MAPPING_V2_VERSION]);
 /** Only exact references persisted by the fixed reader, never concept/time-based inferred links. */
 export function parsedRecordDependencies(parsed: ParsedCandidateTable, calculation: unknown): ParsedRecordDependency[] | null {
   const evidence = parsed.financial_evidence;
+  const expectedMapping = isWfdRecord(calculation) && calculation.mappingProfile !== undefined
+    ? String(calculation.mappingProfile)
+    : FINANCIAL_MAPPING_VERSION;
   if (parsed.kind !== 'parsed-table' || parsed.format !== 'financial-fixed' || parsed.adapter?.id !== 'bd-financial-fixed'
     || !isWfdRecord(evidence) || evidence.version !== 'bd-financial-fixed/1' || evidence.operation !== 'standardize'
-    || evidence.mappingVersion !== FINANCIAL_MAPPING_VERSION || !isWfdRecord(calculation) || !Array.isArray(calculation.inputs)
+    || !SUPPORTED_FINANCIAL_MAPPINGS.has(String(evidence.mappingVersion))
+    || evidence.mappingVersion !== expectedMapping
+    || !isWfdRecord(calculation) || !Array.isArray(calculation.inputs)
     || !Array.isArray(evidence.inputs) || !Array.isArray(evidence.lineage)
     || evidence.inputs.length !== calculation.inputs.length || parsed.selection || parsed.sourceProjection) return null;
   const allowed = new Set<string>();

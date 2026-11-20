@@ -294,10 +294,33 @@ export function profileSemanticGaps(profile: SourceFieldProfile): string[] {
   }
   const ds = profile.domainScope;
   if (ds) {
-    if (ds.quantityBasis === 'unknown') gaps.push('数量计量基础（干重/湿重/金属含量/头数等）未知；不能跨来源认定等价。');
-    if (ds.domain === 'bilateral_trade' && (!ds.valuationBasis || ds.valuationBasis === 'unknown'))
-      gaps.push('贸易估价方式（CIF/FOB）未知；不能跨来源直接合并贸易金额。');
-    if (ds.periodBasis === 'unknown') gaps.push('统计期间口径（自然年/财年/月度等）未知；不能跨来源认定等价。');
+    if (ds.domain === 'geo_commodity' || ds.domain === 'bilateral_trade') {
+      if (!ds.quantityBasis || ds.quantityBasis === 'unknown')
+        gaps.push('数量计量基础（干重/湿重/金属含量/头数等）未知或未声明；不能跨来源认定等价。');
+      if (!ds.periodBasis || ds.periodBasis === 'unknown')
+        gaps.push('统计期间口径（自然年/财年/月度等）未知或未声明；不能跨来源认定等价。');
+      if (!ds.processingStage)
+        gaps.push('商品加工阶段（processingStage）未声明；不能跨来源认定等价。');
+      if (!ds.statisticalAreaScheme)
+        gaps.push('地理/海关统计区域体系（statisticalAreaScheme）未声明；不能跨来源认定等价。');
+    } else {
+      if (ds.quantityBasis === 'unknown') gaps.push('数量计量基础（干重/湿重/金属含量/头数等）未知；不能跨来源认定等价。');
+      if (ds.periodBasis === 'unknown') gaps.push('统计期间口径（自然年/财年/月度等）未知；不能跨来源认定等价。');
+    }
+    if (ds.domain === 'bilateral_trade') {
+      if (!ds.valuationBasis || ds.valuationBasis === 'unknown')
+        gaps.push('贸易估价方式（CIF/FOB）未知或未声明；不能跨来源直接合并贸易金额。');
+      if (!ds.commodityClassification)
+        gaps.push('双边贸易商品外部分类（commodityClassification）未声明；不能跨来源认定等价。');
+    }
+    if (ds.domain === 'financial_statement') {
+      if (!ds.accountingStandard)
+        gaps.push('会计准则（accountingStandard）未声明；不能跨来源认定等价。');
+      if (!ds.statementScope || ds.statementScope === 'unknown')
+        gaps.push('报表合并范围（statementScope）未知或未声明；不能跨来源认定等价。');
+      if (!ds.periodBasis || ds.periodBasis === 'unknown')
+        gaps.push('财报期间口径（periodBasis）未知或未声明；不能跨来源认定等价。');
+    }
     if (ds.commodityClassification && ds.commodityClassification.mappingQuality !== 'exact')
       gaps.push(`商品外部分类映射质量为 ${ds.commodityClassification.mappingQuality}（非精确对应）；存在分类换版拆分/合并或近似对应缺口。`);
   }
@@ -391,14 +414,16 @@ export function assertCrossSourceProductAdmission(
   existingProfiles: readonly SourceFieldProfile[],
   options?: { allowNewDefinitionVersion?: boolean },
 ): { allowed: true; action: 'reuse_product' | 'require_new_definition_version'; comparisons: SourceSemanticComparison[] } {
+  const selfGaps = profileSemanticGaps(candidate);
+  if (selfGaps.length) {
+    throw new TaskError('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', `来源 ${candidate.sourceId} 尚有未决语义缺口：${selfGaps.join('；')}`);
+  }
   const others = existingProfiles.filter(item => item.sourceId !== candidate.sourceId);
   if (!others.length) {
-    const selfGaps = profileSemanticGaps(candidate);
-    if (selfGaps.length) throw new TaskError('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', `来源 ${candidate.sourceId} 尚有未决语义缺口：${selfGaps.join('；')}`);
     return { allowed: true, action: 'reuse_product', comparisons: [] };
   }
   const comparisons = others.map(existing => compareProfileSemantics(existing, candidate));
-  const missingEvidence = comparisons.find(c => c.status === 'needs_evidence');
+  const missingEvidence = comparisons.find(c => c.status === 'needs_evidence' || c.gaps.length > 0);
   if (missingEvidence) {
     throw new TaskError('G5_CROSS_SOURCE_EVIDENCE_REQUIRED',
       `跨来源写入同一正式产品前存在未核实的口径缺口：${missingEvidence.gaps.join('；')}`);

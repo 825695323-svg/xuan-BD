@@ -173,6 +173,7 @@ export class R1WorkspaceService {
     const target = input.target, frozen = this.options.processing.get(input.planId).outputs.find(output => output.outputId === input.outputId)?.target;
     if (canonicalWfdJson(frozen?.declaration) !== canonicalWfdJson({ protocol: 'wfd.structured-ingest/1.0', source: input.source, target, mapping: input.mapping })) fail('R1_TARGET_CHANGED', '修订目标与冻结加工合同不同。');
     const event = 'kind' in input.mapping && input.mapping.kind === 'event_records';
+    const relation = 'kind' in input.mapping && input.mapping.kind === 'relation_edges';
     const rowKey = event ? 'event_id' : 'business_key';
     const factIdentities = new Map<string, string>();
     if (!event) {
@@ -183,8 +184,18 @@ export class R1WorkspaceService {
       if (!isWfdRecord(parsed) || !Array.isArray(parsed.rows)) fail('R1_PROCESS_OUTPUT_FORMAT', '加工产物没有真实 rows。');
       const checked = checkR1MappedRows(parsed.rows, frozen!.declaration);
       if (checked.quality !== 'pass') fail('R1_TABULAR_SEMANTICS', checked.gaps.join('；'));
-      for (const row of checked.rows) factIdentities.set(String((row as WfdRecord).business_key), verifyFinancialFactRow(row));
+      for (const row of checked.rows) {
+        const r = row as WfdRecord;
+        factIdentities.set(
+          String(r.business_key),
+          relation
+            ? canonicalWfdJson({ business_key: r.business_key, subject: r.subject, object: r.object, relation_type: r.relation_type })
+            : verifyFinancialFactRow(row),
+        );
+      }
     }
+    const expectedDomain = event ? 'events' : relation ? 'foundation' : 'observations';
+    const expectedPayloadKind = event ? 'event_records' : relation ? 'relation_edges' : 'tabular_rows';
     const fixedReads = new Map<string, WfdRecord>();
     for (const [key, revision] of Object.entries(target.revisions!)) {
       const previous = revision.previous;
@@ -201,7 +212,7 @@ export class R1WorkspaceService {
         if (result.snapshot_id !== snapshot || !Array.isArray(result.products) || !Array.isArray(result.rows)) fail('R1_CORRECTION_READBACK', '前驱固定读取的快照或数据集不符。');
         const products = result.products.filter(isWfdRecord).filter(product => product.product_id === previous.product_id && product.dataset_id === target.datasetId
           && canonicalWfdJson(product.definition_ref) === canonicalWfdJson(target.definitionRef));
-        if (products.length !== 1 || products[0]!.logical_domain !== (event ? 'events' : 'observations') || products[0]!.payload_kind !== (event ? 'event_records' : 'tabular_rows')
+        if (products.length !== 1 || products[0]!.logical_domain !== expectedDomain || products[0]!.payload_kind !== expectedPayloadKind
           || canonicalWfdJson(products[0]!.subject) !== canonicalWfdJson(target.subject)
           || canonicalWfdJson(products[0]!.declaration) !== canonicalWfdJson(target.definition)) fail('R1_CORRECTION_DEFINITION', '前驱实际定义、主体或完整定义引用与修订合同不符。');
         const rows = result.rows.filter(isWfdRecord).filter(row => row.record_id === key && row.record_version === previous.revision_id);
@@ -210,8 +221,14 @@ export class R1WorkspaceService {
           || rows[0]!.record_ref.product_id !== previous.product_id || rows[0]!.record_ref.logical_key !== key || rows[0]!.record_ref.revision_id !== previous.revision_id
           || rows[0]!.record_ref.snapshot_id !== snapshot || isWfdRecord(rows[0]!.revision) && rows[0]!.revision.withdrawn === true)
           fail('R1_CORRECTION_PREDECESSOR', '前驱实际身份、版本或撤销状态不符。');
-        if (!event && verifyFinancialFactRow(rows[0]!.row as WfdRecord) !== factIdentities.get(key))
-          fail('R1_CORRECTION_FACT_IDENTITY', '前驱与新行完整财务事实身份不同。');
+        if (!event) {
+          const prevRow = rows[0]!.row as WfdRecord;
+          const prevIdentity = relation
+            ? canonicalWfdJson({ business_key: prevRow.business_key, subject: prevRow.subject, object: prevRow.object, relation_type: prevRow.relation_type })
+            : verifyFinancialFactRow(prevRow);
+          if (prevIdentity !== factIdentities.get(key))
+            fail('R1_CORRECTION_FACT_IDENTITY', relation ? '前驱与新关系行的主体、客体或关系类型身份不同。' : '前驱与新行完整财务事实身份不同。');
+        }
       }
     }
   }
@@ -688,7 +705,7 @@ function readInput(value: unknown): R1PrepareInput {
   const relation = isWfdRecord(input.mapping) && input.mapping.kind === 'relation_edges';
   const tabular = event || relation || isWfdRecord(input.mapping) && input.mapping.kind === 'tabular_rows';
   const mapping = object(input.mapping, relation ? ['kind', 'businessKey', 'relationType', 'object', 'effectivePeriod', 'publicTime', 'fields'] : event ? ['kind', 'eventId', 'eventType', 'assertionKind', 'caseId', 'contentNature', 'status', 'eventTime', 'publicTime', 'expectedTime', 'fields'] : tabular
-    ? ['kind', 'businessKey', 'earliestUtc', 'latestExclusiveUtc', 'precision', 'sourceTimezone', 'fields', 'bar', 'publicTime']
+    ? ['kind', 'businessKey', 'earliestUtc', 'latestExclusiveUtc', 'precision', 'sourceTimezone', 'fields', 'bar', 'supplyTrade', 'publicTime']
     : ['businessKey', 'value', 'earliestUtc', 'latestExclusiveUtc', 'precision', 'sourceTimezone']);
   const target = object(input.target, ['datasetId', 'outputKey', 'expectedParentSnapshotId', 'subject', 'definition', 'inputMode', 'coverage', 'definitionMode', 'definitionRef', 'revisions', 'definitionPublicTime', 'expectedCommitId']);
   for (const field of sourceFields) boundedText(source[field], 4096);
@@ -703,7 +720,7 @@ function readInput(value: unknown): R1PrepareInput {
   id(target.datasetId); id(target.outputKey);
   if (Object.hasOwn(target, 'expectedCommitId') && (typeof target.expectedCommitId !== 'string' || !/^[0-9a-f]{64}$/u.test(target.expectedCommitId))) fail('R1_WEB_INPUT', 'joint 提交必须显式提供固定提交令牌。');
   if (target.expectedParentSnapshotId !== null) id(target.expectedParentSnapshotId);
-  if (!(relation ? ['partial_observation'] : ['partial_observation', 'complete_snapshot', ...(tabular ? ['source_correction'] : [])]).includes(String(target.inputMode)) || !isWfdRecord(target.subject) || !isWfdRecord(target.definition) || !isWfdRecord(target.coverage)) fail('R1_WEB_TARGET', '目标身份、定义、覆盖或输入模式无效。');
+  if (!['partial_observation', 'complete_snapshot', ...(tabular ? ['source_correction'] : [])].includes(String(target.inputMode)) || !isWfdRecord(target.subject) || !isWfdRecord(target.definition) || !isWfdRecord(target.coverage)) fail('R1_WEB_TARGET', '目标身份、定义、覆盖或输入模式无效。');
   if (target.inputMode === 'source_correction') readCorrection(target);
   else if (target.definitionMode !== undefined || target.definitionRef !== undefined || target.revisions !== undefined) fail('R1_CORRECTION_TARGET', '普通追加不得夹带修订目标。');
   if (event) compileR1EventDeclaration({ protocol: 'wfd.structured-ingest/1.0', mapping, target, source });

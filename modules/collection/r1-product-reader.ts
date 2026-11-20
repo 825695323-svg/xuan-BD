@@ -281,7 +281,7 @@ export class R1ProductReader {
         || (page.has_more ? typeof page.next_cursor !== 'string' || !page.next_cursor || page.next_cursor.length > 8192 : page.next_cursor !== null)) {
         fail('R1_CONTEXT_RESPONSE_INVALID', '上下文结果的操作、固定身份、范围或分页无法核对；本页未采用。');
       }
-      return { operation, snapshotId, datasetId, subject, historyMode: history.mode as 'snapshot_contents' | 'market_known_at', connection: connection(identity), result, limits: R1_READ_LIMITS };
+      return { operation, snapshotId, datasetId, subject, historyMode: history.mode, connection: connection(identity), result, limits: R1_READ_LIMITS };
     }, signal);
   }
 

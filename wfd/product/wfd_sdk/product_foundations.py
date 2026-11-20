@@ -99,6 +99,7 @@ COMPLETE_SNAPSHOT_ALLOWED_RELATIONS = {
     "classified_as",
     "member_of_theme",
     "parent_theme_of",
+    "cross_market_theme_map",
     "commodity_industry_map",
 }
 
@@ -106,6 +107,7 @@ NON_COMPLETE_RELATION_TYPES = {
     "trade_flow_projection",
     "supplies_to",
     "purchases_from",
+    "competes_with",
     "logistics_connected_via",
     "process_input_to",
     "conditionally_substitutable_by",
@@ -399,7 +401,8 @@ def validate_pack(pack):
             raise FoundationInputError("RELATION_OBJECT_KIND_MISMATCH:" + str(relation.get("id")))
         if want_object != "definition" and ids.get(obj.get("id")) != want_object:
             raise FoundationInputError("RELATION_OBJECT_KIND_MISMATCH:" + str(relation.get("id")))
-        if relation.get("set_completeness") == "complete" and rtype in NON_COMPLETE_RELATION_TYPES:
+        if (relation.get("set_completeness") == "complete"
+                or relation.get("set_absence_means") == "explicitly_absent") and rtype not in COMPLETE_SNAPSHOT_ALLOWED_RELATIONS:
             raise FoundationInputError("TRADE_OR_SUPPLY_RELATION_CANNOT_CLAIM_COMPLETE_SNAPSHOT:" + str(relation.get("id")))
         set_id = relation.get("set_id")
         if not isinstance(set_id, str) or not set_id:
@@ -708,11 +711,13 @@ def build_relation_outputs(pack, evidence):
             })
         completeness = relations[0].get("set_completeness", "unknown")
         absence = relations[0].get("set_absence_means", "unknown")
+        is_complete = completeness == "complete"
         outputs.append(_output("relation_" + set_id, _subject("region", pack["regions"][0]["id"]),
                                declaration, rows, _ev(evidence, sorted(labels)),
-                               _coverage({"set_id": set_id, "members": len(rows)},
+                               _coverage({"product": "relation_" + set_id} if is_complete else {"set_id": set_id, "members": len(rows)},
                                          completeness, _ev(evidence, sorted(labels)), absence,
-                                         "observed_partial" if completeness != "complete" else "declared_full")))
+                                         "observed_partial" if not is_complete else "declared_full"),
+                               input_mode="complete_snapshot" if is_complete else "partial_observation"))
     return outputs
 
 

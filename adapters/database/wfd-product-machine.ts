@@ -383,11 +383,17 @@ export class WfdProductMachineClient {
   readContext(operation: R1ContextOperation, request: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
     if (!R1_CONTEXT_OPERATIONS.includes(operation) || !isWfdRecord(request) || request.operation !== operation
       || request.protocol_version !== 'wfd.read/1.3-product1b'
-      || !(request.history_mode === 'snapshot_contents' || ['read_relation_graph', 'read_event_timeline'].includes(operation) && request.history_mode === 'market_known_at'
-        && isWfdRecord(request.knowledge_cutoff) && request.knowledge_cutoff.status === 'known'
-        && (operation === 'read_event_timeline' || isWfdRecord(request.business_time_range) && request.business_time_range.role === 'validity')
-        && request.held_scope === null && request.usable_stage === null)) {
-      return Promise.reject(new WfdProductMachineError('WFD_PRODUCT_MACHINE_REQUEST', '上下文须为四个明确操作的固定快照，或带明确公开截止的事件时间线及独立有效期的关系图；内外操作必须一致。', { operation: 'context', requestId: 'request' }));
+      || !(request.history_mode === 'snapshot_contents'
+        || ['read_relation_graph', 'read_event_timeline'].includes(operation) && request.history_mode === 'market_known_at'
+          && isWfdRecord(request.knowledge_cutoff) && request.knowledge_cutoff.status === 'known'
+          && (operation === 'read_event_timeline' || isWfdRecord(request.business_time_range) && request.business_time_range.role === 'validity')
+          && request.held_scope === null && request.usable_stage === null
+        || operation === 'read_relation_graph' && request.history_mode === 'system_held_at'
+          && isWfdRecord(request.knowledge_cutoff) && request.knowledge_cutoff.status === 'known'
+          && isWfdRecord(request.business_time_range) && request.business_time_range.role === 'validity'
+          && typeof request.held_scope === 'string' && request.held_scope.length > 0
+          && ['acquired', 'custodied', 'published_readable'].includes(String(request.usable_stage)))) {
+      return Promise.reject(new WfdProductMachineError('WFD_PRODUCT_MACHINE_REQUEST', '上下文须为四个明确操作的固定快照，或带明确公开截止的事件时间线及带公开/持有截止与独立有效期的关系图；内外操作必须一致。', { operation: 'context', requestId: 'request' }));
     }
     return this.request(operation, { request }, signal);
   }

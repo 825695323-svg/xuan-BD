@@ -110,6 +110,7 @@ export interface R1Receipt extends Partial<R1ContractBinding> {
   snapshot_id: string;
   request_identity: WfdRecord;
   rows: R1ReceiptRow[];
+  withdrawn_rows?: R1ReceiptRow[];
   row_results?: R1RowResult[];
   row_summary?: R1RowSummary;
   wfd_state?: string;
@@ -508,6 +509,7 @@ export class R1HandoffService {
     const requireContracts = ['tabular_rows', 'event_records', 'relation_edges'].includes(String(asRecord(frozenResultOutput?.payload).kind))
       || (JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences).contractBindingRequired === true;
     const contractBinding = requireContracts ? readR1ContractBinding(output, String(attempt.dataset_id), productId, true) : undefined;
+    const splitRecords = splitReceiptRecords(records, frozenResultOutput?.input_mode);
     const receipt: R1Receipt = {
       dataset_id: String(attempt.dataset_id),
       output_key: typeof output.output_key === 'string' ? output.output_key : '',
@@ -520,11 +522,8 @@ export class R1HandoffService {
         row_results: output.row_results as R1RowResult[], row_summary: { inserted: asRecord(output.row_summary).inserted as number, duplicate_skipped: asRecord(output.row_summary).duplicate_skipped as number, conflict_pending: asRecord(output.row_summary).conflict_pending as number },
         wfd_state: state, new_snapshot_created: result.new_snapshot_created === true,
       } : {}),
-      rows: records.map(record => ({
-        business_key: typeof record.record_id === 'string' ? record.record_id : '',
-        record_id: typeof record.record_id === 'string' ? record.record_id : '',
-        record_version: typeof record.record_version === 'string' ? record.record_version : '',
-      })),
+      rows: splitRecords.rows,
+      ...(splitRecords.withdrawnRows ? { withdrawn_rows: splitRecords.withdrawnRows } : {}),
     };
     acceptedR1ReceiptRows(document, receipt);
     if (document.duplicate_policy === 'skip_identical_append') {
@@ -581,12 +580,15 @@ export class R1HandoffService {
     for (const outcome of published) {
       signal?.throwIfAborted();
       const records = Array.isArray(outcome.records) ? outcome.records.filter(isWfdRecord) : [];
+      const frozenMember = declared.find(item => item.output_key === outcome.output_key);
+      const splitRecords = splitReceiptRecords(records, frozenMember?.input_mode);
       const receipt: R1Receipt = {
         dataset_id: String(attempt.dataset_id), output_key: String(outcome.output_key), product_id: String(outcome.product_id ?? ''),
         definition_digest: String(asRecord(outcome.definition_ref).digest ?? ''), snapshot_id: String(outcome.snapshot_id ?? ''),
         request_identity: asRecord(result.request_identity),
         ...readR1ContractBinding(outcome, String(attempt.dataset_id), String(outcome.product_id ?? ''), true),
-        rows: records.map(item => ({ business_key: String(item.record_id ?? ''), record_id: String(item.record_id ?? ''), record_version: String(item.record_version ?? '') })),
+        rows: splitRecords.rows,
+        ...(splitRecords.withdrawnRows ? { withdrawn_rows: splitRecords.withdrawnRows } : {}),
       };
       acceptedR1ReceiptRows(document, receipt);
       const rows = await this.readback.read({ requestId: r1MemberCheckpoint(requestId, receipt.output_key),
@@ -1331,6 +1333,27 @@ function isTerminalWfdRejection(result: WfdRecord, document: WfdRecord): boolean
       || (Array.isArray(row.records) && row.records.length > 0);
   })) return false;
   return true;
+}
+
+function splitReceiptRecords(records: WfdRecord[], inputMode: unknown): { rows: R1ReceiptRow[]; withdrawnRows?: R1ReceiptRow[] } {
+  const toRow = (record: WfdRecord): R1ReceiptRow => ({
+    business_key: typeof record.record_id === 'string' ? record.record_id : '',
+    record_id: typeof record.record_id === 'string' ? record.record_id : '',
+    record_version: typeof record.record_version === 'string' ? record.record_version : '',
+  });
+  if (inputMode !== 'complete_snapshot') {
+    if (records.some(record => record.withdrawn === true)) {
+      fail('R1_RECEIPT_UNEXPECTED_WITHDRAWAL', '非 complete_snapshot 交接回执中出现意外的撤回记录。');
+    }
+    return { rows: records.map(toRow) };
+  }
+  const rows: R1ReceiptRow[] = [];
+  const withdrawnRows: R1ReceiptRow[] = [];
+  for (const record of records) {
+    if (record.withdrawn === true) withdrawnRows.push(toRow(record));
+    else rows.push(toRow(record));
+  }
+  return withdrawnRows.length ? { rows, withdrawnRows } : { rows };
 }
 
 function asRecord(value: unknown): WfdRecord {
