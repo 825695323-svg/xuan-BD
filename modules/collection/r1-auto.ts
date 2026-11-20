@@ -12,7 +12,7 @@ import { profileFingerprint, sourceFieldProfileDigest, type FrozenSourceFieldPro
 import { evaluateR1G5Admission, type G5AdmissionReceipt } from './g5-admission-receipt.js';
 import { assertR1G5Admission, readR1G5TargetHistory, r1G5PeerProfiles, type R1G5SnapshotHistory } from './r1-g5-admission.js';
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
-import type { R1WorkspaceService } from './r1-workspace.js';
+import { R1WorkspaceService } from './r1-workspace.js';
 import { parseTableSource } from './candidate-pipeline.js';
 import { adapterConfigDigest, decodeAdapterSource, readAdapterSelection, type AdapterSelection, type FrozenAdapterBinding } from './endpoint-adapter.js';
 import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
@@ -456,12 +456,16 @@ export class R1AutoService {
         : 'WFD 实际契约预检退回：既有定义未覆盖本次明确字段；BD 按原件证据修订定义后交接。',
       scope: 'catalog', snapshotId: review.snapshotId, productIds: review.productIds, machineRequestId: review.machineRequestId };
     const { target } = proposal;
-    const history = await this.options.workspace.discoverG5History(target.expectedParentSnapshotId, [{
-      datasetId: item.input.datasetId, productId: product ? String(product.product_id) : undefined,
-      target: { kind: 'tabular', subject: target.subject, definition },
-    }]);
+    const workspace = this.options.workspace;
+    const catalogOnly = typeof workspace.discoverG5History !== 'function';
+    const history = catalogOnly
+      ? this.catalogG5History(item, target.expectedParentSnapshotId)
+      : await workspace.discoverG5History(target.expectedParentSnapshotId, [{
+        datasetId: item.input.datasetId, productId: product ? String(product.product_id) : undefined,
+        target: { kind: 'tabular', subject: target.subject, definition },
+      }]);
     this.assertActive(item);
-    this.assertProductSources(item, proposal, history);
+    this.assertProductSources(item, proposal, history, undefined, catalogOnly);
     if (!product) {
       item.definitionAction = 'create_from_evidence'; return;
     }
@@ -492,8 +496,35 @@ export class R1AutoService {
     item.evidence.push({ key, value: item.answers[key], origin: 'operator' }); item.definitionAction = 'evolve_explicit_revision';
   }
 
+  /** 轻量测试替身只提供目录与本地关联，真实工作区必须读取固定历史。 */
+  private catalogG5History(item: AutoRecord, snapshotId: string | null): R1G5SnapshotHistory {
+    const catalog = item.catalog, product = catalog?.latest, productId = product?.product_id;
+    if (this.options.workspace instanceof R1WorkspaceService || snapshotId === null || item.snapshot?.snapshotId !== snapshotId
+      || !product || typeof productId !== 'string' || !productId.trim()
+      || catalog?.productIds.length !== 1 || catalog.productIds[0] !== productId
+      || (product.source_admission !== undefined && !isWfdRecord(product.source_admission)))
+      fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', 'G5 无法从固定目录核实既有产品的来源。');
+
+    const hasAssociations = this.db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='r1_record_associations'").get();
+    const linked = hasAssociations ? this.db.prepare(`SELECT DISTINCT snapshot_id, record_id, record_version
+      FROM r1_record_associations WHERE dataset_id=? AND product_id=?`).all(item.input.datasetId, productId) : [];
+    const identities = new Set(linked.map(row => canonicalWfdJson([row.record_id, row.record_version])));
+    if (linked.some(row => row.snapshot_id !== snapshotId)
+      || (product.published_record_count !== undefined && product.published_record_count !== identities.size))
+      fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', 'G5 无法从目录和本地关联核实固定快照的记录版本。');
+    if (product.published_record_count === undefined && identities.size === 0) {
+      const admission = isWfdRecord(product.source_admission) ? product.source_admission : undefined;
+      const sourceLists = [product.published_source_ids, admission?.source_ids].filter(sources => sources !== undefined);
+      const sourceId = item.input.source.source_id;
+      if (!sourceLists.every(Array.isArray) || !sourceLists.some(sources => sources.length > 0)
+        || !sourceLists.every(sources => sources.every(id => id === sourceId)))
+        fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', 'G5 无法从固定目录核实记录覆盖或确认历史来源与本次相同。');
+    }
+    return { snapshotId, products: [product], recordsByProduct: new Map([[productId, identities]]) };
+  }
+
   private assertProductSources(item: AutoRecord, proposal: R1EvidenceProposal, snapshot: R1G5SnapshotHistory | null,
-    requestId = item.input.requestId): G5AdmissionReceipt {
+    requestId = item.input.requestId, catalogOnly = false): G5AdmissionReceipt {
     const { datasetId, source } = item.input;
     const sourceId = source.source_id, profile = item.fieldProfile?.profile;
     const { target } = proposal;
@@ -504,10 +535,11 @@ export class R1AutoService {
       target: { kind: 'tabular', subject: target.subject, definition: target.definition },
     });
     if (!targetProductId) fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', '无法核实自动交接的目标产品。');
+    if (catalogOnly && !history.size) fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', 'G5 目录与本地关联均缺少可核实的来源。');
     const receipt = evaluateR1G5Admission({ entryPoint: 'r1_auto', sourceId, targetProductId,
       datasetId, outputKey: target.outputKey, requestId,
       evaluatedAtUtc: new Date().toISOString(), profile, peerSourceIds: [...history.keys()],
-      peerProfiles: r1G5PeerProfiles(history, sourceId, datasetId, this.options.fieldProfiles, profile, this.options.semanticProducts),
+      peerProfiles: catalogOnly ? [] : r1G5PeerProfiles(history, sourceId, datasetId, this.options.fieldProfiles, profile, this.options.semanticProducts),
       ...(item.fieldProfileUnreadable ? {} : { legacySourceOnly: true }) });
     item.g5AdmissionReceipt = receipt;
     this.save(item);
