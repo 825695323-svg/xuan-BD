@@ -1,4 +1,4 @@
-import type { AlgorithmCatalogView } from './algorithm-types.js';
+import { ALGORITHM_METHODS, type AlgorithmCatalogView } from './algorithm-types.js';
 import { MACD_SNAPSHOT_SEMANTIC_CONTRACT } from './product-machine-snapshot.js';
 import { ALGORITHM_REGISTRY, ALGORITHM_REGISTRY_VERSION } from './algorithm-registry.js';
 import { definitionFor } from './algorithm-definitions.js';
@@ -6,14 +6,20 @@ import { processingSessionContract } from '../collection/production-module-ports
 
 export const BD_SESSION_TOOL_CONTRACT_VERSION = 'bd.session-tools/3';
 
-/** 目录只暴露当前 MACD，实现就绪状态由受信执行器报告。 */
-export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, selectedMethod?: string) {
-  const methods = ALGORITHM_REGISTRY.filter(item => selectedMethod === undefined || item.id === selectedMethod)
+export function algorithmAllowedByRules(methodId: unknown, rulesVersion?: number): boolean {
+  return rulesVersion === undefined || rulesVersion >= 20 || methodId === 'macd';
+}
+
+/** 目录暴露已登记的受控指标，实现就绪状态由受信执行器报告。 */
+export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, selectedMethod?: string, rulesVersion?: number) {
+  const methods = ALGORITHM_REGISTRY.filter(item => Object.hasOwn(ALGORITHM_METHODS, item.id)
+      && algorithmAllowedByRules(item.id, rulesVersion)
+      && (selectedMethod === undefined || item.id === selectedMethod))
     .map(item => {
       const actual = catalog.methods.find(method => method.id === item.id);
       return { methodId: item.id, title: item.title, status: actual?.status ?? 'unavailable',
-        reason: actual?.reason ?? (actual?.status === 'ready' ? null : catalog.reason ?? 'MACD 执行器未装配。'),
-        parameters: actual?.parameters ?? item.parameters,
+        reason: actual?.reason ?? (actual?.status === 'ready' ? null : catalog.reason ?? `${item.title}执行器未装配。`),
+        parameters: actual?.parameters ?? item.parameterSchema ?? item.parameters,
         requiredFields: actual?.requiredFields ?? item.requiredInputs, outputFields: item.outputFields,
         limitations: item.limitations, definition: definitionFor(item.id),
         executable: actual?.status === 'ready', executor: 'python', interface: 'algorithms.calculate',
@@ -21,7 +27,10 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
         input: { kind: 'fixed_snapshot', referenceKind: 'wfd_fixed_snapshot',
           requiredIdentity: ['instanceId', 'productId', 'snapshotId', 'definitionRevision'],
           requiredEvidence: ['fields', 'fieldMapping', 'semantics', 'calendar'],
-          semanticDeclaration: MACD_SNAPSHOT_SEMANTIC_CONTRACT,
+          semanticDeclaration: item.requiredInputs?.includes('volume') ? {
+            ...MACD_SNAPSHOT_SEMANTIC_CONTRACT,
+            semantics: { ...MACD_SNAPSHOT_SEMANTIC_CONTRACT.semantics, volumeUnit: '须与显式映射的 WFD 成交量字段单位一致' },
+          } : MACD_SNAPSHOT_SEMANTIC_CONTRACT,
           historical: '历史用途必须给出明确模式与截止，并通过 WFD 资格核对。' },
         output: { state: 'computed', publication: 'independent_verification_then_existing_r1_fixed_readback' },
       };
@@ -34,7 +43,7 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
     methods, unknownMethod: selectedMethod !== undefined && methods.length === 0 };
 }
 
-export function bdSessionToolContract(catalog: AlgorithmCatalogView) {
+export function bdSessionToolContract(catalog: AlgorithmCatalogView, rulesVersion?: number) {
   const processing = processingSessionContract();
   return { version: BD_SESSION_TOOL_CONTRACT_VERSION, entry: 'bd_agents.conversation', owner: 'bd_agents',
     toolGroups: [
@@ -49,8 +58,8 @@ export function bdSessionToolContract(catalog: AlgorithmCatalogView) {
       { id: 'wfd', title: 'WFD 正式数据',
         tools: ['data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.recover', 'data.wfd.query'],
         next: '正式发布仍经现有 R1 确认与固定读回；查询固定快照。' },
-      { id: 'basic_algorithms', title: 'MACD',
+      { id: 'basic_algorithms', title: '受控日线指标',
         tools: ['algorithms.contract', 'algorithms.capabilities', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status'],
-        next: '固定 WFD 输入 → MACD → 独立数值和来源核对 → 原 R1 发布与固定读回。' },
-    ], algorithms: basicAlgorithmToolContract(catalog) };
+        next: '按登记的参数和字段选择指标，以固定 WFD 快照计算。独立核对数值和来源后，沿原 R1 请求发布与固定读回。' },
+    ], algorithms: basicAlgorithmToolContract(catalog, undefined, rulesVersion) };
 }

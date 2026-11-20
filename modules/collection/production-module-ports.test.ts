@@ -8,6 +8,9 @@ import { SourceFieldProfileStore, readSourceFieldProfile, profileFingerprint, ty
 import { modelActionApprovalMode } from '../agent/model-tools.js';
 import { isModelActionAllowed } from '../agent/model-tools.js';
 import { ConversationProcessingBridge } from './conversation-processing.js';
+import { ALGORITHM_REGISTRY } from '../financial/algorithm-registry.js';
+import { ALGORITHM_DEFINITIONS } from '../financial/algorithm-definitions.js';
+import { ALGORITHM_METHOD_IDS } from '../financial/algorithm-types.js';
 import { PRODUCTION_MODULES, productionModuleDirectory,
   fixedWfdModuleReference, readWfdModulePage,
   factorLibraryView, semanticDictionaryView, sourceSemanticView, readPublishedWfdSemanticDefinition,
@@ -44,26 +47,33 @@ test('exactly eight distinct on-demand interfaces are registered, discoverable a
   assert.equal(detached.modules.find(item => item.id === 'clean')?.status, 'ready');
 });
 
-test('calculation directory reflects only the registered MACD executor and its readiness', () => {
+test('calculation directory reflects all registered methods and executor readiness', () => {
   const status = (status: 'ready' | 'blocked') => ({
     algorithms: { catalog: () => ({
       status: status === 'ready' ? 'available' : 'unavailable',
-      methods: [{ id: 'macd', status }],
+      methods: [...ALGORITHM_METHOD_IDS.map(id => ({ id, status })),
+        { id: 'financial_single_quarter', status: 'ready' }],
     } as ReturnType<import('../../contracts/workspace-services.js').AlgorithmConversationPort['catalog']>) },
     hasWfdReader: true,
   });
   const ready = productionModuleDirectory(status('ready')).modules.find(item => item.id === 'calculate');
   assert.equal(ready?.engine, 'python');
   assert.equal(ready?.status, 'ready');
-  assert.deepEqual(ready?.methods.map(method => (method as { methodId: string }).methodId), ['macd']);
+  assert.deepEqual(ready?.methods.map(method => (method as { methodId: string }).methodId), ALGORITHM_METHOD_IDS);
   const blocked = productionModuleDirectory(status('blocked')).modules.find(item => item.id === 'calculate');
   assert.equal(blocked?.status, 'blocked');
 });
 
 test('factor library reuses existing registry and definitions without granting execution or publication', () => {
+  const library = factorLibraryView();
+  assert.equal(library.sharedRegistryWith, 'bd.algorithms');
+  assert.equal(library.total, 15);
+  assert.equal(library.definitions.counts.definitions, ALGORITHM_DEFINITIONS.length);
+  assert.deepEqual(library.items.map(item => item.id), ALGORITHM_REGISTRY.map(item => item.id));
+  assert.deepEqual(library.items.map(item => item.definition), ALGORITHM_DEFINITIONS);
   const found = factorLibraryView('macd');
   assert.equal(found.kind, 'read_only_factor_library');
-  assert.equal(found.total, 1);
+  assert.equal(found.total, 15);
   assert.equal(found.items.length, 1);
   assert.equal(found.items[0]?.id, 'macd');
   assert.equal(found.items[0]?.publication, 'not_granted_by_library');

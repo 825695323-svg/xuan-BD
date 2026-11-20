@@ -1,14 +1,13 @@
 import type { JsonValue } from '../../contracts/task-contracts.js';
+import type { AlgorithmFormulaLine } from '../../contracts/algorithm-definition.js';
 import type { EligibilityHistoryMode, FixedObjectEvidence, HoldingTimeEvidence, PublicationTimeEvidence, PurposeEligibilityResult,
   PurposeEvidenceClaim, RestrictionEvidence, RevisionEvidence, WfdDecisionEvidence, WfdHistorySupportEvidence } from '../collection/purpose-eligibility.js';
 
-/** 本模块登记固定 12/26/9 MACD 与 WFD 输入合同。 */
+/** 已登记日线指标及其 WFD 固定输入契约。 */
 export const ALGORITHM_CONTRACT_VERSION = 'bd-local-algorithms/1';
 export const ALGORITHM_RUNTIME = 'bd.algorithms';
 export const ALGORITHM_CALL_ACTION = 'algorithms.calculate';
 export const ALGORITHM_INPUT_ADAPTER_VERSION = 'wfd-fixed-snapshot/1';
-export const ALGORITHM_METHOD_IDS = ['macd'] as const;
-export type AlgorithmMethodId = typeof ALGORITHM_METHOD_IDS[number];
 export type AlgorithmEnvironment = 'local-review' | 'synthetic-test';
 export type AlgorithmMethodStatus = 'ready' | 'blocked' | 'unavailable';
 export type AlgorithmDateFormats = 'YYYY-MM-DD' | 'YYYY/MM/DD' | 'YYYYMMDD';
@@ -29,17 +28,171 @@ export const MACD_SEMANTICS = Object.freeze({
   outputUnit: 'same_as_verified_input_close',
 });
 
+type ParameterRule = { type: 'integer' | 'number'; minimum: number; maximum: number }
+  | { type: 'integer'; const: number }
+  | { type: 'string'; const: string }
+  | { type: 'string'; enum: string[] };
+
+type ParameterSchema = { type: 'object'; required: string[]; additionalProperties: false;
+  properties: Record<string, ParameterRule> };
+
+type OutputDefinition = Omit<AlgorithmFormulaLine, 'output'> & { unit: 'close' | 'volume' | 'ratio' | 'percent' };
+
+interface AlgorithmMethodDefinition {
+  kind: 'indicator';
+  operation: string;
+  version: string;
+  title: string;
+  description: string;
+  source: string;
+  reference: string;
+  parameterSchema: ParameterSchema;
+  requiredFields: readonly ('timestamp' | 'close' | 'volume')[];
+  closeDomain: 'positive' | 'finite';
+  outputs: Readonly<Record<string, OutputDefinition>>;
+  outputFields: readonly string[];
+  resultSemantics: string;
+  warmup: string;
+  limitations: readonly string[];
+}
+
+function parameterSchema(properties: Record<string, ParameterRule>, optional: string[] = []): ParameterSchema {
+  return { type: 'object', required: Object.keys(properties).filter(key => !optional.includes(key)),
+    additionalProperties: false, properties };
+}
+
+const period = (minimum: number, maximum: number): ParameterRule => ({ type: 'integer', minimum, maximum });
+const firstValid = { type: 'string', const: 'first_valid' } as const;
+const closeFields = ['timestamp', 'close'] as const;
+const noWarmup = '首行即有效。';
+
+function indicator(method: Omit<AlgorithmMethodDefinition, 'kind' | 'source' | 'outputFields' | 'requiredFields' | 'closeDomain' | 'limitations'>
+  & Partial<Pick<AlgorithmMethodDefinition, 'source' | 'requiredFields' | 'closeDomain' | 'limitations'>>): AlgorithmMethodDefinition {
+  return Object.freeze({ kind: 'indicator', source: `plugins/financial/local-compute/assets/indicators.py: ${method.operation}`,
+    requiredFields: closeFields, closeDomain: 'positive', limitations: ['仅使用所供观测，缺失输入拒绝计算。'],
+    ...method, outputFields: Object.freeze(Object.keys(method.outputs)) });
+}
+
 export const ALGORITHM_METHODS = Object.freeze({
-  macd: { operation: 'MACD', kind: 'indicator', version: MACD_SEMANTICS.version, field: 'MACD',
+  macd: indicator({ operation: 'MACD', version: MACD_SEMANTICS.version,
     title: 'MACD · 固定 12/26/9',
     description: '调用既有 12/26/9 MACD 实现，以所供窗口首条收盘价初始化短、长 EMA 与 DEA；返回 DIFF、DEA、MACD 和 ZERO。',
     source: 'plugins/financial/local-compute/assets/indicators.py: MACD; operators.py: smooth',
     reference: '独立 EMA/DEA 递推核对；首值初始化，不补窗口前历史',
-    requiredFields: ['timestamp', 'close'], outputFields: MACD_SEMANTICS.outputFields,
-    limitations: ['仅按所供连续观测做首值初始化递推；不含窗口之前历史，不能视为完整历史 MACD。', '不接受递推状态续算、不补历史、不自动入库。'] },
-} as const);
+    parameterSchema: parameterSchema({
+      short_period: { type: 'integer', const: MACD_SEMANTICS.parameters.short_period },
+      long_period: { type: 'integer', const: MACD_SEMANTICS.parameters.long_period },
+      signal_period: { type: 'integer', const: MACD_SEMANTICS.parameters.signal_period }, init: firstValid,
+    }),
+    outputs: {
+      DIFF: { expression: 'DIFF_t = EMA(C, 12)_t − EMA(C, 26)_t', unit: 'close' },
+      DEA: { expression: 'DEA_t = EMA(DIFF, 9)_t', unit: 'close' },
+      MACD: { expression: 'MACD_t = 2 × (DIFF_t − DEA_t)', unit: 'close', note: '固定采用 2 倍柱值。' },
+      ZERO: { expression: 'ZERO_t = 0', unit: 'close' },
+    },
+    resultSemantics: MACD_SEMANTICS.resultSemantics,
+    warmup: '可用区间以原计算服务的预热标记为准。窗口首值初始化仅覆盖所供观测。',
+    limitations: ['仅按所供连续观测做首值初始化递推；不含窗口之前历史，不能视为完整历史 MACD。', '不接受递推状态续算、不补历史、不自动入库。'],
+  }),
+  ma: indicator({ operation: 'MA', version: 'ma/sma-v1', title: 'MA · 简单移动平均',
+    description: '计算完整日线窗口内收盘价的算术平均。', reference: '独立逐窗口算术平均核对',
+    parameterSchema: parameterSchema({ period: period(2, 250) }),
+    outputs: { MA: { expression: 'MA_t = sum(C[t−N+1:t]) / N', unit: 'close' } },
+    resultSemantics: 'N 为 period，窗口含当日收盘价。', warmup: '前 period−1 行为空，诊断为 insufficient_warmup。',
+  }),
+  ema: indicator({ operation: 'EMA', version: 'ema/first-valid-v1', title: 'EMA · 指数移动平均',
+    description: '以所供窗口首条收盘价为种子计算指数移动平均。', reference: '独立加权递推核对',
+    parameterSchema: parameterSchema({ period: period(2, 250), init: firstValid }),
+    outputs: { EMA: { expression: 'EMA_t = α × C_t + (1−α) × EMA_(t−1), α = 2/(N+1)', unit: 'close' } },
+    resultSemantics: 'N 为 period，首行 EMA 为该行收盘价，后续依序递推。', warmup: noWarmup,
+  }),
+  rsi: indicator({ operation: 'RSI', version: 'rsi/wilder-v1', title: 'RSI · 相对强弱指标',
+    description: '使用 Wilder 平滑计算日线相对强弱指标。', reference: '独立涨跌幅均值及 Wilder 递推核对',
+    parameterSchema: parameterSchema({ period: period(2, 100) }),
+    outputs: { RSI: { expression: 'RSI_t = 100 × avg_gain / (avg_gain + avg_loss)', unit: 'percent' } },
+    resultSemantics: '以首组 period 个相邻收盘价差的平均涨额和平均跌额初始化，此后用 1/period 做 Wilder 平滑。平均涨额及跌额均为零时输出空值并给出诊断，平均跌额为零且平均涨额为正时输出 100。',
+    warmup: '前 period 行为空，诊断为 insufficient_warmup。',
+  }),
+  boll: indicator({ operation: 'BOLL', version: 'boll/population-std-v1', title: 'BOLL · 布林带',
+    description: '按完整日线窗口的收盘价均值和总体标准差计算上下轨。', reference: '独立两遍总体方差核对',
+    parameterSchema: parameterSchema({ period: period(2, 250), std_dev: { type: 'number', minimum: 0.5, maximum: 5 } }),
+    outputs: {
+      BOLL_MID: { expression: 'BOLL_MID_t = mean(C[t−N+1:t])', unit: 'close' },
+      BOLL_UPPER: { expression: 'BOLL_UPPER_t = BOLL_MID_t + std_dev × σ_t', unit: 'close' },
+      BOLL_LOWER: { expression: 'BOLL_LOWER_t = BOLL_MID_t − std_dev × σ_t', unit: 'close' },
+    },
+    resultSemantics: 'N 为 period，σ_t 为完整 N 条窗口的总体标准差，方差分母为 N。',
+    warmup: '前 period−1 行三列均为空，诊断为 insufficient_warmup。',
+  }),
+  roc: indicator({ operation: 'ROC', version: 'roc/pct-v1', title: 'ROC · 价格变化率',
+    description: '计算收盘价相对 period 个观测前的百分比变化。', reference: '独立固定滞后比值核对',
+    parameterSchema: parameterSchema({ period: period(1, 250) }), closeDomain: 'finite',
+    outputs: { ROC: { expression: 'ROC_t = 100 × (C_t − C_(t−N)) / C_(t−N)', unit: 'percent' } },
+    resultSemantics: 'N 为 period，比较的是观测位置。分母为零时输出空值并给出诊断。',
+    warmup: '前 period 行为空，诊断为 insufficient_warmup。',
+  }),
+  obv: indicator({ operation: 'OBV', version: 'obv/signed-volume-v1', title: 'OBV · 能量潮',
+    description: '按收盘价涨跌方向累加已声明单位的成交量。', reference: '独立逐日成交量累加核对',
+    parameterSchema: parameterSchema({}), requiredFields: ['timestamp', 'close', 'volume'],
+    outputs: { OBV: { expression: 'OBV_t = OBV_(t−1) + sign(C_t − C_(t−1)) × volume_t', unit: 'volume' } },
+    resultSemantics: '窗口首行 OBV 为 0。上涨加成交量，下跌减成交量，平盘维持前值。使用 WFD 固定字段定义核对的 volumeUnit，不换算单位。',
+    warmup: noWarmup,
+  }),
+  returns: indicator({ operation: 'RETURNS', version: 'returns/simple-log-v1', title: 'RETURNS · 收益率',
+    description: '按明确模式计算简单收益或自然对数收益。', reference: '独立固定滞后收益核对',
+    parameterSchema: parameterSchema({ period: period(1, 250), mode: { type: 'string', enum: ['simple', 'log'] } }), closeDomain: 'finite',
+    outputs: { RETURN: { expression: 'simple: (C_t − C_(t−N))/C_(t−N); log: ln(C_t) − ln(C_(t−N))', unit: 'ratio' } },
+    resultSemantics: 'N 为 period。简单收益分母为零，或对数收益任一价格非正时输出空值并给出诊断。',
+    warmup: '前 period 行为空，诊断为 insufficient_warmup。',
+  }),
+  volatility: indicator({ operation: 'VOLATILITY', version: 'volatility/sample-std-v1', title: 'VOLATILITY · 波动率',
+    description: '计算简单日收益的滚动样本标准差，可显式指定年化因子。', reference: '独立收益窗口及两遍样本方差核对',
+    parameterSchema: parameterSchema({ period: period(2, 250), annualization_factor: period(1, 366) }, ['annualization_factor']),
+    closeDomain: 'finite',
+    outputs: { VOLATILITY: { expression: 'VOLATILITY_t = sqrt(sum((r_i−mean(r))²)/(N−1)) × scale', unit: 'ratio' } },
+    resultSemantics: '窗口须含 period 个连续简单日收益，含零分母的窗口为空并给出诊断。仅显式传入 annualization_factor 时乘以该因子的平方根，缺省为日波动率。',
+    warmup: '前 period 行为空，诊断为 insufficient_warmup。',
+  }),
+  max_drawdown: indicator({ operation: 'MAX_DRAWDOWN', version: 'max_drawdown/window-v1', title: 'MAX_DRAWDOWN · 最大回撤',
+    description: '计算窗口内按时间先峰后谷的最大跌幅，并报告窗口最高收盘价。', reference: '独立从后向前搜索峰谷核对',
+    parameterSchema: parameterSchema({ period: period(2, 250) }, ['period']),
+    outputs: {
+      MAX_DRAWDOWN: { expression: 'MAX_DRAWDOWN_t = min(C_j/C_i − 1), i ≤ j 且两点均在窗口内', unit: 'ratio' },
+      PEAK_CLOSE: { expression: 'PEAK_CLOSE_t = max(C_i), i 在窗口内', unit: 'close' },
+    },
+    resultSemantics: '缺省使用从首条观测至当日的累计窗口。显式 period 使用含当日的完整滚动窗口。最大回撤值小于或等于零，窗口最高收盘价可能出现在造成最大回撤的谷值之后。',
+    warmup: '累计模式首行即有效。滚动模式前 period−1 行为空，诊断为 insufficient_warmup。',
+  }),
+});
 
-export type AlgorithmMethodDefinition = typeof ALGORITHM_METHODS[AlgorithmMethodId];
+export type AlgorithmMethodId = keyof typeof ALGORITHM_METHODS;
+export const ALGORITHM_METHOD_IDS = Object.freeze(Object.keys(ALGORITHM_METHODS) as AlgorithmMethodId[]);
+
+export function isAlgorithmMethodId(value: unknown): value is AlgorithmMethodId {
+  return typeof value === 'string' && Object.hasOwn(ALGORITHM_METHODS, value);
+}
+
+/** 参数目录、宿主准入及 Python 白名单使用同一份约束。 */
+export function invalidAlgorithmParameter(methodId: AlgorithmMethodId, value: unknown): string | null {
+  const { required, properties } = ALGORITHM_METHODS[methodId].parameterSchema;
+  if (value === null || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) return 'parameters';
+  const params = value as Record<string, unknown>;
+  const missing = required.find(key => !Object.hasOwn(params, key));
+  if (missing !== undefined) return missing;
+  for (const [key, parameter] of Object.entries(params)) {
+    if (!Object.hasOwn(properties, key)) return key;
+    const rule = properties[key]!;
+    if ('const' in rule) {
+      if (parameter !== rule.const) return key;
+    } else if ('enum' in rule) {
+      if (typeof parameter !== 'string' || !rule.enum.includes(parameter)) return key;
+    } else if (typeof parameter !== 'number' || !Number.isFinite(parameter)
+      || (rule.type === 'integer' && !Number.isInteger(parameter)) || parameter < rule.minimum || parameter > rule.maximum) {
+      return key;
+    }
+  }
+  return null;
+}
 
 export interface AlgorithmFieldMapping {
   timestamp: string;
@@ -47,6 +200,7 @@ export interface AlgorithmFieldMapping {
   open?: string;
   high?: string;
   low?: string;
+  volume?: string;
   available_at?: string;
 }
 
@@ -57,6 +211,8 @@ export interface AlgorithmSemantics {
   timezone: string;
   priceUnit: 'currency_per_share';
   currency: string;
+  /** 必须与映射成交量列的 WFD 固定字段定义一致。 */
+  volumeUnit?: string;
   adjustment: AlgorithmAdjustment;
   adjustmentBasis: string;
   barClosed: true;
@@ -125,7 +281,18 @@ export interface AlgorithmFixedSnapshotSource {
 
 export type AlgorithmSource = AlgorithmManagedTableSource | AlgorithmFixedSnapshotSource;
 
-export type AlgorithmParameters = { short_period: 12; long_period: 26; signal_period: 9; init: 'first_valid' };
+export type AlgorithmParametersByMethod = {
+  macd: typeof MACD_SEMANTICS.parameters;
+  ma: { period: number };
+  ema: { period: number; init: 'first_valid' };
+  rsi: { period: number };
+  boll: { period: number; std_dev: number };
+  roc: { period: number };
+  obv: Record<string, never>;
+  returns: { period: number; mode: 'simple' | 'log' };
+  volatility: { period: number; annualization_factor?: number };
+  max_drawdown: { period?: number };
+};
 
 export interface AlgorithmUsage {
   /** 只接受本机算法当前内容或历史计算两类；发布资格不属于本算法入口。 */
@@ -143,13 +310,13 @@ export type AlgorithmSubmissionContext =
   | { authority: 'operator-http'; requestId: string; observedAtUtc: string }
   | { authority: 'user-message'; messageId: string; quote: string; observedAtUtc: string };
 
-export interface AlgorithmCallRequest {
-  methodId: AlgorithmMethodId;
-  parameters: AlgorithmParameters;
+export type AlgorithmCallRequest = {
+  [Id in AlgorithmMethodId]: { methodId: Id; parameters: AlgorithmParametersByMethod[Id] };
+}[AlgorithmMethodId] & {
   source: AlgorithmSource;
   /** 缺省保持原有当前内容计算能力，不自动提升历史资格。 */
   usage?: AlgorithmUsage;
-}
+};
 
 export interface AlgorithmMetadata {
   series_id: string;
@@ -158,6 +325,7 @@ export interface AlgorithmMetadata {
   timezone: string;
   price_unit: 'currency_per_share';
   currency: string;
+  volume_unit?: string;
   adjustment: AlgorithmAdjustment;
   adjustment_basis: string;
   window_start: string;
@@ -177,6 +345,7 @@ export interface AlgorithmBar {
   open?: number;
   high?: number;
   low?: number;
+  volume?: number;
   available_at: string;
   bar_closed: true;
 }
@@ -220,7 +389,8 @@ export interface AlgorithmSnapshotPort {
   read(reference: AlgorithmSnapshotReference, context: { signal: AbortSignal; taskId?: string }): Promise<AlgorithmSnapshotRead>;
 }
 
-export interface AlgorithmInvalidInterval { start: string; end: string; reason: 'insufficient_history' | 'insufficient_warmup'; count: number }
+export type AlgorithmDiagnosticReason = 'insufficient_warmup' | 'undefined_zero_denominator' | 'undefined_flat_rsi' | 'undefined_nonpositive_log_price';
+export interface AlgorithmInvalidInterval { start: string; end: string; reason: 'insufficient_history' | AlgorithmDiagnosticReason; count: number }
 export interface AlgorithmGap { code: string; message: string; scope?: string }
 
 export interface AlgorithmResultRow { timestamp: string; available_at: string; [field: string]: JsonValue }

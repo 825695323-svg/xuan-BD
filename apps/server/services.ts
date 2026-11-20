@@ -285,7 +285,8 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
     assertPath: path => direct.assertPublicPath(path), mediaAdapters: () => mediaAdapters }) : undefined;
   const conversationAlgorithms = options.workspaceServices?.toolLibrary ? new ConversationAlgorithmBridge({
-    database, companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null }) : undefined;
+    database, companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
+    rulesVersion: runId => core.runConfiguration(runId)?.internalAgentRules?.version }) : undefined;
   const conversationProcessing = options.workspaceServices ? new ConversationProcessingBridge({ database, core, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
   const conversationR1 = options.role !== 'service' && options.workspaceServices?.r1Workspace
     ? new ConversationR1Bridge({ database, core, files, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;

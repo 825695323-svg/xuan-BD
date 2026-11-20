@@ -8,7 +8,8 @@ import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
 import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import { ALGORITHM_CONTRACT_VERSION, ALGORITHM_RUNTIME, type AlgorithmCatalogView } from './algorithm-types.js';
-import { basicAlgorithmToolContract, bdSessionToolContract, BD_SESSION_TOOL_CONTRACT_VERSION } from './basic-algorithm-tool-contract.js';
+import { algorithmAllowedByRules, basicAlgorithmToolContract, bdSessionToolContract,
+  BD_SESSION_TOOL_CONTRACT_VERSION } from './basic-algorithm-tool-contract.js';
 import { ALGORITHM_REGISTRY_VERSION } from './algorithm-registry.js';
 import { productionModuleDirectory, processingSessionContract } from '../collection/production-module-ports.js';
 
@@ -30,6 +31,7 @@ export class ConversationAlgorithmBridge {
   readonly registrations: readonly SkillRegistration[];
   constructor(private readonly options: { database: CoreDatabase; companion: WorkspaceServices;
     origin(taskId: string): ModelTaskOrigin | null;
+    rulesVersion(runId: string): number | undefined;
  }) {
     options.database.migrate('conversation_algorithm_links', 1, `CREATE TABLE conversation_algorithm_links(
       service_task_id TEXT PRIMARY KEY,local_task_id TEXT NOT NULL,operation TEXT NOT NULL,origin_json TEXT NOT NULL,created_at INTEGER NOT NULL);
@@ -54,7 +56,7 @@ export class ConversationAlgorithmBridge {
       registration('bd.session.capabilities', '查看 BD AGENTS 统一会话工具契约',
         '只读展示采集源、接口源、文件与基础算法的现有会话接口、边界和 WFD 输入要求；不启动采集、计算或发布。', []),
       registration('algorithms.contract', '读取基础算法统一接口契约',
-        '返回各算法独立 methodId（算法编号）、参数、输入字段、版本及可调用状态。目录只保留固定 12/26/9 MACD；实际不可用时会明确报告原因。',
+        '返回受控日线指标的 methodId（算法编号）、参数、输入字段、版本及可调用状态。MACD 沿用固定 12/26/9。',
         [text('methodId', '指定算法编号，留空返回全部', 160, false)]),
       registration('algorithms.capabilities', '发现本机基础算法与真实数据能力',
         '只读列出固定基础算法、WFD 固定快照输入和当前执行能力。新计算只走 AGENTS 工具，结果由独立核对器直接提交 WFD，无须沿原报五步加工。', []),
@@ -62,7 +64,7 @@ export class ConversationAlgorithmBridge {
         'calculationJson 由 BD AGENTS 按算法契约和真实 WFD 固定快照组装。固定算法直接计算，独立核对器检查数据身份、方法版本、行值和摘要，复用 R1 正式提交与 WFD 固定读回。无需人工算法执行或派生入库审批，也不走原报五步加工。', [
           text('calculationJson', '算法计算请求（模型从实际元数据组装）', 100_000),
         ]),
-      registration('data.modules.calculate', 'MACD 计算模块',
+      registration('data.modules.calculate', '受控指标计算模块',
         '该入口是已有 algorithms.calculate 的受信别名，只接受登记公式和真实 WFD 固定引用，不允许用户指定执行器。结果保留原任务与 R1/WFD 发布身份。',
         [text('calculationJson', '算法计算请求，按固定WFD与方法契约组成', 100_000)]),
       registration('algorithms.publish', '按原算法任务恢复 WFD 派生结果发布',
@@ -88,14 +90,15 @@ export class ConversationAlgorithmBridge {
     const authority = await acquireAuthority(context, action, args, []);
     authority.assert(); this.options.companion.bd?.assertDispatch();
     if (action === 'bd.session.capabilities') {
-      const contract = bdSessionToolContract(this.modelCatalog(service, origin));
+      const rulesVersion = this.options.rulesVersion(origin.parentRunId);
+      const catalog = this.modelCatalog(service, rulesVersion);
+      const contract = bdSessionToolContract(catalog, rulesVersion);
       const processing = this.options.companion.processing?.catalog();
       const cleaning = isWfdRecord(processing) && isWfdRecord(processing.cleaningEngine)
         ? processing.cleaningEngine : { status: 'not_configured', reason: '数据清洗服务未装配。' };
-      const calculation = service ? basicAlgorithmToolContract(service.catalog()) : null;
       const modules = productionModuleDirectory({
         processing: this.options.companion.processing,
-        algorithms: this.options.companion.algorithms,
+        algorithms: service ? { catalog: () => catalog } : undefined,
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
         hasSourceProfiles: !!this.options.companion.sourceFieldProfiles,
         enabled: this.options.companion.productionModuleSwitches,
@@ -106,9 +109,9 @@ export class ConversationAlgorithmBridge {
           cleaning: { description: '原报解析与严格清洗；AGENTS每次执行一个步骤，读取反馈后再决定下一步',
             ...processingSessionContract(), engine: cleaning,
             source: '受管原件及冻结来源；不读取计算公式注册表' },
-          calculation: { description: '读取 WFD 固定数据，执行固定 12/26/9 MACD',
+          calculation: { description: '读取 WFD 固定数据，执行已登记的受控日线指标',
             discovery: 'algorithms.contract', execute: 'algorithms.calculate',
-            publish: 'algorithms.publish', engine: calculation,
+            publish: 'algorithms.publish', engine: service ? contract.algorithms : null,
             source: 'WFD fixed snapshot; not original cleaning candidates' },
           sharedVerification: 'production-verifier (行、类型、结果摘要) + 领域专属方法核验',
           sharedPublication: 'existing R1/WFD readback only',
@@ -117,17 +120,20 @@ export class ConversationAlgorithmBridge {
     }
     if (action === 'algorithms.contract') {
       const methodId = typeof args.methodId === 'string' && args.methodId.trim() ? args.methodId.trim() : undefined;
-      const contract = basicAlgorithmToolContract(this.modelCatalog(service, origin), methodId);
+      const rulesVersion = this.options.rulesVersion(origin.parentRunId);
+      if (methodId !== undefined) this.assertMethodAllowed(methodId, rulesVersion);
+      const contract = basicAlgorithmToolContract(this.modelCatalog(service, rulesVersion), methodId, rulesVersion);
       authority.assert();
       return { summary: '已读取基础算法独立接口及真实可用状态；未采用或执行任何方法。', data: view(contract) };
     }
     if (action === 'algorithms.capabilities') {
-      const catalog = this.modelCatalog(service, origin);
+      const rulesVersion = this.options.rulesVersion(origin.parentRunId);
+      const catalog = this.modelCatalog(service, rulesVersion);
       authority.assert();
       return { summary: catalog.enabled
         ? '已读取基础算法目录、固定代码版本与 WFD 快照能力；本动作只读，不创建计算。'
         : `算法运行条件尚未就绪（${catalog.reason ?? '执行器或 WFD 快照端口不可用'}）；本次仅返回目录。`,
-        data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog).methods,
+        data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog, undefined, rulesVersion).methods,
           database: json(catalog.inputs.fixedSnapshots), guidance: {
           humanInput: '用户说明 WFD 数据和目标算法，由模型读取真实快照与方法契约形成调用，无需人工逐次计算确认。',
           adoption: '人工采用仅为历史诊断，不决定当前计算资格；执行器或固定快照不可用时不得改走旧入口。',
@@ -141,11 +147,12 @@ export class ConversationAlgorithmBridge {
       try { calculation = JSON.parse(String(args.calculationJson)); }
       catch { throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求不是有效JSON。'); }
       if (!isWfdRecord(calculation)) throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求必须是对象。');
-      this.assertCalculationMaterials(calculation, origin);
+      this.assertMethodAllowed(calculation.methodId, this.options.rulesVersion(origin.parentRunId));
+      this.assertCalculationMaterials(calculation);
       const publisher = this.options.companion.derivedPublisher;
       if (!service || !publisher) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE',
         '计算模块未装配，不能把清洗管线当算法执行器。');
-      // MACD 沿原 TaskService 执行，保留原任务与版本身份。
+      // 已登记指标沿原 TaskService 执行，保留原任务与版本身份。
       const submitted = service.submit('conversation:algorithms:' + context.task.id, calculation);
       const taskId = submitted.taskId;
       this.link(taskId, context.task.id, 'calculate', origin);
@@ -186,9 +193,12 @@ export class ConversationAlgorithmBridge {
   }
 
   /** 代理只读取真实 WFD 固定快照目录；受管原件不再提供计算资格。 */
-  private modelCatalog(service: WorkspaceServices['algorithms'], _origin: ModelTaskOrigin): AlgorithmCatalogView {
-    if (service) return service.catalog();
-    const reason = 'MACD 计算服务未装配。';
+  private modelCatalog(service: WorkspaceServices['algorithms'], rulesVersion?: number): AlgorithmCatalogView {
+    if (service) {
+      const catalog = service.catalog();
+      return { ...catalog, methods: catalog.methods.filter(method => algorithmAllowedByRules(method.id, rulesVersion)) };
+    }
+    const reason = '受控指标计算服务未装配。';
     const fixed = !!this.options.companion.r1Workspace?.capabilities().connection;
     return {
       contractVersion: ALGORITHM_CONTRACT_VERSION, runtime: ALGORITHM_RUNTIME,
@@ -205,12 +215,17 @@ export class ConversationAlgorithmBridge {
         fixedSnapshots: { status: fixed ? 'available' : 'unavailable',
           reason: fixed ? null : '受信 WFD 固定读取尚未装配。',
           contract: { contract: 'wfd.data-service/v1', required: 'snapshotId,productId,recordVersion' } },
-      }, limitations: ['MACD 执行器未装配时不提供其他算法或备用执行路径。'],
+      }, limitations: ['受控指标由已登记的固定执行器提供。'],
     };
   }
 
+  private assertMethodAllowed(methodId: unknown, rulesVersion?: number): void {
+    if (!algorithmAllowedByRules(methodId, rulesVersion)) throw new TaskError('ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES',
+      `本会话冻结的内置代理规则 v${rulesVersion} 仅允许 macd。新增指标要求规则 v20 或以上。`);
+  }
+
   /** 计算请求只能引用 WFD 固定快照；权限由原服务读取端口继续核实。 */
-  private assertCalculationMaterials(value: Record<string, unknown>, _origin: ModelTaskOrigin): void {
+  private assertCalculationMaterials(value: Record<string, unknown>): void {
     const source = isWfdRecord(value.source) ? value.source : null;
     if (!source || source.kind !== 'fixed_snapshot') throw new TaskError('ALGORITHM_WFD_ONLY',
       '基础算法只接受 kind=fixed_snapshot 的 WFD 正式数据；不能让会话原件或模型自行取代已发布版本。');
@@ -218,7 +233,7 @@ export class ConversationAlgorithmBridge {
 
   private statusPayload(taskId: string) {
     const task = this.options.companion.tasks.get(taskId);
-    if (task.runtimeId !== ALGORITHM_RUNTIME) throw new TaskError('ALGORITHM_TASK_ID', '不是当前 MACD 执行器的原任务。');
+    if (task.runtimeId !== ALGORITHM_RUNTIME) throw new TaskError('ALGORITHM_TASK_ID', '须使用受控指标执行器的原任务编号。');
     const value = this.options.companion.algorithms!.view(taskId);
     const result = value.result;
     return { taskId: value.taskId, requestId: value.requestId, methodId: value.methodId, status: value.status,

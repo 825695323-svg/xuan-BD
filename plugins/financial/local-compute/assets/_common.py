@@ -27,7 +27,7 @@ def exact_keys(obj, required, optional=(), label='object'):
     require(not missing, label + '缺少字段：' + ','.join(sorted(missing)))
     require(not extra, label + '包含未支持字段：' + ','.join(sorted(extra)))
 
-def validate_bars(data, required=('close',), frequency='1d'):
+def validate_bars(data, required=('close',), frequency='1d', allow_nonpositive_close=False):
     exact_keys(data, ('metadata', 'rows'), label='data')
     metadata, rows = data['metadata'], data['rows']
     require(isinstance(metadata, dict), 'metadata须为对象')
@@ -54,7 +54,7 @@ def validate_bars(data, required=('close',), frequency='1d'):
             require(key in row and row[key] is not None, '第%d条缺少所需字段%s' % (i + 1, key))
         for key in ('open', 'high', 'low', 'close'):
             if row.get(key) is not None:
-                number(row[key], '第%d条%s' % (i + 1, key), positive=True)
+                number(row[key], '第%d条%s' % (i + 1, key), positive=key != 'close' or not allow_nonpositive_close)
         for key in ('volume', 'amount'):
             if row.get(key) is not None:
                 number(row[key], '第%d条%s' % (i + 1, key), nonnegative=True)
