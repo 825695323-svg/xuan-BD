@@ -574,8 +574,9 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
       };
       const subject = row.subject;
       const subjectScheme = optionalField(row, 'subject_scheme'), subjectCode = optionalField(row, 'subject_code');
-      const known = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
-        && !/^(unknown|unresolved|unspecified|not_reported)$/iu.test(value.trim());
+      const known = (value: unknown): value is string => typeof value === 'string' && value.trim() === value
+        && value.length > 0 && value.length <= 1000 && !/[\u0000-\u001f]/u.test(value)
+        && !/^(unknown|unresolved|unspecified|not_asserted|not_reported|未知|未明确)$/iu.test(value);
       const comparisonBlocked = !isWfdRecord(subject) || !['kind', 'namespace', 'id'].every(key => known(subject[key]))
         || ![subjectScheme, subjectCode, ...Object.values(reportAxes)].every(known)
         || !['formal', 'correction', 'restatement_carrier'].includes(reportAxes.reportNature ?? '');

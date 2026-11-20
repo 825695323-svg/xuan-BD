@@ -260,6 +260,15 @@ test('financial articulation only compares known axes in the same actual report'
     assert.ok(result.every(item => item.status === 'indeterminate'), axis);
     assert.ok(result.some(item => item.reason === 'report_basis_unresolved'), axis);
   }
+  for (const placeholder of ['not_asserted', '未知', '未明确']) {
+    const unresolved = structuredClone(rows);
+    for (const item of unresolved) {
+      ((item.values as WfdRecord).comparability_basis as WfdRecord).value = placeholder;
+    }
+    const [result] = await checked(unresolved);
+    assert.equal(result?.status, 'indeterminate', placeholder);
+    assert.equal(result?.reason, 'report_basis_unresolved', placeholder);
+  }
   const distinctReports = structuredClone(rows);
   ((distinctReports[2]!.values as WfdRecord).report_id as WfdRecord).value = 'other-report-with-same-v1';
   assert.deepEqual((await checked(distinctReports)).map(item => item.status), ['indeterminate', 'indeterminate']);
