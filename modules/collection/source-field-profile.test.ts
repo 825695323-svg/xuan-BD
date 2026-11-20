@@ -26,6 +26,45 @@ const sample = (changes: Record<string, unknown> = {}): SourceFieldProfile => ({
   ...changes,
 });
 const ref = (id: string) => ({ adapterId: id, version: '1', configDigest: 'a'.repeat(64) });
+
+test('explicit domain placeholders are gaps even when both sources supply the same values', () => {
+  const scope = { domain: 'bilateral_trade', quantityBasis: 'dry_weight', periodBasis: 'calendar_year',
+    valuationBasis: 'FOB', processingStage: 'ore', statisticalAreaScheme: 'ISO_3166_1',
+    commodityClassification: { scheme: 'HS', version: 'HS2022', mappingQuality: 'exact' } };
+  for (const placeholder of ['unknown', ' UnReSoLvEd ', ' UNSPECIFIED ']) {
+    for (const axis of ['processingStage', 'statisticalAreaScheme', 'commodityClassification']) {
+      const value = axis === 'commodityClassification' ? { ...scope.commodityClassification, version: placeholder } : placeholder;
+      const domainScope = { ...scope, [axis]: value };
+      const left = readSourceFieldProfile(sample({ domainScope }), 'left.json');
+      const right = readSourceFieldProfile(sample({ domainScope, sourceId: 'synthetic-b' }), 'right.json');
+      const comparison = compareProfileSemantics(left, right);
+      assert.equal(comparison.status, 'needs_evidence', `${axis}: ${placeholder}`);
+      assert.ok(comparison.gaps.some(gap => gap.includes(axis)));
+    }
+  }
+});
+
+test('optional stage and area placeholders block equivalence outside commodity and trade domains', () => {
+  for (const scope of [
+    { domain: 'market_series' },
+    { domain: 'financial_statement', accountingStandard: 'CAS', statementScope: 'consolidated', periodBasis: 'fiscal_year' },
+    { domain: 'relation_claim' },
+  ]) {
+    const compare = (domainScope: Record<string, unknown>) => compareProfileSemantics(
+      readSourceFieldProfile(sample({ domainScope }), 'left.json'),
+      readSourceFieldProfile(sample({ domainScope, sourceId: 'synthetic-b' }), 'right.json'),
+    );
+    assert.equal(compare(scope).status, 'candidate_equivalent');
+    for (const axis of ['processingStage', 'statisticalAreaScheme']) {
+      for (const placeholder of ['unknown', ' UnReSoLvEd ', ' UnSpEcIfIeD ', ' NoT_RePoRtEd ', 'unreported', '未披露', '未知']) {
+        const comparison = compare({ ...scope, [axis]: placeholder });
+        assert.equal(comparison.status, 'needs_evidence', `${scope.domain}: ${axis} = ${placeholder}`);
+        assert.equal(comparison.sameProduct, false);
+        assert.ok(comparison.gaps.some(gap => gap.includes(axis)));
+      }
+    }
+  }
+});
 const throws = (fn: () => unknown) => assert.throws(fn, (e: unknown) =>
   typeof e === 'object' && e !== null && 'code' in e && e.code === 'SOURCE_FIELD_PROFILE');
 

@@ -7,9 +7,18 @@ export const MATERIAL_CLEANING_RULES_VERSION = 'material-cleaning/1' as const;
 export type OriginalSemanticEvidence = { source: 'original'; start?: number; end?: number; quote: string; line?: number; column?: number };
 export type UserMessageSemanticEvidence = { source: 'user-message'; messageId: string; start?: number; end?: number; quote: string; line?: number; column?: number };
 export type SemanticEvidence = OriginalSemanticEvidence | UserMessageSemanticEvidence;
+export type MaterialAnnotationSemanticKey =
+  | 'themeClassification'
+  | 'industryChainRole'
+  | 'counterpartyRelation'
+  | 'geoSupplyDemand'
+  | 'bilateralTrade'
+  | 'enterpriseRegionExposure'
+  | 'shockTransmissionScenario';
+
 export interface SemanticJudgment {
   id: string;
-  key: MaterialSemanticKey | 'dateFormat' | 'decimalFormat';
+  key: MaterialSemanticKey | 'dateFormat' | 'decimalFormat' | MaterialAnnotationSemanticKey;
   /** 无 scope 为整份材料；column:N 为 1 基字段。 */
   scope?: string;
   status: 'known' | 'unknown' | 'conflict';
@@ -108,7 +117,7 @@ export const SEMANTIC_PROPOSAL_SCHEMA = Object.freeze({ type: 'object', addition
     } },
     judgments: { type: 'array', maxItems: 80, items: { type: 'object', additionalProperties: false,
       required: ['id', 'key', 'status', 'evidence'], properties: {
-        id: { type: 'string', minLength: 1, maxLength: 200 }, key: { enum: ['field', 'unit', 'currency', 'period', 'adjustment', 'timeAvailability', 'methodName', 'parameters', 'dependencies', 'version', 'source', 'dateFormat', 'decimalFormat'] },
+        id: { type: 'string', minLength: 1, maxLength: 200 }, key: { enum: ['field', 'unit', 'currency', 'period', 'adjustment', 'timeAvailability', 'methodName', 'parameters', 'dependencies', 'version', 'source', 'dateFormat', 'decimalFormat', 'themeClassification', 'industryChainRole', 'counterpartyRelation', 'geoSupplyDemand', 'bilateralTrade', 'enterpriseRegionExposure', 'shockTransmissionScenario'] },
         scope: { type: 'string', minLength: 1, maxLength: 200 }, status: { enum: ['known', 'unknown', 'conflict'] },
         value: { type: 'string', minLength: 1, maxLength: 2000 }, evidence: { ...evidenceArraySchema, minItems: 0 },
       } } },

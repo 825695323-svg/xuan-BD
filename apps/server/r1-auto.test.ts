@@ -4,12 +4,14 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { R1AutoStartInput, R1AutoView } from '../../modules/collection/r1-auto.js';
+import { R1AutoService, type R1AutoStartInput, type R1AutoView } from '../../modules/collection/r1-auto.js';
+import { R1HandoffService } from '../../modules/collection/r1-structured-handoff.js';
+import { CoreDatabase } from '../../platform/state/database.js';
 import { resolveR1Evidence } from '../../modules/collection/r1-evidence.js';
 import { sourceReportedCode } from '../../modules/collection/source-reported-table.js';
 import { DIMENSION_KEYS } from '../../modules/collection/processing-routing.js';
 import { WfdProductMachineError } from '../../adapters/database/wfd-product-machine.js';
-import { canonicalWfdJson, type WfdRecord } from '../../adapters/database/wfd-transport.js';
+import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { createFullChainFixture, openFullChainHost, type FullChainHost } from './full-chain-test-support.js';
 
 const enabled = !!process.env.WFD_PYTHON && !!process.env.XUAN_FULL_CHAIN_ROOT;
@@ -57,6 +59,60 @@ function compact(view: R1AutoView) {
 function proof(host: FullChainHost, name: string, result: unknown) {
   writeFileSync(join(host.fixture.root, 'auto-verification.json'), JSON.stringify({ name, result }, null, 2) + '\n', { flag: 'wx' });
 }
+
+test('auto reuse requires verified profiles for both associated and published peer sources', async () => {
+  const countDefinition = { dimension: 'quantity' };
+  const units = { count: { definition: countDefinition, digest: 'sha256:' + wfdSha256(canonicalWfdJson(countDefinition)) } };
+  const processingReached = 'Reached processing after definition reuse';
+  for (const scenario of [
+    { name: 'association', association: 'synthetic-first', published: [source.source_id] },
+    { name: 'publication', published: ['synthetic-first'] },
+    { name: 'admission', published: [source.source_id], admitted: ['synthetic-first'] },
+    { name: 'unknown_origin' },
+    { name: 'unknown_origin_additive', additive: true },
+    { name: 'same_source_association', association: source.source_id, sameSource: true },
+    { name: 'same_source_publication', published: [source.source_id], sameSource: true },
+    { name: 'same_source_admission', published: [], admitted: [source.source_id], sameSource: true },
+  ]) {
+    const database = new CoreDatabase();
+    new R1HandoffService({ database });
+    const existing = raw('synthetic-peer'), bytes = scenario.additive ? raw('synthetic-peer', { extra: true }) : existing;
+    const sha256 = wfdSha256(bytes), namespace = 'synthetic';
+    const material = { envelope: { materialId: 'synthetic-material', sha256 }, preview: { format: 'csv' as const } };
+    const target = resolveR1Evidence({ material: { ...material, envelope: { ...material.envelope, sha256: wfdSha256(existing) } } as never,
+      original: existing, answers: {}, namespace,
+      datasetId: 'synthetic-data', parentSnapshotId: 'synthetic-snapshot', source }).proposal!.target;
+    const product = { product_id: 'synthetic-product', definition_ref: { digest: 'synthetic-definition' }, dataset_id: 'synthetic-data', subject: target.subject,
+      payload_kind: 'tabular_rows', logical_domain: 'observations', declaration: target.definition,
+      ...(scenario.published ? { published_source_ids: scenario.published } : {}),
+      ...(scenario.admitted ? { source_admission: { source_ids: scenario.admitted } } : {}) };
+    if (scenario.association) database.connection.prepare('INSERT INTO r1_record_associations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(product.dataset_id, product.product_id, 'definition', 'synthetic-snapshot', 'row', '1', 'prior-request',
+        'synthetic-original', scenario.association, '[]', '[]', 0);
+    const auto = new R1AutoService({ database, tasks: () => ({ getControl: () => ({ stopped: false, generation: 0 }) }) as never,
+      materials: { get: () => material, readOriginal: () => ({ bytes, sha256 }) } as never,
+      processing: { preparePlan: () => { throw new Error(processingReached); } } as never,
+      workspace: { capabilities: () => ({ connection: { namespace } }),
+        snapshotStatus: async () => ({ snapshotId: 'synthetic-snapshot', units }),
+        discoverProducts: async () => ({ products: [product] }),
+        reviewDefinition: async () => ({ code: scenario.additive ? 'FIELD_DEFINITION_REQUIRED' : 'DEFINITION_COMPATIBLE',
+          productIds: [product.product_id], missingFields: scenario.additive ? ['additional'] : [] }) } as never });
+    try {
+      auto.start({ requestId: 'synthetic-auto', materialId: material.envelope.materialId, source, datasetId: product.dataset_id },
+        { operatorId: 'synthetic-operator', requestId: 'synthetic-auto', observedAt: 0,
+          method: 'POST', path: '/r1/auto/start', remoteAddress: '127.0.0.1' });
+      const view = await auto.advance('synthetic-auto');
+      if (scenario.sameSource) {
+        assert.equal(view.error?.message, processingReached, `${scenario.name}: ${JSON.stringify(view)}`);
+        assert.equal(view.definitionAction, 'reuse_same_definition');
+      } else {
+        assert.equal(view.error?.code, 'G5_CROSS_SOURCE_EVIDENCE_REQUIRED', `${scenario.name}: ${JSON.stringify(view)}`);
+        assert.equal(view.state, 'blocked');
+        assert.deepEqual(view.planIds, []);
+      }
+    } finally { await auto.dispose(); database.close(); }
+  }
+});
 
 test('automatic HTTP intake preserves real machine return, five steps, publication, fixed read, and idempotence', { skip: !enabled }, async () => {
   const fixture = createFullChainFixture({ name: 'r1-auto-happy', machine: true });

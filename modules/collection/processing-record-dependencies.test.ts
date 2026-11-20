@@ -16,6 +16,17 @@ test('record edges require exact persisted identities and never leak extended re
   parsed.financial_evidence.lineage[0].source.record = { ...ref, values: { private: 'UNIQUE_SECRET' } };
   assert.deepEqual(parsedRecordDependencies(parsed, calculation), [{ parsedBusinessKey: 'out1', sourceRecordRef: ref }]);
   assert.equal(JSON.stringify(parsedRecordDependencies(parsed, calculation)).includes('UNIQUE_SECRET'), false);
+
+  // cas-primary-statements/2 must preserve the exact same 1-to-1 source lineage
+  const v2 = fixture();
+  v2.parsed.financial_evidence.mappingVersion = 'cas-primary-statements/2';
+  v2.parsed.financial_evidence.lineage[0].source.mapping = 'cas-primary-statements/2';
+  assert.deepEqual(
+    parsedRecordDependencies(v2.parsed, { ...v2.calculation, mappingProfile: 'cas-primary-statements/2' }),
+    [{ parsedBusinessKey: 'out1', sourceRecordRef: ref }],
+  );
+  // Mismatched mappingProfile between calculation and evidence must still return null
+  assert.equal(parsedRecordDependencies(v2.parsed, v2.calculation), null);
 });
 test('missing or inconsistent evidence is unknown, not guessed from keys or concepts', () => {
   for (const mutate of [

@@ -67,6 +67,7 @@ export interface CandidateTablePlan {
   types?: Record<string, 'string' | 'safe_integer' | 'decimal_string' | 'boolean' | 'binary64_hex'>;
   trim?: string[]; emptyToNull?: string[];
   annotations?: Record<string, string | number | boolean | null>;
+  dictionaryMappings?: Record<string, CandidateDictionaryMapping>;
 }
 /** 一个原值单元格的受管证据；original 永不因清洗或类型转换被覆盖。 */
 export interface CandidateCellEvidence {
@@ -334,10 +335,91 @@ export function structureCandidateTable(cleaned: CleanedCandidateTable | ParsedC
     type_change_window_limit: changeWindowLimit, type_changes_truncated: typeChangesTotal > typeChanges.length };
 }
 
-/** 标注步骤：只加入不与原列重名的明确常量，不覆盖原值。 */
-export function annotateCandidateTable(structured: StructuredCandidateTable, annotations?: Record<string, string | number | boolean | null>): AnnotatedCandidateTable {
+export interface CandidateDictionaryMapping {
+  sourceColumn: string;
+  dictionaryId: string;
+  version: string;
+  entries: Record<string, string | number | boolean | null>;
+  unmappedPolicy?: 'null' | 'fail';
+}
+export function readCandidateDictionaryMappings(value: unknown): Record<string, CandidateDictionaryMapping> {
+  const keys = ['sourceColumn', 'dictionaryId', 'version', 'entries', 'unmappedPolicy'];
+  const validText = (text: unknown) => typeof text === 'string' && !!text.trim() && text.length <= 256 && !/[\u0000-\u001f]/u.test(text);
+  if (!isWfdRecord(value) || Object.keys(value).length > CANDIDATE_LIMITS.maxFields)
+    return fail('CANDIDATE_DICTIONARY_MAPPING', '受控字典映射须为有界的目标列对象。');
+  for (const [target, spec] of Object.entries(value)) {
+    if (!validText(target) || !isWfdRecord(spec) || Object.keys(spec).some(key => !keys.includes(key))
+      || !validText(spec.sourceColumn) || !validText(spec.dictionaryId) || !validText(spec.version)
+      || !isWfdRecord(spec.entries) || !Object.values(spec.entries).every(scalar)
+      || (spec.unmappedPolicy !== undefined && spec.unmappedPolicy !== 'null' && spec.unmappedPolicy !== 'fail'))
+      fail('CANDIDATE_DICTIONARY_MAPPING', `受控字典 ${target} 须声明源列、字典标识和版本、标量条目及可选未匹配策略。`);
+  }
+  return value as Record<string, CandidateDictionaryMapping>;
+}
+/** 标注步骤：加入不与原列重名的明确常量与可选受控字典映射列，不覆盖原值。 */
+export function annotateCandidateTable(
+  structured: StructuredCandidateTable,
+  annotations?: Record<string, string | number | boolean | null>,
+  dictionaryMappings?: Record<string, CandidateDictionaryMapping>,
+): AnnotatedCandidateTable {
   const applied = annotations ?? structured.annotations;
-  return { ...structured, kind: 'annotated-table', annotations: { ...applied }, fields: [...structured.columns, ...Object.keys(applied)] };
+  const annotationFields = Object.keys(applied);
+  const mappings = dictionaryMappings === undefined ? {} : readCandidateDictionaryMappings(dictionaryMappings);
+  const extraCols = Object.keys(mappings);
+  if (structured.columns.length + annotationFields.length + extraCols.length > CANDIDATE_LIMITS.maxFields) {
+    fail('CANDIDATE_FIELDS_LIMIT', `原列、常量列和受控字典派生列合计不得超过 ${CANDIDATE_LIMITS.maxFields} 列。`);
+  }
+  if (!extraCols.length) {
+    return { ...structured, kind: 'annotated-table', annotations: { ...applied }, fields: [...structured.columns, ...annotationFields] };
+  }
+  const specs: { targetCol: string; sourceIndex: number; spec: CandidateDictionaryMapping }[] = [];
+  for (const [targetCol, spec] of Object.entries(mappings)) {
+    if (structured.columns.includes(targetCol) || Object.hasOwn(applied, targetCol)) {
+      fail('CANDIDATE_DICTIONARY_MAPPING', `受控字典映射目标列 ${targetCol} 非法或与已有列/常量冲突。`);
+    }
+    const sourceIndex = structured.columns.indexOf(spec.sourceColumn);
+    if (sourceIndex < 0) {
+      fail('CANDIDATE_DICTIONARY_MAPPING', `受控字典映射引用了不存在的源列 ${spec.sourceColumn}。`);
+    }
+    specs.push({ targetCol, sourceIndex, spec });
+  }
+  const rows = structured.rows.map((row, rowIndex) => {
+    const derivedCells: CandidateCellEvidence[] = specs.map(({ targetCol, sourceIndex, spec }) => {
+      const src = row[sourceIndex]!;
+      const rawKey = src.value === null ? null : String(src.value);
+      let mapped: string | number | boolean | null;
+      if (rawKey !== null && Object.hasOwn(spec.entries, rawKey)) {
+        mapped = spec.entries[rawKey]!;
+      } else if ((spec.unmappedPolicy ?? 'fail') === 'null') {
+        mapped = null;
+      } else {
+        return fail('CANDIDATE_DICTIONARY_UNMAPPED', `第 ${rowIndex + 1} 行列 ${spec.sourceColumn} 的原值 ${String(rawKey)} 未在受控字典 ${spec.dictionaryId}@${spec.version} 中登记（目标列 ${targetCol}）。`);
+      }
+      return {
+        original: src.original,
+        value: mapped,
+        sourceType: src.sourceType,
+        quote: src.quote,
+        location: src.location,
+        conversion: {
+          source: spec.sourceColumn,
+          target: targetCol,
+          factor: `${spec.dictionaryId}@${spec.version}`,
+          basis: 'controlled_dictionary_mapping',
+        },
+      };
+    });
+    return [...row, ...derivedCells];
+  });
+  const columns = [...structured.columns, ...extraCols];
+  return {
+    ...structured,
+    kind: 'annotated-table',
+    columns,
+    rows,
+    annotations: { ...applied },
+    fields: [...columns, ...annotationFields],
+  };
 }
 
 /**

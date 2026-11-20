@@ -49,11 +49,16 @@ SEMANTIC = {
     "market": "wfd.foundation.market.identity",
     "region": "wfd.foundation.region.identity",
     "physical_object": "wfd.foundation.physical_object.identity",
+    "commodity": "wfd.foundation.commodity.profile",
     "name_claim": "wfd.foundation.entity.name_claim",
     "issuer_relation": "wfd.foundation.relation.issuer",
     "listing_relation": "wfd.foundation.relation.listing",
     "industry_relation": "wfd.foundation.relation.industry",
     "physical_relation": "wfd.foundation.relation.physical",
+    "theme_relation": "wfd.foundation.relation.theme",
+    "supply_chain_relation": "wfd.foundation.relation.supply_chain",
+    "geo_trade_relation": "wfd.foundation.relation.geo_trade",
+    "policy_access_relation": "wfd.foundation.relation.policy_access",
     "calendar": "wfd.foundation.calendar.trading_days",
     "unit": "wfd.foundation.unit.catalogue",
     "metric_binding": "wfd.foundation.unit.metric_binding",
@@ -66,6 +71,58 @@ RELATION_SHAPES = {
     "classified_as": ("entity", "definition"),
     "operated_by": ("physical_object", "entity"),
     "same_issuer": ("instrument", "instrument"),
+    # C07-B1: industry & theme hierarchy, membership, cross-market & commodity-industry mapping
+    "parent_theme_of": ("definition", "definition"),
+    "member_of_theme": ("entity", "definition"),
+    "cross_market_theme_map": ("definition", "definition"),
+    "commodity_industry_map": ("product", "definition"),
+    # C07-B2: enterprise supply chain, products, materials, counterparties & facility ownership
+    "chain_upstream_of": ("definition", "definition"),
+    "positioned_in_chain": ("entity", "definition"),
+    "produces_product": ("entity", "product"),
+    "consumes_material": ("entity", "product"),
+    "supplies_to": ("entity", "entity"),
+    "purchases_from": ("entity", "entity"),
+    "owned_by": ("physical_object", "entity"),
+    "competes_with": ("entity", "entity"),
+    # C07-B3: global geography, process conversion, bilateral trade projection, logistics & market access
+    "located_in": ("physical_object", "region"),
+    "entity_located_in": ("entity", "region"),
+    "process_input_to": ("product", "product"),
+    "trade_flow_projection": ("region", "region"),
+    "logistics_connected_via": ("physical_object", "physical_object"),
+    "subject_to_market_access": ("physical_object", "region"),
+    "conditionally_substitutable_by": ("product", "product"),
+}
+
+COMPLETE_SNAPSHOT_ALLOWED_RELATIONS = {
+    "classified_as",
+    "member_of_theme",
+    "parent_theme_of",
+    "cross_market_theme_map",
+    "commodity_industry_map",
+}
+
+NON_COMPLETE_RELATION_TYPES = {
+    "trade_flow_projection",
+    "supplies_to",
+    "purchases_from",
+    "competes_with",
+    "logistics_connected_via",
+    "process_input_to",
+    "conditionally_substitutable_by",
+}
+
+COMMODITY_STAGES = {"raw_material", "intermediate", "finished_good"}
+COMMODITY_QUANTITY_BASES = {
+    "net_weight", "dry_weight", "wet_weight", "metal_content",
+    "carcass_weight", "shipped_weight", "head_count", "gross_weight",
+    "volume", "energy", "count",
+}
+COMMODITY_MAPPING_QUALITIES = {"exact", "broader_narrower", "partial_overlap", "pending_review"}
+REGION_KINDS = {
+    "country_or_region", "state_or_province", "customs_statistical_area",
+    "regional_bloc", "facility_zone",
 }
 
 UNIT_DIMENSIONS = {"money", "quantity", "money_per_share", "ratio", "ordinal", "number", "text", "identifier"}
@@ -97,7 +154,17 @@ LISTING_FIELDS = [
     _field("evidence_label"), _field("source_file"), _field("source_line"),
 ]
 MARKET_FIELDS = [_field("code"), _field("name"), _field("region_id"), _field("evidence_label")]
-REGION_FIELDS = [_field("code"), _field("name"), _field("evidence_label")]
+REGION_FIELDS = [
+    _field("code"), _field("name"), _field("region_kind"), _field("parent_region_id"),
+    _field("statistical_scheme"), _field("evidence_label"),
+]
+COMMODITY_FIELDS = [
+    _field("name"), _field("chain_position"), _field("stage_code"),
+    _field("form_grade"), _field("quantity_basis"), _field("external_scheme"),
+    _field("external_version"), _field("external_code"), _field("mapping_quality"),
+    _field("process_route"), _field("input_coefficient"), _field("yield_rate"),
+    _field("observed_at"), _field("evidence_label"), _field("source_file"),
+]
 PHYSICAL_FIELDS = [
     _field("name"), _field("object_type"), _field("region_id"), _field("region_status"),
     _field("object_scope"), _field("operator_scope"), _field("scope_note"),
@@ -280,6 +347,28 @@ def validate_pack(pack):
             if ident in ids:
                 raise FoundationInputError(f"DUPLICATE_ID:{ident}")
             ids[ident] = singular[kind]
+    commodities = pack.get("commodities", [])
+    if not isinstance(commodities, list):
+        raise FoundationInputError("PACK_LIST_INVALID:commodities")
+    data["commodities"] = commodities
+    for item in commodities:
+        ident = item.get("id")
+        if not isinstance(ident, str) or not ident:
+            raise FoundationInputError("commodities: missing id")
+        if ident in ids:
+            raise FoundationInputError(f"DUPLICATE_ID:{ident}")
+        if item.get("chain_position") not in COMMODITY_STAGES:
+            raise FoundationInputError("COMMODITY_STAGE_INVALID:" + ident)
+        if item.get("quantity_basis") not in COMMODITY_QUANTITY_BASES:
+            raise FoundationInputError("COMMODITY_QUANTITY_BASIS_INVALID:" + ident)
+        if item.get("mapping_quality") not in {None, ""} and item.get("mapping_quality") not in COMMODITY_MAPPING_QUALITIES:
+            raise FoundationInputError("COMMODITY_MAPPING_QUALITY_INVALID:" + ident)
+        ids[ident] = "product"
+    for region in data["regions"]:
+        if region.get("region_kind") not in {None, ""} and region.get("region_kind") not in REGION_KINDS:
+            raise FoundationInputError("REGION_KIND_INVALID:" + str(region.get("id")))
+        if region.get("parent_region_id") not in {None, ""} and ids.get(region.get("parent_region_id")) != "region":
+            raise FoundationInputError("REGION_PARENT_KIND_MISMATCH:" + str(region.get("id")))
     for entity in data["entities"]:
         if entity.get("region_id") not in {None, ""} and ids.get(entity["region_id"]) != "region":
             raise FoundationInputError("ENTITY_REGION_KIND_MISMATCH:" + str(entity.get("id")))
@@ -306,12 +395,15 @@ def validate_pack(pack):
         if rtype not in RELATION_SHAPES:
             raise FoundationInputError("RELATION_TYPE_UNSUPPORTED:" + str(rtype))
         want_subject, want_object = RELATION_SHAPES[rtype]
-        if subject.get("kind") != want_subject or ids.get(subject.get("id")) != want_subject:
+        if subject.get("kind") != want_subject or (want_subject != "definition" and ids.get(subject.get("id")) != want_subject):
             raise FoundationInputError("RELATION_SUBJECT_KIND_MISMATCH:" + str(relation.get("id")))
         if obj.get("kind") != want_object:
             raise FoundationInputError("RELATION_OBJECT_KIND_MISMATCH:" + str(relation.get("id")))
         if want_object != "definition" and ids.get(obj.get("id")) != want_object:
             raise FoundationInputError("RELATION_OBJECT_KIND_MISMATCH:" + str(relation.get("id")))
+        if (relation.get("set_completeness") == "complete"
+                or relation.get("set_absence_means") == "explicitly_absent") and rtype not in COMPLETE_SNAPSHOT_ALLOWED_RELATIONS:
+            raise FoundationInputError("TRADE_OR_SUPPLY_RELATION_CANNOT_CLAIM_COMPLETE_SNAPSHOT:" + str(relation.get("id")))
         set_id = relation.get("set_id")
         if not isinstance(set_id, str) or not set_id:
             raise FoundationInputError("RELATION_SET_REQUIRED:" + str(relation.get("id")))
@@ -479,6 +571,9 @@ def build_identity_outputs(pack, evidence):
     for region in pack["regions"]:
         labels = region.get("evidence_labels") or []
         row = _row({"code": region.get("code"), "name": region.get("name"),
+                    "region_kind": region.get("region_kind"),
+                    "parent_region_id": region.get("parent_region_id"),
+                    "statistical_scheme": region.get("statistical_scheme"),
                     "evidence_label": ",".join(labels)},
                    subject=_subject("region", region["id"]), observation_time=day_time(pack["observed_at"]),
                    business_key="region_identity_" + region["id"])
@@ -486,6 +581,30 @@ def build_identity_outputs(pack, evidence):
         outputs.append(_output("region_" + region["id"], _subject("region", region["id"]),
                                declaration, [row], _ev(evidence, labels),
                                _coverage({"object": region["id"]}, "partial", _ev(evidence, labels))))
+    for commodity in pack.get("commodities", []):
+        labels = commodity.get("evidence_labels") or []
+        row = _row({
+            "name": commodity.get("name"), "chain_position": commodity.get("chain_position"),
+            "stage_code": commodity.get("stage_code"), "form_grade": commodity.get("form_grade"),
+            "quantity_basis": commodity.get("quantity_basis"),
+            "external_scheme": commodity.get("external_scheme"),
+            "external_version": commodity.get("external_version"),
+            "external_code": commodity.get("external_code"),
+            "mapping_quality": commodity.get("mapping_quality"),
+            "process_route": commodity.get("process_route"),
+            "input_coefficient": commodity.get("input_coefficient"),
+            "yield_rate": commodity.get("yield_rate"),
+            "observed_at": commodity.get("observed_at", pack["observed_at"]),
+            "evidence_label": ",".join(labels), "source_file": commodity.get("source_file"),
+        }, subject=_subject("product", commodity["id"]),
+           observation_time=day_time(commodity.get("observed_at", pack["observed_at"])),
+           business_key="commodity_profile_" + commodity["id"])
+        declaration = _declaration(SEMANTIC["commodity"], COMMODITY_FIELDS, "wfd.p2.identity", "identity")
+        outputs.append(_output("commodity_" + commodity["id"], _subject("product", commodity["id"]),
+                               declaration, [row], _ev(evidence, labels),
+                               _coverage({"object": commodity["id"], "stage": commodity.get("stage_code"),
+                                          "quantity_basis": commodity.get("quantity_basis")},
+                                         "partial", _ev(evidence, labels))))
     for obj in pack["physical_objects"]:
         labels = obj.get("evidence_labels") or []
         row = _row({
@@ -537,7 +656,27 @@ def build_relation_outputs(pack, evidence):
                     "listed_on": SEMANTIC["listing_relation"],
                     "classified_as": SEMANTIC["industry_relation"],
                     "operated_by": SEMANTIC["physical_relation"],
-                    "same_issuer": SEMANTIC["issuer_relation"]}.get(rtype, SEMANTIC["issuer_relation"])
+                    "owned_by": SEMANTIC["physical_relation"],
+                    "same_issuer": SEMANTIC["issuer_relation"],
+                    "parent_theme_of": SEMANTIC["theme_relation"],
+                    "member_of_theme": SEMANTIC["theme_relation"],
+                    "cross_market_theme_map": SEMANTIC["theme_relation"],
+                    "commodity_industry_map": SEMANTIC["theme_relation"],
+                    "chain_upstream_of": SEMANTIC["supply_chain_relation"],
+                    "positioned_in_chain": SEMANTIC["supply_chain_relation"],
+                    "produces_product": SEMANTIC["supply_chain_relation"],
+                    "consumes_material": SEMANTIC["supply_chain_relation"],
+                    "supplies_to": SEMANTIC["supply_chain_relation"],
+                    "purchases_from": SEMANTIC["supply_chain_relation"],
+                    "competes_with": SEMANTIC["supply_chain_relation"],
+                    "located_in": SEMANTIC["geo_trade_relation"],
+                    "entity_located_in": SEMANTIC["geo_trade_relation"],
+                    "process_input_to": SEMANTIC["geo_trade_relation"],
+                    "trade_flow_projection": SEMANTIC["geo_trade_relation"],
+                    "logistics_connected_via": SEMANTIC["geo_trade_relation"],
+                    "subject_to_market_access": SEMANTIC["policy_access_relation"],
+                    "conditionally_substitutable_by": SEMANTIC["supply_chain_relation"]}.get(
+                        rtype, SEMANTIC["issuer_relation"])
         fields = RELATION_FIELDS
         declaration = _declaration(semantic, fields, relations[0].get("definition_authority", "wfd.p2.relations"),
                                    "validity")
@@ -572,11 +711,13 @@ def build_relation_outputs(pack, evidence):
             })
         completeness = relations[0].get("set_completeness", "unknown")
         absence = relations[0].get("set_absence_means", "unknown")
+        is_complete = completeness == "complete"
         outputs.append(_output("relation_" + set_id, _subject("region", pack["regions"][0]["id"]),
                                declaration, rows, _ev(evidence, sorted(labels)),
-                               _coverage({"set_id": set_id, "members": len(rows)},
+                               _coverage({"product": "relation_" + set_id} if is_complete else {"set_id": set_id, "members": len(rows)},
                                          completeness, _ev(evidence, sorted(labels)), absence,
-                                         "observed_partial" if completeness != "complete" else "declared_full")))
+                                         "observed_partial" if not is_complete else "declared_full"),
+                               input_mode="complete_snapshot" if is_complete else "partial_observation"))
     return outputs
 
 

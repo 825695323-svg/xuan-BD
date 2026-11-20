@@ -300,19 +300,30 @@ const autoForm = autoPanel + ' > form';
 const autoCurrent = autoPanel + ' > div.r1-material';
 const batchPanel = 'section[aria-label="多文件批量交接"]';
 const readerPanel = 'section[aria-label="WFD 持久数据查询"]';
+const readerResult = readerPanel + ' [aria-label="WFD 实际读取结果"]';
 async function fill(browser: Browser, scope: string, label: string, value: string) {
   await browser.evaluate(`(()=>{const root=document.querySelector(${literal(scope)});
     const label=[...root.querySelectorAll('label')].find(e=>e.firstChild?.textContent===${literal(label)});
     if(!label)throw new Error('Missing visible label: '+${literal(label)});
-    const e=label.querySelector('input,select,textarea');if(!e||e.disabled)throw new Error('Input unavailable');
+    const e=label.querySelector('input,select,textarea');if(!e||e.disabled||(root.matches(${literal(readerPanel)})&&(!e.checkVisibility()||e.closest('details:not([open])'))))throw new Error('Input unavailable');
     const type=e.tagName==='SELECT'?HTMLSelectElement:e.tagName==='TEXTAREA'?HTMLTextAreaElement:HTMLInputElement;
     Object.getOwnPropertyDescriptor(type.prototype,'value').set.call(e,${literal(value)});
     e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));})()`);
 }
 async function click(browser: Browser, scope: string, text: string) {
-  const expression = `[...document.querySelector(${literal(scope)}).querySelectorAll('button')].find(e=>e.textContent.trim()===${literal(text)}&&!e.disabled)`;
+  const readerVisibility = scope === readerPanel ? "&&e.checkVisibility()&&!e.closest('details:not([open])')" : '';
+  const expression = `[...document.querySelector(${literal(scope)}).querySelectorAll('button')].find(e=>e.textContent.trim()===${literal(text)}&&!e.disabled${readerVisibility})`;
   await browser.until(`!!(${expression})`, '页面按钮尚不可用：' + text);
   await browser.evaluate(`(${expression}).click()`);
+}
+async function readerDisclosure(browser: Browser, label: string, open: boolean) {
+  await browser.evaluate(`(()=>{
+    const summary=[...document.querySelector(${literal(readerPanel)}).querySelectorAll('details > summary')].find(e=>
+      (e.firstElementChild?.innerText||e.innerText.trim())===${literal(label)}&&e.checkVisibility()&&!e.parentElement.parentElement.closest('details:not([open])'));
+    if(!summary)throw Error('Unavailable reader disclosure '+${literal(label)});
+    if(summary.parentElement.open!==${open})summary.click();
+    if(summary.parentElement.open!==${open})throw Error('Reader disclosure did not change '+${literal(label)});
+  })()`);
 }
 async function checkbox(browser: Browser, scope: string, prefix: string) {
   const expression = `[...document.querySelector(${literal(scope)}).querySelectorAll('label')].find(e=>e.textContent.startsWith(${literal(prefix)}))?.querySelector('input[type=checkbox]')`;
@@ -397,28 +408,54 @@ async function startSingleFromPage(browser: Browser, host: FullChainHost, item: 
   return { materialId, view: await browserSettled(host, await browser.evaluate<string>(idExpression)) };
 }
 async function readFromPage(browser: Browser, host: FullChainHost, snapshotId: string, productId: string, fields: string[], screenshotPath?: string) {
-  await fill(browser, readerPanel, '固定快照编号', snapshotId); await click(browser, readerPanel, '发现快照中的产品');
-  await browser.until(`document.querySelector(${literal(readerPanel)})?.getAttribute('aria-busy')==='false'&&!!document.querySelector(${literal(readerPanel)}+' select')`, '页面固定发现尚未完成');
+  await browser.click('查询固定快照');
+  await readerDisclosure(browser, '按快照编号查询', true);
+  await fill(browser, readerPanel, '快照编号', snapshotId);
+  await click(browser, readerPanel, '查询此快照');
+  await browser.until(`document.querySelector(${literal(readerPanel)})?.getAttribute('aria-busy')==='false'&&!!document.querySelector(${literal(readerPanel + ' [data-source="explicit"]')})`, '页面固定发现尚未完成');
+  await readerDisclosure(browser, '按快照编号查询', false);
   const discovery = await host.call('/r1/products/discover', { snapshotId });
   const selection = discovery.selections.find((item: Json) => item.productId === productId); assert.ok(selection);
-  await fill(browser, readerPanel, '快照中的产品', productId);
-  for (const field of selection.fields) await browser.evaluate(`(()=>{const group=[...document.querySelector(${literal(readerPanel)}).querySelectorAll('fieldset')].find(e=>e.querySelector('legend')?.textContent==='选择读取字段');
-    const checkbox=[...group.querySelectorAll('label')].find(e=>e.querySelector('span')?.title===${literal(field)})?.querySelector('input');if(!checkbox)throw new Error('Discovered field absent');
-    if(checkbox.checked!==${fields.includes(field)})checkbox.click();})()`);
-  await click(browser, readerPanel, '读取持久数据');
-  await browser.until(`document.querySelector(${literal(readerPanel)})?.getAttribute('aria-busy')==='false'&&!!document.querySelector(${literal(readerPanel)}+' [aria-label="WFD 实际读取结果"] table')`, '网页没有返回真实WFD数据', 60_000);
+  await fill(browser, readerPanel, '产品', productId);
+  await readerDisclosure(browser, '选择显示字段', true);
+  const fieldset = literal(readerPanel + ' details[open] fieldset[aria-label="选择显示字段"]');
+  for (const [index, field] of selection.fields.entries()) {
+    const originalLabel = String(field).startsWith('src_') ? Buffer.from(field.slice(4), 'base64url').toString('utf8') : '';
+    await browser.evaluate(`(()=>{
+      const label=document.querySelector(${fieldset}).querySelectorAll('label')[${index}];
+      const checkbox=label?.querySelector('input[type=checkbox]');
+      if(!checkbox?.checkVisibility()||checkbox.disabled)throw Error('Discovered field absent');
+      if(${literal(originalLabel)}&&label.innerText.trim()!==${literal(originalLabel)})throw Error('Original column label was not rendered');
+      if(checkbox.checked!==${fields.includes(field)})checkbox.click();
+    })()`);
+  }
+  await readerDisclosure(browser, '选择显示字段', false);
+  await click(browser, readerPanel, '查看数据');
+  await browser.until(`document.querySelector(${literal(readerPanel)})?.getAttribute('aria-busy')==='false'&&!!document.querySelector(${literal(readerResult + ' table')})`, '网页没有返回真实WFD数据', 60_000);
   const pages: Json[] = [];
+  const stateLabels: Record<string, string> = { reported_zero: '报告为零', unknown: '未知', not_applicable: '不适用', missing_unknown: '缺失，原因未知', not_disclosed: '未披露' };
   for (;;) {
-    const page = await browser.evaluate<Json>(`(()=>{const root=document.querySelector(${literal(readerPanel)}+' [aria-label="WFD 实际读取结果"]');return JSON.parse(root.querySelector('details:last-child pre').textContent);})()`);
+    if (!pages.length && screenshotPath) await screenshot(browser, screenshotPath, readerPanel);
+    await readerDisclosure(browser, '读取详情', true);
+    await readerDisclosure(browser, '本页原始结果', true);
+    const page = await browser.evaluate<Json>(`JSON.parse(document.querySelector(${literal(readerPanel + ' .r1-read-details[open] details[open] > pre')}).innerText)`);
+    await readerDisclosure(browser, '本页原始结果', false);
+    await readerDisclosure(browser, '读取详情', false);
     assert.equal(page.snapshot_id, snapshotId); assert.equal(page.product_id, productId); assert.equal(page.history_mode, 'snapshot_contents');
     assert.deepEqual(page.fields, [...fields].sort());
-    const rendered = await browser.evaluate<string[]>(`[...document.querySelector(${literal(readerPanel)}+' table').querySelectorAll('tbody tr')].map(e=>e.innerText)`);
+    const rendered = await browser.evaluate<string[][]>(`[...document.querySelectorAll(${literal(readerResult + ' tbody tr')})].map(row=>[...row.cells].map(cell=>cell.innerText))`);
     assert.equal(rendered.length, page.rows.length);
-    if (page.rows.length) assert.ok(Object.values(page.rows[0].values).every((cell: any) => rendered[0]!.includes(cell.value === null ? cell.value_state : String(cell.value))));
-    if (!pages.length && screenshotPath) await screenshot(browser, screenshotPath, readerPanel);
+    if (page.rows.length) for (const [index, field] of page.fields.entries()) {
+      const cell = page.rows[0].values[field], text = rendered[0]![index + 1]!;
+      if (cell.value_state !== 'valid_value') assert.ok(text.includes(stateLabels[cell.value_state] ?? '不支持的状态'));
+      if (cell.value !== null && ['valid_value', 'reported_zero'].includes(cell.value_state)) {
+        const value = typeof cell.value === 'boolean' ? cell.value ? '是' : '否' : cell.value === '' ? '空文本' : String(cell.value);
+        assert.ok(text.includes(value));
+      }
+    }
     pages.push(page); if (!page.page.has_more) break;
     await click(browser, readerPanel, '下一页');
-    await browser.until(`document.querySelector(${literal(readerPanel)})?.getAttribute('aria-busy')==='false'&&document.querySelector(${literal(readerPanel)}+' [aria-label="WFD 实际读取结果"]')?.textContent.includes(${literal('第 ')}+${pages.length + 1}+' 页')`, '网页未沿原固定游标翻页', 60_000);
+    await browser.until(`document.querySelector(${literal(readerPanel)})?.getAttribute('aria-busy')==='false'&&document.querySelector(${literal(readerResult)})?.innerText.includes(${literal('第 ')}+${pages.length + 1}+' 页')`, '网页未沿原固定游标翻页', 60_000);
   }
   return { pages, rows: pages.flatMap(page => page.rows) as Json[] };
 }

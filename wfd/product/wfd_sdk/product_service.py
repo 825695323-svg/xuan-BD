@@ -1276,11 +1276,20 @@ class WFDProductService:
                 scoped = set(scope_keys)
             else:
                 scoped = None
-            unsupported_scope = set(scope) - {"product", "business_keys"}
+            allowed_scope = {"product", "business_keys"}
+            unsupported_scope = set(scope) - allowed_scope
             if unsupported_scope:
                 raise ValueError("SCOPE_UNSUPPORTED:" + sorted(unsupported_scope)[0])
             existing = {key: items[0] for key, items in leaves.items()
                         if len(items) == 1 and (scoped is None or key in scoped)}
+            if out["payload"].get("kind") == "relation_edges":
+                relation_rows = [*out["payload"].get("rows", []),
+                                 *(item["row"] for item in existing.values())]
+                for row in relation_rows:
+                    rtype = row.get("relation_type")
+                    if rtype not in {"classified_as", "member_of_theme", "parent_theme_of",
+                                     "cross_market_theme_map", "commodity_industry_map", "listed_as"}:
+                        raise ValueError("RELATION_COMPLETE_SNAPSHOT_UNSUPPORTED:" + str(rtype))
             missing = sorted(set(existing) - logical_keys)
             for row in list(physical["payload"]["rows"]):
                 logical = row[key_field]
@@ -3178,7 +3187,10 @@ class WFDProductService:
         self.require_permission("read")
         result = self._discover_products(snapshot_id=snapshot_id, subject=subject)
         self._authorize_sources(result.get("source_ids", []))
+        published_sources = result.pop("published_source_ids_by_product")
         result["products"] = [self._public_product(product) for product in result.get("products", [])]
+        for product in result["products"]:
+            product["published_source_ids"] = published_sources[product["product_id"]]
         result["public_projection"] = self._public_projection_metadata(
             result.get("products", []), result.get("source_ids", []))
         result.pop("source_ids_by_product", None)
@@ -3191,6 +3203,7 @@ class WFDProductService:
         products = {}
         source_ids = set()
         source_ids_by_product = {}
+        published_source_ids_by_product = {}
         for entry in snapshot["files"]:
             binding = entry["source_bundle"].get("_wfd_product_bindings", {}).get(entry["output_key"])
             if not binding or binding["product"]["product_id"] != entry["product_id"]:
@@ -3218,11 +3231,17 @@ class WFDProductService:
                 ids.update(admission.get("input_source_ids", []))
                 if lineage:
                     ids.update(lineage.get("input_source_ids", []))
+                direct = (binding.get("source_admission") or {}).get("source_ids")
+                published = direct or self._source_ids(entry.get("source_bundle", {}))
+                ids.update(published)
                 source_ids.update(ids)
                 source_ids_by_product.setdefault(product["product_id"], set()).update(ids)
+                published_source_ids_by_product.setdefault(product["product_id"], set()).update(published)
         return {"snapshot_id": snapshot_id, "products": list(products.values()),
                 "source_ids": sorted(source_ids),
-                "source_ids_by_product": {key: sorted(value) for key, value in source_ids_by_product.items()}}
+                "source_ids_by_product": {key: sorted(value) for key, value in source_ids_by_product.items()},
+                "published_source_ids_by_product": {
+                    key: sorted(value) for key, value in published_source_ids_by_product.items()}}
 
     def _derived_stale_basis(self, lineage, snapshot):
         """Expose fixed lineage impact evidence; P4 owns the stale decision."""

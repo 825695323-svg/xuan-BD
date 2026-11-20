@@ -24,7 +24,7 @@ import { declaredSourceSeries } from './r1-evidence.js';
 import type { R1Runtime } from './r1-runtime.js';
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import { R1_WORKSPACE_RUNTIME, type R1WorkspaceService } from './r1-workspace.js';
-import { profileFingerprint, sourceFieldProfileDigest, type SourceFieldProfileStore } from './source-field-profile.js';
+import { assertCrossSourceProductAdmission, profileFingerprint, sourceFieldProfileDigest, type SourceFieldProfileStore } from './source-field-profile.js';
 
 export const R1_SOURCE_MINUTE_MODE = 'source_minute_bulk_v1' as const;
 export const R1_TABULAR_BULK_MODE = 'tabular_bulk_v1' as const;
@@ -279,6 +279,11 @@ export class R1TabularBulkService {
       if (!profile || input.sourceValueColumns && (profile.profile.columns.length !== input.sourceValueColumns.length
         || profile.profile.columns.some(column => !input.sourceValueColumns!.includes(column.originalHeader))))
         return fail('PROFILE', '来源与系列须引用已审核的表格档案，显式选列须完整对应档案。');
+      if ('sourceFieldProfile' in profile.profile) {
+        const sourceProfile = profile.profile.sourceFieldProfile.profile;
+        const peers = this.options.profileStore.list().filter(peer => peer.sourceId !== sourceProfile.sourceId && peer.series === series);
+        if (peers.length) assertCrossSourceProductAdmission(sourceProfile, peers);
+      }
       return materialId => freezeTabularBulkPlan({ ...base, profile, materialId, targetIdentity,
         ...(input.partitionValue !== undefined ? { partitionValue: input.partitionValue } : {}) });
     }
@@ -286,6 +291,8 @@ export class R1TabularBulkService {
     if (!profile || profile.series !== series || profile.fields.length !== input.sourceValueColumns.length
       || profile.fields.some(field => !input.sourceValueColumns.includes(field.originalHeader)))
       return fail('PROFILE', '旧批量入口须引用匹配的已采用来源档案和完整原列。');
+    const peers = this.options.profileStore.list().filter(peer => peer.sourceId !== profile.sourceId && peer.series === series);
+    if (peers.length) assertCrossSourceProductAdmission(profile, peers);
     const frozen = { profile, digest: sourceFieldProfileDigest(profile), fingerprint: profileFingerprint(profile) };
     return materialId => freezeSourceMinuteBulkPlan({ ...base, profile: frozen, materialId,
       targetIdentity: { ...targetIdentity, sourceValueColumns: input.sourceValueColumns },

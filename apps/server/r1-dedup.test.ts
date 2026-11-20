@@ -25,11 +25,11 @@ async function settled(host:FullChainHost,id:string):Promise<R1AutoView>{
   }
   throw new Error('Automatic duplicate intake did not settle: '+JSON.stringify(await host.call('/r1/auto/'+id)));
 }
-async function ingest(host:FullChainHost,id:string,rows:[number,string][]):Promise<R1AutoView>{
+async function ingest(host:FullChainHost,id:string,rows:[number,string][],sourceId=source.source_id):Promise<R1AutoView>{
   const uploaded=await host.upload(id+'.csv','data',raw(rows),id+'-upload'),task=await host.settled(uploaded.jobId);
   assert.equal(task.status,'succeeded',JSON.stringify(task.error));
   const materialId=host.services.materials!.getByTask(task.id)!.envelope.materialId;
-  await host.call('/r1/auto/start',{requestId:id,materialId,source:{...source,source_id:id,requested_url:'https://fixture.example.test/'+id+'.csv'},datasetId:'dedup_observations'},202);
+  await host.call('/r1/auto/start',{requestId:id,materialId,source:{...source,source_id:sourceId,requested_url:'https://fixture.example.test/'+id+'.csv'},datasetId:'dedup_observations'},202);
   return settled(host,id);
 }
 
@@ -40,6 +40,12 @@ test('duplicate HTTP intake appends new rows first, skips identical rows, preser
     const first=results.first=await ingest(host,'dedup-first',[[2,'12.30'],[3,'13.40']]);
     assert.equal(first.state,'associated',JSON.stringify(first));assert.deepEqual(first.currentRequest!.rowSummary,{inserted:2,duplicate_skipped:0,conflict_pending:0});
     const original=(first.currentRequest!.local.associations as WfdRecord[])[0]!;
+    // A different source identity cannot use the existing product without G5 profile evidence.
+    const beforeCrossSource=await host.call('/r1/products/snapshot',{});
+    const crossSource=await ingest(host,'dedup-cross-source',[[4,'14.50']],'unprofiled-test-peer');
+    assert.equal(crossSource.state,'blocked',JSON.stringify(crossSource));
+    assert.equal(crossSource.error?.code,'G5_CROSS_SOURCE_EVIDENCE_REQUIRED');
+    assert.equal((await host.call('/r1/products/snapshot',{})).snapshotId,beforeCrossSource.snapshotId);
     const mixed=results.mixed=await ingest(host,'dedup-mixed',[[2,'12.30'],[3,'99.90'],[4,'14.50']]);
     assert.equal(mixed.state,'conflicts_pending',JSON.stringify(mixed));assert.equal(mixed.currentRequest!.state,'partially_associated');
     assert.deepEqual(mixed.currentRequest!.rowSummary,{inserted:1,duplicate_skipped:1,conflict_pending:1});

@@ -207,3 +207,40 @@ export function buildTabularBulkTarget(input: { profile: FrozenTabularBulkProfil
   validateDefinition(definition, table);
   return target;
 }
+
+/**
+ * §19.6 第 7 项：字段身份跨版本移植核对。
+ * 同一来源系列升版（新增列、调序或变更原表头别名）时，保留稳定 fieldCode 的语义身份；
+ * 若既有 fieldCode 的 dataType/unitCode/role 发生不兼容变更而未声明 supersedes 依据，则明确阻断。
+ */
+export function verifySourceFieldIdentityPortability(
+  previous: SourceFieldProfile,
+  next: SourceFieldProfile,
+): { preservedFieldCodes: string[]; addedFieldCodes: string[]; removedFieldCodes: string[]; reordered: boolean; requiresSupersedes: boolean } {
+  if (previous.sourceId !== next.sourceId || previous.series !== next.series) {
+    fail('字段身份跨版本移植仅适用于同一来源（sourceId）与系列（series）。');
+  }
+  const prevByCode = new Map(previous.fields.map(f => [f.fieldCode, f]));
+  const nextByCode = new Map(next.fields.map(f => [f.fieldCode, f]));
+  const preservedFieldCodes: string[] = [];
+  const incompatible: string[] = [];
+  for (const [fieldCode, oldField] of prevByCode.entries()) {
+    const newField = nextByCode.get(fieldCode);
+    if (!newField) continue;
+    preservedFieldCodes.push(fieldCode);
+    if (oldField.dataType !== newField.dataType || oldField.unitCode !== newField.unitCode || oldField.role !== newField.role) {
+      incompatible.push(`${fieldCode}（type:${oldField.dataType}->${newField.dataType}, unit:${oldField.unitCode}->${newField.unitCode}, role:${oldField.role}->${newField.role}）`);
+    }
+  }
+  const addedFieldCodes = next.fields.map(f => f.fieldCode).filter(c => !prevByCode.has(c));
+  const removedFieldCodes = previous.fields.map(f => f.fieldCode).filter(c => !nextByCode.has(c));
+  const requiresSupersedes = incompatible.length > 0 || removedFieldCodes.length > 0;
+  const hasExplicitSupersedes = Array.isArray(next.supersedes) && next.supersedes.some(entry => entry.profileId === previous.profileId);
+  if (requiresSupersedes && !hasExplicitSupersedes) {
+    fail(`字段身份发生不兼容变更或移除（${[...incompatible, ...removedFieldCodes.map(c => `removed:${c}`)].join('；')}），必须在 supersedes 中显式声明取代原档案 ${previous.profileId} 及依据。`);
+  }
+  const prevPreservedOrder = previous.fields.map(f => f.fieldCode).filter(c => nextByCode.has(c));
+  const nextPreservedOrder = next.fields.map(f => f.fieldCode).filter(c => prevByCode.has(c));
+  const reordered = canonicalWfdJson(prevPreservedOrder) !== canonicalWfdJson(nextPreservedOrder);
+  return { preservedFieldCodes, addedFieldCodes, removedFieldCodes, reordered, requiresSupersedes };
+}
