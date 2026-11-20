@@ -9,7 +9,30 @@ import { isExplicitUtcInstant } from '../../contracts/financial-value.js';
  * 原表头是来源原文，不是正式金融字段身份。不同供应商可映射到相同规范字段，
  * 只有有依据的映射才生效，不按列名相似自动合并，也不据档案改写原件。
  */
-export type SourceFieldRole = 'identity' | 'date' | 'minute' | 'value';
+export type SourceFieldRole = 'identity' | 'date' | 'minute' | 'value' | 'period' | 'dimension' | 'region' | 'commodity_stage' | 'relation';
+export type SourceDomainKind = 'market_series' | 'financial_statement' | 'geo_commodity' | 'bilateral_trade' | 'relation_claim';
+export type SourceQuantityBasis = 'net_weight' | 'dry_weight' | 'wet_weight' | 'metal_content' | 'carcass_weight'
+  | 'shipped_weight' | 'head_count' | 'gross_weight' | 'count' | 'money' | 'unknown';
+export type SourceValuationBasis = 'CIF' | 'FOB' | 'ex_works' | 'not_applicable' | 'unknown';
+export type SourcePeriodBasis = 'calendar_year' | 'fiscal_year' | 'month' | 'quarter' | 'day' | 'minute' | 'instant' | 'unknown';
+export type SourceMappingQuality = 'exact' | 'broader_narrower' | 'partial_overlap' | 'pending_review';
+export interface SourceCommodityClassification {
+  scheme: string;
+  version: string;
+  mappingQuality: SourceMappingQuality;
+}
+export interface SourceDomainScope {
+  domain: SourceDomainKind;
+  statisticalAreaScheme?: string;
+  commodityClassification?: SourceCommodityClassification;
+  processingStage?: string;
+  quantityBasis?: SourceQuantityBasis;
+  valuationBasis?: SourceValuationBasis;
+  periodBasis?: SourcePeriodBasis;
+  revisionPolicy?: 'versioned_archive' | 'current_revision_only' | 'unknown';
+  accountingStandard?: string;
+  statementScope?: 'consolidated' | 'parent_only' | 'unknown';
+}
 export interface SourceFieldMapping {
   originalHeader: string;
   aliases?: string[];
@@ -45,12 +68,19 @@ export interface SourceFieldProfile {
   frequency: 'minute' | 'day' | 'tick' | 'other';
   timeBucket: SourceTimeBucket;
   adjustment: SourceAdjustment;
+  domainScope?: SourceDomainScope;
   supersedes?: { productId?: string; profileId?: string; note: string }[];
 }
 export interface FrozenSourceFieldProfile { profile: SourceFieldProfile; digest: string; fingerprint: string }
 
 const syntax = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
-const roles: readonly SourceFieldRole[] = ['identity', 'date', 'minute', 'value'];
+const roles: readonly SourceFieldRole[] = ['identity', 'date', 'minute', 'value', 'period', 'dimension', 'region', 'commodity_stage', 'relation'];
+const domainKinds: readonly SourceDomainKind[] = ['market_series', 'financial_statement', 'geo_commodity', 'bilateral_trade', 'relation_claim'];
+const quantityBases: readonly SourceQuantityBasis[] = ['net_weight', 'dry_weight', 'wet_weight', 'metal_content', 'carcass_weight',
+  'shipped_weight', 'head_count', 'gross_weight', 'count', 'money', 'unknown'];
+const valuationBases: readonly SourceValuationBasis[] = ['CIF', 'FOB', 'ex_works', 'not_applicable', 'unknown'];
+const periodBases: readonly SourcePeriodBasis[] = ['calendar_year', 'fiscal_year', 'month', 'quarter', 'day', 'minute', 'instant', 'unknown'];
+const mappingQualities: readonly SourceMappingQuality[] = ['exact', 'broader_narrower', 'partial_overlap', 'pending_review'];
 const dataTypes = ['decimal', 'integer', 'text', 'boolean'] as const;
 const unknownBasis = /^(?:authorized|approved|unknown|pending|待核|待确认|已确认|无依据)$/iu;
 const knownMeaning = (value: string | undefined | null): value is string =>
@@ -152,6 +182,46 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
         ...(typeof item.profileId === 'string' ? { profileId: item.profileId } : {}), note: text(item.note, `supersedes[${index}].note`) };
     });
   })();
+  const domainScope = raw.domainScope === undefined ? undefined : (() => {
+    if (!raw.domainScope || typeof raw.domainScope !== 'object' || Array.isArray(raw.domainScope)) fail(`来源字段档案 ${name} 的 domainScope 必须为对象。`);
+    const ds = raw.domainScope as Record<string, unknown>;
+    if (!domainKinds.includes(ds.domain as SourceDomainKind)) fail(`来源字段档案 ${name} 的 domainScope.domain 无效。`);
+    if (ds.quantityBasis !== undefined && !quantityBases.includes(ds.quantityBasis as SourceQuantityBasis))
+      fail(`来源字段档案 ${name} 的 domainScope.quantityBasis 无效。`);
+    if (ds.valuationBasis !== undefined && !valuationBases.includes(ds.valuationBasis as SourceValuationBasis))
+      fail(`来源字段档案 ${name} 的 domainScope.valuationBasis 无效。`);
+    if (ds.periodBasis !== undefined && !periodBases.includes(ds.periodBasis as SourcePeriodBasis))
+      fail(`来源字段档案 ${name} 的 domainScope.periodBasis 无效。`);
+    if (ds.revisionPolicy !== undefined && !['versioned_archive', 'current_revision_only', 'unknown'].includes(String(ds.revisionPolicy)))
+      fail(`来源字段档案 ${name} 的 domainScope.revisionPolicy 无效。`);
+    if (ds.statementScope !== undefined && !['consolidated', 'parent_only', 'unknown'].includes(String(ds.statementScope)))
+      fail(`来源字段档案 ${name} 的 domainScope.statementScope 无效。`);
+    let commodityClassification: SourceCommodityClassification | undefined;
+    if (ds.commodityClassification !== undefined) {
+      if (!ds.commodityClassification || typeof ds.commodityClassification !== 'object' || Array.isArray(ds.commodityClassification))
+        fail(`来源字段档案 ${name} 的 commodityClassification 必须为对象。`);
+      const cc = ds.commodityClassification as Record<string, unknown>;
+      if (!mappingQualities.includes(cc.mappingQuality as SourceMappingQuality))
+        fail(`来源字段档案 ${name} 的 commodityClassification.mappingQuality 无效。`);
+      commodityClassification = {
+        scheme: text(cc.scheme, 'commodityClassification.scheme'),
+        version: text(cc.version, 'commodityClassification.version'),
+        mappingQuality: cc.mappingQuality as SourceMappingQuality,
+      };
+    }
+    return {
+      domain: ds.domain as SourceDomainKind,
+      ...(ds.statisticalAreaScheme === undefined ? {} : { statisticalAreaScheme: text(ds.statisticalAreaScheme, 'statisticalAreaScheme') }),
+      ...(commodityClassification === undefined ? {} : { commodityClassification }),
+      ...(ds.processingStage === undefined ? {} : { processingStage: text(ds.processingStage, 'processingStage') }),
+      ...(ds.quantityBasis === undefined ? {} : { quantityBasis: ds.quantityBasis as SourceQuantityBasis }),
+      ...(ds.valuationBasis === undefined ? {} : { valuationBasis: ds.valuationBasis as SourceValuationBasis }),
+      ...(ds.periodBasis === undefined ? {} : { periodBasis: ds.periodBasis as SourcePeriodBasis }),
+      ...(ds.revisionPolicy === undefined ? {} : { revisionPolicy: ds.revisionPolicy as 'versioned_archive' | 'current_revision_only' | 'unknown' }),
+      ...(ds.accountingStandard === undefined ? {} : { accountingStandard: text(ds.accountingStandard, 'accountingStandard') }),
+      ...(ds.statementScope === undefined ? {} : { statementScope: ds.statementScope as 'consolidated' | 'parent_only' | 'unknown' }),
+    };
+  })();
   return { version: 'bd.source-field-profile/1',
     ...(raw.mappingVersion === undefined ? {} : { mappingVersion: raw.mappingVersion as number }), profileId, sourceId,
     series: raw.series, ...(adapter ? { adapter } : {}), fields, frequency: raw.frequency as SourceFieldProfile['frequency'],
@@ -161,6 +231,7 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
     adjustment: { status: adjustmentRaw.status as SourceAdjustment['status'],
       ...(typeof adjustmentRaw.method === 'string' ? { method: adjustmentRaw.method } : {}),
       ...(typeof adjustmentRaw.basis === 'string' ? { basis: adjustmentRaw.basis } : {}) },
+    ...(domainScope ? { domainScope } : {}),
     confirmation: { status: 'operator_confirmed', basis: confirmation.basis, confirmedAtUtc },
     ...(supersedes ? { supersedes } : {}) };
 }
@@ -194,6 +265,7 @@ export class SourceFieldProfileStore {
 export interface SemanticSignature {
   fields: (Pick<SourceFieldMapping, 'fieldCode' | 'dataType' | 'unitCode' | 'role' | 'measurementStatus'> & { measurement: string | null })[];
   frequency: string; timeBucket: SourceTimeBucket; adjustment: SourceAdjustment;
+  domainScope?: SourceDomainScope;
 }
 export const profileSignature = (profile: SourceFieldProfile): SemanticSignature => ({
   fields: [...profile.fields].map(field => ({ fieldCode: field.fieldCode, dataType: field.dataType,
@@ -201,6 +273,7 @@ export const profileSignature = (profile: SourceFieldProfile): SemanticSignature
     ...(field.measurementStatus === undefined ? {} : { measurementStatus: field.measurementStatus }) }))
     .sort((a, b) => a.fieldCode.localeCompare(b.fieldCode)),
   frequency: profile.frequency, timeBucket: profile.timeBucket, adjustment: profile.adjustment,
+  ...(profile.domainScope === undefined ? {} : { domainScope: profile.domainScope }),
 });
 export const profileFingerprint = (profile: SourceFieldProfile): string => wfdSha256(canonicalWfdJson(profileSignature(profile)));
 
@@ -218,6 +291,15 @@ export function profileSemanticGaps(profile: SourceFieldProfile): string[] {
     if (field.measurementStatus === 'unknown') gaps.push(`计量字段 ${field.fieldCode} 仅保留原报词面，金融计量口径未知。`);
     else if (field.role === 'value' && !knownMeaning(field.measurement))
       gaps.push(`${field.fieldCode} 的金融计量口径未同时明确，不能只按列名、类型和单位合并`);
+  }
+  const ds = profile.domainScope;
+  if (ds) {
+    if (ds.quantityBasis === 'unknown') gaps.push('数量计量基础（干重/湿重/金属含量/头数等）未知；不能跨来源认定等价。');
+    if (ds.domain === 'bilateral_trade' && (!ds.valuationBasis || ds.valuationBasis === 'unknown'))
+      gaps.push('贸易估价方式（CIF/FOB）未知；不能跨来源直接合并贸易金额。');
+    if (ds.periodBasis === 'unknown') gaps.push('统计期间口径（自然年/财年/月度等）未知；不能跨来源认定等价。');
+    if (ds.commodityClassification && ds.commodityClassification.mappingQuality !== 'exact')
+      gaps.push(`商品外部分类映射质量为 ${ds.commodityClassification.mappingQuality}（非精确对应）；存在分类换版拆分/合并或近似对应缺口。`);
   }
   return gaps;
 }
@@ -263,11 +345,73 @@ export function compareProfileSemantics(left: SourceFieldProfile, right: SourceF
     differences.push(`复权方法不同：${a.adjustment.method} ≠ ${b.adjustment.method}`);
   if (knownMeaning(a.adjustment.basis) && knownMeaning(b.adjustment.basis) && a.adjustment.basis !== b.adjustment.basis)
     differences.push(`复权基准不同：${a.adjustment.basis} ≠ ${b.adjustment.basis}`);
+  if (a.domainScope || b.domainScope) {
+    const da = a.domainScope, db = b.domainScope;
+    if (!da || !db) {
+      gaps.push('仅一方声明了领域口径（domainScope）；未核实对齐前不能跨来源认定等价。');
+    } else {
+      if (da.domain !== db.domain) differences.push(`业务领域不同：${da.domain} ≠ ${db.domain}`);
+      if (da.statisticalAreaScheme && db.statisticalAreaScheme && da.statisticalAreaScheme !== db.statisticalAreaScheme)
+        differences.push(`地理/海关统计区域体系不同：${da.statisticalAreaScheme} ≠ ${db.statisticalAreaScheme}`);
+      if (da.processingStage && db.processingStage && da.processingStage !== db.processingStage)
+        differences.push(`商品加工阶段不同：${da.processingStage} ≠ ${db.processingStage}`);
+      if (da.quantityBasis && db.quantityBasis && da.quantityBasis !== 'unknown' && db.quantityBasis !== 'unknown' && da.quantityBasis !== db.quantityBasis)
+        differences.push(`计量数量基础不同：${da.quantityBasis} ≠ ${db.quantityBasis}`);
+      if (da.valuationBasis && db.valuationBasis && da.valuationBasis !== 'unknown' && db.valuationBasis !== 'unknown' && da.valuationBasis !== db.valuationBasis)
+        differences.push(`贸易估价方式不同：${da.valuationBasis} ≠ ${db.valuationBasis}`);
+      if (da.periodBasis && db.periodBasis && da.periodBasis !== 'unknown' && db.periodBasis !== 'unknown' && da.periodBasis !== db.periodBasis)
+        differences.push(`统计期间口径不同：${da.periodBasis} ≠ ${db.periodBasis}`);
+      if (da.revisionPolicy && db.revisionPolicy && da.revisionPolicy !== 'unknown' && db.revisionPolicy !== 'unknown' && da.revisionPolicy !== db.revisionPolicy)
+        differences.push(`历史修订保留口径不同：${da.revisionPolicy} ≠ ${db.revisionPolicy}`);
+      if (da.accountingStandard && db.accountingStandard && da.accountingStandard !== db.accountingStandard)
+        differences.push(`会计准则不同：${da.accountingStandard} ≠ ${db.accountingStandard}`);
+      if (da.statementScope && db.statementScope && da.statementScope !== 'unknown' && db.statementScope !== 'unknown' && da.statementScope !== db.statementScope)
+        differences.push(`报表合并范围不同：${da.statementScope} ≠ ${db.statementScope}`);
+      if (da.commodityClassification && db.commodityClassification) {
+        const ca = da.commodityClassification, cb = db.commodityClassification;
+        if (ca.scheme !== cb.scheme || ca.version !== cb.version)
+          differences.push(`商品外部分类版本不同：${ca.scheme}@${ca.version} ≠ ${cb.scheme}@${cb.version}`);
+      }
+    }
+  }
   if (!differences.length && !gaps.length && canonicalWfdJson(a) !== canonicalWfdJson(b))
     gaps.push('规范语义签名不同且存在仅一方声明的口径信息；未核实对齐前不能认定等价。');
   const status = differences.length ? 'different_semantics' : gaps.length ? 'needs_evidence' : 'candidate_equivalent';
   return { sameProduct: status === 'candidate_equivalent', status,
     reasons: [...new Set([...differences, ...gaps])], differences, gaps };
+}
+
+/**
+ * S07/S08 -> W03 跨来源共用正式产品前置门禁：
+ * 新增来源写入已有其他来源绑定的产品前，必须比较地域、分类版本、阶段、数量基础、估价和期间口径。
+ * 不等价来源必须进入分离产品或显式声明新定义版本（allowNewDefinitionVersion: true），缺证则直接阻断。
+ */
+export function assertCrossSourceProductAdmission(
+  candidate: SourceFieldProfile,
+  existingProfiles: readonly SourceFieldProfile[],
+  options?: { allowNewDefinitionVersion?: boolean },
+): { allowed: true; action: 'reuse_product' | 'require_new_definition_version'; comparisons: SourceSemanticComparison[] } {
+  const others = existingProfiles.filter(item => item.sourceId !== candidate.sourceId);
+  if (!others.length) {
+    const selfGaps = profileSemanticGaps(candidate);
+    if (selfGaps.length) throw new TaskError('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', `来源 ${candidate.sourceId} 尚有未决语义缺口：${selfGaps.join('；')}`);
+    return { allowed: true, action: 'reuse_product', comparisons: [] };
+  }
+  const comparisons = others.map(existing => compareProfileSemantics(existing, candidate));
+  const missingEvidence = comparisons.find(c => c.status === 'needs_evidence');
+  if (missingEvidence) {
+    throw new TaskError('G5_CROSS_SOURCE_EVIDENCE_REQUIRED',
+      `跨来源写入同一正式产品前存在未核实的口径缺口：${missingEvidence.gaps.join('；')}`);
+  }
+  const conflict = comparisons.find(c => c.status === 'different_semantics');
+  if (conflict) {
+    if (options?.allowNewDefinitionVersion === true) {
+      return { allowed: true, action: 'require_new_definition_version', comparisons };
+    }
+    throw new TaskError('G5_CROSS_SOURCE_SEMANTIC_CONFLICT',
+      `跨来源语义不等价（禁止同名异义混入同一产品定义）：${conflict.differences.join('；')}`);
+  }
+  return { allowed: true, action: 'reuse_product', comparisons };
 }
 
 /** 指纹 → 正式数据集；登记不代替语义词典或正式 WFD 目标验证。 */

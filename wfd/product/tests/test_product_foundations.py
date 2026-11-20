@@ -551,3 +551,62 @@ def test_calendar_builder_observations_do_not_replace_or_infer_dates(tmp_path):
         "DUPLICATE_LOGICAL_KEY_REQUIRES_REVISION"}, rejected
     assert engine.head()["snapshot_id"] == second["snapshot_id"]
     assert publications() == before_overlap
+
+
+def test_c07_b1_b2_b3_commodity_and_relation_shapes_and_trade_completeness_guard():
+    pack = boundary_pack()
+    pack["regions"].extend([
+        {"id": "region_aus", "code": "AUS", "name": "Australia",
+         "region_kind": "country_or_region", "statistical_scheme": "ISO_3166_1",
+         "evidence_labels": ["e"]},
+        {"id": "region_wa", "code": "AUS-WA", "name": "Western Australia",
+         "region_kind": "state_or_province", "parent_region_id": "region_aus",
+         "statistical_scheme": "ISO_3166_2", "evidence_labels": ["e"]},
+    ])
+    pack["commodities"] = [
+        {"id": "comm_cu_conc", "name": "Copper Concentrate", "chain_position": "raw_material",
+         "stage_code": "concentrate", "quantity_basis": "metal_content",
+         "external_scheme": "HS", "external_version": "HS2022", "external_code": "260300",
+         "mapping_quality": "exact", "evidence_labels": ["e"]},
+        {"id": "comm_cu_cathode", "name": "Refined Copper Cathode", "chain_position": "intermediate",
+         "stage_code": "smelting_refined", "quantity_basis": "metal_content",
+         "external_scheme": "HS", "external_version": "HS2022", "external_code": "740311",
+         "mapping_quality": "exact", "evidence_labels": ["e"]},
+    ]
+    pack["relations"].extend([
+        {"id": "rel_theme_member", "subject": {"kind": "entity", "id": "entity_e1"},
+         "object": {"kind": "definition", "id": "theme_copper_chain"},
+         "relation_type": "member_of_theme", "set_id": "theme_set",
+         "set_completeness": "complete", "set_absence_means": "explicitly_absent",
+         "definition_authority": "fixture", "effective_from": "2024-01-01", "evidence_labels": ["e"]},
+        {"id": "rel_produces_cu", "subject": {"kind": "entity", "id": "entity_e1"},
+         "object": {"kind": "product", "id": "comm_cu_conc"},
+         "relation_type": "produces_product", "set_id": "prod_set",
+         "set_completeness": "partial", "set_absence_means": "unknown",
+         "definition_authority": "fixture", "effective_from": "2024-01-01", "evidence_labels": ["e"]},
+        {"id": "rel_process_cu", "subject": {"kind": "product", "id": "comm_cu_conc"},
+         "object": {"kind": "product", "id": "comm_cu_cathode"},
+         "relation_type": "process_input_to", "set_id": "proc_set",
+         "set_completeness": "partial", "set_absence_means": "unknown",
+         "definition_authority": "fixture", "effective_from": "2024-01-01", "evidence_labels": ["e"]},
+        {"id": "rel_located_port", "subject": {"kind": "physical_object", "id": "physical_p1"},
+         "object": {"kind": "region", "id": "region_wa"},
+         "relation_type": "located_in", "set_id": "loc_set",
+         "set_completeness": "partial", "set_absence_means": "unknown",
+         "definition_authority": "fixture", "effective_from": "2024-01-01", "evidence_labels": ["e"]},
+    ])
+    validated = f.validate_pack(pack)
+    assert len(validated["commodities"]) == 2
+
+    # Trade or supply chain relations must never claim complete_snapshot (absence != exit)
+    bad_trade = copy.deepcopy(pack)
+    bad_trade["relations"].append({
+        "id": "rel_trade_complete", "subject": {"kind": "region", "id": "region_wa"},
+        "object": {"kind": "region", "id": "region_r"},
+        "relation_type": "trade_flow_projection", "set_id": "trade_set",
+        "set_completeness": "complete", "set_absence_means": "explicitly_absent",
+        "definition_authority": "fixture", "evidence_labels": ["e"],
+    })
+    with pytest.raises(f.FoundationInputError, match="TRADE_OR_SUPPLY_RELATION_CANNOT_CLAIM_COMPLETE_SNAPSHOT"):
+        f.validate_pack(bad_trade)
+

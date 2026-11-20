@@ -200,10 +200,14 @@ export class R1ProductReader {
 
   async readContext(value: unknown, signal?: AbortSignal): Promise<R1ContextRead> {
     const input = body(value, ['operation', 'snapshotId', 'datasetId', 'subject', 'fields', 'pageSize', 'cursor',
-      'maxDepth', 'relationTypes', 'eventTypes', 'ruleCodes', 'businessTimeRange', 'historyMode', 'at']);
+      'maxDepth', 'relationTypes', 'eventTypes', 'ruleCodes', 'businessTimeRange', 'historyMode', 'at', 'heldScope', 'usableStage']);
     const history = readHistorySelection(input);
-    if (history.mode !== 'snapshot_contents' && (!['read_relation_graph', 'read_event_timeline'].includes(String(input.operation)) || history.mode !== 'market_known_at'))
-      fail('R1_CONTEXT_HISTORY_INPUT', '当前仅关系图与事件时间线支持明确市场公开截止；其他上下文仍为固定快照。');
+    const op = String(input.operation);
+    if (history.mode !== 'snapshot_contents' && !(
+      (op === 'read_relation_graph' && (history.mode === 'market_known_at' || history.mode === 'system_held_at'))
+      || (op === 'read_event_timeline' && history.mode === 'market_known_at')
+    ))
+      fail('R1_CONTEXT_HISTORY_INPUT', '当前仅关系图（支持 market_known_at 与 system_held_at）与事件时间线（支持 market_known_at）支持明确历史截止；其他上下文仍为固定快照。');
     if (!R1_CONTEXT_OPERATIONS.includes(input.operation as R1ContextOperation) || !fixed(input.snapshotId)
       || !identifier(input.datasetId) || !isWfdRecord(input.subject)
       || Object.keys(input.subject).length !== 3 || Object.keys(input.subject).some(key => !['kind', 'namespace', 'id'].includes(key))
@@ -234,8 +238,8 @@ export class R1ProductReader {
       || !['role', 'start', 'end', 'timezone'].every(key => typeof range[key] === 'string' && String(range[key]).length > 0 && String(range[key]).length <= 128))) {
       fail('R1_CONTEXT_INPUT', '业务时间区间须明确角色、起止和时区；它不能覆盖固定快照时间视角。');
     }
-    if (history.mode === 'market_known_at' && graph && (!isWfdRecord(range) || range.role !== 'validity'))
-      fail('R1_CONTEXT_HISTORY_INPUT', '历史关系图须同时给出明确有效期范围；可知时间不等于关系已生效。');
+    if ((history.mode === 'market_known_at' || history.mode === 'system_held_at') && graph && (!isWfdRecord(range) || range.role !== 'validity'))
+      fail('R1_CONTEXT_HISTORY_INPUT', '历史关系图须同时给出明确有效期范围；可知或持有时间不等于关系已生效。');
     return this.run(async (runtime, identity, active, wait) => {
       const discovered = await this.discover(runtime, snapshotId, active, wait);
       if (!discovered.selections.some(item => item.datasetId === datasetId)) fail('R1_CONTEXT_DATASET_NOT_FOUND', '该数据集不在所选固定快照中。');
@@ -254,10 +258,10 @@ export class R1ProductReader {
       const { result } = await runtime.client.readContext(operation, request, wait); active(); boundedResult(result);
       const formats: Record<R1ContextOperation, string> = { read_company_context: 'wfd.p4b-context-result/0.1',
         read_relation_graph: 'wfd.p4b-graph-result/0.1', read_applicable_rules: 'wfd.p4b-rule-result/0.1', read_event_timeline: 'wfd.p4b-event-timeline/0.1' };
-      if (history.mode === 'market_known_at') {
+      if (history.mode === 'market_known_at' || history.mode === 'system_held_at') {
         if (canonicalWfdJson(result.knowledge_cutoff) !== canonicalWfdJson(history.cutoff)
-          || result.held_scope !== null || result.usable_stage !== null
-          || canonicalWfdJson(result.business_time_range) !== canonicalWfdJson(range)) fail('R1_CONTEXT_RESPONSE_INVALID', '历史上下文返回的公开截止或业务范围与原请求不符。');
+          || result.held_scope !== history.heldScope || result.usable_stage !== history.usableStage
+          || canonicalWfdJson(result.business_time_range) !== canonicalWfdJson(range)) fail('R1_CONTEXT_RESPONSE_INVALID', '历史上下文返回的公开/持有截止或业务范围与原请求不符。');
         if (!Array.isArray(result.eligibility_diagnostics) || (Array.isArray(result.gaps) && result.gaps.some(item => isWfdRecord(item)
           && ['HISTORY_DEFINITION_TIME_UNSUPPORTED', 'CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED'].includes(String(item.code)))))
           fail('R1_READ_HISTORY_METADATA_UNSUPPORTED', '历史定义资格不足，未以当前元数据替代。');
