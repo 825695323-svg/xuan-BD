@@ -1,5 +1,5 @@
 import { R1DuplicateResult } from './R1DuplicateResult';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, RefreshCw, ShieldAlert } from 'lucide-react';
 import type { R1CapabilitiesView, R1Mapping, R1PrepareInput, R1RequestSummary, R1RequestView, R1ScalarMapping, R1SourceDeclaration, R1TabularMapping, R1TimeMapping } from '../../../../contracts/r1-contracts';
 import type { MaterialCategory, MaterialEnvelope, MaterialRecord } from '../../../../modules/collection/materials/contracts';
@@ -13,6 +13,7 @@ import { R1AutoPanel } from './R1AutoPanel';
 import { DocumentProcessingPanel } from './DocumentProcessingPanel';
 import { CloudCustodyPanel } from './CloudCustodyPanel';
 import { StructuredQueryPanel } from './StructuredQueryPanel';
+import { PageActions, PageButton } from './PageUI';
 import { R1ReadPanel } from './R1ReadPanel';
 import './R1Panel.css';
 
@@ -222,6 +223,7 @@ function readConstants(value: string): Record<string, OperatorConstant> {
 /** 所有结构化交接沿原 R1 请求身份核对。 */
 export function R1Panel() {
   const words = useWords();
+  const readerRef = useRef<HTMLElement>(null);
   const [caps, setCaps] = useState<R1CapabilitiesView | null>(null), [recent, setRecent] = useState<R1RequestSummary[]>([]);
   const [materials, setMaterials] = useState<MaterialEnvelope[]>([]), [materialId, setMaterialId] = useState('');
   const [materialCategory, setMaterialCategory] = useState<MaterialCategory>('unclassified');
@@ -506,7 +508,13 @@ export function R1Panel() {
   return <div className="r1-panel" aria-busy={busy || loading}>
     <header className="database-overview-head"><div><h2 className="data-panel-title">{words('R1 结构化交接', 'R1 structured handoff')}</h2>
       <p className="data-panel-sub">{words('新请求：真实材料 → 五步加工 → 明确确认 → WFD 固定读回。可交接单值标量、普通多字段表格或声明了部分/完整字段的日线与分钟记录。', 'New requests: real material → processing → explicit confirmation → fixed WFD readback. Scalar records, general multi-field tables, and daily or minute records with declared partial or complete market fields are supported.')}</p></div>
-      <button type="button" className="text-button" disabled={busy || loading} onClick={() => void action(refresh)}><RefreshCw size={16} aria-hidden="true" />{words('刷新状态', 'Refresh state')}</button></header>
+      <PageActions>
+        <PageButton onClick={() => {
+          readerRef.current?.focus({ preventScroll: true });
+          readerRef.current?.scrollIntoView({ block: 'start' });
+        }}>{words('查询固定快照', 'Query fixed snapshot')}</PageButton>
+        <PageButton disabled={busy || loading} onClick={() => void action(refresh)}><RefreshCw size={16} aria-hidden="true" />{words('刷新状态', 'Refresh state')}</PageButton>
+      </PageActions></header>
     {loading && <p role="status">{words('读取本地能力和最近请求中…', 'Loading local capabilities and recent requests…')}</p>}
     {error && <ErrorNote detail={error}>{words('本次动作未确认完成，请按具体错误核对原编号。', 'The action is not confirmed complete. Check the error and preserve the original ID.')}</ErrorNote>}
     <div className="database-line-card"><strong>data_only · wfd.structured-ingest/1.0 · {connectionLabel(caps?.connection?.mode)}</strong>
@@ -781,7 +789,7 @@ export function R1Panel() {
       {!recent.length && <p className="data-empty">{words('尚无新 R1 请求。', 'No new R1 requests yet.')}</p>}
       {recent.map(item => <button type="button" className="database-row database-row--button" key={item.requestId} disabled={busy} onClick={() => void action(async () => { showView(await r1Api.get(item.requestId)); setLookupId(item.requestId); setConfirmed(false); })}><span>{item.requestId}</span><span>{words(states[item.state] ?? item.state, item.state)}</span></button>)}
     </section>
-    <R1ReadPanel key={JSON.stringify(caps?.connection ?? null)} ready={ready} />
+    <R1ReadPanel key={JSON.stringify(caps?.connection ?? null)} ref={readerRef} ready={ready} />
     <StructuredQueryPanel key={`context:${JSON.stringify(caps?.connection ?? null)}`} ready={ready} />
   </div>;
 }

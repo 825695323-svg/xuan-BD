@@ -46,10 +46,67 @@ async function navigate(browser: Browser, host: FullChainHost) {
   await browser.until(`(()=>{if(document.querySelector(${q(root)})&&document.querySelector('.r1-panel')?.getAttribute('aria-busy')==='false')return true;(document.querySelector('button[aria-label="数据库"]')||document.querySelector('button[aria-label="Database"]'))?.click();return false;})()`, 'Actual application reader unavailable');
   assert.equal(await browser.evaluate(`document.querySelectorAll('.r1-read-panel').length`), 1, 'The product reader must not share a sibling reconciliation key');
 }
-async function select(browser: Browser, productId: string) {
-  await click(browser, '取得当前固定快照');
-  await click(browser, '发现快照中的产品');
-  await fill(browser, '快照中的产品', productId);
+async function openFixedReader(browser: Browser, label: string) {
+  const before = browser.requests.length;
+  await browser.click(label);
+  await browser.until(`(()=>{
+    const reader = document.querySelector(${q(root)}), panel = reader.closest('.database-panel');
+    const box = reader.getBoundingClientRect(), viewport = panel.getBoundingClientRect();
+    return document.activeElement === reader
+      && Math.min(box.bottom, viewport.bottom, innerHeight) > Math.max(box.top, viewport.top, 0)
+      && Math.min(box.right, viewport.right, innerWidth) > Math.max(box.left, viewport.left, 0);
+  })()`, 'Opening the fixed reader did not focus and reveal it');
+  await browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  assert.deepEqual(browser.requests.slice(before).filter(({ url, method }) => {
+    const { pathname } = new URL(url);
+    return pathname.startsWith('/api/bd/r1/products/') || (pathname.startsWith('/api/') && method !== 'GET');
+  }), [], 'Opening the fixed reader must not query products or write');
+}
+async function select(browser: Browser, productId: string, english = false) {
+  await click(browser, english ? 'Get current fixed snapshot' : '取得当前固定快照');
+  await click(browser, english ? 'Discover products in snapshot' : '发现快照中的产品');
+  await fill(browser, english ? 'Product in snapshot' : '快照中的产品', productId);
+}
+async function checkResultRegion(browser: Browser, name: string, narrow: boolean) {
+  const selector = q(`${root} .r1-read-result [role="region"]`);
+  const region = await browser.evaluate<{ name: string; tabIndex: number; left: number; right: number;
+    panelLeft: number; panelRight: number; viewportWidth: number; scrollWidth: number; clientWidth: number }>(`(()=>{
+    const region = document.querySelector(${selector});
+    const box = region.getBoundingClientRect(), panel = region.closest(${q(root)}).getBoundingClientRect();
+    const label = region.getAttribute('aria-labelledby')?.split(/\\s+/).map(id => document.getElementById(id)?.textContent).join(' ');
+    return { name: label || region.getAttribute('aria-label'), tabIndex: region.tabIndex, left: box.left, right: box.right,
+      panelLeft: panel.left, panelRight: panel.right, viewportWidth: innerWidth, scrollWidth: region.scrollWidth, clientWidth: region.clientWidth };
+  })()`);
+  assert.equal(region.name, name);
+  assert.equal(region.tabIndex, 0);
+  if (!narrow) return;
+  assert.ok(region.clientWidth > 0 && region.left >= Math.max(0, region.panelLeft) - 2
+    && region.right <= Math.min(region.viewportWidth, region.panelRight) + 2, JSON.stringify(region));
+  await browser.evaluate(`(()=>{
+    const region = document.querySelector(${selector});
+    const summaries = [...region.closest(${q(root)}).querySelectorAll('details > summary')];
+    const previous = summaries.findLast(summary => summary.getClientRects().length
+      && (summary.compareDocumentPosition(region) & Node.DOCUMENT_POSITION_FOLLOWING));
+    previous.focus();
+  })()`);
+  const press = async (key: string, code: number) => {
+    const event = { key, code: key, windowsVirtualKeyCode: code };
+    await browser.page('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...event });
+    await browser.page('Input.dispatchKeyEvent', { type: 'keyUp', ...event });
+  };
+  await press('Tab', 9);
+  await browser.until(`document.activeElement === document.querySelector(${selector})`, 'Tab did not reach the read result region');
+  if (region.scrollWidth > region.clientWidth) {
+    await browser.evaluate(`document.querySelector(${selector}).scrollLeft = 0`);
+    await press('ArrowRight', 39);
+    await browser.until(`document.querySelector(${selector}).scrollLeft > 0`, 'ArrowRight did not scroll the read result region');
+    const keyColumnReleased = await browser.evaluate<boolean>(`(()=>{
+      const region = document.querySelector(${selector});
+      region.scrollLeft = region.scrollWidth;
+      return region.querySelector('tbody td').getBoundingClientRect().right <= region.getBoundingClientRect().left + 1;
+    })()`);
+    assert.ok(keyColumnReleased, 'The pinned record key must yield room for field values on a phone');
+  }
 }
 async function pageResult(browser: Browser): Promise<any> {
   return browser.evaluate(`(()=>{const e=[...document.querySelector(${q(root)}).querySelectorAll('.r1-read-result details')].find(e=>e.querySelector('summary')?.textContent.includes('本页原始结果'));if(!e)throw Error('Missing actual result');return JSON.parse(e.querySelector('pre').textContent);})()`);
@@ -86,7 +143,7 @@ test('actual React history reader preserves explicit modes, real holding stages 
       assert.ok(status.holdingInstance?.instanceId);
       browser = await openIsolatedBrowser(program!, fixture.root);
       await browser.page('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
-      await navigate(browser, host); await select(browser, known.productId);
+      await navigate(browser, host); await openFixedReader(browser, '查询固定快照'); await select(browser, known.productId);
       await click(browser, '读取持久数据');
       assert.equal((await pageResult(browser)).page.total_rows, 103);
       await click(browser, '下一页'); assert.equal((await pageResult(browser)).rows.length, 3);
@@ -137,6 +194,9 @@ test('actual React history reader preserves explicit modes, real holding stages 
           assert.ok(control.x >= -2 && control.right <= control.viewport + 2, JSON.stringify(control));
         }
         writeFileSync(join(visualRoot, 'history-' + theme + '.png'), Buffer.from((await browser.page('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+        await checkResultRegion(browser, '持久字段值与状态', theme === 'dark');
+        await browser.evaluate(`document.querySelector(${q(root + ' .r1-read-result')}).scrollIntoView({block:'start'})`);
+        writeFileSync(join(visualRoot, 'result-' + theme + '.png'), Buffer.from((await browser.page('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
       }
       await fill(browser, '快照中的产品', unknown.productId); await fill(browser, '历史视角', 'market_known_at');
       await fill(browser, '截止时间（秒级 UTC）', cutoff);
@@ -165,12 +225,29 @@ test('actual React history reader preserves explicit modes, real holding stages 
       await browser.evaluate(`(async()=>{const session=JSON.parse(sessionStorage.getItem('mashiro.local-data-generation'));if(!Number.isSafeInteger(session?.generation))throw Error('Missing verified local-data session');const headers={'x-local-data-generation':String(session.generation),'x-mashiro-client':'web','Content-Type':'application/json'};const response=await fetch('/api/ui/preferences',{headers});if(!response.ok)throw Error('Isolated preference read failed: '+await response.text());const p=await response.json();const r=await fetch('/api/ui/preferences',{method:'PUT',headers,body:JSON.stringify({revision:p.revision,language:'en'})});if(!r.ok)throw Error('Isolated language change failed: '+await r.text());})()`);
       await navigate(browser, host);
       await browser.until(`!!document.querySelector('[aria-label="History perspective"]')`, 'English history label unavailable');
+      await openFixedReader(browser, 'Query fixed snapshot');
+      const snapshotInputWidths: Array<{ viewport: number; inputWidth: number }> = [];
+      for (const width of [820, 960]) {
+        await browser.page('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+        const inputWidth: number = await browser.evaluate<number>(`document.querySelector('[aria-label="Fixed snapshot ID"]').getBoundingClientRect().width`);
+        snapshotInputWidths.push({ viewport: width, inputWidth });
+        assert.ok(inputWidth >= 160, `Fixed snapshot input squeezed to ${inputWidth}px at ${width}px`);
+      }
+      writeFileSync(join(visualRoot, 'snapshot-input-widths.json'), JSON.stringify(snapshotInputWidths));
       await fill(browser, 'History perspective', 'system_held_at');
       for (const label of ['Cutoff (UTC seconds)', 'Actual holding instance', 'Required usable stage']) {
         assert.equal(await browser.evaluate(`!!document.querySelector('[aria-label='+${q(JSON.stringify(label))}+']')`), true);
       }
       await browser.evaluate(`document.querySelector(${q(root)}).scrollIntoView({block:'start'})`);
       writeFileSync(join(visualRoot, 'history-en.png'), Buffer.from((await browser.page('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+      await fill(browser, 'History perspective', 'snapshot_contents');
+      await select(browser, known.productId, true);
+      await click(browser, 'Read persisted data');
+      await checkResultRegion(browser, 'Persisted field values and states', false);
+      const amount = await browser.evaluate<string>(`document.querySelector(${q(`${root} .r1-read-result tbody tr td:last-child`)}).innerText`);
+      assert.match(amount, /Valid value/u);
+      assert.match(amount, /valid_value/u);
+      assert.doesNotMatch(amount, /有效值/u);
       assert.equal(browser.blockedRequests.length, 0);
     } finally { await browser?.close(); await host.close(); }
   });

@@ -1,17 +1,20 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type Ref } from 'react';
 import type { R1ProductDiscovery, R1ProductRead, R1ProductReadInput, R1SnapshotStatus } from '../../../../contracts/r1-contracts';
 import { RequestError } from '../api';
 import { r1Api } from '../r1-api';
 import { buildR1ReadHistory, R1HistoryError, sameR1ReadConnection } from '../r1-read-history';
-import { PageField } from './PageUI';
+import { PageButton, PageEmpty, PageField, PageHeading } from './PageUI';
 import { recordIdentity, type RecordIdentity } from '../record-evidence-api';
 import { RecordEvidencePanel } from './RecordEvidencePanel';
 import { ErrorNote, errorDetail, useWords } from './Controls';
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const display = (value: unknown): string => value === null ? 'null' : value === undefined ? '—' : typeof value === 'string' ? value : JSON.stringify(value);
-const states: Record<string, string> = { valid_value: '有效值', reported_zero: '报告为零', unknown: '未知',
-  not_applicable: '不适用', missing_unknown: '缺失原因未知', not_disclosed: '未披露' };
+const stateLabels: Record<string, readonly [string, string]> = {
+  valid_value: ['有效值', 'Valid value'], reported_zero: ['报告为零', 'Reported zero'],
+  unknown: ['未知', 'Unknown'], not_applicable: ['不适用', 'Not applicable'],
+  missing_unknown: ['缺失原因未知', 'Reason for absence unknown'], not_disclosed: ['未披露', 'Not disclosed'],
+};
 
 // Only labels from the fixed source-report contract have this reversible encoding.
 function sourceLabel(code: string, prefix: string) {
@@ -33,8 +36,12 @@ function reportSeries(product: Record<string, unknown>) {
 }
 
 /** Independent of the local preparation/receipt editor; all data comes from fresh fixed WFD reads. */
-export function R1ReadPanel({ ready }: { ready: boolean }) {
+export function R1ReadPanel({ ready, ref }: { ready: boolean; ref?: Ref<HTMLElement> }) {
   const words = useWords();
+  const describeState = (code: string) => {
+    const label = Object.hasOwn(stateLabels, code) ? stateLabels[code] : undefined;
+    return label ? words(...label) + ' · ' + code : code;
+  };
   const [snapshotId, setSnapshotId] = useState('');
   const [status, setStatus] = useState<R1SnapshotStatus | null>(null);
   const [discovery, setDiscovery] = useState<R1ProductDiscovery | null>(null);
@@ -94,31 +101,37 @@ export function R1ReadPanel({ ready }: { ready: boolean }) {
     setResult(response); setLastRequest(input); setPageIndex(nextPage);
   });
 
-  return <section className="r1-stage r1-read-panel" aria-label={words('WFD 持久数据查询', 'WFD persisted data query')} aria-busy={busy}>
-    <h3>{words('WFD 持久数据查询', 'WFD persisted data query')}</h3>
-    <p className="r1-help">{words('从绑定数据库读取所选固定快照的真实产品与数据。此区与本地材料预览、加工输出和交接回执独立，重开页面后仍可查询。',
-      'Read actual products and data from a fixed snapshot in the bound database. This query is independent of local previews, processing outputs and handoff receipts, and remains usable after reopening.')}</p>
-    <p className="r1-help">{words('产品发现仍是固定快照合同列表，不是历史可知清单。历史读取须显式选择时间视角、秒级 UTC 截止；业务时间与知识截止不同。未知资格保持诊断或拒绝，不回退最新数据。结构化筛选和关系上下文的历史控件不在本入口范围内。',
-      'Discovery lists fixed snapshot contracts, not products known in the past. Historical reads require an explicit perspective and second-precision UTC cutoff. Business time is separate. Unknown eligibility remains a diagnostic or refusal, never a fallback to latest data. Structured filters and relation-context history controls are outside this entry.')}</p>
-    {!ready && <p className="r1-help danger-text">{words('请先配置并核对可用的 data_only（仅数据）绑定连接。', 'Configure and verify an available data_only connection first.')}</p>}
-    <div className="r1-actions">
-      <button type="button" className="text-button" disabled={busy || !ready} onClick={() => void act(async current => {
-        clear(); setStatus(null); setUsableStage('');
-        const response = await r1Api.snapshotStatus(); if (!current()) return; setStatus(response); setSnapshotId(response.snapshotId ?? '');
-      })}>{words('取得当前固定快照', 'Get current fixed snapshot')}</button>
-      <label>{words('固定快照编号', 'Fixed snapshot ID')}<input value={snapshotId} maxLength={128} disabled={busy || !ready}
-        placeholder="s_…" onChange={event => { setSnapshotId(event.target.value); clear(); }} /></label>
-      <button type="button" className="text-button" disabled={busy || !ready || !snapshotId.trim()} onClick={() => void act(async current => {
-        setLastRequest(null); setDiscovery(null); setProductId(''); setProjection([]); setResult(null); setPageIndex(1);
-        const fixed = snapshotId.trim(), response = await r1Api.discoverProducts(fixed);
-        if (!current()) return; setSnapshotId(fixed); setDiscovery(response);
-      })}>{words('发现快照中的产品', 'Discover products in snapshot')}</button>
+  return <section className="r1-stage r1-read-panel" ref={ref} tabIndex={-1}
+    aria-label={words('WFD 持久数据查询', 'WFD persisted data query')} aria-busy={busy}>
+    <PageHeading level="h3" title={words('WFD 持久数据查询', 'WFD persisted data query')}
+      description={words('输入已有快照编号，或从当前连接取得编号，再查找要读取的产品。',
+        'Enter a saved snapshot ID or get one from the current connection, then find a product to read.')} />
+    {!ready && <PageEmpty state="unavailable">{words('请先配置并核对可用的 data_only（仅数据）绑定连接。', 'Configure and verify an available data_only connection first.')}</PageEmpty>}
+    <div className="r1-snapshot-tools r1-query-block">
+      <h4 className="r1-step">{words('查询条件', 'Query conditions')}</h4>
+      <PageField label={words('固定快照编号', 'Fixed snapshot ID')}>
+        <input aria-label={words('固定快照编号', 'Fixed snapshot ID')} value={snapshotId} maxLength={128} disabled={busy || !ready}
+          placeholder="s_…" onChange={event => { setSnapshotId(event.target.value); clear(); }} />
+      </PageField>
+      <div className="r1-actions">
+        <PageButton disabled={busy || !ready} onClick={() => void act(async current => {
+          clear(); setStatus(null); setUsableStage('');
+          const response = await r1Api.snapshotStatus(); if (!current()) return; setStatus(response); setSnapshotId(response.snapshotId ?? '');
+        })}>{words('取得当前固定快照', 'Get current fixed snapshot')}</PageButton>
+        <PageButton variant="primary" disabled={busy || !ready || !snapshotId.trim()} onClick={() => void act(async current => {
+          clear();
+          const fixed = snapshotId.trim(), response = await r1Api.discoverProducts(fixed);
+          if (!current()) return; setSnapshotId(fixed); setDiscovery(response);
+        })}>{words('发现快照中的产品', 'Discover products in snapshot')}</PageButton>
+      </div>
+      {status && <p className="r1-help" role="status">{status.empty
+        ? words('上次核对时，绑定实例为合法初始化空库，尚无活动快照。', 'The last check confirmed an initialized empty instance with no active snapshot.')
+        : <>{words('上次核对的活动快照', 'Active snapshot at last check')} <code>{status.snapshotId}</code></>}
+        {' · '}{status.connection.connectionId}</p>}
+      {status && snapshotId.trim() && snapshotId.trim() !== (status.snapshotId ?? '') && <p className="r1-help r1-caution">{words('查询将按输入编号执行，而非上次核对的活动快照。', 'Queries will use the entered ID, not the active snapshot from the last check.')}</p>}
     </div>
-    {status && <p className="r1-help" role="status">{status.empty
-      ? words('已只读确认：绑定实例为合法初始化空库，尚无活动快照。', 'Read-only check confirms an initialized empty bound instance with no active snapshot.')
-      : words('已核对当前绑定与活动头；查询使用上方显式固定编号。', 'The current binding and active head were checked; queries use the explicit fixed ID above.')}
-      {' '}{status.connection.connectionId}</p>}
-    <div className="r1-grid" aria-label={words('持久数据时间视角', 'Persisted data time perspective')}>
+    <div className="r1-grid r1-query-block r1-perspective" aria-label={words('持久数据时间视角', 'Persisted data time perspective')}>
+      <h4 className="r1-step">{words('时间与持有视角', 'Time and holding perspective')}</h4>
       <PageField label={words('历史视角', 'History perspective')}><select aria-label={words('历史视角', 'History perspective')} value={historyMode} disabled={busy || !ready} onChange={event => {
         setHistoryMode(event.target.value as NonNullable<R1ProductReadInput['historyMode']>); setAt(''); setUsableStage(''); changed();
       }}>
@@ -142,22 +155,27 @@ export function R1ReadPanel({ ready }: { ready: boolean }) {
           <option value="published_readable">{words('正式可读', 'Published readable')}</option>
         </select></PageField>
       </>}
+      {historyMode !== 'snapshot_contents' && <p className="r1-help r1-caution">
+        {words('目录按固定快照列出合同。读取按所选的知识截止时间核验资格，业务发生时间单独核对。缺少证据时返回诊断或拒绝，不回退到最新值。',
+          'The directory lists contracts from the fixed snapshot. Reads check eligibility at the selected knowledge cutoff, separately from business time. Missing evidence produces a diagnostic or refusal without falling back to current data.')}
+        {historyMode === 'system_held_at' && ' ' + words('持有资格还须核对该实例的实际阶段。', 'Holding also requires evidence of the stage reached by this instance.')}
+      </p>}
     </div>
-    {historyMode === 'system_held_at' && <p className="r1-help">{words('实例身份存在不证明任一记录已达到该阶段；缺持有证据时返回未知或拒绝，不以公开日期替代。',
-      'An instance identity does not prove a record reached the selected stage. Missing holding evidence stays unknown or refused, never replaced by a public date.')}</p>}
     {busy && <p className="r1-help" role="status">{words('正在只读查询绑定 WFD…', 'Reading the bound WFD…')}</p>}
     {error && <ErrorNote>{error}</ErrorNote>}
-    {discovery && <>
-      <p className="r1-help">{words(`发现 ${discovery.selections.length} 个实际产品、${discovery.products.length} 份固定合同绑定。`,
-        `Discovered ${discovery.selections.length} actual products and ${discovery.products.length} fixed contract bindings.`)} <code>{discovery.snapshotId}</code></p>
-      <label>{words('快照中的产品', 'Product in snapshot')}<select value={productId} disabled={busy} onChange={event => {
+    {discovery && <div className="r1-query-block r1-discovery">
+      <h4 className="r1-step">{words('产品与字段', 'Product and fields')}</h4>
+      <p className="r1-help r1-meta">{words(`快照产品目录 · ${discovery.selections.length} 个产品 · ${discovery.products.length} 份合同绑定`,
+        `Snapshot directory · ${discovery.selections.length} products · ${discovery.products.length} contract bindings`)} <code>{discovery.snapshotId}</code></p>
+      <label>{words('快照中的产品', 'Product in snapshot')}<select value={productId} disabled={busy || !discovery.selections.length} onChange={event => {
         setProductId(event.target.value); setProjection(discovery.selections.find(item => item.productId === event.target.value)?.fields.slice() ?? []);
         changed();
       }}>
         <option value="">{words('选择一个实际产品', 'Select an actual product')}</option>
         {discovery.selections.map(item => <option key={item.productId} value={item.productId}>{seriesById.get(item.productId) || item.datasetId} · {item.productId} · {display(item.subject.id)}</option>)}
       </select></label>
-      {!discovery.selections.length && <p className="data-empty">{words('该固定快照没有实际产品。', 'This fixed snapshot contains no actual products.')}</p>}
+      {!discovery.selections.length && <PageEmpty>{words('此快照的产品目录没有返回条目。索引分钟分区须按原批次回执中的定位信息读取。',
+        'The directory returned no entries for this snapshot. Indexed minute partitions require the locator from the original batch receipt.')}</PageEmpty>}
       {selected && <div className="r1-proof">
         <p>{words('数据集', 'Dataset')}：{selected.datasetId} · {words('产品', 'Product')}：<code>{selected.productId}</code></p>
         <p>{words('主体', 'Subject')}：{display(selected.subject)} · {words('载荷类型', 'Payload kind')}：{selected.payloadKind}</p>
@@ -173,21 +191,33 @@ export function R1ReadPanel({ ready }: { ready: boolean }) {
             setProjection(current => event.target.checked ? [...current, field].sort() : current.filter(value => value !== field));
             changed();
           }} /><span title={field}>{reportField(field)}</span></label>)}</div>
-        <p className="r1-help">{words('不同固定合同可能覆盖不同字段。共有字段可用于读取旧记录；选中新增字段时，缺少该字段的旧记录由 WFD 列出准确诊断，已有值不补成新字段值。',
-          'Fixed contracts can cover different fields. Select shared fields to read older records. When a new field is selected, WFD reports exact diagnostics for records whose contracts do not declare it; existing values are not substituted for new fields.')}</p>
+        <details className="r1-note"><summary>{words('字段覆盖说明', 'Field coverage notes')}</summary>
+          <p className="r1-help">{words('不同固定合同可能覆盖不同字段。共有字段可用于读取旧记录；选中新增字段时，缺少该字段的旧记录由 WFD 列出准确诊断，已有值不补成新字段值。',
+            'Fixed contracts can cover different fields. Select shared fields to read older records. When a new field is selected, WFD reports exact diagnostics for records whose contracts do not declare it; existing values are not substituted for new fields.')}</p>
+        </details>
       </fieldset>}
-      <p className="r1-help">{words(`每页 ${discovery.limits.pageSize} 行；单次至多预扫 ${discovery.limits.maxScanRows} 个候选行与 ${discovery.limits.maxScanBytes / 1048576} MiB，完整结果上限 ${discovery.limits.maxResultBytes / 1048576} MiB，等待上限 ${discovery.limits.timeoutMs / 1000} 秒。超限返回错误，不截断为成功。`,
-        `${discovery.limits.pageSize} rows per page; at most ${discovery.limits.maxScanRows} candidate rows and ${discovery.limits.maxScanBytes / 1048576} MiB scanned per call, ${discovery.limits.maxResultBytes / 1048576} MiB for the complete result and ${discovery.limits.timeoutMs / 1000} seconds waiting. Budget failures are not truncated into success.`)}</p>
-      <button type="button" className="primary-button" disabled={busy || !fieldsReady} onClick={() => void read(null, 1)}>{words('读取持久数据', 'Read persisted data')}</button>
-      <details><summary>{words('查看该快照的公开定义与合同', 'Inspect public definitions and contracts in this snapshot')}</summary><pre className="database-text-preview">{JSON.stringify(discovery.products, null, 2)}</pre></details>
-    </>}
-    {result && <div className="r1-read-result" aria-label={words('WFD 实际读取结果', 'Actual WFD read result')}>
-      <p className="r1-help">{words(`第 ${pageIndex} 页，本页 ${rows.length} 行；本次字段投影可返回 ${display(page.total_rows)} 行，本页后还有 ${Math.max(0, Number(page.remaining_rows) - rows.length)} 行。`,
-        `Page ${pageIndex}: ${rows.length} rows on this page, ${display(page.total_rows)} returnable rows for this field projection, ${Math.max(0, Number(page.remaining_rows) - rows.length)} rows after this page.`)}</p>
+      <div className="r1-read-bar">
+        <button type="button" className="primary-button" disabled={busy || !fieldsReady} onClick={() => void read(null, 1)}>{words('读取持久数据', 'Read persisted data')}</button>
+        <details className="r1-note"><summary>{words('查询预算与超限规则', 'Query budget and limit rules')}</summary>
+          <p className="r1-help">{words(`每页 ${discovery.limits.pageSize} 行；单次至多预扫 ${discovery.limits.maxScanRows} 个候选行与 ${discovery.limits.maxScanBytes / 1048576} MiB，完整结果上限 ${discovery.limits.maxResultBytes / 1048576} MiB，等待上限 ${discovery.limits.timeoutMs / 1000} 秒。超限返回错误，不截断为成功。`,
+            `${discovery.limits.pageSize} rows per page; at most ${discovery.limits.maxScanRows} candidate rows and ${discovery.limits.maxScanBytes / 1048576} MiB scanned per call, ${discovery.limits.maxResultBytes / 1048576} MiB for the complete result and ${discovery.limits.timeoutMs / 1000} seconds waiting. Budget failures are not truncated into success.`)}</p>
+        </details>
+      </div>
+      <details><summary>{words('查看该快照的公开定义与合同', 'Inspect public definitions and contracts in this snapshot')}</summary>{discovery.selections.length > 0 && <p className="r1-help">{words('索引分钟分区的读取依赖原批次回执中的定位信息。', 'Reading indexed minute partitions depends on the locator in the original batch receipt.')}</p>}<pre className="database-text-preview">{JSON.stringify(discovery.products, null, 2)}</pre></details>
+    </div>}
+    {result && <div className="r1-read-result r1-query-block" aria-label={words('WFD 实际读取结果', 'Actual WFD read result')}>
+      <h4 className="r1-step">{words('读取结果', 'Read result')}</h4>
+      <p className="r1-help r1-result-identity">{words('本页来自 WFD 持久读取。', 'This page comes from a persisted WFD read.')} <code>{result.snapshotId}</code> · <code>{result.productId}</code></p>
+      <dl className="r1-readout">
+        <div><dt>{words('页码', 'Page')}</dt><dd>{words(`第 ${pageIndex} 页`, `${pageIndex}`)}</dd></div>
+        <div><dt>{words('本页行', 'Page rows')}</dt><dd>{rows.length}</dd></div>
+        <div><dt>{words('可返回总行', 'Total returnable')}</dt><dd>{display(page.total_rows)}</dd></div>
+        <div><dt>{words('本页后剩余', 'Remaining after page')}</dt><dd>{Math.max(0, Number(page.remaining_rows) - rows.length)}</dd></div>
+      </dl>
       <p className="r1-help" aria-label={words('已核对的历史资格', 'Verified history selection')}>{words('视角', 'Perspective')}：{result.historyMode} · {words('截止', 'Cutoff')}：{display(object(data?.knowledge_cutoff).earliest_utc)} · {words('持有实例', 'Holding instance')}：{display(data?.held_scope)} · {words('阶段', 'Stage')}：{display(data?.usable_stage)}</p>
-      <p className="r1-help">{words('本页来自 WFD 持久读取。', 'This page comes from a persisted WFD read.')} <code>{result.snapshotId}</code> · <code>{result.productId}</code></p>
       {!rows.length && <p className="data-empty">{words('本页没有可返回的业务行；请同时核对诊断与原始结果。', 'This page has no returnable business rows. Inspect diagnostics and the original result.')}</p>}
-      {rows.length > 0 && <div className="r1-table-scroll"><table><caption>{words('持久字段值与状态', 'Persisted field values and states')}</caption>
+      {rows.length > 0 && <div className="r1-table-scroll" role="region" tabIndex={0}
+        aria-label={words('持久字段值与状态', 'Persisted field values and states')}><table><caption>{words('持久字段值与状态', 'Persisted field values and states')}</caption>
         <thead><tr><th>{words('业务键与版本', 'Business key and version')}</th><th>{words('业务时间与状态', 'Business time and status')}</th>{fields.map(field => <th key={field} title={field}>{reportField(field)}</th>)}</tr></thead>
         <tbody>{rows.map((row, index) => { const ref = object(row.record_ref), time = object(row.business_time), values = object(row.values); return <tr key={index}>
           <td>{display(ref.logical_key ?? ref.record_id)}<small>{display(ref.revision_id ?? ref.record_version)}</small>{historyMode === 'snapshot_contents' && selected && (() => {
@@ -195,17 +225,19 @@ export function R1ReadPanel({ ready }: { ready: boolean }) {
             return identity && <button type="button" className="text-button" data-record-id={identity.recordId} onClick={() => { setEvidenceRun(value => value + 1); setEvidenceIdentity(identity); }}>{words('核对原件', 'Verify original')}</button>;
           })()}</td>
           <td>{time.status === 'known' ? <>{display(time.earliest_utc)}<br />{words('至（不含）', 'until (exclusive)')} {display(time.latest_exclusive_utc)}<small>{display(time.precision)} · {display(time.source_timezone)}</small></>
-            : <>{display(time.status)}{typeof time.status === 'string' && states[time.status] ? `（${states[time.status]}）` : ''}</>}</td>
+            : describeState(display(time.status))}</td>
           {fields.map(field => { const cell = object(values[field]), state = display(cell.value_state); return <td key={field}><span>{display(cell.value)}</span>
-            <small>{state}{states[state] ? `（${states[state]}）` : ''}</small><small>{words('单位', 'Unit')}：{seriesById.get(productId) ? sourceLabel(display(object(cell.unit).unit_code), 'srcunit_') : display(object(cell.unit).unit_code)}</small></td>; })}
+            <small>{describeState(state)}</small><small>{words('单位', 'Unit')}：{seriesById.get(productId) ? sourceLabel(display(object(cell.unit).unit_code), 'srcunit_') : display(object(cell.unit).unit_code)}</small></td>; })}
         </tr>; })}</tbody></table></div>}
       {historyMode === 'snapshot_contents' && evidenceIdentity && <RecordEvidencePanel key={JSON.stringify([result.snapshotId, result.productId, evidenceIdentity, evidenceRun])} identity={evidenceIdentity} snapshotId={result.snapshotId} connection={result.connection} />}
-      <p className="r1-help">{page.has_more ? words('还有后续页；本页不代表全部数据已读完。', 'More pages remain; this page does not mean all data was read.')
+      <div className="r1-pager">
+        <p className="r1-help">{page.has_more ? words('还有后续页；本页不代表全部数据已读完。', 'More pages remain; this page does not mean all data was read.')
         : words('当前固定查询已到末页。完整性与被排除的记录仍以 WFD 诊断为准。', 'This fixed query has reached its final page. Completeness and excluded records are still governed by WFD diagnostics.')}</p>
+        <button type="button" className="text-button" disabled={busy || page.has_more !== true || typeof page.next_cursor !== 'string' || !lastRequest} onClick={() => void read(page.next_cursor as string, pageIndex + 1)}>{words('下一页', 'Next page')}</button>
+      </div>
       {fieldGaps.length > 0 && <p className="r1-help danger-text">{words(`WFD 返回 ${fieldGaps.length} 条字段覆盖诊断：对应记录的固定合同未声明全部所选字段，未计入本次返回行。可改选共有字段读取已有值；准确记录与缺字段见下方诊断。`,
         `WFD returned ${fieldGaps.length} field-coverage diagnostics. The affected fixed contracts do not declare every selected field, so those records are excluded from this projection. Select shared fields to read their existing values; exact records and missing fields are listed below.`)}</p>}
       {diagnostics.length > 0 && <details open><summary>{words('WFD 读取诊断', 'WFD read diagnostics')} · {diagnostics.length}</summary><pre className="database-text-preview">{JSON.stringify(diagnostics, null, 2)}</pre></details>}
-      <button type="button" className="text-button" disabled={busy || page.has_more !== true || typeof page.next_cursor !== 'string' || !lastRequest} onClick={() => void read(page.next_cursor as string, pageIndex + 1)}>{words('下一页', 'Next page')}</button>
       <details><summary>{words('查看本页原始结果、时间、单位与预算', 'Inspect the original page, times, units and budget')}</summary><pre className="database-text-preview">{JSON.stringify(data, null, 2)}</pre></details>
     </div>}
   </section>;
