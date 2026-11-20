@@ -445,17 +445,11 @@ export class R1AutoService {
     if (!product) {
       item.definitionAction = 'create_from_evidence'; return;
     }
+    this.assertProductSources(item, product);
     const old = publicDefinition(product.declaration as WfdRecord), proposed = publicDefinition(definition);
     item.evidence.push({ key: 'definition_predecessor', value: canonicalWfdJson({ productId: product.product_id,
       definitionRef: product.definition_ref, snapshotId: item.snapshot!.snapshotId }), origin: 'contract' });
     if (comparableDefinition(old) === comparableDefinition(proposed)) {
-      if (item.fieldProfile && this.options.fieldProfiles) {
-        const peers = (this.options.fieldProfiles.list?.() ?? []).filter(peer =>
-          peer.sourceId !== item.fieldProfile!.profile.sourceId
-          && ((peer.series !== '' && peer.series === item.fieldProfile!.profile.series)
-            || this.options.semanticProducts?.datasetFor(profileFingerprint(peer)) === item.input.datasetId));
-        if (peers.length) assertCrossSourceProductAdmission(item.fieldProfile.profile, peers);
-      }
       proposal.target.definition = old; item.definitionAction = 'reuse_same_definition'; return;
     }
     const oldFields = fields(old), newFields = fields(proposed);
@@ -477,6 +471,48 @@ export class R1AutoService {
     }
     if (item.answers[key].trim().length < 8 || /^(yes|同意|确认|允许|ok)$/iu.test(item.answers[key].trim())) fail('R1_AUTO_REVISION_EVIDENCE', '需要具体来源与口径修订依据，确认词不能替代新证据。');
     item.evidence.push({ key, value: item.answers[key], origin: 'operator' }); item.definitionAction = 'evolve_explicit_revision';
+  }
+
+  private assertProductSources(item: AutoRecord, product: WfdRecord): void {
+    const currentSourceId = item.input.source.source_id;
+    const associations = this.db.prepare(`SELECT DISTINCT a.source_id, o.source_json FROM r1_record_associations a
+      LEFT JOIN r1_originals o ON o.original_id=a.original_id
+      WHERE a.dataset_id=? AND a.product_id=?`)
+      .all(item.input.datasetId, String(product.product_id));
+    const sourceSeries = new Map<string, Set<string | undefined>>();
+    for (const row of associations) {
+      const sourceId = row.source_id;
+      if (typeof sourceId !== 'string' || !sourceId.trim()) continue;
+      const source = typeof row.source_json === 'string' ? JSON.parse(row.source_json) as R1SourceDeclaration : undefined;
+      const series = sourceSeries.get(sourceId) ?? new Set();
+      series.add(declaredSourceSeries(source));
+      sourceSeries.set(sourceId, series);
+    }
+    const admission = isWfdRecord(product.source_admission) ? product.source_admission : {};
+    for (const published of [product.published_source_ids, admission.source_ids]) {
+      if (!Array.isArray(published)) continue;
+      for (const sourceId of published) {
+        if (typeof sourceId === 'string' && sourceId.trim() && !sourceSeries.has(sourceId))
+          sourceSeries.set(sourceId, new Set([undefined]));
+      }
+    }
+    if (!sourceSeries.size) fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED',
+      `无法核实既有产品 ${String(product.product_id)} 的来源身份，需要本地关联或 WFD 来源证据。`);
+    sourceSeries.delete(currentSourceId);
+    if (!sourceSeries.size) return;
+    const candidate = item.fieldProfile?.profile ?? fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED',
+      `来源 ${currentSourceId} 缺少已核实的字段档案，不能写入其他来源已关联或发布的产品 ${String(product.product_id)}。`);
+    const peers = [...sourceSeries].flatMap(([sourceId, seriesNames]) => [...seriesNames].map(series => {
+      const profile = this.options.fieldProfiles?.match({ sourceId, series });
+      if (profile) return profile;
+      const registered = series === undefined ? (this.options.fieldProfiles?.list() ?? []).filter(peer =>
+        peer.sourceId === sourceId && ((peer.series !== '' && peer.series === candidate.series)
+          || this.options.semanticProducts?.datasetFor(profileFingerprint(peer)) === item.input.datasetId)) : [];
+      if (registered.length === 1) return registered[0]!;
+      return fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED',
+        `产品 ${String(product.product_id)} 的既有来源 ${sourceId} 缺少可唯一核实的字段档案${series ? `（系列 ${series}）` : ''}。`);
+    }));
+    assertCrossSourceProductAdmission(candidate, peers);
   }
 
   private checkUnits(item: AutoRecord, proposal: R1EvidenceProposal): void {

@@ -180,6 +180,81 @@ function makeTradeObs(overrides: Partial<TradeObservation> = {}): TradeObservati
   };
 }
 
+test('mirror comparison rejects cross-scheme codes and reports a same-code version break', () => {
+  const externalClassification = { ...makeTradeObs().externalClassification, version: 'HS2017', code: '2601', aggrLevel: 4 };
+  const exporter = makeTradeObs({ externalClassification });
+  const importer = makeTradeObs({ externalClassification, reporterRegionId: exporter.partnerRegionId,
+    partnerRegionId: exporter.reporterRegionId, partnerRole: 'origin', flow: 'import' });
+  assert.equal(diagnoseBilateralTradeMirror(exporter, importer).status, 'exact_match');
+  assert.throws(() => diagnoseBilateralTradeMirror(exporter, { ...importer,
+    externalClassification: { ...externalClassification, scheme: 'SITC' } }), { code: 'GLOBAL_SUPPLY_TRADE_MIRROR_CLASSIFICATION_MISMATCH' });
+  const changed = diagnoseBilateralTradeMirror(exporter, { ...importer,
+    externalClassification: { ...externalClassification, version: 'HS2022' } });
+  assert.equal(changed.status, 'explainable_statistical_mirror_difference');
+  assert.match(changed.classificationGap ?? '', /HS2017\(2601\).*HS2022\(2601\)/u);
+});
+
+test('explicit empty holding-stage timestamps suppress the legacy fallback', () => {
+  const perspective = { historyMode: 'system_held_at' as const, cutoffUtc: '2026-03-01T00:00:00Z' };
+  const acquired = '2026-02-16T00:00:00Z';
+  const observation = makeTradeObs();
+  assert.equal(filterTemporalRecordsAtPerspective([observation], perspective).visible.length, 1);
+  for (const record of [
+    { ...observation, temporal: { ...baseTemporal, stageTimestamps: { acquired, published_readable: null }, publishedAtUtc: acquired } },
+    { ...observation, temporal: { ...baseTemporal, publishedReadableAtUtc: null, publishedAtUtc: acquired } },
+    { ...observation, publishedAtUtc: null },
+    { ...observation, temporal: { ...baseTemporal, publishedAtUtc: '  ' } },
+  ]) {
+    const result = filterTemporalRecordsAtPerspective([record], perspective);
+    assert.deepEqual(result.visible, []);
+    assert.equal(result.gaps[0]?.code, 'SYSTEM_HELD_STAGE_NOT_REACHED');
+  }
+});
+
+test('malformed holding-stage containers require an independent timestamp for the requested stage', () => {
+  const perspective = { historyMode: 'system_held_at' as const, cutoffUtc: '2026-03-01T00:00:00Z' };
+  const observation = makeTradeObs();
+  const stageTime = '2026-02-16T00:00:00Z';
+  for (const stageTimestamps of [null, '', undefined, 42, [], new Date(stageTime)]) {
+    const temporal = { ...observation.temporal, stageTimestamps } as typeof observation.temporal;
+    const result = filterTemporalRecordsAtPerspective([{ ...observation, temporal, acquiredAtUtc: stageTime }], perspective);
+    assert.deepEqual(result.visible, []);
+    assert.deepEqual(result.gaps.map(gap => gap.code), ['SYSTEM_HELD_STAGE_NOT_REACHED']);
+    for (const record of [
+      { ...observation, temporal: { ...temporal, publishedReadableAtUtc: stageTime } },
+      { ...observation, temporal, publishedAtUtc: stageTime },
+    ]) {
+      assert.deepEqual(filterTemporalRecordsAtPerspective([record], perspective), { visible: [record], gaps: [] });
+    }
+  }
+});
+
+test('holding-stage maps require valid members and evidence for the requested stage', () => {
+  const perspective = { historyMode: 'system_held_at' as const, cutoffUtc: '2026-03-01T00:00:00Z' };
+  const stageTime = '2026-02-16T00:00:00Z';
+  const rejected: unknown[] = [
+    {},
+    { acquired: stageTime },
+    { acquired: [], published_readable: stageTime },
+    { custodied: '2026-02-30T00:00:00Z', published_readable: stageTime },
+    { published_readable: '2026-02-16T00:00:00.123Z' },
+    { archived: null, published_readable: stageTime },
+  ];
+  for (const stageTimestamps of rejected) {
+    const temporal = { ...baseTemporal, stageTimestamps: stageTimestamps as TradeObservation['temporal']['stageTimestamps'] };
+    const result = filterTemporalRecordsAtPerspective([makeTradeObs({ temporal })], perspective);
+    assert.deepEqual(result.visible, []);
+    assert.deepEqual(result.gaps.map(gap => gap.code), ['SYSTEM_HELD_STAGE_NOT_REACHED']);
+  }
+  const temporal = { ...baseTemporal, stageTimestamps: { acquired: null, custodied: undefined }, publishedAtUtc: stageTime };
+  const valid = makeTradeObs({ temporal });
+  assert.deepEqual(filterTemporalRecordsAtPerspective([valid], perspective), { visible: [valid], gaps: [] });
+  const invalid = { ...valid, temporal: { ...temporal, stageTimestamps: { acquired: [] } as unknown as typeof temporal.stageTimestamps } };
+  const result = filterTemporalRecordsAtPerspective([invalid], perspective);
+  assert.deepEqual(result.visible, []);
+  assert.deepEqual(result.gaps.map(gap => gap.code), ['SYSTEM_HELD_STAGE_NOT_REACHED']);
+});
+
 test('验收场景3（聚合防重叠与镜像差异诊断）：阻断五类重叠相加，保留进出口双方镜像统计差异与原因解释', () => {
   const regionMap = validateGeoRegionHierarchy(REGIONS);
   const perToChn = makeTradeObs();
@@ -545,6 +620,24 @@ test('财报录入四行业科目表（cas-primary-statements/2）、单位显�
     sourceId: 'wa_govt_digest',
   };
   assert.doesNotThrow(() => validateGeoCommodityObservation(validObs));
+  for (const [axis, unsupported] of [['category', 'throughput'], ['periodBasis', 'fortnight'], ['quantityBasis', 'carton']] as const) {
+    for (const value of [unsupported, 'not_reported']) {
+      const invalid = { ...validObs, [axis]: value } as GeoCommodityObservation;
+      assert.throws(() => validateGeoCommodityObservation(invalid), {
+        code: 'GLOBAL_SUPPLY_TRADE_OBSERVATION_AXIS', message: new RegExp(axis),
+      });
+    }
+  }
+  assert.throws(
+    () => validateGeoCommodityObservation({ ...validObs, capacityStatus: 'closed' as GeoCommodityObservation['capacityStatus'] }),
+    { code: 'GLOBAL_SUPPLY_TRADE_OBSERVATION_AXIS', message: /capacityStatus/ },
+  );
+  assert.throws(
+    () => validateGeoCommodityObservation({
+      ...validObs, category: 'inventory', inventoryScope: 'unknown_scope' as GeoCommodityObservation['inventoryScope'],
+    }),
+    { code: 'GLOBAL_SUPPLY_TRADE_OBSERVATION_AXIS', message: /inventoryScope/ },
+  );
   assert.throws(
     () => validateGeoCommodityObservation({ ...validObs, category: 'inventory', inventoryScope: 'port_annual_throughput' }),
     (err: { code?: string }) => err.code === 'GLOBAL_SUPPLY_TRADE_THROUGHPUT_AS_INVENTORY',

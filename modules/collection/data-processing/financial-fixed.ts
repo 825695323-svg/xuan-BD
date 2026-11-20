@@ -201,8 +201,8 @@ export function scaleFinancialUnitValue(rawLexeme: string, sourceUnit: string): 
 
 export interface ArticulationTermInput {
   concept: string;
-  scaledValue: string;
-  declaredPrecisionHalfUlp: string;
+  scaledValue: string | null;
+  declaredPrecisionHalfUlp: string | null;
   subjectKey?: string;
   periodKey?: string;
   startDate?: string;
@@ -301,11 +301,14 @@ export function verifyFinancialStatementArticulation(items: readonly Articulatio
   const multiGroup = groups.size > 1;
   const results: ArticulationCheckResult[] = [];
   for (const [groupKey, groupItems] of groups.entries()) {
-    const byConcept = new Map<string, ArticulationTermInput>();
+    const byConcept = new Map<string, { scaledValue: string; declaredPrecisionHalfUlp: string }>();
     const counts = new Map<string, number>();
     for (const item of groupItems) {
       counts.set(item.concept, (counts.get(item.concept) ?? 0) + 1);
-      byConcept.set(item.concept, item);
+      const { scaledValue, declaredPrecisionHalfUlp } = item;
+      if (scaledValue != null && declaredPrecisionHalfUlp != null) {
+        byConcept.set(item.concept, { scaledValue, declaredPrecisionHalfUlp });
+      }
     }
     for (const rule of ARTICULATION_RULES) {
       const missing = rule.terms.filter(t => !t.optional && !byConcept.has(t.concept)).map(t => t.concept);
@@ -543,7 +546,7 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
     };
     lineage.push({ businessKey: key, source: identity, additive: mapping.additive, unitFactor: allowUnitScale ? scaleRule.factor : '1',
       ...(allowUnitScale ? { sourceUnit: rowUnit, declaredPrecisionHalfUlp: scaled ? scaled.declaredPrecisionHalfUlp : null } : {}) });
-    if (scaled && expectedDim === 'money') {
+    if (expectedDim === 'money') {
       const subjectKey = canonicalWfdJson({
         subject: row.subject ?? null,
         subject_scheme: optionalField(row, 'subject_scheme'),
@@ -551,8 +554,8 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
       });
       articulationTerms.push({
         concept: mapping.code,
-        scaledValue: scaled.scaledValue,
-        declaredPrecisionHalfUlp: scaled.declaredPrecisionHalfUlp,
+        scaledValue: scaled?.scaledValue ?? null,
+        declaredPrecisionHalfUlp: scaled?.declaredPrecisionHalfUlp ?? null,
         subjectKey,
         periodKey: `${startDate}/${endDate}`,
         startDate,

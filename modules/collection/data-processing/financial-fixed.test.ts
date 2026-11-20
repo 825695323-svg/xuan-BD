@@ -209,6 +209,16 @@ test('legacy not_reported nulls remain compatible while unit conflicts, cross-co
   assert.equal(dupBs01?.status, 'indeterminate');
   assert.deepEqual(dupBs01?.duplicateConcepts, ['total_assets']);
 
+  for (const state of ['not_reported', 'unknown']) {
+    Object.assign((dup[1]!.values as WfdRecord).value as WfdRecord, { value: null, value_state: state });
+    const { input, reader } = calculation(dup);
+    const result = await projectFinancialFixed({ ...input, mappingProfile: 'cas-primary-statements/2', articulationCheck: true }, reader, new AbortController().signal);
+    const balance = result.evidence.articulation?.find(item => item.ruleId === 'BS-01');
+    assert.equal(balance?.status, 'indeterminate', state);
+    assert.deepEqual(balance?.duplicateConcepts, ['total_assets']);
+    assert.equal(balance?.residual, null);
+  }
+
   // 5. restatement_carrier without explicit column_role must be rejected
   const carrierRows = compatibleRows();
   ((carrierRows[0]!.values as WfdRecord).column_role = { value: 'current_period', value_state: 'valid_value', data_type: 'text', unit: { unit_code: 'text' } });

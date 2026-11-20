@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { checkR1TabularRows } from './r1-tabular.js';
+import { checkR1TabularRows, compileR1TabularDeclaration } from './r1-tabular.js';
 
 const names = ['open', 'high', 'low', 'close', 'volume', 'amount'];
 function fixture() {
@@ -32,6 +32,87 @@ function fixture() {
   };
 }
 const code = (expected: string) => (error: unknown) => error instanceof Error && 'code' in error && error.code === expected;
+
+function supplyTradeFixture(kind: string, values: Record<string, string>) {
+  const { declaration: base, row: time } = fixture();
+  const axes = Object.keys(values);
+  const { bar: _bar, ...mapping } = base.mapping;
+  const declaration = { ...base, mapping: { ...mapping,
+    fields: axes.map(fieldCode => ({ fieldCode, value: fieldCode, state: `${fieldCode}State` })),
+    supplyTrade: { kind, ...Object.fromEntries(axes.map(axis => [axis, axis])) } as Record<string, string>,
+  }, target: { ...base.target, inputMode: 'partial_observation', definition: { ...base.target.definition,
+    field_definitions: axes.map(field_code => ({ field_code, data_type: ['value', 'primaryValue'].includes(field_code) ? 'decimal' : 'text',
+      unit_code: ['value', 'primaryValue'].includes(field_code) ? 'count' : 'text', measurement_nature: 'flow', time_role: 'observation' })),
+  } } };
+  const row: Record<string, string> = { ...time, ...values, ...Object.fromEntries(axes.map(axis => [`${axis}State`, 'valid_value'])) };
+  return { declaration, row };
+}
+
+test('R1 trade requires declared row axes and supply/trade disallow complete snapshots', () => {
+  const { declaration: trade, row } = supplyTradeFixture('bilateral_trade_observation', {
+    regionId: 'AUS', partnerRegionId: 'CHN', partnerRole: 'last_known_destination',
+    flow: 'export', valuationBasis: 'FOB', currencyCode: 'USD', commodityId: 'iron_ore', stageCode: 'ore',
+    quantityBasis: 'dry_weight', unitCode: 'metric_ton', periodBasis: 'calendar_year', periodLabel: '2026',
+    value: '10', primaryValue: '50', externalScheme: 'HS', externalVersion: 'HS2022', externalCode: '2601',
+    externalMappingQuality: 'exact',
+  });
+  for (const flow of ['export', 'import', 're_export', 're_import']) assert.equal(checkR1TabularRows([{ ...row, flow }], trade).rows.length, 1);
+  for (const [axis, invalid] of [['flow', 'shipment'], ['valuationBasis', 'unknown'], ['partnerRole', 'not_reported'],
+    ['periodBasis', 'fortnight'], ['quantityBasis', 'carton'], ['currencyCode', '  '], ['currencyCode', '!!!'],
+    ['currencyCode', 'usd'], ['externalMappingQuality', 'approximate']]) {
+    assert.throws(() => checkR1TabularRows([{ ...row, [axis!]: invalid }], trade), code('R1_TABULAR_SUPPLY_TRADE_AXIS'));
+  }
+  for (const axis of ['flow', 'valuationBasis', 'partnerRole', 'currencyCode', 'externalMappingQuality']) {
+    assert.throws(() => checkR1TabularRows([{ ...row, [axis]: null, [`${axis}State`]: 'not_reported' }], trade), code('R1_TABULAR_SUPPLY_TRADE_AXIS'));
+  }
+  for (const periodBasis of ['calendar_year', 'fiscal_year', 'quarter', 'month', 'custom_period', 'ytd_cumulative']) {
+    assert.equal(checkR1TabularRows([{ ...row, periodBasis }], trade).rows.length, 1);
+  }
+  for (const externalMappingQuality of ['exact', 'broader_narrower', 'partial_overlap', 'pending_review']) {
+    assert.equal(checkR1TabularRows([{ ...row, externalMappingQuality }], trade).rows.length, 1);
+  }
+  const { externalMappingQuality: _quality, ...missingQuality } = row;
+  assert.throws(() => checkR1TabularRows([missingQuality], trade), code('R1_TABULAR_VALUE'));
+  const noQualityState = structuredClone(trade);
+  Reflect.deleteProperty(noQualityState.mapping.fields.find(field => field.fieldCode === 'externalMappingQuality')!, 'state');
+  assert.throws(() => checkR1TabularRows([row], noQualityState), code('R1_TABULAR_SUPPLY_TRADE_AXIS'));
+  const noQualityMapping = structuredClone(trade);
+  delete noQualityMapping.mapping.supplyTrade.externalMappingQuality;
+  assert.equal(checkR1TabularRows([{ ...row, externalMappingQuality: null, externalMappingQualityState: 'not_reported' }], noQualityMapping).rows.length, 1);
+  const noPartnerRole = structuredClone(trade);
+  delete noPartnerRole.mapping.supplyTrade.partnerRole;
+  assert.throws(() => compileR1TabularDeclaration(noPartnerRole), code('R1_TABULAR_MAPPING'));
+  for (const kind of ['bilateral_trade_observation', 'geo_commodity_observation']) {
+    const complete = structuredClone(trade);
+    complete.target.inputMode = 'complete_snapshot';
+    complete.mapping.supplyTrade.kind = kind;
+    if (kind === 'geo_commodity_observation') complete.mapping.supplyTrade.category = 'regionId';
+    assert.throws(() => compileR1TabularDeclaration(complete), code('R1_TABULAR_SUPPLY_TRADE_INPUT_MODE'));
+    assert.throws(() => checkR1TabularRows([row], complete), code('R1_TABULAR_SUPPLY_TRADE_INPUT_MODE'));
+  }
+});
+
+test('R1 geo commodity requires explicit axes and checks populated optional enums', () => {
+  const { declaration, row } = supplyTradeFixture('geo_commodity_observation', {
+    regionId: 'AUS', commodityId: 'iron_ore', stageCode: 'ore', category: 'inventory',
+    periodBasis: 'calendar_year', periodLabel: '2026', quantityBasis: 'dry_weight', unitCode: 'metric_ton',
+    value: '10', capacityStatus: 'not_applicable', inventoryScope: 'port_ending_stock',
+  });
+  assert.equal(checkR1TabularRows([row], declaration).rows.length, 1);
+  for (const axis of ['regionId', 'commodityId', 'stageCode', 'category', 'periodBasis', 'periodLabel', 'quantityBasis', 'unitCode']) {
+    assert.throws(() => checkR1TabularRows([{ ...row, [axis]: null, [`${axis}State`]: 'not_reported' }], declaration),
+      { code: 'R1_TABULAR_SUPPLY_TRADE_AXIS', message: new RegExp(axis) });
+    assert.throws(() => checkR1TabularRows([{ ...row, [axis]: 'not_reported' }], declaration),
+      { code: 'R1_TABULAR_SUPPLY_TRADE_AXIS', message: new RegExp(axis) });
+  }
+  for (const [axis, value] of [['category', 'throughput'], ['periodBasis', 'fortnight'], ['quantityBasis', 'carton'],
+    ['capacityStatus', 'closed'], ['capacityStatus', 'not_reported'], ['inventoryScope', 'unknown_scope'], ['inventoryScope', 'not_reported']] as const) {
+    assert.throws(() => checkR1TabularRows([{ ...row, [axis]: value }], declaration),
+      { code: 'R1_TABULAR_SUPPLY_TRADE_AXIS', message: new RegExp(axis) });
+  }
+  assert.equal(checkR1TabularRows([{ ...row, periodBasis: 'instant', capacityStatus: null, capacityStatusState: 'not_reported',
+    inventoryScope: null, inventoryScopeState: 'not_reported' }], declaration).rows.length, 1);
+});
 
 test('known price and quantity rules run despite unrelated unknown qualification axes', () => {
   const { declaration, row } = fixture(), result = checkR1TabularRows([row], declaration);

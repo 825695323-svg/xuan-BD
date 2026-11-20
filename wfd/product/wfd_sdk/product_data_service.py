@@ -3678,6 +3678,7 @@ class WFDDataOnlyService(WFDProductService):
         result["public_projection"] = self._public_projection_metadata(
             result.get("products", []), result.get("source_ids", []))
         result.pop("source_ids_by_product", None)
+        result.pop("published_source_ids_by_product", None)
         return result
 
     def trace(self, product_id, *, snapshot_id):

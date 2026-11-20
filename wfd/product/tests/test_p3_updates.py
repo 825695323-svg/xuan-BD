@@ -46,6 +46,44 @@ def _next(doc, sid, request_id):
     return result
 
 
+def test_complete_relation_snapshot_cannot_withdraw_open_world_edges(tmp_path):
+    service, doc = make_service(tmp_path)
+    out = doc["outputs"][0]
+    subject = {"kind": "entity", "namespace": "fixture", "id": "a"}
+    out.update(subject=subject, logical_domain="foundation", input_mode="partial_observation")
+    out["new_definition_declaration"].update(
+        semantic_code="synthetic.mixed.relations", measurement_nature="relation",
+        unit_code="not_applicable", time_role="validity")
+    member = {"business_key": "member", "subject": subject, "relation_type": "classified_as",
+              "object": {"kind": "definition", "namespace": "fixture", "id": "sector"},
+              "effective_period": known_time(2023), "public_time": known_time(2023)}
+    competitor = {**member, "business_key": "competitor", "relation_type": "competes_with",
+                  "object": {**subject, "id": "b"}}
+    out["payload"] = {"kind": "relation_edges", "rows": [member, competitor]}
+    out["coverage"] = {"scope": {"product": "synthetic.mixed.relations"}, "basis": "observed_partial",
+                       "completeness": "partial", "absence_means": "unknown", "coverage_evidence": []}
+    extension(doc, read_dependencies=[])
+    first = service.submit(doc)
+    assert first["status"] == "published_formal", first
+    sid, pid = first["snapshot_id"], first["output_results"][0]["product_id"]
+    update = _next(doc, sid, "relation-complete")
+    replacement = update["outputs"][0]
+    replacement["input_mode"] = "complete_snapshot"
+    replacement["payload"]["rows"] = [member]
+    replacement["coverage"].update(basis="declared_full", completeness="complete", absence_means="explicitly_absent")
+    rejected = service.submit(update)
+    assert rejected.get("snapshot_id") is None, rejected
+    assert [error["code"] for error in rejected["output_results"][0]["errors"]] == ["RELATION_COMPLETE_SNAPSHOT_UNSUPPORTED"], rejected
+    assert {row["row"]["business_key"] for row in service.read(pid, snapshot_id=sid)["rows"]} == {"member", "competitor"}
+
+    scoped = _next(update, sid, "relation-complete-scoped")
+    scoped["outputs"][0]["coverage"]["scope"] = {"business_keys": ["member"]}
+    accepted = service.submit(scoped)
+    assert accepted["status"] == "published_formal", accepted
+    discovered = service.discover_products(snapshot_id=accepted["snapshot_id"])
+    assert discovered["products"][0]["published_source_ids"] == ["fixture"]
+
+
 def test_complete_partial_incremental_and_coverage_revision(tmp_path):
     service, doc, s1, pid = _tabular_doc(tmp_path)
     old_rows = service.read(pid, snapshot_id=s1)["rows"]

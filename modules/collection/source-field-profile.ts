@@ -82,7 +82,7 @@ const valuationBases: readonly SourceValuationBasis[] = ['CIF', 'FOB', 'ex_works
 const periodBases: readonly SourcePeriodBasis[] = ['calendar_year', 'fiscal_year', 'month', 'quarter', 'day', 'minute', 'instant', 'unknown'];
 const mappingQualities: readonly SourceMappingQuality[] = ['exact', 'broader_narrower', 'partial_overlap', 'pending_review'];
 const dataTypes = ['decimal', 'integer', 'text', 'boolean'] as const;
-const unknownBasis = /^(?:authorized|approved|unknown|pending|待核|待确认|已确认|无依据)$/iu;
+const unknownBasis = /^(?:authorized|approved|unknown|unresolved|unspecified|pending|not[ _-](?:reported|disclosed)|unreported|undisclosed|待核|待确认|已确认|无依据|未报告|未披露|未知)$/iu;
 const knownMeaning = (value: string | undefined | null): value is string =>
   typeof value === 'string' && !!value.trim() && !unknownBasis.test(value.trim());
 
@@ -294,33 +294,38 @@ export function profileSemanticGaps(profile: SourceFieldProfile): string[] {
   }
   const ds = profile.domainScope;
   if (ds) {
-    if (ds.domain === 'geo_commodity' || ds.domain === 'bilateral_trade') {
-      if (!ds.quantityBasis || ds.quantityBasis === 'unknown')
+    const requiresGeographicScope = ds.domain === 'geo_commodity' || ds.domain === 'bilateral_trade';
+    if (requiresGeographicScope) {
+      if (!knownMeaning(ds.quantityBasis))
         gaps.push('数量计量基础（干重/湿重/金属含量/头数等）未知或未声明；不能跨来源认定等价。');
-      if (!ds.periodBasis || ds.periodBasis === 'unknown')
+      if (!knownMeaning(ds.periodBasis))
         gaps.push('统计期间口径（自然年/财年/月度等）未知或未声明；不能跨来源认定等价。');
-      if (!ds.processingStage)
-        gaps.push('商品加工阶段（processingStage）未声明；不能跨来源认定等价。');
-      if (!ds.statisticalAreaScheme)
-        gaps.push('地理/海关统计区域体系（statisticalAreaScheme）未声明；不能跨来源认定等价。');
     } else {
-      if (ds.quantityBasis === 'unknown') gaps.push('数量计量基础（干重/湿重/金属含量/头数等）未知；不能跨来源认定等价。');
-      if (ds.periodBasis === 'unknown') gaps.push('统计期间口径（自然年/财年/月度等）未知；不能跨来源认定等价。');
+      if (ds.quantityBasis !== undefined && !knownMeaning(ds.quantityBasis)) gaps.push('数量计量基础（干重/湿重/金属含量/头数等）未知；不能跨来源认定等价。');
+      if (ds.periodBasis !== undefined && !knownMeaning(ds.periodBasis)) gaps.push('统计期间口径（自然年/财年/月度等）未知；不能跨来源认定等价。');
     }
+    if ((requiresGeographicScope || Object.hasOwn(ds, 'processingStage')) && !knownMeaning(ds.processingStage))
+      gaps.push('商品加工阶段（processingStage）未知或未声明；不能跨来源认定等价。');
+    if ((requiresGeographicScope || Object.hasOwn(ds, 'statisticalAreaScheme')) && !knownMeaning(ds.statisticalAreaScheme))
+      gaps.push('地理/海关统计区域体系（statisticalAreaScheme）未知或未声明；不能跨来源认定等价。');
     if (ds.domain === 'bilateral_trade') {
-      if (!ds.valuationBasis || ds.valuationBasis === 'unknown')
+      if (!knownMeaning(ds.valuationBasis))
         gaps.push('贸易估价方式（CIF/FOB）未知或未声明；不能跨来源直接合并贸易金额。');
       if (!ds.commodityClassification)
         gaps.push('双边贸易商品外部分类（commodityClassification）未声明；不能跨来源认定等价。');
     }
     if (ds.domain === 'financial_statement') {
-      if (!ds.accountingStandard)
-        gaps.push('会计准则（accountingStandard）未声明；不能跨来源认定等价。');
-      if (!ds.statementScope || ds.statementScope === 'unknown')
+      if (!knownMeaning(ds.accountingStandard))
+        gaps.push('会计准则（accountingStandard）未知或未声明；不能跨来源认定等价。');
+      if (!knownMeaning(ds.statementScope))
         gaps.push('报表合并范围（statementScope）未知或未声明；不能跨来源认定等价。');
-      if (!ds.periodBasis || ds.periodBasis === 'unknown')
+      if (!knownMeaning(ds.periodBasis))
         gaps.push('财报期间口径（periodBasis）未知或未声明；不能跨来源认定等价。');
     }
+    if (ds.revisionPolicy !== undefined && !knownMeaning(ds.revisionPolicy))
+      gaps.push('历史修订保留口径（revisionPolicy）未知；不能跨来源认定等价。');
+    if (ds.commodityClassification && (!knownMeaning(ds.commodityClassification.scheme) || !knownMeaning(ds.commodityClassification.version)))
+      gaps.push('商品外部分类体系或版本（commodityClassification）未知或未声明；不能跨来源认定等价。');
     if (ds.commodityClassification && ds.commodityClassification.mappingQuality !== 'exact')
       gaps.push(`商品外部分类映射质量为 ${ds.commodityClassification.mappingQuality}（非精确对应）；存在分类换版拆分/合并或近似对应缺口。`);
   }
@@ -374,9 +379,9 @@ export function compareProfileSemantics(left: SourceFieldProfile, right: SourceF
       gaps.push('仅一方声明了领域口径（domainScope）；未核实对齐前不能跨来源认定等价。');
     } else {
       if (da.domain !== db.domain) differences.push(`业务领域不同：${da.domain} ≠ ${db.domain}`);
-      if (da.statisticalAreaScheme && db.statisticalAreaScheme && da.statisticalAreaScheme !== db.statisticalAreaScheme)
+      if (knownMeaning(da.statisticalAreaScheme) && knownMeaning(db.statisticalAreaScheme) && da.statisticalAreaScheme !== db.statisticalAreaScheme)
         differences.push(`地理/海关统计区域体系不同：${da.statisticalAreaScheme} ≠ ${db.statisticalAreaScheme}`);
-      if (da.processingStage && db.processingStage && da.processingStage !== db.processingStage)
+      if (knownMeaning(da.processingStage) && knownMeaning(db.processingStage) && da.processingStage !== db.processingStage)
         differences.push(`商品加工阶段不同：${da.processingStage} ≠ ${db.processingStage}`);
       if (da.quantityBasis && db.quantityBasis && da.quantityBasis !== 'unknown' && db.quantityBasis !== 'unknown' && da.quantityBasis !== db.quantityBasis)
         differences.push(`计量数量基础不同：${da.quantityBasis} ≠ ${db.quantityBasis}`);
@@ -386,13 +391,14 @@ export function compareProfileSemantics(left: SourceFieldProfile, right: SourceF
         differences.push(`统计期间口径不同：${da.periodBasis} ≠ ${db.periodBasis}`);
       if (da.revisionPolicy && db.revisionPolicy && da.revisionPolicy !== 'unknown' && db.revisionPolicy !== 'unknown' && da.revisionPolicy !== db.revisionPolicy)
         differences.push(`历史修订保留口径不同：${da.revisionPolicy} ≠ ${db.revisionPolicy}`);
-      if (da.accountingStandard && db.accountingStandard && da.accountingStandard !== db.accountingStandard)
+      if (knownMeaning(da.accountingStandard) && knownMeaning(db.accountingStandard) && da.accountingStandard !== db.accountingStandard)
         differences.push(`会计准则不同：${da.accountingStandard} ≠ ${db.accountingStandard}`);
       if (da.statementScope && db.statementScope && da.statementScope !== 'unknown' && db.statementScope !== 'unknown' && da.statementScope !== db.statementScope)
         differences.push(`报表合并范围不同：${da.statementScope} ≠ ${db.statementScope}`);
       if (da.commodityClassification && db.commodityClassification) {
         const ca = da.commodityClassification, cb = db.commodityClassification;
-        if (ca.scheme !== cb.scheme || ca.version !== cb.version)
+        if ((knownMeaning(ca.scheme) && knownMeaning(cb.scheme) && ca.scheme !== cb.scheme)
+          || (knownMeaning(ca.version) && knownMeaning(cb.version) && ca.version !== cb.version))
           differences.push(`商品外部分类版本不同：${ca.scheme}@${ca.version} ≠ ${cb.scheme}@${cb.version}`);
       }
     }

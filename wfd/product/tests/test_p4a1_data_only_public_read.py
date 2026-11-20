@@ -381,6 +381,17 @@ def _contract_refs(item):
 # ---------------------------------------------------------------------------
 # A. real machine process, four operations, pure data, trace denied
 # ---------------------------------------------------------------------------
+def test_discover_products_omits_published_source_ids(synthetic_store):
+    discovered = synthetic_store["service"].discover_products(
+        snapshot_id=synthetic_store["snapshot_id"])
+    products = discovered["products"]
+    assert {product["product_id"] for product in products} == set(
+        synthetic_store["product_ids"].values())
+    source_id_fields = {"published_source_ids_by_product", "published_source_ids"}
+    assert source_id_fields.isdisjoint(discovered)
+    assert all(source_id_fields.isdisjoint(product) for product in products)
+
+
 def test_machine_process_four_data_only_ops_are_pure_and_trace_denied(
         synthetic_store):
     snapshot_id = synthetic_store["snapshot_id"]

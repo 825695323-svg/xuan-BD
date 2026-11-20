@@ -29,7 +29,7 @@ import { decodeAdapterSource } from './endpoint-adapter.js';
 import type { EndpointAdapterRegistry } from './endpoint-adapter-registry.js';
 import {
   CANDIDATE_LIMITS, CANDIDATE_SELECTION_LIMITS, CANDIDATE_STAGE_VERSIONS, annotateCandidateTable, checkCandidateTables, cleanCandidateTable,
-  parseTableSource, structureCandidateTable, type AnnotatedCandidateTable, type CandidateTablePlan,
+  parseTableSource, readCandidateDictionaryMappings, structureCandidateTable, type AnnotatedCandidateTable, type CandidateTablePlan,
   type CandidateCsvSelectionEvidence, type CleanedCandidateTable, type ParsedCandidateTable, type StructuredCandidateTable,
 } from './candidate-pipeline.js';
 import {
@@ -269,7 +269,7 @@ export class ProcessingPlanService {
         engine: 'typescript', status: 'legacy_compatibility', reason: '受信 Polars 未装配，沿原冻结处理契约执行。',
         methods: ['trim', 'empty_to_null'], noSilentFallback: true },
       fieldDependencies: { route: '/processing/plans/:id/outputs/:outputId/dependencies', readOnly: true,
-        coverage: 'selected_processing_output_only', supported: ['plain_csv_json_mapping', 'constant_annotation'],
+        coverage: 'selected_processing_output_only', supported: ['plain_csv_json_mapping', 'constant_annotation', 'dictionary_mapping'],
         unknownTransforms: 'explicit_gaps', formalDownstreamImpact: false,
         exactRecordImpact: { method: 'POST', maxRecordRefs: RECORD_IMPACT_SELECTION_LIMIT, coverage: 'verified_parse_candidates_only' } },
       calculationMethods: 'not_part_of_cleaning',
@@ -322,7 +322,7 @@ export class ProcessingPlanService {
         compatibleInputs: 'optional {periodType:duration|instant,periods:[{startDate,endDate}]}; requires fixed report_nature, fiscal_calendar and comparability_basis alongside subject/scope/dimension/currency/unit',
         scope: 'CAS/CNY registered primary-statement concept mapping with original values and dimensions',
         limits: 'Resolved numeric CNY cells and registered concepts only; unmapped concepts are recorded as evidence' },
-      tableInputs: { common: ['materialId', 'format'], optional: ['fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations', 'numericFormats'],
+      tableInputs: { common: ['materialId', 'format'], optional: ['fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations', 'dictionaryMappings', 'numericFormats'],
         endpointAdapter: 'optional sourceAdapter:{adapterId,version,configDigest}; only an adopted version is resolved and frozen into this plan; format stays the carrier family (csv|json)',
         dedicated: { xlsx: { required: ['xlsxSelection'], shape: 'sheetName,headerRow,firstDataRow,lastDataRow,firstColumn,lastColumn,columns[{column,header,name,type?}]' },
           xbrl: { required: ['xbrlSelection'], shape: '{version:"bd-xbrl-numeric/1",reportId,reportVersion,concepts:["{namespaceURI}localName"]}; empty concepts selects all supported numeric facts' },
@@ -372,20 +372,22 @@ export class ProcessingPlanService {
     validateOperator(operator);
     const requestKey = requestKeyFor('plan', operator.requestId);
     const previous = this.request(requestKey);
+    const frozen = previous ? parseJson<NormalizedPlanInput>(previous.input_json) : null;
     let normalizationOperator = operator;
-    if (previous) {
-      const frozen = parseJson<{ operator: OperatorContext }>(previous.input_json).operator;
-      validateOperator(frozen);
-      if (digestOperationArgs(operatorRequestIdentity(operator)) !== digestOperationArgs(operatorRequestIdentity(frozen))) {
+    if (frozen) {
+      validateOperator(frozen.operator);
+      if (digestOperationArgs(operatorRequestIdentity(operator)) !== digestOperationArgs(operatorRequestIdentity(frozen.operator))) {
         fail('REQUEST_CONFLICT', '同一计划请求不能更换操作者、请求来源或会话分支。');
       }
       // 重发沿首次受理的证据时刻核对，不把当前 HTTP 到达时间误判为业务变更。
       // 保留当前受信消息核对函数，并重新核对全部原件、规则与声明，不能直接接受旧摘要。
-      normalizationOperator = { ...operator, observedAt: frozen.observedAt };
+      normalizationOperator = { ...operator, observedAt: frozen.operator.observedAt };
     }
     const normalized = this.normalizePlan(input, normalizationOperator);
-    if (previous) {
-      if (previous.content_digest !== normalized.contentDigest) fail('REQUEST_CONFLICT', '同一计划请求不能更换原件、规则、声明、维度或操作者。');
+    if (previous && frozen) {
+      // 旧摘要曾忽略业务同名键，使用首次受理时完整持久化的输入重算。
+      if (frozen.scopeKey !== normalized.scopeKey || planRequestDigest(frozen) !== normalized.contentDigest)
+        fail('REQUEST_CONFLICT', '同一计划请求不能更换原件、规则、声明、维度或操作者。');
       return this.task(previous);
     }
     this.assertDispatch();
@@ -514,7 +516,8 @@ export class ProcessingPlanService {
     const steps = this.stepRows(planId).filter(step => step.output_id === outputId).map(step => this.stepView(step));
     const missingSteps = this.document(plan).steps.filter(step => step.outputId === outputId && !steps.some(item => item.stepId === step.stepId));
     const dependencies: { outputField: string; materialId: string; sourceSha256: string;
-      inputField: string | null; kind: 'mapped_field' | 'constant'; stepId: string;
+      inputField: string | null; kind: 'mapped_field' | 'constant' | 'dictionary_mapping'; stepId: string;
+      dictionaryId?: string; dictionaryVersion?: string;
       specDigest: string; sourceArtifactSha256: string }[] = [];
     const recordDependencies: (ParsedRecordDependency & { stepId: string; specDigest: string; sourceArtifactSha256: string })[] = [];
     const recordGaps: string[] = [];
@@ -562,6 +565,18 @@ export class ProcessingPlanService {
         for (const outputField of Object.keys(parsed.annotations)) dependencies.push({ outputField,
           materialId: material.materialId, sourceSha256: material.sha256, inputField: null,
           kind: 'constant', stepId: annotation.stepId, specDigest: annotation.specDigest, sourceArtifactSha256: artifact.ref.sha256 });
+        if (annotation.parameters.dictionaryMappings !== undefined) {
+          const annotated = this.artifact(planId, annotation.stepId);
+          if (wfdSha256(annotated.bytes) !== annotated.step.outputDigest)
+            fail('PROCESSING_ARTIFACT_CHANGED', '字段依赖所依据的字典标注产物摘要不符。');
+          for (const [outputField, mapping] of Object.entries(readCandidateDictionaryMappings(annotation.parameters.dictionaryMappings))) {
+            const inputField = parsed.source_columns[parsed.columns.indexOf(mapping.sourceColumn)];
+            if (inputField === undefined) fail('PROCESSING_LINEAGE_CHANGED', '字典标注依赖的原始列身份无法核对。');
+            dependencies.push({ outputField, materialId: material.materialId, sourceSha256: material.sha256, inputField,
+              kind: 'dictionary_mapping', dictionaryId: mapping.dictionaryId, dictionaryVersion: mapping.version,
+              stepId: annotation.stepId, specDigest: annotation.specDigest, sourceArtifactSha256: annotated.ref.sha256 });
+          }
+        }
       }
       if (params.selection) gaps.push(`${spec.stepId}:row_selection_dependency_not_field_value_dependency`);
     }
@@ -722,7 +737,8 @@ export class ProcessingPlanService {
     const suggestions = dimensions.flatMap(item => item.suggestions);
     return { requestId: operator.requestId, operator: storedOperator(operator), materialId, facts, dimensions, suggestions,
       routingState: routing.routingState, gaps: routing.gaps, decisionId: randomUUID(),
-      contentDigest: digestOperationArgs(withoutVolatile({ materialId, sha256: facts.sha256, dimensions, operatorId: operator.operatorId, intendedAction })) };
+      contentDigest: digestOperationArgs(asJson({ materialId, sha256: facts.sha256,
+        dimensions: requestDimensions(dimensions), operatorId: operator.operatorId, intendedAction })) };
   }
 
   private normalizePlan(input: unknown, operator: OperatorContext): NormalizedPlanInput {
@@ -841,13 +857,7 @@ export class ProcessingPlanService {
         stages: item.stages, intendedAction: item.intendedAction, usage: item.usage,
         dimensions: item.dimensions.map(dimension => ({ key: dimension.key, status: dimension.status, value: dimension.value })) })),
       steps: allSteps.map(step => ({ stepId: step.stepId, specDigest: step.specDigest })) }));
-    const contentDigest = digestOperationArgs(withoutVolatile({ ...groupBinding, previousPlanId, operatorId: operator.operatorId,
-      policy: PROCESSING_POLICY.version,
-      materials: materials.map(material => ({ materialId: material.materialId, sha256: material.facts.sha256,
-        dimensions: material.dimensions, suggestions: material.suggestions, intendedAction: material.intendedAction })),
-      outputs: outputs.map(output => ({ outputId: output.outputId, materialIds: output.materialIds, tables: output.tables,
-        target: output.target, stages: output.stages, usage: output.usage, dimensions: output.dimensions, suggestions: output.suggestions,
-        rejectReason: output.rejectReason, coverage: output.coverage })) }));
+    const contentDigest = planRequestDigest({ ...groupBinding, previousPlanId, operator, materials, outputs });
     if (Buffer.byteLength(canonicalWfdJson({ materials, outputs, steps: allSteps }), 'utf8') > 2 * 1024 * 1024) fail('PROCESSING_INPUT_BUDGET', '计划输入超过持久化预算。');
     return { ...groupBinding, requestId: operator.requestId, previousPlanId, operator: storedOperator(operator), materials, outputs, steps: allSteps, scopeKey,
       executionDigest, contentDigest, reuseFromPlanId: previousPlanId ?? null };
@@ -1168,11 +1178,14 @@ export class ProcessingPlanService {
       structure.specDigest = stepDigest(structure, sourceForStructure);
       if (selected('structure')) steps.push(structure);
       const annotateId = `annotate:${outputId}:${index}`;
-      const annotateApplicable = Object.keys(table.annotations ?? {}).length > 0;
+      const hasDictionaryMappings = Object.keys(table.dictionaryMappings ?? {}).length > 0;
+      const annotateApplicable = Object.keys(table.annotations ?? {}).length > 0 || hasDictionaryMappings;
       const annotate: StepSpec = { stepId: annotateId, outputId, kind: 'annotate', required: annotateApplicable,
         applicability: annotateApplicable ? 'applicable' : 'not_applicable', dependsOn: [structureId], implementation: CANDIDATE_STAGE_VERSIONS.annotate,
-        parameters: { materialId: table.materialId, annotations: table.annotations ?? {} },
-        completion: annotateApplicable ? { kind: 'annotated_table', constants_do_not_override: true }
+        parameters: { materialId: table.materialId, annotations: table.annotations ?? {},
+          ...(hasDictionaryMappings ? { dictionaryMappings: table.dictionaryMappings } : {}) },
+        completion: annotateApplicable ? { kind: 'annotated_table', constants_do_not_override: true,
+          ...(hasDictionaryMappings ? { dictionary_mappings_do_not_override: true } : {}) }
           : { kind: 'pass_through', reason: '未声明常量标注；规则不适用。' },
         input: { kind: 'step', stepId: structureId, specDigest: structure.specDigest }, gaps: [], specDigest: '' };
       annotate.specDigest = stepDigest(annotate, structure);
@@ -1439,10 +1452,19 @@ export class ProcessingPlanService {
           type_changes_truncated: structured.type_changes_total > typeChanges.length } };
     } else if (step.kind === 'annotate') {
       const structured = this.readArtifact<StructuredCandidateTable>(dependencies[0]!.output!, 'structured-table');
-      const params = step.parameters as { annotations?: Record<string, string | number | boolean | null> };
-      const annotated = annotateCandidateTable(structured, params.annotations ?? {}), bytes = Buffer.from(canonicalWfdJson(annotated));
-      computed = { bytes, digest: wfdSha256(bytes), checkScope: ['constants_do_not_override', 'scalar_constants'],
-        gaps: ['常量标注来源与业务含义未由业务规则验证。'] };
+      const params = step.parameters as Pick<CandidateTablePlan, 'annotations' | 'dictionaryMappings'>;
+      const annotated = annotateCandidateTable(structured, params.annotations ?? {}, params.dictionaryMappings);
+      const bytes = Buffer.from(canonicalWfdJson(annotated));
+      const checkScope = [], gaps = [];
+      if (Object.keys(annotated.annotations).length) {
+        checkScope.push('constants_do_not_override', 'scalar_constants');
+        gaps.push('常量标注来源与业务含义未由业务规则验证。');
+      }
+      if (params.dictionaryMappings) {
+        checkScope.push('controlled_dictionary_mapping');
+        gaps.push('字典映射按固定条目执行；条目的业务含义仍需核实。');
+      }
+      computed = { bytes, digest: wfdSha256(bytes), checkScope, gaps };
     } else if (step.kind === 'check') {
       const tables = dependencies.map(dependency => this.readArtifact<AnnotatedCandidateTable>(dependency.output!, 'annotated-table', 'structured-table'));
       const checked = checkCandidateTables(tables);
@@ -1946,7 +1968,7 @@ function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[]
   if (value === undefined) return [];
   const list = readArray(value, 1, PROCESSING_LIMITS.maxTablesPerOutput, 'PROCESSING_TABLES');
   return list.map(item => {
-    const record = readRecord(item, ['materialId', 'format', 'sourceAdapter', 'sourceContext', 'sourceReceiptTaskId', 'fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations', 'selection', 'xlsxSelection', 'sourceProjection', 'numericFormats', 'xbrlSelection', 'necessaryTextSelection', 'eventTextSelection', 'pdfSelection', 'financialCalculation', 'ocrClaimSelection', 'transcriptionClaimSelection'], 'PROCESSING_TABLE');
+    const record = readRecord(item, ['materialId', 'format', 'sourceAdapter', 'sourceContext', 'sourceReceiptTaskId', 'fieldMapping', 'types', 'trim', 'emptyToNull', 'annotations', 'dictionaryMappings', 'selection', 'xlsxSelection', 'sourceProjection', 'numericFormats', 'xbrlSelection', 'necessaryTextSelection', 'eventTextSelection', 'pdfSelection', 'financialCalculation', 'ocrClaimSelection', 'transcriptionClaimSelection'], 'PROCESSING_TABLE');
     const materialId = readId(record.materialId, 'PROCESSING_MATERIAL_ID');
     if (!materialIds.includes(materialId)) fail('PROCESSING_TABLES', '表源必须属于本输出的原件。');
     if (!['csv', 'json', 'xlsx', 'xbrl', 'text', 'pdf', 'financial-fixed', 'ocr-review', 'transcription-review'].includes(String(record.format))) fail('PROCESSING_TABLES', '表源须明确为受支持格式及其专用选择规则。');
@@ -1958,6 +1980,7 @@ function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[]
     if (record.sourceContext !== undefined && record.sourceReceiptTaskId !== undefined)
       fail('PROCESSING_TABLES', '同一表源不能同时声明合成上下文与真实取得回执。');
     for (const key of ['fieldMapping', 'types', 'annotations'] as const) if (record[key] !== undefined && !isWfdRecord(record[key])) fail('PROCESSING_TABLES', `${key} 须为明确对象。`);
+    const dictionaryMappings = record.dictionaryMappings === undefined ? undefined : readCandidateDictionaryMappings(record.dictionaryMappings);
     for (const key of ['trim', 'emptyToNull'] as const) if (record[key] !== undefined && (!Array.isArray(record[key]) || (record[key] as unknown[]).some(value => typeof value !== 'string'))) fail('PROCESSING_TABLES', `${key} 须为字符串数组。`);
     let selection: CandidateTablePlan['selection'];
     if (record.selection !== undefined) {
@@ -2005,6 +2028,7 @@ function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[]
       ...(Object.keys(types).length ? { types } : {}),
       ...(record.trim ? { trim: record.trim as string[] } : {}), ...(record.emptyToNull ? { emptyToNull: record.emptyToNull as string[] } : {}),
       ...(record.annotations ? { annotations: record.annotations as Record<string, string | number | boolean | null> } : {}),
+      ...(dictionaryMappings && Object.keys(dictionaryMappings).length ? { dictionaryMappings } : {}),
       ...(selection ? { selection } : {}), ...(sourceProjection ? { sourceProjection } : {}) };
   });
 }
@@ -2036,8 +2060,23 @@ function locate(text: string, start: number, end: number): Pick<MaterialLocation
   for (let index = 0; index < start; index++) if (text[index] === '\n') { line++; lineStart = index + 1; }
   return { start, end, line, column: start - lineStart + 1 };
 }
-function withoutVolatile<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value, (key, item) => key === 'observedAt' ? undefined : item)) as T;
+function requestDimensions(dimensions: NormalizedDimension[]): NormalizedDimension[] {
+  return dimensions.map(dimension => ({ ...dimension, evidence: dimension.evidence.map(evidence => {
+    if (evidence.source !== 'operator-http') return evidence;
+    const { observedAt: _observedAt, ...identity } = evidence;
+    return identity;
+  }) }));
+}
+function planRequestDigest(input: Pick<NormalizedPlanInput, 'consistencyGroups' | 'previousPlanId' | 'operator' | 'materials' | 'outputs'>): string {
+  return digestOperationArgs(asJson({
+    ...(input.consistencyGroups ? { consistencyGroups: input.consistencyGroups } : {}),
+    previousPlanId: input.previousPlanId, operatorId: input.operator.operatorId, policy: PROCESSING_POLICY.version,
+    materials: input.materials.map(material => ({ materialId: material.materialId, sha256: material.facts.sha256,
+      dimensions: requestDimensions(material.dimensions), suggestions: material.suggestions, intendedAction: material.intendedAction })),
+    outputs: input.outputs.map(output => ({ outputId: output.outputId, materialIds: output.materialIds, tables: output.tables,
+      target: output.target, stages: output.stages, usage: output.usage, dimensions: requestDimensions(output.dimensions),
+      suggestions: output.suggestions, rejectReason: output.rejectReason, coverage: output.coverage })),
+  }));
 }
 function parseJson<T = unknown>(value: string): T { try { return JSON.parse(value) as T; } catch { fail('PROCESSING_JSON', '持久记录不是有效 JSON。'); } }
 function json(value: unknown): JsonValue { return JSON.parse(canonicalWfdJson(value)) as JsonValue; }

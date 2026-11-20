@@ -41,24 +41,12 @@ export interface EnterpriseLocationBinding {
 }
 
 export type CommodityChainPosition = 'raw_material' | 'intermediate' | 'finished_good';
-export type CommodityQuantityBasis =
-  | 'gross_weight'
-  | 'net_weight'
-  | 'dry_weight'
-  | 'wet_weight'
-  | 'metal_content'
-  | 'carcass_weight'
-  | 'shipped_weight'
-  | 'head_count'
-  | 'volume'
-  | 'energy'
-  | 'count';
+export const COMMODITY_QUANTITY_BASES = ['gross_weight', 'net_weight', 'dry_weight', 'wet_weight', 'metal_content',
+  'carcass_weight', 'shipped_weight', 'head_count', 'volume', 'energy', 'count'] as const;
+export type CommodityQuantityBasis = typeof COMMODITY_QUANTITY_BASES[number];
 
-export type ExternalClassificationMappingQuality =
-  | 'exact'
-  | 'broader_narrower'
-  | 'partial_overlap'
-  | 'pending_review';
+export const EXTERNAL_CLASSIFICATION_MAPPING_QUALITIES = ['exact', 'broader_narrower', 'partial_overlap', 'pending_review'] as const;
+export type ExternalClassificationMappingQuality = typeof EXTERNAL_CLASSIFICATION_MAPPING_QUALITIES[number];
 
 export interface CommodityExternalClassification {
   scheme: string;
@@ -88,22 +76,15 @@ export interface CommodityMasterProfile {
   };
 }
 
-export type GeoObservationCategory =
-  | 'resource_reserve'
-  | 'production_capacity'
-  | 'actual_output'
-  | 'domestic_use'
-  | 'inventory'
-  | 'import_export_summary';
-
-export type CapacityOrFacilityStatus =
-  | 'planned'
-  | 'under_construction'
-  | 'commissioning'
-  | 'operational_effective'
-  | 'nameplate_designed'
-  | 'suspended'
-  | 'not_applicable';
+export const GEO_OBSERVATION_CATEGORIES = ['resource_reserve', 'production_capacity', 'actual_output',
+  'domestic_use', 'inventory', 'import_export_summary'] as const;
+export type GeoObservationCategory = typeof GEO_OBSERVATION_CATEGORIES[number];
+export const GEO_OBSERVATION_PERIOD_BASES = ['calendar_year', 'fiscal_year', 'month', 'instant'] as const;
+export const CAPACITY_OR_FACILITY_STATUSES = ['planned', 'under_construction', 'commissioning',
+  'operational_effective', 'nameplate_designed', 'suspended', 'not_applicable'] as const;
+export type CapacityOrFacilityStatus = typeof CAPACITY_OR_FACILITY_STATUSES[number];
+export const INVENTORY_SCOPES = ['port_ending_stock', 'commercial_stock', 'in_transit_stock',
+  'producer_stock', 'port_annual_throughput'] as const;
 
 export type TradeOrObservationValueState =
   | 'valid_value'
@@ -137,14 +118,14 @@ export interface GeoCommodityObservation {
   stageCode: string;
   category: GeoObservationCategory;
   metricCode: string;
-  periodBasis: 'calendar_year' | 'fiscal_year' | 'month' | 'instant';
+  periodBasis: typeof GEO_OBSERVATION_PERIOD_BASES[number];
   periodLabel: string;
   quantityBasis: CommodityQuantityBasis;
   unitCode: string;
   value: string | null;
   valueState: TradeOrObservationValueState;
   capacityStatus?: CapacityOrFacilityStatus;
-  inventoryScope?: 'port_ending_stock' | 'commercial_stock' | 'in_transit_stock' | 'producer_stock' | 'port_annual_throughput';
+  inventoryScope?: typeof INVENTORY_SCOPES[number];
   temporal: TemporalQualification;
   sourceId: string;
 }
@@ -152,6 +133,8 @@ export interface GeoCommodityObservation {
 export type TradeFlowDirection = 'import' | 'export' | 're_import' | 're_export';
 export type TradePartnerRole = 'origin' | 'last_known_destination' | 'consignment_or_transit';
 export type TradeValuationBasis = 'CIF' | 'FOB' | 'ex_works' | 'unknown';
+
+export const TRADE_PERIOD_BASES = ['calendar_year', 'fiscal_year', 'quarter', 'month', 'custom_period', 'ytd_cumulative'] as const;
 
 export interface TradeObservation {
   observationKey: string;
@@ -166,7 +149,7 @@ export interface TradeObservation {
   commodityId: string;
   stageCode: string;
   externalClassification: CommodityExternalClassification;
-  periodBasis: 'calendar_year' | 'fiscal_year' | 'month' | 'ytd_cumulative';
+  periodBasis: typeof TRADE_PERIOD_BASES[number];
   periodLabel: string;
   primaryValue: string | null;
   currencyCode: string;
@@ -287,7 +270,7 @@ export function checkHsClassificationContinuity(
       gap: `外部分类（${left.scheme} ${left.version}→${right.version}）映射质量为 ${quality}（存在拆分、合并或近似对应），不能自动合并为无断点时间序列。`,
     };
   }
-  if (left.version !== right.version && left.code !== right.code) {
+  if (left.version !== right.version) {
     return {
       continuous: false,
       gap: `外部分类版本由 ${left.version}(${left.code}) 切换为 ${right.version}(${right.code})，须显式应用版本转换桥并标注修订断点。`,
@@ -300,6 +283,16 @@ export function checkHsClassificationContinuity(
  * 3. 地区供需观测、设施扰动区分与由数据生成摘要标签
  */
 export function validateGeoCommodityObservation(obs: GeoCommodityObservation): void {
+  if (!GEO_OBSERVATION_CATEGORIES.includes(obs.category))
+    fail('OBSERVATION_AXIS', `观测 ${obs.observationKey} 的 category 无效：${obs.category}。`);
+  if (!GEO_OBSERVATION_PERIOD_BASES.includes(obs.periodBasis))
+    fail('OBSERVATION_AXIS', `观测 ${obs.observationKey} 的 periodBasis 无效：${obs.periodBasis}。`);
+  if (!COMMODITY_QUANTITY_BASES.includes(obs.quantityBasis))
+    fail('OBSERVATION_AXIS', `观测 ${obs.observationKey} 的 quantityBasis 无效：${obs.quantityBasis}。`);
+  if (obs.capacityStatus !== undefined && !CAPACITY_OR_FACILITY_STATUSES.includes(obs.capacityStatus))
+    fail('OBSERVATION_AXIS', `观测 ${obs.observationKey} 的 capacityStatus 无效：${obs.capacityStatus}。`);
+  if (obs.inventoryScope !== undefined && !INVENTORY_SCOPES.includes(obs.inventoryScope))
+    fail('OBSERVATION_AXIS', `观测 ${obs.observationKey} 的 inventoryScope 无效：${obs.inventoryScope}。`);
   if (obs.category === 'inventory' && obs.inventoryScope === 'port_annual_throughput') {
     fail('THROUGHPUT_AS_INVENTORY', '港口全年吞吐量属于期间流量，严禁作为期末库存（存量）录入。');
   }
@@ -571,6 +564,7 @@ export interface MirrorDiscrepancyDiagnosis {
   quantityDifference: string | null;
   valueDifference: string | null;
   status: 'exact_match' | 'explainable_statistical_mirror_difference';
+  classificationGap?: string;
   plausibleReasons: ('cif_vs_fob_valuation' | 'third_region_transit_or_consignment' | 'cross_period_in_transit_lag' | 'confidential_or_unreported_suppression' | 'statistical_system_difference')[];
 }
 
@@ -615,14 +609,14 @@ export function diagnoseBilateralTradeMirror(
   if (exportObs.currencyCode !== importObs.currencyCode) {
     fail('MIRROR_CURRENCY_MISMATCH', `镜像对比的计价币种不一致（${exportObs.currencyCode} ≠ ${importObs.currencyCode}）。`);
   }
-  if (exportObs.externalClassification.scheme === importObs.externalClassification.scheme
-    && exportObs.externalClassification.version === importObs.externalClassification.version
-    && exportObs.externalClassification.code !== importObs.externalClassification.code) {
+  const left = exportObs.externalClassification, right = importObs.externalClassification;
+  if (left.scheme !== right.scheme || (left.version === right.version && left.code !== right.code)) {
     fail('MIRROR_CLASSIFICATION_MISMATCH',
-      `镜像对比的商品外部分类代码不一致（${exportObs.externalClassification.code} ≠ ${importObs.externalClassification.code}）。`);
+      `镜像对比的商品外部分类不一致（${left.scheme}@${left.version}:${left.code} ≠ ${right.scheme}@${right.version}:${right.code}）。`);
   }
   const reasons: MirrorDiscrepancyDiagnosis['plausibleReasons'] = [];
-  if (!checkHsClassificationContinuity(exportObs.externalClassification, importObs.externalClassification).continuous) {
+  const classificationGap = checkHsClassificationContinuity(left, right).gap;
+  if (classificationGap) {
     reasons.push('statistical_system_difference');
   }
   if (exportObs.valuationBasis !== importObs.valuationBasis) reasons.push('cif_vs_fob_valuation');
@@ -657,6 +651,7 @@ export function diagnoseBilateralTradeMirror(
     quantityDifference: qtyDiff,
     valueDifference: valDiff,
     status: exact ? 'exact_match' : 'explainable_statistical_mirror_difference',
+    ...(classificationGap ? { classificationGap } : {}),
     plausibleReasons: reasons,
   };
 }
@@ -692,6 +687,8 @@ export function filterTemporalRecordsAtPerspective<T extends { temporal: Tempora
     };
   }
   const stageRank = { acquired: 1, custodied: 2, published_readable: 3 } as const;
+  const stageFields = { acquired: ['acquiredAtUtc'], custodied: ['custodiedAtUtc'],
+    published_readable: ['publishedReadableAtUtc', 'publishedAtUtc'] } as const;
   const candidates: { record: T; orderMs: number; key: string | null }[] = [];
 
   for (const record of records) {
@@ -740,21 +737,29 @@ export function filterTemporalRecordsAtPerspective<T extends { temporal: Tempora
     }
     // system_held_at
     const requiredStage = perspective.usableStage ?? 'published_readable';
+    const stageTimestamps = t.stageTimestamps;
+    const hasStageTimestamps = Object.hasOwn(t, 'stageTimestamps');
+    const hasStageTimes = hasStageTimestamps && isWfdRecord(stageTimestamps);
+    const invalidStageMember = hasStageTimes && Reflect.ownKeys(stageTimestamps).some(key => {
+      if (!Object.hasOwn(stageFields, key)) return true;
+      const value: unknown = Reflect.get(stageTimestamps, key);
+      return value != null && (!isExplicitUtcInstant(value) || value.includes('.'));
+    });
+    const explicitStageTime = hasStageTimes && Object.hasOwn(stageTimestamps, requiredStage)
+      ? { value: stageTimestamps[requiredStage] }
+      : [t, recAny].flatMap(source => stageFields[requiredStage]
+        .filter(field => Object.hasOwn(source, field)).map(field => ({ value: Reflect.get(source, field) as unknown })))[0];
+    if (invalidStageMember || (explicitStageTime ? explicitStageTime.value == null
+      || (typeof explicitStageTime.value === 'string' && !explicitStageTime.value.trim()) : hasStageTimestamps)) {
+      gaps.push({ code: 'SYSTEM_HELD_STAGE_NOT_REACHED', revisionId: t.revisionId,
+        reason: `阶段 ${requiredStage} 缺少有效显式时间戳，或阶段时间戳容器存在非法成员；该阶段尚未到达。` });
+      continue;
+    }
     if (stageRank[t.usableStage] < stageRank[requiredStage]) {
       continue;
     }
-    const explicitStageTime =
-      requiredStage === 'published_readable'
-        ? (t.stageTimestamps?.published_readable ?? t.publishedReadableAtUtc ?? t.publishedAtUtc
-          ?? (typeof recAny.publishedReadableAtUtc === 'string' ? recAny.publishedReadableAtUtc : undefined)
-          ?? (typeof recAny.publishedAtUtc === 'string' ? recAny.publishedAtUtc : undefined))
-        : requiredStage === 'custodied'
-          ? (t.stageTimestamps?.custodied ?? t.custodiedAtUtc
-            ?? (typeof recAny.custodiedAtUtc === 'string' ? recAny.custodiedAtUtc : undefined))
-          : (t.stageTimestamps?.acquired ?? t.acquiredAtUtc
-            ?? (typeof recAny.acquiredAtUtc === 'string' ? recAny.acquiredAtUtc : undefined));
-    const stageUtc = explicitStageTime !== undefined ? explicitStageTime : t.systemHeldAtUtc;
-    const heldMs = stageUtc ? parseR1Utc(stageUtc) : NaN;
+    const stageUtc = explicitStageTime ? explicitStageTime.value : t.systemHeldAtUtc;
+    const heldMs = typeof stageUtc === 'string' ? parseR1Utc(stageUtc) : NaN;
     if (!Number.isFinite(heldMs)) {
       gaps.push({ code: 'SYSTEM_HELD_TIME_UNKNOWN', revisionId: t.revisionId, reason: `缺少本系统在 ${requiredStage} 阶段实际持有该版本的时间戳。` });
       continue;

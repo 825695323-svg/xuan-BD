@@ -67,6 +67,7 @@ export interface CandidateTablePlan {
   types?: Record<string, 'string' | 'safe_integer' | 'decimal_string' | 'boolean' | 'binary64_hex'>;
   trim?: string[]; emptyToNull?: string[];
   annotations?: Record<string, string | number | boolean | null>;
+  dictionaryMappings?: Record<string, CandidateDictionaryMapping>;
 }
 /** 一个原值单元格的受管证据；original 永不因清洗或类型转换被覆盖。 */
 export interface CandidateCellEvidence {
@@ -341,6 +342,20 @@ export interface CandidateDictionaryMapping {
   entries: Record<string, string | number | boolean | null>;
   unmappedPolicy?: 'null' | 'fail';
 }
+export function readCandidateDictionaryMappings(value: unknown): Record<string, CandidateDictionaryMapping> {
+  const keys = ['sourceColumn', 'dictionaryId', 'version', 'entries', 'unmappedPolicy'];
+  const validText = (text: unknown) => typeof text === 'string' && !!text.trim() && text.length <= 256 && !/[\u0000-\u001f]/u.test(text);
+  if (!isWfdRecord(value) || Object.keys(value).length > CANDIDATE_LIMITS.maxFields)
+    return fail('CANDIDATE_DICTIONARY_MAPPING', '受控字典映射须为有界的目标列对象。');
+  for (const [target, spec] of Object.entries(value)) {
+    if (!validText(target) || !isWfdRecord(spec) || Object.keys(spec).some(key => !keys.includes(key))
+      || !validText(spec.sourceColumn) || !validText(spec.dictionaryId) || !validText(spec.version)
+      || !isWfdRecord(spec.entries) || !Object.values(spec.entries).every(scalar)
+      || (spec.unmappedPolicy !== undefined && spec.unmappedPolicy !== 'null' && spec.unmappedPolicy !== 'fail'))
+      fail('CANDIDATE_DICTIONARY_MAPPING', `受控字典 ${target} 须声明源列、字典标识和版本、标量条目及可选未匹配策略。`);
+  }
+  return value as Record<string, CandidateDictionaryMapping>;
+}
 /** 标注步骤：加入不与原列重名的明确常量与可选受控字典映射列，不覆盖原值。 */
 export function annotateCandidateTable(
   structured: StructuredCandidateTable,
@@ -348,24 +363,24 @@ export function annotateCandidateTable(
   dictionaryMappings?: Record<string, CandidateDictionaryMapping>,
 ): AnnotatedCandidateTable {
   const applied = annotations ?? structured.annotations;
-  if (!dictionaryMappings || !Object.keys(dictionaryMappings).length) {
-    return { ...structured, kind: 'annotated-table', annotations: { ...applied }, fields: [...structured.columns, ...Object.keys(applied)] };
+  const annotationFields = Object.keys(applied);
+  const mappings = dictionaryMappings === undefined ? {} : readCandidateDictionaryMappings(dictionaryMappings);
+  const extraCols = Object.keys(mappings);
+  if (structured.columns.length + annotationFields.length + extraCols.length > CANDIDATE_LIMITS.maxFields) {
+    fail('CANDIDATE_FIELDS_LIMIT', `原列、常量列和受控字典派生列合计不得超过 ${CANDIDATE_LIMITS.maxFields} 列。`);
   }
-  const extraCols: string[] = [];
+  if (!extraCols.length) {
+    return { ...structured, kind: 'annotated-table', annotations: { ...applied }, fields: [...structured.columns, ...annotationFields] };
+  }
   const specs: { targetCol: string; sourceIndex: number; spec: CandidateDictionaryMapping }[] = [];
-  for (const [targetCol, spec] of Object.entries(dictionaryMappings)) {
-    if (!targetCol || structured.columns.includes(targetCol) || Object.hasOwn(applied, targetCol) || extraCols.includes(targetCol)) {
+  for (const [targetCol, spec] of Object.entries(mappings)) {
+    if (structured.columns.includes(targetCol) || Object.hasOwn(applied, targetCol)) {
       fail('CANDIDATE_DICTIONARY_MAPPING', `受控字典映射目标列 ${targetCol} 非法或与已有列/常量冲突。`);
     }
     const sourceIndex = structured.columns.indexOf(spec.sourceColumn);
     if (sourceIndex < 0) {
       fail('CANDIDATE_DICTIONARY_MAPPING', `受控字典映射引用了不存在的源列 ${spec.sourceColumn}。`);
     }
-    if (!spec.dictionaryId.trim() || !spec.version.trim() || !isWfdRecord(spec.entries)
-      || Object.values(spec.entries).some(v => !scalar(v))) {
-      fail('CANDIDATE_DICTIONARY_MAPPING', `受控字典 ${targetCol} 须声明有效 dictionaryId、version 与标量映射条目。`);
-    }
-    extraCols.push(targetCol);
     specs.push({ targetCol, sourceIndex, spec });
   }
   const rows = structured.rows.map((row, rowIndex) => {
@@ -403,7 +418,7 @@ export function annotateCandidateTable(
     columns,
     rows,
     annotations: { ...applied },
-    fields: [...columns, ...Object.keys(applied)],
+    fields: [...columns, ...annotationFields],
   };
 }
 

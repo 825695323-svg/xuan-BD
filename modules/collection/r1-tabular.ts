@@ -4,15 +4,20 @@ import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../
 import { TaskError } from '../../platform/jobs/tasks.js';
 import {
   assertTradeAggregationNoOverlap,
+  CAPACITY_OR_FACILITY_STATUSES,
+  COMMODITY_QUANTITY_BASES,
+  EXTERNAL_CLASSIFICATION_MAPPING_QUALITIES,
+  GEO_OBSERVATION_CATEGORIES,
+  GEO_OBSERVATION_PERIOD_BASES,
+  INVENTORY_SCOPES,
+  TRADE_PERIOD_BASES,
   validateGeoCommodityObservation,
   validateGeoRegionHierarchy,
-  type CapacityOrFacilityStatus,
-  type CommodityQuantityBasis,
   type GeoCommodityObservation,
-  type GeoObservationCategory,
   type GeoRegionMaster,
   type TradeFlowDirection,
   type TradeObservation,
+  type TradePartnerRole,
   type TradeOrObservationValueState,
   type TradeValuationBasis,
 } from './data-processing/global-supply-trade.js';
@@ -23,8 +28,10 @@ const IMPLEMENTATION_SHA256 = wfdSha256(Buffer.concat([
   readFileSync(new URL('./data-processing/global-supply-trade.ts', import.meta.url)),
 ]));
 const SUPPLY_TRADE_BASE_KEYS = ['regionId', 'commodityId', 'stageCode', 'quantityBasis', 'unitCode', 'periodBasis', 'periodLabel', 'value'] as const;
-const SUPPLY_TRADE_OPT_KEYS = ['category', 'capacityStatus', 'inventoryScope', 'partnerRegionId', 'flow', 'isSubFlowOf',
-  'valuationBasis', 'currencyCode', 'primaryValue', 'externalScheme', 'externalVersion', 'externalCode', 'externalParentCode', 'externalMappingQuality'] as const;
+const BILATERAL_TRADE_AXES = ['partnerRegionId', 'partnerRole', 'flow', 'valuationBasis', 'currencyCode',
+  'externalScheme', 'externalVersion', 'externalCode'] as const;
+const SUPPLY_TRADE_OPT_KEYS = ['category', 'capacityStatus', 'inventoryScope', ...BILATERAL_TRADE_AXES, 'isSubFlowOf',
+  'primaryValue', 'externalParentCode', 'externalMappingQuality'] as const;
 const PRICE_ROLES = ['open', 'high', 'low', 'close'] as const;
 const QUANTITY_ROLES = ['volume', 'amount'] as const;
 const MARKET_ROLES = [...PRICE_ROLES, ...QUANTITY_ROLES] as const;
@@ -80,6 +87,7 @@ export function compileR1TabularDeclaration(value: unknown): R1TabularCompilatio
   const roleCodes = bar ? MARKET_ROLES.flatMap(role => bar[role] ? [bar[role]] : []) : [];
   if (new Set(roleCodes).size !== roleCodes.length || roleCodes.some(code => !byCode.has(code))) fail('FIELDS', '行情角色必须引用不同的实际合同字段。');
   if (mapping.supplyTrade) {
+    if (target.inputMode === 'complete_snapshot') fail('SUPPLY_TRADE_INPUT_MODE', '贸易与供需观测不支持 complete_snapshot；缺席无法证明零值或不存在。');
     const stCodes = [...SUPPLY_TRADE_BASE_KEYS, ...SUPPLY_TRADE_OPT_KEYS]
       .flatMap(key => mapping.supplyTrade![key] ? [mapping.supplyTrade![key]!] : []);
     if (stCodes.some(code => !byCode.has(code))) fail('FIELDS', '全球供需与贸易角色必须引用已声明的实际合同字段。');
@@ -243,7 +251,7 @@ function readDeclaration(value: unknown): Declaration {
       fail('MAPPING', 'supplyTrade.kind 须为 geo_commodity_observation 或 bilateral_trade_observation。');
     for (const key of SUPPLY_TRADE_BASE_KEYS) text(st[key], 128);
     if (st.kind === 'geo_commodity_observation') text(st.category, 128);
-    else for (const key of ['partnerRegionId', 'flow', 'valuationBasis', 'currencyCode', 'primaryValue', 'externalScheme', 'externalVersion', 'externalCode'] as const) text(st[key], 128);
+    else for (const key of [...BILATERAL_TRADE_AXES, 'primaryValue'] as const) text(st[key], 128);
     for (const key of SUPPLY_TRADE_OPT_KEYS) if (st[key] !== undefined) text(st[key], 128);
   }
   for (const field of mapping.fields) {
@@ -366,25 +374,37 @@ function checkSupplyTradeRows(rows: readonly WfdRecord[], st: R1SupplyTradeMappi
       ? state
       : state === 'not_reported' || state === 'unknown' ? 'unreported_missing' : 'not_covered'
   );
+  type Axis = Exclude<typeof SUPPLY_TRADE_BASE_KEYS[number], 'value'> | typeof BILATERAL_TRADE_AXES[number]
+    | 'category' | 'capacityStatus' | 'inventoryScope' | 'externalMappingQuality';
+  const requiredAxis = (row: WfdRecord, axis: Axis): string => {
+    const { value, state } = cellOf(row, st[axis]);
+    if (state !== 'valid_value' || value === null || !known(value.trim()) || /^(not_reported|unresolved)$/iu.test(value.trim()))
+      return fail('SUPPLY_TRADE_AXIS', `供需贸易观测 ${String(row.business_key)} 缺少明确的 ${axis}。`);
+    return value;
+  };
+  const enumAxis = <T extends string>(row: WfdRecord, axis: Axis, allowed: readonly T[], value = requiredAxis(row, axis)): T =>
+    allowed.find(option => option === value) ?? fail('SUPPLY_TRADE_AXIS', `供需贸易观测 ${String(row.business_key)} 的 ${axis} 无效：${value}。`);
   if (st.kind === 'geo_commodity_observation') {
     for (const row of rows) {
       const obsTime = object(row.observation_time);
       const valCell = cellOf(row, st.value);
+      const capacityStatus = cellOf(row, st.capacityStatus).value;
+      const inventoryScope = cellOf(row, st.inventoryScope).value;
       const obs: GeoCommodityObservation = {
         observationKey: String(row.business_key),
-        regionId: cellOf(row, st.regionId).value ?? '',
-        commodityId: cellOf(row, st.commodityId).value ?? '',
-        stageCode: cellOf(row, st.stageCode).value ?? '',
-        category: (cellOf(row, st.category).value ?? '') as GeoObservationCategory,
+        regionId: requiredAxis(row, 'regionId'),
+        commodityId: requiredAxis(row, 'commodityId'),
+        stageCode: requiredAxis(row, 'stageCode'),
+        category: enumAxis(row, 'category', GEO_OBSERVATION_CATEGORIES),
         metricCode: st.value,
-        periodBasis: (cellOf(row, st.periodBasis).value ?? 'calendar_year') as GeoCommodityObservation['periodBasis'],
-        periodLabel: cellOf(row, st.periodLabel).value ?? '',
-        quantityBasis: (cellOf(row, st.quantityBasis).value ?? 'net_weight') as CommodityQuantityBasis,
-        unitCode: cellOf(row, st.unitCode).value ?? '',
+        periodBasis: enumAxis(row, 'periodBasis', GEO_OBSERVATION_PERIOD_BASES),
+        periodLabel: requiredAxis(row, 'periodLabel'),
+        quantityBasis: enumAxis(row, 'quantityBasis', COMMODITY_QUANTITY_BASES),
+        unitCode: requiredAxis(row, 'unitCode'),
         value: valCell.value,
         valueState: mapValueState(valCell.state),
-        ...(st.capacityStatus ? { capacityStatus: (cellOf(row, st.capacityStatus).value ?? undefined) as CapacityOrFacilityStatus | undefined } : {}),
-        ...(st.inventoryScope ? { inventoryScope: (cellOf(row, st.inventoryScope).value ?? undefined) as GeoCommodityObservation['inventoryScope'] } : {}),
+        ...(capacityStatus === null ? {} : { capacityStatus: enumAxis(row, 'capacityStatus', CAPACITY_OR_FACILITY_STATUSES, capacityStatus) }),
+        ...(inventoryScope === null ? {} : { inventoryScope: enumAxis(row, 'inventoryScope', INVENTORY_SCOPES, inventoryScope) }),
         temporal: {
           effectiveStartUtc: String(obsTime.earliest_utc ?? ''),
           effectiveEndExclusiveUtc: String(obsTime.latest_exclusive_utc ?? ''),
@@ -403,40 +423,48 @@ function checkSupplyTradeRows(rows: readonly WfdRecord[], st: R1SupplyTradeMappi
   const regionIds = new Set<string>();
   const trades: TradeObservation[] = rows.map(row => {
     const obsTime = object(row.observation_time);
-    const reporterRegionId = cellOf(row, st.regionId).value ?? '';
-    const partnerRegionId = cellOf(row, st.partnerRegionId).value ?? '';
+    const reporterRegionId = requiredAxis(row, 'regionId'), partnerRegionId = requiredAxis(row, 'partnerRegionId');
+    const flow = requiredAxis(row, 'flow'), partnerRole = requiredAxis(row, 'partnerRole'), valuation = requiredAxis(row, 'valuationBasis');
+    if (!['export', 'import', 're_export', 're_import'].includes(flow)) fail('SUPPLY_TRADE_AXIS', `贸易流向 flow 无效：${flow}。`);
+    if (!['origin', 'last_known_destination', 'consignment_or_transit'].includes(partnerRole))
+      fail('SUPPLY_TRADE_AXIS', `贸易伙伴角色 partnerRole 无效：${partnerRole}。`);
+    if (!['FOB', 'CIF', 'ex_works'].includes(valuation)) fail('SUPPLY_TRADE_AXIS', `贸易估价 valuationBasis 无效：${valuation}。`);
     if (reporterRegionId) regionIds.add(reporterRegionId);
     if (partnerRegionId) regionIds.add(partnerRegionId);
     const valCell = cellOf(row, st.value);
     const primaryCell = cellOf(row, st.primaryValue);
-    const extCode = cellOf(row, st.externalCode).value ?? '';
+    const extCode = requiredAxis(row, 'externalCode'), scheme = requiredAxis(row, 'externalScheme');
+    if (!['HS', 'CPC', 'SITC', 'CUSTOM'].includes(scheme)) fail('SUPPLY_TRADE_AXIS', `贸易分类体系 externalScheme 无效：${scheme}。`);
+    const currencyCode = requiredAxis(row, 'currencyCode');
+    if (!/^[A-Z]{3}$/u.test(currencyCode)) fail('SUPPLY_TRADE_AXIS', `贸易货币码 currencyCode 无效：${currencyCode}。`);
     return {
       observationKey: String(row.business_key),
       reporterRegionId,
       reporterStatisticalScheme: 'declared',
       partnerRegionId,
-      partnerRole: 'origin',
-      flow: (cellOf(row, st.flow).value ?? 'export') as TradeFlowDirection,
+      partnerRole: partnerRole as TradePartnerRole,
+      flow: flow as TradeFlowDirection,
       ...(st.isSubFlowOf ? { isSubFlowOf: (cellOf(row, st.isSubFlowOf).value ?? null) as TradeFlowDirection | null } : {}),
-      commodityId: cellOf(row, st.commodityId).value ?? '',
-      stageCode: cellOf(row, st.stageCode).value ?? '',
+      commodityId: requiredAxis(row, 'commodityId'),
+      stageCode: requiredAxis(row, 'stageCode'),
       externalClassification: {
-        scheme: (cellOf(row, st.externalScheme).value ?? 'HS') as 'HS' | 'CPC' | 'SITC' | 'CUSTOM',
-        version: cellOf(row, st.externalVersion).value ?? 'HS2022',
+        scheme: scheme as TradeObservation['externalClassification']['scheme'],
+        version: requiredAxis(row, 'externalVersion'),
         code: extCode,
         aggrLevel: extCode.length,
         ...(st.externalParentCode ? { parentCode: cellOf(row, st.externalParentCode).value } : {}),
-        mappingQuality: (cellOf(row, st.externalMappingQuality).value ?? 'exact') as 'exact' | 'broader_narrower' | 'partial_overlap' | 'pending_review',
+        mappingQuality: st.externalMappingQuality === undefined ? 'exact'
+          : enumAxis(row, 'externalMappingQuality', EXTERNAL_CLASSIFICATION_MAPPING_QUALITIES),
       },
-      periodBasis: (cellOf(row, st.periodBasis).value ?? 'calendar_year') as TradeObservation['periodBasis'],
-      periodLabel: cellOf(row, st.periodLabel).value ?? '',
+      periodBasis: enumAxis(row, 'periodBasis', TRADE_PERIOD_BASES),
+      periodLabel: requiredAxis(row, 'periodLabel'),
       primaryValue: primaryCell.value,
-      currencyCode: cellOf(row, st.currencyCode).value ?? 'USD',
-      valuationBasis: (cellOf(row, st.valuationBasis).value ?? 'FOB') as TradeValuationBasis,
+      currencyCode,
+      valuationBasis: valuation as TradeValuationBasis,
       valueState: mapValueState(primaryCell.state),
       quantity: valCell.value,
-      quantityBasis: (cellOf(row, st.quantityBasis).value ?? 'net_weight') as CommodityQuantityBasis,
-      quantityUnitCode: cellOf(row, st.unitCode).value ?? '',
+      quantityBasis: enumAxis(row, 'quantityBasis', COMMODITY_QUANTITY_BASES),
+      quantityUnitCode: requiredAxis(row, 'unitCode'),
       quantityState: mapValueState(valCell.state),
       temporal: {
         effectiveStartUtc: String(obsTime.earliest_utc ?? ''),

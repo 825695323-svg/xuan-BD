@@ -22,6 +22,7 @@ export interface R1SupplyTradeMapping {
   capacityStatus?: string;
   inventoryScope?: string;
   partnerRegionId?: string;
+  partnerRole?: string;
   flow?: string;
   isSubFlowOf?: string;
   valuationBasis?: string;
