@@ -112,7 +112,7 @@ export function adaptSourceMinuteBulkProfile(input: FrozenSourceFieldProfile): F
     return fail('来源档案摘要不一致。');
   const byRole = (role: string) => profile.fields.filter(field => field.role === role);
   const { timeBucket } = profile, dates = byRole('date'), minutes = byRole('minute'), identities = byRole('identity');
-  if (!profile.series || profile.adapter || profile.frequency !== 'minute' || timeBucket.lengthMinutes !== 1
+  if (!profile.series || profile.adapter || profile.frequency !== 'minute' || timeBucket.kind === 'not_applicable' || timeBucket.lengthMinutes !== 1
     || timeBucket.labelSemantics !== 'unknown' || timeBucket.interval !== 'unknown' || profile.adjustment.status !== 'unknown'
     || dates.length !== 1 || minutes.length !== 1 || !identities.length || profile.fields.some(field => field.dataType !== 'text'))
     return null;

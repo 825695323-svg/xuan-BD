@@ -13,6 +13,9 @@ import { frozenR1RowMatches, parseR1Utc, readR1ContractBinding, type R1ContractB
 import { r1SourceDenied, r1SourceGaps, validR1Authorization, type R1SourceAuthorization } from './r1-source.js';
 import { PURPOSE_ELIGIBILITY_RULE_VERSION, evaluatePurposeEligibility, type PurposeEligibilityInput, type EligibilityHistoryMode, type EligibilityPurpose, type RestrictionEvidence } from './purpose-eligibility.js';
 import { publishRestrictionTarget } from './wfd-publish-restriction.js';
+import { G5_ADMISSION_RECEIPT_VERSION, type G5AdmissionReceipt } from './g5-admission-receipt.js';
+import { assertIssuedR1G5Receipt, migrateR1G5Receipts, persistR1G5Receipt, readIssuedR1G5Binding,
+  readIssuedR1G5Receipts, r1G5PredecessorProducts } from './r1-g5-admission.js';
 export { parseR1Utc } from './r1-tabular.js';
 
 /**
@@ -48,7 +51,7 @@ export interface R1ProcessRef {
   evidence_sha256: string;
   document_sha256?: string;
 }
-export interface R1EvidenceRef { ref_id: string; content_sha256: string; kind: string }
+export interface R1EvidenceRef { ref_id: string; content_sha256: string; kind: string; g5AdmissionReceipt?: G5AdmissionReceipt }
 export interface R1LocalReferences {
   /** Explicit original joint CAS token; not part of the WFD document schema. */
   expectedCommitId?: string;
@@ -192,6 +195,7 @@ export class R1HandoffService {
   }; processing?: { get(planId: string): unknown; outputArtifact(planId: string, outputId: string): { bytes: Buffer } };
     candidates?: { verifyObject(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): boolean;
       objectBytes(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): Buffer };
+    requireG5Admission?: boolean;
     verifyFixedDerived?(refs: R1LocalReferences, documentSha256: string): void }) {
     const version = this.db.prepare('SELECT version FROM schema_versions WHERE module=?').get('r1-structured-handoff');
     if (version && !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='r1_record_associations'").get())
@@ -201,6 +205,7 @@ export class R1HandoffService {
     options.database.migrate('r1-structured-handoff', 3, ASSOCIATIONS_V3 +
       `INSERT INTO r1_record_associations_v3 SELECT * FROM r1_record_associations; DROP TABLE r1_record_associations;` + `ALTER TABLE r1_record_associations_v3 RENAME TO r1_record_associations;
       CREATE INDEX r1_assoc_request ON r1_record_associations(request_id);`);
+    migrateR1G5Receipts(options.database);
     this.readback = new R1PagedReadback(options.database);
   }
   private get db() { return this.options.database.connection; }
@@ -215,7 +220,7 @@ export class R1HandoffService {
     const mediaType = input.mediaType ?? 'application/octet-stream';
     if (typeof mediaType !== 'string' || !mediaType.trim() || mediaType.length > 256) fail('R1_ORIGINAL_MEDIA_TYPE', '原件媒体类型无效。');
     const sourceJson = canonicalWfdJson(input.source), sourceDigest = wfdSha256(sourceJson);
-    return this.options.database.transaction(() => {
+    const register = () => {
       const existing = this.db.prepare(`SELECT original_id FROM r1_originals
         WHERE sha256=? AND source_digest=? AND original_name=? AND media_type=?`).get(digest, sourceDigest, input.originalName, mediaType) as { original_id: string } | undefined;
       this.db.prepare('INSERT INTO r1_original_contents(sha256,original_bytes) VALUES(?,?) ON CONFLICT(sha256) DO NOTHING').run(digest, input.bytes);
@@ -227,10 +232,19 @@ export class R1HandoffService {
       this.db.prepare('INSERT INTO r1_originals VALUES(?,?,?,?,?,?,?)').run(
         originalId, digest, input.originalName, mediaType, sourceJson, sourceDigest, Date.now());
       return { originalId, sha256: digest };
-    });
+    };
+    return this.db.isTransaction ? register() : this.options.database.transaction(register);
   }
 
-  prepare(input: { structured: R1StructuredRequest; localRefs: R1LocalReferences }, restriction?: R1PublicationRestriction | null): R1PrepareResult {
+  /** hostAdmissions 仅由宿主准入调用点传入，不能从请求正文或本地证据引用取值。 */
+  prepare(input: { structured: R1StructuredRequest; localRefs: R1LocalReferences }, restriction?: R1PublicationRestriction | null,
+    hostAdmissions: readonly G5AdmissionReceipt[] = []): R1PrepareResult {
+    const prepare = () => this.prepareFrozen(input, restriction, hostAdmissions);
+    return hostAdmissions.length && !this.db.isTransaction ? this.options.database.transaction(prepare) : prepare();
+  }
+
+  private prepareFrozen(input: { structured: R1StructuredRequest; localRefs: R1LocalReferences },
+    restriction: R1PublicationRestriction | null | undefined, hostAdmissions: readonly G5AdmissionReceipt[]): R1PrepareResult {
     const document = buildStructuredIngestDocument(input.structured);
     assertDataOnly(document);
     if ((document.outputs as WfdRecord[]).length > 1) {
@@ -240,6 +254,8 @@ export class R1HandoffService {
         || input.structured.duplicatePolicy) fail('R1_SET_REFERENCE', '整组文档与本地成员引用必须一致；集合冲突不能逐行跳过。');
     }
     const documentSha256 = wfdSha256(canonicalWfdJson(document));
+    for (const receipt of hostAdmissions) persistR1G5Receipt(this.db, receipt, documentSha256);
+    this.assertG5References(input.structured.requestId, input.localRefs, document, documentSha256);
     this.assertLocalRefs(input.localRefs, documentSha256);
     this.assertPublicationUsage(input.structured.definition, input.localRefs, 'prepare', restriction, document);
     const localRefsSha256 = wfdSha256(canonicalWfdJson(input.localRefs));
@@ -413,8 +429,9 @@ export class R1HandoffService {
     if (R1_SETTLED_STATES.has(String(attempt.state)) || ['rejected', 'sending', 'pending_unknown', 'pending_receipt'].includes(String(attempt.state))) return;
     const document = JSON.parse(String(attempt.document_json)) as WfdRecord;
     const output = (document.outputs as WfdRecord[])[0]!;
-    this.assertPublicationUsage(output.definition as WfdRecord,
-      JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences, 'first_send', restriction, document);
+    const refs = JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
+    this.assertG5References(requestId, refs, document, String(attempt.document_sha256));
+    this.assertPublicationUsage(output.definition as WfdRecord, refs, 'first_send', restriction, document);
   }
 
   /** 实际 submit 结果 → 逐输出 records → 实际 fixed_read → 逐行关联。 */
@@ -426,8 +443,8 @@ export class R1HandoffService {
     if (['sending', 'pending_unknown', 'pending_receipt'].includes(String(attempt.state))) {
       fail('R1_RECOVERY_REQUIRED', '该原请求结果尚未核清；必须沿原 identity 查询状态，不能重新提交。');
     }
-    this.assertLocalRefs(JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences, String(attempt.document_sha256));
     this.assertPublicationReadyToSend(requestId, restriction);
+    this.assertLocalRefs(JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences, String(attempt.document_sha256));
     this.markSending(requestId);
     let reply: WfdProductMachineReply;
     try {
@@ -728,7 +745,9 @@ export class R1HandoffService {
     if(R1_SETTLED_STATES.has(String(attempt.state)))return this.localExplanation(requestId);
     this.assertSourceAuthorized(requestId);
     const document=JSON.parse(String(attempt.document_json)) as WfdRecord;
-    const reply=await client.resumeAccepted(document,signal,(JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences).expectedCommitId);
+    const refs=JSON.parse(String(attempt.local_refs_json)) as R1LocalReferences;
+    this.assertG5References(requestId,refs,document,String(attempt.document_sha256),false);
+    const reply=await client.resumeAccepted(document,signal,refs.expectedCommitId);
     try{return await this.consumeResult(requestId,reply.result,client,signal);}
     catch(error){
       this.db.prepare("UPDATE r1_handoff_attempts SET state='pending_receipt',receipt_json=?,error_json=?,updated_at=? WHERE request_id=?")
@@ -992,6 +1011,43 @@ export class R1HandoffService {
     }
   }
 
+  private assertG5References(requestId: string, refs: R1LocalReferences, document: WfdRecord, documentSha256: string,
+    requireDerived = true): void {
+    const issued = readIssuedR1G5Receipts(this.db, requestId);
+    const outputs = document.outputs as WfdRecord[];
+    const identity = asRecord(document.request_identity);
+    const mismatch = () => fail('R1_G5_EVIDENCE_MISMATCH', 'G5 准入必须提供与当前请求和输出一致的宿主回执。');
+    if (Object.hasOwn(refs, 'g5Admission') || Object.hasOwn(refs, 'g5AdmissionReceipt')) mismatch();
+    if (issued.length && (issued.length !== outputs.length || identity.request_id !== requestId)) mismatch();
+    for (const output of outputs) {
+      const outputKey = String(output.output_key);
+      const member = refs.outputs ? refs.outputs[outputKey] : refs;
+      const evidence = Array.isArray(member?.evidenceRefs) ? member.evidenceRefs.filter(item => item?.kind === G5_ADMISSION_RECEIPT_VERSION
+        || item?.g5AdmissionReceipt !== undefined || typeof item?.ref_id === 'string' && item.ref_id.startsWith('g5:')) : [];
+      if (member && (Object.hasOwn(member, 'g5Admission') || Object.hasOwn(member, 'g5AdmissionReceipt'))) mismatch();
+      if (!issued.length && !evidence.length) {
+        if (this.options.requireG5Admission || requireDerived && refs.fixedAlgorithm) mismatch();
+        continue;
+      }
+      const saved = issued.find(item => item.output_key === outputKey);
+      const ref = evidence[0], receipt = ref?.g5AdmissionReceipt;
+      if (evidence.length !== 1 || !receipt || !saved || !member || ref.kind !== G5_ADMISSION_RECEIPT_VERSION
+        || ref.ref_id !== 'g5:' + receipt.receiptDigest || ref.content_sha256 !== receipt.receiptDigest) return mismatch();
+      const binding = readIssuedR1G5Binding(saved.receipt_json);
+      const predecessors = r1G5PredecessorProducts(output);
+      if (predecessors.length > 1 || predecessors.length && predecessors[0] !== binding.target.productId) mismatch();
+      const entryPoint = refs.fixedAlgorithm ? 'derived_wfd_publisher'
+        : output.input_mode === 'source_correction' || output.input_mode === 'processing_repair' ? 'post_publication_correction'
+          : outputs.length > 1 ? 'r1_publication_set_member'
+          : output.logical_domain === 'events' ? 'r1_workspace_event' : output.logical_domain === 'foundation' ? 'r1_workspace_relation'
+            : binding.entryPoint === 'r1_auto' ? 'r1_auto' : 'r1_workspace_tabular';
+      assertIssuedR1G5Receipt(this.db, receipt, { entryPoint, requestId,
+        candidateSource: { sourceId: member.sourceRefs?.[0]?.source_id },
+        target: { datasetId: String(identity.dataset_id), productId: binding.target.productId, outputKey },
+      }, documentSha256);
+    }
+  }
+
   private assertLocalRefs(refs: R1LocalReferences, documentSha256: string): void {
     if (refs.expectedCommitId !== undefined && !/^[0-9a-f]{64}$/u.test(refs.expectedCommitId)) fail('R1_LOCAL_REFS', 'joint 原提交令牌无效。');
     if (refs?.outputs) {
@@ -1020,6 +1076,7 @@ export class R1HandoffService {
     const source = refs.sourceRefs[0];
     validateSourceRef(source);
     assertKnownR1Source(source);
+    const artifactEvidence = refs.evidenceRefs.filter(evidence => evidence?.kind !== G5_ADMISSION_RECEIPT_VERSION);
     if (refs.materialIds.length === 1) {
       const material = this.db.prepare("SELECT envelope_json FROM material_objects WHERE material_id=?").get(refs.materialIds[0]) as WfdRecord | undefined;
       if (!material) fail('R1_MATERIAL_NOT_FOUND', 'BD 材料不存在：' + refs.materialIds[0]);
@@ -1044,8 +1101,8 @@ export class R1HandoffService {
     if (refs.fixedAlgorithm) {
       if (!this.options.verifyFixedDerived || Object.hasOwn(refs.fixedAlgorithm, 'kind')
         || refs.processRefs.length !== 0 || refs.originalIds.length !== 1 || refs.materialIds.length !== 0
-        || refs.evidenceRefs.length !== 1 || refs.evidenceRefs[0]?.content_sha256 !== source.sha256
-        || refs.evidenceRefs[0]?.kind !== 'fixed-algorithm-output')
+        || artifactEvidence.length !== 1 || artifactEvidence[0]?.content_sha256 !== source.sha256
+        || artifactEvidence[0]?.kind !== 'fixed-algorithm-output')
         fail('R1_DERIVED_PROOF_INVALID', 'MACD 派生交接必须只有原任务的独立核验证明，不接受其他算法或额外加工引用。');
       this.options.verifyFixedDerived(refs, documentSha256);
       return;
@@ -1078,8 +1135,8 @@ export class R1HandoffService {
       if (![actualDigest, source.sha256, documentSha256].includes(stripSha(process.evidence_sha256))) fail('R1_PROCESS_EVIDENCE_MISMATCH', '加工证据必须对应已核对的原件、产物或交接文档。');
       allowedEvidence.add(actualDigest);
     }
-    if (!refs.evidenceRefs.length) fail('R1_EVIDENCE_REQUIRED', '至少需要一个真实证据引用。');
-    for (const evidence of refs.evidenceRefs) {
+    if (!artifactEvidence.length) fail('R1_EVIDENCE_REQUIRED', '至少需要一个真实证据引用。');
+    for (const evidence of artifactEvidence) {
       const digest = stripSha(evidence?.content_sha256);
       if (!evidence?.ref_id || !evidence.kind || !allowedEvidence.has(digest)) fail('R1_EVIDENCE_MISMATCH', '证据摘要没有对应已核对的原件或实际加工产物。');
       if (this.options.candidates && digest !== source.sha256 && digest !== documentSha256) {

@@ -283,6 +283,22 @@ test('G5 lookup reports explicit unknown measurement even with a source unit lab
   assert.deepEqual(result.left.gaps, ['计量字段 close 仅保留原报词面，金融计量口径未知。']);
 });
 
+test('G5 dictionary reads non-market buckets and adjustment without assigning market conditions', () => {
+  const scope = syntheticScope('synthetic-a', 'a');
+  const profile = syntheticProfile('synthetic-a', 'a', {
+    frequency: 'other', domainScope: { domain: 'relation_claim', taxonomyAuthority: 'synthetic-taxonomy/v1',
+      effectivePeriodPolicy: 'snapshot_only' },
+    timeBucket: { kind: 'not_applicable', timezone: 'Asia/Shanghai' }, adjustment: { status: 'not_applicable' },
+  });
+  const ports = { profiles: { match: () => profile } };
+  const result = sourceSemanticView({ left: scope, conditions: { timezone: 'Asia/Shanghai' } }, ports);
+  assert.equal(result.status, 'registered');
+  assert.ok('left' in result && result.left.timeBucket);
+  assert.deepEqual(result.left.timeBucket, { kind: 'not_applicable', timezone: 'Asia/Shanghai', previewTruncated: false });
+  assert.deepEqual(result.left.adjustment, { status: 'not_applicable', method: null, basis: null, previewTruncated: false });
+  assert.equal(sourceSemanticView({ left: scope, conditions: { adjustment: 'raw' } }, ports).status, 'different_semantics');
+});
+
 test('G5 is a single read-only AGENTS action, not a new task runtime or adoption capability', async () => {
   assert.equal(modelActionApprovalMode('data.modules.semantics', {}), 'automatic');
   const database = new CoreDatabase(':memory:');

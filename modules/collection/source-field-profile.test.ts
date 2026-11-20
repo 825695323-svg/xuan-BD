@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import {
-  readSourceFieldProfile, SourceFieldProfileStore, profileFingerprint, sourceFieldProfileDigest,
+  readSourceFieldProfile, SourceFieldProfileStore, profileFingerprint, profileSemanticGaps, profileSignature, sourceFieldProfileDigest,
   compareProfileSemantics, SemanticProductRegistryStore, type SourceFieldProfile,
 } from './source-field-profile.js';
 
@@ -48,7 +49,7 @@ test('optional stage and area placeholders block equivalence outside commodity a
   for (const scope of [
     { domain: 'market_series' },
     { domain: 'financial_statement', accountingStandard: 'CAS', statementScope: 'consolidated', periodBasis: 'fiscal_year' },
-    { domain: 'relation_claim' },
+    { domain: 'relation_claim', taxonomyAuthority: 'synthetic-taxonomy/v1', effectivePeriodPolicy: 'explicit_range' },
   ]) {
     const compare = (domainScope: Record<string, unknown>) => compareProfileSemantics(
       readSourceFieldProfile(sample({ domainScope }), 'left.json'),
@@ -67,6 +68,104 @@ test('optional stage and area placeholders block equivalence outside commodity a
 });
 const throws = (fn: () => unknown) => assert.throws(fn, (e: unknown) =>
   typeof e === 'object' && e !== null && 'code' in e && e.code === 'SOURCE_FIELD_PROFILE');
+
+test('explicit and implicit market profiles retain the exact legacy bytes and fingerprints', () => {
+  const baseline = [
+    { domainScope: undefined, fingerprint: '837e584af0fe9bfd585ddcba676295671af5aa0324b38aad6b6cfb46259c2cfc',
+      digest: 'fbd55ae66a707f151e34f65097849bb09834234ab1dd531614e7c3c248f4c395',
+      bytesHash: '3e22cd0337a65aef666a9c3a30267caa65f2746e267a475e9bce1eb00fe6e6c5' },
+    { domainScope: { domain: 'market_series' }, fingerprint: '8426d87b05c894f93a481530f0cad6fd0ccf2107983df3b2ca4a705ea6cb448b',
+      digest: '78dd50c52764fce9961965606508fbf6d8e66b5bfb3af2eceadbc467d0606324',
+      bytesHash: 'd3e5c8ef4d16aff53316f9c916ce150184aab990542d99f58c3e8f09dd074214' },
+  ];
+  for (const { domainScope, fingerprint, digest, bytesHash } of baseline) {
+    const a = readSourceFieldProfile(sample({ domainScope }), 'old.json');
+    const b = readSourceFieldProfile(sample({ domainScope, adjustment: { status: 'qfq', method: 'factor-v1' },
+      timeBucket: { ...a.timeBucket, labelSemantics: 'end' } }), 'old-peer.json');
+    assert.equal(profileFingerprint(a), fingerprint);
+    assert.equal(sourceFieldProfileDigest(a), digest);
+    assert.equal(wfdSha256(JSON.stringify([
+      a, b, profileSignature(a), profileSignature(b), profileSemanticGaps(a), profileSemanticGaps(b),
+      compareProfileSemantics(a, b), compareProfileSemantics(b, a),
+    ])), bytesHash);
+  }
+});
+
+const noMarketAxes = { timeBucket: { kind: 'not_applicable', timezone: 'Asia/Shanghai' },
+  adjustment: { status: 'not_applicable' } };
+const eventSemantics = { contentNature: 'source_claim', occurrencePolicy: 'preserve_distinct_propagation',
+  timePrecisionPolicy: 'preserve_unknown_no_midnight_fill' };
+const relationScope = { domain: 'relation_claim', taxonomyAuthority: 'synthetic-taxonomy/v1',
+  effectivePeriodPolicy: 'explicit_range' };
+
+test('only declared non-market domains may opt out of market buckets and adjustment', () => {
+  for (const domainScope of [
+    { domain: 'event_claim', eventSemantics }, relationScope,
+    { domain: 'financial_statement', accountingStandard: 'synthetic-accounting/v1', statementScope: 'consolidated',
+      periodBasis: 'fiscal_year' },
+    { domain: 'geo_commodity', periodBasis: 'month', quantityBasis: 'net_weight', processingStage: 'ore',
+      statisticalAreaScheme: 'synthetic-geo/v1' },
+    { domain: 'bilateral_trade', periodBasis: 'month', quantityBasis: 'net_weight', processingStage: 'ore',
+      statisticalAreaScheme: 'synthetic-geo/v1', valuationBasis: 'FOB',
+      commodityClassification: { scheme: 'synthetic-trade', version: '1', mappingQuality: 'exact' } },
+  ]) {
+    const profile = readSourceFieldProfile(sample({ domainScope, ...noMarketAxes }), 'non-market.json');
+    assert.deepEqual(profile.timeBucket, noMarketAxes.timeBucket);
+    assert.deepEqual(profile.adjustment, noMarketAxes.adjustment);
+    assert.deepEqual(profileSemanticGaps(profile), []);
+    assert.equal(compareProfileSemantics(profile, profile).status, 'candidate_equivalent');
+  }
+  for (const domainScope of [undefined, { domain: 'market_series' }]) {
+    throws(() => readSourceFieldProfile(sample({ domainScope, timeBucket: noMarketAxes.timeBucket }), 'market.json'));
+    throws(() => readSourceFieldProfile(sample({ domainScope, adjustment: noMarketAxes.adjustment }), 'market.json'));
+    throws(() => readSourceFieldProfile(sample({ domainScope,
+      timeBucket: { ...sample().timeBucket, ...noMarketAxes.timeBucket } }), 'market-mixed.json'));
+  }
+  for (const timezone of ['invalid/zone', '+08:00']) {
+    throws(() => readSourceFieldProfile(sample({ domainScope: relationScope, ...noMarketAxes,
+      timeBucket: { ...noMarketAxes.timeBucket, timezone } }), 'invalid-zone.json'));
+  }
+});
+
+test('relation taxonomy and effective period report gaps and known differences', () => {
+  const relation = (domainScope: Record<string, unknown>) =>
+    readSourceFieldProfile(sample({ domainScope, ...noMarketAxes }), 'relation.json');
+  const complete = relation(relationScope);
+  for (const scope of [{ domain: 'relation_claim' },
+    { ...relationScope, taxonomyAuthority: '未知', effectivePeriodPolicy: 'unknown' }]) {
+    const result = compareProfileSemantics(complete, relation(scope));
+    assert.equal(result.status, 'needs_evidence');
+    assert.deepEqual(result.gaps, profileSemanticGaps(relation(scope)));
+    assert.match(result.gaps.join(' '), /taxonomyAuthority.*effectivePeriodPolicy/u);
+  }
+  const other = relation({ ...relationScope, taxonomyAuthority: 'synthetic-taxonomy/v2', effectivePeriodPolicy: 'snapshot_only' });
+  assert.equal(compareProfileSemantics(complete, other).status, 'different_semantics');
+  assert.match(compareProfileSemantics(complete, other).differences.join(' '), /taxonomyAuthority.*effectivePeriodPolicy/u);
+  assert.notEqual(profileFingerprint(complete), profileFingerprint(other));
+  throws(() => relation({ ...relationScope, effectivePeriodPolicy: 'open_ended' }));
+  throws(() => relation({ ...relationScope, taxonomyAuthority: 42 }));
+});
+
+test('event roles and declared event policies are retained and validated', () => {
+  const event = (domainScope: Record<string, unknown>) => readSourceFieldProfile(sample({
+    domainScope, ...noMarketAxes,
+    fields: ['event_time', 'public_time', 'expected_time', 'occurrence', 'evidence'].map(role => ({
+      originalHeader: role, fieldCode: role, role, unitCode: 'not_applicable', dataType: 'text',
+    })),
+  }), 'event.json');
+  const left = event({ domain: 'event_claim', eventSemantics });
+  assert.deepEqual(left.fields.map(field => field.role), ['event_time', 'public_time', 'expected_time', 'occurrence', 'evidence']);
+  assert.deepEqual(left.domainScope?.eventSemantics, eventSemantics);
+  assert.match(profileSemanticGaps(event({ domain: 'event_claim' })).join(' '), /eventSemantics/u);
+  const right = event({ domain: 'event_claim', eventSemantics: {
+    ...eventSemantics, contentNature: 'forecast', occurrencePolicy: 'exact_event_id_only',
+  } });
+  assert.match(compareProfileSemantics(left, right).differences.join(' '), /contentNature.*occurrencePolicy/u);
+  for (const override of [{ contentNature: 'unknown' }, { occurrencePolicy: 'merge_by_text' },
+    { timePrecisionPolicy: 'fill_midnight' }, { timePrecisionPolicy: undefined }]) {
+    throws(() => event({ domain: 'event_claim', eventSemantics: { ...eventSemantics, ...override } }));
+  }
+});
 
 test('source header aliases are retained, but do not change canonical cross-provider semantics', () => {
   const a = readSourceFieldProfile(sample(), 'a.json');

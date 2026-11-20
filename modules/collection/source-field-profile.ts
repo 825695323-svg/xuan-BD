@@ -9,8 +9,9 @@ import { isExplicitUtcInstant } from '../../contracts/financial-value.js';
  * 原表头是来源原文，不是正式金融字段身份。不同供应商可映射到相同规范字段，
  * 只有有依据的映射才生效，不按列名相似自动合并，也不据档案改写原件。
  */
-export type SourceFieldRole = 'identity' | 'date' | 'minute' | 'value' | 'period' | 'dimension' | 'region' | 'commodity_stage' | 'relation';
-export type SourceDomainKind = 'market_series' | 'financial_statement' | 'geo_commodity' | 'bilateral_trade' | 'relation_claim';
+export type SourceFieldRole = 'identity' | 'date' | 'minute' | 'value' | 'period' | 'dimension' | 'region' | 'commodity_stage' | 'relation'
+  | 'event_time' | 'public_time' | 'expected_time' | 'occurrence' | 'evidence';
+export type SourceDomainKind = 'market_series' | 'financial_statement' | 'geo_commodity' | 'bilateral_trade' | 'relation_claim' | 'event_claim';
 export type SourceQuantityBasis = 'net_weight' | 'dry_weight' | 'wet_weight' | 'metal_content' | 'carcass_weight'
   | 'shipped_weight' | 'head_count' | 'gross_weight' | 'count' | 'money' | 'unknown';
 export type SourceValuationBasis = 'CIF' | 'FOB' | 'ex_works' | 'not_applicable' | 'unknown';
@@ -20,6 +21,11 @@ export interface SourceCommodityClassification {
   scheme: string;
   version: string;
   mappingQuality: SourceMappingQuality;
+}
+export interface SourceEventSemantics {
+  contentNature: 'source_claim' | 'plan' | 'forecast' | 'observed_fact' | 'outcome';
+  occurrencePolicy: 'preserve_distinct_propagation' | 'exact_event_id_only';
+  timePrecisionPolicy: 'preserve_unknown_no_midnight_fill';
 }
 export interface SourceDomainScope {
   domain: SourceDomainKind;
@@ -32,6 +38,9 @@ export interface SourceDomainScope {
   revisionPolicy?: 'versioned_archive' | 'current_revision_only' | 'unknown';
   accountingStandard?: string;
   statementScope?: 'consolidated' | 'parent_only' | 'unknown';
+  taxonomyAuthority?: string;
+  effectivePeriodPolicy?: 'explicit_range' | 'snapshot_only' | 'unknown';
+  eventSemantics?: SourceEventSemantics;
 }
 export interface SourceFieldMapping {
   originalHeader: string;
@@ -44,16 +53,19 @@ export interface SourceFieldMapping {
   measurementStatus?: 'unknown';
 }
 export interface SourceTimeBucket {
+  kind?: never;
   labelSemantics: 'start' | 'end' | 'unknown';
   interval: 'closed_open' | 'closed_closed' | 'unknown';
   lengthMinutes: number;
   timezone: string;
 }
+interface NonApplicableTimeBucket { kind: 'not_applicable'; timezone: string }
 export interface SourceAdjustment {
   status: 'raw' | 'qfq' | 'hfq' | 'unknown';
   method?: string;
   basis?: string;
 }
+interface NonApplicableAdjustment { status: 'not_applicable' }
 export interface SourceProfileAdapterBinding { adapterId: string; version: string; configDigest: string }
 export interface SourceFieldProfile {
   version: 'bd.source-field-profile/1';
@@ -66,16 +78,20 @@ export interface SourceFieldProfile {
   fields: SourceFieldMapping[];
   confirmation: { status: 'operator_confirmed'; basis: string; confirmedAtUtc: string };
   frequency: 'minute' | 'day' | 'tick' | 'other';
-  timeBucket: SourceTimeBucket;
-  adjustment: SourceAdjustment;
+  timeBucket: SourceTimeBucket | NonApplicableTimeBucket;
+  adjustment: SourceAdjustment | NonApplicableAdjustment;
   domainScope?: SourceDomainScope;
   supersedes?: { productId?: string; profileId?: string; note: string }[];
 }
 export interface FrozenSourceFieldProfile { profile: SourceFieldProfile; digest: string; fingerprint: string }
 
 const syntax = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
-const roles: readonly SourceFieldRole[] = ['identity', 'date', 'minute', 'value', 'period', 'dimension', 'region', 'commodity_stage', 'relation'];
-const domainKinds: readonly SourceDomainKind[] = ['market_series', 'financial_statement', 'geo_commodity', 'bilateral_trade', 'relation_claim'];
+const roles: readonly SourceFieldRole[] = ['identity', 'date', 'minute', 'value', 'period', 'dimension', 'region', 'commodity_stage', 'relation',
+  'event_time', 'public_time', 'expected_time', 'occurrence', 'evidence'];
+const domainKinds: readonly SourceDomainKind[] = ['market_series', 'financial_statement', 'geo_commodity', 'bilateral_trade', 'relation_claim', 'event_claim'];
+const effectivePeriodPolicies = ['explicit_range', 'snapshot_only', 'unknown'] as const;
+const eventContentNatures = ['source_claim', 'plan', 'forecast', 'observed_fact', 'outcome'] as const;
+const eventOccurrencePolicies = ['preserve_distinct_propagation', 'exact_event_id_only'] as const;
 const quantityBases: readonly SourceQuantityBasis[] = ['net_weight', 'dry_weight', 'wet_weight', 'metal_content', 'carcass_weight',
   'shipped_weight', 'head_count', 'gross_weight', 'count', 'money', 'unknown'];
 const valuationBases: readonly SourceValuationBasis[] = ['CIF', 'FOB', 'ex_works', 'not_applicable', 'unknown'];
@@ -122,16 +138,23 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
   if (raw.mappingVersion !== undefined && (!Number.isSafeInteger(raw.mappingVersion) || (raw.mappingVersion as number) < 1))
     fail(`来源字段档案 ${name} 的旧 mappingVersion 无效。`);
   if (!['minute', 'day', 'tick', 'other'].includes(String(raw.frequency))) fail(`来源字段档案 ${name} 的 frequency 无效。`);
+  const domain = (raw.domainScope as { domain?: SourceDomainKind } | undefined)?.domain;
+  const nonMarket = domain !== undefined && domain !== 'market_series' && domainKinds.includes(domain);
   const bucket = raw.timeBucket as Record<string, unknown> | undefined;
-  if (!bucket || !['start', 'end', 'unknown'].includes(String(bucket.labelSemantics))
+  const noTimeBucket = bucket?.kind === 'not_applicable';
+  if (!bucket || (noTimeBucket ? !nonMarket : !['start', 'end', 'unknown'].includes(String(bucket.labelSemantics))
     || !['closed_open', 'closed_closed', 'unknown'].includes(String(bucket.interval))
-    || !Number.isSafeInteger(bucket.lengthMinutes) || Number(bucket.lengthMinutes) < 1
+    || !Number.isSafeInteger(bucket.lengthMinutes) || Number(bucket.lengthMinutes) < 1)
     || typeof bucket.timezone !== 'string' || !bucket.timezone.trim() || bucket.timezone.length > 128)
     fail(`来源字段档案 ${name} 的 timeBucket 需要标签语义、区间、分钟长度与时区。`);
+  if (noTimeBucket && /^[+−-]/u.test(bucket.timezone))
+    fail(`来源字段档案 ${name} 的 timeBucket.timezone 不是有效 IANA 时区。`);
   try { new Intl.DateTimeFormat('en', { timeZone: bucket.timezone as string }).format(0); }
   catch { fail(`来源字段档案 ${name} 的 timeBucket.timezone 不是有效时区。`); }
   const adjustmentRaw = raw.adjustment as Record<string, unknown> | undefined;
-  if (!adjustmentRaw || !['raw', 'qfq', 'hfq', 'unknown'].includes(String(adjustmentRaw.status))) fail(`来源字段档案 ${name} 的 adjustment.status 无效。`);
+  const noAdjustment = adjustmentRaw?.status === 'not_applicable';
+  if (!adjustmentRaw || (noAdjustment ? !nonMarket : !['raw', 'qfq', 'hfq', 'unknown'].includes(String(adjustmentRaw.status))))
+    fail(`来源字段档案 ${name} 的 adjustment.status 无效。`);
   for (const key of ['method', 'basis']) {
     const item = adjustmentRaw[key];
     if (item !== undefined && (typeof item !== 'string' || item.length > 512 || /[\u0000-\u001f]/u.test(item)))
@@ -196,6 +219,20 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
       fail(`来源字段档案 ${name} 的 domainScope.revisionPolicy 无效。`);
     if (ds.statementScope !== undefined && !['consolidated', 'parent_only', 'unknown'].includes(String(ds.statementScope)))
       fail(`来源字段档案 ${name} 的 domainScope.statementScope 无效。`);
+    const effectivePeriodPolicy = ds.effectivePeriodPolicy as SourceDomainScope['effectivePeriodPolicy'];
+    if (ds.domain === 'relation_claim' && effectivePeriodPolicy !== undefined && !effectivePeriodPolicies.includes(effectivePeriodPolicy))
+      fail(`来源字段档案 ${name} 的 domainScope.effectivePeriodPolicy 无效。`);
+    let eventSemantics: SourceEventSemantics | undefined;
+    if (ds.domain === 'event_claim' && ds.eventSemantics !== undefined) {
+      const event = ds.eventSemantics as Partial<SourceEventSemantics> | null;
+      if (!event || typeof event !== 'object' || Array.isArray(event)
+        || !event.contentNature || !eventContentNatures.includes(event.contentNature)
+        || !event.occurrencePolicy || !eventOccurrencePolicies.includes(event.occurrencePolicy)
+        || event.timePrecisionPolicy !== 'preserve_unknown_no_midnight_fill')
+        fail(`来源字段档案 ${name} 的 domainScope.eventSemantics 无效。`);
+      eventSemantics = { contentNature: event.contentNature, occurrencePolicy: event.occurrencePolicy,
+        timePrecisionPolicy: event.timePrecisionPolicy };
+    }
     let commodityClassification: SourceCommodityClassification | undefined;
     if (ds.commodityClassification !== undefined) {
       if (!ds.commodityClassification || typeof ds.commodityClassification !== 'object' || Array.isArray(ds.commodityClassification))
@@ -220,15 +257,20 @@ export function readSourceFieldProfile(value: unknown, name: string): SourceFiel
       ...(ds.revisionPolicy === undefined ? {} : { revisionPolicy: ds.revisionPolicy as 'versioned_archive' | 'current_revision_only' | 'unknown' }),
       ...(ds.accountingStandard === undefined ? {} : { accountingStandard: text(ds.accountingStandard, 'accountingStandard') }),
       ...(ds.statementScope === undefined ? {} : { statementScope: ds.statementScope as 'consolidated' | 'parent_only' | 'unknown' }),
+      ...(ds.domain === 'relation_claim' && ds.taxonomyAuthority !== undefined
+        ? { taxonomyAuthority: text(ds.taxonomyAuthority, 'taxonomyAuthority') } : {}),
+      ...(ds.domain === 'relation_claim' && effectivePeriodPolicy !== undefined ? { effectivePeriodPolicy } : {}),
+      ...(eventSemantics === undefined ? {} : { eventSemantics }),
     };
   })();
   return { version: 'bd.source-field-profile/1',
     ...(raw.mappingVersion === undefined ? {} : { mappingVersion: raw.mappingVersion as number }), profileId, sourceId,
     series: raw.series, ...(adapter ? { adapter } : {}), fields, frequency: raw.frequency as SourceFieldProfile['frequency'],
-    timeBucket: { labelSemantics: bucket.labelSemantics as SourceTimeBucket['labelSemantics'],
+    timeBucket: noTimeBucket ? { kind: 'not_applicable', timezone: bucket.timezone }
+      : { labelSemantics: bucket.labelSemantics as SourceTimeBucket['labelSemantics'],
       interval: bucket.interval as SourceTimeBucket['interval'], lengthMinutes: Number(bucket.lengthMinutes),
       timezone: String(bucket.timezone) },
-    adjustment: { status: adjustmentRaw.status as SourceAdjustment['status'],
+    adjustment: noAdjustment ? { status: 'not_applicable' } : { status: adjustmentRaw.status as SourceAdjustment['status'],
       ...(typeof adjustmentRaw.method === 'string' ? { method: adjustmentRaw.method } : {}),
       ...(typeof adjustmentRaw.basis === 'string' ? { basis: adjustmentRaw.basis } : {}) },
     ...(domainScope ? { domainScope } : {}),
@@ -264,7 +306,7 @@ export class SourceFieldProfileStore {
 /** 保持原签名格式与规范排序；校验强化不重写已发布身份。 */
 export interface SemanticSignature {
   fields: (Pick<SourceFieldMapping, 'fieldCode' | 'dataType' | 'unitCode' | 'role' | 'measurementStatus'> & { measurement: string | null })[];
-  frequency: string; timeBucket: SourceTimeBucket; adjustment: SourceAdjustment;
+  frequency: string; timeBucket: SourceFieldProfile['timeBucket']; adjustment: SourceFieldProfile['adjustment'];
   domainScope?: SourceDomainScope;
 }
 export const profileSignature = (profile: SourceFieldProfile): SemanticSignature => ({
@@ -285,7 +327,8 @@ export function profileSemanticGaps(profile: SourceFieldProfile): string[] {
     if (!knownMeaning(profile.adjustment.method)) gaps.push('复权方法未明确；相同的前/后复权标签不能证明同一口径。');
     if (!knownMeaning(profile.adjustment.basis)) gaps.push('复权基准未明确；不得把两个未声明的基准认定为相同。');
   }
-  if (profile.timeBucket.labelSemantics === 'unknown' || profile.timeBucket.interval === 'unknown')
+  if (profile.timeBucket.kind !== 'not_applicable'
+    && (profile.timeBucket.labelSemantics === 'unknown' || profile.timeBucket.interval === 'unknown'))
     gaps.push('时间桶起止和区间口径未知；不能跨来源认定等价。');
   for (const field of profile.fields) {
     if (field.measurementStatus === 'unknown') gaps.push(`计量字段 ${field.fieldCode} 仅保留原报词面，金融计量口径未知。`);
@@ -322,6 +365,14 @@ export function profileSemanticGaps(profile: SourceFieldProfile): string[] {
       if (!knownMeaning(ds.periodBasis))
         gaps.push('财报期间口径（periodBasis）未知或未声明；不能跨来源认定等价。');
     }
+    if (ds.domain === 'relation_claim') {
+      if (!knownMeaning(ds.taxonomyAuthority))
+        gaps.push('关系分类权威（taxonomyAuthority）未知或未声明。');
+      if (!knownMeaning(ds.effectivePeriodPolicy))
+        gaps.push('关系生效期间规则（effectivePeriodPolicy）未知或未声明。');
+    }
+    if (ds.domain === 'event_claim' && !ds.eventSemantics)
+      gaps.push('事件声明口径（eventSemantics）未声明。');
     if (ds.revisionPolicy !== undefined && !knownMeaning(ds.revisionPolicy))
       gaps.push('历史修订保留口径（revisionPolicy）未知；不能跨来源认定等价。');
     if (ds.commodityClassification && (!knownMeaning(ds.commodityClassification.scheme) || !knownMeaning(ds.commodityClassification.version)))
@@ -361,18 +412,23 @@ export function compareProfileSemantics(left: SourceFieldProfile, right: SourceF
       differences.push(`${field.fieldCode} 口径不同：${field.measurement} ≠ ${other.measurement}`);
   }
   if (a.frequency !== b.frequency) differences.push(`频率不同：${a.frequency} ≠ ${b.frequency}`);
-  const knownBucketDifference = a.timeBucket.lengthMinutes !== b.timeBucket.lengthMinutes
-    || a.timeBucket.timezone !== b.timeBucket.timezone
-    || a.timeBucket.labelSemantics !== 'unknown' && b.timeBucket.labelSemantics !== 'unknown'
-      && a.timeBucket.labelSemantics !== b.timeBucket.labelSemantics
-    || a.timeBucket.interval !== 'unknown' && b.timeBucket.interval !== 'unknown' && a.timeBucket.interval !== b.timeBucket.interval;
-  if (knownBucketDifference) differences.push(`分钟桶定义不同：${canonicalWfdJson(a.timeBucket)} ≠ ${canonicalWfdJson(b.timeBucket)}`);
+  const at = a.timeBucket, bt = b.timeBucket;
+  if (at.kind === 'not_applicable' || bt.kind === 'not_applicable') {
+    if (at.kind !== bt.kind || at.timezone !== bt.timezone)
+      differences.push(`时间桶适用性或时区不同：${canonicalWfdJson(at)} ≠ ${canonicalWfdJson(bt)}`);
+  } else if (at.lengthMinutes !== bt.lengthMinutes || at.timezone !== bt.timezone
+    || at.labelSemantics !== 'unknown' && bt.labelSemantics !== 'unknown' && at.labelSemantics !== bt.labelSemantics
+    || at.interval !== 'unknown' && bt.interval !== 'unknown' && at.interval !== bt.interval) {
+    differences.push(`分钟桶定义不同：${canonicalWfdJson(at)} ≠ ${canonicalWfdJson(bt)}`);
+  }
   if (a.adjustment.status !== 'unknown' && b.adjustment.status !== 'unknown' && a.adjustment.status !== b.adjustment.status)
     differences.push(`复权状态不同：${a.adjustment.status} ≠ ${b.adjustment.status}`);
-  if (knownMeaning(a.adjustment.method) && knownMeaning(b.adjustment.method) && a.adjustment.method !== b.adjustment.method)
-    differences.push(`复权方法不同：${a.adjustment.method} ≠ ${b.adjustment.method}`);
-  if (knownMeaning(a.adjustment.basis) && knownMeaning(b.adjustment.basis) && a.adjustment.basis !== b.adjustment.basis)
-    differences.push(`复权基准不同：${a.adjustment.basis} ≠ ${b.adjustment.basis}`);
+  if (a.adjustment.status !== 'not_applicable' && b.adjustment.status !== 'not_applicable') {
+    if (knownMeaning(a.adjustment.method) && knownMeaning(b.adjustment.method) && a.adjustment.method !== b.adjustment.method)
+      differences.push(`复权方法不同：${a.adjustment.method} ≠ ${b.adjustment.method}`);
+    if (knownMeaning(a.adjustment.basis) && knownMeaning(b.adjustment.basis) && a.adjustment.basis !== b.adjustment.basis)
+      differences.push(`复权基准不同：${a.adjustment.basis} ≠ ${b.adjustment.basis}`);
+  }
   if (a.domainScope || b.domainScope) {
     const da = a.domainScope, db = b.domainScope;
     if (!da || !db) {
@@ -395,6 +451,18 @@ export function compareProfileSemantics(left: SourceFieldProfile, right: SourceF
         differences.push(`会计准则不同：${da.accountingStandard} ≠ ${db.accountingStandard}`);
       if (da.statementScope && db.statementScope && da.statementScope !== 'unknown' && db.statementScope !== 'unknown' && da.statementScope !== db.statementScope)
         differences.push(`报表合并范围不同：${da.statementScope} ≠ ${db.statementScope}`);
+      if (da.domain === 'relation_claim' && db.domain === 'relation_claim') {
+        if (knownMeaning(da.taxonomyAuthority) && knownMeaning(db.taxonomyAuthority) && da.taxonomyAuthority !== db.taxonomyAuthority)
+          differences.push(`关系分类权威（taxonomyAuthority）不同：${da.taxonomyAuthority} ≠ ${db.taxonomyAuthority}`);
+        if (knownMeaning(da.effectivePeriodPolicy) && knownMeaning(db.effectivePeriodPolicy) && da.effectivePeriodPolicy !== db.effectivePeriodPolicy)
+          differences.push(`关系生效期间规则（effectivePeriodPolicy）不同：${da.effectivePeriodPolicy} ≠ ${db.effectivePeriodPolicy}`);
+      }
+      const ae = da.eventSemantics, be = db.eventSemantics;
+      if (da.domain === 'event_claim' && db.domain === 'event_claim' && ae && be) {
+        for (const axis of ['contentNature', 'occurrencePolicy', 'timePrecisionPolicy'] as const) {
+          if (ae[axis] !== be[axis]) differences.push(`事件声明口径（eventSemantics.${axis}）不同：${ae[axis]} ≠ ${be[axis]}`);
+        }
+      }
       if (da.commodityClassification && db.commodityClassification) {
         const ca = da.commodityClassification, cb = db.commodityClassification;
         if ((knownMeaning(ca.scheme) && knownMeaning(cb.scheme) && ca.scheme !== cb.scheme)

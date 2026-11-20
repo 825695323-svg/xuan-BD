@@ -281,9 +281,10 @@ function sourceApplicability(profile: SourceFieldProfile | null, conditions?: So
     else if (actual !== expected) differences.push(label + ' 不符合请求：' + actual + ' ≠ ' + expected);
   };
   check('频率', profile.frequency, conditions.frequency);
-  check('复权状态', profile.adjustment.status, conditions.adjustment);
-  check('复权方法', profile.adjustment.method, conditions.adjustmentMethod);
-  check('复权基准', profile.adjustment.basis, conditions.adjustmentBasis);
+  const { adjustment } = profile;
+  check('复权状态', adjustment.status, conditions.adjustment);
+  check('复权方法', adjustment.status === 'not_applicable' ? undefined : adjustment.method, conditions.adjustmentMethod);
+  check('复权基准', adjustment.status === 'not_applicable' ? undefined : adjustment.basis, conditions.adjustmentBasis);
   check('时区', profile.timeBucket.timezone, conditions.timezone);
   for (const [field, unit] of Object.entries(conditions.fieldUnits ?? {}))
     check('字段 ' + field + ' 单位', profile.fields.find(item => item.fieldCode === field)?.unitCode, unit);
@@ -305,6 +306,8 @@ function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceS
       || (field.aliases ?? []).some(alias => alias.length > 128) || (field.measurement?.length ?? 0) > 192,
   }));
   const semanticGaps = profileSemanticGaps(profile);
+  const { adjustment } = profile;
+  const { method, basis } = adjustment.status === 'not_applicable' ? {} : adjustment;
   const gaps = [...semanticGaps,
     ...(fieldCode && !filtered.length ? ['来源档案没有规范字段 ' + fieldCode + '。'] : []),
     ...(!datasetId ? ['没有该语义指纹对应的本机数据集登记；来源档案不等于 WFD 已发布定义。'] : [])];
@@ -317,9 +320,8 @@ function sourceProfilePreview(profile: SourceFieldProfile | null, scope: SourceS
     fields: displayFields, frequency: profile.frequency,
     timeBucket: { ...profile.timeBucket, timezone: profile.timeBucket.timezone.slice(0, 128),
       previewTruncated: profile.timeBucket.timezone.length > 128 },
-    adjustment: { status: profile.adjustment.status,
-      method: profile.adjustment.method?.slice(0, 192) ?? null, basis: profile.adjustment.basis?.slice(0, 192) ?? null,
-      previewTruncated: (profile.adjustment.method?.length ?? 0) > 192 || (profile.adjustment.basis?.length ?? 0) > 192 },
+    adjustment: { status: adjustment.status, method: method?.slice(0, 192) ?? null, basis: basis?.slice(0, 192) ?? null,
+      previewTruncated: (method?.length ?? 0) > 192 || (basis?.length ?? 0) > 192 },
     supersedes: (profile.supersedes ?? []).slice(0, 8).map(item => ({ ...item, note: item.note.slice(0, 192) })),
     totalSupersedes: profile.supersedes?.length ?? 0,
     supersedesPreviewComplete: (profile.supersedes ?? []).length <= 8

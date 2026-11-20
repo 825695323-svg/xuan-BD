@@ -3188,9 +3188,11 @@ class WFDProductService:
         result = self._discover_products(snapshot_id=snapshot_id, subject=subject)
         self._authorize_sources(result.get("source_ids", []))
         published_sources = result.pop("published_source_ids_by_product")
+        published_counts = result.pop("published_record_counts")
         result["products"] = [self._public_product(product) for product in result.get("products", [])]
         for product in result["products"]:
             product["published_source_ids"] = published_sources[product["product_id"]]
+            product["published_record_count"] = published_counts[product["product_id"]]
         result["public_projection"] = self._public_projection_metadata(
             result.get("products", []), result.get("source_ids", []))
         result.pop("source_ids_by_product", None)
@@ -3204,6 +3206,7 @@ class WFDProductService:
         source_ids = set()
         source_ids_by_product = {}
         published_source_ids_by_product = {}
+        published_record_counts = {}
         for entry in snapshot["files"]:
             binding = entry["source_bundle"].get("_wfd_product_bindings", {}).get(entry["output_key"])
             if not binding or binding["product"]["product_id"] != entry["product_id"]:
@@ -3225,6 +3228,8 @@ class WFDProductService:
             if subject is None or product["subject"] == subject:
                 key = (product["product_id"], (product.get("contract_ref") or {}).get("digest", "legacy"))
                 products[key] = copy.deepcopy(product)
+                pid = product["product_id"]
+                published_record_counts[pid] = published_record_counts.get(pid, 0) + entry["row_count"]
                 admission = self._merge_source_admissions(
                     (metadata or {}).get("source_admission"), binding.get("source_admission"))
                 ids = set(admission.get("source_ids") or self._source_ids(entry.get("source_bundle", {})))
@@ -3238,6 +3243,7 @@ class WFDProductService:
                 source_ids_by_product.setdefault(product["product_id"], set()).update(ids)
                 published_source_ids_by_product.setdefault(product["product_id"], set()).update(published)
         return {"snapshot_id": snapshot_id, "products": list(products.values()),
+                "published_record_counts": published_record_counts,
                 "source_ids": sorted(source_ids),
                 "source_ids_by_product": {key: sorted(value) for key, value in source_ids_by_product.items()},
                 "published_source_ids_by_product": {

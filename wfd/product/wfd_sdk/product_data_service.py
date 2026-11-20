@@ -3675,8 +3675,11 @@ class WFDDataOnlyService(WFDProductService):
     def discover_products(self, *, snapshot_id, subject=None):
         self.require_permission("read")
         result = self._discover_products(snapshot_id=snapshot_id, subject=subject)
+        published_counts = result.pop("published_record_counts")
         result["products"] = [self._public_product(product)
                               for product in result.get("products", [])]
+        for product in result["products"]:
+            product["published_record_count"] = published_counts[product["product_id"]]
         result["public_projection"] = self._public_projection_metadata(
             result.get("products", []), result.get("source_ids", []))
         result.pop("source_ids_by_product", None)

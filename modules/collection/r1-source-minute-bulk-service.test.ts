@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
+import { verifyG5AdmissionReceiptDigest } from './g5-admission-receipt.js';
 import type { R1ConnectionIdentity } from '../../contracts/r1-contracts.js';
 import { SOURCE_MINUTE_BATCH_PROTOCOL, type SourceMinuteBatchChunk } from '../../contracts/source-minute-batch.js';
 import { TaskRuntimeRegistry, TaskService } from '../../platform/jobs/tasks.js';
@@ -15,11 +16,12 @@ import { ManagedOriginalStore } from './managed-originals.js';
 import { MaterialService } from './materials/service.js';
 import { R1ChunkedCsvService } from './r1-chunked-csv.js';
 import type { R1AutoService } from './r1-auto.js';
+import { r1G5ProductId } from './r1-g5-admission.js';
 import { assertSourceMinuteDiskGrowth, R1_SOURCE_MINUTE_ACTIONS, R1_SOURCE_MINUTE_COMMIT_NO_PROGRESS_MS, R1SourceMinuteBulkService, type R1SourceMinuteBulkTransport } from './r1-source-minute-bulk-service.js';
 import { buildSourceMinuteBatchHeader } from './r1-source-minute-transport.js';
 import { R1_WORKSPACE_RUNTIME, R1WorkspaceService } from './r1-workspace.js';
 import type { R1Runtime } from './r1-runtime.js';
-import type { R1HandoffService } from './r1-structured-handoff.js';
+import { R1HandoffService } from './r1-structured-handoff.js';
 import { SourceFieldProfileStore } from './source-field-profile.js';
 import type { OperatorContext, ProcessingPlanService } from './processing-plan.js';
 
@@ -35,14 +37,19 @@ const profile = {
 };
 const source = { source_id: 'synthetic-source', provider: 'synthetic-provider', requested_url: 'file:///synthetic/source-series/file.csv',
   requested_at_utc: '2026-04-07T00:00:00Z', acquired_at_utc: '2026-04-07T00:01:00Z', usage_scope: 'synthetic verification only',
-  authorization: { status: 'authorized', basis: 'fixture generated for this test' } };
+  authorization: { status: 'authorized' as const, basis: 'fixture generated for this test' } };
 const input = (intakeId: string) => ({ intakeId, name: 'synthetic.csv', sha256: wfdSha256(bytes), byteLength: bytes.length, source, datasetId: 'synthetic' });
 const bulkInput = (id: string) => ({ ...input(id), mode: 'source_minute_bulk_v1', sourceValueColumns: columns, partitionDate: '20260407' });
 const operator = (requestId: string): OperatorContext => ({ operatorId: 'synthetic.local', requestId, method: 'POST',
   path: '/api/bd/r1/batches/chunked', remoteAddress: null, observedAt: Date.now() });
 type Test = { after(fn: () => Promise<void>): void };
 
-function setup(t: Test) {
+function stripBulkAdmission(database: CoreDatabase, id: string) {
+  database.connection.prepare(`UPDATE r1_source_minute_bulk SET record_json =
+    json_remove(record_json, '$.g5AdmissionPending', '$.g5AdmissionReceipt') WHERE intake_id=?`).run(id);
+}
+
+function setup(t: Test, parentSnapshotId: string | null = null) {
   const path = realpathSync(mkdtempSync(join(process.env.BD_SYNTHETIC_BULK_TMP ?? tmpdir(), 'bd-bulk-controller-')));
   const external = join(path, 'owned'), config = join(path, 'config');
   mkdirSync(external); mkdirSync(config);
@@ -72,6 +79,14 @@ function setup(t: Test) {
     cleanupRequired: false, waitOnPut: null as (() => Promise<void>) | null };
   const received = new Set<number>();
   const reply = (result: WfdRecord) => ({ result });
+  const discoveredSnapshots: string[] = [];
+  const historyReads: { snapshotId: string; productId: string }[] = [];
+  const publishedProduct = () => {
+    const saved = database.connection.prepare("SELECT json_extract(record_json, '$.manifest.target') AS target FROM r1_source_minute_bulk").get();
+    const { datasetId, subject, definition } = JSON.parse(String(saved?.target));
+    return { product_id: r1G5ProductId(datasetId, 'tabular', subject, definition), dataset_id: datasetId, subject,
+      declaration: definition, logical_domain: 'observations', payload_kind: 'tabular_rows', published_record_count: 1 };
+  };
   const phase = (batch_id: string) => reply(remote ? { protocol_version: SOURCE_MINUTE_BATCH_PROTOCOL, batch_id,
     expected_chunks: frozenChunks.length, received_chunks: received.size, chunk_offset: 0, next_chunk_offset: null,
     chunks: frozenChunks.map(chunk => ({ ...chunk, received: received.has(chunk.ordinal) })), phase: remote, ...activation }
@@ -114,6 +129,19 @@ function setup(t: Test) {
   };
   const runtime = { connection: { client, store: external, runtime: path }, currentIdentity: () => ({ ...connection }), client: {
     usageStatus: async () => reply({ format_version: 'wfd.usage-suspension/1', issues: [], tickets: [], active_issues: 0, suspended_record_versions: 0 }),
+    contractDiscovery: async (snapshotId: string) => {
+      discoveredSnapshots.push(snapshotId);
+      assert.equal(snapshotId, parentSnapshotId);
+      return reply({ snapshot_id: snapshotId, product_count: 1, products: [publishedProduct()] });
+    },
+    fixedReadHistory: async (snapshotId: string, productId: string) => {
+      historyReads.push({ snapshotId, productId });
+      const product = publishedProduct();
+      assert.equal(productId, product.product_id);
+      return reply({ snapshot_id: snapshotId, perspective: 'snapshot_contents', include_history: true, products: [product],
+        rows: [{ record_id: 'published-row', record_version: 'revision-1', record_ref: { snapshot_id: snapshotId,
+          product_id: productId, logical_key: 'published-row', revision_id: 'revision-1' } }] });
+    },
   } } as unknown as R1Runtime;
   const processing = { moduleCapability: () => ({ status: 'ready' }) } as unknown as ProcessingPlanService;
   const workspace = new R1WorkspaceService({ database, tasks: () => tasks, runtime, processing, materials,
@@ -135,7 +163,8 @@ function setup(t: Test) {
     },
   };
   const bulk = new R1SourceMinuteBulkService({ database, tasks: () => tasks, materials, store, resources, profileStore: new SourceFieldProfileStore(profileDirectory),
-    runtime, processing, workspace: { snapshotStatus: async () => ({ snapshotId: null, connection: { roles: ['read', 'submit', 'publish'] } } as never) },
+    runtime, processing, workspace: { snapshotStatus: async () => ({ snapshotId: parentSnapshotId, connection: { roles: ['read', 'submit', 'publish'] } } as never),
+      discoverG5History: workspace.discoverG5History.bind(workspace) },
     transport, commitBudgetPolicy });
   workspace.setSourceMinuteBulkHandler(bulk);
   const legacyOptions = { database, tasks: () => tasks, materials, auto: {} as R1AutoService, connection: () => connection,
@@ -147,7 +176,7 @@ function setup(t: Test) {
     const task = await tasks.wait((kind === 'stage' ? view.stageTaskId : view.commitTaskId)!);
     return { task, view: chunked.get(id) };
   };
-  return { database, tasks, chunked, store, external, profilePath, connection, legacyOptions, problems, status,
+  return { database, tasks, chunked, store, external, profilePath, connection, legacyOptions, problems, status, discoveredSnapshots, historyReads,
     counters: () => ({ beginCalls, finalizeCalls, legacyAccept, verifiedCheckpoint, readbackAttempts }) };
 }
 
@@ -164,6 +193,7 @@ test('explicit batch stages, confirms, reads back and reclaims only derived file
   assert.throws(() => f.chunked.start(input(id), operator(id)), { code: 'R1_CSV_CONFLICT' });
   assert.throws(() => f.chunked.upload(id, 0, bytes), { code: 'R1_BULK_CHUNK_DIGEST' });
   f.chunked.upload(id, 0, bytes, wfdSha256(bytes));
+  stripBulkAdmission(f.database, id);
   await f.chunked.advance(id);
   const staged = await f.status(id, 'stage');
   assert.equal(staged.task.status, 'succeeded', JSON.stringify(staged.task.error));
@@ -175,11 +205,15 @@ test('explicit batch stages, confirms, reads back and reclaims only derived file
   assert.equal(f.database.connection.prepare('SELECT COUNT(*) AS n FROM r1_csv_pages WHERE intake_id=?').get(id)?.n, 0);
   await assert.rejects(f.chunked.reclaim(id), { code: 'R1_BULK_RECLAIM_NOT_READY' });
   await assert.rejects(f.chunked.commit(id, 'sha256:' + '0'.repeat(64)), { code: 'R1_BULK_CONFIRMATION' });
+  stripBulkAdmission(f.database, id);
   await f.chunked.commit(id, staged.view.bulk!.manifestDigest);
   const completed = await f.status(id, 'commit');
   assert.equal(completed.task.status, 'succeeded', JSON.stringify(completed.task.error));
   assert.equal(completed.view.state, 'completed');
   assert.equal(completed.view.bulk?.association?.materialId, completed.view.materialId);
+  const admission = completed.view.bulk?.association?.g5AdmissionReceipt;
+  assert.ok(verifyG5AdmissionReceiptDigest(admission));
+  assert.equal(admission.binding.requestId, id);
   assert.equal(f.counters().finalizeCalls, 1);
   assert.equal(f.counters().readbackAttempts, 1);
   assert.equal(f.database.connection.prepare('SELECT COUNT(*) AS n FROM r1_source_minute_associations').get()?.n, 1);
@@ -288,10 +322,67 @@ test('finalized WFD status with outstanding cleanup completes the same ledger be
   f.problems.cleanupRequired = true;
   await f.chunked.commit(id, stage.view.bulk!.manifestDigest);
   assert.equal((await f.status(id, 'commit')).task.status, 'needs_review');
+  stripBulkAdmission(f.database, id);
+  writeFileSync(join(f.profilePath, '..', 'peer-source.json'), JSON.stringify({
+    ...profile, profileId: 'bulk.recovery-peer', sourceId: 'recovery-peer',
+  }));
   await f.chunked.advance(id);
   assert.equal((await f.status(id, 'commit')).view.state, 'completed');
   assert.equal(f.counters().finalizeCalls, 2);
   assert.equal(f.counters().readbackAttempts, 1);
+});
+
+test('a legacy staged batch with both G5 fields absent rechecks peers before finalize', async t => {
+  const f = setup(t), id = 'legacy-finalize-g5';
+  await f.chunked.startAny(bulkInput(id), operator(id));
+  f.chunked.upload(id, 0, bytes, wfdSha256(bytes));
+  await f.chunked.advance(id);
+  const staged = await f.status(id, 'stage');
+  assert.equal(staged.task.status, 'succeeded', JSON.stringify(staged.task.error));
+  stripBulkAdmission(f.database, id);
+  writeFileSync(join(f.profilePath, '..', 'peer-source.json'), JSON.stringify({
+    ...profile, profileId: 'bulk.finalize-peer', sourceId: 'finalize-peer',
+  }));
+  await f.chunked.commit(id, staged.view.bulk!.manifestDigest);
+  const blocked = await f.status(id, 'commit');
+  assert.equal(blocked.task.status, 'failed');
+  assert.equal(blocked.task.error?.code, 'G5_CROSS_SOURCE_EVIDENCE_REQUIRED');
+  assert.equal(f.counters().finalizeCalls, 0);
+});
+
+test('minute staging and legacy finalize reject incomplete coverage of the WFD fixed parent', async t => {
+  const snapshotId = 's_' + 'd'.repeat(24);
+  const f = setup(t, snapshotId), id = 'published-parent-g5';
+  const handoff = new R1HandoffService({ database: f.database });
+  await f.chunked.startAny(bulkInput(id), operator(id));
+  f.chunked.upload(id, 0, bytes, wfdSha256(bytes));
+  await f.chunked.advance(id);
+  const blockedStage = await f.status(id, 'stage');
+  assert.equal(blockedStage.task.error?.code, 'G5_PEER_HISTORY_INCOMPLETE');
+  assert.equal(f.counters().beginCalls, 0);
+  assert.deepEqual(f.discoveredSnapshots, [snapshotId]);
+  assert.equal(f.historyReads.length, 1);
+  const { productId } = f.historyReads[0]!;
+  assert.deepEqual(f.historyReads[0], { snapshotId, productId });
+
+  const { originalId } = handoff.registerOriginal({ bytes, originalName: 'previous.csv',
+    source: { ...source, sha256: wfdSha256(bytes), bytes: bytes.length } });
+  const db = f.database.connection;
+  db.prepare('INSERT INTO r1_record_associations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run('synthetic', productId, 'definition', snapshotId, 'published-row', 'revision-1',
+      'published-request', originalId, source.source_id, '[]', '[]', 0);
+  await f.chunked.advance(id);
+  const staged = await f.status(id, 'stage');
+  assert.equal(staged.task.status, 'succeeded', JSON.stringify(staged.task.error));
+  stripBulkAdmission(f.database, id);
+  db.prepare('DELETE FROM r1_record_associations WHERE request_id=?').run('published-request');
+
+  await f.chunked.commit(id, staged.view.bulk!.manifestDigest);
+  const blockedCommit = await f.status(id, 'commit');
+  assert.equal(blockedCommit.task.error?.code, 'G5_PEER_HISTORY_INCOMPLETE');
+  assert.equal(f.counters().finalizeCalls, 0);
+  assert.deepEqual(f.discoveredSnapshots, [snapshotId, snapshotId, snapshotId]);
+  assert.deepEqual(f.historyReads, Array.from({ length: 3 }, () => ({ snapshotId, productId })));
 });
 
 test('a no-progress budget is not extended by an unactivated status alone', async t => {

@@ -12,6 +12,12 @@ import type { R1Runtime } from './r1-runtime.js';
 import type { OperatorContext } from './processing-plan.js';
 import { readR1ContractBinding } from './r1-tabular.js';
 import { readPublicationGroups } from '../../contracts/r1-publication-set.js';
+import type { R1SourceDeclaration } from '../../contracts/r1-contracts.js';
+import { evaluateR1G5Admission, type G5AdmissionReceipt } from './g5-admission-receipt.js';
+import { assertR1G5Admission, persistR1G5Receipt, readR1G5PredecessorAssociations, readR1G5TargetHistory,
+  readR1G5Profile, r1G5EvidenceRef, r1G5PeerProfiles } from './r1-g5-admission.js';
+import { declaredSourceSeries } from './r1-evidence.js';
+import type { SemanticProductRegistryStore, SourceFieldProfileStore } from './source-field-profile.js';
 
 /**
  * 已发布成功、固定读回一致后才发现映射/语义错误的更正闭环的 BD 编排。
@@ -86,6 +92,7 @@ export class PostPublicationCorrectionService {
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService;
     runtime: R1Runtime; processing: ProcessingPlanService; materials: MaterialService;
     adapters: { resolve(ref: unknown): { configDigest: string } };
+    fieldProfiles?: SourceFieldProfileStore; semanticProducts?: SemanticProductRegistryStore;
     publicationSetEvidence?(requestId: string, value: unknown, check: () => void): Promise<unknown> }) {
     options.database.migrate('post-publication-correction', 1, SCHEMA);
   }
@@ -603,30 +610,35 @@ export class PostPublicationCorrectionService {
     const original = this.options.materials.readOriginal(materialId);
     const expectedSha = input.originalSha256.replace(/^sha256:/u, '');
     const actualSha = original.sha256.replace(/^sha256:/u, '');
-    const originalAttempt = this.db.prepare('SELECT local_refs_json,created_at FROM r1_handoff_attempts WHERE request_id=?')
-      .get(String(originals[0]!.requestId)) as { local_refs_json: string; created_at: number } | undefined;
-    let originalRefs: WfdRecord = {};
-    try { originalRefs = originalAttempt ? JSON.parse(originalAttempt.local_refs_json) as WfdRecord : {}; }
-    catch { originalRefs = {}; }
+    const originalRequestId = String(originals[0]!.requestId);
+    const datasetId = String((originalDocument.request_identity as WfdRecord).dataset_id);
+    const targetProductId = originals[0]!.productId;
+    if (originals.some(item => item.productId !== targetProductId))
+      fail('CORRECTION_MULTI_OUTPUT_UNSUPPORTED', '单个修复输出须绑定同一前驱产品。');
+    const originalAttempt = this.db.prepare('SELECT local_refs_json,local_refs_sha256,created_at FROM r1_handoff_attempts WHERE request_id=?')
+      .get(originalRequestId) as { local_refs_json: string; local_refs_sha256: string; created_at: number } | undefined;
+    if (!originalAttempt || wfdSha256(originalAttempt.local_refs_json) !== originalAttempt.local_refs_sha256)
+      fail('CORRECTION_ORIGINAL_LINK', '原发布的冻结原件引用缺失或摘要不符。');
+    let originalRefs = JSON.parse(originalAttempt.local_refs_json) as WfdRecord;
     if ((JSON.parse(row.binding_json) as CorrectionBinding).publicationSet) {
       const memberRefs = isWfdRecord(originalRefs.outputs) ? originalRefs.outputs[String(output.output_key)] : undefined;
       if (!isWfdRecord(memberRefs)) fail('CORRECTION_GROUP_ORIGINAL_LINK', '原组成员缺少独立原件关联。');
       originalRefs = memberRefs;
     }
-    const refMaterialIds = Array.isArray(originalRefs.materialIds) ? originalRefs.materialIds.map(String) : [];
-    const refOriginalIds = Array.isArray(originalRefs.originalIds) ? originalRefs.originalIds.map(String) : [];
-    const refShaMatches = (sha: string) => {
-      if (refMaterialIds.includes(materialId)) return true;
-      for (const originalId of refOriginalIds) {
-        const stored = this.db.prepare(`SELECT o.sha256 FROM r1_originals o WHERE o.original_id=?`).get(originalId) as
-          { sha256: string } | undefined;
-        if (stored && String(stored.sha256).replace(/^sha256:/u, '') === sha) return true;
-      }
-      return false;
-    };
+    const originalIds = new Set([...(Array.isArray(originalRefs.originalIds) ? originalRefs.originalIds : []),
+      ...(Array.isArray(originalRefs.materialIds) ? originalRefs.materialIds : [])]);
+    const sourceRefs = Array.isArray(originalRefs.sourceRefs) ? originalRefs.sourceRefs.filter(isWfdRecord) : [];
+    const predecessors = originals.flatMap(item => readR1G5PredecessorAssociations(this.db, {
+      datasetId, productId: item.productId, recordId: item.businessKey, recordVersion: item.recordVersion, requestId: originalRequestId,
+    }));
+    const predecessorSourceIds = [...new Set(predecessors.map(item => item.sourceId))];
+    const refShaMatches = (sha: string) => predecessors.every(item => originalIds.has(item.originalId)
+      && (item.sha256 === null || String(item.sha256).replace(/^sha256:/u, '') === sha)
+      && sourceRefs.some(ref => ref.source_id === item.sourceId && String(ref.sha256).replace(/^sha256:/u, '') === sha));
     if (row.kind === 'processing_repair') {
       if (actualSha !== expectedSha) fail('CORRECTION_ORIGINAL_CHANGED', 'processing_repair 必须保留原字节；原件摘要不同。');
       if (!refShaMatches(actualSha)) fail('CORRECTION_ORIGINAL_LINK', '修复原件没有关联到原发布请求的实际材料。');
+      if (predecessorSourceIds.length !== 1) fail('CORRECTION_ASSOCIATION_SOURCE', '同原件修复须明确绑定单一前驱来源。');
     }
     if (row.kind === 'source_correction') {
       const sourceRevision = input.sourceRevision!;
@@ -636,7 +648,7 @@ export class PostPublicationCorrectionService {
       if (String(sourceRevision.originalSha256).replace(/^sha256:/u, '') !== actualSha)
         fail('CORRECTION_SOURCE_REVISION_REQUIRED', '来源修订依据的新原件摘要与当前材料不符。');
       const acquired = Date.parse(String(sourceRevision.acquiredAtUtc));
-      if (originalAttempt && acquired < originalAttempt.created_at)
+      if (acquired < originalAttempt.created_at)
         fail('CORRECTION_SOURCE_TIME', '供应商更正取得时间早于原发布，不能倒填。');
     }
     const revisions: WfdRecord = {};
@@ -644,9 +656,13 @@ export class PostPublicationCorrectionService {
       revisions[item.businessKey] = { previous: { product_id: item.productId, snapshot_id: item.snapshotId,
         logical_key: item.businessKey, revision_id: item.recordVersion }, reason: input.reason };
     }
-    const identity = { dataset_id: String((originalDocument.request_identity as WfdRecord).dataset_id),
+    const identity = { dataset_id: datasetId,
       trusted_actor_namespace: String((originalDocument.request_identity as WfdRecord).trusted_actor_namespace),
       request_id: `correction:${caseId}`, submission_digest: 'sha256:' + '0'.repeat(64) };
+    const g5AdmissionReceipt = this.repairAdmission(row.kind, { datasetId, targetProductId,
+      outputKey: String(output.output_key), requestId: identity.request_id }, predecessorSourceIds,
+      input.sourceRevision, newParameters.sourceFieldProfile ?? this.options.processing.get(input.planId).outputs
+        ?.find(item => item.outputId === input.outputId)?.target?.declaration?.sourceFieldProfile);
     const structured: R1StructuredRequest = {
       datasetId: identity.dataset_id, namespace: identity.trusted_actor_namespace,
       producerNamespace: identity.trusted_actor_namespace, requestId: identity.request_id,
@@ -675,13 +691,38 @@ export class PostPublicationCorrectionService {
       planVersion: String(this.options.processing.get(input.planId).version), originalBytes: original.bytes.length,
       materialId, originalRequestId: String(originals[0]!.requestId),
       sourceRevision: input.sourceRevision ?? null, expectedParentSnapshotId: input.expectedParentSnapshotId,
-      document, documentSha256, requestIdentity: document.request_identity, valueFields,
+      document, documentSha256, requestIdentity: document.request_identity, valueFields, g5AdmissionReceipt,
       revisionCount: (document.outputs as WfdRecord[]).reduce((count, item) =>
         count + Object.keys((item.revisions as WfdRecord) ?? {}).length, 0),
       budget: { max_rows: Math.max(1, originals.length),
         max_document_bytes: this.capabilities().maxDocumentBytes,
         series_count: (document.outputs as WfdRecord[]).length } };
     return frozen;
+  }
+
+  private repairAdmission(kind: CorrectionKind, binding: { datasetId: string; targetProductId: string; outputKey: string; requestId: string },
+    predecessorSourceIds: readonly string[],
+    sourceRevision: WfdRecord | undefined, profileEvidence: unknown): G5AdmissionReceipt {
+    const sourceId = sourceRevision ? String(sourceRevision.sourceId) : predecessorSourceIds[0]!;
+    const request = { entryPoint: 'post_publication_correction' as const, correctionKind: kind, sourceId,
+      ...binding, evaluatedAtUtc: new Date().toISOString() };
+    if (kind === 'processing_repair') return evaluateR1G5Admission(request);
+
+    const { datasetId, targetProductId, requestId } = binding;
+    const { history } = readR1G5TargetHistory(this.db, { datasetId, productId: targetProductId, requestId });
+    let profile = null;
+    if (profileEvidence !== undefined) profile = readR1G5Profile(profileEvidence, sourceId);
+    else {
+      try { profile = this.options.fieldProfiles?.match({ sourceId, series: declaredSourceSeries({
+        requested_url: String(sourceRevision!.requestedUrl),
+      } as R1SourceDeclaration) }) ?? null; }
+      catch { /* 对手缺档或不可读时由 G5 返回失败关闭决定。 */ }
+    }
+    const receipt = evaluateR1G5Admission({ ...request, profile, peerSourceIds: [...history.keys()],
+      peerProfiles: r1G5PeerProfiles(history, sourceId, datasetId, this.options.fieldProfiles, profile, this.options.semanticProducts),
+      ...(!this.options.fieldProfiles ? { legacySourceOnly: true } : {}) });
+    assertR1G5Admission(receipt);
+    return receipt;
   }
 
   private persistRepair(caseId: string, frozen: FrozenRepair) {
@@ -1441,6 +1482,7 @@ export class PostPublicationCorrectionService {
     const evidenceRefs = [
       { ref_id: `correction-output:${caseId}`, content_sha256: artifactSha256, kind: 'processing_output' },
       { ref_id: `correction-document:${caseId}`, content_sha256: documentSha256, kind: 'r1_document' },
+      ...(frozen.g5AdmissionReceipt ? [r1G5EvidenceRef(frozen.g5AdmissionReceipt)] : []),
       ...(sourceCorrection ? [{ ref_id: `predecessor-original:${caseId}`,
         content_sha256: String((frozen.sourceRevision as WfdRecord).previousOriginalSha256).replace(/^sha256:/u, ''),
         kind: 'predecessor_original' }] : []),
@@ -1449,6 +1491,7 @@ export class PostPublicationCorrectionService {
       sourceRefs: [source], processRefs: [processRef], evidenceRefs };
     const now = Date.now();
     const writeMember = () => {
+      if (frozen.g5AdmissionReceipt) persistR1G5Receipt(this.db, frozen.g5AdmissionReceipt, documentSha256);
       this.db.prepare(`INSERT INTO r1_handoff_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(request_id) DO UPDATE SET document_json=excluded.document_json,
         document_sha256=excluded.document_sha256,local_refs_json=excluded.local_refs_json,
@@ -1527,6 +1570,7 @@ interface FrozenRepair {
   caseId: string; impactSha256: string; errorBindingDigest: string; document: WfdRecord;
   documentSha256: string; planId: string; outputId: string; originalSha256: string; outputSha256?: string; planVersion?: string; originalBytes?: number;
   valueFields?: WfdRecord; materialId?: string; originalRequestId?: string; sourceRevision?: WfdRecord | null;
+  g5AdmissionReceipt?: G5AdmissionReceipt;
   budget: { max_rows: number; max_document_bytes: number; series_count: number };
   /** 旧冻结文档的复算字段仅用于判断退役范围及保留原报核验摘要。 */
   recompute?: unknown[];
