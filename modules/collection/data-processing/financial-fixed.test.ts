@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { projectFinancialFixed, type FinancialCalculation, type FinancialReader } from './financial-fixed.js';
+import { projectFinancialFixed, verifyFinancialStatementArticulation, type FinancialCalculation, type FinancialReader } from './financial-fixed.js';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../../adapters/database/wfd-transport.js';
 
 function valueUnit(code = 'cny', definition: WfdRecord = { dimension: 'money' }) {
@@ -203,6 +203,13 @@ test('legacy not_reported nulls remain compatible while unit conflicts, cross-co
     row('l1', '30', '2025-12-31', '2025-12-31', { concept: '负债合计', period_type: 'instant' }),
     row('e1', '70', '2025-12-31', '2025-12-31', { concept: '所有者权益（或股东权益）合计', period_type: 'instant' }),
   ];
+  const duplicateReportAxes = { report_id: 'annual-2025', report_nature: 'formal', fiscal_calendar: 'calendar-year',
+    comparability_basis: 'same-annual-report', column_role: 'current_period' };
+  for (const item of dup) {
+    item.subject = { kind: 'entity', namespace: 'sse', id: '600592' };
+    Object.assign(item.values as WfdRecord,
+      Object.fromEntries(Object.entries(duplicateReportAxes).map(([key, value]) => [key, { value, value_state: 'valid_value' }])));
+  }
   const { input: dIn, reader: dRd } = calculation(dup);
   const dupRes = await projectFinancialFixed({ ...dIn, mappingProfile: 'cas-primary-statements/2', articulationCheck: true }, dRd, new AbortController().signal);
   const dupBs01 = dupRes.evidence.articulation?.find(item => item.ruleId === 'BS-01');
@@ -227,4 +234,54 @@ test('legacy not_reported nulls remain compatible while unit conflicts, cross-co
     compatible(carrierRows, { mappingProfile: 'cas-primary-statements/2' }),
     /列角色|column_role/u,
   );
+});
+
+
+test('financial articulation only compares known axes in the same actual report', async () => {
+  const rows: WfdRecord[] = ['资产总计', '负债合计', '所有者权益（或股东权益）合计'].map((concept, index) => ({
+    ...row('line-' + index, ['100', '30', '70'][index]!, '2025-12-31', '2025-12-31', {
+      concept, period_type: 'instant', report_id: 'annual-2025', report_nature: 'formal',
+      fiscal_calendar: 'calendar-year', comparability_basis: 'same-annual-report', column_role: 'current_period',
+    }),
+    subject: { kind: 'entity', namespace: 'sse', id: '600592' },
+  }));
+  const checked = async (items: WfdRecord[]) => {
+    const { input, reader } = calculation(items);
+    const result = await projectFinancialFixed({ ...input, mappingProfile: 'cas-primary-statements/2',
+      articulationCheck: true }, reader, new AbortController().signal);
+    assert.equal(result.evidence.outputRows, 3);
+    return result.evidence.articulation!.filter(item => item.ruleId === 'BS-01');
+  };
+  assert.deepEqual((await checked(rows)).map(item => item.status), ['exact_match']);
+  for (const axis of ['report_id', 'fiscal_calendar', 'report_nature', 'column_role', 'comparability_basis']) {
+    const unresolved = structuredClone(rows);
+    Object.assign((unresolved[2]!.values as WfdRecord)[axis] as WfdRecord, { value: null, value_state: 'not_reported' });
+    const result = await checked(unresolved);
+    assert.ok(result.every(item => item.status === 'indeterminate'), axis);
+    assert.ok(result.some(item => item.reason === 'report_basis_unresolved'), axis);
+  }
+  const distinctReports = structuredClone(rows);
+  ((distinctReports[2]!.values as WfdRecord).report_id as WfdRecord).value = 'other-report-with-same-v1';
+  assert.deepEqual((await checked(distinctReports)).map(item => item.status), ['indeterminate', 'indeterminate']);
+});
+
+test('cash-flow reconciliation never replaces missing FX or invents the balance-period bridge', () => {
+  const term = (concept: string, scaledValue: string | null) => ({
+    concept, scaledValue, declaredPrecisionHalfUlp: scaledValue === null ? null : '0',
+  });
+  const flows = [term('net_cash_operating', '5'), term('net_cash_investing', '-2'),
+    term('net_cash_financing', '1'), term('net_cash_increase', '4')];
+  for (const input of [flows, [...flows, term('fx_effect_on_cash', null)]]) {
+    const cf01 = verifyFinancialStatementArticulation(input).find(item => item.ruleId === 'CF-01')!;
+    assert.equal(cf01.status, 'indeterminate');
+    assert.deepEqual(cf01.missingConcepts, ['fx_effect_on_cash']);
+    assert.equal(cf01.residual, null);
+  }
+  const results = verifyFinancialStatementArticulation([...flows, term('fx_effect_on_cash', '0'),
+    term('cash_and_equivalents_begin', '10'), term('cash_and_equivalents_end', '14')]);
+  assert.equal(results.find(item => item.ruleId === 'CF-01')!.status, 'exact_match');
+  const cf02 = results.find(item => item.ruleId === 'CF-02')!;
+  assert.equal(cf02.status, 'indeterminate');
+  assert.equal(cf02.reason, 'period_alignment_unverified');
+  assert.equal(cf02.residual, null);
 });

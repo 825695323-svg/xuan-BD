@@ -29,7 +29,7 @@ async function ingest(host:FullChainHost,id:string,rows:[number,string][]):Promi
   const uploaded=await host.upload(id+'.csv','data',raw(rows),id+'-upload'),task=await host.settled(uploaded.jobId);
   assert.equal(task.status,'succeeded',JSON.stringify(task.error));
   const materialId=host.services.materials!.getByTask(task.id)!.envelope.materialId;
-  await host.call('/r1/auto/start',{requestId:id,materialId,source:{...source,source_id:id,requested_url:'https://fixture.example.test/'+id+'.csv'},datasetId:'dedup_observations'},202);
+  await host.call('/r1/auto/start',{requestId:id,materialId,source:{...source,requested_url:'https://fixture.example.test/'+id+'.csv'},datasetId:'dedup_observations'},202);
   return settled(host,id);
 }
 

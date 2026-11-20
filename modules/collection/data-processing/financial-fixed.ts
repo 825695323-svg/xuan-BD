@@ -213,7 +213,11 @@ export interface ArticulationTermInput {
   accountingStandard?: string;
   comparabilityBasis?: string;
   reportVersion?: string;
+  reportId?: string;
+  reportNature?: string;
+  fiscalCalendar?: string;
   columnRole?: string;
+  comparisonBlocked?: boolean;
 }
 export interface ArticulationCheckResult {
   ruleId: 'BS-01' | 'BS-02-ASSETS' | 'BS-02-LIABILITIES' | 'BS-03' | 'IS-01' | 'IS-02' | 'CF-01' | 'CF-02';
@@ -223,13 +227,14 @@ export interface ArticulationCheckResult {
   toleranceRadius: string | null;
   missingConcepts: string[];
   duplicateConcepts?: string[];
+  reason?: 'report_basis_unresolved' | 'period_alignment_unverified';
   groupKey?: string;
 }
 
 const ARTICULATION_RULES: readonly {
   ruleId: ArticulationCheckResult['ruleId'];
   formula: string;
-  terms: readonly { concept: string; weight: 1 | -1; optional?: boolean }[];
+  terms: readonly { concept: string; weight: 1 | -1 }[];
 }[] = Object.freeze([
   { ruleId: 'BS-01', formula: 'total_assets - total_liabilities - total_equity = 0',
     terms: [{ concept: 'total_assets', weight: 1 }, { concept: 'total_liabilities', weight: -1 }, { concept: 'total_equity', weight: -1 }] },
@@ -245,7 +250,7 @@ const ARTICULATION_RULES: readonly {
     terms: [{ concept: 'net_profit_parent', weight: 1 }, { concept: 'minority_interest_profit', weight: 1 }, { concept: 'net_profit_total', weight: -1 }] },
   { ruleId: 'CF-01', formula: 'net_cash_operating + net_cash_investing + net_cash_financing + fx_effect_on_cash - net_cash_increase = 0',
     terms: [{ concept: 'net_cash_operating', weight: 1 }, { concept: 'net_cash_investing', weight: 1 },
-      { concept: 'net_cash_financing', weight: 1 }, { concept: 'fx_effect_on_cash', weight: 1, optional: true },
+      { concept: 'net_cash_financing', weight: 1 }, { concept: 'fx_effect_on_cash', weight: 1 },
       { concept: 'net_cash_increase', weight: -1 }] },
   { ruleId: 'CF-02', formula: 'cash_and_equivalents_begin + net_cash_increase - cash_and_equivalents_end = 0',
     terms: [{ concept: 'cash_and_equivalents_begin', weight: 1 }, { concept: 'net_cash_increase', weight: 1 }, { concept: 'cash_and_equivalents_end', weight: -1 }] },
@@ -277,6 +282,9 @@ function articulationGroupKey(item: ArticulationTermInput): string {
     accountingStandard: item.accountingStandard ?? '',
     comparabilityBasis: item.comparabilityBasis ?? '',
     reportVersion: item.reportVersion ?? '',
+    reportId: item.reportId ?? '',
+    reportNature: item.reportNature ?? '',
+    fiscalCalendar: item.fiscalCalendar ?? '',
     columnRole: item.columnRole ?? '',
   });
 }
@@ -310,10 +318,14 @@ export function verifyFinancialStatementArticulation(items: readonly Articulatio
         byConcept.set(item.concept, { scaledValue, declaredPrecisionHalfUlp });
       }
     }
+    const reportBasisUnresolved = groupItems.some(item => item.comparisonBlocked);
     for (const rule of ARTICULATION_RULES) {
-      const missing = rule.terms.filter(t => !t.optional && !byConcept.has(t.concept)).map(t => t.concept);
+      const missing = rule.terms.filter(t => !byConcept.has(t.concept)).map(t => t.concept);
       const duplicates = rule.terms.filter(t => (counts.get(t.concept) ?? 0) > 1).map(t => t.concept);
-      if (missing.length || duplicates.length) {
+      // CF-02 needs a source-backed bridge between balance dates and the flow period.
+      const reason = rule.ruleId === 'CF-02' ? 'period_alignment_unverified' as const
+        : reportBasisUnresolved ? 'report_basis_unresolved' as const : undefined;
+      if (reason || missing.length || duplicates.length) {
         results.push({
           ruleId: rule.ruleId,
           formula: rule.formula,
@@ -321,12 +333,13 @@ export function verifyFinancialStatementArticulation(items: readonly Articulatio
           residual: null,
           toleranceRadius: null,
           missingConcepts: missing,
+          ...(reason ? { reason } : {}),
           ...(duplicates.length ? { duplicateConcepts: duplicates } : {}),
           ...(multiGroup ? { groupKey } : {}),
         });
         continue;
       }
-      const activeTerms = rule.terms.filter(t => byConcept.has(t.concept));
+      const activeTerms = rule.terms;
       const maxScale = Math.max(0, ...activeTerms.flatMap(t => {
         const entry = byConcept.get(t.concept)!;
         return [entry.scaledValue.split('.')[1]?.length ?? 0, entry.declaredPrecisionHalfUlp.split('.')[1]?.length ?? 0];
@@ -546,12 +559,27 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
     };
     lineage.push({ businessKey: key, source: identity, additive: mapping.additive, unitFactor: allowUnitScale ? scaleRule.factor : '1',
       ...(allowUnitScale ? { sourceUnit: rowUnit, declaredPrecisionHalfUlp: scaled ? scaled.declaredPrecisionHalfUlp : null } : {}) });
-    if (expectedDim === 'money') {
-      const subjectKey = canonicalWfdJson({
-        subject: row.subject ?? null,
-        subject_scheme: optionalField(row, 'subject_scheme'),
-        subject_code: optionalField(row, 'subject_code'),
-      });
+    if (calculation.articulationCheck === true && expectedDim === 'money') {
+      const reportAxes = {
+        scope: optionalField(row, 'scope'),
+        dimension: optionalField(row, 'dimension'),
+        currency: optionalField(row, 'currency'),
+        accountingStandard: optionalField(row, 'accounting_standard'),
+        comparabilityBasis: optionalField(row, 'comparability_basis'),
+        reportId: optionalField(row, 'report_id'),
+        reportVersion: optionalField(row, 'report_version'),
+        reportNature: optionalField(row, 'report_nature'),
+        fiscalCalendar: optionalField(row, 'fiscal_calendar'),
+        columnRole: colRole,
+      };
+      const subject = row.subject;
+      const subjectScheme = optionalField(row, 'subject_scheme'), subjectCode = optionalField(row, 'subject_code');
+      const known = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
+        && !/^(unknown|unresolved|unspecified|not_reported)$/iu.test(value.trim());
+      const comparisonBlocked = !isWfdRecord(subject) || !['kind', 'namespace', 'id'].every(key => known(subject[key]))
+        || ![subjectScheme, subjectCode, ...Object.values(reportAxes)].every(known)
+        || !['formal', 'correction', 'restatement_carrier'].includes(reportAxes.reportNature ?? '');
+      const subjectKey = canonicalWfdJson({ subject: subject ?? null, subject_scheme: subjectScheme, subject_code: subjectCode });
       articulationTerms.push({
         concept: mapping.code,
         scaledValue: scaled?.scaledValue ?? null,
@@ -560,13 +588,8 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
         periodKey: `${startDate}/${endDate}`,
         startDate,
         endDate,
-        scope: optionalField(row, 'scope') ?? '',
-        dimension: optionalField(row, 'dimension') ?? '',
-        currency: optionalField(row, 'currency') ?? '',
-        accountingStandard: optionalField(row, 'accounting_standard') ?? '',
-        comparabilityBasis: optionalField(row, 'comparability_basis') ?? '',
-        reportVersion: optionalField(row, 'report_version') ?? '',
-        columnRole: colRole ?? '',
+        ...Object.fromEntries(Object.entries(reportAxes).map(([key, value]) => [key, value ?? ''])),
+        comparisonBlocked,
       });
     }
     return [result];
