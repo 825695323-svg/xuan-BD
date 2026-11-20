@@ -1,6 +1,8 @@
 import { TaskError } from '../../platform/jobs/tasks.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
-import { ALGORITHM_METHODS, MACD_SEMANTICS, type AlgorithmComputedResult, type AlgorithmData } from './algorithm-types.js';
+import { ALGORITHM_METHODS, MACD_SEMANTICS, isAlgorithmMethodId, type AlgorithmComputedResult, type AlgorithmData } from './algorithm-types.js';
+import { verifyAlgorithmNumbers } from './algorithm-reference.js';
+import { normalizeDecimal } from './algorithm-service.js';
 import { buildStructuredIngestDocument, type R1StructuredRequest, type R1SourceRef } from '../collection/r1-structured-handoff.js';
 
 export interface DerivedWfdBinding {
@@ -30,9 +32,10 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     fail('DERIVED_SYNTHETIC_FORBIDDEN', '合成测试算法结果不能进入正式 WFD。');
   if (result.eligibility?.input.status !== 'eligible')
     fail('DERIVED_INPUT_INELIGIBLE', '原 WFD 快照输入尚未通过实际用途资格，不允许把计算结果作为正式派生数据。');
-  if (result.methodId !== 'macd')
+  if (!isAlgorithmMethodId(result.methodId))
     fail('DERIVED_METHOD_UNKNOWN', '原结果的算法未登记为可执行固定方法。');
-  const method = ALGORITHM_METHODS.macd;
+  const method = ALGORITHM_METHODS[result.methodId];
+  const macd = result.methodId === 'macd';
   if (result.methodVersion !== method.version)
     fail('DERIVED_METHOD_CHANGED', '结果方法版本与当前固定算法定义不一致，不能改用新公式冒充旧结果。');
   const src = isWfdRecord(result.source) ? result.source : null;
@@ -60,10 +63,20 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
   const originalSha256 = wfdSha256(original), resultSha256 = wfdSha256(canonicalWfdJson(result));
   const mapped = isWfdRecord(verifiedSrc.fieldMapping) ? verifiedSrc.fieldMapping : {};
   const column = String(mapped.close ?? '');
-  const sourceField = (verifiedFields.definitions as unknown[]).find(item => isWfdRecord(item) && item.field_code === column);
+  const definitions = (verifiedFields.definitions as unknown[]).filter(isWfdRecord);
+  const sourceField = definitions.find(item => item.field_code === column);
   const priceUnit = isWfdRecord(sourceField) && typeof sourceField.unit_code === 'string' ? sourceField.unit_code : '';
   if (!priceUnit)
     fail('DERIVED_UNIT_UNKNOWN', 'WFD 原字段没有正式单位定义，不能推定派生数值单位。');
+  const volumeUnit = result.metadata.volume_unit;
+  if (result.methodId === 'obv') {
+    const semantics = isWfdRecord(verifiedSrc.semantics) ? verifiedSrc.semantics : {};
+    const volumeField = definitions.find(item => item.field_code === mapped.volume);
+    if (typeof mapped.volume !== 'string' || !mapped.volume || typeof volumeUnit !== 'string' || !volumeUnit.trim()
+      || volumeUnit !== semantics.volumeUnit || volumeUnit !== volumeField?.unit_code) {
+      fail('DERIVED_UNIT_UNKNOWN', 'OBV 须使用固定成交量字段定义中核对过的已声明单位。');
+    }
+  }
   if (result.metadata.frequency !== '1d' || !result.metadata.timezone)
     fail('DERIVED_TIME_UNSUPPORTED', '当前固定算法派生入库仅接受有明确时区的日频观测。');
   const outputFields = [...method.outputFields];
@@ -97,9 +110,13 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     for (const code of outputFields) {
       if (!Object.hasOwn(data, code)) fail('DERIVED_OUTPUT_FIELD_MISSING', `第 ${i+1} 条缺少算法输出 ${code}。`);
       const value = data[code];
-      if (typeof value !== 'number' || !Number.isFinite(value) || !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(String(value)))
+      if (!macd && value === null) {
+        values[code] = { data_type: 'decimal', value_state: 'missing_unknown', value: null };
+        continue;
+      }
+      if (typeof value !== 'number' || !Number.isFinite(value) || (macd && !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(String(value))))
         fail('DERIVED_OUTPUT_TYPE', `第 ${i+1} 条 ${code} 不是无损可写入的十进制数。`);
-      values[code] = { data_type: 'decimal', value_state: 'valid_value', value: String(value) };
+      values[code] = { data_type: 'decimal', value_state: 'valid_value', value: macd ? String(value) : normalizeDecimal(String(value)) };
     }
     rows.push({ business_key: 'derived:' + wfdSha256(canonicalWfdJson({
       key: validObserved.business_key, method: result.methodId, parameters: result.parameters })).slice(0, 48),
@@ -108,21 +125,26 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
   if (rows.some((row, i) => i > 0 && row.business_key === rows[i-1]!.business_key)
     || new Set(rows.map(row => row.business_key)).size !== rows.length)
     fail('DERIVED_BUSINESS_KEYS', '不同来源行生成了相同的派生业务键，拒绝丢失观测。');
-  const methodIdentity = wfdSha256(canonicalWfdJson({ method: result.methodId,
-    version: result.methodVersion, semantics: MACD_SEMANTICS }));
+  const methodIdentity = wfdSha256(canonicalWfdJson(macd ? { method: result.methodId,
+    version: result.methodVersion, semantics: MACD_SEMANTICS } : {
+    version: result.methodVersion, semantics: { outputs: method.outputs, resultSemantics: method.resultSemantics },
+    parameters: result.parameters,
+  }));
   let definitionVersion = 'v' + methodIdentity.slice(0, 20);
-  let resultSemantics: string = MACD_SEMANTICS.resultSemantics;
+  let resultSemantics = macd ? MACD_SEMANTICS.resultSemantics
+    : `${method.resultSemantics} 本次参数为 ${canonicalWfdJson(result.parameters)}。`;
   if (frozenDocument) {
     // 只读旧请求的冻结身份，不给新准备增加旧路径，也不执行旧算法源码。
     const outputs = frozenDocument.outputs;
     const output = Array.isArray(outputs) && outputs.length === 1 && isWfdRecord(outputs[0]) ? outputs[0] : null;
     const algorithm = output && isWfdRecord(output.definition) && isWfdRecord(output.definition.algorithm_definition)
       ? output.definition.algorithm_definition : null;
-    const legacyVersion = 'v' + wfdSha256(canonicalWfdJson({ method: result.methodId,
-      version: result.methodVersion, implementation: result.implementationVersion })).slice(0, 20);
-    if (!algorithm || ![definitionVersion, legacyVersion].includes(String(algorithm.definition_version)))
+    const legacyVersion = macd ? 'v' + wfdSha256(canonicalWfdJson({ method: result.methodId,
+      version: result.methodVersion, implementation: result.implementationVersion })).slice(0, 20) : null;
+    const frozenVersion = typeof algorithm?.definition_version === 'string' ? algorithm.definition_version : '';
+    if (frozenVersion !== definitionVersion && frozenVersion !== legacyVersion)
       fail('DERIVED_FROZEN_DEFINITION_CHANGED', '原请求的冻结数学定义身份与已核验结果不一致。');
-    definitionVersion = String(algorithm!.definition_version);
+    definitionVersion = frozenVersion;
     if (definitionVersion === legacyVersion) {
       // 旧文档的既存说明仅作精确只读匹配；新定义使用明确的 DEA=0 初始化声明。
       resultSemantics = '调用既有 12/26/9 MACD 实现，以所供窗口首条收盘价初始化短、长 EMA 与 DEA；返回 DIFF、DEA、MACD 和 ZERO。';
@@ -133,7 +155,8 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     parameters: result.parameters,
   }));
   const derivedCode = 'bd.derived.' + result.methodId + '.' + scopeIdentity.slice(0, 16);
-  const math = MACD_SEMANTICS.mathematicalDefinition;
+  const math = macd ? MACD_SEMANTICS.mathematicalDefinition
+    : outputFields.map(field => method.outputs[field]!.expression).join('；');
   const constants = Object.fromEntries(Object.entries(
     isWfdRecord(result.parameters) ? result.parameters : {}).filter(([,v]) =>
     typeof v === 'number' || typeof v === 'boolean' || v === null));
@@ -141,10 +164,12 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     semantic_code: derivedCode,
     measurement_nature: 'derived', unit_code: 'per_field',
     definition_authority: binding.namespace, time_role: 'observation',
-    field_definitions: outputFields.map(field => ({ field_code: field,
-      data_type: 'decimal',
-      unit_code: priceUnit,
-      measurement_nature: 'derived', time_role: 'observation' })),
+    field_definitions: outputFields.map(field => {
+      const unit = method.outputs[field]!.unit;
+      return { field_code: field, data_type: 'decimal',
+        unit_code: unit === 'close' ? priceUnit : unit === 'volume' ? volumeUnit : unit,
+        measurement_nature: 'derived', time_role: 'observation' };
+    }),
     semantic_context: { version: 'wfd.semantic-context/1.0',
       content_nature: 'deterministic_derived',
       measurement_nature: 'derived',
@@ -189,36 +214,4 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
   if (frozenDocument && canonicalWfdJson(buildStructuredIngestDocument(structured)) !== canonicalWfdJson(frozenDocument))
     fail('DERIVED_FROZEN_DOCUMENT_CHANGED', '原请求的输入范围、目标、数值或正式声明变化；不能沿原身份改写。');
   return { structured, source, originalBytes: original, sourceSha256: originalSha256, resultSha256 };
-}
-
-/** 与固定 Python 实现独立的数值再核（Independent numeric verification），禁止仅凭声明或结构通过。 */
-function verifyAlgorithmNumbers(result: AlgorithmComputedResult, input: AlgorithmData): void {
-  const rows = result.rows, source = input.rows;
-  const mismatch = (message: string): never => { throw new TaskError('DERIVED_NUMERIC_MISMATCH', message); };
-  if (source.length !== rows.length || !source.length || input.metadata.series_id !== result.metadata.series_id
-    || canonicalWfdJson(input.metadata) !== canonicalWfdJson(result.metadata))
-    mismatch('固定输入与原算法持久结果的行数、序列或期间不一致。');
-  const same = (actual: unknown, expected: number) => typeof actual === 'number' && Number.isFinite(actual)
-      && Math.abs(actual - expected) <= 1e-10 * Math.max(1, Math.abs(expected));
-  const close = source.map((r, i) => {
-    if (r.timestamp !== rows[i]?.timestamp || r.available_at !== rows[i]?.available_at
-      || typeof r.close !== 'number' || !Number.isFinite(r.close)) mismatch(`第 ${i+1} 行固定输入、时间或收盘价格不同。`);
-    return r.close;
-  });
-  const p = isWfdRecord(result.parameters) ? result.parameters : {};
-  if (p.short_period !== 12 || p.long_period !== 26 || p.signal_period !== 9 || p.init !== 'first_valid')
-    mismatch('MACD 参数不是固定 12/26/9 首值初始化。');
-  let short = close[0]!, long = close[0]!, dea = 0;
-  for (let i = 0; i < rows.length; i++) {
-    if (i) {
-      short = short + (close[i]! - short) * (2 / 13);
-      long = long + (close[i]! - long) * (2 / 27);
-    }
-    const diff = short - long;
-    dea = i ? dea + (diff - dea) * (2 / 10) : 0;
-    const row = rows[i]!;
-    if (!same(row.DIFF, diff) || !same(row.DEA, dea)
-      || !same(row.MACD, 2 * (diff - dea)) || !same(row.ZERO, 0))
-      mismatch(`第 ${i+1} 行 MACD 的独立递推与原结果不一致。`);
-  }
 }

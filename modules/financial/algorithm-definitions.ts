@@ -1,41 +1,69 @@
 import type { AlgorithmDefinition, AlgorithmDefinitionSummary } from '../../contracts/algorithm-definition.js';
-import { ALGORITHM_REGISTRY } from './algorithm-registry.js';
-import { ALGORITHM_METHODS } from './algorithm-types.js';
+import { ALGORITHM_METHOD_IDS, ALGORITHM_METHODS } from './algorithm-types.js';
+import { PURE_ALGORITHM_OPERATORS } from './algorithm-pure-operators.js';
 
-const registered = ALGORITHM_REGISTRY[0]!;
-export const ALGORITHM_DEFINITIONS: readonly AlgorithmDefinition[] = Object.freeze([{
-  kind: 'definition', id: 'algo.macd', registryId: 'macd', title: registered.title,
-  definitionKind: 'indicator', summary: registered.description,
-  formula: [
-    { output: 'DIFF', expression: 'DIFF_t = EMA(C, 12)_t − EMA(C, 26)_t' },
-    { output: 'DEA', expression: 'DEA_t = EMA(DIFF, 9)_t' },
-    { output: 'MACD', expression: 'MACD_t = 2 × (DIFF_t − DEA_t)', note: '固定采用 2 倍柱值。' },
-    { output: 'ZERO', expression: 'ZERO_t = 0' },
-  ],
-  semantics: [
-    { key: 'methodVersion', label: '数学定义版本', value: ALGORITHM_METHODS.macd.version, state: 'fixed' },
-    { key: 'parameters', label: '周期', value: '固定 12/26/9。', state: 'fixed' },
-    { key: 'seed', label: '初始化', value: '按所供窗口首条有效收盘价初始化，不补窗口前历史或接续状态。', state: 'fixed' },
-    { key: 'coefficient', label: '柱值系数', value: '2 × (DIFF − DEA)，不与 1 倍口径混用。', state: 'fixed' },
-  ],
-  warmup: '可用区间以原计算服务的预热标记为准；窗口首值初始化不等同完整长期历史。',
-  missingPolicy: '不补历史、不扩窗、不推定价格单位、复权或可得时间。',
-  implementations: [{ id: 'impl.local.indicators.macd', role: 'primary', language: 'Python',
-    location: 'plugins/financial/local-compute/assets/indicators.py: MACD',
-    note: '实际实现摘要从运行目录 implementationVersion 读取，不借用数学定义版本。' }],
-  configurations: [{ id: 'cfg.macd.base', label: '受控 MACD', frequency: '日线',
-    parameters: '12/26/9 固定；init=first_valid', entry: 'library' }],
-  products: [], legacyAliases: [],
-  status: {
-    definition: { state: 'frozen', basis: '沿用当前 MACD 的固定周期、首值初始化和 2 倍柱值定义。' },
-    implementation: { state: 'present', basis: '保留受控 Python MACD 与输入、结果校验。' },
-    verification: { state: 'unrecorded', basis: '当前清理后的验证状态以交付记录为准，目录不替代实际验收。' },
-  },
-}]);
+const marketDefinitions = ALGORITHM_METHOD_IDS.map((registryId): AlgorithmDefinition => {
+  const method = ALGORITHM_METHODS[registryId];
+  const schema = method.parameterSchema;
+  const parameters = Object.entries(schema.properties).map(([key, rule]) => {
+    const constraint = 'const' in rule ? String(rule.const)
+      : 'enum' in rule ? rule.enum.join(' | ') : `${rule.type} [${rule.minimum}–${rule.maximum}]`;
+    return `${key}=${constraint}${schema.required.includes(key) ? '' : '（可选）'}`;
+  }).join('，') || '无参数。';
+  return {
+    kind: 'definition', id: 'algo.' + registryId, registryId, title: method.title,
+    definitionKind: method.kind, summary: method.description,
+    formula: Object.entries(method.outputs).map(([output, { expression, note }]) =>
+      ({ output, expression, ...(note ? { note } : {}) })),
+    semantics: [
+      { key: 'methodVersion', label: '数学定义版本', value: method.version, state: 'fixed' },
+      { key: 'parameters', label: '参数', value: parameters, state: 'fixed' },
+      { key: 'resultSemantics', label: '计算口径', value: method.resultSemantics, state: 'fixed' },
+    ],
+    warmup: method.warmup,
+    missingPolicy: '缺失输入拒绝计算。只使用固定窗口内的观测，保留结果空值及其诊断。',
+    implementations: [
+      { id: 'impl.local.indicators.' + registryId, role: 'primary', language: 'Python',
+        location: method.source, note: '本次执行的资产摘要见 implementationVersion。' },
+      { id: 'ref.local.indicators.' + registryId, role: 'reference', language: 'TypeScript',
+        location: 'modules/financial/algorithm-reference.ts', note: method.reference },
+    ],
+    configurations: [{ id: `cfg.${registryId}.base`, label: '受控 ' + method.operation, frequency: '日线', parameters, entry: 'library' }],
+    products: [], legacyAliases: [],
+    status: {
+      definition: { state: 'frozen', basis: '按登记的数学版本、参数和计算口径固定。' },
+      implementation: { state: 'present', basis: '已有受控 Python 执行与独立 TypeScript 数值核对。' },
+      verification: { state: 'unrecorded', basis: '执行及发布资格以原任务核验为准。' },
+    },
+  };
+});
+
+export const ALGORITHM_DEFINITIONS: readonly AlgorithmDefinition[] = Object.freeze([
+  ...marketDefinitions,
+  ...PURE_ALGORITHM_OPERATORS.map((operator): AlgorithmDefinition => ({
+    kind: 'definition', id: 'algo.' + operator.id, registryId: operator.id, title: operator.title,
+    definitionKind: operator.category === 'financial' ? 'financial' : 'operator', summary: operator.description,
+    formula: operator.formula,
+    semantics: [{ key: 'resultSemantics', label: '计算口径', value: operator.description, state: 'fixed' }],
+    warmup: '按声明的期间或日线范围计算。', missingPolicy: operator.missingPolicy,
+    implementations: [{ id: 'impl.local.' + operator.id, role: 'primary', language: 'TypeScript',
+      location: operator.source, note: operator.entry }],
+    configurations: [], products: [], legacyAliases: [],
+    status: {
+      definition: { state: 'frozen', basis: '按登记公式及输入契约计算。' },
+      implementation: { state: 'present', basis: '受控 TypeScript 纯算子。' },
+      verification: { state: 'unrecorded', basis: '实际输入资格及发布另行核验。' },
+    },
+  })),
+]);
+
 export function definitionFor(registryId: string): AlgorithmDefinition | undefined {
   return ALGORITHM_DEFINITIONS.find(item => item.registryId === registryId);
 }
+
 export const ALGORITHM_DEFINITION_SUMMARY: AlgorithmDefinitionSummary = Object.freeze({
-  kind: 'definition', version: 'bd.macd-definition/1', note: '只登记一个固定 MACD 算法；执行与发布按实际任务核验。',
-  counts: { definitions: 1, operators: 0, withProducts: 0, definitionConflicts: 0, implemented: 1, legacyAliases: 0 },
+  kind: 'definition', version: 'bd.algorithm-definition/2', note: '受控日线指标、财务及复权定义。执行与发布按实际输入核验。',
+  counts: { definitions: ALGORITHM_DEFINITIONS.length,
+    operators: ALGORITHM_DEFINITIONS.filter(item => item.definitionKind === 'operator').length, withProducts: 0, definitionConflicts: 0,
+    implemented: ALGORITHM_DEFINITIONS.length, legacyAliases: 0 },
 });

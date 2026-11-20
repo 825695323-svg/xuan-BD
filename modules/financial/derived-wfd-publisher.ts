@@ -6,6 +6,7 @@ import type { R1ConnectionIdentity } from '../../contracts/r1-contracts.js';
 import type { R1Runtime } from '../collection/r1-runtime.js';
 import type { R1WorkspaceService } from '../collection/r1-workspace.js';
 import type { AlgorithmTaskView, AlgorithmData } from './algorithm-types.js';
+import { ALGORITHM_METHODS, isAlgorithmMethodId } from './algorithm-types.js';
 import { checkDerivedForWfd } from './derived-wfd-check.js';
 import { publishRestrictionTarget, restrictionEvidenceFromUsageStatus } from '../collection/wfd-publish-restriction.js';
 
@@ -28,9 +29,11 @@ export class DerivedWfdPublisher {
     if (task.status !== 'succeeded' || task.requiresReview || !task.result || task.result.status !== 'computed'
       || task.result.taskId !== taskId)
       throw new TaskError('DERIVED_RESULT_NOT_READY', '固定算法原任务未完成或结果仍待核对，不能写入 WFD。');
+    if (!isAlgorithmMethodId(task.result.methodId))
+      throw new TaskError('DERIVED_METHOD_UNKNOWN', '原结果的算法未登记为可执行固定方法。');
     if (!isWfdRecord(task.result.source) || task.result.source.instanceId !== identity.connectionId
       || task.result.source.connectionIdentityDigest !== digestOperationArgs(identity))
-      throw new TaskError('DERIVED_WFD_BINDING_CHANGED', '原 MACD 输入使用的 WFD 连接与当前发布连接不同。');
+      throw new TaskError('DERIVED_WFD_BINDING_CHANGED', `原 ${ALGORITHM_METHODS[task.result.methodId].operation} 输入使用的 WFD 连接与当前发布连接不同。`);
     return task.result;
   }
 

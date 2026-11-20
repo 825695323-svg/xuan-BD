@@ -1,5 +1,6 @@
-"""Recursive series helpers used by MACD."""
+"""Series helpers for recursively seeded and complete-window indicators."""
 from copy import deepcopy
+import math
 
 
 def combine(function, *sequences):
@@ -31,6 +32,16 @@ def smooth(values, weight):
             current = current + weight * (value - current)
             result.append(current)
     return result
+
+
+def rolling_windows(values, period):
+    for end in range(1, len(values) + 1):
+        yield values[end - period:end] if end >= period else None
+
+
+def standard_deviation(values, mean, ddof):
+    divisor = math.sqrt(len(values) - ddof)
+    return math.hypot(*((value - mean) / divisor for value in values))
 
 
 _BINDINGS = ("series_id", "frequency", "timezone", "price_unit", "adjustment", "adjustment_basis")

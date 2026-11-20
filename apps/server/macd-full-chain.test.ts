@@ -8,9 +8,10 @@ import type { Backend, BackendInput, BackendSession } from '../../contracts/back
 import type { HealthResponse } from '../../contracts/contracts.js';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
+import { assertInternalAgentRules } from '../../modules/agent/instructions/rules.js';
 import { PersonalCore } from '../../modules/agent/runtime/core.js';
 import { buildStructuredIngestDocument } from '../../modules/collection/r1-structured-handoff.js';
-import { ALGORITHM_RUNTIME } from '../../modules/financial/algorithm-types.js';
+import { ALGORITHM_METHOD_IDS, ALGORITHM_RUNTIME } from '../../modules/financial/algorithm-types.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { ProcessRuntime } from '../../platform/runtime/programs.js';
 import { CoreDatabase } from '../../platform/state/database.js';
@@ -113,7 +114,12 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
       workspace.permissions.grant({ label: 'isolated MACD Python', scope: { kind: 'persistent' }, capabilities: [
         { action: 'execute', target: { kind: 'file', path: processRuntime.path('python3') } },
       ] });
-      assert.deepEqual(workspace.toolLibrary!.view().tools.map(tool => [tool.id, tool.status]), [['macd', 'ready']]);
+      const toolsInLibrary = workspace.toolLibrary!.view().tools;
+      assert.deepEqual(toolsInLibrary.filter(tool => tool.status === 'ready').map(tool => tool.id), ALGORITHM_METHOD_IDS);
+      const assetTools = toolsInLibrary.filter(tool => tool.state === 'assets_only');
+      assert.deepEqual(assetTools.map(tool => tool.id),
+        ['financial_single_quarter', 'financial_ttm', 'financial_growth', 'financial_ratios', 'price_adjustment']);
+      assert.ok(assetTools.every(tool => tool.status === 'unavailable' && tool.reason?.includes('algorithms.calculate')));
       assert.equal(runtime.currentIdentity().mode, 'user_test');
       const submitted = (await runtime.client.submit(sourceDocument(suppliedCloses))).result;
       assert.equal(submitted.state, 'published_formal', JSON.stringify({ errors: submitted.errors, state: submitted.state }));
@@ -135,6 +141,18 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
         } }, usage: { purpose: 'current_compute', historyMode: null, cutoff: null, perspective: null } };
       personalCore.sendMessage(personalCore.defaultConversationId, '计算隔离样本固定快照的 MACD。', 'macd-user');
       const input = await captured;
+      const useFrozenV18 = size === 80;
+      if (useFrozenV18) {
+        const frozen = personalCore.runConfiguration(input.runId);
+        assert.ok(frozen?.internalAgentRulesText && frozen.internalAgentRules);
+        const boundary = frozen.internalAgentRulesText.indexOf('\n\n13. **算法边界**');
+        assert.ok(boundary > 0);
+        const historical = { ...frozen, internalAgentRulesText: frozen.internalAgentRulesText.slice(0, boundary) + '\n',
+          internalAgentRules: { ...frozen.internalAgentRules, version: 18,
+            digest: 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c' } };
+        assertInternalAgentRules(historical);
+        personalDb.connection.prepare('UPDATE runs SET configuration_json=? WHERE id=?').run(JSON.stringify(historical), input.runId);
+      }
       const tools = personal.modelTools.toolFactory({ model, getCurrentInput: () => input });
       const perform = tools.find(tool => tool.name === 'perform_action')!;
       const evidenceRead = tools.find(tool => tool.name === 'core_evidence_read')!;
@@ -156,12 +174,24 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
         assert.equal(wfdSha256(text), sha256);
         return JSON.parse(text);
       }
-      for (const methodId of ['ma', 'ttm', 'macro_yoy']) {
+      for (const methodId of ['unregistered_indicator', 'ttm', 'macro_yoy']) {
         await assert.rejects(invoke('algorithms.calculate', { calculationJson: JSON.stringify({ ...request, methodId }) },
           'reject-' + methodId), { code: 'MODEL_ACTION_FAILED' });
       }
+      if (useFrozenV18) {
+        const toolCallId = 'reject-ma-by-frozen-rules';
+        const calculationJson = JSON.stringify({ ...request, methodId: 'ma', parameters: { period: 3 } });
+        await assert.rejects(invoke('algorithms.calculate', { calculationJson }, toolCallId), (error: unknown) => {
+          assert.ok(error instanceof Error);
+          const projected = personal.modelTools.projectToolResult({ role: 'toolResult', toolCallId, toolName: 'perform_action',
+            isError: true, content: [{ type: 'text', text: error.message }], timestamp: Date.now() }, input, undefined, model);
+          assert.match(projected.content.map(part => part.type === 'text' ? part.text : '').join(''), /v18.*仅允许 macd/u);
+          return true;
+        });
+      }
       const rejected = personalDb.connection.prepare("SELECT error FROM tasks WHERE action='algorithms.calculate'").all();
-      assert.deepEqual(rejected.map(row => JSON.parse(String(row.error)).code), Array(3).fill('INVALID_ALGORITHM_METHOD'));
+      assert.deepEqual(rejected.map(row => JSON.parse(String(row.error)).code), useFrozenV18
+        ? Array(4).fill('ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES') : Array(3).fill('INVALID_ALGORITHM_METHOD'));
       const calculated = await invoke('algorithms.calculate', { calculationJson: JSON.stringify(request) }, 'macd-calculate')
         .catch(error => {
           const failed = personalDb.connection.prepare("SELECT error FROM tasks WHERE action='algorithms.calculate' ORDER BY rowid DESC LIMIT 1").get();

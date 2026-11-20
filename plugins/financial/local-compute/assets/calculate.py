@@ -1,4 +1,4 @@
-"""Run the registered local MACD method against explicit in-memory input."""
+"""Run a registered daily indicator against explicit in-memory input."""
 import math
 
 from _common import require
@@ -17,10 +17,10 @@ def finite_tree(value):
 
 def execute(request):
     require(isinstance(request, dict), '请求须为对象')
-    require(set(request) == {'version', 'kind', 'operation', 'params', 'data'}, '请求字段与 MACD 契约不符')
+    require(set(request) == {'version', 'kind', 'operation', 'params', 'data'}, '请求字段与算法契约不符')
     require(type(request['version']) is int and request['version'] == 1, 'version须为1')
     kind = request['kind']
-    require((kind, request['operation']) == ('indicator', 'MACD'), '算法未登记')
+    require(kind == 'indicator', '算法类别未登记')
     require(isinstance(request['data'], dict), 'data须为对象')
     finite_tree(request)
     answer = run(request)

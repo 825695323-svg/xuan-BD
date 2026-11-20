@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { ALGORITHM_REGISTRY, ALGORITHM_REGISTRY_VERSION, ALGORITHM_REGISTRY_NOTE,
   registryCounts } from '../financial/algorithm-registry.js';
 import { ALGORITHM_DEFINITION_SUMMARY, definitionFor } from '../financial/algorithm-definitions.js';
+import { ALGORITHM_RUNTIME, isAlgorithmMethodId } from '../financial/algorithm-types.js';
 import { MATERIAL_CLEANING_RULES_VERSION, MATERIAL_SEMANTIC_PROPOSAL_VERSION } from './materials/semantic-contracts.js';
 import { compareProfileSemantics, profileFingerprint, profileSemanticGaps, sourceFieldProfileDigest,
   type SourceFieldProfile, type SourceFieldProfileStore, type SemanticProductRegistryStore,
@@ -85,7 +86,7 @@ export function productionModuleDirectory(services: {
           feedback: dictionaryBoundary } : {}) };
     }
     if (id === 'calculate') {
-      const methods = services.algorithms?.catalog().methods.map(method => ({
+      const methods = services.algorithms?.catalog().methods.filter(method => isAlgorithmMethodId(method.id)).map(method => ({
         methodId: method.id, status: method.status, reason: method.reason,
         methodVersion: method.methodVersion, implementationVersion: method.implementationVersion,
       })) ?? [];
@@ -199,7 +200,7 @@ export function factorLibraryView(factorId?: string) {
     : ALGORITHM_REGISTRY.slice(0, 50);
   if (factorId && !entries.length) return fail('PRODUCTION_FACTOR_NOT_FOUND', '受信登记中没有该因子编号。');
   return { version: ALGORITHM_REGISTRY_VERSION, kind: 'read_only_factor_library',
-    designOnly: true, note: ALGORITHM_REGISTRY_NOTE,
+    designOnly: true, note: ALGORITHM_REGISTRY_NOTE, sharedRegistryWith: ALGORITHM_RUNTIME,
     definitions: ALGORITHM_DEFINITION_SUMMARY, counts: registryCounts(),
     total: ALGORITHM_REGISTRY.length, selected: entries.length,
     items: entries.map(item => ({ ...item, definition: definitionFor(item.id) ?? null,

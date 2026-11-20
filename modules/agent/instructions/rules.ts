@@ -7,11 +7,13 @@ import type { FrozenRunConfiguration } from '../../../contracts/ui-contracts.js'
 const AGENTS_FILE = new URL('./AGENTS.md', import.meta.url);
 
 /** 与已审核正文绑定；规则改版同步更新版本与可信摘要。 */
-export const INTERNAL_AGENT_RULES = Object.freeze({ id: 'xuan-bd-internal-agent', version: 19,
-  digest: '38342f494b3a83fc5f0512c1fd42515a49877ea61f70e62c6ce3089b257ff45c' });
+export const INTERNAL_AGENT_RULES = Object.freeze({ id: 'xuan-bd-internal-agent', version: 20,
+  digest: 'd6c8ecfc20feabf9d1512654d4123e54a803d6029ade74fdd70205a51e1ba49c' });
 /** 旧任务携带的完整冻结规则仅按原版本/摘要验真，不能被新版 AGENTS 正文替换。 */
-const FROZEN_PRIOR_AGENT_RULES = Object.freeze({ version: 18,
-  digest: 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c' });
+const FROZEN_PRIOR_AGENT_RULES = Object.freeze([
+  { version: 18, digest: 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c' },
+  { version: 19, digest: '38342f494b3a83fc5f0512c1fd42515a49877ea61f70e62c6ce3089b257ff45c' },
+]);
 
 export function captureInternalAgentRules(): Pick<FrozenRunConfiguration, 'internalAgentRules' | 'internalAgentRulesText'> {
   let body: string;
@@ -27,9 +29,8 @@ export function captureInternalAgentRules(): Pick<FrozenRunConfiguration, 'inter
 /** 旧记录仍可显示，但执行时不能把缺失或未知的规则快照替换成当前正文。 */
 export function assertInternalAgentRules(configuration: FrozenRunConfiguration): void {
   const reference = configuration.internalAgentRules, body = configuration.internalAgentRulesText;
-  const trusted = !!reference && (reference.version === INTERNAL_AGENT_RULES.version
-    && reference.digest === INTERNAL_AGENT_RULES.digest || reference.version === FROZEN_PRIOR_AGENT_RULES.version
-    && reference.digest === FROZEN_PRIOR_AGENT_RULES.digest);
+  const trusted = reference && [INTERNAL_AGENT_RULES, ...FROZEN_PRIOR_AGENT_RULES]
+    .some(({ version, digest }) => reference.version === version && reference.digest === digest);
   if (!reference || typeof body !== 'string' || reference.id !== INTERNAL_AGENT_RULES.id
     || !trusted || digestOperationArgs({ id: reference.id, version: reference.version, body }) !== reference.digest) {
     throw new CoreError('RUN_CONFIGURATION_UNAVAILABLE', '原任务的内置代理运行规则缺失、摘要不符或版本不可用，不能套用当前规则恢复；请核对后明确建立新任务。');

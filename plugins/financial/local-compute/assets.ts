@@ -5,6 +5,7 @@ import { isAbsolute, join, relative } from 'node:path';
 import { TaskError, type TaskExecutionContext } from '../../../platform/jobs/tasks.js';
 import { runDirectProcess } from '../../../platform/runtime/process.js';
 import type { JsonValue } from '../../../contracts/task-contracts.js';
+import { ALGORITHM_METHODS } from '../../../modules/financial/algorithm-types.js';
 
 /** 只封闭正式入口的实际依赖；不把其余算法或取数函数暴露为插件。 */
 export const ASSET_FILES = ['_common.py', 'calculate.py', 'indicators.py', 'operators.py'] as const;
@@ -80,7 +81,10 @@ export async function executeFinancialAssets(options: {
   } catch { throw new TaskError('FINANCIAL_OUTPUT_INVALID', '原计算入口没有返回有效有限 JSON，结果已拒绝。'); }
 }
 
-/** 首包仅执行已核本地第一方代码；审计钩子是执行约束，并非不可信包完整沙箱。 */
+const operations = Object.fromEntries(Object.values(ALGORITHM_METHODS).map(method =>
+  [method.operation, { kind: method.kind, parameters: method.parameterSchema }]));
+
+/** 仅执行已核本地第一方代码；审计钩子是执行约束，并非不可信包完整沙箱。 */
 export const PYTHON_BRIDGE = String.raw`
 import base64, importlib.abc, importlib.util, json, math, os, sys, sysconfig
 payload = json.load(sys.stdin)
@@ -88,15 +92,27 @@ files = payload['files']
 request = payload['request']
 if set(files) != {'_common.py', 'calculate.py', 'indicators.py', 'operators.py'}:
     raise ValueError('implementation closure mismatch')
-if set(request) != {'version', 'kind', 'operation', 'params', 'data'}:
+if not isinstance(request, dict) or set(request) != {'version', 'kind', 'operation', 'params', 'data'}:
     raise ValueError('only explicit in-memory calculation input is permitted')
-if (request['kind'], request['operation']) != ('indicator', 'MACD'):
+if type(request['version']) is not int or request['version'] != 1 or not isinstance(request['data'], dict):
+    raise ValueError('expected version 1 and explicit data object')
+operations = json.loads(r'''${JSON.stringify(operations)}''')
+operation = request['operation']
+contract = operations.get(operation) if isinstance(operation, str) else None
+if contract is None or request['kind'] != contract['kind']:
     raise ValueError('operation is not registered')
 parameters = request['params']
-if (not isinstance(parameters, dict) or set(parameters) != {'short_period', 'long_period', 'signal_period', 'init'}
-    or any(type(parameters[name]) is not int or parameters[name] != expected for name, expected in [('short_period', 12), ('long_period', 26), ('signal_period', 9)])
-    or parameters['init'] != 'first_valid'):
-    raise ValueError('MACD requires fixed 12/26/9 and explicit first_valid initialization; continuation is not supported')
+schema = contract['parameters']
+if (not isinstance(parameters, dict) or set(schema['required']) - set(parameters)
+    or set(parameters) - set(schema['properties'])):
+    raise ValueError('parameter fields do not match the registered operation')
+for key, value in parameters.items():
+    rule = schema['properties'][key]
+    allowed_types = {'integer': (int,), 'number': (int, float), 'string': (str,)}[rule['type']]
+    if (type(value) not in allowed_types or ('const' in rule and value != rule['const'])
+        or ('enum' in rule and value not in rule['enum'])
+        or ('minimum' in rule and not rule['minimum'] <= value <= rule['maximum'])):
+        raise ValueError('invalid parameter: ' + key)
 stdlib = os.path.realpath(sysconfig.get_path('stdlib'))
 def allowed_path(path):
     if isinstance(path, int):
@@ -108,6 +124,14 @@ def allowed_path(path):
 def audit(event, args):
     if event.startswith(('socket.', 'subprocess.', 'ctypes.')) or event in {'os.system', 'os.fork', 'os.forkpty', 'os.posix_spawn', 'os.exec', 'pty.spawn'}:
         raise PermissionError('network and child execution are disabled')
+    if event in {
+        'os.remove', 'os.unlink', 'os.rename', 'os.replace', 'os.mkdir', 'os.rmdir',
+        'os.chmod', 'os.chown', 'os.link', 'os.symlink', 'os.truncate', 'os.utime',
+        'os.chflags', 'os.setxattr', 'os.removexattr',
+        'os.chdir', 'os.putenv', 'os.unsetenv', 'shutil.rmtree', 'shutil.move',
+        'shutil.copyfile', 'pathlib.Path.chmod',
+    }:
+        raise PermissionError('calculation cannot modify filesystem or environment')
     if event == 'open':
         path, mode, flags = args
         if (isinstance(mode, str) and any(flag in mode for flag in 'wax+')) or (isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)) or not allowed_path(path):

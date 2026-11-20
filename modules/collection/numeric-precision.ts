@@ -59,6 +59,35 @@ function decimal(text: string): Fraction {
   const digits = BigInt(match[2]! + fraction) * (match[1] ? -1n : 1n), scale = fraction.length - exponent;
   return scale < 0 ? rational(digits * 10n ** BigInt(-scale)) : rational(digits, 10n ** BigInt(scale));
 }
+
+export { type Fraction, add, compare, multiply, negative };
+export type DecimalInput = string | number;
+
+export function readExactDecimal(value: unknown, field: string): Fraction {
+  if (typeof value === 'string') return decimal(value);
+  if (typeof value === 'number' && Number.isFinite(value)
+    && (!Number.isInteger(value) || Number.isSafeInteger(value))) return decimal(String(value));
+  return fail('VALUE', `${field} 须为有限十进制值，超出安全整数范围时请传入十进制字符串。`);
+}
+
+export const divide = (a: Fraction, b: Fraction): Fraction => rational(a.n * b.d, a.d * b.n);
+
+/** Render exactly when terminating. Round recurring results once, keeping at least 34 fractional significant digits. */
+export function formatExactDecimal({ n, d }: Fraction): string {
+  let remaining = d, twos = 0, fives = 0;
+  while (remaining % 2n === 0n) { remaining /= 2n; twos++; }
+  while (remaining % 5n === 0n) { remaining /= 5n; fives++; }
+  const magnitude = abs(n);
+  const places = remaining === 1n ? Math.max(twos, fives)
+    : 34 + Math.max(0, d.toString().length - magnitude.toString().length);
+  const scaled = (magnitude * 10n ** BigInt(places) * 2n + d) / (2n * d);
+  const sign = n < 0n ? '-' : '';
+  if (places === 0) return sign + scaled.toString();
+  const digits = scaled.toString().padStart(places + 1, '0');
+  const fraction = digits.slice(-places).replace(/0+$/u, '');
+  return sign + digits.slice(0, -places) + (fraction ? '.' + fraction : '');
+}
+
 function overlaps(a: Bounds, b: Bounds): boolean {
   const lowerOrder = compare(a.lower, b.lower), upperOrder = compare(a.upper, b.upper);
   const lower = lowerOrder >= 0 ? a.lower : b.lower, upper = upperOrder <= 0 ? a.upper : b.upper;
