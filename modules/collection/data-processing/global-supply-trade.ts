@@ -7,10 +7,17 @@ export const GLOBAL_SUPPLY_TRADE_VERSION = 'bd-global-supply-trade/1';
 
 export type GeoRegionKind =
   | 'country_or_region'
+  | 'country'
   | 'state_or_province'
+  | 'subnational'
   | 'customs_statistical_area'
   | 'regional_bloc'
-  | 'facility_zone';
+  | 'trade_bloc'
+  | 'continent'
+  | 'macro_region'
+  | 'aggregate'
+  | 'facility_zone'
+  | 'facility_area';
 
 export type EnterpriseLocationRole =
   | 'registered_in'
@@ -24,6 +31,7 @@ export interface GeoRegionMaster {
   namespace: string;
   code: string;
   name: string;
+  aliases?: readonly string[];
   kind: GeoRegionKind;
   parentRegionId?: string | null;
   memberRegionIds?: readonly string[];
@@ -184,6 +192,7 @@ export function validateGeoRegionHierarchy(regions: readonly GeoRegionMaster[]):
   for (const region of regions) {
     if (!isNonEmptyText(region.regionId) || !isNonEmptyText(region.namespace)
       || !isNonEmptyText(region.code) || !isNonEmptyText(region.name)
+      || region.aliases !== undefined && (!Array.isArray(region.aliases) || !region.aliases.every(alias => isNonEmptyText(alias)))
       || !isNonEmptyText(region.statisticalScheme)) {
       fail('GEO_INVALID', `地理节点 ${String(region.regionId)} 缺少明确的命名空间、代码或统计体系。`);
     }

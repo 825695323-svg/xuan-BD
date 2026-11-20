@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
+import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { DIMENSION_KEYS } from '../../modules/collection/processing-routing.js';
-import { projectFinancialPdf } from '../../modules/collection/data-processing/financial-pdf.js';
+import { projectFinancialPdf, type FinancialPdfSelection } from '../../modules/collection/data-processing/financial-pdf.js';
 import { conversionText } from '../../platform/capabilities/conversion/storage.js';
 import { createFullChainFixture, openFullChainHost } from './full-chain-test-support.js';
 
@@ -93,17 +93,23 @@ test('official correction full necessary paragraph: original material → ordina
     } finally { await host.close(); }
   });
 
-test('real split financial cell requires exact continuation and refuses altered original fragment',
+test('real split financial cell stays blocked when its continuation page has no scope title',
   { skip: !sourceRoot, timeout: 30_000 }, async () => {
-    const selection = JSON.parse(readFileSync(join(sourceRoot!, '选区/half-2024-corrected.consolidated.equity_changes.2024.page-45.cny.json'), 'utf8'));
+    const selection: FinancialPdfSelection = JSON.parse(readFileSync(
+      join(sourceRoot!, '选区/half-2024-corrected.consolidated.equity_changes.2024.page-45.cny.json'), 'utf8'));
     const bytes = readFileSync(join(sourceRoot!, '原件/half-2024-corrected.pdf'));
-    const result = await projectFinancialPdf(bytes, selection, new AbortController().signal), rows = JSON.parse(result.jsonBytes.toString());
-    const row = rows.find((row: any) => row.concept === '（三）利润分配' && row.dimension === '所有者权益合计');
-    assert.equal(row.value, '-50743303.52');
-    const modified = structuredClone(selection), region = modified.regions.find((region: any) => region.continuations);
-    region.continuations[0].quote = '53';
-    await assert.rejects(projectFinancialPdf(bytes, modified, new AbortController().signal), /原文与核定片段不符/u);
+    const signal = new AbortController().signal;
+    const region = selection.regions[0]!;
+    const part = region.continuations![0]!;
+    assert.equal(part.page, 46);
+    const error = { code: 'FINANCIAL_L1_SCOPE_MISMATCH' };
+    await assert.rejects(projectFinancialPdf(bytes, selection, signal), error);
+    const titleRows = [{ text: '合并所有者权益变动表', yMin: 490, yMax: 493 }];
+    const copiedTitle = { ...selection, scope: 'consolidated' as const, regionHeaders: [{
+      columns: region.columns.map(() => ({ columnRole: 'current_period' as const, declaredUnit: '元' })),
+      pages: [{ page: region.page, titleRows }, { page: part.page, titleRows }],
+    }] };
+    await assert.rejects(projectFinancialPdf(bytes, copiedTitle, signal), error);
     delete region.continuations;
-    await assert.rejects(projectFinancialPdf(bytes, modified, new AbortController().signal), /不符合冻结数值语法/u);
-    assert.equal(canonicalWfdJson(rows), result.jsonBytes.toString());
+    await assert.rejects(projectFinancialPdf(bytes, selection, signal), /不符合冻结数值语法/u);
   });

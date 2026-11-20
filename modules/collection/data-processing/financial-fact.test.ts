@@ -35,20 +35,22 @@ test('mapped actual cells must reproduce the complete frozen identity, not only 
   assert.throws(() => verifyFinancialFactRow({ ...row, values: { ...values, unit: { value: 'usd', value_state: 'valid_value' } } }));
 });
 
-test('financial identity rule bytes participate in both replay and processing implementation bindings', t => {
+test('financial identity, COA and temporal rule bytes invalidate replay and processing implementation bindings', t => {
   // Only source reads are substituted; no repository file, stored plan or production state is changed.
   const processing = () => new ProcessingPlanService({ database: { migrate() {} } } as any).versionBinding.implementation;
   const before = { candidate: candidateImplementationDigest(), processing: processing() };
   const realRead = fs.readFileSync;
-  const mock = t.mock.method(fs, 'readFileSync', ((path: any, ...args: any[]) => {
-    const bytes = (realRead as any)(path, ...args);
-    return String(path).endsWith('/data-processing/financial-fact.ts') ? Buffer.concat([bytes, Buffer.from('\n// isolated changed identity rule bytes\n')]) : bytes;
-  }) as typeof fs.readFileSync);
-  try {
-    syncBuiltinESMExports();
-    assert.notEqual(candidateImplementationDigest(), before.candidate);
-    assert.notEqual(processing(), before.processing);
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  for (const source of ['financial-fact.ts', 'financial-coa-registry.ts', 'financial-temporal-pairing.ts']) {
+    const mock = t.mock.method(fs, 'readFileSync', ((path: any, ...args: any[]) => {
+      const bytes = (realRead as any)(path, ...args);
+      return String(path).endsWith(`/data-processing/${source}`) ? Buffer.concat([bytes, Buffer.from('\n// isolated changed financial rule bytes\n')]) : bytes;
+    }) as typeof fs.readFileSync);
+    try {
+      syncBuiltinESMExports();
+      assert.notEqual(candidateImplementationDigest(), before.candidate, source);
+      assert.notEqual(processing(), before.processing, source);
+    } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  }
   assert.equal(candidateImplementationDigest(), before.candidate);
   assert.equal(processing(), before.processing);
 });

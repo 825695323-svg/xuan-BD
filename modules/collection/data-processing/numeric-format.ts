@@ -20,7 +20,7 @@ export function readNumericFormat(raw: unknown): NumericFormat {
   return { ...value };
 }
 
-export function normalizeNumericLexeme(original: string, raw: NumericFormat): string {
+export function normalizeNumericLexeme(original: string, raw: NumericFormat, options?: { preserveFractionDigits: boolean }): string {
   const format = readNumericFormat(raw);
   if (typeof original !== 'string' || original.length > 1024 || original !== original.trim()) fail();
   let value = original, negative = false;
@@ -46,7 +46,8 @@ export function normalizeNumericLexeme(original: string, raw: NumericFormat): st
     whole = scale < digits.length ? digits.slice(0, -scale) : '0';
     fraction = scale < digits.length ? digits.slice(-scale) : '0'.repeat(scale - digits.length) + digits;
   }
-  whole = whole.replace(/^0+(?=\d)/u, ''); fraction = fraction.replace(/0+$/u, '');
+  whole = whole.replace(/^0+(?=\d)/u, '');
+  if (!options?.preserveFractionDigits) fraction = fraction.replace(/0+$/u, '');
   const result = whole + (fraction ? '.' + fraction : '');
   return negative && /[1-9]/u.test(result) ? '-' + result : result;
 }
