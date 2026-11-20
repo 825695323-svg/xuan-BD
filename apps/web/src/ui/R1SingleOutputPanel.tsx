@@ -13,7 +13,7 @@ import { R1AutoPanel } from './R1AutoPanel';
 import { DocumentProcessingPanel } from './DocumentProcessingPanel';
 import { CloudCustodyPanel } from './CloudCustodyPanel';
 import { StructuredQueryPanel } from './StructuredQueryPanel';
-import { PageActions, PageButton } from './PageUI';
+import { PageButton } from './PageUI';
 import { R1ReadPanel } from './R1ReadPanel';
 import './R1Panel.css';
 
@@ -221,9 +221,10 @@ function readConstants(value: string): Record<string, OperatorConstant> {
 }
 
 /** 所有结构化交接沿原 R1 请求身份核对。 */
-export function R1Panel() {
+export function R1Panel({ reading = false }: { reading?: boolean }) {
   const words = useWords();
   const readerRef = useRef<HTMLElement>(null);
+  useEffect(() => { if (reading) readerRef.current?.focus(); }, [reading]);
   const [caps, setCaps] = useState<R1CapabilitiesView | null>(null), [recent, setRecent] = useState<R1RequestSummary[]>([]);
   const [materials, setMaterials] = useState<MaterialEnvelope[]>([]), [materialId, setMaterialId] = useState('');
   const [materialCategory, setMaterialCategory] = useState<MaterialCategory>('unclassified');
@@ -505,16 +506,10 @@ export function R1Panel() {
       : words('原件接收任务已受理，尚未证明保管完成；刷新原任务后核对材料。', 'Intake task accepted, but custody is not yet confirmed. Refresh the original task to inspect the material.'));
   };
 
-  return <div className="r1-panel" aria-busy={busy || loading}>
+  return <div className="r1-panel" data-view={reading ? 'reader' : 'editor'} aria-busy={busy || loading}>
     <header className="database-overview-head"><div><h2 className="data-panel-title">{words('R1 结构化交接', 'R1 structured handoff')}</h2>
       <p className="data-panel-sub">{words('新请求：真实材料 → 五步加工 → 明确确认 → WFD 固定读回。可交接单值标量、普通多字段表格或声明了部分/完整字段的日线与分钟记录。', 'New requests: real material → processing → explicit confirmation → fixed WFD readback. Scalar records, general multi-field tables, and daily or minute records with declared partial or complete market fields are supported.')}</p></div>
-      <PageActions>
-        <PageButton onClick={() => {
-          readerRef.current?.focus({ preventScroll: true });
-          readerRef.current?.scrollIntoView({ block: 'start' });
-        }}>{words('查询固定快照', 'Query fixed snapshot')}</PageButton>
-        <PageButton disabled={busy || loading} onClick={() => void action(refresh)}><RefreshCw size={16} aria-hidden="true" />{words('刷新状态', 'Refresh state')}</PageButton>
-      </PageActions></header>
+      <PageButton disabled={busy || loading} onClick={() => void action(refresh)}><RefreshCw size={16} aria-hidden="true" />{words('刷新状态', 'Refresh state')}</PageButton></header>
     {loading && <p role="status">{words('读取本地能力和最近请求中…', 'Loading local capabilities and recent requests…')}</p>}
     {error && <ErrorNote detail={error}>{words('本次动作未确认完成，请按具体错误核对原编号。', 'The action is not confirmed complete. Check the error and preserve the original ID.')}</ErrorNote>}
     <div className="database-line-card"><strong>data_only · wfd.structured-ingest/1.0 · {connectionLabel(caps?.connection?.mode)}</strong>

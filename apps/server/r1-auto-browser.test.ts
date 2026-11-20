@@ -14,6 +14,7 @@ const python = process.env.WFD_PYTHON, browserPath = process.env.XUAN_TEST_BROWS
 const browserDigest = process.env.XUAN_TEST_BROWSER_SHA256, webRoot = process.env.XUAN_TEST_WEB_ROOT;
 const auto = 'section[aria-label="文件自动交接"]';
 const reader = 'section[aria-label="WFD 持久数据查询"]';
+const result = reader + ' [aria-label="WFD 实际读取结果"]';
 type Browser = Awaited<ReturnType<typeof openIsolatedBrowser>>;
 type SourceRow = Record<string, string>;
 const literal = JSON.stringify;
@@ -25,15 +26,25 @@ async function fill(browser: Browser, scope: string, label: string, value: strin
   await browser.evaluate(`(()=>{const root=document.querySelector(${literal(scope)});
     const label=[...root.querySelectorAll('label')].find(e=>e.firstChild?.textContent===${literal(label)});
     if(!label)throw new Error('Missing scoped label: '+${literal(label)});
-    const e=label.querySelector('input,select,textarea');if(!e||e.disabled)throw new Error('Input unavailable');
+    const e=label.querySelector('input,select,textarea');if(!e||e.disabled||(root.matches(${literal(reader)})&&(!e.checkVisibility()||e.closest('details:not([open])'))))throw new Error('Input unavailable');
     const type=e.tagName==='SELECT'?HTMLSelectElement:e.tagName==='TEXTAREA'?HTMLTextAreaElement:HTMLInputElement;
     Object.getOwnPropertyDescriptor(type.prototype,'value').set.call(e,${literal(value)});
     e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));})()`);
 }
 async function click(browser: Browser, scope: string, text: string) {
-  const button = `[...document.querySelector(${literal(scope)}).querySelectorAll('button')].find(e=>e.textContent.trim()===${literal(text)}&&!e.disabled)`;
+  const readerVisibility = scope === reader ? "&&e.checkVisibility()&&!e.closest('details:not([open])')" : '';
+  const button = `[...document.querySelector(${literal(scope)}).querySelectorAll('button')].find(e=>e.innerText.trim()===${literal(text)}&&!e.disabled${readerVisibility})`;
   await browser.until(`!!(${button})`, 'Scoped button unavailable: ' + text);
   await browser.evaluate(`(${button}).click()`);
+}
+async function readerDisclosure(browser: Browser, text: string, open: boolean) {
+  await browser.evaluate(`(()=>{
+    const summary=[...document.querySelector(${literal(reader)}).querySelectorAll('details > summary')].find(e=>
+      (e.firstElementChild?.innerText||e.innerText.trim())===${literal(text)}&&e.checkVisibility()&&!e.parentElement.parentElement.closest('details:not([open])'));
+    if(!summary)throw Error('Unavailable disclosure '+${literal(text)});
+    if(summary.parentElement.open!==${open})summary.click();
+    if(summary.parentElement.open!==${open})throw Error('Disclosure did not change '+${literal(text)});
+  })()`);
 }
 async function screenshot(browser: Browser, path: string, scope = auto) {
   await browser.evaluate(`document.querySelector(${literal(scope)}).scrollIntoView({block:'start',behavior:'instant'})`);
@@ -108,41 +119,79 @@ async function waitAuto(browser: Browser, host: FullChainHost, id: string, state
 }
 
 async function readFromPage(browser: Browser, host: FullChainHost, snapshotId: string, subjectId: string, expectedFields: string[], firstPageScreenshot?: string) {
-  await fill(browser, reader, '固定快照编号', snapshotId);
-  await click(browser, reader, '发现快照中的产品');
-  await browser.until(`document.querySelector(${literal(reader)})?.getAttribute('aria-busy')==='false' && !!document.querySelector(${literal(reader)}+' select')`, 'Fixed snapshot discovery did not finish');
+  await readerDisclosure(browser, '按快照编号查询', true);
+  await fill(browser, reader, '快照编号', snapshotId);
+  await click(browser, reader, '查询此快照');
+  await browser.until(`document.querySelector(${literal(reader)})?.getAttribute('aria-busy')==='false' && document.querySelector(${literal(reader + ' [data-source="explicit"]')})?.innerText.includes('已载入指定快照')`, 'Fixed snapshot discovery did not finish');
+  await readerDisclosure(browser, '按快照编号查询', false);
   const discovery = await host.call('/r1/products/discover', { snapshotId }) as R1ProductDiscovery;
   const selection = discovery.selections.find(item => item.subject.id === subjectId && expectedFields.every(field => item.fields.includes(field)));
   assert.ok(selection, JSON.stringify(discovery.selections));
-  await fill(browser, reader, '快照中的产品', selection.productId);
-  for (const field of selection.fields) {
-    await browser.evaluate(`(()=>{const group=[...document.querySelector(${literal(reader)}).querySelectorAll('fieldset')].find(e=>e.querySelector('legend')?.textContent==='选择读取字段');
-      const label=[...group.querySelectorAll('label')].find(e=>e.textContent.trim()===${literal(field)});const checkbox=label?.querySelector('input[type=checkbox]');
-      if(!checkbox||checkbox.disabled)throw new Error('Discovered field is not selectable: '+${literal(field)});
+  const options = await browser.evaluate<string[]>(`[...document.querySelector(${literal(reader + ' select')}).options].map(e=>e.label)`);
+  for (const item of discovery.selections) for (const identity of [item.productId, item.datasetId, String(item.subject.id)]) {
+    assert.ok(options.every(label => !label.includes(identity)), 'Product choices expose ' + identity);
+  }
+  await fill(browser, reader, '产品', selection.productId);
+  await readerDisclosure(browser, '选择显示字段', true);
+  const fieldset = literal(reader + ' details[open] fieldset[aria-label="选择显示字段"]');
+  assert.equal(await browser.evaluate<number>(`document.querySelector(${fieldset}).querySelectorAll('input[type=checkbox]').length`), selection.fields.length);
+  for (const [index, field] of selection.fields.entries()) {
+    await browser.evaluate(`(()=>{const checkbox=document.querySelector(${fieldset}).querySelectorAll('input[type=checkbox]')[${index}];
+      if(!checkbox||checkbox.disabled||!checkbox.checkVisibility()||!checkbox.closest('label')?.innerText.trim())throw new Error('Discovered field is not selectable: '+${literal(field)});
       if(checkbox.checked!==${expectedFields.includes(field)})checkbox.click();})()`);
   }
   const projection = selection.fields.filter(field => expectedFields.includes(field));
-  assert.deepEqual(await browser.evaluate<string[]>(`(()=>{const group=[...document.querySelector(${literal(reader)}).querySelectorAll('fieldset')].find(e=>e.querySelector('legend')?.textContent==='选择读取字段');return [...group.querySelectorAll('label')].filter(e=>e.querySelector('input').checked).map(e=>e.textContent.trim()).sort();})()`), projection);
-  await click(browser, reader, '读取持久数据');
-  await browser.until(`document.querySelector(${literal(reader)})?.getAttribute('aria-busy')==='false' && !!document.querySelector(${literal(reader)}+' [aria-label="WFD 实际读取结果"] table')`, 'Independent persisted-data read did not return real rows', 60_000);
+  assert.deepEqual(await browser.evaluate<boolean[]>(`[...document.querySelector(${fieldset}).querySelectorAll('input[type=checkbox]')].map(e=>e.checked)`),
+    selection.fields.map(field => expectedFields.includes(field)));
+  await readerDisclosure(browser, '选择显示字段', false);
+  await click(browser, reader, '查看数据');
+  await browser.until(`document.querySelector(${literal(reader)})?.getAttribute('aria-busy')==='false' && !!document.querySelector(${literal(result + ' table')})`, 'Independent persisted-data read did not return real rows', 60_000);
   const pages: Record<string, any>[] = [];
   for (;;) {
-    const page = await browser.evaluate<Record<string, any>>(`(()=>{const result=document.querySelector(${literal(reader)}+' [aria-label="WFD 实际读取结果"]');return JSON.parse(result.querySelector('details:last-child pre').textContent);})()`);
+    const visible = await browser.evaluate<string>(`document.querySelector(${literal(reader)}).innerText`);
+    assert.equal(await browser.evaluate(`!!document.querySelector(${literal(reader + ' details[open]')})`), false);
+    if (!pages.length && firstPageScreenshot) await screenshot(browser, firstPageScreenshot, reader);
+    await readerDisclosure(browser, '读取详情', true);
+    const details = await browser.evaluate<string>(`document.querySelector(${literal(reader + ' .r1-read-details[open]')}).innerText`);
+    for (const id of [snapshotId, selection.productId, selection.datasetId, String(selection.subject.id), discovery.connection.connectionId]) {
+      assert.ok(!visible.includes(id) && details.includes(id), 'Read details must show the identity only after expansion: ' + id);
+    }
+    await readerDisclosure(browser, '本页原始结果', true);
+    const page = await browser.evaluate<Record<string, any>>(`JSON.parse(document.querySelector(${literal(reader + ' .r1-read-details[open] details[open] > pre')}).innerText)`);
+    await readerDisclosure(browser, '本页原始结果', false);
+    await readerDisclosure(browser, '读取详情', false);
     assert.equal(page.snapshot_id, snapshotId); assert.equal(page.product_id, selection.productId);
     assert.equal(page.history_mode, 'snapshot_contents');
     assert.deepEqual(page.fields, projection);
-    const rendered = await browser.evaluate<string[]>(`[...document.querySelector(${literal(reader)}+' table').querySelectorAll('tbody tr')].map(e=>e.innerText)`);
+    assert.doesNotMatch(visible, /snapshot_contents|valid_value|reported_zero|next_cursor|record_ref|FIELD_NOT_DEFINED_IN_ROW_CONTRACT/u);
+    if (page.page.next_cursor) assert.ok(!visible.includes(page.page.next_cursor));
+    const columnLabels = await browser.evaluate<string[]>(`[...document.querySelectorAll(${literal(result + ' thead th')})].map(e=>e.innerText)`);
+    if (projection.includes('reading')) assert.equal(columnLabels[projection.indexOf('reading') + 1]?.split('\n')[0], '读数');
+    const rendered = await browser.evaluate<{ value?: string; state?: string; text: string }[][]>(`[...document.querySelector(${literal(result + ' table')}).querySelectorAll('tbody tr')]
+      .map(row=>[...row.cells].map(cell=>({value:cell.querySelector('.r1-cell-value')?.innerText,state:cell.querySelector('.r1-cell-state')?.innerText,text:cell.innerText})))`);
     assert.equal(rendered.length, page.rows.length);
-    for (const row of page.rows) for (const field of expectedFields) {
-      const cell = row.values[field];
-      assert.ok(rendered.some(text => text.includes(String(cell.value)) && text.includes(cell.value_state)), 'Actual field value/state missing from visible table');
+    for (const [rowIndex, row] of page.rows.entries()) {
+      assert.ok(!visible.includes(row.record_ref.revision_id), 'Default table exposes a machine revision');
+      for (const [columnIndex, field] of projection.entries()) {
+        const cell = row.values[field], shown = rendered[rowIndex]![columnIndex + 1]!;
+        if (cell.value_state === 'unknown') {
+          assert.equal(shown.state, '未知');
+          assert.doesNotMatch(shown.text, /null|unknown|\b0\b/u);
+        } else {
+          assert.equal(shown.value, String(cell.value));
+          if (cell.value_state === 'reported_zero') assert.match(shown.text, /报告为零/u);
+          assert.equal(cell.unit.unit_code, 'count');
+          const quantity = columnLabels[columnIndex + 1] + '\n' + shown.text;
+          assert.match(quantity, /计数/u);
+          assert.doesNotMatch(quantity, /count|value_state/u);
+        }
+      }
     }
-    if (!pages.length && firstPageScreenshot) await screenshot(browser, firstPageScreenshot, reader);
     pages.push(page);
     if (!page.page.has_more) break;
     const pageIndex = pages.length + 1;
     await click(browser, reader, '下一页');
-    await browser.until(`document.querySelector(${literal(reader)})?.getAttribute('aria-busy')==='false' && document.querySelector(${literal(reader)}+' [aria-label="WFD 实际读取结果"]')?.textContent.includes(${literal('第 ')}+${pageIndex}+' 页')`, 'Independent query did not advance the original cursor', 60_000);
+    await browser.until(`document.querySelector(${literal(reader)})?.getAttribute('aria-busy')==='false' && document.querySelector(${literal(result)})?.innerText.includes(${literal('第 ')}+${pageIndex}+' 页')`, 'Independent query did not advance the original cursor', 60_000);
   }
   return { discovery, selection, pages, rows: pages.flatMap(page => page.rows) as Record<string, any>[] };
 }
@@ -165,8 +214,12 @@ test('real browser automatically adds an unknown observation family, asks only a
     try {
       browser = await openIsolatedBrowser(browserPath!, fixture.root);
       await navigate(browser, host);
-      await click(browser, reader, '取得当前固定快照');
-      await browser.until(`document.querySelector(${literal(reader)})?.textContent.includes('合法初始化空库')`, 'Fresh WFD was not authoritatively confirmed empty');
+      await browser.click('查询固定快照');
+      await click(browser, reader, '查看当前数据');
+      await browser.until(`document.querySelector(${literal(reader)})?.innerText.includes('当前实例已初始化，但还没有保存任何数据。')`, 'Fresh WFD was not authoritatively confirmed empty');
+      assert.ok(!browser.requests.some(request => new URL(request.url).pathname.endsWith('/r1/products/discover')));
+      await browser.click('原件与单输出编辑');
+      await browser.until(`!!document.querySelector(${literal(auto)})?.checkVisibility() && !document.querySelector(${literal(reader)})?.checkVisibility()`, 'Automatic handoff editor was not restored after fixed snapshot query');
       const first = await uploadAndStart(browser, host, 'new-observation-family', firstBytes, dataset);
       const firstView = await waitAuto(browser, host, first.requestId, 'associated');
       assert.equal(firstView.definitionReview?.code, 'FAMILY_DEFINITION_REQUIRED');
@@ -224,9 +277,15 @@ test('real browser automatically adds an unknown observation family, asks only a
       const reopenedBrowser = join(fixture.root, 'reopened-browser'); mkdirSync(reopenedBrowser);
       browser = await openIsolatedBrowser(browserPath!, reopenedBrowser);
       await navigate(browser, host);
-      assert.equal(await browser.evaluate(`!!document.querySelector(${literal(reader)}+' [aria-label="WFD 实际读取结果"]')`), false);
-      await click(browser, reader, '取得当前固定快照');
-      await browser.until(`document.querySelector(${literal(reader)})?.getAttribute('aria-busy')==='false' && [...document.querySelector(${literal(reader)}).querySelectorAll('label')].find(e=>e.firstChild?.textContent==='固定快照编号')?.querySelector('input').value===${literal(currentSnapshot)}`, 'Reopened host did not retrieve the current persisted snapshot');
+      await browser.click('查询固定快照');
+      assert.equal(await browser.evaluate(`!!document.querySelector(${literal(result)})`), false);
+      await click(browser, reader, '查看当前数据');
+      await browser.until(`document.querySelector(${literal(reader)})?.getAttribute('aria-busy')==='false' && document.querySelector(${literal(reader + ' [data-source="current"]')})?.innerText.includes('已载入当前数据')`, 'Reopened host did not retrieve the current persisted snapshot');
+      const currentBeforeDetails = await browser.evaluate<string>(`document.querySelector(${literal(reader)}).innerText`);
+      assert.ok(!currentBeforeDetails.includes(currentSnapshot));
+      await readerDisclosure(browser, '读取详情', true);
+      assert.ok((await browser.evaluate<string>(`document.querySelector(${literal(reader + ' .r1-read-details[open]')}).innerText`)).includes(currentSnapshot));
+      await readerDisclosure(browser, '读取详情', false);
       const historical = await readFromPage(browser, host, firstSnapshot, subject, ['reading'], join(fixture.root, '04-reopened-historical-value-states.png'));
       assert.deepEqual(historical.pages.map(page => page.rows.length), [100, 3]);
       assert.equal(historical.rows.length, 103);
@@ -259,13 +318,18 @@ test('real browser automatically adds an unknown observation family, asks only a
       const missingFieldDiagnostics = extraProjection.pages.flatMap(page => page.diagnostics)
         .filter(item => item.code === 'FIELD_NOT_DEFINED_IN_ROW_CONTRACT');
       assert.equal(missingFieldDiagnostics.length, initialRows.length, 'Old row contracts must report the missing new field, never invent values');
+      await readerDisclosure(browser, '读取诊断 · ' + extraProjection.pages.at(-1)!.diagnostics.length, true);
+      const shownDiagnostics = await browser.evaluate<any[]>(`JSON.parse(document.querySelector(${literal(result + ' details[open] > pre')}).innerText)`);
+      assert.deepEqual(shownDiagnostics, extraProjection.pages.at(-1)!.diagnostics);
+      await readerDisclosure(browser, '读取诊断 · ' + shownDiagnostics.length, false);
       const historyAgain = await readFromPage(browser, host, firstSnapshot, subject, ['reading']);
       assert.deepEqual(historyAgain.rows, historical.rows, 'Adding a field must preserve the original fixed snapshot');
       evidence.reads = { historical, current, extraProjection, cursorMismatch, historicalSnapshotPreserved: true };
-      await fill(browser, reader, '固定快照编号', 's_absent_' + suffix);
-      await click(browser, reader, '发现快照中的产品');
+      await readerDisclosure(browser, '按快照编号查询', true);
+      await fill(browser, reader, '快照编号', 's_absent_' + suffix);
+      await click(browser, reader, '查询此快照');
       await browser.until(`document.querySelector(${literal(reader)})?.getAttribute('aria-busy')==='false' && !!document.querySelector(${literal(reader)}+' .error-note')`, 'Unknown fixed snapshot was not reported as an error');
-      assert.equal(await browser.evaluate(`!!document.querySelector(${literal(reader)}+' [aria-label="WFD 实际读取结果"]')`), false);
+      assert.equal(await browser.evaluate(`!!document.querySelector(${literal(result)})`), false);
       evidence.badSnapshotError = await browser.evaluate(`document.querySelector(${literal(reader)}+' .error-note').innerText`);
       await screenshot(browser, join(fixture.root, '06-bad-snapshot-is-error.png'), reader);
       assert.deepEqual(browser.exceptions, []); assert.deepEqual(browser.blockedRequests, []);

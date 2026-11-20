@@ -36,31 +36,33 @@ export function RecordEvidencePanel({ identity, snapshotId, connection }: { iden
     } catch { if (active()) { setEvidence(null); setError(true); } }
     finally { if (active()) setBusy(false); }
   }
-  return <section data-testid="record-evidence-panel" aria-label={words('原件追溯', 'Original evidence')} aria-busy={busy}>
-    <PageHeading level="h3" title={words('原件追溯', 'Original evidence')} description={words(
-      '仅核本地固定行关联和原件字节，不证明披露内容正确或历史可知资格。加工与证据引用仍仅冻结登记，未重新核验。',
-      'Verifies local fixed-row association and original bytes, not source claims or historical eligibility. Processing and evidence references remain frozen, not revalidated.')} />
-    <p className="database-scope">{identity.recordId} · {identity.recordVersion}</p>
-    <PageButton disabled={busy} onClick={() => void run()}>{words('读取原件证据', 'Read original evidence')}</PageButton>
+  return <section className="r1-evidence" data-testid="record-evidence-panel" aria-label={words('原件追溯', 'Original evidence')} aria-busy={busy}>
+    <PageHeading level="h3" title={words('原件追溯', 'Original evidence')} />
     {busy && <PageEmpty state="loading">{words('核对中…', 'Verifying…')}</PageEmpty>}
-    {error && <ErrorNote>{words('无法核对或范围已变化，旧证据已清除。未找到关联不等于原件不存在；未执行发布或任务。',
-      'Verification failed or scope changed; old evidence cleared. A missing association does not prove the original is absent. No publication or task was started.')}</ErrorNote>}
+    {error && <ErrorNote>{words('未能核对这条记录关联的原件。', 'The original associated with this record could not be verified.')}</ErrorNote>}
     {evidence && <>
-      <DetailFacts items={[
-        { label: words('当前读取快照', 'Current read snapshot'), value: snapshotId },
-        { label: words('原发布证据快照', 'Original publication snapshot'), value: evidence.snapshotId },
-        { label: words('原请求', 'Original request'), value: evidence.requestId },
-      ]} />
-      <p className="database-scope">SHA-256: {evidence.sha256}</p><p>{words('已核原件字节数', 'Verified original bytes')}: {evidence.bytes}</p>
-      <p className="r1-help">{words('原发布证据快照可能早于本次读取快照；没有改读最新行。此入口没有新增逐文档权限。',
-        'The publication snapshot may precede this read snapshot; no latest-row fallback. This entry does not add per-document permissions.')}</p>
-      {evidence.downloadUnavailable && <p>{words('原件字节已核，但没有材料下载链接；不拼造链接或传输到网盘。',
-        'Original bytes verified, but no material download link is available. No link or cloud-drive transfer is synthesized.')}</p>}
+      <p className="r1-help">{words('已核对这条记录与原件的关联及文件内容。', 'The original file and its association with this record were verified.')}</p>
+      {evidence.downloadUnavailable && <p>{words('当前没有原件下载链接。', 'No download link is available for this original.')}</p>}
       {evidence.materials.map(material => <div key={material.materialId}>
         <p className="database-scope">{material.filename}</p>
         <PageButton disabled={busy || material.bytes > 25 * 1024 * 1024} onClick={() => void run(material)}>{words('下载已核原件', 'Download verified original')}</PageButton>
         {material.bytes > 25 * 1024 * 1024 && <p>{words('超过本网页25 MiB下载预算；只展示已核关联，不扩大下载能力。', 'Exceeds this browser’s 25 MiB download budget; verified association only.')}</p>}
       </div>)}
     </>}
+    <PageButton disabled={busy} onClick={() => void run()}>{words('重新核对原件', 'Verify original again')}</PageButton>
+    <details><summary>{words('原件核对详情', 'Evidence details')}</summary>
+      <p className="r1-help">{words('核对范围是固定记录关联与原件字节。披露内容、历史资格、加工与证据引用的核验另行进行。',
+        'Verification covers the fixed record association and original bytes. Source claims, historical eligibility, processing and evidence references require separate verification.')}</p>
+      <DetailFacts items={[
+        { label: words('记录与版本', 'Record and version'), value: <><code>{identity.recordId}</code> · <code>{identity.recordVersion}</code></> },
+        { label: words('当前读取快照', 'Current read snapshot'), value: snapshotId },
+        ...(evidence ? [
+          { label: words('原发布证据快照', 'Original publication snapshot'), value: evidence.snapshotId },
+          { label: words('原请求', 'Original request'), value: evidence.requestId },
+          { label: 'SHA-256', value: <code>{evidence.sha256}</code> },
+          { label: words('已核原件字节数', 'Verified original bytes'), value: evidence.bytes },
+        ] : []),
+      ]} />
+    </details>
   </section>;
 }
