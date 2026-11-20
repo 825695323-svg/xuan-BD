@@ -19,8 +19,10 @@ import { readNumericFormat } from './data-processing/numeric-format.js';
 import { readXbrlSelection } from './data-processing/xbrl-table.js';
 import { readEventTextSelection } from './data-processing/event-text.js';
 import { readNecessaryTextSelection } from './data-processing/necessary-text.js';
-import { readFinancialPdfSelection, projectFinancialPdf } from './data-processing/financial-pdf.js';
+import { projectFinancialPdf } from './data-processing/financial-pdf.js';
+import { readFinancialPdfProjection } from './data-processing/financial-l1-templates.js';
 import { readFinancialCalculation, projectFinancialFixed, type FinancialReader } from './data-processing/financial-fixed.js';
+import type { ChartOfAccountsRegistry } from './data-processing/financial-coa-registry.js';
 import { R1_TABULAR_RULE_VERSION, parseR1Utc } from './r1-tabular.js';
 import { R1_EVENT_RULE_VERSION, checkR1MappedRows, compileR1MappedDeclaration, isR1MappedDeclaration } from './r1-event.js';
 import { r1SourceGaps } from './r1-source.js';
@@ -222,13 +224,16 @@ export class ProcessingPlanService {
 
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService; materials: MaterialService;
     objects: PlanObjectStore; financialReader?: FinancialReader; financialReaderIdentity?(): unknown;
+    financialCoaRegistry?: ChartOfAccountsRegistry;
     /** 端点适配登记：只提供已采用版本的冻结配置与漂移记录。 */
     adapters?: EndpointAdapterRegistry;
     /** 独立清洗引擎，仅处理 parse→clean；不调用金融公式或计算任务。 */
     polarsCleaner?: PolarsSourceCleaner;
     /** Host-only module switches; cannot be changed by model tools or an existing plan. */
     modules?: Partial<Record<ProcessingStepKind, boolean>> }) {
-    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/event-text.ts', './data-processing/ocr-claim.ts', '../../apps/server/ocr-review.ts', '../../apps/server/transcription-review.ts', '../../platform/capabilities/transcription/local.ts', '../../apps/server/media-review-source.ts', '../../platform/capabilities/ocr/evidence.ts', '../../platform/capabilities/browser/html-extraction.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fact.ts', './data-processing/financial-fixed.ts', './data-processing/global-supply-trade.ts', './data-processing/wfd-fixed-selection.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
+    const files = ['./processing-plan.ts', './processing-routing.ts', './candidate-pipeline.ts', './candidate-csv-records.ts', './source-reported-table.ts', './r1-source.ts', './data-processing/xlsx-table.ts', './data-processing/numeric-format.ts', './data-processing/xbrl-table.ts', './data-processing/necessary-text.ts', './data-processing/event-text.ts', './data-processing/ocr-claim.ts', '../../apps/server/ocr-review.ts', '../../apps/server/transcription-review.ts', '../../platform/capabilities/transcription/local.ts', '../../apps/server/media-review-source.ts', '../../platform/capabilities/ocr/evidence.ts', '../../platform/capabilities/browser/html-extraction.ts', './data-processing/financial-pdf.ts', './data-processing/financial-fact.ts', './data-processing/financial-fixed.ts',
+      './data-processing/financial-coa-registry.ts', './data-processing/financial-temporal-pairing.ts', './data-processing/financial-l1-templates.ts',
+      './data-processing/global-supply-trade.ts', './data-processing/wfd-fixed-selection.ts', './endpoint-adapter.ts', '../../platform/capabilities/conversion/office.ts', '../../platform/capabilities/conversion/formats.ts'].map(path => readFileSync(new URL(path, import.meta.url)));
     this.versionBinding = Object.freeze({ processing: PROCESSING_PLAN_VERSION,
       implementation: wfdSha256(Buffer.concat(files)), policy: PROCESSING_POLICY_DIGEST,
       ...(options.modules ? { productionModules: wfdSha256(canonicalWfdJson(options.modules)) } : {}),
@@ -328,7 +333,10 @@ export class ProcessingPlanService {
           xbrl: { required: ['xbrlSelection'], shape: '{version:"bd-xbrl-numeric/1",reportId,reportVersion,concepts:["{namespaceURI}localName"]}; empty concepts selects all supported numeric facts' },
           text: { requiredOneOf: ['necessaryTextSelection', 'eventTextSelection'], eventScope: 'exact UTF8 source or explicitly hashed existing static HTML projection; declared occurrence only; no rendered-page completeness, event truth or public time inferred',
             eventShape: '{version:"bd-event-source-excerpts/1",sourceSha256,occurrence:{namespace,publisherId,publicationId,kind:"original"|"repost",upstreamPublicationId:string|null},reviewBasis,excerpts:[{start,end,quote}]}; exact original UTF-16 code-unit ranges', shape: '{version:"bd-necessary-business-paragraph/1",sourceSha256,documentVersion,purpose,reviewBasis,paragraphs:[{start,end,quote}]}; complete original paragraphs only' },
-          pdf: { required: ['pdfSelection'], shape: '{version:"bd-financial-pdf-regions/1",sourceSha256,report:{id,version,subjectScheme,subjectCode,accountingStandard,currency,auditStatus},regions:[{page,yMin,yMax,statement,scope,section,label:[xMin,xMax],expectedLabels,rowBands:[{yMin,yMax}],columns:[{xMin,xMax,dimension,periodType,startDate,endDate,unit,numericFormat}],continuations?:[{rowIndex,columnIndex,page,yMin,yMax,xMin,xMax,quote}]}]}' },
+          pdf: { required: ['pdfSelection'], shape: '{version:"bd-financial-pdf-regions/1",sourceSha256,report:{id,version,subjectScheme,subjectCode,accountingStandard,currency,auditStatus},regions:[{page,yMin,yMax,statement,scope,section,label:[xMin,xMax],expectedLabels,rowBands:[{yMin,yMax}],columns:[{xMin,xMax,dimension,periodType,startDate,endDate,unit,numericFormat}],continuations?:[{rowIndex,columnIndex,page,yMin,yMax,xMin,xMax,quote}]}]}',
+            l1Template: '{version:"bd-financial-l1-template/1",kind:"pdf_regions",preserveOriginalLexeme:true,preserveDeclaredUnit:true,selection,regionHeaders}',
+            explicitScope: 'Selections with continuations require the L1 template or explicit scope (consolidated|parent_only) with regionHeaders.',
+            regionHeaders: '[{columns:[{columnRole,declaredUnit}],pages:[{page,titleRows:[{text,yMin,yMax}],columnRoles?}]}] in region order, with source-checked titles above the main crop and each continuation. L1 value is text with the reported decimal scale.' },
           'transcription-review': { readerStatus: this.transcriptionClaimReader ? 'bound' : 'unavailable', required: ['transcriptionClaimSelection'], shape: 'Fixed packet/source digest, taskId, segmentIndex, explicit eventId/eventType; original milliseconds only, no caller text' },
           'ocr-review': { readerStatus: this.ocrClaimReader ? 'bound' : 'unavailable', required: ['ocrClaimSelection'], shape: 'Fixed OCR packet digest, original SHA, taskId, observationIndex, eventId/eventType; no caller text or verification claims' },
           'financial-fixed': { required: ['financialCalculation'], shape: 'financialFixed.calculation above; executable only through this managed plan and bound trusted reader' } },
@@ -775,7 +783,7 @@ export class ProcessingPlanService {
       const materialIds = readArray(record.materialIds, 1, CANDIDATE_LIMITS.maxOriginals, 'PROCESSING_OUTPUT_MATERIALS').map(value => readId(value, 'PROCESSING_MATERIAL_ID'));
       if (new Set(materialIds).size !== materialIds.length) fail('PROCESSING_OUTPUTS', '一个输出不能重复引用同一原件。');
       const outputFacts = materialIds.map(materialId => facts.get(materialId) ?? fail('PROCESSING_MATERIAL_NOT_FOUND', `输出引用了未路由的材料 ${materialId}。`));
-      const tables = readTables(record.tables, materialIds);
+      const tables = readTables(record.tables, materialIds, this.options.financialCoaRegistry);
       // 新计划只编译明确选中的模块；数据/文件类型只能选择解析器，不能决定处理链。
       const stages = readProcessingStages(record.stages, tables.length > 0);
       if (operator.source === 'conversation') {
@@ -1383,7 +1391,8 @@ export class ProcessingPlanService {
       const mediaProjection = ['ocr-review', 'transcription-review'].includes(params.format) ? await this.projectMediaClaim(original.bytes, params) : null;
       this.assertActive(context);
       const projection = mediaProjection ?? (params.format === 'pdf' ? await projectFinancialPdf(original.bytes, params.pdfSelection!, context.signal)
-        : params.format === 'financial-fixed' ? await projectFinancialFixed(params.financialCalculation!, this.options.financialReader!, context.signal) : null);
+        : params.format === 'financial-fixed' ? await projectFinancialFixed(params.financialCalculation!, this.options.financialReader!, context.signal,
+          this.options.financialCoaRegistry) : null);
       const projected = projection ? parseTableSource(projection.jsonBytes, { ...params, format: 'json', pdfSelection: undefined, financialCalculation: undefined, ocrClaimSelection: undefined, transcriptionClaimSelection: undefined }) : null;
       let parsed: ParsedCandidateTable;
       try {
@@ -1964,7 +1973,7 @@ function readProcessingStages(value: unknown, hasTables: boolean): ProcessingSte
     fail('PROCESSING_STAGE_SELECTION', '标注/核对需要结构化产物；未选择结构化不得隐式执行。');
   return PROCESSING_STEP_KINDS.filter(kind => selected.includes(kind));
 }
-function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[] {
+function readTables(value: unknown, materialIds: string[], financialCoaRegistry?: ChartOfAccountsRegistry): CandidateTablePlan[] {
   if (value === undefined) return [];
   const list = readArray(value, 1, PROCESSING_LIMITS.maxTablesPerOutput, 'PROCESSING_TABLES');
   return list.map(item => {
@@ -1998,12 +2007,12 @@ function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[]
     const necessaryTextSelection = record.necessaryTextSelection === undefined ? undefined : readNecessaryTextSelection(record.necessaryTextSelection);
     const eventTextSelection = record.eventTextSelection === undefined ? undefined : readEventTextSelection(record.eventTextSelection);
     if (eventTextSelection && necessaryTextSelection) fail('PROCESSING_TABLES', '必要业务段与事件选录不能混用。');
-    const pdfSelection = record.pdfSelection === undefined ? undefined : readFinancialPdfSelection(record.pdfSelection);
+    const pdfSelection = record.pdfSelection === undefined ? undefined : readFinancialPdfProjection(record.pdfSelection);
     const ocrClaimSelection = record.ocrClaimSelection === undefined ? undefined : readOcrClaimSelection(record.ocrClaimSelection);
     const transcriptionClaimSelection = record.transcriptionClaimSelection === undefined ? undefined : readTranscriptionClaimSelection(record.transcriptionClaimSelection);
     if (transcriptionClaimSelection && Object.keys(record).some(key => !['materialId', 'format', 'transcriptionClaimSelection'].includes(key))) fail('TRANSCRIPTION_CLAIM_EVIDENCE', '转录主张不接受其他选区或清洗覆盖规则。');
     if (ocrClaimSelection && Object.keys(record).some(key => !['materialId', 'format', 'ocrClaimSelection'].includes(key))) fail('OCR_CLAIM_EVIDENCE', '识别主张不接受其他选区、适配、清洗或覆盖规则。');
-    const financialCalculation = record.financialCalculation === undefined ? undefined : readFinancialCalculation(record.financialCalculation);
+    const financialCalculation = record.financialCalculation === undefined ? undefined : readFinancialCalculation(record.financialCalculation, financialCoaRegistry);
     if ((record.format === 'xbrl') !== !!xbrlSelection || (record.format === 'text') !== !!(necessaryTextSelection || eventTextSelection)
       || (record.format === 'pdf') !== !!pdfSelection || (record.format === 'financial-fixed') !== !!financialCalculation || (record.format === 'ocr-review') !== !!ocrClaimSelection || (record.format === 'transcription-review') !== !!transcriptionClaimSelection) fail('PROCESSING_TABLES', '专用格式须具有同格式的明确投影选择，不能挪用其他格式规则。');
     if (sourceAdapter && !['csv', 'json'].includes(String(record.format))) fail('PROCESSING_TABLES', '端点适配表源须声明载体族 csv 或 json。');
@@ -2013,6 +2022,13 @@ function readTables(value: unknown, materialIds: string[]): CandidateTablePlan[]
     const numericFormats = record.numericFormats === undefined ? undefined : Object.fromEntries(Object.entries(record.numericFormats as WfdRecord).map(([key, format]) => [key, readNumericFormat(format)]));
     if ((record.format === 'xlsx') !== !!xlsxSelection) fail('PROCESSING_XLSX_SELECTION', 'XLSX 必须提供明确选区，其他格式不能带工作簿选区。');
     const types: NonNullable<CandidateTablePlan['types']> = Object.assign(Object.create(null), record.types ?? {});
+    if (pdfSelection) {
+      const mapping = record.fieldMapping as Record<string, string> | undefined;
+      const valueField = mapping && Object.hasOwn(mapping, 'value') ? mapping.value! : 'value';
+      const format = numericFormats && Object.hasOwn(numericFormats, valueField) ? numericFormats[valueField] : undefined;
+      if (format || types[valueField] !== undefined && types[valueField] !== 'string')
+        fail('FINANCIAL_L1_TEMPLATE', 'PDF L1 数值列须保留为文本及原始小数位，百分比及倍率换算由 L3 执行。');
+    }
     for (const column of xlsxSelection?.columns ?? []) if (column.type) {
       const mapping = record.fieldMapping as Record<string, string> | undefined;
       const name = mapping && Object.hasOwn(mapping, column.name) ? mapping[column.name]! : column.name;

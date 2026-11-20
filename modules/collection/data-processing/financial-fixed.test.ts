@@ -253,13 +253,19 @@ test('financial articulation only compares known axes in the same actual report'
     return result.evidence.articulation!.filter(item => item.ruleId === 'BS-01');
   };
   assert.deepEqual((await checked(rows)).map(item => item.status), ['exact_match']);
-  for (const axis of ['report_id', 'fiscal_calendar', 'report_nature', 'column_role', 'comparability_basis']) {
+  for (const axis of ['report_id', 'fiscal_calendar', 'column_role', 'comparability_basis']) {
     const unresolved = structuredClone(rows);
     Object.assign((unresolved[2]!.values as WfdRecord)[axis] as WfdRecord, { value: null, value_state: 'not_reported' });
     const result = await checked(unresolved);
     assert.ok(result.every(item => item.status === 'indeterminate'), axis);
     assert.ok(result.some(item => item.reason === 'report_basis_unresolved'), axis);
   }
+  const legacy = structuredClone(rows);
+  delete (legacy[2]!.values as WfdRecord).report_nature;
+  assert.ok((await checked(legacy)).some(item => item.reason === 'report_basis_unresolved'));
+  const unresolvedNature = structuredClone(rows);
+  Object.assign((unresolvedNature[2]!.values as WfdRecord).report_nature as WfdRecord, { value: null, value_state: 'not_reported' });
+  await assert.rejects(checked(unresolvedNature), { code: 'FINANCIAL_REPORT_NATURE' });
   for (const placeholder of ['not_asserted', '未知', '未明确']) {
     const unresolved = structuredClone(rows);
     for (const item of unresolved) {

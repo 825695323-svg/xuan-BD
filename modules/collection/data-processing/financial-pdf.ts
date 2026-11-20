@@ -2,6 +2,7 @@ import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../../adapters/d
 import { openPdf } from '../../../platform/capabilities/conversion/pdf.js';
 import { TaskError } from '../../../platform/jobs/tasks.js';
 import { financialFactIdentity, readFinancialFactDeclaration, type FinancialFactDeclaration } from './financial-fact.js';
+import { guardFinancialPdfInterveningTitle, readFinancialPdfProjection, type FinancialPdfProjection } from './financial-l1-templates.js';
 import { normalizeNumericLexeme, readNumericFormat, type NumericFormat } from './numeric-format.js';
 
 export const FINANCIAL_PDF_VERSION = 'bd-financial-pdf-regions/1';
@@ -49,7 +50,9 @@ export function readFinancialPdfSelection(raw: unknown): FinancialPdfSelection {
         || !['instant', 'duration'].includes(column.periodType) || !day(column.startDate) || !day(column.endDate) || column.endDate < column.startDate
         || column.periodType === 'instant' && column.startDate !== column.endDate
         || ![column.dimension, column.unit].every(item => typeof item === 'string' && item.trim() && item.length <= 256)) fail('PDF期间、单位、范围列交叠或缺定义。');
-      readNumericFormat(column.numericFormat); previous = column.xMax;
+      if (readNumericFormat(column.numericFormat).percent === 'fraction')
+        throw new TaskError('FINANCIAL_L1_TEMPLATE', 'L1 须保留百分比原词面及声明单位，倍率换算由 L3 执行。');
+      previous = column.xMax;
     }
     if (region.continuations !== undefined && (!Array.isArray(region.continuations) || region.continuations.length > 64
       || region.continuations.some(part => !part || Object.keys(part).sort().join(',') !== 'columnIndex,page,quote,rowIndex,xMax,xMin,yMax,yMin'
@@ -62,8 +65,10 @@ export function readFinancialPdfSelection(raw: unknown): FinancialPdfSelection {
 }
 
 /** 直接读取已保管PDF的原生文字项；坐标投影只按操作者核定的表区/完整行清单执行。 */
-export async function projectFinancialPdf(bytes: Buffer, raw: FinancialPdfSelection, signal: AbortSignal) {
-  const selection = readFinancialPdfSelection(raw);
+export async function projectFinancialPdf(bytes: Buffer, raw: FinancialPdfProjection, signal: AbortSignal) {
+  const projection = readFinancialPdfProjection(raw);
+  const selection = 'selection' in projection ? projection.selection : projection;
+  const regionHeaders = 'regionHeaders' in projection ? projection.regionHeaders : undefined;
   if (bytes.byteLength > 25 * 1024 * 1024 || wfdSha256(bytes) !== selection.sourceSha256 || bytes.subarray(0, 5).toString() !== '%PDF-') fail('PDF字节身份/格式/预算与核定选择不符。');
   const loading = await openPdf(bytes), document = await loading.promise;
   const rows: WfdRecord[] = [], evidence: WfdRecord[] = [], seen = new Set<string>();
@@ -81,12 +86,42 @@ export async function projectFinancialPdf(bytes: Buffer, raw: FinancialPdfSelect
     }
     return cache.get(pageNumber)!;
   };
+  type TextItem = Awaited<ReturnType<typeof readPage>>[number];
+  const reading = (a: TextItem, b: TextItem) => Math.abs(b.y - a.y) >= 2 ? b.y - a.y : a.x - b.x;
   try {
-    for (const region of selection.regions) {
+    for (const [regionIndex, region] of selection.regions.entries()) {
       signal.throwIfAborted();
+      const header = regionHeaders?.[regionIndex];
+      for (const [segmentIndex, page] of (header?.pages ?? []).entries()) {
+        const segment = segmentIndex === 0 ? region : region.continuations![segmentIndex - 1]!;
+        const originalItems = await readPage(page.page);
+        let firstTitleY = -Infinity;
+        for (const title of page.titleRows) {
+          const titleItems = originalItems.filter(item => item.y >= title.yMin && item.y < title.yMax).sort(reading);
+          const quote = titleItems.map(item => item.str).join('').trim();
+          if (quote !== title.text.trim()) throw new TaskError('FINANCIAL_L1_SCOPE_MISMATCH', `第 ${page.page} 页实际表头与核定标题原文不符。`);
+          firstTitleY = titleItems.reduce((top, item) => item.str.trim() ? Math.max(top, item.y) : top, firstTitleY);
+        }
+        // 扫描整页宽度，并覆盖取数区内部，防止扩大选区把相反范围标题藏进选区。
+        const lines: TextItem[][] = [];
+        const intervening = originalItems.filter(item => item.y < firstTitleY && item.y >= segment.yMin && item.str.trim());
+        for (const item of intervening.sort((a, b) => b.y - a.y)) {
+          const line = lines.at(-1);
+          if (line && line[0]!.y - item.y < 2) line.push(item);
+          else lines.push([item]);
+        }
+        const lineWords = lines.map(line => line.sort((a, b) => a.x - b.x).map(item => item.str));
+        for (let start = 0; start < lineWords.length; start += 1) {
+          let words: string[] = [];
+          for (const line of lineWords.slice(start, start + 3)) {
+            words = words.concat(line);
+            guardFinancialPdfInterveningTitle(region.scope, page.page, words.join(' '));
+            if (words.length > 1) guardFinancialPdfInterveningTitle(region.scope, page.page, words.join(''));
+          }
+        }
+      }
       const items = (await readPage(region.page)).filter(item => item.y >= region.yMin && item.y <= region.yMax && item.str.trim());
       const lines = region.rowBands.map(band => items.filter(item => item.y >= band.yMin && item.y < band.yMax));
-      const reading = (a: (typeof items)[number], b: (typeof items)[number]) => Math.abs(b.y - a.y) >= 2 ? b.y - a.y : a.x - b.x;
       const cells = lines.map(line => ({ line,
         label: line.filter(item => item.x >= region.label[0] && item.x < region.label[1]).sort(reading).map(item => item.str).join('').trim(),
         values: region.columns.map(column => line.filter(item => item.x >= column.xMin && item.x < column.xMax).sort(reading).map(item => item.str).join('').trim()) }));
@@ -107,10 +142,11 @@ export async function projectFinancialPdf(bytes: Buffer, raw: FinancialPdfSelect
             if (quote !== part.quote) fail('跨页续段原文与核定片段不符；未部分采用或自动拼接。');
             lexical += quote; continued.push({ page: part.page, originalItems, quote, selection: part });
           }
-          let value: string | null;
+          let normalized: string | null;
           // 本版缺值词典仅含空格和独立连字符；原因未披露时只记unknown，绝不认定零或不适用。
-          try { value = lexical === '' || lexical === '-' ? null : normalizeNumericLexeme(lexical, column.numericFormat); }
+          try { normalized = lexical === '' || lexical === '-' ? null : normalizeNumericLexeme(lexical, column.numericFormat, { preserveFractionDigits: true }); }
           catch (error) { if (error instanceof TaskError) fail(`第${region.page}页「${row.label}」${column.dimension}原词面「${lexical}」不符合冻结数值语法；未猜值。`); throw error; }
+          const value = normalized !== null && (header || column.unit === 'percent' || column.numericFormat.percent === 'as_reported') ? lexical : normalized;
           const identity = { report_id: selection.report.id, report_version: selection.report.version, subject_scheme: selection.report.subjectScheme,
             subject_code: selection.report.subjectCode, accounting_standard: selection.report.accountingStandard, currency: selection.report.currency,
             audit_status: selection.report.auditStatus, statement: region.statement, scope: region.scope, section: region.section,
@@ -119,7 +155,7 @@ export async function projectFinancialPdf(bytes: Buffer, raw: FinancialPdfSelect
           const businessKey = fact?.businessKey ?? 'financial_' + wfdSha256(canonicalWfdJson(identity));
           if (seen.has(businessKey)) fail('报告、范围、期间、维度与科目存在重复身份；须核定真实层级，未按页号伪造唯一键。');
           seen.add(businessKey);
-          rows.push({ business_key: businessKey, ...identity, ...(fact ? { financial_fact_identity: fact.identity } : {}), value, value_state: value === null ? 'unknown' : value === '0' ? 'reported_zero' : 'valid_value',
+          rows.push({ business_key: businessKey, ...identity, ...(fact ? { financial_fact_identity: fact.identity } : {}), value, value_state: normalized === null ? 'unknown' : /[1-9]/u.test(normalized) ? 'valid_value' : 'reported_zero',
             start_utc: column.startDate + 'T00:00:00Z', end_utc: new Date(Date.parse(column.endDate + 'T00:00:00Z') + 86_400_000).toISOString().replace('.000Z', 'Z') });
           const originalItems = row.line.filter(item => item.x >= region.label[0] && item.x < region.label[1] || item.x >= column.xMin && item.x < column.xMax);
           evidence.push({ businessKey, ...(fact ? { financialFactIdentity: JSON.parse(fact.identity), identityAssurance: 'operator_declared_axes_checked_not_independent_source_verification' } : {}), page: region.page, originalLexeme: lexical, value, originalItems, continued,
@@ -131,6 +167,7 @@ export async function projectFinancialPdf(bytes: Buffer, raw: FinancialPdfSelect
     if (!rows.length || rows.length > 5000) fail('选定财报记录超过1–5000行预算。');
     return { jsonBytes: Buffer.from(canonicalWfdJson(rows)), evidence: { adapter: FINANCIAL_PDF_VERSION, parser: 'pdfjs-dist/6.4.299',
       sourceSha256: selection.sourceSha256, sourcePages: document.numPages, selectedPages: [...cache.keys()], selectedRows: rows.length,
-      selectedScopeOnly: true, missingDictionary: { '': 'unknown', '-': 'unknown' }, blankState: 'unknown-without-source-missing-reason', report: selection.report, records: evidence } };
+      selectedScopeOnly: true, missingDictionary: { '': 'unknown', '-': 'unknown' }, blankState: 'unknown-without-source-missing-reason',
+      report: selection.report, ...(regionHeaders ? { regionHeaders } : {}), records: evidence } };
   } finally { await loading.destroy(); }
 }

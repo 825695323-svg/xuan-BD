@@ -3,6 +3,7 @@ import test from 'node:test';
 import { CoreDatabase } from '../../platform/state/database.js';
 import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import type { TaskExecutionContext, TaskRecord } from '../../platform/jobs/tasks.js';
+import { FINANCIAL_PDF_VERSION, type FinancialPdfSelection } from './data-processing/financial-pdf.js';
 import { ProcessingPlanService, type OperatorContext, type ProcessingPlanInput } from './processing-plan.js';
 
 // Actual request acceptance/SQLite and normalization; only task scheduling and original custody are doubles.
@@ -36,6 +37,38 @@ function fixture(runSteps = false) {
   return { database, processing, operator, input, records, execute, changeOriginal: () => { bytes = Buffer.from('name,value\nsynthetic,2.5\n'); } };
 }
 const conflict = (error: unknown) => !!error && typeof error === 'object' && 'code' in error && error.code === 'REQUEST_CONFLICT';
+
+test('new PDF plans refuse unverified continuations and lossy conversions on the mapped value column', () => {
+  const f = fixture();
+  try {
+    const numericFormat = { decimal: '.', grouping: ',', negative: 'minus', plus: false, percent: 'as_reported' } as const;
+    const pdfSelection: FinancialPdfSelection = {
+      version: FINANCIAL_PDF_VERSION, sourceSha256: 'a'.repeat(64),
+      report: { id: 'synthetic-report', version: 'v1', subjectScheme: 'fixture', subjectCode: 'synthetic-company',
+        accountingStandard: 'CAS', currency: 'CNY', auditStatus: 'audited' },
+      regions: [{ page: 1, yMin: 100, yMax: 200, statement: 'income_statement', scope: 'consolidated', section: 'main',
+        label: [0, 100], expectedLabels: ['Revenue'], rowBands: [{ yMin: 150, yMax: 165 }],
+        columns: [{ xMin: 100, xMax: 180, dimension: 'current', periodType: 'duration', startDate: '2025-01-01',
+          endDate: '2025-06-30', unit: 'percent', numericFormat }],
+        continuations: [{ rowIndex: 0, columnIndex: 0, page: 2, yMin: 150, yMax: 165, xMin: 100, xMax: 180, quote: '.50%' }] }],
+    };
+    const table = { materialId: 'synthetic-material', format: 'pdf' as const, pdfSelection };
+    f.input.outputs[0]!.tables = [table];
+    assert.throws(() => f.processing.preparePlan(f.input, f.operator), { code: 'FINANCIAL_L1_SCOPE_MISMATCH' });
+    delete pdfSelection.regions[0]!.continuations;
+    f.input.outputs[0]!.tables = [{ ...table, fieldMapping: { value: 'raw_value' }, types: { raw_value: 'decimal_string' },
+      numericFormats: { raw_value: { ...numericFormat, percent: 'fraction' } } }];
+    assert.throws(() => f.processing.preparePlan(f.input, f.operator), { code: 'FINANCIAL_L1_TEMPLATE' });
+    const column = pdfSelection.regions[0]!.columns[0]!;
+    column.unit = 'ratio';
+    column.numericFormat = { ...numericFormat, percent: 'reject' };
+    for (const type of ['safe_integer', 'decimal_string'] as const) {
+      f.input.outputs[0]!.tables = [{ ...table, fieldMapping: { value: 'raw_value' }, types: { raw_value: type } }];
+      assert.throws(() => f.processing.preparePlan(f.input, f.operator), { code: 'FINANCIAL_L1_TEMPLATE' });
+    }
+    assert.equal(f.records.size, 0);
+  } finally { f.database.close(); }
+});
 
 test('plan requests validate and execute dictionary-only annotation with persisted field dependencies', async () => {
   const f = fixture(true);

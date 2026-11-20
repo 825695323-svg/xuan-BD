@@ -34,6 +34,7 @@ import { readConnectionRegistry } from '../../platform/config/connections.js';
 import { DirectConversationService } from '../../modules/agent/direct-conversations.js';
 import { BdService } from '../../modules/agent/service.js';
 import { CollectionService } from '../../modules/collection/service.js';
+import type { ChartOfAccountsRegistry } from '../../modules/collection/data-processing/financial-coa-registry.js';
 import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
 import { ConversationAlgorithmBridge } from '../../modules/financial/conversation-algorithms.js';
 import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
@@ -105,6 +106,8 @@ export interface ServiceOptions {
   browserUnavailableReason?: string;
   captureSessions?: CaptureSessionService;
   customSources?: CustomSourceRegistry;
+  /** 仅受信宿主装配科目登记表及操作员确认核验器。 */
+  financialCoaRegistry?: ChartOfAccountsRegistry;
   captureUnavailableReason?: string;
   shortcuts?: readonly ShortcutDefinition[];
   shortcutConfigPath?: string;
@@ -402,6 +405,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   // R1 只使用已完整装配的真实加工服务和共用内容仓储。
   processing = materials && candidates ? new ProcessingPlanService({ database, tasks: currentTasks, materials,
     adapters: endpointAdapters,
+    financialCoaRegistry: options.financialCoaRegistry,
     ...(options.productionModuleSwitches ? { modules: options.productionModuleSwitches } : {}),
     ...(options.role === 'service' && options.processRuntime
       ? { polarsCleaner: new PolarsSourceCleaner(options.processRuntime) } : {}),

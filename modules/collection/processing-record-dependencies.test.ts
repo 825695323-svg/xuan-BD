@@ -17,16 +17,37 @@ test('record edges require exact persisted identities and never leak extended re
   assert.deepEqual(parsedRecordDependencies(parsed, calculation), [{ parsedBusinessKey: 'out1', sourceRecordRef: ref }]);
   assert.equal(JSON.stringify(parsedRecordDependencies(parsed, calculation)).includes('UNIQUE_SECRET'), false);
 
-  // cas-primary-statements/2 must preserve the exact same 1-to-1 source lineage
-  const v2 = fixture();
-  v2.parsed.financial_evidence.mappingVersion = 'cas-primary-statements/2';
-  v2.parsed.financial_evidence.lineage[0].source.mapping = 'cas-primary-statements/2';
-  assert.deepEqual(
-    parsedRecordDependencies(v2.parsed, { ...v2.calculation, mappingProfile: 'cas-primary-statements/2' }),
-    [{ parsedBusinessKey: 'out1', sourceRecordRef: ref }],
-  );
-  // Mismatched mappingProfile between calculation and evidence must still return null
-  assert.equal(parsedRecordDependencies(v2.parsed, v2.calculation), null);
+  for (const mappingProfile of ['cas-primary-statements/2', 'ifrs-primary-statements/1', 'us-gaap-primary-statements/1']) {
+    const candidate = fixture();
+    candidate.parsed.financial_evidence.mappingVersion = mappingProfile;
+    candidate.parsed.financial_evidence.lineage[0].source.mapping = mappingProfile;
+    assert.deepEqual(parsedRecordDependencies(candidate.parsed, { ...candidate.calculation, mappingProfile }),
+      [{ parsedBusinessKey: 'out1', sourceRecordRef: ref }]);
+    assert.equal(parsedRecordDependencies(candidate.parsed, candidate.calculation), null);
+  }
+});
+
+test('historical candidate mapping requires the same pinned digest in request, evidence and every source edge', () => {
+  const { parsed, calculation } = fixture();
+  const mappingProfile = 'historical-fixture-coa/1';
+  const mappingProfileDigest = 'sha256:' + '1'.repeat(64);
+  const otherDigest = 'sha256:' + '2'.repeat(64);
+  const frozen = { ...calculation, mappingProfile, mappingProfileDigest };
+  const evidence = parsed.financial_evidence;
+  evidence.mappingVersion = mappingProfile;
+  evidence.mappingProfileDigest = mappingProfileDigest;
+  const source = evidence.lineage[0].source;
+  source.mapping = mappingProfile;
+  source.mappingProfileDigest = mappingProfileDigest;
+  assert.deepEqual(parsedRecordDependencies(parsed, frozen), [{ parsedBusinessKey: 'out1', sourceRecordRef: ref }]);
+  for (const digest of [undefined, 'malformed', otherDigest]) {
+    assert.equal(parsedRecordDependencies(parsed, { ...frozen, mappingProfileDigest: digest }), null);
+  }
+  evidence.mappingProfileDigest = otherDigest;
+  assert.equal(parsedRecordDependencies(parsed, frozen), null);
+  evidence.mappingProfileDigest = mappingProfileDigest;
+  source.mappingProfileDigest = otherDigest;
+  assert.equal(parsedRecordDependencies(parsed, frozen), null);
 });
 test('missing or inconsistent evidence is unknown, not guessed from keys or concepts', () => {
   for (const mutate of [

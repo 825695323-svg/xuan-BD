@@ -1,5 +1,6 @@
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../../platform/jobs/tasks.js';
+import { assertActualFinancialReport } from './financial-temporal-pairing.js';
 
 export const FINANCIAL_FACT_VERSION = 'bd-financial-fact/1';
 export interface FinancialFactDeclaration {
@@ -22,6 +23,7 @@ export function readFinancialFactDeclaration(raw: unknown): FinancialFactDeclara
 }
 /** Edition, audit status and value remain source evidence, never the stable fact identity. */
 export function financialFactIdentity(row: WfdRecord, raw: unknown): { businessKey: string; identity: string } {
+  assertActualFinancialReport(row);
   const declaration = readFinancialFactDeclaration(raw);
   if (!axes.every(axis => known(row[axis])) || !known(row.report_id) || !known(row.report_version)
     || typeof row.audit_status !== 'string' || !row.audit_status.trim()) fail();
@@ -35,6 +37,7 @@ export function financialFactIdentity(row: WfdRecord, raw: unknown): { businessK
 /** Recompute from actual mapped cells; an arbitrary key/hash is not identity authority. */
 export function verifyFinancialFactRow(row: WfdRecord): string {
   if (!isWfdRecord(row.values)) fail();
+  assertActualFinancialReport(row, row.values);
   const values = Object.fromEntries(Object.entries(row.values).map(([key, cell]) => {
     if (!isWfdRecord(cell) || cell.value_state !== 'valid_value' && cell.value_state !== 'reported_zero') fail();
     return [key, cell.value];

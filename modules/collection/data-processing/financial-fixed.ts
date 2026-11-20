@@ -1,14 +1,18 @@
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../../platform/jobs/tasks.js';
 import { isExplicitUtcInstant } from '../../../contracts/financial-value.js';
+import { defaultFinancialCoaRegistry, FINANCIAL_INDUSTRY_TEMPLATES, FINANCIAL_MAPPING_VERSION, FINANCIAL_MAPPING_V2_VERSION, financialUnitRule,
+  inspectFinancialCoaUnit, isFinancialCoaProfilePin, matchingFinancialCoaRules,
+  type FinancialCoaProfileSelection, type FinancialConceptRule, type FinancialIndustryTemplate, type FinancialUnitDimension } from './financial-coa-registry.js';
+import { assertActualFinancialReport, FINANCIAL_COLUMN_ROLES,
+  type FinancialColumnRole } from './financial-temporal-pairing.js';
 import { readFixedHistorySelection, selectWfdFixedRecords, type WfdFixedRecordReader, type WfdFixedHistorySelection } from './wfd-fixed-selection.js';
 
 export const FINANCIAL_FIXED_VERSION = 'bd-financial-fixed/1';
-export const FINANCIAL_MAPPING_VERSION = 'cas-primary-statements/1';
-export const FINANCIAL_MAPPING_V2_VERSION = 'cas-primary-statements/2';
-export type FinancialMappingVersion = typeof FINANCIAL_MAPPING_VERSION | typeof FINANCIAL_MAPPING_V2_VERSION;
-export type FinancialIndustryTemplate = 'general_industrial' | 'commercial_bank' | 'insurance' | 'securities';
-export type FinancialColumnRole = 'current_period' | 'prior_period_comparative_unchanged' | 'prior_period_restated';
+export { FINANCIAL_MAPPING_VERSION, FINANCIAL_MAPPING_V2_VERSION } from './financial-coa-registry.js';
+export type { FinancialConceptRule, FinancialIndustryTemplate } from './financial-coa-registry.js';
+export type { FinancialColumnRole } from './financial-temporal-pairing.js';
+export type FinancialMappingVersion = `${string}/${number}`;
 export interface FinancialCalculation {
   version: typeof FINANCIAL_FIXED_VERSION;
   operation: 'standardize';
@@ -16,6 +20,7 @@ export interface FinancialCalculation {
   history?: WfdFixedHistorySelection;
   compatibleInputs?: { periodType: 'duration' | 'instant'; periods: { startDate: string; endDate: string }[] };
   mappingProfile?: FinancialMappingVersion;
+  mappingProfileDigest?: string;
   industryTemplate?: FinancialIndustryTemplate;
   allowUnitScale?: boolean;
   articulationCheck?: boolean;
@@ -38,17 +43,7 @@ const codes: Record<string, { code: string; additive: boolean }> = {
   '六、期末现金及现金等价物余额': { code: 'cash_and_equivalents_end', additive: false },
 };
 
-export interface FinancialConceptRule {
-  code: string;
-  statement: 'income_statement' | 'balance_sheet' | 'cash_flow' | 'note';
-  periodType: 'duration' | 'instant';
-  additive: boolean;
-  unitDimension: 'money' | 'money_per_share' | 'ratio';
-  templates: readonly FinancialIndustryTemplate[];
-  aliases: readonly string[];
-}
-
-const ALL_TEMPLATES: readonly FinancialIndustryTemplate[] = ['general_industrial', 'commercial_bank', 'insurance', 'securities'];
+const ALL_TEMPLATES = FINANCIAL_INDUSTRY_TEMPLATES;
 
 export const CAS_CHART_OF_ACCOUNTS_V2: readonly FinancialConceptRule[] = Object.freeze([
   // 利润表通用与一般工商企业核心科目
@@ -132,27 +127,24 @@ export function resolveFinancialConceptRule(
   originalConcept: string,
   profile: FinancialMappingVersion = FINANCIAL_MAPPING_VERSION,
   template: FinancialIndustryTemplate = 'general_industrial',
-): { code: string; additive: boolean; periodType?: 'duration' | 'instant'; unitDimension?: 'money' | 'money_per_share' | 'ratio' } | null {
-  if (profile === FINANCIAL_MAPPING_VERSION) {
-    return codes[originalConcept] ?? null;
-  }
-  const hit = CAS_CHART_OF_ACCOUNTS_V2.find(rule => rule.templates.includes(template)
-    && (rule.code === originalConcept || rule.aliases.includes(originalConcept)));
-  return hit ? { code: hit.code, additive: hit.additive, periodType: hit.periodType, unitDimension: hit.unitDimension } : null;
+  statement?: string,
+  registry = defaultFinancialCoaRegistry,
+): { code: string; additive: boolean; periodType?: 'duration' | 'instant'; unitDimension?: FinancialUnitDimension } | null {
+  const selected = registry.getFinancialCoaProfile(profile);
+  return selected && mapFinancialConcept(selected, originalConcept, template, statement);
 }
 
-const UNIT_SCALE_POWERS: Record<string, { baseUnit: string; dimension: 'money' | 'money_per_share' | 'ratio'; power10: number; factor: string }> = {
-  cny: { baseUnit: 'cny', dimension: 'money', power10: 0, factor: '1' },
-  cny_thousand: { baseUnit: 'cny', dimension: 'money', power10: 3, factor: '1000' },
-  cny_ten_thousand: { baseUnit: 'cny', dimension: 'money', power10: 4, factor: '10000' },
-  cny_10000: { baseUnit: 'cny', dimension: 'money', power10: 4, factor: '10000' },
-  cny_million: { baseUnit: 'cny', dimension: 'money', power10: 6, factor: '1000000' },
-  cny_hundred_million: { baseUnit: 'cny', dimension: 'money', power10: 8, factor: '100000000' },
-  cny_100million: { baseUnit: 'cny', dimension: 'money', power10: 8, factor: '100000000' },
-  cny_per_share: { baseUnit: 'cny_per_share', dimension: 'money_per_share', power10: 0, factor: '1' },
-  ratio: { baseUnit: 'ratio', dimension: 'ratio', power10: 0, factor: '1' },
-  percent: { baseUnit: 'percent', dimension: 'ratio', power10: 0, factor: '1' },
-};
+function mapFinancialConcept(selected: FinancialCoaProfileSelection, originalConcept: string,
+  template: FinancialIndustryTemplate, statement?: string): ReturnType<typeof resolveFinancialConceptRule> {
+  if (selected.id === FINANCIAL_MAPPING_VERSION) {
+    return Object.hasOwn(codes, originalConcept) ? codes[originalConcept]! : null;
+  }
+  const hits = selected.kind === 'legacy'
+    ? matchingFinancialCoaRules({ rules: CAS_CHART_OF_ACCOUNTS_V2 }, originalConcept, template)
+    : matchingFinancialCoaRules(selected, originalConcept, template, statement);
+  const hit = hits.length === 1 || selected.kind === 'legacy' ? hits[0] : undefined;
+  return hit ? { code: hit.code, additive: hit.additive, periodType: hit.periodType, unitDimension: hit.unitDimension } : null;
+}
 
 /**
  * 显式单位倍率无损换算并保留原披露精度（最低有效位半径 half-ULP）：
@@ -167,7 +159,7 @@ export function scaleFinancialUnitValue(rawLexeme: string, sourceUnit: string): 
   sourceFractionDigits: number;
   declaredPrecisionHalfUlp: string;
 } {
-  const rule = UNIT_SCALE_POWERS[sourceUnit];
+  const rule = financialUnitRule(sourceUnit);
   if (!rule) fail(`未知或未授权换算的财务单位 ${sourceUnit}；未知倍率不得隐式换算。`);
   if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(rawLexeme)) fail(`财务数值 ${rawLexeme} 不是规范十进制词面。`);
   const negative = rawLexeme.startsWith('-');
@@ -370,14 +362,16 @@ export function verifyFinancialStatementArticulation(items: readonly Articulatio
   return results;
 }
 const validDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(value) && isExplicitUtcInstant(value + 'T00:00:00Z');
-const COLUMN_ROLES: readonly FinancialColumnRole[] = ['current_period', 'prior_period_comparative_unchanged', 'prior_period_restated'];
-export function readFinancialCalculation(raw: unknown): FinancialCalculation {
+export function readFinancialCalculation(raw: unknown, registry = defaultFinancialCoaRegistry): FinancialCalculation {
   if (!isWfdRecord(raw) || Object.keys(raw).some(key => !['version', 'operation', 'inputs', 'history', 'compatibleInputs',
-    'mappingProfile', 'industryTemplate', 'allowUnitScale', 'articulationCheck'].includes(key))
+    'mappingProfile', 'mappingProfileDigest', 'industryTemplate', 'allowUnitScale', 'articulationCheck'].includes(key))
     || raw.version !== FINANCIAL_FIXED_VERSION || raw.operation !== 'standardize'
     || !Array.isArray(raw.inputs) || !raw.inputs.length || raw.inputs.length > 16) fail('财务固定变换需要明确已登记版本、操作和固定输入引用，不能提交客户端数值。');
-  if (raw.mappingProfile !== undefined && ![FINANCIAL_MAPPING_VERSION, FINANCIAL_MAPPING_V2_VERSION].includes(String(raw.mappingProfile) as FinancialMappingVersion))
-    fail('科目映射档案版本不受支持。');
+  const mappingProfile = raw.mappingProfile === undefined ? FINANCIAL_MAPPING_VERSION : raw.mappingProfile;
+  const profile = registry.getFinancialCoaProfile(mappingProfile);
+  if (!profile || !isFinancialCoaProfilePin(mappingProfile, raw.mappingProfileDigest)
+    || profile.kind === 'adopted' && profile.digest !== raw.mappingProfileDigest)
+    fail('科目映射档案须为已登记版本，并使用与已采用档案一致的固定摘要。');
   if (raw.industryTemplate !== undefined && !ALL_TEMPLATES.includes(String(raw.industryTemplate) as FinancialIndustryTemplate))
     fail('行业报表模板须为 general_industrial / commercial_bank / insurance / securities 之一。');
   if (raw.allowUnitScale !== undefined && typeof raw.allowUnitScale !== 'boolean') fail('allowUnitScale 须为布尔值。');
@@ -415,41 +409,54 @@ const optionalField = (row: WfdRecord, key: string): string | null => {
   if (!cell || !['valid_value', 'reported_zero'].includes(String(cell.value_state)) || typeof cell.value !== 'string' || !cell.value.trim()) return null;
   return cell.value;
 };
-function assertFinancialValueUnit(row: WfdRecord, allowScale = false, expectedDimension: 'money' | 'money_per_share' | 'ratio' = 'money'): void {
+function assertFinancialValueUnit(row: WfdRecord, profile: FinancialCoaProfileSelection,
+  allowScale: boolean, expectedDimension: FinancialUnitDimension) {
   const rowUnit = field(row, 'unit');
+  const currency = field(row, 'currency');
   const cell = isWfdRecord(row.values) && isWfdRecord(row.values.value) ? row.values.value : null;
   const unit = cell && isWfdRecord(cell.unit) ? cell.unit : null;
-  const unitCode = unit ? String(unit.unit_code ?? '') : '';
+  const unitCode = typeof unit?.unit_code === 'string' ? unit.unit_code : '';
   if (rowUnit !== unitCode) {
     fail(`财务行内声明单位（${rowUnit}）与数值单元已解析单位（${unitCode || 'missing'}）冲突；拒绝换算。`);
   }
-  const scaleRule = UNIT_SCALE_POWERS[unitCode];
-  const validCode = !!scaleRule && scaleRule.dimension === expectedDimension && (allowScale ? true : scaleRule.power10 === 0);
+  const { unit: scaleRule, scaleIssue } = inspectFinancialCoaUnit(profile, {
+    accountingStandard: field(row, 'accounting_standard'), currency, unit: rowUnit,
+  }, allowScale, expectedDimension);
+  if (!scaleRule || scaleIssue) return fail(`财务数值单元的准则、币种、单位、倍率或量纲与所选档案不相符（${scaleIssue}）。`);
   const def = unit?.definition && isWfdRecord(unit.definition) ? unit.definition : null;
-  const validDim = !!def && def.dimension === expectedDimension && (allowScale
-    ? Object.keys(def).every(k => ['dimension', 'scale_factor', 'currency', 'base_unit'].includes(k))
-      && (def.scale_factor === undefined || String(def.scale_factor) === scaleRule?.factor)
-      && (def.currency === undefined || String(def.currency) === 'CNY')
-      && (def.base_unit === undefined || String(def.base_unit) === scaleRule?.baseUnit)
-    : Object.keys(def).length === 1);
-  if (!cell || (cell.data_type !== 'decimal' && cell.data_type !== 'integer') || !unit || !validCode || unit.resolved !== true
+  const validDim = !!def && def.dimension === expectedDimension && (profile.kind === 'legacy' && !allowScale
+    ? Object.keys(def).length === 1
+    : Object.keys(def).every(k => ['dimension', 'scale_factor', 'currency', 'base_unit'].includes(k))
+      && (def.scale_factor === undefined || def.scale_factor === scaleRule.factor
+        || typeof def.scale_factor === 'number' && String(def.scale_factor) === scaleRule.factor)
+      && (def.currency === undefined || def.currency === currency)
+      && (def.base_unit === undefined || def.base_unit === scaleRule.baseUnit));
+  if (!cell || (cell.data_type !== 'decimal' && cell.data_type !== 'integer') || !unit || unit.resolved !== true
     || !validDim
     || unit.digest !== 'sha256:' + wfdSha256(canonicalWfdJson({ code: unit.unit_code, definition: unit.definition }))) {
     fail('财务数值单元须为十进制或整数，并具有与科目量纲及行内单位一致的已解析单位定义及摘要；未知尺度或冲突单位不能按行内标签参与变换。');
   }
+  return scaleRule;
 }
 const nextDay = (date: string) => new Date(Date.parse(date + 'T00:00:00Z') + 86_400_000).toISOString().slice(0, 10);
-export async function projectFinancialFixed(raw: FinancialCalculation, reader: FinancialReader, signal: AbortSignal) {
-  const calculation = readFinancialCalculation(raw);
+export async function projectFinancialFixed(raw: FinancialCalculation, reader: FinancialReader, signal: AbortSignal,
+  registry = defaultFinancialCoaRegistry) {
+  const calculation = readFinancialCalculation(raw, registry);
   const mappingProfile = calculation.mappingProfile ?? FINANCIAL_MAPPING_VERSION;
+  const profile = registry.getFinancialCoaProfile(mappingProfile);
+  if (!profile) return fail('科目映射档案须已登记及采用。');
+  const profilePin = calculation.mappingProfileDigest === undefined ? {} : { mappingProfileDigest: calculation.mappingProfileDigest };
   const industryTemplate = calculation.industryTemplate ?? 'general_industrial';
-  const allowUnitScale = calculation.allowUnitScale === true && mappingProfile === FINANCIAL_MAPPING_V2_VERSION;
+  const allowUnitScale = calculation.allowUnitScale === true && mappingProfile !== FINANCIAL_MAPPING_VERSION;
+  const mappingFor = (row: WfdRecord, concept: string) =>
+    mapFinancialConcept(profile, concept, industryTemplate, profile.kind === 'legacy' ? undefined : field(row, 'statement'));
   const fixed = await selectWfdFixedRecords(calculation.inputs.map(item => ({
     snapshotId: item.snapshotId, productId: item.productId, businessKeys: item.businessKeys,
   })), reader, signal, reason => fail(reason), calculation.history);
-  const inputs = fixed.selections.map((selection, index) => ({
-    ref: calculation.inputs[index]!, rows: selection.rows,
-  }));
+  const inputs = fixed.selections.map((selection, index) => {
+    for (const row of selection.rows) assertActualFinancialReport(row, row.values as WfdRecord);
+    return { ref: calculation.inputs[index]!, rows: selection.rows };
+  });
   const inputEvidence: WfdRecord[] = fixed.selections.map((selection, index) => ({
     ...calculation.inputs[index]!, selectedRows: selection.rows.length,
     selectedRowsSha256: selection.selectedRowsSha256, recordVersions: selection.recordVersions,
@@ -464,19 +471,17 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
     let basis: string | undefined;
     for (const row of selected) {
       const original = field(row, 'concept');
-      const mapping = resolveFinancialConceptRule(original, mappingProfile, industryTemplate);
+      const mapping = mappingFor(row, original);
       if (!mapping) fail('相容输入含未登记科目，不能丢弃该行后冒充完整期间集合。');
       const rowPeriodType = field(row, 'period_type');
-      const validPeriodCompatibility = mappingProfile === FINANCIAL_MAPPING_V2_VERSION
-        ? (spec.periodType === 'duration' ? mapping.additive && rowPeriodType === 'duration' : !mapping.additive && rowPeriodType === 'instant')
-        : (spec.periodType === 'duration') === mapping.additive && rowPeriodType === spec.periodType;
+      const validPeriodCompatibility = (spec.periodType === 'duration') === mapping.additive && rowPeriodType === spec.periodType;
       if (!validPeriodCompatibility)
         fail('财报流量、非线性比率与时点余额不相容；余额或每股收益/收益率等非线性科目不能作为累计流量差分输入。');
       const reportNature = field(row, 'report_nature');
-      if (!['formal', 'correction', ...(mappingProfile === FINANCIAL_MAPPING_V2_VERSION ? ['restatement_carrier'] : [])].includes(reportNature))
+      if (!['formal', 'correction', ...(mappingProfile !== FINANCIAL_MAPPING_VERSION ? ['restatement_carrier'] : [])].includes(reportNature))
         fail('相容输入只接受明确正式报告、更正或重述比较列载体，不能把预告/快报混入。');
       const colRole = optionalField(row, 'column_role');
-      if (colRole !== null && !COLUMN_ROLES.includes(colRole as FinancialColumnRole))
+      if (colRole !== null && !FINANCIAL_COLUMN_ROLES.includes(colRole as FinancialColumnRole))
         fail(`未知财报列角色 ${colRole}；须明确区分当期初报列与上年同期重述比较列。`);
       if (reportNature === 'restatement_carrier' && (colRole === null || colRole === 'current_period'))
         fail('重述比较列载体（restatement_carrier）必须显式声明比较列角色（prior_period_restated 或 prior_period_comparative_unchanged），不得缺省列角色或冒充当期列。');
@@ -492,7 +497,6 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
       const key = canonicalWfdJson({ subject: row.subject, ...identity, concept: mapping.code, periodType: spec.periodType });
       if (basis !== undefined && basis !== key) fail('主体、科目、准则、范围、维度、币种、单位、财年或修订相容依据不一致。');
       basis = key;
-      assertFinancialValueUnit(row, allowUnitScale, mapping.unitDimension ?? 'money');
     }
     if (seen.size !== expected.size) fail('所需财报期间缺失；不补零、不改读最新数据。');
     compatibility = { status: 'declared_basis_compatible', periodType: spec.periodType,
@@ -503,19 +507,13 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
   const lineage: WfdRecord[] = [], unmapped: WfdRecord[] = [], articulationTerms: ArticulationTermInput[] = [];
   const rows = inputs.flatMap(input => input.rows.flatMap(row => {
     const original = field(row, 'concept');
-    const mapping = resolveFinancialConceptRule(original, mappingProfile, industryTemplate);
+    const mapping = mappingFor(row, original);
     if (!mapping) { unmapped.push({ record: row.record_ref, concept: original }); return []; }
     const rowUnit = field(row, 'unit');
     const expectedDim = mapping.unitDimension ?? 'money';
-    const scaleRule = UNIT_SCALE_POWERS[rowUnit];
-    if (field(row, 'accounting_standard') !== 'CAS' || field(row, 'currency') !== 'CNY'
-      || !scaleRule || scaleRule.dimension !== expectedDim
-      || (!allowUnitScale && scaleRule.power10 !== 0)) {
-      fail('当前映射只对明确CAS、人民币对应科目量纲基本单位（或显式启用 allowUnitScale 的受控倍率单位）原值开放；其他币种、未知单位或准则须另有映射。');
-    }
-    assertFinancialValueUnit(row, allowUnitScale, expectedDim);
+    const scaleRule = assertFinancialValueUnit(row, profile, allowUnitScale, expectedDim);
     const colRole = optionalField(row, 'column_role');
-    if (colRole !== null && !COLUMN_ROLES.includes(colRole as FinancialColumnRole))
+    if (colRole !== null && !FINANCIAL_COLUMN_ROLES.includes(colRole as FinancialColumnRole))
       fail(`未知财报列角色 ${colRole}；须明确区分当期初报列与上年同期重述比较列。`);
     if (optionalField(row, 'report_nature') === 'restatement_carrier' && (colRole === null || colRole === 'current_period'))
       fail('重述比较列载体（restatement_carrier）必须显式声明比较列角色（prior_period_restated 或 prior_period_comparative_unchanged）。');
@@ -539,7 +537,7 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
       fail(`非数值状态 ${valueState} 的财务单元值须为 null，不得夹带数值。`);
     }
     const scaled = hasNumericValue ? scaleFinancialUnitValue(String(values.value), rowUnit) : null;
-    const identity = { snapshot: input.ref.snapshotId, product: input.ref.productId, record: row.record_ref, mapping: mappingProfile };
+    const identity = { snapshot: input.ref.snapshotId, product: input.ref.productId, record: row.record_ref, mapping: mappingProfile, ...profilePin };
     const key = 'standardized_' + wfdSha256(canonicalWfdJson(identity));
     const result: WfdRecord = {
       ...values,
@@ -597,7 +595,7 @@ export async function projectFinancialFixed(raw: FinancialCalculation, reader: F
   }));
   if (!rows.length || rows.length > 1000) fail('本次固定映射没有合格输出或超过1000条输出预算；未补值或静默截断。');
   const articulation = calculation.articulationCheck === true ? verifyFinancialStatementArticulation(articulationTerms) : undefined;
-  return { jsonBytes: Buffer.from(canonicalWfdJson(rows)), evidence: { version: FINANCIAL_FIXED_VERSION, mappingVersion: mappingProfile,
+  return { jsonBytes: Buffer.from(canonicalWfdJson(rows)), evidence: { version: FINANCIAL_FIXED_VERSION, mappingVersion: mappingProfile, ...profilePin,
     ...(calculation.industryTemplate ? { industryTemplate } : {}),
     operation: calculation.operation, connection, inputs: inputEvidence, outputRows: rows.length, unmapped, lineage,
     historicalQualification: fixed.historyQualification,
