@@ -553,7 +553,7 @@ test('财报录入四行业科目表（cas-primary-statements/2）、单位显�
   assert.equal(bs01.residual, '100000');
   assert.equal(bs01.toleranceRadius, '150000');
 
-  // 4. r1-relation.ts：显式 membership_set:true 的板块完整成分集支持 complete_snapshot，但贸易关系（trade_flow_projection）严禁声称 complete_snapshot
+  // 4. r1-relation.ts：WFD 原生范围内的板块完整成分集支持 complete_snapshot，但贸易关系（trade_flow_projection）严禁声称 complete_snapshot
   const completeThemeDecl = {
     protocol: 'wfd.structured-ingest/1.0',
     mapping: {
@@ -578,7 +578,7 @@ test('财报录入四行业科目表（cas-primary-statements/2）、单位显�
         field_definitions: [{ field_code: 'label', data_type: 'text', measurement_nature: 'relation', time_role: 'validity', unit_code: 'text' }],
       },
       coverage: {
-        scope: { membership_set: true, board_id: 'BK0800' },
+        scope: { business_keys: ['m1'] },
         basis: 'declared_full',
         completeness: 'complete',
         absence_means: 'explicitly_absent',
@@ -586,6 +586,19 @@ test('财报录入四行业科目表（cas-primary-statements/2）、单位显�
     },
   };
   assert.equal(compileR1RelationDeclaration(completeThemeDecl).applicable, true);
+  assert.throws(
+    () => compileR1RelationDeclaration({
+      ...completeThemeDecl,
+      target: {
+        ...completeThemeDecl.target,
+        coverage: {
+          ...completeThemeDecl.target.coverage,
+          scope: { membership_set: true, board_id: 'BK0800' },
+        },
+      },
+    }),
+    { code: 'R1_RELATION_MAPPING' },
+  );
   assert.equal(
     checkR1RelationRows(
       [{ key: 'm1', type: 'member_of_theme', object_kind: 'definition', object_ns: 'eastmoney_board', object_id: 'BK0800', label: 'member', state: 'valid_value' }],

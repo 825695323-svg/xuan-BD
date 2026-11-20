@@ -85,10 +85,9 @@ function read(value: unknown) {
     const validWfdScope = scopeKeys.length > 0 && scopeKeys.every(k => ['product', 'business_keys'].includes(k))
       && (scope.product === undefined || identifier(scope.product))
       && (scope.business_keys === undefined || (Array.isArray(scope.business_keys) && scope.business_keys.length > 0 && scope.business_keys.every(identifier)));
-    const validMembershipScope = scope.membership_set === true;
-    if ((!validWfdScope && !validMembershipScope) || NON_COMPLETE_DOMAINS.has(domain)
+    if (!validWfdScope || NON_COMPLETE_DOMAINS.has(domain)
       || coverage.basis !== 'declared_full' || coverage.completeness !== 'complete' || coverage.absence_means !== 'explicitly_absent') {
-      fail('完整关系快照仅允许显式声明 product/business_keys 或 membership_set:true 的板块或分类成分集（declared_full / complete / explicitly_absent）；贸易缺报或供应链观测不能声称未出现即关系终止。');
+      fail('完整关系快照仅允许使用 WFD 支持的 product/business_keys 作用域，且限可证明完整性的成分集（declared_full / complete / explicitly_absent）；贸易缺报或供应链观测不能声称未出现即关系终止。');
     }
   } else {
     if (target.definitionMode !== 'reuse' || !isWfdRecord(target.definitionRef) || !isWfdRecord(target.revisions)
