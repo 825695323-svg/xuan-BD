@@ -73,6 +73,8 @@ export interface R1SourceDeclaration {
 export interface R1PrepareInput {
   requestId: string; planId: string; outputId: string;
   source: R1SourceDeclaration;
+  /** Optional explicit field-profile evidence. The host validates the profile and any frozen digest. */
+  sourceFieldProfile?: unknown;
   mapping: R1Mapping;
   target: { datasetId: string; outputKey: string; expectedParentSnapshotId: string | null; expectedCommitId?: string;
     subject: Record<string, unknown>; definition: Record<string, unknown>;

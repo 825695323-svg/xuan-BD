@@ -1,6 +1,6 @@
 import { readTranscriptionReviewPacket } from './transcription-review.js';
 import { readOcrReviewPacket } from './ocr-review.js';
-import { mkdirSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { PersonalCore } from '../../modules/agent/runtime/core.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
@@ -424,10 +424,13 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   };
   let r1Configuration: { state: 'ready' | 'not_configured' | 'unavailable'; reason: string | null } =
     { state: 'unavailable', reason: 'materials service not assembled' };
+  // 来源档案与语义登记来自同一宿主配置。旧隔离测试根没有 source-fields，保留未装配入口。
+  const sourceProfileRoot = options.resources ? join(options.resources.path('config'), 'source-fields') : undefined;
+  const hasSourceProfiles = !!sourceProfileRoot && existsSync(sourceProfileRoot);
   if (materials && options.resources) {
     try {
       r1Runtime = createR1HandoffRuntime({ resources: options.resources, database, materials, processing, candidates,
-        connectionId: options.r1ConnectionId, verifyFixedDerived });
+        connectionId: options.r1ConnectionId, verifyFixedDerived, requireG5Admission: hasSourceProfiles || undefined });
       r1Configuration = { state: 'ready', reason: null };
     } catch (error) {
       r1Configuration = { state: 'not_configured',
@@ -435,9 +438,15 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     }
   }
   const r1: R1HandoffService | undefined = r1Runtime?.service ?? (materials ? new R1HandoffService({
-    database, materials, processing, candidates, verifyFixedDerived }) : undefined);
+    database, materials, processing, candidates, verifyFixedDerived, requireG5Admission: hasSourceProfiles }) : undefined);
+  const sourceFieldProfiles = sourceProfileRoot ? new SourceFieldProfileStore(sourceProfileRoot) : undefined;
+  const semanticProducts = options.resources
+    ? new SemanticProductRegistryStore(join(options.resources.path('config'), 'semantic-products.json')) : undefined;
+  const workspaceFieldProfiles = r1Runtime?.connection.profile.mode === 'production' || hasSourceProfiles
+    ? sourceFieldProfiles : undefined;
   const r1Workspace: R1WorkspaceService | undefined = r1 && processing && materials ? new R1WorkspaceService({ database, tasks: currentTasks,
-    handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration }) : undefined;
+    handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration,
+    fieldProfiles: workspaceFieldProfiles, semanticProducts }) : undefined;
   const algorithms = options.configureAlgorithms?.({ database, tasks: currentTasks, permissions, r1Runtime });
   const toolLibrary = options.role === 'service' ? new ToolLibraryService({ algorithms }) : undefined;
   if (algorithms && r1Runtime && r1Workspace && r1) {
@@ -447,11 +456,6 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       runtime: () => r1Runtime, workspace: () => r1Workspace, handoff: r1,
     });
   }
-  // 来源字段档案放在本机配置资源下；未绑定时退回工程外运行根，不读源码树。
-  const sourceFieldProfiles = options.resources
-    ? new SourceFieldProfileStore(join(options.resources.path('config'), 'source-fields')) : undefined;
-  const semanticProducts = options.resources
-    ? new SemanticProductRegistryStore(join(options.resources.path('config'), 'semantic-products.json')) : undefined;
   const r1Auto = options.role === 'service' && r1Workspace && processing && materials
     ? new R1AutoService({ database, tasks: currentTasks, workspace: r1Workspace, processing, materials, adapters: endpointAdapters,
       ...(sourceFieldProfiles ? { fieldProfiles: sourceFieldProfiles } : {}),
@@ -526,7 +530,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     accept: input => acceptWorkspaceMaterial(batchCustody, input) }) : undefined;
   const corrections = r1Runtime && processing && materials && endpointAdapters && r1Auto
     ? new PostPublicationCorrectionService({ database, tasks: currentTasks, runtime: r1Runtime,
-      processing, materials, adapters: endpointAdapters,
+      processing, materials, adapters: endpointAdapters, fieldProfiles: workspaceFieldProfiles, semanticProducts,
       publicationSetEvidence: r1Workspace ? (requestId, value, check) => r1Workspace!.publicationSetEvidence(requestId, value, check) : undefined }) : undefined;
   // 运行时注册可晚于 TaskService 构造：TaskService 持有同一个 registry 引用。
   if (corrections) runtimes.register(corrections.runtime);

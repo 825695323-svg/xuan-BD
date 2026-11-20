@@ -40,6 +40,21 @@ function refs(originalId: string, input = structured(), src = source()): R1Local
 }
 const expectCode = (work: () => unknown, code: string) => assert.throws(work, (error: unknown) => (error as { code?: string }).code === code);
 
+test('enabled G5 gate blocks missing receipts at preparation and before the first send', () => {
+  const database = new CoreDatabase();
+  try {
+    const enabled = new R1HandoffService({ database, processing: reader(), requireG5Admission: true });
+    const legacy = new R1HandoffService({ database, processing: reader(), requireG5Admission: false });
+    const input = structured('g5-missing-receipt');
+    const original = legacy.registerOriginal({ bytes: raw, originalName: 'input.csv', source: source() });
+    const handoff = { structured: input, localRefs: refs(original.originalId, input) };
+    assert.throws(() => enabled.prepare(handoff), { code: 'R1_G5_EVIDENCE_MISMATCH' });
+    assert.throws(() => enabled.attempt(input.requestId), { code: 'R1_ATTEMPT_NOT_FOUND' });
+    legacy.prepare(handoff);
+    assert.throws(() => enabled.assertPublicationReadyToSend(input.requestId), { code: 'R1_G5_EVIDENCE_MISMATCH' });
+  } finally { database.close(); }
+});
+
 test('R1 checks original publication purpose and WFD restriction before prepare and first send', () => {
   const database = new CoreDatabase();
   try {

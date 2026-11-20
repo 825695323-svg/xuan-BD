@@ -66,7 +66,8 @@ export function freezeSourceMinuteBulkPlan(input: SourceMinuteBulkPlanInput): So
   if (sourceFieldProfileDigest(profile) !== input.profile.digest || profileFingerprint(profile) !== input.profile.fingerprint)
     fail('PROFILE', '冻结的来源字段档案摘要与实际声明不一致。');
   if (profile.sourceId !== input.source.source_id || !input.source.provider || !profile.series || profile.adapter
-    || profile.frequency !== 'minute' || timeBucket.timezone !== TIMEZONE || timeBucket.lengthMinutes !== 1
+    || profile.frequency !== 'minute' || timeBucket.kind === 'not_applicable'
+    || timeBucket.timezone !== TIMEZONE || timeBucket.lengthMinutes !== 1
     || timeBucket.labelSemantics !== 'unknown' || timeBucket.interval !== 'unknown' || profile.adjustment.status !== 'unknown'
     || fields.length !== 11 || fields.some(field => field.dataType !== 'text' || !wireCode.test(field.fieldCode)
       || field.unitCode !== (field.role === 'date' ? 'date' : 'not_applicable'))

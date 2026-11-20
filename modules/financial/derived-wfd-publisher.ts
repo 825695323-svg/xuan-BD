@@ -9,6 +9,8 @@ import type { AlgorithmTaskView, AlgorithmData } from './algorithm-types.js';
 import { ALGORITHM_METHODS, isAlgorithmMethodId } from './algorithm-types.js';
 import { checkDerivedForWfd } from './derived-wfd-check.js';
 import { publishRestrictionTarget, restrictionEvidenceFromUsageStatus } from '../collection/wfd-publish-restriction.js';
+import { evaluateR1G5Admission } from '../collection/g5-admission-receipt.js';
+import { r1G5EvidenceRef, r1G5ProductId } from '../collection/r1-g5-admission.js';
 
 /**
  * 固定算法 → 单次独立核对 → R1 data-only 正式入 WFD。
@@ -76,6 +78,14 @@ export class DerivedWfdPublisher {
     return checked;
   }
 
+  private attempt(requestId: string) {
+    try { return this.options.handoff.attempt(requestId); }
+    catch (error) {
+      if (!(error instanceof TaskError) || error.code !== 'R1_ATTEMPT_NOT_FOUND') throw error;
+      return null;
+    }
+  }
+
   async publish(taskId: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const runtime = this.options.runtime(), workspace = this.options.workspace();
@@ -87,11 +97,7 @@ export class DerivedWfdPublisher {
       method: result.methodId, methodVersion: result.methodVersion,
       producer: identity.namespace, connection: identity.connectionId,
     })).slice(0,48);
-    let prior: ReturnType<R1HandoffService['attempt']> | null = null;
-    try { prior = this.options.handoff.attempt(requestId); }
-    catch (error) {
-      if (!(error instanceof TaskError) || error.code !== 'R1_ATTEMPT_NOT_FOUND') throw error;
-    }
+    let prior = this.attempt(requestId);
 
     let refs: R1LocalReferences;
     if (prior) {
@@ -112,19 +118,29 @@ export class DerivedWfdPublisher {
       }, requestId, this.options.readAlgorithmInput(taskId));
       const restriction = await this.requirePublishable(runtime, checked.structured, signal);
       signal?.throwIfAborted();
-      const registered = this.options.handoff.registerOriginal({
-        bytes: checked.originalBytes, originalName: 'derived-' + taskId + '.json',
-        mediaType: 'application/json', source: checked.source,
-      });
-      refs = { originalIds: [registered.originalId], materialIds: [],
-        sourceRefs: [checked.source], processRefs: [],
-        evidenceRefs: [{ ref_id: 'algorithm:' + taskId, content_sha256: checked.sourceSha256,
-          kind: 'fixed-algorithm-output' }],
-        fixedAlgorithm: { taskId, requestId, resultSha256: checked.resultSha256,
-          namespace: identity.namespace, mode: identity.mode,
-          expectedParentSnapshotId: current.snapshotId },
-      };
-      this.options.handoff.prepare({ structured: checked.structured, localRefs: refs }, restriction);
+      const prepared = this.attempt(requestId);
+      if (prepared) {
+        refs = JSON.parse(String(prepared.local_refs_json)) as R1LocalReferences;
+        this.verify(refs, String(prepared.document_sha256));
+      } else {
+        const { datasetId, outputKey, subject, definition } = checked.structured;
+        const admission = evaluateR1G5Admission({ entryPoint: 'derived_wfd_publisher', sourceId: checked.source.source_id,
+          datasetId, outputKey, requestId,
+          evaluatedAtUtc: new Date().toISOString(), targetProductId: r1G5ProductId(datasetId, 'tabular', subject, definition) });
+        const registered = this.options.handoff.registerOriginal({
+          bytes: checked.originalBytes, originalName: 'derived-' + taskId + '.json',
+          mediaType: 'application/json', source: checked.source,
+        });
+        refs = { originalIds: [registered.originalId], materialIds: [],
+          sourceRefs: [checked.source], processRefs: [],
+          evidenceRefs: [{ ref_id: 'algorithm:' + taskId, content_sha256: checked.sourceSha256,
+            kind: 'fixed-algorithm-output' }, r1G5EvidenceRef(admission)],
+          fixedAlgorithm: { taskId, requestId, resultSha256: checked.resultSha256,
+            namespace: identity.namespace, mode: identity.mode,
+            expectedParentSnapshotId: current.snapshotId },
+        };
+        this.options.handoff.prepare({ structured: checked.structured, localRefs: refs }, restriction, [admission]);
+      }
     }
 
     // R1 恢复后可能已经结算；未知外部状态不允许换号重发。

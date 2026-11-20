@@ -11,7 +11,7 @@ import type { JsonValue, TaskRecord, TaskResult } from '../../contracts/task-con
 import { TaskError, type TaskExecutionContext, type TaskInitialBudgetPolicy, type TaskRuntime, type TaskService } from '../../platform/jobs/tasks.js';
 import type { ResourceBindings, ResourceReference } from '../../platform/resources/bindings.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
-import { compileSourceMinuteBulk, freezeSourceMinuteBulkPlan, readSourceMinuteBulkChunk, SOURCE_MINUTE_BULK_LIMITS,
+import { compileSourceMinuteBulk, freezeSourceMinuteBulkPlan, readSourceMinuteBulkChunk, SOURCE_MINUTE_BULK_LIMITS, SOURCE_MINUTE_BULK_VERSION,
   type SourceMinuteBulkManifest, type SourceMinuteBulkPlan } from './data-processing/source-minute-bulk.js';
 import { compileTabularBulk, freezeTabularBulkPlan, readTabularBulkChunk, TABULAR_BULK_LIMITS, TABULAR_BULK_VERSION,
   type TabularBulkManifest, type TabularBulkPlan } from './data-processing/tabular-bulk.js';
@@ -24,7 +24,10 @@ import { declaredSourceSeries } from './r1-evidence.js';
 import type { R1Runtime } from './r1-runtime.js';
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import { R1_WORKSPACE_RUNTIME, type R1WorkspaceService } from './r1-workspace.js';
-import { assertCrossSourceProductAdmission, profileFingerprint, sourceFieldProfileDigest, type SourceFieldProfileStore } from './source-field-profile.js';
+import { profileFingerprint, sourceFieldProfileDigest, type SourceFieldProfile, type SourceFieldProfileStore } from './source-field-profile.js';
+import { evaluateR1G5Admission, verifyG5AdmissionReceiptDigest, type G5AdmissionReceipt } from './g5-admission-receipt.js';
+import { addR1G5Source, assertR1G5Admission, readR1G5TargetHistory, r1G5PeerProfiles, r1G5ProductId,
+  type R1G5HistoryTarget, type R1G5SnapshotHistory } from './r1-g5-admission.js';
 
 export const R1_SOURCE_MINUTE_MODE = 'source_minute_bulk_v1' as const;
 export const R1_TABULAR_BULK_MODE = 'tabular_bulk_v1' as const;
@@ -91,12 +94,13 @@ interface BulkRecord {
   receivedBytes: number; phase: BulkPhase; custodyTaskId: string | null; stageTaskId: string | null; commitTaskId: string | null;
   manifest: BulkManifest | null; stagedChunks: number; checkpoint: WfdRecord | null;
   receipt: WfdRecord | null; proof: WfdRecord | null; rowSummary: R1RowSummary | null;
+  g5AdmissionPending?: true; g5AdmissionReceipt?: G5AdmissionReceipt;
   confirmedDigest: string | null; error: { code: string; message: string } | null; createdAt: number; updatedAt: number;
 }
 interface Options {
   database: CoreDatabase; tasks(): TaskService; materials: MaterialService; store: ManagedOriginalStore;
   resources: ResourceBindings; profileStore: SourceFieldProfileStore; runtime: R1Runtime;
-  processing: Pick<ProcessingPlanService, 'moduleCapability'>; workspace: Pick<R1WorkspaceService, 'snapshotStatus'>;
+  processing: Pick<ProcessingPlanService, 'moduleCapability'>; workspace: Pick<R1WorkspaceService, 'snapshotStatus' | 'discoverG5History'>;
   transport: R1SourceMinuteBulkTransport; tabular?: { profiles: TabularBulkProfileStore; transport: R1TabularBulkTransport };
   commitBudgetPolicy: TaskInitialBudgetPolicy;
 }
@@ -258,13 +262,25 @@ export class R1TabularBulkService {
     const targetIdentity = { connection, requestId: input.intakeId, operatorId, duplicatePolicy: 'append_complete_partition' };
     const base = { source: input.source, namespace: connection.namespace, datasetId: input.datasetId,
       parentSnapshotId: parent.snapshotId, sourceSha256: input.sha256, sourceBytes: input.byteLength };
-    const freeze = this.planFactory(input, series, base, targetIdentity);
+    let freeze;
+    try { freeze = this.planFactory(input, series, base, targetIdentity); }
+    catch (error) {
+      const { history } = readR1G5TargetHistory(this.db, { datasetId: input.datasetId, requestId: input.intakeId });
+      if ([...history.keys()].some(id => id !== input.source.source_id))
+        assertR1G5Admission(this.evaluateG5(input, series, null));
+      throw error;
+    }
     // Validate the frozen source and contract before creating a durable material receipt.
-    freeze('validation');
+    const validation = freeze('validation');
+    const template = validation.version === TABULAR_BULK_VERSION && 'targetTemplate' in validation.profile.profile
+      ? validation.profile.profile.targetTemplate : null;
+    const templateProductId = template ? r1G5ProductId(input.datasetId, 'tabular', { ...template.subject, namespace: connection.namespace },
+      { ...template.definition, definition_authority: connection.namespace }) : undefined;
+    assertR1G5Admission(this.evaluateG5(input, series, validation, templateProductId, template?.outputKey));
     const original = this.options.store.start({ intakeId: input.intakeId, filename: input.name, byteLength: input.byteLength, sha256: input.sha256 });
     const plan = freeze(original.materialId);
     const now = Date.now();
-    const record: BulkRecord = { input, operatorId, connection, binding, generation, plan, stageRef: null,
+    const record: BulkRecord = { input, operatorId, connection, binding, generation, plan, stageRef: null, g5AdmissionPending: true,
       receivedBytes: original.committedOffset, phase: 'receiving', custodyTaskId: null, stageTaskId: null, commitTaskId: null, manifest: null,
       stagedChunks: 0, checkpoint: null, receipt: null, proof: null, rowSummary: null, confirmedDigest: null, error: null, createdAt: now, updatedAt: now };
     this.db.prepare('INSERT INTO r1_source_minute_bulk VALUES(?,?,?,?)').run(input.intakeId, digest, canonicalWfdJson(record), now);
@@ -279,11 +295,6 @@ export class R1TabularBulkService {
       if (!profile || input.sourceValueColumns && (profile.profile.columns.length !== input.sourceValueColumns.length
         || profile.profile.columns.some(column => !input.sourceValueColumns!.includes(column.originalHeader))))
         return fail('PROFILE', '来源与系列须引用已审核的表格档案，显式选列须完整对应档案。');
-      if ('sourceFieldProfile' in profile.profile) {
-        const sourceProfile = profile.profile.sourceFieldProfile.profile;
-        const peers = this.options.profileStore.list().filter(peer => peer.sourceId !== sourceProfile.sourceId && peer.series === series);
-        if (peers.length) assertCrossSourceProductAdmission(sourceProfile, peers);
-      }
       return materialId => freezeTabularBulkPlan({ ...base, profile, materialId, targetIdentity,
         ...(input.partitionValue !== undefined ? { partitionValue: input.partitionValue } : {}) });
     }
@@ -291,12 +302,54 @@ export class R1TabularBulkService {
     if (!profile || profile.series !== series || profile.fields.length !== input.sourceValueColumns.length
       || profile.fields.some(field => !input.sourceValueColumns.includes(field.originalHeader)))
       return fail('PROFILE', '旧批量入口须引用匹配的已采用来源档案和完整原列。');
-    const peers = this.options.profileStore.list().filter(peer => peer.sourceId !== profile.sourceId && peer.series === series);
-    if (peers.length) assertCrossSourceProductAdmission(profile, peers);
     const frozen = { profile, digest: sourceFieldProfileDigest(profile), fingerprint: profileFingerprint(profile) };
     return materialId => freezeSourceMinuteBulkPlan({ ...base, profile: frozen, materialId,
       targetIdentity: { ...targetIdentity, sourceValueColumns: input.sourceValueColumns },
       ...(input.partitionDate ? { partitionDate: input.partitionDate } : {}) });
+  }
+  private evaluateG5(input: BulkInput, series: string, plan: BulkPlan | null, productId?: string, outputKey = input.intakeId,
+    fixed?: { target: R1G5HistoryTarget['target']; snapshotId: string | null; snapshot: R1G5SnapshotHistory | null }) {
+    const { datasetId, source: { source_id: sourceId } } = input, store = this.options.profileStore;
+    const { history } = readR1G5TargetHistory(this.db, { datasetId, productId, requestId: input.intakeId, ...fixed });
+    let profile: SourceFieldProfile | null = null;
+    let registered: SourceFieldProfile[] = [];
+    const sourceReport = plan?.version === SOURCE_MINUTE_BULK_VERSION || plan?.version === TABULAR_BULK_VERSION && 'sourceFieldProfile' in plan.profile.profile;
+    try {
+      if (plan?.version === SOURCE_MINUTE_BULK_VERSION) profile = plan.profile.profile;
+      else if (plan?.version === TABULAR_BULK_VERSION && 'sourceFieldProfile' in plan.profile.profile) profile = plan.profile.profile.sourceFieldProfile.profile;
+      else if (plan) profile = store.match({ sourceId, series });
+      if (sourceReport) registered = store.list().filter(peer => peer.sourceId !== sourceId && peer.series === series);
+    } catch (error) {
+      if (![...history.keys()].some(id => id !== sourceId)) throw error;
+    }
+    for (const peer of registered) addR1G5Source(history, peer.sourceId, peer.series);
+    return evaluateR1G5Admission({ entryPoint: 'r1_minute_bulk', sourceId, targetProductId: productId ?? datasetId,
+      datasetId, outputKey, requestId: input.intakeId,
+      evaluatedAtUtc: new Date().toISOString(), profile, peerSourceIds: [...history.keys()],
+      peerProfiles: r1G5PeerProfiles(history, sourceId, datasetId, store, profile),
+      ...(plan && (sourceReport || !profile) ? { legacySourceOnly: true } : {}) });
+  }
+  private async ensureG5Admission(record: BulkRecord, context: TaskExecutionContext) {
+    this.assertProfile(record);
+    const manifest = record.manifest ?? fail('MANIFEST', '整件加工清单未完成。');
+    const { datasetId, subject, definition, outputKey, expectedParentSnapshotId: snapshotId } = manifest.target;
+    const productId = r1G5ProductId(datasetId, 'tabular', subject, definition);
+    const requestId = record.input.intakeId;
+    if (record.g5AdmissionReceipt === undefined) {
+      if (snapshotId !== record.plan.parentSnapshotId) fail('MANIFEST', '清单的父快照与冻结计划不符。');
+      const target = { kind: 'tabular', subject, definition };
+      const snapshot = await this.options.workspace.discoverG5History(snapshotId, [{ datasetId, productId, target }], context.signal);
+      this.assertCurrent(record, context);
+      this.assertProfile(record);
+      record.g5AdmissionReceipt = this.evaluateG5(record.input, record.plan.profile.profile.series, record.plan, productId, outputKey,
+        { target, snapshotId, snapshot });
+      delete record.g5AdmissionPending;
+      this.save(record);
+    }
+    if (!verifyG5AdmissionReceiptDigest(record.g5AdmissionReceipt, { entryPoint: 'r1_minute_bulk', requestId,
+      target: { datasetId, productId, outputKey }, candidateSource: { sourceId: record.input.source.source_id } }))
+      throw new TaskError('R1_G5_EVIDENCE_MISMATCH', '批量准入回执与冻结请求、目标、来源或入口不符。');
+    assertR1G5Admission(record.g5AdmissionReceipt);
   }
   private assertLegacyIdFree(intakeId: string) {
     const legacy = this.db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='r1_csv_intakes'").get();
@@ -469,7 +522,11 @@ export class R1TabularBulkService {
   private async stage(record: BulkRecord, context: TaskExecutionContext): Promise<TaskResult> {
     const id = record.input.intakeId;
     const current = () => this.assertCurrent(record, context);
-    if (record.phase === 'ready_to_commit') return this.stageResult(record);
+    if (record.phase === 'ready_to_commit') {
+      await this.ensureG5Admission(record, context);
+      current();
+      return this.stageResult(record);
+    }
     if (record.confirmedDigest) return fail('TASK_BINDING', '正式提交已绑定原清单，不能重新暂存。');
     const moduleKinds = ['parse', 'clean', 'structure', 'annotate', 'check'] as const;
     for (const kind of moduleKinds) {
@@ -497,7 +554,8 @@ export class R1TabularBulkService {
       return fail('CUSTODY', custody.error?.message ?? '受管原件尚未取得实际材料回执。');
     const stagingDir = await this.compile(record, context, current);
     const manifest = record.manifest!;
-    this.assertProfile(record);
+    current();
+    await this.ensureG5Admission(record, context);
     const header = this.header(record);
     current(); this.disk();
     record.phase = 'staging'; this.save(record);
@@ -649,7 +707,8 @@ export class R1TabularBulkService {
       if (phase !== 'ready' && !activated && !notActivated)
         fail('RECOVERY_PENDING', 'WFD 尚未确定原正式提交结果，继续保留同一请求。');
       // WFD derives the exact product identity and enforces its usage policy under publication authority.
-      if (!activated) this.assertProfile(record);
+      if (!activated) await this.ensureG5Admission(record, context);
+      current();
       this.disk(0, 'activate');
       record.phase = 'committing'; this.save(record);
       const effectId = 'r1-bulk-commit:' + id;
@@ -657,7 +716,8 @@ export class R1TabularBulkService {
       await context.emit({ type: 'side_effect_started', effectId, description: '向冻结 WFD 连接正式提交整件',
         operation: { requestId: id, manifestDigest: manifest.manifestDigest } });
       current();
-      if (!activated) this.assertProfile(record);
+      if (!activated) await this.ensureG5Admission(record, context);
+      current();
       const finalized = (await this.client.batchFinalize(id, context.signal)).result;
       current();
       const status = this.status(record, finalized);
@@ -693,7 +753,8 @@ export class R1TabularBulkService {
     const proof = { version: this.version(record), intakeId: id, materialId: record.plan.materialId, planDigest: record.plan.digest,
       manifestDigest: manifest.manifestDigest, rowCount: manifest.rowCount, snapshotId: record.receipt!.snapshot_id,
       productId: record.receipt!.product_id, partition: record.receipt!.partition, resultRoot: record.receipt!.result_root,
-      rowsDigest: manifest.rowsDigest, readback };
+      rowsDigest: manifest.rowsDigest, readback,
+      ...(record.g5AdmissionReceipt ? { g5AdmissionReceipt: record.g5AdmissionReceipt } : {}) };
     this.options.database.transaction(() => {
       const previous = this.db.prepare('SELECT proof_digest FROM r1_source_minute_associations WHERE intake_id=?').get(id);
       if (previous && previous.proof_digest !== hash(proof)) fail('ASSOCIATION', '整件已有不同的原关联根。');

@@ -24,6 +24,7 @@ export interface R1RuntimeOptions {
   candidates?: { verifyObject(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): boolean;
     objectBytes(ref: { kind: 'stored-object'; sha256: string; byte_length: number; media_type: string }): Buffer };
   connectionId?: string;
+  requireG5Admission?: boolean;
   verifyFixedDerived?(refs: import('./r1-structured-handoff.js').R1LocalReferences, documentSha256: string): void;
 }
 export interface R1Runtime {
@@ -42,7 +43,8 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
   const connectionOptions = { allowProduction: options.connectionId !== undefined || manualSelection !== undefined };
   const connection = resolveProductMachineConnection(options.resources, selectedConnectionId, connectionOptions);
   const service = new R1HandoffService({ database: options.database, materials: options.materials,
-    processing: options.processing, candidates: options.candidates, verifyFixedDerived: options.verifyFixedDerived });
+    processing: options.processing, candidates: options.candidates, verifyFixedDerived: options.verifyFixedDerived,
+    requireG5Admission: options.requireG5Admission ?? connection.profile.mode === 'production' });
   const client = new WfdStructuredIngestClient(connection.client, connection.schemaPath);
   const initialConfig = JSON.parse(readFileSync(connection.configPath, 'utf8')) as Record<string, unknown>;
   const currentIdentity = (): R1ConnectionIdentity => {

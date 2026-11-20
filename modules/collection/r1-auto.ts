@@ -7,8 +7,10 @@ import { readXlsxTableSelection, type XlsxTableSelection } from './data-processi
 import { DIMENSION_KEYS } from './processing-routing.js';
 import type { OperatorContext, ProcessingDimensionInput, ProcessingPlanInput, ProcessingPlanService, ProcessingStepKind } from './processing-plan.js';
 import { declaredSourceSeries, resolveR1Evidence, type R1EvidenceFact, type R1EvidenceProposal, type R1EvidenceQuestion } from './r1-evidence.js';
-import { assertCrossSourceProductAdmission, profileFingerprint, sourceFieldProfileDigest, type FrozenSourceFieldProfile, type SourceFieldProfileStore,
+import { profileFingerprint, sourceFieldProfileDigest, type FrozenSourceFieldProfile, type SourceFieldProfileStore,
   type SemanticProductRegistryStore } from './source-field-profile.js';
+import { evaluateR1G5Admission, type G5AdmissionReceipt } from './g5-admission-receipt.js';
+import { assertR1G5Admission, readR1G5TargetHistory, r1G5PeerProfiles, type R1G5SnapshotHistory } from './r1-g5-admission.js';
 import { assertKnownR1Source, parseR1Utc } from './r1-structured-handoff.js';
 import type { R1WorkspaceService } from './r1-workspace.js';
 import { parseTableSource } from './candidate-pipeline.js';
@@ -47,6 +49,8 @@ interface AutoRecord {
   calculation?: unknown;
   /** 冻结的来源字段档案：原表头 → 标准字段/类型/单位；请求摘要已含其 digest。 */
   fieldProfile?: FrozenSourceFieldProfile;
+  fieldProfileUnreadable?: true;
+  g5AdmissionReceipt?: G5AdmissionReceipt;
   /** 本请求冻结的已采用适配；后续阶段按同一配置摘要核对，不换版本重放。 */
   adapter?: FrozenAdapterBinding;
   version: typeof R1_AUTO_VERSION; input: R1AutoStartInput; inputSha256: string; materialSha256: string;
@@ -122,8 +126,10 @@ export class R1AutoService {
       }
       return this.get(input.requestId);
     }
-    const fieldProfile = this.options.fieldProfiles?.match({ sourceId: input.source.source_id,
-      series: declaredSourceSeries(input.source) }) ?? null;
+    let fieldProfile = null, fieldProfileUnreadable = false;
+    try { fieldProfile = this.options.fieldProfiles?.match({ sourceId: input.source.source_id,
+      series: declaredSourceSeries(input.source) }) ?? null; }
+    catch { fieldProfileUnreadable = true; }
     const frozenProfile = fieldProfile
       ? { profile: fieldProfile, digest: sourceFieldProfileDigest(fieldProfile), fingerprint: profileFingerprint(fieldProfile) }
       : undefined;
@@ -136,7 +142,10 @@ export class R1AutoService {
         && ((peer.series !== '' && peer.series === fieldProfile!.series)
           || this.options.semanticProducts?.datasetFor(profileFingerprint(peer)) === input.datasetId));
       if (peerProfiles.length) {
-        assertCrossSourceProductAdmission(fieldProfile!, peerProfiles);
+        assertR1G5Admission(evaluateR1G5Admission({ entryPoint: 'r1_auto', sourceId: input.source.source_id,
+          datasetId: input.datasetId, outputKey: input.datasetId, requestId: input.requestId,
+          targetProductId: input.datasetId, evaluatedAtUtc: new Date().toISOString(), profile: fieldProfile,
+          peerSourceIds: peerProfiles.map(peer => peer.sourceId), peerProfiles }));
       }
     }
     const payload = { input, ...(frozenProfile ? { sourceFieldProfileSha256: frozenProfile.digest } : {}) };
@@ -169,7 +178,9 @@ export class R1AutoService {
     if (material.envelope.sha256 !== original.sha256) fail('R1_AUTO_MATERIAL_CHANGED', '原材料与保管摘要不同，未开始自动交接。');
     if (input.priorRequestId) this.assertPrior(input, connection, original.sha256, original.bytes.length);
     const now = Date.now();
-    const record: AutoRecord = { ...(frozenProfile ? { fieldProfile: frozenProfile } : {}), ...(adapter ? { adapter } : {}), ...(selectedKeyReplacement ? { selectedKeyReplacement: true } : {}), version: R1_AUTO_VERSION, input, inputSha256: digest, materialSha256: original.sha256,
+    const record: AutoRecord = { ...(frozenProfile ? { fieldProfile: frozenProfile } : {}),
+      ...(fieldProfileUnreadable ? { fieldProfileUnreadable: true } : {}),
+      ...(adapter ? { adapter } : {}), ...(selectedKeyReplacement ? { selectedKeyReplacement: true } : {}), version: R1_AUTO_VERSION, input, inputSha256: digest, materialSha256: original.sha256,
       connection, controlGeneration: this.tasks.getControl().generation, operator: { ...operator, requestId: input.requestId },
       state: 'inspecting', answers: {}, questions: [], evidence: [], snapshot: null, catalog: null, revisions: [], definitionReview: null,
       localReturn: null, wfdRejection: input.priorRequestId ? this.options.workspace.get(input.priorRequestId).error : null,
@@ -311,7 +322,7 @@ export class R1AutoService {
         datasetId: item.input.datasetId, subject: proposal.target.subject, semanticCode: String(proposal.target.definition.semantic_code),
         fieldCodes: proposal.mapping.fields.map(field => field.fieldCode) });
       this.assertActive(item); this.save(item);
-      this.selectDefinition(item, proposal);
+      await this.selectDefinition(item, proposal);
       if (item.questions.length) { item.state = 'awaiting_answers'; this.save(item); return; }
       this.checkUnits(item, proposal);
       if (item.input.priorRequestId) {
@@ -372,7 +383,9 @@ export class R1AutoService {
     const handoffId = revision.handoffRequestId ?? this.phaseId(item, 'handoff');
     this.assertActive(item);
     const request = await this.options.workspace.prepareWithRestriction({ requestId: handoffId, planId: revision.planId, outputId: 'observations',
-      source: item.input.source, target: revision.proposal.target, mapping: revision.proposal.mapping });
+      ...(item.fieldProfile ? { sourceFieldProfile: item.fieldProfile } : {}),
+      source: item.input.source, target: revision.proposal.target, mapping: revision.proposal.mapping }, undefined,
+    history => this.assertProductSources(item, revision.proposal, history, handoffId));
     revision.handoffRequestId = handoffId;
     if (!request.submitTaskId) {
       item.state = 'submitting'; this.save(item); this.assertActive(item);
@@ -429,7 +442,7 @@ export class R1AutoService {
     return resolved;
   }
 
-  private selectDefinition(item: AutoRecord, proposal: R1EvidenceProposal): void {
+  private async selectDefinition(item: AutoRecord, proposal: R1EvidenceProposal): Promise<void> {
     const definition = proposal.target.definition;
     const product = item.catalog?.latest;
     const review = item.definitionReview ?? fail('R1_AUTO_REVIEW_MISSING', '没有 WFD 实际契约预检回执，未自动登记定义。');
@@ -442,10 +455,16 @@ export class R1AutoService {
       message: review.code === 'FAMILY_DEFINITION_REQUIRED' ? 'WFD 实际契约预检退回：固定目录没有此产品族；BD 按本次原材料证据登记定义后交接。'
         : 'WFD 实际契约预检退回：既有定义未覆盖本次明确字段；BD 按原件证据修订定义后交接。',
       scope: 'catalog', snapshotId: review.snapshotId, productIds: review.productIds, machineRequestId: review.machineRequestId };
+    const { target } = proposal;
+    const history = await this.options.workspace.discoverG5History(target.expectedParentSnapshotId, [{
+      datasetId: item.input.datasetId, productId: product ? String(product.product_id) : undefined,
+      target: { kind: 'tabular', subject: target.subject, definition },
+    }]);
+    this.assertActive(item);
+    this.assertProductSources(item, proposal, history);
     if (!product) {
       item.definitionAction = 'create_from_evidence'; return;
     }
-    this.assertProductSources(item, product);
     const old = publicDefinition(product.declaration as WfdRecord), proposed = publicDefinition(definition);
     item.evidence.push({ key: 'definition_predecessor', value: canonicalWfdJson({ productId: product.product_id,
       definitionRef: product.definition_ref, snapshotId: item.snapshot!.snapshotId }), origin: 'contract' });
@@ -473,46 +492,27 @@ export class R1AutoService {
     item.evidence.push({ key, value: item.answers[key], origin: 'operator' }); item.definitionAction = 'evolve_explicit_revision';
   }
 
-  private assertProductSources(item: AutoRecord, product: WfdRecord): void {
-    const currentSourceId = item.input.source.source_id;
-    const associations = this.db.prepare(`SELECT DISTINCT a.source_id, o.source_json FROM r1_record_associations a
-      LEFT JOIN r1_originals o ON o.original_id=a.original_id
-      WHERE a.dataset_id=? AND a.product_id=?`)
-      .all(item.input.datasetId, String(product.product_id));
-    const sourceSeries = new Map<string, Set<string | undefined>>();
-    for (const row of associations) {
-      const sourceId = row.source_id;
-      if (typeof sourceId !== 'string' || !sourceId.trim()) continue;
-      const source = typeof row.source_json === 'string' ? JSON.parse(row.source_json) as R1SourceDeclaration : undefined;
-      const series = sourceSeries.get(sourceId) ?? new Set();
-      series.add(declaredSourceSeries(source));
-      sourceSeries.set(sourceId, series);
-    }
-    const admission = isWfdRecord(product.source_admission) ? product.source_admission : {};
-    for (const published of [product.published_source_ids, admission.source_ids]) {
-      if (!Array.isArray(published)) continue;
-      for (const sourceId of published) {
-        if (typeof sourceId === 'string' && sourceId.trim() && !sourceSeries.has(sourceId))
-          sourceSeries.set(sourceId, new Set([undefined]));
-      }
-    }
-    if (!sourceSeries.size) fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED',
-      `无法核实既有产品 ${String(product.product_id)} 的来源身份，需要本地关联或 WFD 来源证据。`);
-    sourceSeries.delete(currentSourceId);
-    if (!sourceSeries.size) return;
-    const candidate = item.fieldProfile?.profile ?? fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED',
-      `来源 ${currentSourceId} 缺少已核实的字段档案，不能写入其他来源已关联或发布的产品 ${String(product.product_id)}。`);
-    const peers = [...sourceSeries].flatMap(([sourceId, seriesNames]) => [...seriesNames].map(series => {
-      const profile = this.options.fieldProfiles?.match({ sourceId, series });
-      if (profile) return profile;
-      const registered = series === undefined ? (this.options.fieldProfiles?.list() ?? []).filter(peer =>
-        peer.sourceId === sourceId && ((peer.series !== '' && peer.series === candidate.series)
-          || this.options.semanticProducts?.datasetFor(profileFingerprint(peer)) === item.input.datasetId)) : [];
-      if (registered.length === 1) return registered[0]!;
-      return fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED',
-        `产品 ${String(product.product_id)} 的既有来源 ${sourceId} 缺少可唯一核实的字段档案${series ? `（系列 ${series}）` : ''}。`);
-    }));
-    assertCrossSourceProductAdmission(candidate, peers);
+  private assertProductSources(item: AutoRecord, proposal: R1EvidenceProposal, snapshot: R1G5SnapshotHistory | null,
+    requestId = item.input.requestId): G5AdmissionReceipt {
+    const { datasetId, source } = item.input;
+    const sourceId = source.source_id, profile = item.fieldProfile?.profile;
+    const { target } = proposal;
+    const product = item.catalog?.latest;
+    const { history, productId: targetProductId } = readR1G5TargetHistory(this.db, {
+      datasetId, requestId: item.input.requestId, productId: product ? String(product.product_id) : undefined,
+      snapshotId: target.expectedParentSnapshotId, snapshot,
+      target: { kind: 'tabular', subject: target.subject, definition: target.definition },
+    });
+    if (!targetProductId) fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', '无法核实自动交接的目标产品。');
+    const receipt = evaluateR1G5Admission({ entryPoint: 'r1_auto', sourceId, targetProductId,
+      datasetId, outputKey: target.outputKey, requestId,
+      evaluatedAtUtc: new Date().toISOString(), profile, peerSourceIds: [...history.keys()],
+      peerProfiles: r1G5PeerProfiles(history, sourceId, datasetId, this.options.fieldProfiles, profile, this.options.semanticProducts),
+      ...(item.fieldProfileUnreadable ? {} : { legacySourceOnly: true }) });
+    item.g5AdmissionReceipt = receipt;
+    this.save(item);
+    assertR1G5Admission(receipt);
+    return receipt;
   }
 
   private checkUnits(item: AutoRecord, proposal: R1EvidenceProposal): void {

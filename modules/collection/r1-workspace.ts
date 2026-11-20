@@ -18,6 +18,11 @@ import { checkR1MappedRows, compileR1EventDeclaration, compileR1MappedDeclaratio
 import { R1ProductReader } from './r1-product-reader.js';
 import { publishRestrictionTarget, restrictionEvidenceFromUsageStatus, type PublishRestrictionTarget } from './wfd-publish-restriction.js';
 import type { RestrictionEvidence } from './purpose-eligibility.js';
+import { evaluatePublicationSetG5Admission, evaluateR1G5Admission, type G5AdmissionReceipt, type PublicationSetG5AdmissionMember } from './g5-admission-receipt.js';
+import { assertR1G5Admission, readR1G5PredecessorAssociations, readR1G5SnapshotHistory, readR1G5TargetHistory, readR1G5Profile,
+  r1G5EvidenceRef, r1G5PeerProfiles, r1G5PredecessorProducts, type R1G5HistoryTarget, type R1G5SnapshotHistory } from './r1-g5-admission.js';
+import { declaredSourceSeries } from './r1-evidence.js';
+import { sourceFieldProfileDigest, type SemanticProductRegistryStore, type SourceFieldProfileStore } from './source-field-profile.js';
 
 export const R1_WORKSPACE_RUNTIME = 'bd.r1-structured-ingest';
 export const R1_WORKSPACE_VERSION = 'bd.r1-workspace/1';
@@ -43,6 +48,7 @@ export class R1WorkspaceService {
   }
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService; handoff: R1HandoffService;
     processing: ProcessingPlanService; materials: MaterialService; runtime?: R1Runtime;
+    fieldProfiles?: SourceFieldProfileStore; semanticProducts?: SemanticProductRegistryStore;
     configuration: { state: string; reason: string | null } }) {
     this.reader = new R1ProductReader({ runtime: () => this.requireRuntime(), control: () => this.tasks.getControl() });
     options.database.migrate('r1-workspace', 1, `CREATE TABLE r1_workspace_requests (
@@ -85,6 +91,12 @@ export class R1WorkspaceService {
   }
   snapshotStatus(signal?: AbortSignal) { return this.reader.snapshotStatus(signal); }
   discoverProducts(value: unknown, signal?: AbortSignal) { return this.reader.discoverProducts(value, signal); }
+  async discoverG5History(snapshotId: string | null, targets: readonly R1G5HistoryTarget[], signal?: AbortSignal) {
+    if (snapshotId === null) return null;
+    const runtime = this.requireRuntime();
+    return readR1G5SnapshotHistory(snapshotId, targets, wait => this.discoverProducts({ snapshotId }, wait),
+      async (productId, wait) => (await runtime.client.fixedReadHistory(snapshotId, productId, wait)).result, signal);
+  }
   checkProductCoverage(value: unknown, signal?: AbortSignal) { return checkR1ProductCoverage(value, (input, wait) => this.reader.readProduct(input, wait), signal); }
   outputDependencies(requestId: string, value: unknown, checkAccess: () => void, signal?: AbortSignal, mode: 'output' | 'fixed_rows' = 'output') {
     return readOutputDependencies(requestId, value, { ...this.options,
@@ -144,7 +156,8 @@ export class R1WorkspaceService {
   }
 
   /** 统一异步限制 verifier：prepare 与 auto/Polars 共用同一实际 WFD usage_status 检查。 */
-  async prepareWithRestriction(value: unknown, signal?: AbortSignal): Promise<R1RequestView> {
+  async prepareWithRestriction(value: unknown, signal?: AbortSignal,
+    autoAdmission?: (history: R1G5SnapshotHistory | null) => G5AdmissionReceipt): Promise<R1RequestView> {
     signal?.throwIfAborted();
     if (isWfdRecord(value) && value.kind === 'publication_set') return this.prepareSetWithRestriction(value, signal);
     const input = readInput(value), runtime = this.requireRuntime(); this.assertDispatch();
@@ -159,19 +172,22 @@ export class R1WorkspaceService {
       if (snapshot.jointCommitId !== input.target.expectedCommitId || snapshot.snapshotId !== input.target.expectedParentSnapshotId) fail('R1_SET_PARENT_CHANGED', 'joint 基线改变，未自动补新令牌。');
     }
     await this.options.processing.verifyMediaClaims(input.planId, input.outputId);
+    const output = this.prepareOutput(input, runtime);
+    const history = autoAdmission || output.requiresG5
+      ? await this.discoverG5History(input.target.expectedParentSnapshotId, [this.g5Target(input, output.targetKind)], signal) : null;
     signal?.throwIfAborted();
     this.assertDispatch();
     if (generation !== this.tasks.getControl().generation) fail('TASK_NOT_ACTIVE', '核对期间停止代次已改变，未准备交接。');
     if (canonicalWfdJson(connection) !== canonicalWfdJson(runtime.currentIdentity()))
       fail('R1_CONNECTION_BINDING_CHANGED', '限制核对期间连接发生变化，未准备交接。');
-    return this.prepareInternal(input, runtime, restriction);
+    return this.prepareInternal(input, runtime, restriction, { output, history, autoAdmission });
   }
 
   private async verifyCorrection(input: R1PrepareInput, runtime: ReturnType<R1WorkspaceService['requireRuntime']>, signal?: AbortSignal): Promise<void> {
     if (input.target.inputMode !== 'source_correction') return;
     readCorrection(input.target);
     const target = input.target, frozen = this.options.processing.get(input.planId).outputs.find(output => output.outputId === input.outputId)?.target;
-    if (canonicalWfdJson(frozen?.declaration) !== canonicalWfdJson({ protocol: 'wfd.structured-ingest/1.0', source: input.source, target, mapping: input.mapping })) fail('R1_TARGET_CHANGED', '修订目标与冻结加工合同不同。');
+    if (canonicalWfdJson(r1DeclarationEvidence(frozen?.declaration).declaration) !== canonicalWfdJson({ protocol: 'wfd.structured-ingest/1.0', source: input.source, target, mapping: input.mapping })) fail('R1_TARGET_CHANGED', '修订目标与冻结加工合同不同。');
     const event = 'kind' in input.mapping && input.mapping.kind === 'event_records';
     const relation = 'kind' in input.mapping && input.mapping.kind === 'relation_edges';
     const rowKey = event ? 'event_id' : 'business_key';
@@ -289,7 +305,8 @@ export class R1WorkspaceService {
       const declaration = output.target?.declaration;
       if (!isWfdRecord(declaration) || declaration.protocol !== 'wfd.structured-ingest/1.0'
         || !isWfdRecord(declaration.source)) fail('R1_SET_SOURCE', '集合成员缺少冻结来源声明，不能取第一来源补齐。');
-      return readInput({ requestId, planId, outputId, source: declaration.source, mapping: declaration.mapping, target: declaration.target });
+      return readInput({ requestId, planId, outputId, source: declaration.source, mapping: declaration.mapping, target: declaration.target,
+        ...(Object.hasOwn(declaration, 'sourceFieldProfile') ? { sourceFieldProfile: declaration.sourceFieldProfile } : {}) });
     });
     if (inputs.some(input => input.target.inputMode === 'source_correction')) fail('R1_SET_CORRECTION_UNSUPPORTED', '首批来源修订仅支持单输出固定前驱核对，不在集合中跳过核对。');
     const first = inputs[0]!;
@@ -322,6 +339,11 @@ export class R1WorkspaceService {
       plan.outputs.find(output => output.outputId === member.outputId), runtime, signal);
     const snapshot = await this.snapshotStatus(signal);
     if (snapshot.snapshotId !== inputs[0]!.target.expectedParentSnapshotId || snapshot.jointCommitId !== inputs[0]!.target.expectedCommitId) fail('R1_SET_PARENT_CHANGED', 'WFD 基线变化，需重新修订并确认，不能自动换父快照。');
+    const members = inputs.map(member => this.prepareOutput(member, runtime, true));
+    const requiresG5 = members.some(member => member.requiresG5);
+    const history = requiresG5
+      ? await this.discoverG5History(snapshot.snapshotId, members.map((member, index) => this.g5Target(inputs[index]!, member.targetKind)), signal)
+      : null;
     signal?.throwIfAborted(); this.assertDispatch();
     if (generation !== this.tasks.getControl().generation || canonicalWfdJson(identity) !== canonicalWfdJson(runtime.currentIdentity()))
       fail('R1_CONNECTION_BINDING_CHANGED', '集合核对期间运行代次或连接变化，未准备提交。');
@@ -332,7 +354,6 @@ export class R1WorkspaceService {
       if (concurrentlyAccepted.recipe_sha256 !== recipeDigest) fail('R1_REQUEST_CONFLICT', '并发集合请求的计划或成员不同。');
       return this.get(input.requestId);
     }
-    const members = inputs.map(member => this.prepareOutput(member, runtime, true));
     const first = members[0]!.structured;
     const structured: R1StructuredRequest = { ...first, duplicatePolicy: undefined,
       consistencyGroups: { [input.setId]: members.map(member => member.structured.outputKey) },
@@ -346,16 +367,21 @@ export class R1WorkspaceService {
       fail('R1_WEB_BUDGET', '整组文档或总行数超过既有 Web 预算，未截断或分组重投。');
     validateStructuredDocument(document, runtime.connection.schemaPath);
     const outputs: Record<string, R1LocalReferences> = Object.create(null), documentSha256 = wfdSha256(documentText);
-    for (const member of members) outputs[member.structured.outputKey] = { ...member.localRefs,
-      processRefs: member.localRefs.processRefs.map(ref => ({ ...ref, document_sha256: documentSha256 })) };
-    const refs = Object.keys(outputs).sort().map(key => outputs[key]!);
-    const localRefs: R1LocalReferences = { publicationSetId: input.setId, outputs, contractBindingRequired: true,
-      ...(inputs[0]!.target.expectedCommitId !== undefined ? { expectedCommitId: inputs[0]!.target.expectedCommitId } : {}),
-      originalIds: refs.flatMap(ref => ref.originalIds), materialIds: refs.flatMap(ref => ref.materialIds),
-      sourceRefs: refs.flatMap(ref => ref.sourceRefs), processRefs: refs.flatMap(ref => ref.processRefs), evidenceRefs: refs.flatMap(ref => ref.evidenceRefs) };
     const binding = canonicalWfdJson(identity);
     this.options.database.transaction(() => {
-      this.options.handoff.prepare({ structured, localRefs }, { outputRestrictions });
+      const evaluatedAtUtc = new Date().toISOString();
+      const admission = requiresG5
+        ? evaluatePublicationSetG5Admission(members.map((member, index) =>
+          this.g5Input(inputs[index]!, member, evaluatedAtUtc, history))) : null;
+      if (admission && !admission.allowed) assertR1G5Admission(admission.receipts.find(receipt => !receipt.allowed)!);
+      for (const [index, member] of members.entries())
+        outputs[member.structured.outputKey] = member.localRefs(documentSha256, admission?.receipts[index]);
+      const refs = Object.keys(outputs).sort().map(key => outputs[key]!);
+      const localRefs: R1LocalReferences = { publicationSetId: input.setId, outputs, contractBindingRequired: true,
+        ...(inputs[0]!.target.expectedCommitId !== undefined ? { expectedCommitId: inputs[0]!.target.expectedCommitId } : {}),
+        originalIds: refs.flatMap(ref => ref.originalIds), materialIds: refs.flatMap(ref => ref.materialIds),
+        sourceRefs: refs.flatMap(ref => ref.sourceRefs), processRefs: refs.flatMap(ref => ref.processRefs), evidenceRefs: refs.flatMap(ref => ref.evidenceRefs) };
+      this.options.handoff.prepare({ structured, localRefs }, { outputRestrictions }, admission?.receipts);
       this.db.prepare('INSERT INTO r1_workspace_requests VALUES(?,?,?,?,?,?,NULL,?)').run(input.requestId, binding,
         wfdSha256(binding), recipeDigest, input.planId, input.setId, Date.now());
     });
@@ -363,7 +389,8 @@ export class R1WorkspaceService {
   }
 
   private prepareInternal(input: R1PrepareInput, runtime: ReturnType<R1WorkspaceService['requireRuntime']>,
-    restriction: RestrictionEvidence | null): R1RequestView {
+    restriction: RestrictionEvidence | null, checked?: { output: ReturnType<R1WorkspaceService['prepareOutput']>;
+      history: R1G5SnapshotHistory | null; autoAdmission?: (history: R1G5SnapshotHistory | null) => G5AdmissionReceipt }): R1RequestView {
     const identity = runtime.currentIdentity();
     const previous = this.row(input.requestId), recipeDigest = wfdSha256(canonicalWfdJson(input));
     if (previous) {
@@ -373,14 +400,60 @@ export class R1WorkspaceService {
     }
     // Pre-workspace/legacy requests are never silently adopted under today's data-only profile.
     if (this.db.prepare('SELECT request_id FROM r1_handoff_attempts WHERE request_id=?').get(input.requestId)) fail('R1_LEGACY_REQUEST', '该请求没有本流程的冻结连接记录；只保留原身份核对，不采用当前 profile 重放。');
-    const { structured, localRefs } = this.prepareOutput(input, runtime);
+    const output = checked?.output ?? this.prepareOutput(input, runtime), { structured } = output;
     const bindingJson = canonicalWfdJson(identity);
     this.options.database.transaction(() => {
-      this.options.handoff.prepare({ structured, localRefs }, restriction);
+      if (input.target.inputMode === 'source_correction') {
+        for (const { previous } of Object.values(input.target.revisions!))
+          readR1G5PredecessorAssociations(this.db, { datasetId: input.target.datasetId, productId: previous.product_id,
+            recordId: previous.logical_key, recordVersion: previous.revision_id });
+      }
+      let receipt = checked?.autoAdmission?.(checked.history);
+      if (!receipt && output.requiresG5) {
+        const { targetKind: kind, ...admission } = this.g5Input(input, output, new Date().toISOString(), checked?.history);
+        receipt = input.target.inputMode === 'source_correction'
+          ? evaluateR1G5Admission({ ...admission, entryPoint: 'post_publication_correction', correctionKind: 'source_correction' })
+          : evaluateR1G5Admission({ ...admission, entryPoint: kind === 'event_records' ? 'r1_workspace_event'
+            : kind === 'relation_edges' ? 'r1_workspace_relation' : 'r1_workspace_tabular' });
+      }
+      if (receipt) assertR1G5Admission(receipt);
+      this.options.handoff.prepare({ structured, localRefs: output.localRefs(output.documentSha256, receipt) }, restriction, receipt ? [receipt] : []);
       this.db.prepare('INSERT INTO r1_workspace_requests VALUES(?,?,?,?,?,?,NULL,?)').run(input.requestId, bindingJson,
         wfdSha256(bindingJson), recipeDigest, input.planId, input.outputId, Date.now());
     });
     return this.get(input.requestId);
+  }
+
+  private g5Target(input: R1PrepareInput, kind: string): R1G5HistoryTarget {
+    const { target } = input;
+    const predecessors = r1G5PredecessorProducts(target);
+    if (predecessors.length > 1) fail('R1_CORRECTION_TARGET', '单个修订输出须绑定同一个前驱产品。');
+    return { datasetId: target.datasetId, productId: predecessors[0],
+      target: { kind, subject: target.subject, definition: target.definition } };
+  }
+
+  private g5Input(input: R1PrepareInput, output: ReturnType<R1WorkspaceService['prepareOutput']>,
+    evaluatedAtUtc: string, snapshot?: R1G5SnapshotHistory | null): PublicationSetG5AdmissionMember {
+    const { source, target } = input, sourceId = source.source_id;
+    const { targetKind: kind, profile, preservePropagation, structured } = output;
+    const selection = this.g5Target(input, kind);
+    const { history, productId: targetProductId } = readR1G5TargetHistory(this.db, {
+      ...selection, requestId: input.requestId, snapshotId: target.expectedParentSnapshotId, snapshot,
+    });
+    if (!targetProductId) fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', '目标产品的历史来源身份无法核全。');
+    if (preservePropagation) {
+      const keys = (structured.payload.rows as WfdRecord[]).map(row => row.event_id);
+      const collision = this.db.prepare(`SELECT record_id FROM r1_record_associations
+        WHERE dataset_id=? AND product_id=? AND source_id<>? AND record_id IN (SELECT value FROM json_each(?)) LIMIT 1`)
+        .get(target.datasetId, targetProductId, sourceId, canonicalWfdJson(keys));
+      if (collision) fail('R1_EVENT_PROPAGATION_COLLISION', '同一产品的事件键已关联其他来源，须提供独立传播身份：' + String(collision.record_id));
+      if (target.inputMode === 'complete_snapshot' && history.size)
+        fail('R1_EVENT_PROPAGATION_COLLISION', '完整快照无法保留已有或未核全的传播记录，须使用独立事件键逐条追加。');
+    }
+    const peerProfiles = preservePropagation && !selection.productId ? []
+      : r1G5PeerProfiles(history, sourceId, target.datasetId, this.options.fieldProfiles, profile, this.options.semanticProducts);
+    return { sourceId, targetProductId, targetKind: kind, datasetId: target.datasetId, outputKey: target.outputKey,
+      requestId: input.requestId, evaluatedAtUtc, profile, peerSourceIds: [...history.keys()], peerProfiles };
   }
 
   /** Shared single-member validation; set preparation never creates member tasks or member requests. */
@@ -395,7 +468,8 @@ export class R1WorkspaceService {
     const tabular = event || relation || 'kind' in input.mapping && input.mapping.kind === 'tabular_rows';
     const declaration = { protocol: 'wfd.structured-ingest/1.0', target: input.target, mapping: input.mapping,
       ...(tabular ? { source: input.source } : {}) };
-    if (canonicalWfdJson(fixedOutput.target?.declaration ?? null) !== canonicalWfdJson(declaration)
+    const frozenEvidence = r1DeclarationEvidence(fixedOutput.target?.declaration);
+    if (canonicalWfdJson(frozenEvidence.declaration ?? null) !== canonicalWfdJson(declaration)
       || (fixedOutput.target?.expectedSnapshotId ?? null) !== input.target.expectedParentSnapshotId) fail('R1_TARGET_CHANGED', '目标合同、映射或父快照与加工计划冻结声明不同；请修订计划，不改写旧计划。');
     const output = this.options.processing.candidateOutput(input.planId, input.outputId);
     if (output.materialIds.length !== 1) fail('R1_MULTI_SOURCE_UNSUPPORTED', '当前 Web 切片只支持单材料输出；不把多来源压成 first。');
@@ -406,12 +480,50 @@ export class R1WorkspaceService {
     let parsed: unknown;
     try { parsed = JSON.parse(actual.bytes.toString('utf8')); } catch { fail('R1_PROCESS_OUTPUT_FORMAT', '加工产物不是有效 JSON。'); }
     if (!isWfdRecord(parsed) || !Array.isArray(parsed.rows)) fail('R1_PROCESS_OUTPUT_FORMAT', '加工产物没有真实 rows。');
+    const sourceId = input.source.source_id;
+    const frozenProfiles = [frozenEvidence.sourceFieldProfile, parsed.sourceFieldProfile,
+      isWfdRecord(parsed.evidence) ? parsed.evidence.sourceFieldProfile : undefined]
+      .filter(value => value !== undefined).map(value => readR1G5Profile(value, sourceId));
+    const frozenProfile = frozenProfiles[0];
+    const requestedProfile = input.sourceFieldProfile === undefined ? undefined : readR1G5Profile(input.sourceFieldProfile, sourceId);
+    if (frozenProfile && [...frozenProfiles.slice(1), ...(requestedProfile ? [requestedProfile] : [])]
+      .some(profile => sourceFieldProfileDigest(profile) !== sourceFieldProfileDigest(frozenProfile)))
+      fail('R1_G5_PROFILE_CHANGED', '请求与冻结加工证据携带的来源字段档案摘要不同。');
+    let adoptedProfile = null;
+    if (requestedProfile && !frozenProfile && !this.options.fieldProfiles)
+      fail('R1_G5_PROFILE_CHANGED', '请求中的来源字段档案缺少宿主采用记录和冻结加工证据。');
+    if (!frozenProfile && this.options.fieldProfiles) {
+      try { adoptedProfile = this.options.fieldProfiles.match({ sourceId, series: declaredSourceSeries(input.source) }); }
+      catch { /* G5 拒绝无法核实的档案。 */ }
+      if (requestedProfile && (!adoptedProfile || sourceFieldProfileDigest(requestedProfile) !== sourceFieldProfileDigest(adoptedProfile)))
+        fail('R1_G5_PROFILE_CHANGED', '请求中的来源字段档案摘要与宿主当前采用档案不同。');
+    }
+    const profile = frozenProfile ?? adoptedProfile;
+    const requiresG5 = !!this.options.fieldProfiles || profile !== null;
+    const scope = profile?.domainScope;
+    const mapping = input.mapping;
+    if (profile && 'kind' in mapping && mapping.kind === 'event_records'
+      && (scope?.domain !== 'event_claim' || scope.eventSemantics?.contentNature !== mapping.contentNature))
+      fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', '事件字段档案须声明 event_claim，且 contentNature 与冻结映射一致。');
+    if (profile && 'kind' in mapping && mapping.kind === 'relation_edges') {
+      if (scope?.domain !== 'relation_claim')
+        fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', '关系字段档案须声明 relation_claim。');
+      if (scope.effectivePeriodPolicy === 'explicit_range' && mapping.effectivePeriod.status !== 'known')
+        fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', '关系字段档案声明 explicit_range，冻结映射须提供已知有效期。');
+    }
+    const preservePropagation = event && scope?.domain === 'event_claim'
+      && scope.eventSemantics?.occurrencePolicy === 'preserve_distinct_propagation';
     const checked = tabular ? checkR1MappedRows(parsed.rows, declaration) : null;
     if (checked && checked.quality !== 'pass') fail('R1_TABULAR_SEMANTICS', checked.gaps.join('；'));
     const rows = checked ? checked.rows : scalarRows(parsed.rows, input.mapping as R1ScalarMapping, input.target.inputMode === 'partial_observation');
+    if (preservePropagation && new Set(rows.map(row => (row as WfdRecord).event_id)).size !== rows.length)
+      fail('R1_EVENT_PROPAGATION_COLLISION', '实际事件行的 event_id 重复，无法区分独立传播。');
     if (input.target.inputMode === 'source_correction' && canonicalWfdJson(Object.keys(input.target.revisions!).sort()) !== canonicalWfdJson(rows.map(row => String((row as WfdRecord)[event ? 'event_id' : 'business_key'])).sort())) fail('R1_CORRECTION_KEYS', '修订前驱必须精确覆盖全部实际记录键。');
     const structured: R1StructuredRequest = { ...input.target, namespace: identity.namespace, producerNamespace: identity.namespace,
-      requestId: input.requestId, ...(input.target.inputMode === 'partial_observation' ? { duplicatePolicy: 'skip_identical_append' as const } : {}), submissionDigest: 'sha256:' + '0'.repeat(64), payload: { kind: relation ? 'relation_edges' : event ? 'event_records' : tabular ? 'tabular_rows' : 'scalar_rows', rows } };
+      requestId: input.requestId,
+      // WFD 的严格追加会拒绝既有逻辑键，包括宿主没有逐行来源关联的记录。
+      ...(input.target.inputMode === 'partial_observation' && !event ? { duplicatePolicy: 'skip_identical_append' as const } : {}),
+      submissionDigest: 'sha256:' + '0'.repeat(64), payload: { kind: relation ? 'relation_edges' : event ? 'event_records' : tabular ? 'tabular_rows' : 'scalar_rows', rows } };
     const unsigned = buildStructuredIngestDocument(structured);
     const digestInput = structuredClone(unsigned);
     delete (digestInput.request_identity as WfdRecord).submission_digest;
@@ -420,15 +532,19 @@ export class R1WorkspaceService {
     if (documentBytes > R1_WEB_LIMITS.maxDocumentBytes) fail('R1_WEB_BUDGET', '此 Web 小切片超过文档预算；未截断或放大机器响应预算。');
     if (!validateStructuredDocument(document, runtime.connection.schemaPath).valid) fail('R1_SCHEMA_INVALID', '目标合同或实际产物不符合公开 structured-ingest schema。');
     const source: R1SourceRef = { ...input.source, sha256: original.sha256, bytes: original.bytes.byteLength };
-    const acquisition = this.options.handoff.registerOriginal({ bytes: original.bytes, originalName: material.envelope.filename,
-      mediaType: material.envelope.mediaType, source });
-    const localRefs: R1LocalReferences = { ...(input.target.expectedCommitId !== undefined ? { expectedCommitId: input.target.expectedCommitId } : {}), originalIds: [acquisition.originalId], materialIds: [], sourceRefs: [source], contractBindingRequired: true,
-      processRefs: [{ process_id: `${input.planId}:${input.outputId}`, plan_id: input.planId, output_id: input.outputId,
-        version: PROCESSING_PLAN_VERSION, input_sha256: original.sha256, output_sha256: output.ref.sha256,
-        evidence_sha256: output.ref.sha256, document_sha256: wfdSha256(canonicalWfdJson(document)) }],
-      ...(input.target.inputMode === 'source_correction' ? { reusedDefinition: { definitionRef: input.target.definitionRef!, declaration: input.target.definition } } : {}),
-      evidenceRefs: [{ ref_id: `processing:${input.planId}:${input.outputId}`, content_sha256: output.ref.sha256, kind: 'processing-output' }] };
-    return { structured, localRefs };
+    const localRefs = (documentSha256: string, receipt?: G5AdmissionReceipt): R1LocalReferences => {
+      const acquisition = this.options.handoff.registerOriginal({ bytes: original.bytes, originalName: material.envelope.filename,
+        mediaType: material.envelope.mediaType, source });
+      return { ...(input.target.expectedCommitId !== undefined ? { expectedCommitId: input.target.expectedCommitId } : {}), originalIds: [acquisition.originalId], materialIds: [], sourceRefs: [source], contractBindingRequired: true,
+        processRefs: [{ process_id: `${input.planId}:${input.outputId}`, plan_id: input.planId, output_id: input.outputId,
+          version: PROCESSING_PLAN_VERSION, input_sha256: original.sha256, output_sha256: output.ref.sha256,
+          evidence_sha256: output.ref.sha256, document_sha256: documentSha256 }],
+        ...(input.target.inputMode === 'source_correction' ? { reusedDefinition: { definitionRef: input.target.definitionRef!, declaration: input.target.definition } } : {}),
+        evidenceRefs: [{ ref_id: `processing:${input.planId}:${input.outputId}`, content_sha256: output.ref.sha256, kind: 'processing-output' },
+          ...(receipt ? [r1G5EvidenceRef(receipt)] : [])] };
+    };
+    const targetKind = relation ? 'relation_edges' : event ? 'event_records' : 'tabular';
+    return { structured, localRefs, documentSha256: wfdSha256(canonicalWfdJson(document)), targetKind, profile, requiresG5, preservePropagation } as const;
   }
 
   list(): R1RequestSummary[] {
@@ -696,8 +812,14 @@ export class R1WorkspaceService {
   }
 }
 
+function r1DeclarationEvidence(value: unknown) {
+  if (!isWfdRecord(value)) return { declaration: value, sourceFieldProfile: undefined };
+  const { sourceFieldProfile, ...declaration } = value;
+  return { declaration, sourceFieldProfile };
+}
+
 function readInput(value: unknown): R1PrepareInput {
-  const input = object(value, ['requestId', 'planId', 'outputId', 'source', 'mapping', 'target']);
+  const input = object(value, ['requestId', 'planId', 'outputId', 'source', 'mapping', 'target', 'sourceFieldProfile']);
   id(input.requestId); id(input.planId); id(input.outputId);
   const sourceFields = ['source_id', 'provider', 'requested_url', 'requested_at_utc', 'acquired_at_utc', 'usage_scope'];
   const source = object(input.source, [...sourceFields, 'license', 'authorization']);
