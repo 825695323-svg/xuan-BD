@@ -448,6 +448,12 @@ CONSOLIDATION_SCOPES = {"consolidated", "parent", "not_applicable", "unknown"}
 _SEMANTIC_AXES = {"identity", "time", "measurement", "content", "statistical",
                   "financial", "relation", "coverage_quality", "source", "version",
                   "derivation"}
+IDENTITY_FIELDS = {"subject_kind", "identity_resolution_rule", "alias_scope"}
+
+
+def valid_field_identity(value):
+    return (isinstance(value, dict) and set(value) <= IDENTITY_FIELDS
+            and all(isinstance(item, str) and item.strip() for item in value.values()))
 
 
 def _ref_like(value):
@@ -508,8 +514,7 @@ def normalize_semantic_context(declaration, payload_kind, *, allow_deterministic
                             "semantic context measurement nature differs from declaration",
                             "semantic_context.measurement_nature"))
     axes = {}
-    axes["identity"] = _normalize_axis(raw.get("identity"), {
-        "subject_kind", "identity_resolution_rule", "alias_scope", "notes"}, "identity", issues)
+    axes["identity"] = _normalize_axis(raw.get("identity"), IDENTITY_FIELDS | {"notes"}, "identity", issues)
     time_axis = _normalize_axis(raw.get("time"), {
         "period_type", "frequency", "interval", "calendar_ref",
         "accounting_calendar_ref", "window", "roles", "timezone", "notes"}, "time", issues) or {}
@@ -692,12 +697,15 @@ def normalize_semantic_context(declaration, payload_kind, *, allow_deterministic
                 if not isinstance(value, dict):
                     issues.append(issue("SEMANTIC_FIELD_CONTEXT_INVALID", "Field context must be an object", field_code))
                     continue
-                unknown = set(value) - {"time", "measurement", "content", "statistical",
+                unknown = set(value) - {"identity", "time", "measurement", "content", "statistical",
                                         "financial", "coverage_quality", "notes"}
                 if unknown:
                     issues.append(issue("SEMANTIC_FIELD_CONTEXT_INVALID",
                                         "Unsupported field context: " + sorted(unknown)[0], field_code))
                 normalized_fields[field_code] = copy.deepcopy(value)
+                if "identity" in value and not valid_field_identity(value["identity"]):
+                    issues.append(issue("SEMANTIC_CONTEXT_AXIS_INVALID", "Invalid declared field identity",
+                                        f"field_semantic_context.{field_code}.identity"))
             if normalized_fields:
                 normalized["field_semantic_context"] = normalized_fields
             else:

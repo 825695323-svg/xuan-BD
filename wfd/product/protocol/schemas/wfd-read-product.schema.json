@@ -90,8 +90,8 @@
     "max_nodes": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 200000,
-      "description": "read_product 中表示本次固定快照内该产品允许预扫的物理候选行上限；预算超限在读取业务行前拒绝。"
+      "maximum": 50000000,
+      "description": "固定候选行预算。普通读取至多 200000。indexed_tabular 按未剪枝的 Parquet 行组计数。"
     },
     "product_id": {
       "type": "string",
@@ -107,6 +107,47 @@
         "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$"
       },
       "description": "只允许产品已声明的 value 字段；scalar_rows 产品显式支持 value_decimal。上下文操作可用 fields 选择投影字段，该选择进入 query_hash/cursor 绑定。"
+    },
+    "indexed_tabular": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "显式选择固定快照中的批量表格分区，按声明文本字段筛选。仅 read_product 的 snapshot_contents。",
+      "properties": {
+        "partitions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 366,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 512}
+        },
+        "match": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {"pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"},
+          "additionalProperties": {
+            "type": "array",
+            "maxItems": 20000,
+            "uniqueItems": true,
+            "items": {"type": "string", "maxLength": 4096}
+          }
+        },
+        "date_range": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["field", "format", "start", "end"],
+          "properties": {
+            "field": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"},
+            "format": {"enum": ["YYYYMMDD", "YYYY-MM-DD"]},
+            "start": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+            "end": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
+          }
+        },
+        "context_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "上游固定选择证据摘要，绑定查询与游标。由调用方保留和核验原证据。"
+        }
+      }
     },
     "business_time_range": {
       "oneOf": [
@@ -284,6 +325,11 @@
     "max_nodes"
   ],
   "allOf": [
+    {
+      "if": {"required": ["indexed_tabular"]},
+      "then": {"properties": {"operation": {"const": "read_product"}}},
+      "else": {"properties": {"max_nodes": {"maximum": 200000}}}
+    },
     {
       "if": {
         "properties": {

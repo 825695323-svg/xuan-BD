@@ -159,8 +159,28 @@ export interface R1ProductReadInput {
   usableStage?: 'acquired' | 'custodied' | 'published_readable';
   /** Only fields declared by this product in the selected fixed snapshot; omitted means all. */
   fields?: string[];
+  selection?: R1TabularSelection;
+  membership?: R1MembershipSelection;
+  pageSize?: number;
 }
 
+/** Field names are discovered contract codes; text values retain their original form. */
+export interface R1TabularSelection {
+  partitions?: string[];
+  match?: Record<string, string[]>;
+  dateRange?: { field: string; format: 'YYYYMMDD' | 'YYYY-MM-DD'; start: string; end: string };
+  timeRange?: { role: 'observation'; start: string; end: string; timezone: string };
+}
+
+/** Selects a cohort from a published membership snapshot. */
+export interface R1MembershipSelection {
+  productId: string;
+  selection: R1TabularSelection;
+  memberField: string;
+  targetField: string;
+  basis: 'reported_snapshot';
+  mapping?: { productId: string; selection: R1TabularSelection; sourceField: string; targetField: string };
+}
 
 export const R1_CONTEXT_OPERATIONS = ['read_company_context', 'read_relation_graph', 'read_applicable_rules', 'read_event_timeline'] as const;
 export type R1ContextOperation = typeof R1_CONTEXT_OPERATIONS[number];

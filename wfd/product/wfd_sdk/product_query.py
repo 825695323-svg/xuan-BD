@@ -23,6 +23,7 @@ import base64
 import binascii
 import copy
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -47,6 +48,33 @@ SCHEMA_NAME = "wfd-read-product.schema.json"
 MAX_PAGE_SIZE = 500
 MAX_SCAN_BYTES = 256 * 1024 * 1024
 MAX_SCAN_ROWS = 200_000
+
+_INDEXED_READ_FAILURE = "INDEXED_QUERY_READ_FAILED"
+_INDEXED_SNAPSHOT_ERRORS = {
+    "SNAPSHOT_PATH_INVALID": "Fixed snapshot has an invalid storage reference",
+    "SNAPSHOT_UNAVAILABLE_OR_INVALID": "Fixed snapshot metadata is unavailable or fails its declared digests",
+}
+_INDEXED_QUERY_ERROR_MESSAGES = {
+    _INDEXED_READ_FAILURE: "Indexed tabular read failed",
+    "CALLER_PERMISSION_DENIED": "Caller lacks permission for the indexed read",
+    "BULK_OBJECT_MISSING": "A required indexed storage object is missing",
+    "BULK_PATH_INVALID": "Indexed storage reference is invalid",
+    "BULK_PATH_SYMLINK": "Indexed storage reference must not use a symbolic link",
+    "BULK_NODE_DIGEST_MISMATCH": "Indexed catalog node does not match its committed digest",
+    "BULK_NODE_KIND_INVALID": "Indexed catalog node has an invalid structure",
+    "BULK_NODE_FANOUT_INVALID": "Indexed catalog node has invalid children",
+    "BULK_LEAF_BINDING_MISMATCH": "Indexed partition does not match its fixed binding",
+    "BULK_TABLE_CONTRACT_MISMATCH": "Indexed partition does not match its fixed table contract",
+    "BULK_LEAF_PARTS_INVALID": "Indexed partition has invalid Parquet part references",
+    "BULK_PART_REFERENCE_INVALID": "Indexed Parquet part reference is invalid",
+    "BULK_PUBLICATION_NOT_FORMAL": "Indexed partition has no valid formal publication",
+    "USAGE_SUSPENDED": "Usage is suspended for the selected records",
+    "USAGE_KNOWN_ISSUE_LEGACY": "The selected record versions are restricted by a known issue",
+    "USAGE_GOVERNANCE_MISSING": "Required usage governance is missing",
+    "USAGE_GOVERNANCE_UNREADABLE": "Usage governance could not be read",
+    "USAGE_GOVERNANCE_FORMAT": "Usage governance has an invalid format",
+    **_INDEXED_SNAPSHOT_ERRORS,
+}
 
 SORT_KEYS = [
     "business_time_known",
@@ -99,6 +127,10 @@ class ProductQueryError(ValueError):
     def as_dict(self):
         return {"code": self.code, "message": self.message,
                 "details": copy.deepcopy(self.details)}
+
+
+def _indexed_query_error(code: str = _INDEXED_READ_FAILURE) -> ProductQueryError:
+    return ProductQueryError(code, _INDEXED_QUERY_ERROR_MESSAGES[code])
 
 
 def _utc(value: str):
@@ -195,6 +227,8 @@ class ProductQuery:
 
     # ------------------------------------------------------------------ capabilities
     def capabilities(self):
+        from . import indexed_tabular_query
+
         data_only = getattr(self.service, "profile", None) == "data_only"
         context_scope = "P4a1_data_only_public" if data_only else "P4b_read_only"
         operations = {
@@ -268,6 +302,8 @@ class ProductQuery:
                 "evidence_refs": "omitted" if data_only else "legacy",
             },
             "read_product": {
+                "indexed_tabular": indexed_tabular_query.capabilities(
+                    callable(getattr(self.service, "indexed_query_product_service", None))),
                 "history_modes": {
                     "snapshot_contents": {
                         "supported": True,
@@ -617,21 +653,36 @@ class ProductQuery:
                                     {"relative": str(relative)})
         return target
 
-    def _snapshot_metadata(self, snapshot_id, *, expected_sha=None):
+    def _snapshot_metadata(self, snapshot_id, *, expected_sha=None, indexed_budget=None):
         """Read one commit/snapshot/manifest chain without scanning payloads."""
         commit_path = self.root / "catalog/commits" / (snapshot_id + ".json")
         from . import indexed_bulk as bulk
+        observe = indexed_budget.add_metadata if indexed_budget is not None else None
+
+        def read(path):
+            if indexed_budget is None:
+                return path.read_bytes()
+            with path.open("rb") as stream:
+                raw = stream.read(indexed_budget.max_bytes - indexed_budget.metadata_bytes + 1)
+            indexed_budget.metadata_bytes += len(raw)
+            indexed_budget.check_bytes()
+            return raw
+
         try:
-            commit_bytes = commit_path.read_bytes()
+            if indexed_budget is not None:
+                bulk.snapshot_relative(snapshot_id)
+                commit_path = bulk.checked_path(self.root, f"catalog/commits/{snapshot_id}.json")
+            commit_bytes = read(commit_path)
             marker = json.loads(commit_bytes.decode("utf-8"))
             if marker.get("snapshot_id") != snapshot_id:
                 raise ValueError("commit marker snapshot id mismatch")
             if str(marker.get("snapshot_file", "")).startswith(bulk.SNAPSHOT_PREFIXES):
                 if expected_sha is not None or commit_path.is_symlink():
                     raise ValueError("BULK_LEGACY_ANCHOR_INVALID")
-                snapshot = bulk.read_snapshot(self.root, snapshot_id, commit_raw=commit_bytes)
+                snapshot = bulk.read_snapshot(self.root, snapshot_id, commit_raw=commit_bytes,
+                                              verify_catalog=indexed_budget is None, observe=observe)
                 roots = bulk.index_roots(snapshot)
-                products = bulk.indexed_products(self.root, snapshot)
+                products = bulk.indexed_products(self.root, snapshot, observe=observe)
                 root_size = sum(self._rooted(bulk.node_relative(ref, protocol=protocol)).stat().st_size
                                 for protocol, ref in bulk.root_nodes(snapshot))
                 # A fixed ordinary product query uses the ordinary predecessor's
@@ -639,17 +690,18 @@ class ProductQuery:
                 anchor = snapshot["legacy_anchor"]
                 manifest = {"files": []}
                 anchor_commit = anchor_snapshot = anchor_manifest = 0
-                if anchor is not None:
+                if anchor is not None and indexed_budget is None:
                     bulk.snapshot_relative(anchor["snapshot_id"])
                     _, manifest, anchor_commit, anchor_snapshot, anchor_manifest = self._snapshot_metadata(
                         anchor["snapshot_id"], expected_sha=anchor["sha256"])
                 return ({**snapshot, **roots},
-                        {**manifest, "_indexed_product_ids": list(products)},
+                        {**manifest, "_indexed_product_ids": list(products),
+                         **({"_indexed_products": products} if indexed_budget is not None else {})},
                         len(commit_bytes) + anchor_commit,
                         self._rooted(bulk.snapshot_relative(snapshot_id)).stat().st_size + anchor_snapshot,
                         anchor_manifest + 3 * root_size)
             snapshot_path = self._rooted(row_version_objects.snapshot_relative(marker, snapshot_id))
-            snapshot_bytes = snapshot_path.read_bytes()
+            snapshot_bytes = read(snapshot_path)
             checksum = sha(snapshot_bytes)
             if checksum != marker["snapshot_sha256"] or (expected_sha is not None and "sha256:" + checksum != expected_sha):
                 raise ValueError("snapshot digest mismatch")
@@ -657,19 +709,23 @@ class ProductQuery:
             if snapshot.get("snapshot_id") != snapshot_id:
                 raise ValueError("snapshot id mismatch")
             manifest_path = self._rooted(snapshot["manifest_relpath"])
-            manifest_bytes = manifest_path.read_bytes()
+            manifest_bytes = read(manifest_path)
             if sha(manifest_bytes) != snapshot["manifest_sha256"]:
                 raise ValueError("manifest digest mismatch")
             manifest = json.loads(manifest_bytes.decode("utf-8"))
             if manifest.get("files") != snapshot.get("files"):
                 raise ValueError("manifest/snapshot file list mismatch")
-            roots = bulk.validate_ordinary_roots(self.root, snapshot, manifest)
+            roots = bulk.validate_ordinary_roots(self.root, snapshot, manifest, observe=observe)
             root_size = 0
             if roots:
-                manifest["_indexed_product_ids"] = list(bulk.indexed_products(self.root, snapshot))
+                products = bulk.indexed_products(self.root, snapshot, observe=observe)
+                manifest["_indexed_product_ids"] = list(products)
+                if indexed_budget is not None:
+                    manifest["_indexed_products"] = products
                 root_size = sum(self._rooted(bulk.node_relative(ref, protocol=protocol)).stat().st_size
                                 for protocol, ref in bulk.root_nodes(snapshot))
-            row_version_objects.project_snapshot(self.root, snapshot)
+            if indexed_budget is None:
+                row_version_objects.project_snapshot(self.root, snapshot)
             # Equality above binds the physical lists. Reuse only the validated
             # source projections; iteration/canonical bytes remain physical.
             manifest["files"] = snapshot["files"]
@@ -1590,7 +1646,7 @@ class ProductQuery:
     def _first_meta(products):
         return next(iter(products.values()))
 
-    def _current_business_policy(self, request, products):
+    def _current_business_policy(self, request, products, *, fixed_head_check=None):
         if not self._data_only_projection() or not any(
                 current_only_business(product.get("declaration")) for product in products.values()):
             return
@@ -1598,8 +1654,12 @@ class ProductQuery:
                 or request.get("knowledge_cutoff") is not None or request.get("include_history")):
             raise ProductQueryError("CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED",
                                     "This basic-market product exposes only current business values")
-        head = self.service.engine.head()
-        if head is None or request["snapshot_id"] != head["snapshot_id"]:
+        if fixed_head_check is None:
+            head = self.service.engine.head()
+            is_head = head is not None and request["snapshot_id"] == head["snapshot_id"]
+        else:
+            is_head = fixed_head_check()
+        if not is_head:
             raise ProductQueryError("CURRENT_ONLY_BUSINESS_HEAD_REQUIRED",
                                     "Current business queries must select the active HEAD; pinned old snapshots are technical reads")
 
@@ -2670,19 +2730,41 @@ class ProductQuery:
         # per request.
         self.service.require_permission("read")
         from .joint_state import reject_unsupported
-        reject_unsupported(self.service.root, "experimental_product_query")
-        if (isinstance(request, dict)
-                and request.get("operation") == "trace_evidence"
-                and getattr(self.service, "profile", None) == "data_only"):
-            raise ProductQueryError(
-                "QUERY_OPERATION_UNSUPPORTED",
-                "data_only does not expose trace_evidence; source/evidence provenance "
-                "belongs to BD and WFD returns only record/version identity",
-                {"operation": "trace_evidence",
-                 "profile": "data_only",
-                 "exposed_operations": sorted(DATA_ONLY_PUBLIC_QUERY_OPERATIONS),
-                 "bd_boundary": "source/evidence/processing trace is not stored by WFD"})
-        self._validate_request(request)
+        is_request_object = isinstance(request, dict)
+        indexed = is_request_object and "indexed_tabular" in request
+        try:
+            reject_unsupported(self.service.root, "experimental_product_query")
+            if (is_request_object and request.get("operation") == "trace_evidence"
+                    and getattr(self.service, "profile", None) == "data_only"):
+                raise ProductQueryError(
+                    "QUERY_OPERATION_UNSUPPORTED",
+                    "data_only does not expose trace_evidence; source/evidence provenance "
+                    "belongs to BD and WFD returns only record/version identity",
+                    {"operation": "trace_evidence",
+                     "profile": "data_only",
+                     "exposed_operations": sorted(DATA_ONLY_PUBLIC_QUERY_OPERATIONS),
+                     "bd_boundary": "source/evidence/processing trace is not stored by WFD"})
+            self._validate_request(request)
+            if indexed:
+                from . import indexed_tabular_query
+
+                if request.get("include_definition_publication"):
+                    raise ProductQueryError("DEFINITION_PUBLICATION_MODE_UNSUPPORTED",
+                                            "Indexed tabular selection does not expose definition-publication evidence")
+                return indexed_tabular_query.execute(self, request, self._business_time_range(request))
+        except ProductQueryError as exc:
+            if not indexed or exc.code not in _INDEXED_SNAPSHOT_ERRORS:
+                raise
+            code = exc.code
+        except (OSError, ValueError, KeyError, TypeError, OverflowError, RuntimeError) as exc:
+            if not indexed:
+                raise
+            prefix = exc.args[0].partition(":")[0] if exc.args and isinstance(exc.args[0], str) else ""
+            code = prefix if prefix in _INDEXED_QUERY_ERROR_MESSAGES else _INDEXED_READ_FAILURE
+        else:
+            code = None
+        if code is not None:
+            raise _indexed_query_error(code) from None
         if request["history_mode"] == "system_held_at":
             if not request.get("held_scope") or not request.get("usable_stage"):
                 raise ProductQueryError(

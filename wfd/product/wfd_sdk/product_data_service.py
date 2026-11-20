@@ -23,7 +23,7 @@ from .duckdb_storage import selected_rows_page
 from .product_service import (
     SERVICE_VERSION, WFDProductService, _second_now, _issue, current_only_business,
 )
-from .product_governance import validate_payload, validate_units
+from .product_governance import IDENTITY_FIELDS, valid_field_identity, validate_payload, validate_units
 from . import product_calendar
 from . import write_targets
 from . import adjustment_anchors
@@ -36,9 +36,8 @@ DATA_ONLY_PROTOCOL = "wfd.structured-ingest/1.0"
 DATA_ONLY_PROFILE = "data_only"
 DATA_ONLY_STATUS_FORMAT = "wfd.data-only-request-state/1.0"
 DATA_ONLY_FORMAL_FORMAT = "wfd.data-only-formal-publication/1.0"
-# P2 explicitly selects the additive ingest schema: spec 1.1 = spec 1.0 plus
-# `price_adjustment.method`.  The frozen 1.0 file stays untouched and is still
-# published for readers that only know that shape.
+# P2 selects the additive 1.1 schema for `price_adjustment.method`.
+# Field-level identity is supported in both schema versions.
 DATA_ONLY_SCHEMA_ENTRY = "protocol/schemas/wfd-structured-ingest-1.1.schema.json"
 DATA_ONLY_SCHEMA_ID = "https://wfd.example/spec/1.1/wfd-structured-ingest.schema.json"
 DATA_ONLY_SCHEMA_SAMPLE = "protocol/samples/wfd-structured-ingest.example.json"
@@ -119,7 +118,7 @@ _CTX_KEYS = {"version", "content_nature", "measurement_nature", "identity", "tim
              "coverage_quality", "source", "version_axis", "derivation",
              "unknown_axes"}
 _AXIS_KEYS = {
-    "identity": {"subject_kind", "identity_resolution_rule", "alias_scope"},
+    "identity": IDENTITY_FIELDS,
     "time": {"period_type", "frequency", "interval", "calendar_ref",
              "accounting_calendar_ref", "window", "roles", "timezone"},
     "measurement": {"measurement_nature", "unit_code", "precision", "sign",
@@ -134,7 +133,7 @@ _AXIS_KEYS = {
     "relation": {"relation_type", "direction", "set_completeness", "effective_scope"},
     "coverage_quality": {"completeness", "absence_means", "validation_ref", "warmup_ref"},
 }
-_FIELD_CONTEXT_AXES = {"time", "measurement", "content", "statistical",
+_FIELD_CONTEXT_AXES = {"identity", "time", "measurement", "content", "statistical",
                        "financial", "coverage_quality"}
 _EXTERNAL_METADATA_KEYS = {
     "source_bundle", "source_id", "source_ids", "source_roles", "license_ref",
@@ -352,7 +351,10 @@ def validate_data_only_metadata(declaration):
                 raise ValueError("SEMANTIC_FIELD_CONTEXT_UNKNOWN_FIELD")
             _strict_keys(value, _FIELD_CONTEXT_AXES, "field_semantic_context." + field_code)
             for axis, child in value.items():
-                _strict_axis(axis, child, "field_semantic_context." + field_code + "." + axis)
+                path = "field_semantic_context." + field_code + "." + axis
+                _strict_axis(axis, child, path)
+                if axis == "identity" and not valid_field_identity(child):
+                    raise ValueError("SEMANTIC_CONTEXT_AXIS_INVALID:" + path)
     algorithm = declaration.get("algorithm_definition")
     if algorithm is not None:
         _strict_keys(algorithm, {"result_semantics", "mathematical_definition", "window",

@@ -1745,6 +1745,7 @@ def _capabilities(service, config, identity, service_identity):
             "projection": query_caps.get("projection"),
             "pagination": query_caps.get("read_product", {}).get("pagination"),
             "budget": query_caps.get("read_product", {}).get("budget"),
+            "indexed_tabular": query_caps.get("read_product", {}).get("indexed_tabular"),
             "context_operations": (
                 "read_company_context/read_relation_graph/read_applicable_rules/"
                 "read_event_timeline are explicitly exposed for data_only"
@@ -1886,6 +1887,18 @@ def _write_response(response, limit):
 
 
 def _error_response(exc, config, service, request, started):
+    request_id = request.get("request_id") if isinstance(request, dict) else None
+    operation = request.get("operation") if isinstance(request, dict) else None
+    # Service construction can stat or open the volume marker before ProductQuery runs.
+    caller_denied_read = isinstance(exc, PermissionError) and exc.args == ("CALLER_PERMISSION_DENIED:read",)
+    if (operation == "read_product" and (config or {}).get("profile") == "data_only"
+            and (getattr(exc, "code", None) == "JOINT_FORMAT_INVALID"
+                 or (isinstance(exc, OSError) and not caller_denied_read))):
+        arguments = request.get("arguments")
+        query = arguments.get("request") if isinstance(arguments, dict) else None
+        if isinstance(query, dict) and "indexed_tabular" in query:
+            from wfd_sdk.product_query import _indexed_query_error
+            exc = _indexed_query_error()
     code, text = _service_error(exc)
     if code == "RESPONSE_TOO_LARGE":
         text = ("response exceeds the configured bounded output and was not returned "
@@ -1893,8 +1906,6 @@ def _error_response(exc, config, service, request, started):
     details = getattr(exc, "details", None)
     if hasattr(exc, "status") and details is None:
         details = {"batch_status": getattr(exc, "status")}
-    request_id = request.get("request_id") if isinstance(request, dict) else None
-    operation = request.get("operation") if isinstance(request, dict) else None
     identity = None
     service_identity = None
     if service is not None and config is not None:
