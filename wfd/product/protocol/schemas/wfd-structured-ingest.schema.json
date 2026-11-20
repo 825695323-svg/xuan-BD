@@ -831,6 +831,15 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "subject_kind": {"type": "string", "minLength": 1},
+            "identity_resolution_rule": {"type": "string", "minLength": 1},
+            "alias_scope": {"type": "string", "minLength": 1}
+          }
+        },
         "time": {
           "$ref": "#/$defs/axis"
         },

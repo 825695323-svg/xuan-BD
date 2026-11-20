@@ -54,9 +54,11 @@ def root_nodes(snapshot):
             yield protocol, ref
 
 
-def indexed_products(root, snapshot):
+def indexed_products(root, snapshot, *, observe=None):
     products = {}
     for protocol, ref in root_nodes(snapshot):
+        if observe is not None:
+            observe(checked_path(root, node_relative(ref, protocol=protocol)))
         children = branch(root, ref, "catalog", protocol=protocol)
         if products.keys() & children.keys():
             raise ValueError("BULK_PRODUCT_OVERLAP")
@@ -359,10 +361,13 @@ def has_bulk_marker(root, sid):
     return str(commit.get("snapshot_file", "")).startswith(SNAPSHOT_PREFIXES)
 
 
-def read_snapshot(root, sid, *, expected_commit=None, expected_sha=None, commit_raw=None, protocol=None):
+def read_snapshot(root, sid, *, expected_commit=None, expected_sha=None, commit_raw=None, protocol=None,
+                  verify_catalog=True, observe=None):
     rel = snapshot_relative(sid)
     if commit_raw is None:
         commit_path = checked_path(root, f"catalog/commits/{sid}.json")
+        if observe is not None:
+            observe(commit_path)
         with commit_path.open("rb") as stream:
             commit_raw = stream.read(MAX_NODE_BYTES + 1)
     if len(commit_raw) > MAX_NODE_BYTES:
@@ -375,6 +380,8 @@ def read_snapshot(root, sid, *, expected_commit=None, expected_sha=None, commit_
             or (expected_commit is not None and sha(commit_raw) != expected_commit)):
         raise ValueError("BULK_COMMIT_INVALID")
     path = checked_path(root, rel)
+    if observe is not None:
+        observe(path)
     with path.open("rb") as stream:
         raw = stream.read(MAX_NODE_BYTES + 1)
     if len(raw) > MAX_NODE_BYTES:
@@ -404,11 +411,12 @@ def read_snapshot(root, sid, *, expected_commit=None, expected_sha=None, commit_
             or not _matches(_PID, snapshot.get("product_id")) or not valid_partition(snapshot.get("partition"), protocol)
             or sid != snapshot_id(snapshot)):
         raise ValueError("BULK_SNAPSHOT_INVALID")
-    indexed_products(root, snapshot)
+    if verify_catalog:
+        indexed_products(root, snapshot, observe=observe)
     return snapshot
 
 
-def validate_ordinary_roots(root, snapshot, manifest):
+def validate_ordinary_roots(root, snapshot, manifest, *, observe=None):
     roots = index_roots(snapshot)
     if roots != index_roots(manifest):
         raise ValueError("BULK_MANIFEST_ROOT_MISMATCH")
@@ -417,7 +425,7 @@ def validate_ordinary_roots(root, snapshot, manifest):
             snapshot["request_fingerprint"], snapshot["manifest_sha256"]]))[:24]
         if snapshot["snapshot_id"] != expected_sid or snapshot["parent_snapshot_id"] != manifest["parent_snapshot_id"]:
             raise ValueError("BULK_MANIFEST_SNAPSHOT_ID_MISMATCH")
-        products = indexed_products(root, snapshot)
+        products = indexed_products(root, snapshot, observe=observe)
         if any(item["product_id"] in products for item in snapshot["files"]):
             raise ValueError("BULK_ORDINARY_PRODUCT_OVERLAP")
     return roots
@@ -447,13 +455,20 @@ def partition_leaf(root, snapshot, product_id, value, result_root):
     products, _, leaves = partition_path(root, snapshot["root"], product_id, value, protocol=protocol)
     if leaves.get(partition_keys(value, protocol)[1]) != result_root:
         raise ValueError("BULK_LOCATOR_MISMATCH")
+    product = read_node(root, products[product_id], "product", protocol=protocol)
+    if product["product"]["product_id"] != product_id:
+        raise ValueError("BULK_PRODUCT_BINDING_MISMATCH")
+    return bound_partition_leaf(root, product, protocol, value, result_root)
+
+
+def bound_partition_leaf(root, product, protocol, value, result_root):
+    """Validate a leaf already located in the fixed product's catalog."""
     leaf = read_node(root, result_root, partition_keys(value, protocol)[3], protocol=protocol)
-    if (leaf["product"]["product_id"] != product_id or leaf["header"]["protocol_version"] != protocol
-            or partition_value(leaf["header"]) != value):
+    header = leaf["header"]
+    if (leaf["product"]["product_id"] != product["product"]["product_id"]
+            or header["protocol_version"] != protocol or partition_value(header) != value):
         raise ValueError("BULK_LEAF_BINDING_MISMATCH")
     if protocol == tabular.PROTOCOL:
-        header = leaf["header"]
-        product = read_node(root, products[product_id], "product", protocol=protocol)
         tabular.validate_contract(header)
         tabular.validate_definition(header, leaf["product"]["declaration"])
         if product.get("table_contract_digest") != header["table_contract"]["digest"]:

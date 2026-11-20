@@ -1692,7 +1692,7 @@ class WFDVolumeService:
                 "row_count": leaf["header"]["row_count"], "identities_digest": leaf["identities_digest"],
                 "formal_sha256": formal_sha256, "stage": "published_readable"}
 
-    def _bulk_formal_result(self, snap, leaf, *, require_holding):
+    def _bulk_formal_result(self, snap, leaf, *, require_holding, formal_raw=None, observe=None):
         from . import indexed_bulk as bulk
         identity = leaf["header"]["request_identity"]
         key = self._request_key(identity)
@@ -1702,7 +1702,8 @@ class WFDVolumeService:
         formal_path = self.root / formal_rel
         if not formal_path.exists() and not formal_path.is_symlink():
             return None
-        raw = bulk.checked_path(self.root, formal_rel).read_bytes()
+        raw = (formal_raw if formal_raw is not None else
+               self._read_bulk_publication_file(formal_rel, observe))
         result = bulk.summary_result(leaf, snap, duplicate=False)
         expected = {**result, "request_key": key, "request_identity": identity,
                     "input_fingerprint": identity["submission_digest"][7:],
@@ -1715,9 +1716,21 @@ class WFDVolumeService:
             if not holding_path.exists() and not holding_path.is_symlink():
                 return None
             holding = self._bulk_holding(snap, leaf, sha(raw))
-            if bulk.checked_path(self.root, holding_rel).read_bytes() != canonical(holding):
+            if self._read_bulk_publication_file(holding_rel, observe) != canonical(holding):
                 raise ValueError("BULK_HOLDING_CONFLICT")
         return {**result, "request_identity": identity, "formal_publication_ref": formal_rel}
+
+    def _read_bulk_publication_file(self, relative, observe):
+        from . import indexed_bulk as bulk
+        path = bulk.checked_path(self.root, relative)
+        if observe is None:
+            return path.read_bytes()
+        observe(path)
+        with path.open("rb") as stream:
+            raw = stream.read(bulk.MAX_NODE_BYTES + 1)
+        if len(raw) > bulk.MAX_NODE_BYTES:
+            raise ValueError("BULK_PUBLICATION_METADATA_TOO_LARGE")
+        return raw
 
     def reconcile_bulk_batch(self, header, *, for_finalize=False):
         """Reconcile a previously attempted finalize against the volume without writes."""
@@ -1975,6 +1988,54 @@ class WFDVolumeService:
 
     # The bound machine entry probes this historical method name.
     read_source_minute_page = read_bulk_page
+
+    def indexed_query_product_service(self):
+        self.require_permission("read")
+        return self._target_service()
+
+    def verify_indexed_query_binding(self, product, *, observe):
+        from . import indexed_bulk as bulk
+
+        def verify(relative, _kind, expected=None):
+            path = bulk.checked_path(self.root, relative)
+            if path.stat().st_size > bulk.MAX_NODE_BYTES:
+                raise ValueError("BULK_CONTRACT_OBJECT_TOO_LARGE")
+            observe(path)  # The closure reads and verifies the stored body.
+            if expected is not None:
+                observe(path)
+                if sha256_file(path) != expected:
+                    raise ValueError("BULK_CONTRACT_DIGEST_MISMATCH")
+
+        self.indexed_query_product_service()._verify_binding(product, verify_contract_files=False)
+        _add_product_closure(verify, product, self.root)
+
+    def verify_indexed_partition_publication(self, leaf, *, protocol, partition, result_root, snapshot=None,
+                                             observe):
+        """Bind a fixed catalog leaf to its original formal activation and holding."""
+        from . import indexed_bulk as bulk
+
+        header = leaf["header"]
+        identity = header["request_identity"]
+        if identity["submission_digest"] != bulk.header_identity(header):
+            raise ValueError("BULK_REQUEST_BINDING_MISMATCH")
+        raw = None
+        if snapshot is None:
+            key = self._request_key(identity)
+            relative = f"catalog/product_service/data_only_formal_publications/{key}.json"
+            if not (self.root / relative).is_file():
+                raise ValueError("BULK_PUBLICATION_NOT_FORMAL")
+            raw = self._read_bulk_publication_file(relative, observe)
+            # The requested snapshot's catalog has already bound this leaf.
+            snapshot = bulk.read_snapshot(self.root, json.loads(raw)["snapshot_id"], protocol=protocol,
+                                          verify_catalog=False, observe=observe)
+        if (bulk.protocol_for_snapshot(snapshot) != protocol
+                or bulk.locator(snapshot) != {"snapshot_id": snapshot["snapshot_id"],
+                                             "product_id": leaf["product"]["product_id"],
+                                             "partition": partition, "result_root": result_root}
+                or self._bulk_formal_result(snapshot, leaf, require_holding=True,
+                                            formal_raw=raw, observe=observe) is None):
+            raise ValueError("BULK_PUBLICATION_NOT_FORMAL")
+        return snapshot["snapshot_id"]
 
     def release_bulk_prep(self, identity, protocol):
         from . import indexed_bulk as bulk

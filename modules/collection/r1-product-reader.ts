@@ -1,5 +1,5 @@
 import { R1_CONTEXT_OPERATIONS, type R1ContextOperation, type R1ContextRead } from '../../contracts/r1-contracts.js';
-import type { R1ConnectionIdentity, R1DefinitionIntent, R1DefinitionReview, R1ProductDiscovery, R1ProductRead, R1ProductSelection, R1ReadConnection, R1SnapshotStatus } from '../../contracts/r1-contracts.js';
+import type { R1ConnectionIdentity, R1DefinitionIntent, R1DefinitionReview, R1ProductDiscovery, R1ProductRead, R1ProductSelection, R1ReadConnection, R1SnapshotStatus, R1TabularSelection } from '../../contracts/r1-contracts.js';
 import { WfdProductMachineError } from '../../adapters/database/wfd-product-machine.js';
 import type { WfdFilterPlan } from '../../adapters/database/wfd-product-machine.js';
 import { canonicalWfdJson, isWfdRecord, type WfdRecord } from '../../adapters/database/wfd-transport.js';
@@ -7,6 +7,8 @@ import { TaskError } from '../../platform/jobs/tasks.js';
 import { isExplicitUtcInstant } from '../../contracts/financial-value.js';
 import { ELIGIBILITY_HISTORY_MODES, type EligibilityHistoryMode } from './purpose-eligibility.js';
 import type { R1Runtime } from './r1-runtime.js';
+import { assertSelectionFields, parseMembership, parseTabularSelection, resolveMembership, R1_INDEXED_LIMITS,
+  validateIndexedResult, validateMembershipDeclarations, wireSelection } from './r1-indexed-query.js';
 
 export const R1_READ_LIMITS = Object.freeze({ pageSize: 100, maxScanRows: 5000, maxScanBytes: 16_777_216,
   maxResultBytes: 2_097_152, maxDiscoveryProducts: 1000, maxFields: 64, timeoutMs: 30_000 });
@@ -119,7 +121,8 @@ export class R1ProductReader {
   }
 
   async readProduct(value: unknown, signal?: AbortSignal): Promise<R1ProductRead> {
-    const input = body(value, ['snapshotId', 'productId', 'fields', 'cursor', 'historyMode', 'at', 'heldScope', 'usableStage', 'includeDefinitionPublication', 'definitionPublicationAt']);
+    const input = body(value, ['snapshotId', 'productId', 'fields', 'cursor', 'historyMode', 'at', 'heldScope', 'usableStage',
+      'includeDefinitionPublication', 'definitionPublicationAt', 'selection', 'membership', 'pageSize']);
     const history = readHistorySelection(input);
     if (input.includeDefinitionPublication !== undefined && (typeof input.includeDefinitionPublication !== 'boolean' || input.includeDefinitionPublication && history.mode !== 'snapshot_contents')) fail('R1_READ_INPUT', '定义公开证据仅允许显式固定快照读取。');
     if (input.definitionPublicationAt !== undefined) {
@@ -135,13 +138,30 @@ export class R1ProductReader {
       || new Set(input.fields).size !== input.fields.length)) {
       fail('R1_READ_FIELDS', '请选择 1–64 个已发现的声明字段；不接受空投影、重复字段或路径。');
     }
+    const selection = input.selection === undefined ? undefined : parseTabularSelection(input.selection);
+    const membership = input.membership === undefined ? undefined : parseMembership(input.membership);
+    if (membership && !selection) fail('R1_INDEXED_INPUT', '分类读取还须明确目标表的分区或日期范围。');
+    if (selection && (history.mode !== 'snapshot_contents' || input.includeDefinitionPublication === true))
+      fail('R1_INDEXED_INPUT', '索引表格仅支持固定快照内容读取。');
+    const limits = selection ? R1_INDEXED_LIMITS : R1_READ_LIMITS;
+    const pageSize = input.pageSize === undefined ? limits.pageSize : input.pageSize;
+    if (typeof pageSize !== 'number' || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > limits.pageSize)
+      fail('R1_READ_INPUT', '读取页大小超过该查询的有界范围。');
     const snapshotId = input.snapshotId as string, productId = input.productId as string;
     return this.run(async (runtime, identity, active, wait) => {
       // Rediscover on every page, validating projection against the same fixed product contracts.
       const discovered = await this.discover(runtime, snapshotId, active, wait);
-      const product = discovered.selections.find(item => item.productId === productId);
-      if (!product) fail('R1_READ_PRODUCT_NOT_FOUND', '该产品不在所选固定快照中；请重新发现实际产品。');
-      if (!product.readable) fail('R1_READ_PROJECTION_UNSUPPORTED', product.reason!);
+      const chooseProduct = (id: string, projection?: string[]) => {
+        const product = discovered.selections.find(item => item.productId === id);
+        if (!product) fail('R1_READ_PRODUCT_NOT_FOUND', '该产品不在所选固定快照中；请重新发现实际产品。');
+        if (!product.readable) fail('R1_READ_PROJECTION_UNSUPPORTED', product.reason!);
+        const fields = projection === undefined ? product.fields : [...projection].sort();
+        if (fields.length > limits.maxFields || fields.some(field => !product.fields.includes(field))) {
+          fail('R1_READ_FIELDS', '所选字段未在该固定快照产品中声明，或超过 64 字段预算；请按实际发现结果重新选择。');
+        }
+        return { product, fields };
+      };
+      const target = chooseProduct(productId, input.fields as string[] | undefined);
       if (history.mode !== 'snapshot_contents') {
         const contracts = discovered.products.filter(item => item.product_id === productId);
         if (contracts.some(item => {
@@ -149,53 +169,66 @@ export class R1ProductReader {
           return !Array.isArray(read.perspectives) || !read.perspectives.includes(history.mode);
         })) fail('R1_READ_HISTORY_UNSUPPORTED', '固定产品合同未声明所选历史视角；不退回快照内容或最新数据。');
       }
-      const fields = input.fields === undefined ? product.fields : [...input.fields as string[]].sort();
-      if (fields.length > R1_READ_LIMITS.maxFields || fields.some(field => !product.fields.includes(field))) {
-        fail('R1_READ_FIELDS', '所选字段未在该固定快照产品中声明，或超过 64 字段预算；请按实际发现结果重新选择。');
-      }
-      active();
-      const reply = await runtime.client.readProduct({ protocol_version: 'wfd.read/1.3-product1', operation: 'read_product',
-        dataset_id: product.datasetId, snapshot_id: snapshotId, product_id: productId, fields,
-        ...(input.includeDefinitionPublication === true ? { include_definition_publication: true } : {}),
-        ...(input.definitionPublicationAt !== undefined ? { definition_publication_at: input.definitionPublicationAt } : {}),
-        history_mode: history.mode, knowledge_cutoff: history.cutoff, held_scope: history.heldScope, usable_stage: history.usableStage, subject: null,
-        business_time_range: null, page_size: R1_READ_LIMITS.pageSize, max_nodes: R1_READ_LIMITS.maxScanRows,
-        max_scan_bytes: R1_READ_LIMITS.maxScanBytes, cursor: input.cursor ?? null }, wait);
-      active(); const result = reply.result; boundedResult(result);
-      if (input.definitionPublicationAt !== undefined && result.definition_publication_at !== input.definitionPublicationAt)
-        fail('R1_READ_RESPONSE_INVALID', '定义公开证据截止回显不符，未采用该结果。');
+      const readPage = async ({ product, fields }: typeof target, selected: R1TabularSelection | undefined,
+        cursor: unknown, requestedPageSize: number, contextDigest?: string) => {
+        if (selected) assertSelectionFields(selected, product.fields);
+        const range = selected?.timeRange ?? null;
+        active();
+        const reply = await runtime.client.readProduct({ protocol_version: 'wfd.read/1.3-product1', operation: 'read_product',
+          dataset_id: product.datasetId, snapshot_id: snapshotId, product_id: product.productId, fields,
+          ...(input.includeDefinitionPublication === true ? { include_definition_publication: true } : {}),
+          ...(input.definitionPublicationAt !== undefined ? { definition_publication_at: input.definitionPublicationAt } : {}),
+          history_mode: history.mode, knowledge_cutoff: history.cutoff, held_scope: history.heldScope, usable_stage: history.usableStage, subject: null,
+          business_time_range: range, page_size: requestedPageSize, max_nodes: limits.maxScanRows,
+          max_scan_bytes: limits.maxScanBytes, cursor,
+          ...(selected ? { indexed_tabular: wireSelection(selected, contextDigest) } : {}) }, wait);
+        active(); const result = reply.result; boundedResult(result);
+        if (input.definitionPublicationAt !== undefined && result.definition_publication_at !== input.definitionPublicationAt)
+          fail('R1_READ_RESPONSE_INVALID', '定义公开证据截止回显不符，未采用该结果。');
 
-      // 撤销保留原行，市场资格仅采用独立公告时间；旧记录或时间精度缺口不降级采用。
-      if (history.mode === 'market_known_at' && Array.isArray(result.diagnostics)
-        && result.diagnostics.some(item => isWfdRecord(item) && ((item.reason === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED' || item.code === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED')
-          || item.reason === 'WITHDRAWN_AT_PERSPECTIVE' && !isWfdRecord(item.withdrawal_public_time))))
-        fail('R1_READ_REVISION_TIME_UNSUPPORTED', '撤销缺少可独立核验的公开时间，此历史查询未采用；可按明确持有阶段或固定快照核对。');
-      if (history.mode !== 'snapshot_contents' && Array.isArray(result.diagnostics)
-        && result.diagnostics.some(item => isWfdRecord(item) && [
-          'FIELD_NOT_DEFINED_IN_ROW_CONTRACT', 'PRODUCT_CONTRACT_UNAVAILABLE',
-        ].includes(String(item.code)))) {
-        fail('R1_READ_HISTORY_METADATA_UNSUPPORTED',
-          '历史记录的固定定义不支持所选字段或合同缺失；请显式选择该历史版本已有字段，不能用后续新增定义替代。');
-      }
-      const page = isWfdRecord(result.page) ? result.page : {};
-      if (result.format_version !== 'wfd.read-product-result/0.1' || result.operation !== 'read_product'
-        || result.snapshot_id !== snapshotId || result.product_id !== productId || result.dataset_id !== product.datasetId
-        || result.history_mode !== history.mode || canonicalWfdJson(result.knowledge_cutoff) !== canonicalWfdJson(history.cutoff)
-        || result.held_scope !== history.heldScope || result.usable_stage !== history.usableStage || result.subject !== null || result.business_time_range !== null
-        || canonicalWfdJson(result.fields) !== canonicalWfdJson(fields)
-        || !Array.isArray(result.rows) || result.rows.length > R1_READ_LIMITS.pageSize
-        || result.rows.some(row => !isWfdRecord(row) || !isWfdRecord(row.values) || !isWfdRecord(row.record_ref))
-        || !Array.isArray(result.diagnostics) || typeof result.complete !== 'boolean' || !isWfdRecord(result.budget)
-        || typeof result.query_hash !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(result.query_hash)
-        || page.page_size !== R1_READ_LIMITS.pageSize || page.returned_rows !== result.rows.length
-        || !Number.isSafeInteger(page.total_rows) || Number(page.total_rows) < result.rows.length
-        || !Number.isSafeInteger(page.remaining_rows) || Number(page.remaining_rows) < 0
-        || typeof page.has_more !== 'boolean' || page.page_complete !== !page.has_more
-        || (page.has_more ? typeof page.next_cursor !== 'string' || !page.next_cursor || page.next_cursor.length > 8192 : page.next_cursor !== null)) {
-        fail('R1_READ_RESPONSE_INVALID', 'WFD 返回的固定身份、时间视角、投影或分页无法核对；本页未采用。');
-      }
-      return { snapshotId, productId, historyMode: history.mode, connection: connection(identity), result, limits: R1_READ_LIMITS };
-    }, signal);
+        // 撤销保留原行，市场资格仅采用独立公告时间；旧记录或时间精度缺口不降级采用。
+        if (history.mode === 'market_known_at' && Array.isArray(result.diagnostics)
+          && result.diagnostics.some(item => isWfdRecord(item) && ((item.reason === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED' || item.code === 'WITHDRAWAL_PUBLIC_TIME_UNRESOLVED')
+            || item.reason === 'WITHDRAWN_AT_PERSPECTIVE' && !isWfdRecord(item.withdrawal_public_time))))
+          fail('R1_READ_REVISION_TIME_UNSUPPORTED', '撤销缺少可独立核验的公开时间，此历史查询未采用；可按明确持有阶段或固定快照核对。');
+        if (history.mode !== 'snapshot_contents' && Array.isArray(result.diagnostics)
+          && result.diagnostics.some(item => isWfdRecord(item) && [
+            'FIELD_NOT_DEFINED_IN_ROW_CONTRACT', 'PRODUCT_CONTRACT_UNAVAILABLE',
+          ].includes(String(item.code)))) {
+          fail('R1_READ_HISTORY_METADATA_UNSUPPORTED',
+            '历史记录的固定定义不支持所选字段或合同缺失；请显式选择该历史版本已有字段，不能用后续新增定义替代。');
+        }
+        const actualRange = result.business_time_range;
+        const rangeMatches = range === null ? actualRange === null : isWfdRecord(actualRange)
+          && Object.entries(range).every(([key, expected]) => actualRange[key] === expected);
+        const page = isWfdRecord(result.page) ? result.page : {};
+        if (result.format_version !== 'wfd.read-product-result/0.1' || result.operation !== 'read_product'
+          || result.snapshot_id !== snapshotId || result.product_id !== product.productId || result.dataset_id !== product.datasetId
+          || result.history_mode !== history.mode || canonicalWfdJson(result.knowledge_cutoff) !== canonicalWfdJson(history.cutoff)
+          || result.held_scope !== history.heldScope || result.usable_stage !== history.usableStage || result.subject !== null || !rangeMatches
+          || canonicalWfdJson(result.fields) !== canonicalWfdJson(fields)
+          || !Array.isArray(result.rows) || result.rows.length > requestedPageSize
+          || result.rows.some(row => !isWfdRecord(row) || !isWfdRecord(row.values) || !isWfdRecord(row.record_ref))
+          || !Array.isArray(result.diagnostics) || typeof result.complete !== 'boolean' || !isWfdRecord(result.budget)
+          || typeof result.query_hash !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(result.query_hash)
+          || page.page_size !== requestedPageSize || page.returned_rows !== result.rows.length
+          || !Number.isSafeInteger(page.total_rows) || Number(page.total_rows) < result.rows.length
+          || !Number.isSafeInteger(page.remaining_rows) || Number(page.remaining_rows) < 0
+          || typeof page.has_more !== 'boolean' || page.page_complete !== !page.has_more
+          || (page.has_more ? typeof page.next_cursor !== 'string' || !page.next_cursor || page.next_cursor.length > 8192 : page.next_cursor !== null)) {
+          fail('R1_READ_RESPONSE_INVALID', 'WFD 返回的固定身份、时间视角、投影或分页无法核对；本页未采用。');
+        }
+        if (selected) validateIndexedResult(result, selected, fields, product.fields, cursor, contextDigest);
+        return result;
+      };
+      const resolved = membership && selection ? await resolveMembership((id, selected, fields, cursor) =>
+        readPage(chooseProduct(id, fields), selected, cursor ?? null, R1_INDEXED_LIMITS.pageSize), membership, selection,
+        validateMembershipDeclarations(membership, discovered.products, productId), snapshotId) : undefined;
+      const page = await readPage(target, resolved?.selection ?? selection, input.cursor ?? null, pageSize, resolved?.digest);
+      const result = resolved ? { ...page, membership: { ...resolved.proof, digest: resolved.digest } } : page;
+      boundedResult(result);
+      return { snapshotId, productId, historyMode: history.mode, connection: connection(identity), result, limits };
+    }, signal, limits.timeoutMs);
   }
 
   async readContext(value: unknown, signal?: AbortSignal): Promise<R1ContextRead> {
@@ -311,14 +344,15 @@ export class R1ProductReader {
     return { products: result.products as WfdRecord[], selections: [...selections.values()] };
   }
 
-  private async run<T>(work: (runtime: ReadRuntime, identity: R1ConnectionIdentity, active: () => void, wait: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  private async run<T>(work: (runtime: ReadRuntime, identity: R1ConnectionIdentity, active: () => void, wait: AbortSignal) => Promise<T>,
+    signal?: AbortSignal, timeoutMs: number = R1_READ_LIMITS.timeoutMs): Promise<T> {
     const initial = this.options.control();
     if (initial.stopped) fail('BD_STOPPED', '服务已停止，不受理新的 WFD 查询。');
     const runtime = this.options.runtime(), identity = runtime.currentIdentity(), fingerprint = canonicalWfdJson(identity);
     if (identity.profile !== 'data_only') fail('R1_PROFILE_REQUIRED', '此读取入口只允许绑定的 data_only 连接。');
-    const wait = AbortSignal.any([AbortSignal.timeout(R1_READ_LIMITS.timeoutMs), ...(signal ? [signal] : [])]);
+    const wait = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]);
     const active = () => {
-      if (wait.aborted) fail('R1_READ_ABORTED', '本次只读等待已中止或超过 30 秒；没有自动重试。');
+      if (wait.aborted) fail('R1_READ_ABORTED', `本次只读等待已中止或超过 ${timeoutMs / 1000} 秒；没有自动重试。`);
       const now = this.options.control();
       if (now.stopped || now.generation !== initial.generation) fail('BD_STOPPED', '查询等待期间停止代次已变化；本次旧结果未采用。');
       if (canonicalWfdJson(runtime.currentIdentity()) !== fingerprint) fail('R1_CONNECTION_BINDING_CHANGED', '查询期间绑定连接身份已变化；请核对后重新装配。');
@@ -326,7 +360,7 @@ export class R1ProductReader {
     try { active(); const result = await work(runtime, identity, active, wait); active(); return result; }
     catch (error) {
       if (error instanceof TaskError) throw error;
-      if (wait.aborted) fail('R1_READ_ABORTED', '本次只读等待已中止或超过 30 秒；没有自动重试。');
+      if (wait.aborted) fail('R1_READ_ABORTED', `本次只读等待已中止或超过 ${timeoutMs / 1000} 秒；没有自动重试。`);
       if (error instanceof WfdProductMachineError) {
         const code = error.remoteCode ?? error.code;
         if (code === 'HISTORY_DEFINITION_TIME_UNSUPPORTED') fail('R1_READ_HISTORY_METADATA_UNSUPPORTED',
