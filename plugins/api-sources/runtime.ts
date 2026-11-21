@@ -17,7 +17,7 @@ import { readTdxMinutes, tdxAvailability, tdxVersions, type TdxPackageBinding } 
 import { decodePublicDailyBars, normalizePublicDailyRequest, publicKlineProvider, publicKlineProviders, type SupportedDailyProviderId, type PublicKlineOperationId } from './public-kline.js';
 import { cacheUrl, parseWerssFeed, readWerssCache, WERSS_CACHE_LIMIT, WERSS_PROJECTION_VERSION } from './providers/werss/cache.js';
 import { runWechatScript, wechatArticleUrl } from './providers/wechat/script.js';
-import { sourceCandidateFeedback, sourceOperationsForAction } from './operations.js';
+import { FETCH_OPERATIONS, sourceCandidateFeedback, sourceOperationsForAction } from './operations.js';
 import { decodeThsResponse } from './providers/ths/requests.js';
 import { buildApiReadRequest, validateApiReadRequest } from './api-read.js';
 
@@ -507,10 +507,12 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
           }
           throw new DirectError('SOURCE_NO_ELIGIBLE_CONNECTION', '已配置组合中没有完成此请求的合格连接；未调用名单外账号。');
         }
-        let actualConnectionId: string | null = null;
+        if (!Object.hasOwn(FETCH_OPERATIONS, sourceId)) throw new DirectError('SOURCE_PARAMETERS_INVALID', '下载来源没有登记操作。');
+        const fetchOperation = FETCH_OPERATIONS[sourceId as keyof typeof FETCH_OPERATIONS];
+        let actualConnectionId: string | null = null, observedAt: string | null = null;
         if (sourceId === 'tdx') {
-          let acquired = false; const attemptedAccounts = new Set<string>();
-          const operation: SourceOperationId = 'minute_bars';
+          const attemptedAccounts = new Set<string>();
+          const operation = FETCH_OPERATIONS.tdx;
           for (const connection of settings.operationCandidates(scopeId, operation)) {
             if (connection.pluginId !== 'tdx') continue;
             const attempt = beginAttempt(connection.id);
@@ -529,19 +531,20 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
               attempt.fileRefId = reference.id; attempt.sha256 = hash(raw.bytes); attempt.outcome = 'used';
               receipts.push({ connectionId: connection.id, url: raw.url, sha256: attempt.sha256, fileRefId: reference.id, contentType: raw.contentType, status: raw.status, transport: 'native-tcp' });
               await context.emit({ type: 'checkpoint', checkpoint: { sourceReceipts: receipts as unknown as JsonValue, artifactIds: artifacts, complete: false } });
-              actualConnectionId = connection.id; acquired = true;
+              actualConnectionId = connection.id; observedAt = raw.observedAt;
               saveDownload(connection.id, true, `已下载${String(p.symbol)}的1分钟原始响应。`, downloadIdentity); break;
             } catch (error) {
               if (attempt.outcome === 'used' || context.signal.aborted || terminalSourceError(error)) throw error;
               await recordCandidateFailure(connection, attempt, error, downloadIdentity);
             }
           }
-          if (!acquired) throw new DirectError('SOURCE_NO_ELIGIBLE_CONNECTION', '已配置组合中没有完成下载的通达信连接。');
+          if (observedAt === null) throw new DirectError('SOURCE_NO_ELIGIBLE_CONNECTION', '已配置组合中没有完成下载的通达信连接。');
         } else if (sourceId === 'eastmoney') {
-          await fetchRetain(eastmoneyMinuteRequest(p));
+          observedAt = (await fetchRetain(eastmoneyMinuteRequest(p))).observedAt;
           saveDownload('eastmoney', true, '已下载东方财富原始JSON。');
         } else {
           const raw = await fetchRetain(validatePublicWebUrl(String(p.url)));
+          observedAt = raw.observedAt;
           if (raw.contentType.includes('html')) {
             const { document } = parseHTML(decode(raw));
             const pdfs = [...new Set([...document.querySelectorAll('a[href]')].map(anchor => { try { return new URL(anchor.getAttribute('href')!, raw.url).href; } catch { return ''; } }).filter(url => /\.pdf(?:$|\?)/iu.test(url)))];
@@ -552,7 +555,8 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
             }
           }
         }
-        const receipt = { status: 'downloaded', sourceId, actualConnectionId, ...(attempts.length ? { attempts } : {}),
+        const receipt = { status: 'downloaded', sourceId, operation: fetchOperation,
+          scopeId, observedAt, actualConnectionId, ...(attempts.length ? { attempts } : {}),
           sourceReceipts: receipts, sourceConfigurationDigest: context.task.versions.directConfiguration };
         await publish('receipt.json', JSON.stringify(receipt, null, 2)); await workspace.cleanup();
         return { summary: `原件下载完成，共${receipts.length}份。`, artifactIds: artifacts,

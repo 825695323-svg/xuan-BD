@@ -1,4 +1,4 @@
-import type { ReportSubjectEvidence, SourceCandidateFeedback, SourceOperationView } from '../../contracts/source-settings.js';
+import type { ReportSubjectEvidence, SourceCandidateFeedback, SourceOperationView, SourceRunRequest } from '../../contracts/source-settings.js';
 import { publicKlineProvider, publicKlineProviders } from './public-kline.js';
 import { sourceReceiptReview } from './source-acquisition.js';
 
@@ -6,8 +6,13 @@ import { sourceReceiptReview } from './source-acquisition.js';
  * 唯一的接口操作目录：页面展示的操作与服务端路由使用同一份声明。
  * 新增来源时只登记已经由执行器支持的动作；不在页面猜测供应商协议。
  */
+// 下载回执也覆盖既有的站点采集入口；只有接口插件的操作进入账号路由。
+export const FETCH_OPERATIONS = Object.freeze({
+  tdx: 'minute_bars', eastmoney: 'minute_bars', official_web: 'official_document',
+} as const satisfies Record<SourceRunRequest['sourceId'], SourceOperationView['id'] | 'official_document'>);
+
 const providerOperations: Record<string, SourceOperationView[]> = {
-  tdx: [{ id: 'minute_bars', label: '1分钟K线', dataCapability: 'history', assetScope: 'equity',
+  tdx: [{ id: FETCH_OPERATIONS.tdx, label: '1分钟K线', dataCapability: 'history', assetScope: 'equity',
     run: { action: 'source.fetch', sourceId: 'tdx' } }],
   ths: [
     { id: 'daily_bars', label: '日线行情', dataCapability: 'history', assetScope: 'equity',

@@ -10,7 +10,7 @@ export { historicalExclusionSummary } from './historical-exclusions.js';
 
 export const STRATEGY_SCREEN_WFD_VERSION = 'bd.strategy-screen-wfd/2';
 export const STRATEGY_SCREEN_READ_LIMITS = Object.freeze({ pages: 100, rows: 10_000, bytes: 16_777_216, resultBytes: 900_000, timeoutMs: 60_000 });
-type Reader = (input: unknown, signal?: AbortSignal) => Promise<R1ProductRead & { connectionSha256?: string }>;
+export type FixedProductReader = (input: unknown, signal?: AbortSignal) => Promise<R1ProductRead & { connectionSha256?: string }>;
 interface Selection { dateField: string; date: string; dateFormat: 'YYYY-MM-DD' | 'YYYYMMDD'; keys?: string[] }
 interface Request extends Omit<StrategyScreenInput, 'rows'> {
   snapshotId: string; productId: string; historyMode: 'snapshot_contents' | 'market_known_at' | 'system_held_at';
@@ -23,7 +23,7 @@ export type HistoricalPurposeContext = AlgorithmSubmissionContext & {
 };
 
 const id = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(value);
-const fixed = (value: unknown): value is string => id(value) && !/^(latest|current)$/iu.test(value);
+export const fixedProductIdentifier = (value: unknown): value is string => id(value) && !/^(latest|current)$/iu.test(value);
 const field = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(value);
 const key = (value: unknown): value is string => typeof value === 'string' && !!value.trim() && value === value.trim()
   && value.length <= 128 && !/[\u0000-\u001f\u007f]/u.test(value);
@@ -37,11 +37,12 @@ function day(value: unknown): value is string {
 }
 
 /** 只识别 WFD 已作出的确定排除；不在工具侧重新选择历史版本或推断时间资格。 */
-function knownHistoricalExclusion(value: unknown, request: Request): value is WfdRecord {
+type ReadPerspective = Pick<Request, 'productId' | 'historyMode' | 'heldScope' | 'usableStage' | 'at'>;
+function knownHistoricalExclusion(value: unknown, request: ReadPerspective): value is WfdRecord {
   if (!isWfdRecord(value) || value.product_id !== request.productId || value.decision !== 'ineligible'
     || value.diagnostic_source !== 'product_service_eligibility') return false;
   if (request.historyMode === 'market_known_at' && value.code === undefined && recordKey(value.business_key)) {
-    if (value.reason === 'time_interval_starts_after_cutoff') return fixed(value.revision_id);
+    if (value.reason === 'time_interval_starts_after_cutoff') return fixedProductIdentifier(value.revision_id);
     return value.reason === 'WITHDRAWN_AT_PERSPECTIVE' && isWfdRecord(value.withdrawal_public_time);
   }
   if (request.historyMode !== 'system_held_at') return false;
@@ -55,7 +56,7 @@ function knownHistoricalExclusion(value: unknown, request: Request): value is Wf
     && value.eligibility.reason === value.reason;
 }
 
-function checkHistoricalRow(row: WfdRecord, request: Request) {
+function checkHistoricalRow(row: WfdRecord, request: ReadPerspective) {
   if (request.historyMode === 'snapshot_contents') return;
   const eligibility = row.eligibility;
   if (!isWfdRecord(eligibility) || eligibility.decision !== 'eligible'
@@ -85,7 +86,9 @@ const mixedDefinition = (): never => fail('STRATEGY_SCREEN_DEFINITION_MIXED', '�
 /** read_product 使用 product 包络，部分读取端口直接返回同名列表。两处都有时必须一致。 */
 function productVersions(result: WfdRecord) {
   const product = isWfdRecord(result.product) ? result.product : {};
-  if (result.product != null && !isWfdRecord(result.product) || product.product_id !== undefined && product.product_id !== result.product_id)
+  if (result.product != null && !isWfdRecord(result.product) || product.product_id !== undefined && product.product_id !== result.product_id
+    || product.snapshot_id !== undefined && product.snapshot_id !== result.snapshot_id
+    || product.dataset_id !== undefined && product.dataset_id !== result.dataset_id)
     fail('STRATEGY_SCREEN_WFD_RESPONSE', '产品合同包络与固定读取的产品身份不符。');
   const list = (name: string): WfdRecord[] | null => {
     const nested = product[name], flat = result[name];
@@ -112,7 +115,7 @@ function productVersions(result: WfdRecord) {
 }
 
 function versionIdentity(ref: unknown): ref is WfdRecord {
-  return isWfdRecord(ref) && [ref.digest, ref.version, ref.id].some(fixed);
+  return isWfdRecord(ref) && [ref.digest, ref.version, ref.id].some(fixedProductIdentifier);
 }
 
 function checkRowVersion(ref: unknown, expected: unknown, previous: WfdRecord | null) {
@@ -125,7 +128,7 @@ function checkRowVersion(ref: unknown, expected: unknown, previous: WfdRecord | 
 function normalize(value: unknown): Request {
   if (!isWfdRecord(value) || Object.keys(value).some(name => !['snapshotId', 'productId', 'historyMode', 'at', 'heldScope',
     'usableStage', 'selection', 'readMode', 'factorNames', 'keyField', 'filter', 'orderBy', 'topN'].includes(name))
-    || !fixed(value.snapshotId) || !fixed(value.productId)
+    || !fixedProductIdentifier(value.snapshotId) || !fixedProductIdentifier(value.productId)
     || !['snapshot_contents', 'market_known_at', 'system_held_at'].includes(String(value.historyMode))
     || !isWfdRecord(value.selection) || Object.keys(value.selection).some(name => !['dateField', 'date', 'dateFormat', 'keys'].includes(name)))
     fail('STRATEGY_SCREEN_WFD_INPUT', '筛选须显式提供固定快照、产品、历史视角和单日截面；不接受自填数据行、路径或读取权限。');
@@ -179,36 +182,22 @@ export function strategyScreenContract() {
     publication: 'not_requested', execution: 'research_candidates_only', automaticTrading: false };
 }
 
-/** 共用 R1 固定读取，不建立快照、数据库或第二个历史选择器。 */
-export async function screenFixedWfdStrategy(value: unknown, read: Reader, signal?: AbortSignal,
-  assertCurrent: () => void = () => {}, purposeContext?: HistoricalPurposeContext) {
-  const started = performance.now();
-  const request = normalize(value), fields = [...request.factorNames, request.keyField, request.selection.dateField].sort();
-  const replay = request.historyMode !== 'snapshot_contents';
+type FixedReadQuery = R1ProductReadInput & { historyMode: Request['historyMode']; fields: string[]; pageSize: number };
+export type FixedProductRow = WfdRecord & { values: WfdRecord; record_ref: WfdRecord };
+
+/** 固定产品读取共用同一套分页、历史排除、逐行资格及版本检查。只有完整读取后才能使用选中的行。 */
+export async function readCompleteFixedProduct(query: FixedReadQuery, read: FixedProductReader, wait: AbortSignal,
+  active: () => void, purposeContext: HistoricalPurposeContext | undefined,
+  selectRow: (row: FixedProductRow) => boolean, expectedRevision?: string) {
+  const history = readHistorySelection({ ...query }), fields = query.fields;
+  const replay = query.historyMode !== 'snapshot_contents';
   if (replay && (!purposeContext || purposeContext.purpose !== 'historical_compute'
-    || purposeContext.historyMode !== request.historyMode || purposeContext.cutoff !== request.at
+    || purposeContext.historyMode !== query.historyMode || purposeContext.cutoff !== query.at
     || !isExplicitUtcInstant(purposeContext.observedAtUtc) || Date.parse(purposeContext.observedAtUtc) > Date.now() + 300_000
     || !(purposeContext.authority === 'operator-http' && recordKey(purposeContext.requestId)
       || purposeContext.authority === 'user-message' && recordKey(purposeContext.messageId) && purposeContext.quote?.trim())))
-    fail('ALGORITHM_PURPOSE_EVIDENCE_REQUIRED', '历史截面筛选须有本次历史视角和截止对应的受信操作者声明或真实用户消息。');
-  const query: R1ProductReadInput = { snapshotId: request.snapshotId, productId: request.productId,
-    historyMode: request.historyMode, fields, pageSize: request.readMode === 'indexed' ? 500 : 100,
-    ...(request.at ? { at: request.at } : {}), ...(request.heldScope ? { heldScope: request.heldScope, usableStage: request.usableStage } : {}),
-    ...(request.readMode === 'indexed' ? { selection: {
-      dateRange: { field: request.selection.dateField, format: request.selection.dateFormat, start: request.selection.date, end: request.selection.date },
-      ...(request.selection.keys ? { match: { [request.keyField]: request.selection.keys } } : {}),
-    } } : {}) };
-  const history = readHistorySelection({ ...query });
-  const wait = AbortSignal.any([AbortSignal.timeout(STRATEGY_SCREEN_READ_LIMITS.timeoutMs), ...(signal ? [signal] : [])]);
-  const active = () => {
-    wait.throwIfAborted(); assertCurrent();
-    if (performance.now() - started >= STRATEGY_SCREEN_READ_LIMITS.timeoutMs)
-      fail('STRATEGY_SCREEN_WFD_BUDGET', '固定读取及筛选超过 60 秒预算。');
-  };
-  const records: Record<string, unknown>[] = [], references: WfdRecord[] = [];
-  const requestedKeys = request.selection.keys ? new Set(request.selection.keys) : null;
-  const recordIds = new Set<string>(), cursors = new Set<string>(), selectedKeys = new Set<string>();
-  const fieldMetadata: Record<string, unknown> = {};
+    fail('ALGORITHM_PURPOSE_EVIDENCE_REQUIRED', '历史读取须有本次历史视角和截止对应的受信操作者声明或真实用户消息。');
+  const recordIds = new Set<string>(), cursors = new Set<string>();
   let cursor: string | undefined, identity: string | undefined, queryHash: string | undefined, partitionProof: string | undefined;
   let total: number | undefined, scannedRows = 0, pages = 0, bytes = 0, connection: R1ProductRead['connection'] | undefined;
   let datasetId: unknown, knowledgeCutoff: unknown, historicalExclusions: WfdRecord[] = [];
@@ -219,21 +208,28 @@ export async function screenFixedWfdStrategy(value: unknown, read: Reader, signa
     active();
     const response = await read({ ...query, ...(cursor ? { cursor } : {}) }, wait);
     active();
+    if (!isWfdRecord(response?.result) || !isWfdRecord(response.connection))
+      fail('STRATEGY_SCREEN_WFD_RESPONSE', '受信读取缺少固定产品或连接身份。');
     const result = response.result, page = result.page;
-    if (response.snapshotId !== request.snapshotId || response.productId !== request.productId || response.historyMode !== request.historyMode
-      || result.snapshot_id !== request.snapshotId || result.product_id !== request.productId || result.history_mode !== request.historyMode
+    if (response.snapshotId !== query.snapshotId || response.productId !== query.productId || response.historyMode !== query.historyMode
+      || result.snapshot_id !== query.snapshotId || result.product_id !== query.productId || result.history_mode !== query.historyMode
       || canonicalWfdJson(result.knowledge_cutoff ?? null) !== canonicalWfdJson(history.cutoff)
       || result.held_scope !== history.heldScope || result.usable_stage !== history.usableStage
       || canonicalWfdJson(result.fields) !== canonicalWfdJson(fields) || !isWfdRecord(page) || !Array.isArray(result.rows)
       || result.rows.length > query.pageSize! || page.returned_rows !== result.rows.length || !Number.isSafeInteger(page.total_rows)
       || Number(page.total_rows) < 0 || typeof page.has_more !== 'boolean' || typeof result.complete !== 'boolean'
+      || page.has_more && result.complete || page.page_complete !== undefined && page.page_complete !== !page.has_more
+      || page.page_size !== undefined && page.page_size !== query.pageSize
       || !Array.isArray(result.diagnostics) || typeof result.query_hash !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(result.query_hash))
       fail('STRATEGY_SCREEN_WFD_RESPONSE', '固定读取的身份、字段、查询摘要或分页计数无法核对。');
-    if (result.diagnostics.some(item => !knownHistoricalExclusion(item, request))
+    if (result.diagnostics.some(item => !knownHistoricalExclusion(item, query))
       || result.diagnostics_total !== undefined && result.diagnostics_total !== result.diagnostics.length
-      || !page.has_more && result.complete !== true)
+      || !page.has_more && !result.complete)
       fail('STRATEGY_SCREEN_WFD_INCOMPLETE', 'WFD 返回不确定诊断、未识别的排除或未完整读取；不能把局部截面当成完整样本排名。');
     versions = productVersions(result);
+    if (expectedRevision !== undefined && versions.definitionRef != null
+      && (!isWfdRecord(versions.definitionRef) || versions.definitionRef.version !== expectedRevision))
+      fail('PURE_OPERATOR_DEFINITION_MISMATCH', '固定产品定义修订与请求不一致。');
     const currentVersionDigest = wfdSha256(canonicalWfdJson(versions));
     if (versionDigest !== undefined && currentVersionDigest !== versionDigest) mixedDefinition();
     versionDigest = currentVersionDigest;
@@ -243,7 +239,7 @@ export async function screenFixedWfdStrategy(value: unknown, read: Reader, signa
       historicalExclusions: result.diagnostics, versionDigest });
     const indexed = isWfdRecord(result.indexed_tabular) ? result.indexed_tabular : null;
     const currentProof = indexed ? canonicalWfdJson(indexed) : null;
-    if (request.readMode === 'indexed' && (!indexed || !Array.isArray(indexed.missing_partitions) || indexed.missing_partitions.length))
+    if (query.selection !== undefined && (!indexed || !Array.isArray(indexed.missing_partitions) || indexed.missing_partitions.length))
       fail('STRATEGY_SCREEN_WFD_INCOMPLETE', '索引日期范围有缺失分区或没有固定表格证明。');
     if (identity !== undefined && identity !== currentIdentity || queryHash !== undefined && queryHash !== result.query_hash
       || total !== undefined && total !== page.total_rows || partitionProof !== undefined && partitionProof !== currentProof)
@@ -258,61 +254,34 @@ export async function screenFixedWfdStrategy(value: unknown, read: Reader, signa
     // WFD 的 remaining_rows 是游标之后、取本页之前的精确余量。
     if (page.remaining_rows !== total - scannedRows + result.rows.length || page.has_more !== (scannedRows < total))
       fail('STRATEGY_SCREEN_WFD_RESPONSE', '固定产品分页余量与本页起点、总数或续页标记不一致。');
+    const excludedVersions = expectedRevision && replay ? new Set(historicalExclusions.map(item => item.revision_id).filter(fixedProductIdentifier)) : null;
     for (const raw of result.rows) {
       if (!isWfdRecord(raw) || !isWfdRecord(raw.record_ref) || !isWfdRecord(raw.values))
         fail('STRATEGY_SCREEN_WFD_RESPONSE', '固定行缺少值对象或记录引用。');
-      checkHistoricalRow(raw, request);
+      checkHistoricalRow(raw, query);
       const ref = raw.record_ref;
       // 普通产品的固定读取允许最小 logical_key/revision_id 引用，外层已绑定快照及产品。
       // 若行引用显式携带身份，仍必须与受信读取相符；不补造来源字段。
-      if (raw.product_id !== undefined && raw.product_id !== request.productId
-        || ref.product_id !== undefined && ref.product_id !== request.productId
-        || ref.snapshot_id !== undefined && ref.snapshot_id !== request.snapshotId
-        || !recordKey(ref.logical_key ?? ref.record_id) || !fixed(ref.revision_id))
+      if (raw.snapshot_id !== undefined && raw.snapshot_id !== query.snapshotId
+        || raw.product_id !== undefined && raw.product_id !== query.productId
+        || ref.product_id !== undefined && ref.product_id !== query.productId
+        || ref.snapshot_id !== undefined && ref.snapshot_id !== query.snapshotId
+        || !recordKey(ref.logical_key ?? ref.record_id) || !fixedProductIdentifier(ref.revision_id))
         fail('STRATEGY_SCREEN_WFD_RESPONSE', '记录引用与所选固定快照、产品或版本不符。');
-      const recordIdentity = canonicalWfdJson(ref);
+      if (excludedVersions?.has(ref.revision_id))
+        fail('PURE_OPERATOR_HISTORICAL_CONFLICT', '同一固定版本同时出现在合格行与排除证据中。');
+      const recordIdentity = expectedRevision ? String(ref.logical_key ?? ref.record_id) : canonicalWfdJson(ref);
       if (recordIds.has(recordIdentity)) fail('STRATEGY_SCREEN_WFD_RESPONSE', '固定读取重复返回同一行，未静默去重。');
       recordIds.add(recordIdentity);
-      const values = raw.values, dateCell = values[request.selection.dateField];
-      if (!isWfdRecord(dateCell) || dateCell.value_state !== 'valid_value' || typeof dateCell.value !== 'string')
-        fail('STRATEGY_SCREEN_CROSS_SECTION_UNKNOWN', '存在日期缺失或非有效日期状态，不能证明该行是否属于目标截面。');
-      const dateValue = request.selection.dateFormat === 'YYYYMMDD' && /^\d{8}$/u.test(dateCell.value)
-        ? `${dateCell.value.slice(0, 4)}-${dateCell.value.slice(4, 6)}-${dateCell.value.slice(6)}` : dateCell.value;
-      if (!day(dateValue) || request.selection.dateFormat === 'YYYYMMDD' && !/^\d{8}$/u.test(dateCell.value))
-        fail('STRATEGY_SCREEN_CROSS_SECTION_UNKNOWN', 'WFD 日期原值与显式格式不符。');
-      if (dateValue !== request.selection.date) {
-        if (request.readMode === 'indexed') fail('STRATEGY_SCREEN_WFD_RESPONSE', '日期索引返回目标截面之外的行。');
-        continue;
-      }
-      const keyCell = values[request.keyField];
-      if (!isWfdRecord(keyCell) || keyCell.value_state !== 'valid_value' || !key(keyCell.value))
-        fail('STRATEGY_SCREEN_CROSS_SECTION_UNKNOWN', '截面行没有有效、明确的标的字段。');
-      if (requestedKeys && !requestedKeys.has(keyCell.value)) {
-        if (request.readMode === 'indexed') fail('STRATEGY_SCREEN_WFD_RESPONSE', '索引返回明确标的集合之外的行。');
-        continue;
+      if (!selectRow({ ...raw, values: raw.values, record_ref: ref })) continue;
+      if (expectedRevision !== undefined) {
+        const definition = raw.definition_ref ?? versions.definitionRef;
+        if (!isWfdRecord(definition) || definition.version !== expectedRevision)
+          fail('PURE_OPERATOR_DEFINITION_MISMATCH', '行的固定定义修订与请求不一致。');
       }
       if (!versions.hasContract && raw.contract_ref == null) mixedDefinition();
       rowContract = checkRowVersion(raw.contract_ref, versions.contractRef, rowContract);
       rowDefinition = checkRowVersion(raw.definition_ref, versions.definitionRef, rowDefinition);
-      if (selectedKeys.has(keyCell.value)) fail('STRATEGY_SCREEN_CROSS_SECTION_UNKNOWN', '同一截面标的有多行或多个版本，必须先明确数据口径。');
-      selectedKeys.add(keyCell.value);
-      const record: Record<string, unknown> = { [request.keyField]: keyCell.value };
-      for (const name of request.factorNames) {
-        const cell = values[name];
-        const reportedZero = isWfdRecord(cell) && cell.value_state === 'reported_zero';
-        if (reportedZero && !isNumericReportedZero(cell.data_type, cell.value))
-          fail('STRATEGY_SCREEN_WFD_RESPONSE', '因子的 reported_zero 状态要求 decimal 或 integer 类型及明确的零值。');
-        const usable = isWfdRecord(cell) && (cell.value_state === 'valid_value' || reportedZero);
-        // reported_zero 是有来源声明的有效零；其余非值态即使携带数值仍保持缺项。
-        record[name] = usable ? cell.value : null;
-        if (usable) {
-          const metadata = { dataType: cell.data_type ?? null, unit: cell.unit ?? null };
-          if (Object.hasOwn(fieldMetadata, name) && canonicalWfdJson(fieldMetadata[name]) !== canonicalWfdJson(metadata))
-            fail('STRATEGY_SCREEN_FIELD_CHANGED', '同一因子在截面中存在不同数据类型或单位口径。');
-          fieldMetadata[name] = metadata;
-        }
-      }
-      records.push(record); references.push(ref);
     }
     if (!page.has_more) {
       if (page.next_cursor !== null || scannedRows !== total)
@@ -327,6 +296,83 @@ export async function screenFixedWfdStrategy(value: unknown, read: Reader, signa
     cursor = page.next_cursor; cursors.add(cursor);
   } while (cursor);
   if (!versions.hasContract && !rowContract) mixedDefinition();
+  const definitionRef = rowDefinition ?? versions.definitionRef;
+  if (expectedRevision !== undefined && (!isWfdRecord(definitionRef) || definitionRef.version !== expectedRevision))
+    fail('PURE_OPERATOR_DEFINITION_MISMATCH', '完整读取缺少预期的定义修订。');
+  return { datasetId, knowledgeCutoff, connection, queryHash, pages, scannedRows, complete: true as const,
+    historicalExclusions: { source: 'WFD', scope: 'fixed_product_not_date_filtered', diagnostics: historicalExclusions },
+    ...(connectionSha256 ? { connectionSha256 } : {}),
+    ...(versions.definitionRefs ? { definitionRefs: versions.definitionRefs } : {}),
+    ...(versions.contractVersions ? { contractVersionsSha256: wfdSha256(canonicalWfdJson(versions.contractVersions)) } : {}),
+    ...((rowContract ?? versions.contractRef) ? { contractRef: rowContract ?? versions.contractRef } : {}),
+    ...((rowDefinition ?? versions.definitionRef) ? { definitionRef: rowDefinition ?? versions.definitionRef } : {}),
+  };
+}
+
+/** 共用 R1 固定读取，不建立快照、数据库或第二个历史选择器。 */
+export async function screenFixedWfdStrategy(value: unknown, read: FixedProductReader, signal?: AbortSignal,
+  assertCurrent: () => void = () => {}, purposeContext?: HistoricalPurposeContext) {
+  const started = performance.now();
+  const request = normalize(value), fields = [...request.factorNames, request.keyField, request.selection.dateField].sort();
+  const replay = request.historyMode !== 'snapshot_contents';
+  const query: FixedReadQuery = { snapshotId: request.snapshotId, productId: request.productId,
+    historyMode: request.historyMode, fields, pageSize: request.readMode === 'indexed' ? 500 : 100,
+    ...(request.at ? { at: request.at } : {}), ...(request.heldScope ? { heldScope: request.heldScope, usableStage: request.usableStage } : {}),
+    ...(request.readMode === 'indexed' ? { selection: {
+      dateRange: { field: request.selection.dateField, format: request.selection.dateFormat, start: request.selection.date, end: request.selection.date },
+      ...(request.selection.keys ? { match: { [request.keyField]: request.selection.keys } } : {}),
+    } } : {}) };
+  const wait = AbortSignal.any([AbortSignal.timeout(STRATEGY_SCREEN_READ_LIMITS.timeoutMs), ...(signal ? [signal] : [])]);
+  const active = () => {
+    wait.throwIfAborted(); assertCurrent();
+    if (performance.now() - started >= STRATEGY_SCREEN_READ_LIMITS.timeoutMs)
+      fail('STRATEGY_SCREEN_WFD_BUDGET', '固定读取及筛选超过 60 秒预算。');
+  };
+  const records: Record<string, unknown>[] = [], references: WfdRecord[] = [];
+  const requestedKeys = request.selection.keys ? new Set(request.selection.keys) : null;
+  const selectedKeys = new Set<string>();
+  const fieldMetadata: Record<string, unknown> = {};
+  const fixedRead = await readCompleteFixedProduct(query, read, wait, active, purposeContext, raw => {
+    const ref = raw.record_ref;
+    const values = raw.values, dateCell = values[request.selection.dateField];
+    if (!isWfdRecord(dateCell) || dateCell.value_state !== 'valid_value' || typeof dateCell.value !== 'string')
+      fail('STRATEGY_SCREEN_CROSS_SECTION_UNKNOWN', '存在日期缺失或非有效日期状态，不能证明该行是否属于目标截面。');
+    const dateValue = request.selection.dateFormat === 'YYYYMMDD' && /^\d{8}$/u.test(dateCell.value)
+      ? `${dateCell.value.slice(0, 4)}-${dateCell.value.slice(4, 6)}-${dateCell.value.slice(6)}` : dateCell.value;
+    if (!day(dateValue) || request.selection.dateFormat === 'YYYYMMDD' && !/^\d{8}$/u.test(dateCell.value))
+      fail('STRATEGY_SCREEN_CROSS_SECTION_UNKNOWN', 'WFD 日期原值与显式格式不符。');
+    if (dateValue !== request.selection.date) {
+      if (request.readMode === 'indexed') fail('STRATEGY_SCREEN_WFD_RESPONSE', '日期索引返回目标截面之外的行。');
+      return false;
+    }
+    const keyCell = values[request.keyField];
+    if (!isWfdRecord(keyCell) || keyCell.value_state !== 'valid_value' || !key(keyCell.value))
+      fail('STRATEGY_SCREEN_CROSS_SECTION_UNKNOWN', '截面行没有有效、明确的标的字段。');
+    if (requestedKeys && !requestedKeys.has(keyCell.value)) {
+      if (request.readMode === 'indexed') fail('STRATEGY_SCREEN_WFD_RESPONSE', '索引返回明确标的集合之外的行。');
+      return false;
+    }
+    if (selectedKeys.has(keyCell.value)) fail('STRATEGY_SCREEN_CROSS_SECTION_UNKNOWN', '同一截面标的有多行或多个版本，必须先明确数据口径。');
+    selectedKeys.add(keyCell.value);
+    const record: Record<string, unknown> = { [request.keyField]: keyCell.value };
+    for (const name of request.factorNames) {
+      const cell = values[name];
+      const reportedZero = isWfdRecord(cell) && cell.value_state === 'reported_zero';
+      if (reportedZero && !isNumericReportedZero(cell.data_type, cell.value))
+        fail('STRATEGY_SCREEN_WFD_RESPONSE', '因子的 reported_zero 状态要求 decimal 或 integer 类型及明确的零值。');
+      const usable = isWfdRecord(cell) && (cell.value_state === 'valid_value' || reportedZero);
+      // reported_zero 是有来源声明的有效零；其余非值态即使携带数值仍保持缺项。
+      record[name] = usable ? cell.value : null;
+      if (usable) {
+        const metadata = { dataType: cell.data_type ?? null, unit: cell.unit ?? null };
+        if (Object.hasOwn(fieldMetadata, name) && canonicalWfdJson(fieldMetadata[name]) !== canonicalWfdJson(metadata))
+          fail('STRATEGY_SCREEN_FIELD_CHANGED', '同一因子在截面中存在不同数据类型或单位口径。');
+        fieldMetadata[name] = metadata;
+      }
+    }
+    records.push(record); references.push(ref);
+    return true;
+  });
   if (request.selection.keys?.some(item => !selectedKeys.has(item)))
     fail('STRATEGY_SCREEN_WFD_INCOMPLETE', '固定数据没有覆盖明确要求的全部标的；未以缺项为零继续排名。');
   active();
@@ -335,16 +381,9 @@ export async function screenFixedWfdStrategy(value: unknown, read: Reader, signa
   active();
   const output = { ...result, inputVersion: STRATEGY_SCREEN_WFD_VERSION, taskType: 'research_candidates' as const,
     evaluatedAtUtc: new Date().toISOString(), replay,
-    fixedRead: { snapshotId: request.snapshotId, productId: request.productId, datasetId, historyMode: request.historyMode,
+    fixedRead: { ...fixedRead, snapshotId: request.snapshotId, productId: request.productId, historyMode: request.historyMode,
       at: request.at ?? null, heldScope: request.heldScope ?? null, usableStage: request.usableStage ?? null,
-      knowledgeCutoff, historicalExclusions: { source: 'WFD', scope: 'fixed_product_not_date_filtered', diagnostics: historicalExclusions },
-      readMode: request.readMode, selection: request.selection, fields, connection, queryHash,
-      ...(connectionSha256 ? { connectionSha256 } : {}),
-      ...(versions.definitionRefs ? { definitionRefs: versions.definitionRefs } : {}),
-      ...(versions.contractVersions ? { contractVersionsSha256: wfdSha256(canonicalWfdJson(versions.contractVersions)) } : {}),
-      ...((rowContract ?? versions.contractRef) ? { contractRef: rowContract ?? versions.contractRef } : {}),
-      ...((rowDefinition ?? versions.definitionRef) ? { definitionRef: rowDefinition ?? versions.definitionRef } : {}),
-      pages, scannedRows, crossSectionRows: records.length, complete: true,
+      readMode: request.readMode, selection: request.selection, fields, crossSectionRows: records.length,
       coverageBasis: 'selected_fixed_product_only_not_all_market', fieldMetadata,
       projectionSha256: wfdSha256(canonicalWfdJson(records)), recordReferencesSha256: wfdSha256(canonicalWfdJson(references)),
       selectedReferences: result.selected.map(item => ({ key: item.key, recordRef: references[item.rowIndex] })) },

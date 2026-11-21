@@ -117,10 +117,10 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
       ] });
       const toolsInLibrary = workspace.toolLibrary!.view().tools;
       assert.deepEqual(toolsInLibrary.filter(tool => tool.status === 'ready').map(tool => tool.id), ALGORITHM_METHOD_IDS);
-      const assetTools = toolsInLibrary.filter(tool => tool.state === 'assets_only');
-      assert.deepEqual(assetTools.map(tool => tool.id),
+      const pureTools = toolsInLibrary.filter(tool => tool.executor === 'typescript');
+      assert.deepEqual(pureTools.map(tool => tool.id),
         ['financial_single_quarter', 'financial_ttm', 'financial_growth', 'financial_ratios', 'price_adjustment']);
-      assert.ok(assetTools.every(tool => tool.status === 'unavailable' && tool.reason?.includes('algorithms.calculate')));
+      assert.ok(pureTools.every(tool => tool.state === 'executable' && tool.status === 'unavailable' && tool.reason?.includes('algorithms.calculate')));
       assert.equal(runtime.currentIdentity().mode, 'user_test');
       const submitted = (await runtime.client.submit(sourceDocument(suppliedCloses))).result;
       assert.equal(submitted.state, 'published_formal', JSON.stringify({ errors: submitted.errors, state: submitted.state }));

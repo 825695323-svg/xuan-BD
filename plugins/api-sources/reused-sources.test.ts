@@ -39,7 +39,7 @@ function fixture(responseBytes: Buffer, status = 200) {
   const permissions = new PermissionService({ database, isRunActive: () => true });
   const files = new FileReferenceService({ database, permissions });
   permissions.grant({ capabilities: (['read', 'write', 'delete'] as const).map(action => directoryCapability(action, artifactRoot)) });
-  for (const origin of ['https://free-api.tickflow.org', 'https://reportapi.eastmoney.com', 'https://data.eastmoney.com', 'https://fuyao.aicubes.cn', 'https://push2his.eastmoney.com'])
+  for (const origin of ['https://free-api.tickflow.org', 'https://reportapi.eastmoney.com', 'https://data.eastmoney.com', 'https://fuyao.aicubes.cn', 'https://push2his.eastmoney.com', 'https://www.sse.com.cn'])
     permissions.grant({ capabilities: [{ action: 'network', target: { kind: 'network', origin } }] });
   // 明确隔离档案路径，不能承接用户本机默认凭据引用。
   const settings = new SourceSettingsService(join(root, 'sources.json'), database, undefined, join(root, 'absent-connections.json'));
@@ -417,6 +417,27 @@ test('Fuyao persists distinct upstream authentication and permission errors with
       await assert.rejects(f.runtime.execute(f.context('source.api.read', args), 'source.api.read', args), code('SOURCE_NO_ELIGIBLE_CONNECTION'));
       const failures = f.events.filter(event => event.type === 'progress' && (event.data as { code?: string })?.code === expected);
       assert.equal(failures.length, 2);
+    } finally { f.close(); }
+  }
+});
+
+
+test('source.fetch 真实下载分支的产物、预览及任务回执共享登记操作，可直接签发适配证据', async () => {
+  for (const [sourceId, operation, params] of [
+    ['eastmoney', 'minute_bars', { symbol: '600001.SH', start: '20260105', end: '20260106' }],
+    ['official_web', 'official_document', { url: 'https://www.sse.com.cn/synthetic.pdf' }],
+  ] as const) {
+    const f = fixture(bytes({ synthetic: true }));
+    try {
+      const args = { sourceId, scopeId: 'CN/A_STOCK', parameters: JSON.stringify(params) };
+      const context = f.context('source.fetch', args);
+      const result = await f.runtime.execute(context, 'source.fetch', args), data = result.data as Record<string, any>;
+      const stored = JSON.parse(f.read(result.artifactIds!.at(-1)!).toString('utf8'));
+      assert.equal(data.operation, operation); assert.equal(data.modelPreview.operation, operation); assert.equal(stored.operation, operation);
+      const evidence = f.completed(context, result);
+      assert.equal(evidence?.operation, operation); assert.equal(evidence?.observedAt, stored.observedAt);
+      assert.ok(Date.parse(stored.observedAt)); assert.equal(evidence?.market, 'cn-a-share');
+      assert.equal(evidence?.receipts[0]?.fileRefId, data.sourceReceipts[0].fileRefId);
     } finally { f.close(); }
   }
 });

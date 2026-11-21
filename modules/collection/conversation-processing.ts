@@ -12,6 +12,7 @@ import type { OperatorContext, ProcessingPlanInput } from './processing-plan.js'
 import type { ProcessingQuality } from '../../contracts/processing-quality.js';
 import { processingQualitySummary } from './processing-quality.js';
 import { isAlgorithmMethodId } from '../financial/algorithm-types.js';
+import { fixedWfdBinding, pureOperatorAvailability } from '../financial/tool-library.js';
 import { algorithmAllowedByRules, frozenAlgorithmCapabilities } from '../financial/basic-algorithm-tool-contract.js';
 import { PRODUCTION_MODULES, stepModuleForAction, readWfdModulePage,
   productionModuleDirectory, factorLibraryView, semanticDictionaryView, sourceSemanticView,
@@ -491,7 +492,9 @@ export class ConversationProcessingBridge {
     const allowed = (id: string) => isAlgorithmMethodId(id) ? algorithmAllowedByRules(id, version) : rules.allFactorDefinitions;
     if (factorId && !allowed(factorId))
       throw new TaskError('ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES', '本会话冻结规则不允许读取该因子定义。');
-    return factorLibraryView(factorId, allowed);
+    const companion = this.options.companion;
+    return factorLibraryView(factorId, allowed, { algorithms: companion.algorithms, hasWfdReader: () => !!fixedWfdBinding(companion.r1Workspace),
+      calculateEnabled: () => companion.productionModuleSwitches?.calculate !== false, hasDailyPublisher: () => !!companion.derivedPublisher }, rules.pureOperators === true);
   }
   private verifyUserMessage(origin: ModelTaskOrigin, messageId: string, quote: string): boolean {
     if (!quote.trim()) return false;
@@ -526,6 +529,7 @@ export class ConversationProcessingBridge {
     return rows.map(row => row.material_id);
   }
   private capabilitiesView(origin: ModelTaskOrigin) {
+    const version = this.options.core.runConfiguration(origin.parentRunId)?.internalAgentRules?.version;
     const service = this.options.companion.processing!;
     const rows = this.options.database.connection.prepare(`SELECT material_id FROM conversation_material_links
       WHERE origin_json LIKE ? ORDER BY created_at DESC,rowid DESC LIMIT 20`)
@@ -572,9 +576,11 @@ export class ConversationProcessingBridge {
       parallelModuleDirectory: productionModuleDirectory({
         processing: service, algorithms: this.options.companion.algorithms && { catalog: () => {
           const catalog = this.options.companion.algorithms!.catalog();
-          const version = this.options.core.runConfiguration(origin.parentRunId)?.internalAgentRules?.version;
           return { ...catalog, methods: catalog.methods.filter(method => algorithmAllowedByRules(method.id, version)) };
         } },
+        pureOperators: frozenAlgorithmCapabilities(version).pureOperators ? pureOperatorAvailability({
+          hasWfdReader: () => !!fixedWfdBinding(this.options.companion.r1Workspace),
+          calculateEnabled: () => this.options.companion.productionModuleSwitches?.calculate !== false }) : undefined,
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
         hasSourceProfiles: !!this.options.companion.sourceFieldProfiles,
         enabled: this.options.companion.productionModuleSwitches,

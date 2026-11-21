@@ -187,3 +187,50 @@ test('算法紧凑详情区分登记参数、关联定义与真实执行，当�
     assert.equal(env.document.querySelector('.object-detail-content > .object-detail-section'), null);
   } finally { await act(() => root.unmount()); globalThis.fetch = previousFetch; env.cleanup(); }
 });
+
+test('统一算法目录展示 20 项并按三类筛选，查看详情与刷新只发送 GET', async () => {
+  const { PreferencesProvider, ToolsPage } = await loadPageComponents();
+  const { ToolLibraryService } = await import('../../../../modules/financial/tool-library.js');
+  const { createRoot } = await import('react-dom/client');
+  const full = new ToolLibraryService({ hasWfdReader: () => true }).view();
+  for (const [language, theme, labels] of [
+    ['zh-CN', 'light', ['全部算法', '行情', '财务', '复权']],
+    ['en', 'dark', ['All algorithms', 'Market', 'Financial', 'Adjustment']],
+  ] as const) {
+    const env = browser(), previous = globalThis.fetch, calls: string[] = [];
+    const root = createRoot(env.document.getElementById('root')!);
+    globalThis.fetch = async (input, init) => {
+      assert.equal(init?.method ?? 'GET', 'GET');
+      const url = String(input); calls.push(url);
+      if (url === '/api/ui/preferences') return reply({ ...preferences, language, theme });
+      assert.equal(url, '/api/ui/tool-library');
+      return reply(full);
+    };
+    try {
+      await act(() => root.render(<PreferencesProvider><ToolsPage /></PreferencesProvider>));
+      assert.equal(env.document.documentElement.dataset.theme, theme);
+      const cards = () => [...env.document.querySelectorAll<HTMLButtonElement>('.object-card')];
+      const filters = [...env.document.querySelectorAll<HTMLButtonElement>('.data-nav-item')];
+      assert.deepEqual(filters.map(el => el.textContent), labels);
+      assert.equal(cards().length, 20); assert.equal(env.document.querySelector('[role="alert"]'), null);
+      for (const [index, count] of [[1, 15], [2, 4], [3, 1], [0, 20]]) {
+        await act(() => filters[index]!.click());
+        assert.equal(filters[index].getAttribute('aria-current'), 'true');
+        assert.equal(cards().length, count);
+        assert.ok(index === 0 || cards().every(el => el.textContent?.includes(labels[index])));
+        await act(() => cards()[0].click());
+        assert.equal(cards()[0].getAttribute('aria-current'), 'true');
+        const detail = env.document.querySelector('.object-detail-content')!.textContent ?? '';
+        assert.match(detail, /algorithms\.capabilities/u); assert.match(detail, /algorithms\.calculate/u);
+        if (index === 3) {
+          assert.match(detail, /forward_qfq/u);
+          assert.match(env.document.querySelector('details')?.textContent ?? '', /adj_factor/u);
+          assert.match(env.document.body.textContent ?? '', /TypeScript/u);
+        }
+      }
+      assert.doesNotMatch(env.document.body.textContent ?? '', /Invalid tool-library response/u);
+      await act(() => env.document.querySelector<HTMLButtonElement>('.object-detail-head button')!.click());
+      assert.deepEqual(calls.filter(url => url !== '/api/ui/preferences'), ['/api/ui/tool-library', '/api/ui/tool-library']);
+    } finally { await act(() => root.unmount()); globalThis.fetch = previous; env.cleanup(); }
+  }
+});

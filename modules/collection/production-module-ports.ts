@@ -6,8 +6,10 @@ import type { R1ProductRead, R1ProductDiscovery } from '../../contracts/r1-contr
 import { readFileSync } from 'node:fs';
 import { ALGORITHM_REGISTRY, ALGORITHM_REGISTRY_VERSION, ALGORITHM_REGISTRY_NOTE,
   registryCounts } from '../financial/algorithm-registry.js';
+import { PURE_OPERATOR_VERSION, pureMethodVersion } from '../financial/algorithm-pure-operators.js';
+import { ToolLibraryService, pureOperatorAvailability, type ToolLibraryOptions } from '../financial/tool-library.js';
 import { ALGORITHM_DEFINITION_SUMMARY, definitionFor } from '../financial/algorithm-definitions.js';
-import { ALGORITHM_RUNTIME, isAlgorithmMethodId } from '../financial/algorithm-types.js';
+import { ALGORITHM_RUNTIME, PURE_OPERATOR_IDS, isAlgorithmMethodId, isPureOperatorId } from '../financial/algorithm-types.js';
 import { MATERIAL_CLEANING_RULES_VERSION, MATERIAL_SEMANTIC_PROPOSAL_VERSION } from './materials/semantic-contracts.js';
 import { compareProfileSemantics, profileFingerprint, profileSemanticGaps, sourceFieldProfileDigest,
   type SourceFieldProfile, type SourceFieldProfileStore, type SemanticProductRegistryStore,
@@ -60,6 +62,7 @@ export function productionModuleDirectory(services: {
   algorithms?: Pick<AlgorithmConversationPort, 'catalog'>;
   hasWfdReader: boolean;
   hasSourceProfiles?: boolean;
+  pureOperators?: ReturnType<typeof pureOperatorAvailability>;
   enabled?: Partial<Record<ProductionModuleId, boolean>>;
 }) {
   const modules = PRODUCTION_MODULES.map(({ id, action, title, source }) => {
@@ -86,13 +89,16 @@ export function productionModuleDirectory(services: {
           feedback: dictionaryBoundary } : {}) };
     }
     if (id === 'calculate') {
-      const methods = services.algorithms?.catalog().methods.filter(method => isAlgorithmMethodId(method.id)).map(method => ({
+      const daily = services.algorithms?.catalog().methods.filter(method => isAlgorithmMethodId(method.id)).map(method => ({
         methodId: method.id, status: method.status, reason: method.reason,
         methodVersion: method.methodVersion, implementationVersion: method.implementationVersion,
       })) ?? [];
+      const pure = services.pureOperators;
+      const methods = [...daily, ...(pure ? PURE_OPERATOR_IDS.map(methodId => ({ methodId, ...pure,
+        methodVersion: pureMethodVersion(methodId), implementationVersion: PURE_OPERATOR_VERSION })) : [])];
       return { id, action, title, source, status: !attached ? 'unplugged' as const
           : methods.some(method => method.status === 'ready') ? 'ready' as const : 'blocked' as const,
-        engine: services.algorithms ? 'python' : 'unavailable', methods,
+        engine: pure ? services.algorithms ? 'python_and_typescript' : 'typescript' : services.algorithms ? 'python' : 'unavailable', methods,
         execution: 'on_demand', history: 'wfd_fixed_snapshot_only',
         wfdRead: services.hasWfdReader, dependencies: [] as string[] };
     }
@@ -193,10 +199,13 @@ export async function readPublishedWfdSemanticDefinition(raw: unknown,
     note: '正式定义只按原 WFD Snapshot 读取；仅查询，不采用/修订口径，也不触发自动标注或计算。' };
 }
 
-export function factorLibraryView(factorId?: string, allowed?: (id: string) => boolean) {
+export function factorLibraryView(factorId?: string, allowed?: (id: string) => boolean, runtime?: ToolLibraryOptions, pureOperators = true) {
   if (factorId !== undefined && (!identifier(factorId) || factorId.length > 128))
     return fail('PRODUCTION_FACTOR_ID', '因子编号格式无效；不能作为动态程序、脚本或表达式。');
-  const registry = allowed ? ALGORITHM_REGISTRY.filter(item => allowed(item.id)) : ALGORITHM_REGISTRY;
+  const tools = runtime ? new ToolLibraryService(runtime).view().tools : ALGORITHM_REGISTRY;
+  // v20/v21 已可查询五项只读定义。保留原目录身份，执行准入仍取该会话的冻结版本。
+  const registry = tools.filter(item => !allowed || allowed(item.id)).map(item => !pureOperators && isPureOperatorId(item.id)
+    ? { ...item, state: 'assets_only' as const, status: 'unavailable' as const, reason: '本会话冻结规则仅允许查阅此定义。' } : item);
   const entries = factorId ? registry.filter(item => item.id === factorId) : registry.slice(0, 50);
   if (factorId && !entries.length) return fail('PRODUCTION_FACTOR_NOT_FOUND', '受信登记中没有该因子编号。');
   return { version: ALGORITHM_REGISTRY_VERSION, kind: 'read_only_factor_library',

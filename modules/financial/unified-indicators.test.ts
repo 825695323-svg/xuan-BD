@@ -376,7 +376,10 @@ def execute(request):
         assert.equal(capabilities.screening.action, contract.screenAction ?? undefined);
         assert.equal(JSON.stringify(await invoke('bd.session.capabilities')).includes('algorithms.screen'), runId === 'run-v21');
         const factors = (await invoke('data.modules.factors')).catalog;
-        const expectedFactors = (frozenVersions.get(runId) ?? 0) >= 20 ? ALGORITHM_REGISTRY.filter(item => item.state === 'assets_only' || methods.some(id => id === item.id)).map(item => item.id) : methods;
+        const readOnlyDefinitions = ['financial_single_quarter', 'financial_ttm', 'financial_growth', 'financial_ratios', 'price_adjustment'];
+        const expectedFactors = (frozenVersions.get(runId) ?? 0) >= 20 ? [...methods, ...readOnlyDefinitions] : methods;
+        for (const factor of factors.items.filter(item => readOnlyDefinitions.includes(item.id)))
+          assert.partialDeepStrictEqual(factor, { state: 'assets_only', status: 'unavailable', execution: 'not_granted_by_library' });
         assert.deepEqual(factors.items.map(item => item.id), expectedFactors);
         assert.equal(factors.total, expectedFactors.length);
         if (!methods.some(method => method === 'alpha191_014')) {
