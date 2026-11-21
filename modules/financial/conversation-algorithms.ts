@@ -271,7 +271,7 @@ export class ConversationAlgorithmBridge {
         ? { action: 'algorithms.calculate', historyMode: String(usage.historyMode), cutoff: String(usage.cutoff),
           snapshotId: reference.snapshotId, productId: reference.productId, methodId: calculation.methodId,
           heldScope: reference.heldScope, usableStage: reference.usableStage } : undefined;
-      const submission = this.options.submissionContext?.(origin, intent);
+      const submission = intent ? this.options.submissionContext?.(origin, intent) : undefined;
       if (intent && !submission) throw new TaskError('ALGORITHM_PURPOSE_EVIDENCE_REQUIRED', '历史计算需要本次真实用户输入中的历史用途声明。');
       const submitted = service.submit('conversation:algorithms:' + context.task.id, calculation, submission);
       const taskId = submitted.taskId;

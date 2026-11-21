@@ -76,7 +76,7 @@ const groups = {
     'modules/collection/conversation-r1.ts', 'modules/collection/r1-record-evidence.ts', 'modules/collection/r1-output-dependencies.ts', 'modules/collection/r1-publication-set-evidence.ts', 'modules/collection/r1-fixed-row-consumption.ts', 'modules/collection/structured-retrieval.ts',
     'modules/financial/basic-algorithm-tool-contract.ts', 'modules/collection/conversation-processing.ts', 'modules/collection/processing-plan.ts', 'modules/collection/data-processing/ocr-claim.ts', 'apps/server/ocr-review.ts', 'apps/server/transcription-review.ts', 'platform/capabilities/transcription/local.ts', 'apps/server/media-review-source.ts', 'platform/capabilities/ocr/evidence.ts',
     'contracts/workspace-services.ts', 'contracts/r1-contracts.ts', 'adapters/database/wfd-product-machine.ts', 'adapters/database/wfd-transport.ts',
-    'platform/config/connections.ts', 'platform/resources/bindings.ts',
+    'adapters/database/wfd-product-connection.ts', 'platform/config/connections.ts', 'platform/resources/bindings.ts',
     'modules/collection/r1-paged-readback.ts', 'modules/collection/r1-event.ts', 'modules/collection/r1-relation.ts',
     'wfd/product/protocol/schemas/wfd-common.schema.json', 'modules/collection/r1-tabular.ts', 'modules/collection/data-processing/global-supply-trade.ts', 'modules/collection/data-processing/financial-fixed.ts', 'modules/collection/candidate-service.ts', 'modules/collection/candidate-object-storage.ts'],
 } as const;
