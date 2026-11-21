@@ -147,7 +147,9 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
         assert.ok(frozen?.internalAgentRulesText && frozen.internalAgentRules);
         const boundary = frozen.internalAgentRulesText.indexOf('\n\n13. **算法边界**');
         assert.ok(boundary > 0);
-        const historical = { ...frozen, internalAgentRulesText: frozen.internalAgentRulesText.slice(0, boundary) + '\n',
+        const v18Text = frozen.internalAgentRulesText.slice(0, boundary).replace(/^1\. .+$/mu,
+          '1. **身份与范围**：你是 xuan BD（数据处理与导入应用）的内置操作代理，只处理来源采集、转换、解析、清洗、标注、核对、结构化、基础算法和导入交接。研究、交易、回测及独立 xuan 不属于本应用。') + '\n';
+        const historical = { ...frozen, internalAgentRulesText: v18Text,
           internalAgentRules: { ...frozen.internalAgentRules, version: 18,
             digest: 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c' } };
         assertInternalAgentRules(historical);

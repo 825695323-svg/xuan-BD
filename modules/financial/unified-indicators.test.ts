@@ -186,7 +186,7 @@ describe('统一指标真实 Python 执行与独立复核',
     }
 
     const cases = [
-      ['macd', 'macd', macdParameters],
+      ['macd', 'macd', macdParameters, factorPrices],
       ['ma', 'ma', { period: 3 }],
       ['ema', 'ema', { period: 4, init: 'first_valid' }],
       ['rsi', 'rsi', { period: 3 }],
