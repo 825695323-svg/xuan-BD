@@ -191,43 +191,23 @@ function detailMetadata(literal: string): Record<string, JsonValue> | null {
   return values;
 }
 
-const kwBreakPattern = '(?:[^\\S\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]+[^\\S\\r\\n\\u2028\\u2029]*)?';
-const relatedKwPattern = `(?:相${kwBreakPattern}关${kwBreakPattern}阅${kwBreakPattern}读`
-  + `|相${kwBreakPattern}关${kwBreakPattern}研${kwBreakPattern}报`
-  + `|推${kwBreakPattern}荐${kwBreakPattern}阅${kwBreakPattern}读`
-  + `|延${kwBreakPattern}伸${kwBreakPattern}阅${kwBreakPattern}读)`;
-const relatedTitle = new RegExp(`^[【[(\\s（]*${relatedKwPattern}(?:$|[\\s】\\])））：:—\\-·•]+|(?=[《「【[(（]|\\[\\d{1,3}\\]|[(（]\\d{1,3}[)）]|\\d{1,3}(?:\\.(?!\\d)|[、)）])|[①-⑳]))`, 'u');
-const relatedHeadingAtBoundary = new RegExp(`^${relatedKwPattern}(?:$|(?:\\s*[】\\])））：:—\\-·•]+)+|\\s+|(?=[《「【[(（]|\\[\\d{1,3}\\]|[(（]\\d{1,3}[)）]|\\d{1,3}(?:\\.(?!\\d)|[、)）])|[①-⑳]))`, 'u');
-const relatedAfterAnchor = new RegExp(`^${relatedKwPattern}(?:$|(?:\\s*[】\\])））：:—\\-·•]+)+|(?=\\s*(?:[《「【[(（]|\\[\\d{1,3}\\]|[(（]\\d{1,3}[)）]|\\d{1,3}(?:\\.(?!\\d)|[、)）])|[①-⑳])))`, 'u');
-const relatedBeforeTarget = new RegExp(`(?:^|(?<=[\\s。！？；.!?])|(?<=(?:^|[\\s。！？；.!?])[【[(（]))${relatedKwPattern}[\\s】\\])））：:—\\-·•]*$`, 'u');
-const relatedWrapperTitle = new RegExp(`^[【[(\\s（]*${relatedKwPattern}[\\s】\\])））：:]*$`, 'u');
-const relatedBareKeywordCore = new RegExp(`^[【[]*\\s*${relatedKwPattern}(?:\\s*[】\\])）：:—\\-·•]+)*`, 'u');
-const titleLinkRightBoundary = /^(?:[\s】\])））：:—\-·•《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])/u;
-const inlineRelatedHeading = new RegExp(`(?:^|(?<=[\\s。！？；.!?])|(?<=(?:^|[\\s。！？；.!?])[【[(（]))(${relatedKwPattern})(?:$|[\\s】\\])））：:—\\-·•]+|(?=[《「【[(（]|\\[\\d{1,3}\\]|[(（]\\d{1,3}[)）]|\\d{1,3}(?:\\.(?!\\d)|[、)）])|[①-⑳]))`, 'gu');
-const mainAttachmentHeading = /^[【[(\s]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)(?:$|[\s】\])：:—\-·•（(])/u;
-const mainAttachmentWrapperTitle = /^[【[(\s（]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)[\s】\])））：:]*$/u;
-const leadingListItem = /^[\s\n]*(?:\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])(?=$|[\s\n\p{L}\p{N}《「【])/u;
-const proseBodyCueGlobal = /(?:详见正文|参见正文|请见正文|见正文|详见下文|参见下文|见下文|详见本?报告|参见本?报告|请见本?报告|详见本?研报|参见本?研报|请见本?研报|本(?:研报|报告)的?(?:下载地址|原文地址|下载链接|原文链接|下载入口|原文|附件)(?:见|参见|详见|请见|如下|在此)|请参阅|正文说明)/gu;
-const proseDownloadTailCue = /(?:下载地址|原文地址|下载链接|原文链接|下载入口|本?研报附件|正文附件|原文附件|附件|原文|下载|入口|链接)见[\s：:]*$/u;
-const foreignReportRefCue = /(?:上一|其他|另一|他稿)/u;
-const proseAnchorText = /^(?:详见|参见|请见|请参阅|见)?(?:正文|下文|上文|本?(?:研报|报告))(?:说明|内容|分析|第\s*\d+\s*[节章条页])?[。！？；.!?\s]*$/u;
-const midSentencePrevChar = /[\p{L}\p{N}，,、”’"'）)\]]/u;
-const lineOrSentenceBreakChar = /[\r\n\u2028\u2029。！？；.!?]/u;
-const horizWhitespaceChar = /[^\S\r\n\u2028\u2029]/u;
-const explicitSectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt';
-const rootBoundaryContainers = '#zwinfo,article,section,main,body,html';
+const rootBoundaryContainers = '#zwinfo,main,body,html';
 const relatedSelector = 'aside,nav,footer,[role="navigation"],[aria-label*="相关"],[aria-label*="推荐"],[aria-label*="延伸阅读"],'
   + '[class*="related" i],[id*="related" i],[class*="recommend" i],[id*="recommend" i],.rel-list,.xgyd,.xgyb';
-const inlineFlowElements = 'span,strong,b,em,i,small,u,mark,font,sub,sup,label,abbr,cite,code,time,ins,del,s,q,bdi,bdo,ruby,rt,rp,kbd,samp,var,data,dfn';
-const decorativeInlineTags = new Set(['WBR', 'IMG', 'INPUT', 'SVG', 'PICTURE', 'SOURCE', 'CANVAS']);
-const isolatedContainerTags = new Set([
-  'HEAD', 'ARTICLE', 'SECTION', 'MAIN', 'BODY', 'HTML',
-  'DETAILS', 'FIGURE', 'FIELDSET', 'DIALOG', 'TABLE', 'BLOCKQUOTE',
-  'UL', 'OL', 'LI', 'DD', 'DL',
+const inlineFlowTags = new Set([
+  'A', 'SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL', 'U', 'MARK', 'FONT',
+  'SUB', 'SUP', 'LABEL', 'ABBR', 'CITE', 'CODE', 'TIME', 'INS', 'DEL',
+  'S', 'Q', 'BDI', 'BDO', 'RUBY', 'RT', 'RP', 'KBD', 'SAMP', 'VAR',
+  'DATA', 'DFN', 'BR', 'HR', 'WBR', 'IMG', 'INPUT', 'SVG', 'PICTURE',
+  'SOURCE', 'CANVAS',
+]);
+const flushInlineTags = new Set(['A', 'BR', 'HR', 'WBR', 'IMG', 'INPUT', 'SVG', 'PICTURE', 'SOURCE', 'CANVAS']);
+const formControlTags = new Set([
   'FORM', 'SELECT', 'OPTION', 'OPTGROUP', 'TEXTAREA', 'BUTTON', 'DATALIST', 'OUTPUT',
 ]);
-const listTags = new Set(['UL', 'OL', 'LI', 'DL']);
+const isolatedAuxiliaryTags = new Set(['HEAD', 'DETAILS', 'FIGURE', 'DIALOG', ...formControlTags]);
 const nonContentTags = new Set(['META', 'LINK', 'TITLE', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+const relatedKeywordsWithCountGuard = new Set(['相关阅读', '推荐阅读', '延伸阅读']);
 
 function isEastmoneyPdfHref(href: string | null, baseUrl: string): boolean {
   if (!href) return false;
@@ -243,231 +223,15 @@ function isEastmoneyPdfHref(href: string | null, baseUrl: string): boolean {
   return /^\/pdf\/H3_AP\d{8,20}_1\.pdf$/u.test(url.pathname);
 }
 
-function appendNormalizedOwnText(current: string, piece: string, limit = 128): string {
-  if (!piece || current.length >= limit) return current;
-  let out = current;
-  let lastCh = out.length > 0 ? out[out.length - 1]! : '';
-  for (let i = 0; i < piece.length && out.length < limit; i += 1) {
-    const ch = piece[i]!;
-    if (/[\r\n\u2028\u2029]/u.test(ch)) {
-      if (lastCh === ' ') {
-        out = out.slice(0, -1) + '\n';
-        lastCh = '\n';
-      } else if (lastCh !== '\n') {
-        out += '\n';
-        lastCh = '\n';
-      }
-    } else if (/\s/u.test(ch)) {
-      if (lastCh !== ' ' && lastCh !== '\n') {
-        out += ' ';
-        lastCh = ' ';
-      }
-    } else {
-      out += ch;
-      lastCh = ch;
-    }
-  }
-  return out;
-}
-
-function headingLevel(element: Element): number {
-  if (/^H[1-6]$/u.test(element.tagName)) return Number(element.tagName[1]);
-  const aria = element.getAttribute('aria-level');
-  return aria && /^[1-6]$/u.test(aria) ? Number(aria) : 2;
-}
-
-type DomFlags = {
-  canFlattenInline: WeakMap<Element, boolean>;
-  hasRootBoundary: WeakMap<Element, boolean>;
-  hasNestedExplicitHeading: WeakMap<Element, boolean>;
-  stopsOuterRelated: WeakMap<Element, boolean>;
-  hasCandidateBeforeHeading: WeakMap<Element, boolean>;
-  ownText: WeakMap<Element, string>;
-};
-
-function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
-  const canFlattenInline = new WeakMap<Element, boolean>();
-  const hasRootBoundary = new WeakMap<Element, boolean>();
-  const hasNestedExplicitHeading = new WeakMap<Element, boolean>();
-  const stopsOuterRelated = new WeakMap<Element, boolean>();
-  const hasCandidateBeforeHeading = new WeakMap<Element, boolean>();
-  const isIsolatedBoundary = new WeakMap<Element, boolean>();
-  const ownText = new WeakMap<Element, string>();
-  const hasAnchorOrFrame = new WeakMap<Element, boolean>();
-  const stack: Array<{
-    node: Element;
-    parentIsZwinfo: boolean;
-    inZwinfo: boolean;
-    inDownloadBox: boolean;
-    hasEncodeUrl: boolean;
-    inList: boolean;
-    needOwnText: boolean;
-    visited: boolean;
-  }> = [];
-  const docChildren: NodeListOf<ChildNode> = document.childNodes;
-  for (let i = docChildren.length - 1; i >= 0; i -= 1) {
-    const child: ChildNode = docChildren[i]!;
-    if (child.nodeType === 1) {
-      stack.push({
-        node: child as Element,
-        parentIsZwinfo: false,
-        inZwinfo: false,
-        inDownloadBox: false,
-        hasEncodeUrl: false,
-        inList: false,
-        needOwnText: false,
-        visited: false,
-      });
-    }
-  }
-  while (stack.length) {
-    const top = stack[stack.length - 1]!;
-    const el = top.node;
-    if (!top.visited) {
-      top.visited = true;
-      const isRel = el.matches(relatedSelector);
-      const isBox = el.matches('.report-download');
-      const isRootSelf = el.matches(rootBoundaryContainers);
-      const isIsoSelf = isRel || isBox || isRootSelf || isolatedContainerTags.has(el.tagName) || nonContentTags.has(el.tagName);
-      isIsolatedBoundary.set(el, isIsoSelf);
-      const selfConsumesOwnText = el.matches(explicitSectionHeadings)
-        || el.tagName === 'A'
-        || (el.hasAttribute('class') && el.matches('[class*="title" i]'));
-      const nextNeedOwnText = selfConsumesOwnText || top.needOwnText;
-      top.needOwnText = nextNeedOwnText;
-      const nextInList = top.inList || listTags.has(el.tagName);
-      top.inList = nextInList;
-      const isZw = el.id === 'zwinfo';
-      const nextInZw = top.inZwinfo || isZw;
-      const nextInBox = top.inDownloadBox || isBox;
-      const nextHasEncode = top.hasEncodeUrl || el.hasAttribute('data-encode-url');
-      top.inZwinfo = nextInZw;
-      top.inDownloadBox = nextInBox;
-      top.hasEncodeUrl = nextHasEncode;
-      const children: NodeListOf<ChildNode> = el.childNodes;
-      for (let i = children.length - 1; i >= 0; i -= 1) {
-        const child: ChildNode = children[i]!;
-        if (child.nodeType === 1) {
-          const ce = child as Element;
-          const childIso = ce.matches(relatedSelector)
-            || ce.matches('.report-download')
-            || ce.matches(rootBoundaryContainers)
-            || isolatedContainerTags.has(ce.tagName)
-            || nonContentTags.has(ce.tagName);
-          stack.push({
-            node: ce,
-            parentIsZwinfo: isZw,
-            inZwinfo: nextInZw,
-            inDownloadBox: nextInBox,
-            hasEncodeUrl: nextHasEncode,
-            inList: nextInList,
-            needOwnText: nextNeedOwnText && !childIso,
-            visited: false,
-          });
-        }
-      }
-      continue;
-    }
-    stack.pop();
-    const isRel = el.matches(relatedSelector);
-    const isBox = el.matches('.report-download');
-    const isRootSelf = el.matches(rootBoundaryContainers);
-    const isIsoSelf = Boolean(isIsolatedBoundary.get(el));
-
-    const isExplicitH = el.matches(explicitSectionHeadings);
-    let rootB = isRootSelf;
-    let nestedH = false;
-    let childStopsOuter = false;
-    let allFlat = true;
-    let linkOrFrameChild = false;
-    const selfIsCandidate = !isRel && !isRootSelf && !nonContentTags.has(el.tagName) && (
-      (
-        el.tagName === 'A'
-        && isEastmoneyPdfHref(el.getAttribute('href'), baseUrl)
-        && (isBox || (top.inZwinfo && el.hasAttribute('download')) || top.inDownloadBox || top.hasEncodeUrl)
-      )
-      || (el.tagName === 'IFRAME' && top.parentIsZwinfo && isEastmoneyPdfHref(el.getAttribute('src'), baseUrl))
-    );
-    let candidateBeforeH = selfIsCandidate;
-    let hitHeading = false;
-    let own = '';
-    const children: NodeListOf<ChildNode> = el.childNodes;
-    for (let i = 0; i < children.length; i += 1) {
-      const child: ChildNode = children[i]!;
-      if (child.nodeType === 3) {
-        if (top.needOwnText && own.length < 128) {
-          own = appendNormalizedOwnText(own, child.textContent ?? '', 128);
-        }
-        continue;
-      }
-      if (child.nodeType !== 1) continue;
-      const ce = child as Element;
-      const childNestedH = ce.matches(explicitSectionHeadings) || Boolean(hasNestedExplicitHeading.get(ce));
-      const ceStopsOuter = Boolean(stopsOuterRelated.get(ce));
-      if (hasRootBoundary.get(ce)) rootB = true;
-      if (childNestedH) nestedH = true;
-      if (ceStopsOuter) childStopsOuter = true;
-      if (!canFlattenInline.get(ce)) allFlat = false;
-      if (ce.tagName === 'A' || ce.tagName === 'IFRAME' || hasAnchorOrFrame.get(ce)) linkOrFrameChild = true;
-      if (!hitHeading && !isRel && !isRootSelf && !nonContentTags.has(el.tagName)) {
-        if (hasCandidateBeforeHeading.get(ce)) candidateBeforeH = true;
-        if (ceStopsOuter) hitHeading = true;
-      }
-      if (top.needOwnText && own.length < 128 && !isIsolatedBoundary.get(ce)) {
-        const piece = ce.tagName === 'BR' || ce.tagName === 'HR' ? '\n' : (ownText.get(ce) ?? '');
-        own = appendNormalizedOwnText(own, piece, 128);
-      }
-    }
-    let selfStopsLevel2 = false;
-    if (isExplicitH && !isIsoSelf && !rootB && !nestedH) {
-      const hText = own.trim();
-      if (hText.length > 0 && hText.length <= 64 && !/[。！？；]/u.test(hText) && !relatedTitle.test(hText)) {
-        selfStopsLevel2 = top.inList
-          ? mainAttachmentHeading.test(hText)
-          : (headingLevel(el) <= 2 || mainAttachmentHeading.test(hText));
-      }
-    }
-    if (selfStopsLevel2 && !selfIsCandidate) candidateBeforeH = false;
-    hasRootBoundary.set(el, rootB);
-    hasNestedExplicitHeading.set(el, nestedH);
-    stopsOuterRelated.set(el, !isIsoSelf && (selfStopsLevel2 || childStopsOuter));
-    hasCandidateBeforeHeading.set(el, candidateBeforeH);
-    hasAnchorOrFrame.set(el, linkOrFrameChild);
-    if (top.needOwnText) ownText.set(el, own);
-    let flat = false;
-    if (el.tagName === 'BR' || el.tagName === 'HR') {
-      flat = true;
-    } else if (decorativeInlineTags.has(el.tagName)) {
-      flat = !linkOrFrameChild && !rootB && !nestedH && allFlat;
-    } else if (el.tagName === 'IFRAME') {
-      flat = !isRel && !isBox;
-    } else if (el.tagName === 'A' || el.matches(inlineFlowElements)) {
-      flat = allFlat
-        && !isRel
-        && !isRootSelf
-        && !isBox
-        && !isExplicitH;
-    }
-    canFlattenInline.set(el, flat);
-  }
-  return {
-    canFlattenInline,
-    hasRootBoundary,
-    hasNestedExplicitHeading,
-    stopsOuterRelated,
-    hasCandidateBeforeHeading,
-    ownText,
-  };
-}
-
 type Scope = {
-  relatedLevel: number | null;
   inRelatedSelector: boolean;
-  inList: boolean;
   isDownloadBox: boolean;
   outerRelated: boolean;
   boxAncestorLocalRelated: boolean;
-  inAttachmentLink: boolean;
+  relatedSeen: boolean;
+  localRelated: boolean;
+  tail: string;
+  pendingRelated: boolean;
 };
 
 type AttrScope = {
@@ -475,7 +239,7 @@ type AttrScope = {
   nearestInfoCode: string | null;
   nearestDownloadBox: Element | null;
   inZwinfo: boolean;
-  inHrefAnchor: boolean;
+  inFormControl: boolean;
 };
 
 type AttachmentInfo = {
@@ -492,801 +256,177 @@ type AttachmentEntry = {
   info: AttachmentInfo;
 };
 
-type RunTarget = {
+type CandidateAnchor = {
   element: Element;
-  start: number;
-  end: number;
   owner: string | null;
   expectedInfoCode: string | null;
-  inRelatedSelf: boolean;
+  downloadBox: Element | null;
+  inRelatedSelector: boolean;
+  poisonedByRelatedDescendant: boolean;
 };
 
-type TitleLinkTrigger = {
-  start: number;
-  end: number;
-  endsWithPunct: boolean;
-  isRoundParen: boolean;
-  isTitleElem: boolean;
-  hasHref: boolean;
-};
-
-function recordRunTargets(
-  targets: RunTarget[],
-  fromIndex: number,
-  toIndex: number,
-  inRelatedSelector: boolean,
-  outerRelated: boolean,
-  localRelated: boolean,
-  downloadBox: Element | null,
-  attachmentMap: WeakSet<Element>,
-  attachments: AttachmentEntry[],
-): void {
-  for (let i = fromIndex; i < toIndex; i += 1) {
-    const t = targets[i]!;
-    if (!attachmentMap.has(t.element)) {
-      attachmentMap.add(t.element);
-      attachments.push({
-        element: t.element,
-        info: {
-          inRelatedSelector: inRelatedSelector || t.inRelatedSelf,
-          outerRelated,
-          localRelated,
-          owner: t.owner,
-          expectedInfoCode: t.expectedInfoCode,
-          downloadBox,
-        },
-      });
-    }
+function markScopeRelated(scope: Scope, candidateAnchorStack: CandidateAnchor[]): void {
+  scope.pendingRelated = false;
+  if (scope.isDownloadBox) scope.localRelated = true;
+  else scope.relatedSeen = true;
+  if (candidateAnchorStack.length > 0) {
+    candidateAnchorStack[candidateAnchorStack.length - 1]!.poisonedByRelatedDescendant = true;
   }
 }
 
-function scanInlineRun(
-  container: Element | Document,
-  nodes: ChildNode[],
-  onlyRun: boolean,
-  followedByCandidate: boolean,
-  baseUrl: string,
-  flags: DomFlags,
-  cur: Scope,
-  attr: AttrScope,
-  attachmentMap: WeakSet<Element>,
-  attachments: AttachmentEntry[],
-): void {
-  type CloseAnchorFrame = {
-    kind: 'closeAnchor';
-    el: Element;
-    start: number;
-    targetIndex: number;
-    hasHref: boolean;
-    hasExplicitReportAttr: boolean;
-  };
-  type CloseTitleFrame = {
-    kind: 'closeTitle';
-    el: Element;
-    start: number;
-    inHref: boolean;
-  };
-  type RunFrame =
-    | {
-        kind: 'node';
-        node: ChildNode;
-        owner: string | null;
-        infoCode: string | null;
-        isTopChild: boolean;
-        hasExplicitReportAttr: boolean;
-      }
-    | CloseAnchorFrame
-    | CloseTitleFrame;
-  const stack: RunFrame[] = [];
-  const initialHasExplicitAttr = attr.nearestEncodeUrl !== null || attr.nearestInfoCode !== null;
-  for (let i = nodes.length - 1; i >= 0; i -= 1) {
-    stack.push({
-      kind: 'node',
-      node: nodes[i]!,
-      owner: attr.nearestEncodeUrl,
-      infoCode: attr.nearestInfoCode,
-      isTopChild: true,
-      hasExplicitReportAttr: initialHasExplicitAttr,
-    });
-  }
-  let runText = '';
-  let inAnchorDepth = 0;
-  let inHrefAnchorDepth = attr.inHrefAnchor ? 1 : 0;
-  let hasNonEmptyTitleElem = false;
-  let hasHrefAnchor = attr.inHrefAnchor;
-  const runTargets: RunTarget[] = [];
-  const titleLinkTriggers: TitleLinkTrigger[] = [];
-  const topAnchorSpans: Array<{ start: number; end: number }> = [];
-  const hrefAnchorSpans: Array<{ start: number; end: number }> = [];
-  const titleSpans: Array<{ start: number; end: number }> = [];
-  const anchorStarts = new Set<number>();
-  const nonEmptyAnchorStarts = new Set<number>();
-  const anchorEnds = new Set<number>();
-  const targetStarts = new Set<number>();
-  while (stack.length) {
-    const frame = stack.pop()!;
-    if (frame.kind === 'closeTitle') {
-      const end = runText.length;
-      if (end > frame.start) {
-        titleSpans.push({ start: frame.start, end });
-        if (!frame.inHref) hasNonEmptyTitleElem = true;
-      }
-      const titleText = (flags.ownText.get(frame.el) ?? '').trim();
-      if (titleText.length > 0 && titleText.length <= 16 && relatedWrapperTitle.test(titleText)) {
-        titleLinkTriggers.push({
-          start: frame.start,
-          end,
-          endsWithPunct: /[】\])））：:—\-·•]$/u.test(titleText),
-          isRoundParen: /^[（(]/u.test(titleText) && !/[：:]/u.test(titleText),
-          isTitleElem: true,
-          hasHref: frame.inHref,
-        });
+function flushPendingRelated(scope: Scope, candidateAnchorStack: CandidateAnchor[]): void {
+  if (scope.pendingRelated) markScopeRelated(scope, candidateAnchorStack);
+}
+
+function feedScopeText(scope: Scope, text: string, candidateAnchorStack: CandidateAnchor[]): void {
+  if (scope.inRelatedSelector || (scope.isDownloadBox ? scope.localRelated : scope.relatedSeen)) return;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (/[\s\u200b-\u200d\ufeff\u00ad]/u.test(ch)) {
+      if (scope.pendingRelated) {
+        markScopeRelated(scope, candidateAnchorStack);
+        return;
       }
       continue;
     }
-    if (frame.kind === 'closeAnchor') {
-      inAnchorDepth -= 1;
-      if (frame.hasHref) inHrefAnchorDepth -= 1;
-      const end = runText.length;
-      if (end > frame.start) {
-        nonEmptyAnchorStarts.add(frame.start);
-        anchorEnds.add(end);
-        if (frame.hasHref) {
-          hrefAnchorSpans.push({ start: frame.start, end });
-        }
-      }
-      const linkText = (flags.ownText.get(frame.el) ?? '').trim();
-      const anchorIsTitle = frame.el.hasAttribute('class') && frame.el.matches('[class*="title" i]');
-      if (anchorIsTitle && end > frame.start) {
-        titleSpans.push({ start: frame.start, end });
-        if (!frame.hasHref && inHrefAnchorDepth === 0) {
-          hasNonEmptyTitleElem = true;
-        }
-      }
-      if (inAnchorDepth === 0 && end > frame.start && linkText.length > 0) {
-        const rawHref = (frame.el.getAttribute('href') ?? '').trim();
-        if (
-          rawHref.length > 0
-          && !rawHref.toLowerCase().startsWith('javascript:')
-          && (frame.hasExplicitReportAttr || !proseAnchorText.test(linkText))
-        ) {
-          topAnchorSpans.push({ start: frame.start, end });
-        }
-      }
-      if (frame.targetIndex !== -1) {
-        const target = runTargets[frame.targetIndex]!;
-        target.end = end;
-        target.inRelatedSelf = linkText.length > 0 && relatedTitle.test(linkText);
-      }
-      if (linkText.length > 0 && linkText.length <= 16 && relatedWrapperTitle.test(linkText)) {
-        titleLinkTriggers.push({
-          start: frame.start,
-          end,
-          endsWithPunct: /[】\])））：:—\-·•]$/u.test(linkText),
-          isRoundParen: /^[（(]/u.test(linkText) && !/[：:]/u.test(linkText),
-          isTitleElem: anchorIsTitle,
-          hasHref: frame.hasHref,
-        });
-      }
-      continue;
-    }
-    const { node } = frame;
-    if (node.nodeType === 3) {
-      const text = node.textContent ?? '';
-      if (text) runText += text;
-      continue;
-    }
-    if (node.nodeType !== 1) continue;
-    const el = node as Element;
-    if (el.tagName === 'BR' || el.tagName === 'HR') {
-      runText += '\n';
-      continue;
-    }
-    if (decorativeInlineTags.has(el.tagName)) continue;
-    const nextOwner = el.getAttribute('data-encode-url') ?? frame.owner;
-    const nextInfoCode = el.getAttribute('data-info-code') ?? frame.infoCode;
-    const nextExplicitAttr = frame.hasExplicitReportAttr
-      || el.hasAttribute('data-encode-url')
-      || el.hasAttribute('data-info-code');
-    if (el.tagName === 'IFRAME') {
-      const isZwinfoDirect = frame.isTopChild && container.nodeType === 1 && (container as Element).id === 'zwinfo';
-      if (isZwinfoDirect && isEastmoneyPdfHref(el.getAttribute('src'), baseUrl)) {
-        targetStarts.add(runText.length);
-        runTargets.push({
-          element: el,
-          start: runText.length,
-          end: runText.length,
-          owner: nextOwner,
-          expectedInfoCode: nextInfoCode,
-          inRelatedSelf: false,
-        });
-      }
-      continue;
-    }
-    if (el.tagName === 'A') {
-      const anchorStart = runText.length;
-      anchorStarts.add(anchorStart);
-      const hasHref = el.hasAttribute('href');
-      if (hasHref) hasHrefAnchor = true;
-      const isCandidate = isEastmoneyPdfHref(el.getAttribute('href'), baseUrl)
-        && ((attr.inZwinfo && el.hasAttribute('download')) || attr.nearestDownloadBox !== null || nextOwner !== null);
-      let targetIndex = -1;
-      if (isCandidate) {
-        targetIndex = runTargets.length;
-        targetStarts.add(anchorStart);
-        runTargets.push({
-          element: el,
-          start: anchorStart,
-          end: anchorStart,
-          owner: nextOwner,
-          expectedInfoCode: nextInfoCode,
-          inRelatedSelf: false,
-        });
-      }
-      inAnchorDepth += 1;
-      if (hasHref) inHrefAnchorDepth += 1;
-      stack.push({
-        kind: 'closeAnchor',
-        el,
-        start: anchorStart,
-        targetIndex,
-        hasHref,
-        hasExplicitReportAttr: nextExplicitAttr,
-      });
-      const ac: NodeListOf<ChildNode> = el.childNodes;
-      for (let i = ac.length - 1; i >= 0; i -= 1) {
-        stack.push({
-          kind: 'node',
-          node: ac[i]!,
-          owner: nextOwner,
-          infoCode: nextInfoCode,
-          isTopChild: false,
-          hasExplicitReportAttr: nextExplicitAttr,
-        });
-      }
-      continue;
-    }
-    if (el.hasAttribute('class') && el.matches('[class*="title" i]')) {
-      stack.push({ kind: 'closeTitle', el, start: runText.length, inHref: inHrefAnchorDepth > 0 });
-    }
-    const ic: NodeListOf<ChildNode> = el.childNodes;
-    for (let i = ic.length - 1; i >= 0; i -= 1) {
-      stack.push({
-        kind: 'node',
-        node: ic[i]!,
-        owner: nextOwner,
-        infoCode: nextInfoCode,
-        isTopChild: false,
-        hasExplicitReportAttr: nextExplicitAttr,
-      });
-    }
-  }
-
-  // 独占块主附件标题停靠（如 <p><span class="title">本研报附件</span></p>），拒绝带后续正文的句子或超链接。
-  if (onlyRun && runTargets.length === 0 && !hasHrefAnchor && !cur.inList && !cur.inRelatedSelector && cur.relatedLevel !== null
-    && container.nodeType === 1 && ((container as Element).matches('[class*="title" i]') || hasNonEmptyTitleElem)
-    && mainAttachmentWrapperTitle.test(runText.trim())) {
-    cur.relatedLevel = null;
-    return;
-  }
-
-  if (cur.inRelatedSelector || cur.relatedLevel !== null) {
-    recordRunTargets(
-      runTargets,
-      0,
-      runTargets.length,
-      cur.inRelatedSelector,
-      cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null),
-      cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null),
-      attr.nearestDownloadBox,
-      attachmentMap,
-      attachments,
-    );
-    return;
-  }
-
-  if (runText.length === 0 && runTargets.length === 0) return;
-
-  const len = runText.length;
-  const nextBoundaryOrNonSpace = new Int32Array(len + 1);
-  const nextElemBoundary = new Int32Array(len + 1);
-  const nextNonSpace = new Int32Array(len + 1);
-  nextBoundaryOrNonSpace[len] = len;
-  nextElemBoundary[len] = len;
-  nextNonSpace[len] = len;
-  for (let i = len - 1; i >= 0; i -= 1) {
-    const isElemStart = nonEmptyAnchorStarts.has(i) || targetStarts.has(i);
-    const isNonSpace = !/\s/u.test(runText[i]!);
-    nextElemBoundary[i] = isElemStart ? i : nextElemBoundary[i + 1]!;
-    nextNonSpace[i] = isNonSpace ? i : nextNonSpace[i + 1]!;
-    if (isElemStart || isNonSpace) {
-      nextBoundaryOrNonSpace[i] = i;
-    } else {
-      nextBoundaryOrNonSpace[i] = nextBoundaryOrNonSpace[i + 1]!;
-    }
-  }
-
-  const titleLeadStarts = new Set<number>();
-  for (let i = 0; i < titleSpans.length; i += 1) {
-    const sp = titleSpans[i]!;
-    const lead = nextNonSpace[sp.start]!;
-    if (lead < sp.end) titleLeadStarts.add(lead);
-  }
-  const anchorDiff = new Int32Array(len + 1);
-  for (let i = 0; i < hrefAnchorSpans.length; i += 1) {
-    const sp = hrefAnchorSpans[i]!;
-    anchorDiff[sp.start] += 1;
-    anchorDiff[sp.end] -= 1;
-  }
-  const midState = new Uint8Array(len + 1);
-  let anchorDepthAt = 0;
-  let lastNonHoriz = '';
-  let roundParenMidSentence = false;
-  for (let i = 0; i < len; i += 1) {
-    anchorDepthAt += anchorDiff[i]!;
-    const ch = runText[i]!;
-    if (ch === '（' || ch === '(') {
-      if (midSentencePrevChar.test(lastNonHoriz)) roundParenMidSentence = true;
-    }
-    let state = titleLeadStarts.has(i) ? 4 : 0;
-    if (anchorDepthAt > 0) state |= 8;
-    if (midSentencePrevChar.test(lastNonHoriz)) state |= 1;
-    if (roundParenMidSentence) state |= 2;
-    midState[i] = state;
-    if (ch === '）' || ch === ')' || lineOrSentenceBreakChar.test(ch)) {
-      roundParenMidSentence = false;
-    }
-    if (lineOrSentenceBreakChar.test(ch)) {
-      lastNonHoriz = '';
-    } else if (!horizWhitespaceChar.test(ch)) {
-      lastNonHoriz = ch;
-    }
-  }
-  midState[len] = (midSentencePrevChar.test(lastNonHoriz) ? 1 : 0) | (roundParenMidSentence ? 2 : 0);
-
-  const clampPostKeywordEnd = (kwEnd: number, rawEnd: number): number => {
-    const bound = nextElemBoundary[kwEnd]!;
-    return bound < rawEnd ? bound : rawEnd;
-  };
-
-  const triggers: number[] = [];
-  if (len > 0) {
-    inlineRelatedHeading.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = inlineRelatedHeading.exec(runText)) !== null) {
-      const mStart = m.index;
-      const kwLen = m[1]!.length;
-      const kwEnd = mStart + kwLen;
-      const rawEnd = clampPostKeywordEnd(kwEnd, mStart + m[0].length);
-      let coreMatchEnd = rawEnd;
-      while (coreMatchEnd > mStart && /\s/u.test(runText[coreMatchEnd - 1]!)) coreMatchEnd -= 1;
-      const matchEnd = nextBoundaryOrNonSpace[coreMatchEnd]!;
-      const st = midState[mStart]!;
-      const isTitleLead = (st & 4) !== 0;
-      const inHrefAnchor = (st & 8) !== 0;
-      if (!isTitleLead) {
-        if (!inHrefAnchor && (st & 2) !== 0 && !/[：:]/u.test(runText.slice(mStart, rawEnd))) {
-          continue;
-        }
-        const tail = runText.slice(kwEnd, rawEnd);
-        const isBareSpaceTail = tail.length > 0 && /^[^\S\r\n\u2028\u2029]+$/u.test(tail);
-        if (isBareSpaceTail && (st & 1) !== 0) {
-          const nextSlice = runText.slice(matchEnd, matchEnd + 16);
-          const followedByMarker = matchEnd === len
-            || nonEmptyAnchorStarts.has(matchEnd)
-            || targetStarts.has(matchEnd)
-            || /^[《「【[(（]/u.test(nextSlice)
-            || leadingListItem.test(nextSlice);
-          if (!followedByMarker) continue;
-        }
-      }
-      triggers.push(matchEnd);
-    }
-    for (const target of runTargets) {
-      if (target.start > 0) {
-        const sliceStart = Math.max(0, target.start - 20);
-        const prefixSlice = (sliceStart > 0 ? 'X' : '') + runText.slice(sliceStart, target.start);
-        if (relatedBeforeTarget.test(prefixSlice)) triggers.push(target.start);
-      }
-      if (target.end < len) {
-        const afterTarget = relatedHeadingAtBoundary.exec(runText.slice(target.end, target.end + 32));
-        if (afterTarget) {
-          const kwMatch = /^(?:相|推|延)[\s\S]*?(?:读|报)/u.exec(afterTarget[0]);
-          const kwEnd = target.end + (kwMatch ? kwMatch[0].length : 4);
-          let coreEndPos = clampPostKeywordEnd(kwEnd, target.end + afterTarget[0].length);
-          while (coreEndPos > target.end && /\s/u.test(runText[coreEndPos - 1]!)) coreEndPos -= 1;
-          triggers.push(nextBoundaryOrNonSpace[coreEndPos]!);
-        }
-      }
-    }
-    for (const endPos of anchorEnds) {
-      if (endPos < len) {
-        const afterAnchor = relatedAfterAnchor.exec(runText.slice(endPos, endPos + 32));
-        if (afterAnchor) {
-          const kwMatch = /^(?:相|推|延)[\s\S]*?(?:读|报)/u.exec(afterAnchor[0]);
-          const kwEnd = endPos + (kwMatch ? kwMatch[0].length : 4);
-          let coreEndPos = clampPostKeywordEnd(kwEnd, endPos + afterAnchor[0].length);
-          while (coreEndPos > endPos && /\s/u.test(runText[coreEndPos - 1]!)) coreEndPos -= 1;
-          triggers.push(nextBoundaryOrNonSpace[coreEndPos]!);
-        } else {
-          const p0 = nextBoundaryOrNonSpace[endPos]!;
-          const bare = relatedBareKeywordCore.exec(runText.slice(p0, p0 + 24));
-          if (bare) {
-            const kwMatch = /^[【[]*\s*(?:相|推|延)[\s\S]*?(?:读|报)/u.exec(bare[0]);
-            const kwEnd = p0 + (kwMatch ? kwMatch[0].length : bare[0].length);
-            const clampedEnd = clampPostKeywordEnd(kwEnd, p0 + bare[0].length);
-            const p1 = nextBoundaryOrNonSpace[clampedEnd]!;
-            if (p1 === len || nonEmptyAnchorStarts.has(p1) || targetStarts.has(p1)) {
-              triggers.push(p1);
-            }
-          }
-        }
-      }
-    }
-  }
-  for (const t of titleLinkTriggers) {
-    const leftOk = t.start === 0
-      || t.isTitleElem
-      || /[\s。！？；.!?【[(（]/u.test(runText[t.start - 1]!)
-      || anchorEnds.has(t.start);
-    if (!leftOk) continue;
-    const nextPos = nextBoundaryOrNonSpace[t.end]!;
-    if (!t.isTitleElem) {
-      const st = midState[t.start]!;
-      if (!t.hasHref && t.isRoundParen && (st & 2) !== 0) continue;
-      if (!t.endsWithPunct && (st & 1) !== 0) {
-        const nextSlice = runText.slice(nextPos, nextPos + 16);
-        const followedByMarker = nextPos === len
-          || nonEmptyAnchorStarts.has(nextPos)
-          || targetStarts.has(nextPos)
-          || /^[】\])））：:—\-·•《「【[(（]/u.test(nextSlice)
-          || leadingListItem.test(nextSlice);
-        if (!followedByMarker) continue;
-      }
-    }
-    const rightOk = t.endsWithPunct
-      || nextPos === len
-      || nonEmptyAnchorStarts.has(nextPos)
-      || targetStarts.has(nextPos)
-      || titleLinkRightBoundary.test(runText.slice(t.end, t.end + 16));
-    if (rightOk) triggers.push(nextPos);
-  }
-  if (triggers.length === 0) {
-    recordRunTargets(runTargets, 0, runTargets.length, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap, attachments);
-    return;
-  }
-  if (triggers.length > 1) {
-    let sorted = true;
-    for (let i = 1; i < triggers.length; i += 1) {
-      if (triggers[i]! < triggers[i - 1]!) {
-        sorted = false;
-        break;
-      }
-    }
-    if (!sorted) {
-      const seen = new Uint8Array(len + 1);
-      for (let i = 0; i < triggers.length; i += 1) seen[triggers[i]!] = 1;
-      triggers.length = 0;
-      for (let pos = 0; pos <= len; pos += 1) {
-        if (seen[pos]) triggers.push(pos);
-      }
-    }
-  }
-
-  const anchorTrimmedEnd = new Map<number, number>();
-  let nonTitleRunText = runText;
-  if (topAnchorSpans.length > 0) {
-    let out = '';
-    let cursor = 0;
-    for (let i = 0; i < topAnchorSpans.length; i += 1) {
-      const span = topAnchorSpans[i]!;
-      let s = span.start;
-      let e = span.end;
-      while (s < e && /\s/u.test(runText[s]!)) s += 1;
-      while (e > s && /\s/u.test(runText[e - 1]!)) e -= 1;
-      if (s < e) anchorTrimmedEnd.set(s, e);
-      if (span.start > cursor) out += runText.slice(cursor, span.start);
-      if (span.end > span.start) out += '\0'.repeat(span.end - span.start);
-      cursor = span.end;
-    }
-    if (cursor < len) out += runText.slice(cursor);
-    nonTitleRunText = out;
-  }
-
-  let targetIdx = 0;
-  let prevGapEnd = 0;
-  let cachedGapEnd = -1;
-  let trimmedEnd = 0;
-  let lastFullStop = -1;
-  let lastProseChar = -1;
-  let coreEnd = -1;
-  let lastNonPunct = -1;
-  let prevCloseGuillemet = -1;
-  let prevCloseCorner = -1;
-  let prevCloseLenticular = -1;
-  let lastProseCueStart = -1;
-  let nonSpaceIdx = 0;
-
-  for (let ti = 0; ti < triggers.length; ti += 1) {
-    const triggerEnd = triggers[ti]!;
-    if (ti > 0 && triggerEnd === triggers[ti - 1]) continue;
-    while (targetIdx < runTargets.length && runTargets[targetIdx]!.start < triggerEnd) targetIdx += 1;
-    const nextTarget = targetIdx < runTargets.length ? runTargets[targetIdx]! : null;
-    const gapEnd = nextTarget ? nextTarget.start : len;
-
-    if (gapEnd !== cachedGapEnd) {
-      const floor = cachedGapEnd === -1 ? 0 : prevGapEnd;
-      prevGapEnd = cachedGapEnd === -1 ? 0 : cachedGapEnd;
-      trimmedEnd = gapEnd;
-      while (trimmedEnd > floor && /\s/u.test(runText[trimmedEnd - 1]!)) trimmedEnd -= 1;
-      lastFullStop = -1;
-      lastProseChar = -1;
-      coreEnd = -1;
-      lastNonPunct = -1;
-      prevCloseGuillemet = -1;
-      prevCloseCorner = -1;
-      prevCloseLenticular = -1;
-      for (let i = trimmedEnd - 1; i >= floor; i -= 1) {
-        const ch = runText[i]!;
-        if (lastFullStop === -1 && nonTitleRunText[i] === '。') lastFullStop = i;
-        if (lastProseChar === -1 && !/[\s【】[\]()（）：:—\-·•]/u.test(ch)) lastProseChar = i;
-        if (coreEnd === -1 && !/[\s"'”’）)】\]]/u.test(ch)) coreEnd = i;
-        if (lastNonPunct === -1) {
-          if (!/[\s。！？；.!?,，:：—\-·•]/u.test(ch)) lastNonPunct = i;
-        } else {
-          if (prevCloseGuillemet === -1 && ch === '》') prevCloseGuillemet = i;
-          if (prevCloseCorner === -1 && ch === '」') prevCloseCorner = i;
-          if (prevCloseLenticular === -1 && ch === '】') prevCloseLenticular = i;
-        }
-        if (
-          lastFullStop !== -1
-          && lastProseChar !== -1
-          && coreEnd !== -1
-          && lastNonPunct !== -1
-          && prevCloseGuillemet !== -1
-          && prevCloseCorner !== -1
-          && prevCloseLenticular !== -1
-        ) {
-          break;
-        }
-      }
-      lastProseCueStart = -1;
-      if (trimmedEnd > floor) {
-        const gapSlice = nonTitleRunText.slice(floor, trimmedEnd);
-        proseBodyCueGlobal.lastIndex = 0;
-        let cm: RegExpExecArray | null;
-        while ((cm = proseBodyCueGlobal.exec(gapSlice)) !== null) {
-          lastProseCueStart = floor + cm.index;
-        }
-        if (nextTarget !== null && !foreignReportRefCue.test(gapSlice)) {
-          const tailStart = Math.max(0, gapSlice.length - 24);
-          const tailSlice = gapSlice.slice(tailStart);
-          const tm = proseDownloadTailCue.exec(tailSlice);
-          if (tm) {
-            const cuePos = floor + tailStart + tm.index;
-            if (cuePos > lastProseCueStart) lastProseCueStart = cuePos;
-          }
-        }
-      }
-      cachedGapEnd = gapEnd;
-      prevGapEnd = gapEnd;
-    }
-
-    if (nonSpaceIdx < triggerEnd) nonSpaceIdx = triggerEnd;
-    while (nonSpaceIdx < trimmedEnd && /\s/u.test(runText[nonSpaceIdx]!)) nonSpaceIdx += 1;
-
-    let isProse: boolean;
-    if (lastProseChar < triggerEnd) {
-      isProse = false;
-    } else {
-      const openChar = nonSpaceIdx < trimmedEnd ? runText[nonSpaceIdx] : '';
-      const closeChar = openChar === '《' ? '》' : openChar === '「' ? '」' : openChar === '【' ? '】' : '';
-      const prevClose = closeChar === '》'
-        ? prevCloseGuillemet
-        : closeChar === '」'
-          ? prevCloseCorner
-          : closeChar === '】'
-            ? prevCloseLenticular
-            : -1;
-      const isBareQuotedTitle = Boolean(
-        closeChar && lastNonPunct > nonSpaceIdx && runText[lastNonPunct] === closeChar
-        && prevClose <= nonSpaceIdx,
-      );
-      const linkedEnd = anchorTrimmedEnd.get(nonSpaceIdx) ?? -1;
-      const isBareLinkedTitle = linkedEnd !== -1 && (linkedEnd === trimmedEnd || linkedEnd === lastNonPunct + 1);
-      const isNumbered = nonSpaceIdx < trimmedEnd && leadingListItem.test(runText.slice(nonSpaceIdx, nonSpaceIdx + 16));
-      if (isNumbered || isBareQuotedTitle || isBareLinkedTitle) {
-        isProse = false;
-      } else if (
-        lastFullStop >= triggerEnd
-        || lastProseCueStart >= triggerEnd
-        || (coreEnd >= nonSpaceIdx && (
-          /[。！？；!?]/u.test(nonTitleRunText[coreEnd]!)
-          || (nonTitleRunText[coreEnd]! === '.' && coreEnd > nonSpaceIdx && !/[\d.]/u.test(runText[coreEnd - 1]!))
-        ))
-      ) {
-        isProse = true;
+    if (scope.pendingRelated) {
+      if (ch === '量') {
+        scope.pendingRelated = false;
       } else {
-        isProse = nextTarget === null && !followedByCandidate;
+        markScopeRelated(scope, candidateAnchorStack);
+        return;
       }
     }
-    if (isProse) continue;
-
-    recordRunTargets(runTargets, 0, targetIdx, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap, attachments);
-    recordRunTargets(
-      runTargets,
-      targetIdx,
-      runTargets.length,
-      false,
-      cur.outerRelated || !cur.isDownloadBox,
-      cur.boxAncestorLocalRelated || cur.isDownloadBox,
-      attr.nearestDownloadBox,
-      attachmentMap,
-      attachments,
-    );
-    cur.relatedLevel = 2;
-    return;
+    scope.tail = (scope.tail + ch).slice(-4);
+    if (scope.tail === '相关研报') {
+      markScopeRelated(scope, candidateAnchorStack);
+      return;
+    }
+    if (relatedKeywordsWithCountGuard.has(scope.tail)) {
+      scope.pendingRelated = true;
+    }
   }
-
-  recordRunTargets(runTargets, 0, runTargets.length, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap, attachments);
 }
 
-/** 单趟前序文档作用域遍历：严格 O(N)，零递归，隔离根边界与多层下载框。 */
-function analyzeEastmoneySections(document: Document, baseUrl: string) {
-  const flags = precomputeDomFlags(document, baseUrl);
+/**
+ * 严格 fail-closed 的单趟前序文档作用域遍历（O(N)、零递归）：
+ * - 不做自然语言正文猜测；在同一作用域内一旦出现相关/推荐/延伸阅读标记，后续无显式归属证明的候选链接与脚本一律保守拒收；
+ * - 仅允许位于结构隔离容器外、且带有与 zwinfo 元数据一致的 data-encode-url + data-info-code 证明的主下载框跨越外层相关标记。
+ */
+function analyzeEastmoneySections(document: Document, baseUrl: string, expectedEncodeUrl: string) {
   const scripts: Element[] = [];
   const attachmentMap = new WeakSet<Element>();
   const attachments: AttachmentEntry[] = [];
   const scopeStack: Scope[] = [{
-    relatedLevel: null,
     inRelatedSelector: false,
-    inList: false,
     isDownloadBox: false,
     outerRelated: false,
     boxAncestorLocalRelated: false,
-    inAttachmentLink: false,
+    relatedSeen: false,
+    localRelated: false,
+    tail: '',
+    pendingRelated: false,
   }];
   const attrStack: AttrScope[] = [{
     nearestEncodeUrl: null,
     nearestInfoCode: null,
     nearestDownloadBox: null,
     inZwinfo: false,
-    inHrefAnchor: false,
+    inFormControl: false,
   }];
+  const candidateAnchorStack: CandidateAnchor[] = [];
 
   type DfsFrame =
-    | { kind: 'visit'; node: Element; inZwinfoDirect: boolean; followedByCandidate: boolean }
-    | { kind: 'run'; container: Element | Document; nodes: ChildNode[]; onlyRun: boolean; followedByCandidate: boolean; hasRunCandidate: boolean }
-    | { kind: 'leave'; popScope: boolean; popAttr: boolean };
-  const dfsStack: DfsFrame[] = [];
+    | { kind: 'node'; node: ChildNode; parentIsZwinfo: boolean }
+    | { kind: 'leave'; popScope: boolean; popAttr: boolean; resetParentTail: boolean; closeCandidate: boolean };
+  const stack: DfsFrame[] = [];
+  const docChildren: NodeListOf<ChildNode> = document.childNodes;
+  for (let i = docChildren.length - 1; i >= 0; i -= 1) {
+    stack.push({ kind: 'node', node: docChildren[i]!, parentIsZwinfo: false });
+  }
 
-  const enqueueChildren = (
-    container: Element | Document,
-    parentFollowedByCandidate: boolean,
-    includeLeave?: { popScope: boolean; popAttr: boolean },
-  ) => {
-    const children: NodeListOf<ChildNode> = container.childNodes;
-    const steps: DfsFrame[] = [];
-    let runNodes: ChildNode[] = [];
-    let runHasMeaningful = false;
-    let runHasCandidate = false;
-    const flushRun = () => {
-      if (runNodes.length > 0) {
-        if (runHasMeaningful) {
-          steps.push({
-            kind: 'run',
-            container,
-            nodes: runNodes,
-            onlyRun: false,
-            followedByCandidate: false,
-            hasRunCandidate: runHasCandidate,
+  while (stack.length) {
+    const frame = stack.pop()!;
+    if (frame.kind === 'leave') {
+      const activeScope = scopeStack[scopeStack.length - 1]!;
+      if (frame.closeCandidate) {
+        flushPendingRelated(activeScope, candidateAnchorStack);
+        const candidate = candidateAnchorStack.pop()!;
+        if (candidate.poisonedByRelatedDescendant && candidateAnchorStack.length > 0) {
+          candidateAnchorStack[candidateAnchorStack.length - 1]!.poisonedByRelatedDescendant = true;
+        }
+        if (!attachmentMap.has(candidate.element)) {
+          attachmentMap.add(candidate.element);
+          attachments.push({
+            element: candidate.element,
+            info: {
+              inRelatedSelector: candidate.inRelatedSelector || candidate.poisonedByRelatedDescendant || activeScope.inRelatedSelector,
+              outerRelated: activeScope.outerRelated || (!activeScope.isDownloadBox && activeScope.relatedSeen),
+              localRelated: activeScope.boxAncestorLocalRelated || (activeScope.isDownloadBox && activeScope.localRelated),
+              owner: candidate.owner,
+              expectedInfoCode: candidate.expectedInfoCode,
+              downloadBox: candidate.downloadBox,
+            },
           });
         }
-        runNodes = [];
-        runHasMeaningful = false;
-        runHasCandidate = false;
       }
-    };
-    const parentIsZwinfo = container.nodeType === 1 && (container as Element).id === 'zwinfo';
-    for (let i = 0; i < children.length; i += 1) {
-      const child: ChildNode = children[i]!;
-      if (child.nodeType === 3) {
-        const text = child.textContent ?? '';
-        if (text.length > 0) {
-          runNodes.push(child);
-          if (!runHasMeaningful && /\S/u.test(text)) runHasMeaningful = true;
-        }
-      } else if (child.nodeType === 1) {
-        const ce = child as Element;
-        if (flags.canFlattenInline.get(ce)) {
-          runNodes.push(child);
-          runHasMeaningful = true;
-          if (flags.hasCandidateBeforeHeading.get(ce)) runHasCandidate = true;
-        } else {
-          flushRun();
-          steps.push({ kind: 'visit', node: ce, inZwinfoDirect: parentIsZwinfo, followedByCandidate: false });
-        }
+      if (frame.popScope) {
+        flushPendingRelated(activeScope, candidateAnchorStack);
+        scopeStack.pop();
+      } else if (frame.resetParentTail) {
+        flushPendingRelated(activeScope, candidateAnchorStack);
+        activeScope.tail = '';
       }
-    }
-    flushRun();
-    if (steps.length === 1 && steps[0]!.kind === 'run') {
-      steps[0]!.onlyRun = true;
-    }
-    let seenCandidateAfter = parentFollowedByCandidate;
-    for (let i = steps.length - 1; i >= 0; i -= 1) {
-      const step = steps[i]!;
-      if (step.kind === 'run') {
-        step.followedByCandidate = seenCandidateAfter;
-        if (step.hasRunCandidate) seenCandidateAfter = true;
-      } else if (step.kind === 'visit') {
-        const ce = step.node;
-        step.followedByCandidate = seenCandidateAfter;
-        if (flags.hasCandidateBeforeHeading.get(ce)) {
-          seenCandidateAfter = true;
-        } else if (flags.stopsOuterRelated.get(ce)) {
-          seenCandidateAfter = false;
-        }
-      }
-    }
-    if (includeLeave && (includeLeave.popScope || includeLeave.popAttr)) dfsStack.push({ kind: 'leave', ...includeLeave });
-    for (let i = steps.length - 1; i >= 0; i -= 1) dfsStack.push(steps[i]!);
-  };
-
-  enqueueChildren(document, false);
-
-  while (dfsStack.length) {
-    const frame = dfsStack.pop()!;
-    if (frame.kind === 'leave') {
-      if (frame.popScope) scopeStack.pop();
       if (frame.popAttr) attrStack.pop();
       continue;
     }
+
     const cur = scopeStack[scopeStack.length - 1]!;
     const attr = attrStack[attrStack.length - 1]!;
-    if (frame.kind === 'run') {
-      scanInlineRun(
-        frame.container,
-        frame.nodes,
-        frame.onlyRun,
-        frame.followedByCandidate,
-        baseUrl,
-        flags,
-        cur,
-        attr,
-        attachmentMap,
-        attachments,
-      );
+    const { node } = frame;
+    if (node.nodeType === 3) {
+      const text = node.textContent ?? '';
+      if (text) feedScopeText(cur, text, candidateAnchorStack);
       continue;
     }
+    if (node.nodeType !== 1) continue;
 
-    const el = frame.node;
-    if (nonContentTags.has(el.tagName)) continue;
-    if (el.tagName === 'SCRIPT') {
+    const el = node as Element;
+    const tag = el.tagName.toUpperCase();
+    if (nonContentTags.has(tag)) continue;
+
+    if (tag === 'SCRIPT') {
+      flushPendingRelated(cur, candidateAnchorStack);
+      const scriptOwner = el.hasAttribute('data-encode-url') ? el.getAttribute('data-encode-url') : attr.nearestEncodeUrl;
       if (
         !el.hasAttribute('src')
+        && !attr.inFormControl
+        && (scriptOwner === null || scriptOwner === expectedEncodeUrl)
         && !el.matches(relatedSelector)
         && !cur.inRelatedSelector
-        && cur.relatedLevel === null
-        && !cur.boxAncestorLocalRelated
         && !cur.outerRelated
+        && !cur.relatedSeen
+        && !cur.localRelated
+        && !cur.boxAncestorLocalRelated
       ) {
         scripts.push(el);
       }
       continue;
     }
 
-    if (el.tagName === 'IFRAME') {
-      if (frame.inZwinfoDirect && isEastmoneyPdfHref(el.getAttribute('src'), baseUrl) && !attachmentMap.has(el)) {
+    if (tag === 'IFRAME') {
+      flushPendingRelated(cur, candidateAnchorStack);
+      if (frame.parentIsZwinfo && !attr.inFormControl && isEastmoneyPdfHref(el.getAttribute('src'), baseUrl) && !attachmentMap.has(el)) {
         const isRel = cur.inRelatedSelector || el.matches(relatedSelector);
         attachmentMap.add(el);
         attachments.push({
           element: el,
           info: {
             inRelatedSelector: isRel,
-            outerRelated: cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null),
-            localRelated: cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null),
-            owner: el.getAttribute('data-encode-url') ?? attr.nearestEncodeUrl,
-            expectedInfoCode: el.getAttribute('data-info-code') ?? attr.nearestInfoCode,
+            outerRelated: cur.outerRelated || (!cur.isDownloadBox && cur.relatedSeen),
+            localRelated: cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.localRelated),
+            owner: el.hasAttribute('data-encode-url') ? el.getAttribute('data-encode-url') : attr.nearestEncodeUrl,
+            expectedInfoCode: el.hasAttribute('data-info-code') ? el.getAttribute('data-info-code') : attr.nearestInfoCode,
             downloadBox: attr.nearestDownloadBox,
           },
         });
@@ -1297,7 +437,20 @@ function analyzeEastmoneySections(document: Document, baseUrl: string) {
     const isRelSelector = el.matches(relatedSelector);
     const isDownloadBox = el.matches('.report-download');
     const isRootBoundary = el.matches(rootBoundaryContainers);
-    const isIsolated = isRelSelector || isDownloadBox || isRootBoundary || isolatedContainerTags.has(el.tagName);
+    const isFormControl = formControlTags.has(tag);
+    const isIsolated = isRelSelector || isDownloadBox || isRootBoundary || isolatedAuxiliaryTags.has(tag);
+    const isBlockBoundary = isIsolated || !inlineFlowTags.has(tag);
+
+    if (isBlockBoundary) {
+      flushPendingRelated(cur, candidateAnchorStack);
+      cur.tail = '';
+    } else if (flushInlineTags.has(tag)) {
+      flushPendingRelated(cur, candidateAnchorStack);
+    }
+
+    if (isRelSelector && candidateAnchorStack.length > 0) {
+      candidateAnchorStack[candidateAnchorStack.length - 1]!.poisonedByRelatedDescendant = true;
+    }
 
     const hasEncodeAttr = el.hasAttribute('data-encode-url');
     const hasInfoAttr = el.hasAttribute('data-info-code');
@@ -1305,104 +458,65 @@ function analyzeEastmoneySections(document: Document, baseUrl: string) {
     const nextEncodeUrl = hasEncodeAttr ? el.getAttribute('data-encode-url') : attr.nearestEncodeUrl;
     const nextInfoCode = hasInfoAttr ? el.getAttribute('data-info-code') : attr.nearestInfoCode;
 
-    const isPdfAnchor = el.tagName === 'A'
+    const isPdfAnchor = tag === 'A'
+      && !attr.inFormControl
       && isEastmoneyPdfHref(el.getAttribute('href'), baseUrl)
       && (isDownloadBox || (attr.inZwinfo && el.hasAttribute('download')) || attr.nearestDownloadBox !== null || nextEncodeUrl !== null);
 
-    if (isPdfAnchor && !attachmentMap.has(el)) {
-      const outerRel = cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null);
-      const localRel = cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null);
-      const anchorText = (flags.ownText.get(el) ?? '').trim();
-      attachmentMap.add(el);
-      attachments.push({
-        element: el,
-        info: {
-          inRelatedSelector: cur.inRelatedSelector || isRelSelector || relatedTitle.test(anchorText),
-          outerRelated: outerRel,
-          localRelated: localRel,
-          owner: nextEncodeUrl,
-          expectedInfoCode: nextInfoCode,
-          downloadBox: isDownloadBox ? el : attr.nearestDownloadBox,
-        },
+    let popScope = false;
+    if (isIsolated) {
+      popScope = true;
+      const inheritedOuter = cur.outerRelated || (!cur.isDownloadBox && cur.relatedSeen);
+      const inheritedBoxLocal = cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.localRelated);
+      scopeStack.push({
+        inRelatedSelector: cur.inRelatedSelector || isRelSelector,
+        isDownloadBox,
+        outerRelated: inheritedOuter,
+        boxAncestorLocalRelated: inheritedBoxLocal,
+        relatedSeen: false,
+        localRelated: false,
+        tail: '',
+        pendingRelated: false,
       });
     }
 
-    let popScope = false;
-    if (isIsolated || isPdfAnchor) {
-      popScope = true;
-      if (isRelSelector) {
-        scopeStack.push({
-          ...cur,
-          inRelatedSelector: true,
-          inList: cur.inList || listTags.has(el.tagName),
-          inAttachmentLink: cur.inAttachmentLink || isPdfAnchor,
-        });
-      } else if (isDownloadBox) {
-        scopeStack.push({
-          relatedLevel: null,
-          inRelatedSelector: cur.inRelatedSelector,
-          inList: cur.inList || listTags.has(el.tagName),
-          isDownloadBox: true,
-          outerRelated: cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null),
-          boxAncestorLocalRelated: cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null),
-          inAttachmentLink: cur.inAttachmentLink || isPdfAnchor,
-        });
-      } else {
-        scopeStack.push({
-          ...cur,
-          inList: cur.inList || listTags.has(el.tagName),
-          inAttachmentLink: cur.inAttachmentLink || isPdfAnchor,
-        });
-      }
-    }
-
-    const isNonFragmentHrefAnchor = el.tagName === 'A'
-      && el.hasAttribute('href')
-      && (!(el.getAttribute('href') ?? '').trim().startsWith('#') || hasEncodeAttr || hasInfoAttr || nextEncodeUrl !== null || nextInfoCode !== null);
-    const pushAttr = hasEncodeAttr || hasInfoAttr || isZwinfoId || isDownloadBox || isNonFragmentHrefAnchor;
+    const pushAttr = hasEncodeAttr || hasInfoAttr || isZwinfoId || isDownloadBox || isFormControl;
     if (pushAttr) {
       attrStack.push({
         nearestEncodeUrl: nextEncodeUrl,
         nearestInfoCode: nextInfoCode,
         nearestDownloadBox: isDownloadBox ? el : attr.nearestDownloadBox,
         inZwinfo: attr.inZwinfo || isZwinfoId,
-        inHrefAnchor: attr.inHrefAnchor || isNonFragmentHrefAnchor,
+        inFormControl: attr.inFormControl || isFormControl,
       });
     }
 
-    const activeScope = scopeStack[scopeStack.length - 1]!;
-    const activeAttr = attrStack[attrStack.length - 1]!;
-    if (el.matches(explicitSectionHeadings)
-      && !el.matches(`${rootBoundaryContainers},.report-download`)
-      && !flags.hasRootBoundary.get(el)
-      && !flags.hasNestedExplicitHeading.get(el)) {
-      const text = (flags.ownText.get(el) ?? '').trim();
-      if (text.length > 0) {
-        if (relatedTitle.test(text)) {
-          const targetScope = isPdfAnchor && !isIsolated ? cur : activeScope;
-          if (!targetScope.inRelatedSelector) {
-            const level = headingLevel(el);
-            targetScope.relatedLevel = targetScope.relatedLevel === null ? level : Math.min(targetScope.relatedLevel, level);
-            if (targetScope !== activeScope) activeScope.relatedLevel = targetScope.relatedLevel;
-          }
-        } else if (
-          !activeScope.inAttachmentLink
-          && !activeAttr.inHrefAnchor
-          && !activeScope.inRelatedSelector
-          && activeScope.relatedLevel !== null
-          && text.length <= 64
-          && !/[。！？；]/u.test(text)
-        ) {
-          const shouldStop = activeScope.inList
-            ? mainAttachmentHeading.test(text)
-            : (headingLevel(el) <= activeScope.relatedLevel || mainAttachmentHeading.test(text));
-          if (shouldStop) activeScope.relatedLevel = null;
-        }
-      }
+    if (isPdfAnchor) {
+      candidateAnchorStack.push({
+        element: el,
+        owner: nextEncodeUrl,
+        expectedInfoCode: nextInfoCode,
+        downloadBox: isDownloadBox ? el : attr.nearestDownloadBox,
+        inRelatedSelector: cur.inRelatedSelector || isRelSelector,
+        poisonedByRelatedDescendant: false,
+      });
     }
 
-    const childFollowedByCandidate = popScope ? false : frame.followedByCandidate;
-    enqueueChildren(el, childFollowedByCandidate, { popScope, popAttr: pushAttr });
+    const resetParentTail = !popScope && isBlockBoundary;
+    if (popScope || pushAttr || resetParentTail || isPdfAnchor) {
+      stack.push({
+        kind: 'leave',
+        popScope,
+        popAttr: pushAttr,
+        resetParentTail,
+        closeCandidate: isPdfAnchor,
+      });
+    }
+
+    const children: NodeListOf<ChildNode> = el.childNodes;
+    for (let i = children.length - 1; i >= 0; i -= 1) {
+      stack.push({ kind: 'node', node: children[i]!, parentIsZwinfo: isZwinfoId });
+    }
   }
 
   return { scripts, attachments };
@@ -1413,7 +527,7 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
   const bound = buildEastmoneyReportDetailRequest({ ...request });
   const { document } = parseHTML(decodeUtf8(rawBytes));
   const candidates = new Map<string, string>(), declaredCodes = new Set<string>();
-  const sections = analyzeEastmoneySections(document, bound.url.href);
+  const sections = analyzeEastmoneySections(document, bound.url.href, request.encodeUrl);
   const collect = (candidate: string, expectedInfoCode?: string | null) => {
     let url: URL;
     try { url = new URL(candidate, bound.url); } catch { return; }
