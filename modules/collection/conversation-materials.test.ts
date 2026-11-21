@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,12 +12,15 @@ import { acquireAuthority, directoryCapability, fileCapability } from '../../pla
 import { extractPublicWebHtml, publishRawPage, publishRawPdf } from '../../platform/capabilities/browser/raw-page.js';
 import type { TaskRecord } from '../../contracts/task-contracts.js';
 import type { BackendInput } from '../../contracts/backend.js';
-import type { TaskExecutionContext, TaskOperation } from '../../platform/jobs/tasks.js';
+import { TaskRuntimeRegistry, TaskService, type TaskExecutionContext, type TaskOperation } from '../../platform/jobs/tasks.js';
 import { SkillRegistry } from '../../platform/plugins/registry.js';
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
 import { CoreModelTools } from '../agent/model-tools.js';
 import type { PersonalCore } from '../agent/runtime/core.js';
 import type { WorkspaceServices } from '../../contracts/workspace-services.js';
+import { MaterialService } from './materials/service.js';
+import { createBaiduDriveActions } from '../../plugins/capture-sources/baidu-drive/index.js';
+import type { ProcessRuntime } from '../../platform/runtime/programs.js';
 import { ConversationMaterialBridge, authorizedMaterialAdoption } from './conversation-materials.js';
 
 const operation = {
@@ -295,4 +298,97 @@ test('网页正文只接续同分支祖先成功任务，并核对三份产物�
     assert.equal(bridge.canSelectGeneratedMaterial(arbitrary.id, current), false);
     assert.throws(() => reserve(arbitrary.id), { code: 'MODEL_FILE_NOT_SELECTED' });
   } finally { database.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('百度下载经真实签发和材料建档读回原件，拒绝错分支、待复核、非下载与不一致回执', async () => {
+  const root = realpathSync(mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'baidu-material-')));
+  const artifacts = join(root, 'artifacts'), attachmentRoot = join(root, 'held'); mkdirSync(artifacts); mkdirSync(attachmentRoot);
+  const open = (name: string) => {
+    const database = new CoreDatabase(join(root, name + '.sqlite')), runtimes = new TaskRuntimeRegistry();
+    const permissions = new PermissionService({ database, isRunActive: (id, generation) => tasks.isRunActive(id, generation) });
+    const files = new FileReferenceService({ database, permissions });
+    const tasks: TaskService = new TaskService({ database, runtimes, permissions });
+    return { database, files, permissions, tasks, runtimes };
+  };
+  const personal = open('personal'), workspace = open('workspace');
+  const materials = new MaterialService({ ...workspace, tasks: () => workspace.tasks, environment: 'synthetic-test' });
+  workspace.runtimes.register(materials.runtime);
+  const companion = { ...workspace, materials, attachmentRoot, core: { healthy: true },
+    bd: { assertDispatch() {} }, semantics: { modelContract: () => ({}) } } as unknown as WorkspaceServices;
+  const bytes = Buffer.from('date,value\n2026-01-01,3\n'), sha256 = createHash('sha256').update(bytes).digest('hex');
+  const remotePath = '/apps/bdpan/report.csv', binaryPath = realpathSync(process.execPath), configPath = join(root, 'offline.json');
+  writeFileSync(configPath, '{}');
+  personal.permissions.grant({ capabilities: [fileCapability('execute', binaryPath),
+    { action: 'secret', target: { kind: 'secret', name: 'baidu-drive.native-login' } },
+    ...['https://pan.baidu.com', 'https://openapi.baidu.com', 'https://d.pcs.baidu.com'].map(origin =>
+      ({ action: 'network' as const, target: { kind: 'network' as const, origin } })),
+    ...(['read', 'write', 'delete'] as const).map(action => directoryCapability(action, artifacts))] });
+  const drive = createBaiduDriveActions({ files: personal.files, artifactRoot: artifacts, configuration: { binaryPath, configPath },
+    processRuntime: { path: () => binaryPath } as unknown as ProcessRuntime, assertPath() {},
+    runTool: async ({ args }) => {
+      const cli = args.slice(4);
+      if (cli[0] === 'download') writeFileSync(cli[2]!, bytes, { flag: 'wx' });
+      else assert.equal(cli[0], 'ls');
+      const reply = cli[0] === 'ls' ? [{ path: remotePath, fsid: '31', isdir: false, size: bytes.length }] : { status: 'completed' };
+      return { binaryPath, stdout: JSON.stringify(reply), stderr: '', exitCode: 0 };
+    } });
+  const conversationId = 'fixture-conversation', branchId = 'fixture-branch';
+  const origin = { conversationId, branchId, messageId: 'read', inputId: 'input' } as ModelTaskOrigin;
+  let selected = '', sourceTask = '';
+  const core = { selectedAttachmentsForInput: () => selected ? [{ fileRefId: selected, version: 1, category: 'unclassified' }] : [],
+    store: { command: () => ({ text: '读下载的文件' }), message: (id: string) => ({ conversation_id: conversationId,
+      parent_id: id === 'read' ? 'download' : null, role: 'user', text: '读下载的文件' }) } } as unknown as PersonalCore;
+  const bridge = new ConversationMaterialBridge({ database: personal.database, files: personal.files, companion, core, assertPath() {},
+    origin: id => id === sourceTask ? { ...origin, messageId: 'download' } : origin });
+  personal.runtimes.register({ id: 'direct', execute: context => context.task.action === 'baidu.drive'
+    ? drive.execute(context, context.task.args as { operation: string; path: string })
+    : bridge.execute(context, context.task.action, context.task.args as { fileRefId: string }) });
+  const run = (action: string, args: Record<string, string>) => {
+    const job = personal.tasks.create({ runtimeId: 'direct', action, args, conversationId, ownerRole: 'personal', title: action, requestId: randomUUID() });
+    personal.tasks.start(job.id, job.version); return personal.tasks.wait(job.id);
+  };
+  try {
+    const signed = await run('baidu.drive', { operation: 'download', path: remotePath });
+    assert.equal(signed.status, 'succeeded', JSON.stringify(signed.error)); sourceTask = signed.id;
+    const result = signed.result!, fileRefId = result.artifactIds![0]!;
+    const data = result.data as Record<string, string | number | boolean>;
+    const read = () => run('material.read', { fileRefId });
+    assert.ok(bridge.canSelectGeneratedMaterial(fileRefId, origin));
+    assert.equal(bridge.canSelectGeneratedMaterial(fileRefId, { ...origin, branchId: 'other-branch' }), false);
+    const admitted = await read(); assert.equal(admitted.status, 'succeeded', JSON.stringify(admitted.error));
+    const materialId = (admitted.result!.data as { materialId: string }).materialId;
+    assert.deepEqual(materials.readOriginal(materialId).bytes, bytes);
+    const stored = personal.database.connection.prepare('SELECT origin_json FROM conversation_material_links WHERE material_id=?').get(materialId);
+    const producer = JSON.parse(String(stored?.origin_json)).processingTask;
+    assert.equal(producer.taskId, sourceTask); assert.equal(producer.artifact.sha256, sha256); assert.equal(producer.data.remotePath, remotePath);
+    const db = personal.database.connection;
+    const replace = (overrides: Record<string, unknown>) => db.prepare('UPDATE tasks SET result=? WHERE id=?')
+      .run(JSON.stringify({ ...result, data: { ...data, ...overrides } }), sourceTask);
+    for (const overrides of [{ remotePath: remotePath + '.other' }, { remotePath: null }, { fileRefId: 'wrong' },
+      { sha256: 'missing' }, { bytes: bytes.length - 1 }, { complete: false }, { fileRefVersion: 2 }]) {
+      replace(overrides); assert.equal(bridge.canSelectGeneratedMaterial(fileRefId, origin), false);
+    }
+    replace({ sha256: '0'.repeat(64) });
+    assert.equal((await read()).error?.code, 'MATERIAL_BAIDU_PROVENANCE');
+    // 旧格式只带 path 时仍要求与原任务一致。
+    replace({ remotePath: undefined, path: remotePath }); assert.ok(bridge.canSelectGeneratedMaterial(fileRefId, origin));
+    db.prepare('UPDATE tasks SET result=? WHERE id=?').run(JSON.stringify({ ...result, artifactIds: [] }), sourceTask);
+    assert.equal(bridge.canSelectGeneratedMaterial(fileRefId, origin), false);
+    replace({});
+    for (const operation of ['ls', 'search', 'whoami', 'upload', 'transfer-list', 'transfer-select']) {
+      db.prepare('UPDATE tasks SET args=? WHERE id=?').run(JSON.stringify({ operation, path: remotePath }), sourceTask);
+      assert.equal(bridge.canSelectGeneratedMaterial(fileRefId, origin), false);
+    }
+    selected = fileRefId;
+    assert.equal((await read()).error?.code, 'MATERIAL_NOT_SELECTED');
+    db.prepare("UPDATE tasks SET args=?,status='failed' WHERE id=?").run(JSON.stringify({ operation: 'download', path: remotePath }), sourceTask);
+    assert.equal(bridge.canSelectGeneratedMaterial(fileRefId, origin), false);
+    db.prepare("UPDATE tasks SET status='succeeded',requires_review=1 WHERE id=?").run(sourceTask);
+    assert.equal(bridge.canSelectGeneratedMaterial(fileRefId, origin), false);
+    assert.equal((await read()).error?.code, 'MATERIAL_NOT_SELECTED');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM conversation_material_links').get()?.n, 1);
+  } finally {
+    await personal.tasks.dispose(); await workspace.tasks.dispose(); personal.database.close(); workspace.database.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -17,6 +17,7 @@ const sourceDirectory = '/apps/bdpan/selected';
 const targetDirectory = cloudEvidenceDirectory('行情', '来源原件');
 const topicDirectory = CLOUD_EVIDENCE_ROOT + '/行情';
 const bytes = Buffer.from('item,value\nfixture,12\n');
+const viewUrl = 'https://pan.baidu.com/disk/main#/index?category=all';
 const md5 = (value: Buffer) => createHash('md5').update(value).digest('hex');
 type SessionInput = Parameters<CloudCustodyBackend['open']>[1];
 
@@ -72,7 +73,7 @@ if(command==='ls'){
   if(fault==='lost-response')process.stdout.write('{');
   else if(fault==='pending')console.log(JSON.stringify({status:'pending'}));
   else if(fault==='bad-receipt')console.log(JSON.stringify({...publicObject(copied),fsid:'123'}));
-  else console.log(JSON.stringify({success:true,status:'completed'}));
+  else console.log(JSON.stringify({success:true,status:'completed',return_url:${JSON.stringify(viewUrl)},return_markdown:'[查看文件]('+${JSON.stringify(viewUrl)}+')'}));
 }else if(command==='mkdir'){
   if(args.length!==6||!['证据盘/行情','证据盘/行情/来源原件'].includes(args[5]))throw Error('mkdir escaped the selected two-level directory or used an absolute argument');
   const target='/apps/bdpan/'+args[5];
@@ -92,7 +93,7 @@ if(command==='ls'){
   if(fault==='upload-lost-response')process.stdout.write('{');
   else if(fault.startsWith('native-compact-'))console.log(JSON.stringify({code:0,data:{remote_path:args[6],fsid:created.id,
     ...(fault==='native-compact-contradiction'?{size:content.length+1}:fault==='native-compact-aliases'?{path:target,fs_id:'123',remote_path:'证据盘/行情/来源原件/wrong.csv'}:{})},error:''}));
-  else console.log(JSON.stringify([publicObject(created)]));
+  else console.log(JSON.stringify({data:[publicObject(created)],return_url:${JSON.stringify(viewUrl)}}));
 }else if(command==='download'){
   const source=index.find(o=>o.path===args[5]);fs.writeFileSync(args[6],fs.readFileSync(path.join(root,source.id)),{flag:'wx'});
   console.log(JSON.stringify({success:true,status:'completed'}));
@@ -161,6 +162,8 @@ test('registered offline CLI copies an unchanged source into the evidence direct
       assert.equal(await session.prepareDirectory(targetDirectory, true), true);
       const copied = await session.copy(f.source, targetDirectory);
       assert.equal(copied.path, targetDirectory + '/renamed-original.csv');
+      assert.equal(copied.returnUrl, viewUrl);
+      assert.equal(copied.returnMarkdown, '[查看文件](' + viewUrl + ')');
       assert.notEqual(copied.id, f.source.id); assert.equal(copied.size, bytes.length);
       assert.deepEqual(await session.read(copied, bytes.length), bytes);
       assert.deepEqual(await session.read(f.source, bytes.length), bytes);
@@ -170,7 +173,7 @@ test('registered offline CLI copies an unchanged source into the evidence direct
     assert.deepEqual(f.calls().filter(args => args[0] === 'cp'), [['cp', 'selected/renamed-original.csv', '证据盘/行情/来源原件']]);
     assert.equal(f.calls().some(args => args[0] === 'upload'), false);
     assert.doesNotMatch(JSON.stringify(events), /synthetic-private-token|synthetic account text|download_url|return_markdown/u);
-    assert.equal(f.backend.versionBinding.cloudBackend, 'baidu-drive-custody/3');
+    assert.equal(f.backend.versionBinding.cloudBackend, 'baidu-drive-custody/4');
   } finally { await f.close(); }
 });
 
@@ -195,6 +198,7 @@ test('a new upload keeps its complete target identity but passes only an app-rel
       assert.equal(await session.prepareDirectory(targetDirectory, true), true);
       const uploaded = await session.put(bytes, targetDirectory + '/new-original.csv');
       assert.equal(uploaded.path, targetDirectory + '/new-original.csv');
+      assert.equal(uploaded.returnUrl, viewUrl);
       assert.deepEqual(await session.read(uploaded, bytes.length), bytes);
     });
     const uploads = f.calls().filter(args => args[0] === 'upload');
