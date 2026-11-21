@@ -195,18 +195,41 @@ const relatedTitle = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|�
 const relatedHeadingAtBoundary = /^(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/u;
 const relatedBeforeTarget = /(?:^|(?<=[\s。！？；.!?])|(?<=(?:^|[\s。！？；.!?])[【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:—\-·•]*$/u;
 const relatedWrapperTitle = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:]*$/u;
+const relatedBareKeywordPrefix = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:—\-·•]*/u;
+const titleLinkRightBoundary = /^(?:[\s】\])））：:—\-·•《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])/u;
 const inlineRelatedHeading = /(?:^|(?<=[\s。！？；.!?])|(?<=(?:^|[\s。！？；.!?])[【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/gu;
 const mainAttachmentHeading = /^[【[(\s]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)(?:$|[\s】\])：:—\-·•（(])/u;
+const mainAttachmentWrapperTitle = /^[【[(\s（]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)[\s】\])））：:]*$/u;
 const leadingListItem = /^[\s\n]*(?:\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])(?=$|[\s\n\p{L}\p{N}《「【])/u;
+const proseBodyCueGlobal = /(?:详见正文|参见正文|见正文|见下文|请参阅|正文说明|下载地址|原文地址|附件见|下载见|原文见|入口见|链接见)/gu;
 const explicitSectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt';
 const rootBoundaryContainers = '#zwinfo,article,section,main,body,html';
 const relatedSelector = 'aside,nav,footer,[role="navigation"],[aria-label*="相关"],[aria-label*="推荐"],[aria-label*="延伸阅读"],'
   + '[class*="related" i],[id*="related" i],[class*="recommend" i],[id*="recommend" i],.rel-list,.xgyd,.xgyb';
 const inlineFlowElements = 'span,strong,b,em,i,small,u,mark,font,sub,sup,label,abbr,cite,code,time,ins,del,s,q,bdi,bdo,ruby,rt,rp,kbd,samp,var,data,dfn';
 const decorativeInlineTags = new Set(['WBR', 'IMG', 'INPUT', 'SVG', 'PICTURE', 'SOURCE', 'CANVAS']);
-const isolatedContainerTags = new Set(['ARTICLE', 'SECTION', 'MAIN', 'BODY', 'HTML', 'DETAILS', 'FIGURE', 'FIELDSET', 'DIALOG', 'TABLE', 'BLOCKQUOTE', 'UL', 'OL', 'LI', 'DD', 'DL']);
+const isolatedContainerTags = new Set([
+  'HEAD', 'ARTICLE', 'SECTION', 'MAIN', 'BODY', 'HTML',
+  'DETAILS', 'FIGURE', 'FIELDSET', 'DIALOG', 'TABLE', 'BLOCKQUOTE',
+  'UL', 'OL', 'LI', 'DD', 'DL',
+  'FORM', 'SELECT', 'OPTION', 'OPTGROUP', 'TEXTAREA', 'BUTTON', 'DATALIST', 'OUTPUT',
+]);
 const listTags = new Set(['UL', 'OL', 'LI', 'DL']);
-const nonContentTags = new Set(['HEAD', 'META', 'LINK', 'TITLE', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+const nonContentTags = new Set(['META', 'LINK', 'TITLE', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+
+function isEastmoneyPdfHref(href: string | null, baseUrl: string): boolean {
+  if (!href) return false;
+  let url: URL;
+  try {
+    url = new URL(href, baseUrl);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' || url.hostname !== 'pdf.dfcfw.com' || url.port || url.username || url.password) {
+    return false;
+  }
+  return /^\/pdf\/H3_AP\d{8,20}_1\.pdf$/u.test(url.pathname);
+}
 
 function headingLevel(element: Element): number {
   if (/^H[1-6]$/u.test(element.tagName)) return Number(element.tagName[1]);
@@ -218,12 +241,17 @@ type DomFlags = {
   canFlattenInline: WeakMap<Element, boolean>;
   hasRootBoundary: WeakMap<Element, boolean>;
   hasNestedExplicitHeading: WeakMap<Element, boolean>;
+  hasCandidateBeforeHeading: WeakMap<Element, boolean>;
+  ownText: WeakMap<Element, string>;
 };
 
-function precomputeDomFlags(document: Document): DomFlags {
+function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
   const canFlattenInline = new WeakMap<Element, boolean>();
   const hasRootBoundary = new WeakMap<Element, boolean>();
   const hasNestedExplicitHeading = new WeakMap<Element, boolean>();
+  const hasCandidateBeforeHeading = new WeakMap<Element, boolean>();
+  const isIsolatedBoundary = new WeakMap<Element, boolean>();
+  const ownText = new WeakMap<Element, string>();
   const hasAnchorOrFrame = new WeakMap<Element, boolean>();
   const stack: Array<{ node: Element; visited: boolean }> = [];
   const docChildren: NodeListOf<ChildNode> = document.childNodes;
@@ -244,40 +272,74 @@ function precomputeDomFlags(document: Document): DomFlags {
       continue;
     }
     stack.pop();
-    let rootB = el.matches(rootBoundaryContainers);
+    const isRel = el.matches(relatedSelector);
+    const isBox = el.matches('.report-download');
+    const isRootSelf = el.matches(rootBoundaryContainers);
+    const isIsoSelf = isRel || isBox || isRootSelf || isolatedContainerTags.has(el.tagName) || nonContentTags.has(el.tagName);
+    isIsolatedBoundary.set(el, isIsoSelf);
+
+    const isExplicitH = el.matches(explicitSectionHeadings);
+    let rootB = isRootSelf;
     let nestedH = false;
     let allFlat = true;
     let linkOrFrameChild = false;
+    let candidateBeforeH = !isRel && !isRootSelf && !nonContentTags.has(el.tagName) && !isExplicitH && (
+      isBox
+      || (el.tagName === 'A' && isEastmoneyPdfHref(el.getAttribute('href'), baseUrl))
+      || (el.tagName === 'IFRAME' && isEastmoneyPdfHref(el.getAttribute('src'), baseUrl))
+    );
+    let hitHeading = isExplicitH;
+    let own = '';
     const children: NodeListOf<ChildNode> = el.childNodes;
     for (let i = 0; i < children.length; i += 1) {
       const child: ChildNode = children[i]!;
+      if (child.nodeType === 3) {
+        if (own.length < 128) {
+          const raw = child.textContent ?? '';
+          const piece = own.length === 0 ? raw.trimStart() : raw;
+          if (piece) own += piece.slice(0, 128 - own.length);
+        }
+        continue;
+      }
       if (child.nodeType !== 1) continue;
       const ce = child as Element;
+      const childNestedH = ce.matches(explicitSectionHeadings) || Boolean(hasNestedExplicitHeading.get(ce));
       if (hasRootBoundary.get(ce)) rootB = true;
-      if (ce.matches(explicitSectionHeadings) || hasNestedExplicitHeading.get(ce)) nestedH = true;
+      if (childNestedH) nestedH = true;
       if (!canFlattenInline.get(ce)) allFlat = false;
       if (ce.tagName === 'A' || ce.tagName === 'IFRAME' || hasAnchorOrFrame.get(ce)) linkOrFrameChild = true;
+      if (!hitHeading && !isRel && !isRootSelf && !nonContentTags.has(el.tagName)) {
+        if (hasCandidateBeforeHeading.get(ce)) candidateBeforeH = true;
+        if (childNestedH) hitHeading = true;
+      }
+      if (own.length < 128 && !isIsolatedBoundary.get(ce)) {
+        const childOwn = ownText.get(ce) ?? '';
+        const piece = own.length === 0 ? childOwn.trimStart() : childOwn;
+        if (piece) own += piece.slice(0, 128 - own.length);
+      }
     }
     hasRootBoundary.set(el, rootB);
     hasNestedExplicitHeading.set(el, nestedH);
+    hasCandidateBeforeHeading.set(el, candidateBeforeH);
     hasAnchorOrFrame.set(el, linkOrFrameChild);
+    ownText.set(el, own.trim());
     let flat = false;
     if (el.tagName === 'BR' || el.tagName === 'HR') {
       flat = true;
     } else if (decorativeInlineTags.has(el.tagName)) {
       flat = !linkOrFrameChild && !rootB && !nestedH && allFlat;
     } else if (el.tagName === 'IFRAME') {
-      flat = !el.matches(relatedSelector) && !el.matches('.report-download');
+      flat = !isRel && !isBox;
     } else if (el.tagName === 'A' || el.matches(inlineFlowElements)) {
       flat = allFlat
-        && !el.matches(relatedSelector)
-        && !el.matches(rootBoundaryContainers)
-        && !el.matches('.report-download')
-        && !el.matches(explicitSectionHeadings);
+        && !isRel
+        && !isRootSelf
+        && !isBox
+        && !isExplicitH;
     }
     canFlattenInline.set(el, flat);
   }
-  return { canFlattenInline, hasRootBoundary, hasNestedExplicitHeading };
+  return { canFlattenInline, hasRootBoundary, hasNestedExplicitHeading, hasCandidateBeforeHeading, ownText };
 }
 
 type Scope = {
@@ -306,6 +368,11 @@ type AttachmentInfo = {
   downloadBox: Element | null;
 };
 
+type AttachmentEntry = {
+  element: Element;
+  info: AttachmentInfo;
+};
+
 type RunTarget = {
   element: Element;
   start: number;
@@ -325,18 +392,23 @@ function recordRunTargets(
   outerRelated: boolean,
   localRelated: boolean,
   downloadBox: Element | null,
-  attachmentMap: WeakMap<Element, AttachmentInfo>,
+  attachmentMap: WeakSet<Element>,
+  attachments: AttachmentEntry[],
 ): void {
   for (let i = fromIndex; i < toIndex; i += 1) {
     const t = targets[i]!;
     if (!attachmentMap.has(t.element)) {
-      attachmentMap.set(t.element, {
-        inRelatedSelector: inRelatedSelector || t.inRelatedSelf,
-        outerRelated,
-        localRelated,
-        owner: t.owner,
-        expectedInfoCode: t.expectedInfoCode,
-        downloadBox,
+      attachmentMap.add(t.element);
+      attachments.push({
+        element: t.element,
+        info: {
+          inRelatedSelector: inRelatedSelector || t.inRelatedSelf,
+          outerRelated,
+          localRelated,
+          owner: t.owner,
+          expectedInfoCode: t.expectedInfoCode,
+          downloadBox,
+        },
       });
     }
   }
@@ -344,43 +416,38 @@ function recordRunTargets(
 
 function scanInlineRun(
   container: Element | Document,
-  startIdx: number,
-  endIdx: number,
+  nodes: ChildNode[],
   onlyRun: boolean,
+  followedByCandidate: boolean,
+  baseUrl: string,
   cur: Scope,
   attr: AttrScope,
-  attachmentMap: WeakMap<Element, AttachmentInfo>,
+  attachmentMap: WeakSet<Element>,
+  attachments: AttachmentEntry[],
 ): void {
-  const children: NodeListOf<ChildNode> = container.childNodes;
   type RunFrame =
     | { kind: 'node'; node: ChildNode; owner: string | null; infoCode: string | null }
-    | { kind: 'closeAnchor'; el: Element; start: number; owner: string | null; infoCode: string | null };
+    | { kind: 'closeAnchor'; el: Element; start: number; targetIndex: number };
   const stack: RunFrame[] = [];
-  for (let i = endIdx - 1; i >= startIdx; i -= 1) {
-    stack.push({ kind: 'node', node: children[i]!, owner: attr.nearestEncodeUrl, infoCode: attr.nearestInfoCode });
+  for (let i = nodes.length - 1; i >= 0; i -= 1) {
+    stack.push({ kind: 'node', node: nodes[i]!, owner: attr.nearestEncodeUrl, infoCode: attr.nearestInfoCode });
   }
   let runText = '';
   let hasTitleClass = false;
   const runTargets: RunTarget[] = [];
   const titleLinkTriggers: TitleLinkTrigger[] = [];
   const anchorStarts = new Set<number>();
+  const anchorEnds = new Set<number>();
   while (stack.length) {
     const frame = stack.pop()!;
     if (frame.kind === 'closeAnchor') {
       const end = runText.length;
+      anchorEnds.add(end);
       const linkText = runText.slice(frame.start, end).trim();
-      const el = frame.el;
-      const isCandidate = el.hasAttribute('href')
-        && ((attr.inZwinfo && el.hasAttribute('download')) || attr.nearestDownloadBox !== null || frame.owner !== null);
-      if (isCandidate) {
-        runTargets.push({
-          element: el,
-          start: frame.start,
-          end,
-          owner: frame.owner,
-          expectedInfoCode: frame.infoCode,
-          inRelatedSelf: relatedTitle.test(linkText),
-        });
+      if (frame.targetIndex !== -1) {
+        const target = runTargets[frame.targetIndex]!;
+        target.end = end;
+        target.inRelatedSelf = relatedTitle.test(linkText);
       }
       if (relatedWrapperTitle.test(linkText)) {
         titleLinkTriggers.push({
@@ -404,26 +471,40 @@ function scanInlineRun(
       continue;
     }
     if (decorativeInlineTags.has(el.tagName)) continue;
+    const nextOwner = el.getAttribute('data-encode-url') ?? frame.owner;
+    const nextInfoCode = el.getAttribute('data-info-code') ?? frame.infoCode;
     if (el.tagName === 'IFRAME') {
       const isZwinfoDirect = container.nodeType === 1 && (container as Element).id === 'zwinfo';
-      if (isZwinfoDirect && el.hasAttribute('src')) {
+      if (isZwinfoDirect && isEastmoneyPdfHref(el.getAttribute('src'), baseUrl)) {
         runTargets.push({
           element: el,
           start: runText.length,
           end: runText.length,
-          owner: frame.owner,
-          expectedInfoCode: frame.infoCode,
+          owner: nextOwner,
+          expectedInfoCode: nextInfoCode,
           inRelatedSelf: false,
         });
       }
       continue;
     }
-    const nextOwner = el.getAttribute('data-encode-url') ?? frame.owner;
-    const nextInfoCode = el.getAttribute('data-info-code') ?? frame.infoCode;
     if (el.tagName === 'A') {
       const anchorStart = runText.length;
       anchorStarts.add(anchorStart);
-      stack.push({ kind: 'closeAnchor', el, start: anchorStart, owner: nextOwner, infoCode: nextInfoCode });
+      const isCandidate = isEastmoneyPdfHref(el.getAttribute('href'), baseUrl)
+        && ((attr.inZwinfo && el.hasAttribute('download')) || attr.nearestDownloadBox !== null || nextOwner !== null);
+      let targetIndex = -1;
+      if (isCandidate) {
+        targetIndex = runTargets.length;
+        runTargets.push({
+          element: el,
+          start: anchorStart,
+          end: anchorStart,
+          owner: nextOwner,
+          expectedInfoCode: nextInfoCode,
+          inRelatedSelf: false,
+        });
+      }
+      stack.push({ kind: 'closeAnchor', el, start: anchorStart, targetIndex });
       const ac: NodeListOf<ChildNode> = el.childNodes;
       for (let i = ac.length - 1; i >= 0; i -= 1) stack.push({ kind: 'node', node: ac[i]!, owner: nextOwner, infoCode: nextInfoCode });
       continue;
@@ -433,10 +514,10 @@ function scanInlineRun(
     for (let i = ic.length - 1; i >= 0; i -= 1) stack.push({ kind: 'node', node: ic[i]!, owner: nextOwner, infoCode: nextInfoCode });
   }
 
-  // 独占块主附件标题停靠（如 <p><span class="title">本研报附件</span></p>）。
+  // 独占块主附件标题停靠（如 <p><span class="title">本研报附件</span></p>），拒绝带后续正文的句子。
   if (onlyRun && runTargets.length === 0 && !cur.inList && !cur.inRelatedSelector && cur.relatedLevel !== null
     && container.nodeType === 1 && ((container as Element).matches('[class*="title" i]') || hasTitleClass)
-    && mainAttachmentHeading.test(runText.trim())) {
+    && mainAttachmentWrapperTitle.test(runText.trim())) {
     cur.relatedLevel = null;
     return;
   }
@@ -451,6 +532,7 @@ function scanInlineRun(
       cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null),
       attr.nearestDownloadBox,
       attachmentMap,
+      attachments,
     );
     return;
   }
@@ -475,21 +557,50 @@ function scanInlineRun(
         if (afterTarget) triggers.push(target.end + afterTarget[0].length);
       }
     }
+    for (const endPos of anchorEnds) {
+      if (endPos < runText.length) {
+        const afterAnchor = relatedHeadingAtBoundary.exec(runText.slice(endPos, endPos + 32));
+        if (afterAnchor) {
+          triggers.push(endPos + afterAnchor[0].length);
+        } else {
+          const bare = relatedBareKeywordPrefix.exec(runText.slice(endPos, endPos + 16));
+          if (bare && anchorStarts.has(endPos + bare[0].length)) {
+            triggers.push(endPos + bare[0].length);
+          }
+        }
+      }
+    }
   }
   for (const t of titleLinkTriggers) {
-    const leftOk = t.start === 0 || /[\s。！？；.!?【[(（]/u.test(runText[t.start - 1]!) || anchorStarts.has(t.start);
+    const leftOk = t.start === 0 || /[\s。！？；.!?【[(（]/u.test(runText[t.start - 1]!) || anchorEnds.has(t.start);
     if (!leftOk) continue;
     const rightOk = t.endsWithPunct
       || t.end === runText.length
       || anchorStarts.has(t.end)
-      || /^[\s】\])））：:—\-·•《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]/u.test(runText.slice(t.end, t.end + 16));
+      || titleLinkRightBoundary.test(runText.slice(t.end, t.end + 16));
     if (rightOk) triggers.push(t.end);
   }
   if (triggers.length === 0) {
-    recordRunTargets(runTargets, 0, runTargets.length, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap);
+    recordRunTargets(runTargets, 0, runTargets.length, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap, attachments);
     return;
   }
-  triggers.sort((a, b) => a - b);
+  if (triggers.length > 1) {
+    let sorted = true;
+    for (let i = 1; i < triggers.length; i += 1) {
+      if (triggers[i]! < triggers[i - 1]!) {
+        sorted = false;
+        break;
+      }
+    }
+    if (!sorted) {
+      const seen = new Uint8Array(runText.length + 1);
+      for (let i = 0; i < triggers.length; i += 1) seen[triggers[i]!] = 1;
+      triggers.length = 0;
+      for (let pos = 0; pos <= runText.length; pos += 1) {
+        if (seen[pos]) triggers.push(pos);
+      }
+    }
+  }
 
   let targetIdx = 0;
   let prevGapEnd = 0;
@@ -499,6 +610,10 @@ function scanInlineRun(
   let lastProseChar = -1;
   let coreEnd = -1;
   let lastNonPunct = -1;
+  let prevCloseGuillemet = -1;
+  let prevCloseCorner = -1;
+  let prevCloseLenticular = -1;
+  let lastProseCueStart = -1;
   let nonSpaceIdx = 0;
 
   for (let ti = 0; ti < triggers.length; ti += 1) {
@@ -517,13 +632,41 @@ function scanInlineRun(
       lastProseChar = -1;
       coreEnd = -1;
       lastNonPunct = -1;
+      prevCloseGuillemet = -1;
+      prevCloseCorner = -1;
+      prevCloseLenticular = -1;
       for (let i = trimmedEnd - 1; i >= floor; i -= 1) {
         const ch = runText[i]!;
         if (lastFullStop === -1 && ch === '。') lastFullStop = i;
         if (lastProseChar === -1 && !/[\s【】[\]()（）：:—\-·•]/u.test(ch)) lastProseChar = i;
         if (coreEnd === -1 && !/[\s"'”’）)】\]]/u.test(ch)) coreEnd = i;
-        if (lastNonPunct === -1 && !/[\s。！？；.!?,，:：—\-·•]/u.test(ch)) lastNonPunct = i;
-        if (lastFullStop !== -1 && lastProseChar !== -1 && coreEnd !== -1 && lastNonPunct !== -1) break;
+        if (lastNonPunct === -1) {
+          if (!/[\s。！？；.!?,，:：—\-·•]/u.test(ch)) lastNonPunct = i;
+        } else {
+          if (prevCloseGuillemet === -1 && ch === '》') prevCloseGuillemet = i;
+          if (prevCloseCorner === -1 && ch === '」') prevCloseCorner = i;
+          if (prevCloseLenticular === -1 && ch === '】') prevCloseLenticular = i;
+        }
+        if (
+          lastFullStop !== -1
+          && lastProseChar !== -1
+          && coreEnd !== -1
+          && lastNonPunct !== -1
+          && prevCloseGuillemet !== -1
+          && prevCloseCorner !== -1
+          && prevCloseLenticular !== -1
+        ) {
+          break;
+        }
+      }
+      lastProseCueStart = -1;
+      if (trimmedEnd > floor) {
+        const gapSlice = runText.slice(floor, trimmedEnd);
+        proseBodyCueGlobal.lastIndex = 0;
+        let cm: RegExpExecArray | null;
+        while ((cm = proseBodyCueGlobal.exec(gapSlice)) !== null) {
+          lastProseCueStart = floor + cm.index;
+        }
       }
       cachedGapEnd = gapEnd;
       prevGapEnd = gapEnd;
@@ -538,15 +681,23 @@ function scanInlineRun(
     } else {
       const openChar = nonSpaceIdx < trimmedEnd ? runText[nonSpaceIdx] : '';
       const closeChar = openChar === '《' ? '》' : openChar === '「' ? '」' : openChar === '【' ? '】' : '';
+      const prevClose = closeChar === '》'
+        ? prevCloseGuillemet
+        : closeChar === '」'
+          ? prevCloseCorner
+          : closeChar === '】'
+            ? prevCloseLenticular
+            : -1;
       const isBareQuotedTitle = Boolean(
         closeChar && lastNonPunct > nonSpaceIdx && runText[lastNonPunct] === closeChar
-        && runText.indexOf(closeChar, nonSpaceIdx + 1) === lastNonPunct,
+        && prevClose <= nonSpaceIdx,
       );
       const isNumbered = nonSpaceIdx < trimmedEnd && leadingListItem.test(runText.slice(nonSpaceIdx, nonSpaceIdx + 16));
       if (isNumbered || isBareQuotedTitle) {
         isProse = false;
       } else if (
         lastFullStop >= triggerEnd
+        || lastProseCueStart >= triggerEnd
         || (coreEnd >= nonSpaceIdx && (
           /[。！？；!?]/u.test(runText[coreEnd]!)
           || (runText[coreEnd]! === '.' && coreEnd > nonSpaceIdx && !/[\d.]/u.test(runText[coreEnd - 1]!))
@@ -554,12 +705,12 @@ function scanInlineRun(
       ) {
         isProse = true;
       } else {
-        isProse = nextTarget === null;
+        isProse = nextTarget === null && !followedByCandidate;
       }
     }
     if (isProse) continue;
 
-    recordRunTargets(runTargets, 0, targetIdx, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap);
+    recordRunTargets(runTargets, 0, targetIdx, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap, attachments);
     recordRunTargets(
       runTargets,
       targetIdx,
@@ -569,19 +720,21 @@ function scanInlineRun(
       cur.boxAncestorLocalRelated || cur.isDownloadBox,
       attr.nearestDownloadBox,
       attachmentMap,
+      attachments,
     );
     cur.relatedLevel = 2;
     return;
   }
 
-  recordRunTargets(runTargets, 0, runTargets.length, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap);
+  recordRunTargets(runTargets, 0, runTargets.length, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap, attachments);
 }
 
 /** 单趟前序文档作用域遍历：严格 O(N)，零递归，隔离根边界与多层下载框。 */
-function analyzeEastmoneySections(document: Document) {
-  const flags = precomputeDomFlags(document);
-  const excludedScripts = new WeakSet<Element>();
-  const attachmentMap = new WeakMap<Element, AttachmentInfo>();
+function analyzeEastmoneySections(document: Document, baseUrl: string) {
+  const flags = precomputeDomFlags(document, baseUrl);
+  const scripts: Element[] = [];
+  const attachmentMap = new WeakSet<Element>();
+  const attachments: AttachmentEntry[] = [];
   const scopeStack: Scope[] = [{
     relatedLevel: null,
     inRelatedSelector: false,
@@ -600,37 +753,76 @@ function analyzeEastmoneySections(document: Document) {
 
   type DfsFrame =
     | { kind: 'visit'; node: Element; inZwinfoDirect: boolean }
-    | { kind: 'run'; container: Element | Document; start: number; end: number; onlyRun: boolean }
+    | { kind: 'run'; container: Element | Document; nodes: ChildNode[]; onlyRun: boolean; followedByCandidate: boolean; hasRunCandidate: boolean }
     | { kind: 'leave'; popScope: boolean; popAttr: boolean };
   const dfsStack: DfsFrame[] = [];
 
   const enqueueChildren = (container: Element | Document, includeLeave?: { popScope: boolean; popAttr: boolean }) => {
     const children: NodeListOf<ChildNode> = container.childNodes;
     const steps: DfsFrame[] = [];
-    let runStart = -1;
-    const flushRun = (end: number) => {
-      if (runStart !== -1) {
-        steps.push({ kind: 'run', container, start: runStart, end, onlyRun: false });
-        runStart = -1;
+    let runNodes: ChildNode[] = [];
+    let runHasMeaningful = false;
+    let runHasCandidate = false;
+    let nonEmptyElementCount = 0;
+    const flushRun = () => {
+      if (runNodes.length > 0) {
+        if (runHasMeaningful) {
+          steps.push({
+            kind: 'run',
+            container,
+            nodes: runNodes,
+            onlyRun: false,
+            followedByCandidate: false,
+            hasRunCandidate: runHasCandidate,
+          });
+        }
+        runNodes = [];
+        runHasMeaningful = false;
+        runHasCandidate = false;
       }
     };
     const parentIsZwinfo = container.nodeType === 1 && (container as Element).id === 'zwinfo';
     for (let i = 0; i < children.length; i += 1) {
       const child: ChildNode = children[i]!;
       if (child.nodeType === 3) {
-        if (runStart === -1) runStart = i;
+        const text = child.textContent ?? '';
+        if (text.length > 0) {
+          runNodes.push(child);
+          if (!runHasMeaningful && /\S/u.test(text)) runHasMeaningful = true;
+        }
       } else if (child.nodeType === 1) {
         const ce = child as Element;
         if (flags.canFlattenInline.get(ce)) {
-          if (runStart === -1) runStart = i;
+          runNodes.push(child);
+          runHasMeaningful = true;
+          nonEmptyElementCount += 1;
+          if (flags.hasCandidateBeforeHeading.get(ce)) runHasCandidate = true;
         } else {
-          flushRun(i);
+          flushRun();
+          nonEmptyElementCount += 1;
           steps.push({ kind: 'visit', node: ce, inZwinfoDirect: parentIsZwinfo });
         }
       }
     }
-    flushRun(children.length);
-    if (steps.length === 1 && steps[0]!.kind === 'run') steps[0]!.onlyRun = true;
+    flushRun();
+    if (steps.length === 1 && steps[0]!.kind === 'run' && nonEmptyElementCount <= 1) {
+      steps[0]!.onlyRun = true;
+    }
+    let seenCandidateAfter = false;
+    for (let i = steps.length - 1; i >= 0; i -= 1) {
+      const step = steps[i]!;
+      if (step.kind === 'run') {
+        step.followedByCandidate = seenCandidateAfter;
+        if (step.hasRunCandidate) seenCandidateAfter = true;
+      } else if (step.kind === 'visit') {
+        const ce = step.node;
+        if (flags.hasCandidateBeforeHeading.get(ce)) {
+          seenCandidateAfter = true;
+        } else if (ce.matches(explicitSectionHeadings) || flags.hasNestedExplicitHeading.get(ce)) {
+          seenCandidateAfter = false;
+        }
+      }
+    }
     if (includeLeave && (includeLeave.popScope || includeLeave.popAttr)) dfsStack.push({ kind: 'leave', ...includeLeave });
     for (let i = steps.length - 1; i >= 0; i -= 1) dfsStack.push(steps[i]!);
   };
@@ -647,29 +839,50 @@ function analyzeEastmoneySections(document: Document) {
     const cur = scopeStack[scopeStack.length - 1]!;
     const attr = attrStack[attrStack.length - 1]!;
     if (frame.kind === 'run') {
-      scanInlineRun(frame.container, frame.start, frame.end, frame.onlyRun, cur, attr, attachmentMap);
+      scanInlineRun(
+        frame.container,
+        frame.nodes,
+        frame.onlyRun,
+        frame.followedByCandidate,
+        baseUrl,
+        cur,
+        attr,
+        attachmentMap,
+        attachments,
+      );
       continue;
     }
 
     const el = frame.node;
     if (nonContentTags.has(el.tagName)) continue;
     if (el.tagName === 'SCRIPT') {
-      if (cur.inRelatedSelector || cur.relatedLevel !== null || cur.boxAncestorLocalRelated || cur.outerRelated) {
-        excludedScripts.add(el);
+      if (
+        !el.hasAttribute('src')
+        && !el.matches(relatedSelector)
+        && !cur.inRelatedSelector
+        && cur.relatedLevel === null
+        && !cur.boxAncestorLocalRelated
+        && !cur.outerRelated
+      ) {
+        scripts.push(el);
       }
       continue;
     }
 
     if (el.tagName === 'IFRAME') {
-      if (frame.inZwinfoDirect && el.hasAttribute('src')) {
+      if (frame.inZwinfoDirect && isEastmoneyPdfHref(el.getAttribute('src'), baseUrl) && !attachmentMap.has(el)) {
         const isRel = cur.inRelatedSelector || el.matches(relatedSelector);
-        attachmentMap.set(el, {
-          inRelatedSelector: isRel,
-          outerRelated: cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null),
-          localRelated: cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null),
-          owner: el.getAttribute('data-encode-url') ?? attr.nearestEncodeUrl,
-          expectedInfoCode: el.getAttribute('data-info-code') ?? attr.nearestInfoCode,
-          downloadBox: attr.nearestDownloadBox,
+        attachmentMap.add(el);
+        attachments.push({
+          element: el,
+          info: {
+            inRelatedSelector: isRel,
+            outerRelated: cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null),
+            localRelated: cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null),
+            owner: el.getAttribute('data-encode-url') ?? attr.nearestEncodeUrl,
+            expectedInfoCode: el.getAttribute('data-info-code') ?? attr.nearestInfoCode,
+            downloadBox: attr.nearestDownloadBox,
+          },
         });
       }
       continue;
@@ -686,32 +899,37 @@ function analyzeEastmoneySections(document: Document) {
     const nextEncodeUrl = hasEncodeAttr ? el.getAttribute('data-encode-url') : attr.nearestEncodeUrl;
     const nextInfoCode = hasInfoAttr ? el.getAttribute('data-info-code') : attr.nearestInfoCode;
 
-    const isAnchorCandidate = el.tagName === 'A' && el.hasAttribute('href')
+    const isPdfAnchor = el.tagName === 'A'
+      && isEastmoneyPdfHref(el.getAttribute('href'), baseUrl)
       && (isDownloadBox || (attr.inZwinfo && el.hasAttribute('download')) || attr.nearestDownloadBox !== null || nextEncodeUrl !== null);
 
-    if (isAnchorCandidate) {
+    if (isPdfAnchor && !attachmentMap.has(el)) {
       const outerRel = cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null);
       const localRel = cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null);
-      const anchorText = el.textContent?.trim() ?? '';
-      attachmentMap.set(el, {
-        inRelatedSelector: cur.inRelatedSelector || isRelSelector || relatedTitle.test(anchorText),
-        outerRelated: outerRel,
-        localRelated: localRel,
-        owner: nextEncodeUrl,
-        expectedInfoCode: nextInfoCode,
-        downloadBox: isDownloadBox ? el : attr.nearestDownloadBox,
+      const anchorText = flags.ownText.get(el) ?? '';
+      attachmentMap.add(el);
+      attachments.push({
+        element: el,
+        info: {
+          inRelatedSelector: cur.inRelatedSelector || isRelSelector || relatedTitle.test(anchorText),
+          outerRelated: outerRel,
+          localRelated: localRel,
+          owner: nextEncodeUrl,
+          expectedInfoCode: nextInfoCode,
+          downloadBox: isDownloadBox ? el : attr.nearestDownloadBox,
+        },
       });
     }
 
     let popScope = false;
-    if (isIsolated || isAnchorCandidate) {
+    if (isIsolated || isPdfAnchor) {
       popScope = true;
       if (isRelSelector) {
         scopeStack.push({
           ...cur,
           inRelatedSelector: true,
           inList: cur.inList || listTags.has(el.tagName),
-          inAttachmentLink: cur.inAttachmentLink || isAnchorCandidate,
+          inAttachmentLink: cur.inAttachmentLink || isPdfAnchor,
         });
       } else if (isDownloadBox) {
         scopeStack.push({
@@ -721,13 +939,13 @@ function analyzeEastmoneySections(document: Document) {
           isDownloadBox: true,
           outerRelated: cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null),
           boxAncestorLocalRelated: cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null),
-          inAttachmentLink: cur.inAttachmentLink || isAnchorCandidate,
+          inAttachmentLink: cur.inAttachmentLink || isPdfAnchor,
         });
       } else {
         scopeStack.push({
           ...cur,
           inList: cur.inList || listTags.has(el.tagName),
-          inAttachmentLink: cur.inAttachmentLink || isAnchorCandidate,
+          inAttachmentLink: cur.inAttachmentLink || isPdfAnchor,
         });
       }
     }
@@ -747,27 +965,34 @@ function analyzeEastmoneySections(document: Document) {
       && !el.matches(`${rootBoundaryContainers},.report-download`)
       && !flags.hasRootBoundary.get(el)
       && !flags.hasNestedExplicitHeading.get(el)) {
-      const text = el.textContent?.trim() ?? '';
-      if (relatedTitle.test(text)) {
-        if (!activeScope.inRelatedSelector) {
-          const level = headingLevel(el);
-          activeScope.relatedLevel = activeScope.relatedLevel === null ? level : Math.min(activeScope.relatedLevel, level);
+      const text = flags.ownText.get(el) ?? '';
+      if (text.length > 0) {
+        if (relatedTitle.test(text)) {
+          const targetScope = isPdfAnchor && !isIsolated ? cur : activeScope;
+          if (!targetScope.inRelatedSelector) {
+            const level = headingLevel(el);
+            targetScope.relatedLevel = targetScope.relatedLevel === null ? level : Math.min(targetScope.relatedLevel, level);
+            if (targetScope !== activeScope) activeScope.relatedLevel = targetScope.relatedLevel;
+          }
+        } else if (
+          !activeScope.inAttachmentLink
+          && !activeScope.inRelatedSelector
+          && activeScope.relatedLevel !== null
+          && text.length <= 64
+          && !/[。！？；]/u.test(text)
+        ) {
+          const shouldStop = activeScope.inList
+            ? mainAttachmentHeading.test(text)
+            : (headingLevel(el) <= activeScope.relatedLevel || mainAttachmentHeading.test(text));
+          if (shouldStop) activeScope.relatedLevel = null;
         }
-      } else if (!activeScope.inAttachmentLink && !activeScope.inRelatedSelector && activeScope.relatedLevel !== null) {
-        const shouldStop = activeScope.inList
-          ? mainAttachmentHeading.test(text)
-          : (headingLevel(el) <= activeScope.relatedLevel || mainAttachmentHeading.test(text));
-        if (shouldStop) activeScope.relatedLevel = null;
       }
     }
 
     enqueueChildren(el, { popScope, popAttr: pushAttr });
   }
 
-  return {
-    isScriptExcluded: (script: Element) => excludedScripts.has(script),
-    getAttachment: (element: Element) => attachmentMap.get(element),
-  };
+  return { scripts, attachments };
 }
 
 /** 复用现有 HTML 解析依赖；仅返回同源固定格式 PDF 定位，不下载、不执行脚本。 */
@@ -775,7 +1000,7 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
   const bound = buildEastmoneyReportDetailRequest({ ...request });
   const { document } = parseHTML(decodeUtf8(rawBytes));
   const candidates = new Map<string, string>(), declaredCodes = new Set<string>();
-  const sections = analyzeEastmoneySections(document);
+  const sections = analyzeEastmoneySections(document, bound.url.href);
   const collect = (candidate: string, expectedInfoCode?: string | null) => {
     let url: URL;
     try { url = new URL(candidate, bound.url); } catch { return; }
@@ -785,8 +1010,7 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
     if (match) candidates.set(url.href, match[1]!);
   };
   // 只读详情变量的静态赋值。普通脚本中的字符串、相关推荐和任意独立链接没有报告归属。
-  for (const script of document.querySelectorAll('script:not([src])')) {
-    if (sections.isScriptExcluded(script)) continue;
+  for (const script of sections.scripts) {
     let source = (script.textContent ?? '').trim();
     // 同一脚本可依次声明元数据和附件。只消费可识别的静态赋值，不执行页面代码。
     while (source) {
@@ -818,10 +1042,7 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
       source = source.slice(assignment[0].length).trimStart();
     }
   }
-  const attachment = '#zwinfo a[download][href], #zwinfo > iframe[src], .report-download a[href], a.report-download[href], a[data-encode-url][href], [data-encode-url] a[href]';
-  for (const element of document.querySelectorAll(attachment)) {
-    const status = sections.getAttachment(element);
-    if (!status) continue;
+  for (const { element, info: status } of sections.attachments) {
     if (status.owner != null && status.owner !== request.encodeUrl) continue;
     const boxOwner = status.downloadBox?.getAttribute('data-encode-url');
     const boxInfoCode = status.downloadBox?.getAttribute('data-info-code');
