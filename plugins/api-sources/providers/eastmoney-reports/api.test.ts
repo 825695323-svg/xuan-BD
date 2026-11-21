@@ -149,7 +149,14 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<main id="zwinfo">${mainLink}<div>正文<span> </span><em>相关</em>阅读：${otherLink}</div></main>`,
     `<ul id="zwinfo"><li>${mainLink}</li><li>正文<span> </span><em>相关</em>阅读：${otherLink}</li></ul>`,
     `<div id="zwinfo">${mainLink}<div>相关阅读：${otherLink}</div><ul><li>${otherLink}</li></ul></div>`,
+    `<div id="zwinfo">${mainLink}<p>相关阅读：<br>1. ${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<p>相关阅读：<br><span>1. </span>${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<p>相关阅读：<br>1. 某行业研报 ${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<p>相关阅读：1. ${otherLink}</p></div>`,
     `<div id="zwinfo"><p>1. 相关阅读：参见正文说明。${mainLink}</p></div>`,
+    `<div id="zwinfo"><p><em>相关阅读</em> 参见正文说明。${mainLink}</p></div>`,
+    `<div id="zwinfo"><p><em>相关阅读</em> 参见正文说明。</p>${mainLink}</div>`,
+    `<div id="zwinfo"><p>1. 相关阅读：参见正文说明。<br>${mainLink}</p></div>`,
     `<div id="zwinfo"><h2>相关阅读</h2>${otherLink}<div><div><div><div><h2>本研报附件</h2>${mainLink}</div></div></div></div></div>`,
     `<div id="zwinfo"><h2>相关阅读</h2>${otherLink}<section><h3>本研报附件</h3>${mainLink}</section></div>`,
   ]) {
@@ -159,6 +166,9 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<main id="zwinfo"><div>正文<span> </span><em>相关</em>阅读：${otherLink}</div></main>`,
     `<ul id="zwinfo"><li>正文<span> </span><em>相关</em>阅读：${otherLink}</li></ul>`,
     `<div id="zwinfo"><div>相关阅读：${otherLink}</div><ul><li>${otherLink}</li></ul></div>`,
+    `<div id="zwinfo"><p>相关阅读：<br>1. ${otherLink}</p></div>`,
+    `<div id="zwinfo"><p>相关阅读：<br><span>1. </span>${otherLink}</p></div>`,
+    `<div id="zwinfo"><p>相关阅读：<br>1. 某行业研报 ${otherLink}</p></div>`,
   ]) {
     assert.throws(() => decodeEastmoneyReportDetail(request, html(relOnly)), code('SOURCE_REPORT_RESPONSE_INVALID'));
   }

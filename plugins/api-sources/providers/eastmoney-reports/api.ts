@@ -247,20 +247,41 @@ function leadingHeading(element: Element): Element | null {
   return null;
 }
 
+function hasProseText(text: string): boolean {
+  return text
+    .replace(/(?:^|[\s\n])(?:\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}[.、)）]|[①-⑳])(?=$|[\s\n])/gu, '')
+    .replace(/[\s【】[\]()（）：:—\-·•]/gu, '')
+    .length > 0;
+}
+
+function firstLineText(element: Element): string {
+  let out = '';
+  for (const child of element.childNodes) {
+    if (child.nodeType === 3) out += child.textContent ?? '';
+    else if (child.nodeType === 1) {
+      const el = child as Element;
+      if (el.tagName === 'BR' || el.tagName === 'HR') break;
+      out += el.textContent ?? '';
+    }
+  }
+  return out;
+}
+
 function isProseAfterInlineMatch(targetNode: ChildNode, trailingInTarget: string): boolean {
-  if (trailingInTarget.replace(/[\s】\])：:—\-·•]/gu, '').length > 0) return true;
+  if (hasProseText(trailingInTarget)) return true;
   for (let next = targetNode.nextSibling; next; next = next.nextSibling) {
     if (next.nodeType === 3) {
-      if ((next.textContent ?? '').replace(/[\s】\])：:—\-·•]/gu, '').length > 0) return true;
+      if (hasProseText(next.textContent ?? '')) return true;
       continue;
     }
     if (next.nodeType === 1) {
       const el = next as Element;
-      if (['BR', 'HR', 'WBR'].includes(el.tagName)) continue;
+      if (el.tagName === 'BR' || el.tagName === 'HR') return false;
+      if (el.tagName === 'WBR') continue;
       if (el.matches('a,iframe,ul,ol,dl,table,div,p,section,article')) return false;
       if (el.matches(inlineTextElements)) {
         if (el.querySelector('a,iframe')) return false;
-        if ((el.textContent ?? '').replace(/[\s】\])：:—\-·•]/gu, '').length > 0) return true;
+        if (hasProseText(el.textContent ?? '')) return true;
         continue;
       }
       return false;
@@ -294,6 +315,9 @@ function relatedSections(document: Document) {
       let heading = element;
       // 标题可以独占一层包装（可含 <br> 等空排版标签），链接列表与包装节点同级。
       while (heading.parentElement && isHarmlessWrapper(heading.parentElement, heading)) heading = heading.parentElement;
+      const inlineTrailing = !element.matches(sectionHeadings)
+        ? firstLineText(heading).trim().replace(relatedTitle, '') : '';
+      if (!element.matches(sectionHeadings) && isProseAfterInlineMatch(heading, inlineTrailing)) continue;
       excluded.add(heading);
       markFollowing(heading, headingLevel(element));
       continue;
