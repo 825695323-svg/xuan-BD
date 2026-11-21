@@ -8,7 +8,7 @@ import { TaskError, type TaskExecutionContext, type TaskService } from '../../pl
 import { acquireAuthority, directoryCapability, DirectError, DirectWorkspace, prepareDestination } from '../../platform/runtime/file-workspace.js';
 import { CLOUD_EVIDENCE_ROOT, CLOUD_MAX_BYTES, cloudPath, type CloudCustodyBackend, type CloudObject } from '../../plugins/storage/baidu-drive.js';
 import { createHash } from 'node:crypto';
-import { ARTIFACT_ARCHIVE_VERSION } from './artifact-archive.js';
+import { ARTIFACT_ARCHIVE_VERSION, matchesArchiveBinding } from './artifact-archive.js';
 
 export const ARTIFACT_RESTORE_VERSION = 'bd.artifact-restore/1';
 interface Receipt {
@@ -80,7 +80,7 @@ export function createArtifactRestoreActions(options: {
       if (!record || record.state !== 'confirmed' || !record.remote_id || record.file_version !== original.version
         || !/^[a-f0-9]{64}$/u.test(record.sha256) || record.byte_length !== original.size
         || record.byte_length < 1 || record.byte_length > CLOUD_MAX_BYTES
-        || record.binding_json !== JSON.stringify(versionBinding()))
+        || !matchesArchiveBinding(record.binding_json, backend))
         throw new TaskError('ARTIFACT_RESTORE_UNCONFIRMED', '原网盘回执不完整、文件版本或账号已变化；禁止猜测远端位置。');
       const remotePath = cloudPath(record.target_path);
       if (!remotePath.startsWith(CLOUD_EVIDENCE_ROOT + '/') || posix.dirname(remotePath) !== posix.join(CLOUD_EVIDENCE_ROOT, record.topic, record.purpose))

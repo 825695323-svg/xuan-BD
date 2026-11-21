@@ -22,6 +22,7 @@ const rootPath = '/apps/bdpan';
 const folder = rootPath + '/selected';
 const evidenceRoot = rootPath + '/证据盘';
 const archiveDirectory = evidenceRoot + '/待分类/来源原件';
+const viewUrl = 'https://pan.baidu.com/disk/main#/index?category=all';
 const request = (materialId: string, extra: Partial<CloudCustodyInput> = {}): CloudCustodyInput => ({ materialId,
   scopePath: folder, purpose: '独立隔离盘原件保管验收', authorization: { status: 'authorized', basis: '操作者仅选择此隔离夹具目录与原件进行本次核证' }, ...extra });
 class FixtureDrive implements CloudCustodyBackend {
@@ -84,7 +85,7 @@ class FixtureDrive implements CloudCustodyBackend {
         assert.equal(input.allowUpload, true); this.onPut?.(); this.writes.push(path);
         const object = this.add(path, bytes);
         if (this.throwAfterPut) throw new TaskError('CLOUD_UPLOAD_PENDING', '隔离注入：上传已生效但响应丢失。');
-        return object;
+        return { ...object, returnUrl: viewUrl };
       },
       copy: async (source, targetDirectory) => {
         assert.equal(input.allowUpload, true);
@@ -138,7 +139,7 @@ test('new archive requests expose and default to the dedicated evidence root, re
   try {
     const materialId = await f.material();
     assert.equal(f.custody.capabilities().evidenceRoot, evidenceRoot);
-    assert.equal(f.custody.capabilities().version, 'bd-cloud-custody/6');
+    assert.equal(f.custody.capabilities().version, 'bd-cloud-custody/7');
     assert.throws(() => f.custody.submit(request(materialId, { verifyBytes: true, allowUpload: true, targetDirectory: folder }), 'outside-evidence'), { code: 'CLOUD_EVIDENCE_ROOT_REQUIRED' });
     assert.throws(() => f.custody.submit(request(materialId, { verifyBytes: true, allowUpload: true, targetDirectory: evidenceRoot }), 'no-direct-root-write'), { code: 'CLOUD_EVIDENCE_ROOT_REQUIRED' });
     const result = await f.run(request(materialId, { verifyBytes: true, allowUpload: true }));
@@ -516,7 +517,7 @@ test('metadata-only archive uses matching remote filename and size without downl
   } finally { await f.close(); }
 });
 
-test('a verified source outside the evidence root is copied within the drive and its distinct archive is fully read back', async () => {
+test('a matched source outside the evidence root is copied and its distinct target metadata is checked', async () => {
   const drive = new FixtureDrive(), source = drive.add(folder + '/source.csv', original), f = open(newRoot(), drive);
   try {
     const materialId = await f.material();
@@ -524,7 +525,7 @@ test('a verified source outside the evidence root is copied within the drive and
       const row = f.db.connection.prepare('SELECT upload_started,record_json FROM cloud_custody_requests WHERE upload_started=1').get()!;
       const record = JSON.parse(String(row.record_json));
       assert.equal(row.upload_started, 1); assert.equal(record.state, 'copying'); assert.equal(record.copyAttempted, true);
-      assert.deepEqual(record.writeIntent, { operation: 'copy', targetPath: archiveDirectory + '/source.csv', source });
+      assert.deepEqual(record.writeIntent, { operation: 'copy', targetPath: archiveDirectory + '/source.csv', source: { ...source, returnUrl: null, returnMarkdown: null } });
       assert.equal(Number(f.db.connection.prepare('SELECT count(*) n FROM cloud_custody_target_claims').get()!.n), 1);
     };
     const result = await f.run(request(materialId, { verifyBytes: true, allowUpload: true, sourceRemotePath: source.path }));
@@ -910,12 +911,39 @@ test('metadata-only Skill archive does not download after upload, and recovery d
     assert.equal(archived.record.state, 'uploaded_metadata_checked');
     assert.equal(archived.record.metadataConfirmed, true);
     assert.equal(archived.record.verifiedSha256, null);
+    assert.equal(archived.record.returnUrl, viewUrl);
+    assert.equal((archived.task.result?.data as Record<string, unknown>).returnUrl, viewUrl);
+    const saved = f.db.connection.prepare('SELECT record_json FROM cloud_custody_requests WHERE task_id=?').get(archived.task.id);
+    assert.equal(JSON.parse(String(saved?.record_json)).remoteObject.returnUrl, viewUrl);
     assert.equal(drive.reads.length, 0);
     assert.equal(drive.writes.length, 1);
     const restored = f.custody.recover(archived.task.id, archived.task.version, 'metadata-restore');
     await f.tasks.wait(restored.id);
     assert.equal(f.custody.view(restored.id).record.state, 'restored_verified');
+    assert.equal(f.custody.view(restored.id).record.returnUrl, viewUrl);
     assert.deepEqual(f.custody.readRestored(restored.id).bytes, original);
     assert.deepEqual(drive.reads, [archived.record.remoteObject!.path]);
+  } finally { await f.close(); }
+});
+
+test('v3 native pending write keeps its claim and can be restored on v4 with the same account binding', async () => {
+  const drive = new FixtureDrive(), root = newRoot();
+  drive.versionBinding.cloudBackend = 'baidu-drive-custody/3'; drive.throwAfterPut = true;
+  let f = open(root, drive);
+  try {
+    const id = await f.material(), input = request(id, { allowUpload: true });
+    const first = await f.run(input, 'old-native');
+    assert.equal(first.task.status, 'needs_review');
+    f.db.connection.prepare('UPDATE tasks SET versions=? WHERE id=?')
+      .run(JSON.stringify({ ...first.task.versions, cloudCustody: 'bd-cloud-custody/6' }), first.task.id);
+    await f.close();
+    drive.versionBinding.cloudBackend = 'baidu-drive-custody/4';
+    f = open(root, drive);
+    const repeated = await f.run(input, 'new-native');
+    assert.equal(repeated.record.gaps[0]?.code, 'CLOUD_PREVIOUS_UPLOAD_PENDING');
+    const restored = f.custody.recover(first.task.id, f.tasks.get(first.task.id).version, 'same-account-restore');
+    await f.tasks.wait(restored.id);
+    assert.deepEqual(f.custody.readRestored(restored.id).bytes, original);
+    assert.equal(drive.writes.length, 1);
   } finally { await f.close(); }
 });

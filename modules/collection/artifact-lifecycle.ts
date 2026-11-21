@@ -9,6 +9,7 @@ import type { SkillRegistration } from '../../platform/plugins/registry.js';
 import { inspectPath, samePathIdentity } from '../../platform/security/permissions.js';
 import { acquireAuthority, fileCapability } from '../../platform/runtime/file-workspace.js';
 import { cloudEvidenceDirectory, type CloudCustodyBackend, type CloudObject } from '../../plugins/storage/baidu-drive.js';
+import { matchesArchiveBinding } from './artifact-archive.js';
 
 const SCHEMA = [
   'CREATE TABLE artifact_local_releases (',
@@ -93,7 +94,6 @@ export function createArtifactLifecycleActions(options: {
   const db = options.database.connection;
   const backend = options.backend;
   const available = () => backend?.availability() ?? { available: false, reason: '百度网盘 Skill（技能）尚未绑定。' };
-  const archiveBinding = () => JSON.stringify({ artifactArchive: 'bd.artifact-archive/1', ...(backend?.versionBinding ?? {}) });
   const fields: SkillRegistration['fields'] = [
     { key: 'sourceTaskId', label: '来源任务编号', type: 'text', required: true, maxLength: 200 },
     { key: 'fileRefId', label: '已发布文件引用编号', type: 'file', required: true },
@@ -133,7 +133,7 @@ export function createArtifactLifecycleActions(options: {
     const reference = options.files.getRef(input.fileRefId), receipt = receiptFor(input.sourceTaskId, input.fileRefId);
     const previous = releaseFor(input.sourceTaskId, input.fileRefId);
     const blockers = artifactReleaseBlockers(options.database, options.files, input.sourceTaskId, reference, options.artifactRoot);
-    if (!receipt || receipt.state !== 'confirmed' || !receipt.remote_id || receipt.binding_json !== archiveBinding()
+    if (!receipt || receipt.state !== 'confirmed' || !receipt.remote_id || !matchesArchiveBinding(receipt.binding_json, backend)
       || receipt.file_version !== reference.version || receipt.byte_length !== reference.size)
       blockers.push('archive-not-confirmed-or-binding-changed');
     if (previous && (previous.file_version !== reference.version || previous.source_sha256 !== receipt?.sha256

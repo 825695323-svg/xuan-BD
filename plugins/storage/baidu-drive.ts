@@ -8,8 +8,9 @@ import { DirectProcessError, runDirectProcess } from '../../platform/runtime/pro
 import type { ProcessRuntime } from '../../platform/runtime/programs.js';
 import { inspectPath, samePathIdentity } from '../../platform/security/permissions.js';
 import { runBaiduSkillCommand, type BaiduDriveConfiguration } from '../capture-sources/baidu-drive/index.js';
+import { baiduReturnMarkdown, baiduReturnUrl, cloudPath, CLOUD_ROOT } from '../capture-sources/baidu-drive/contract.js';
 
-export const CLOUD_ROOT = '/apps/bdpan';
+export { cloudPath, CLOUD_ROOT } from '../capture-sources/baidu-drive/contract.js';
 export const CLOUD_EVIDENCE_ROOT = posix.join(CLOUD_ROOT, '证据盘');
 export const CLOUD_EVIDENCE_TOPICS = ['行情', '财报', '资讯', '资金流向', '市场情绪', '榜单', '待分类'] as const;
 export const CLOUD_EVIDENCE_PURPOSES = ['来源原件', '加工证据', '交接回执'] as const;
@@ -27,8 +28,9 @@ function evidenceDirectory(path: string): boolean {
     && (CLOUD_EVIDENCE_PURPOSES as readonly string[]).includes(parts[1]!);
 }
 export const CLOUD_MAX_BYTES = 256 * 1024 * 1024;
-export interface CloudObject { id: string; path: string; kind: 'file' | 'directory'; size: number; md5: string | null }
-export interface CloudPage { items: CloudObject[]; hasMore: boolean; nextOffset: number | null }
+interface CloudLinks { returnUrl?: string | null; returnMarkdown?: string | null }
+export interface CloudObject extends CloudLinks { id: string; path: string; kind: 'file' | 'directory'; size: number; md5: string | null }
+export interface CloudPage extends CloudLinks { items: CloudObject[]; hasMore: boolean; nextOffset: number | null }
 export interface CloudSession {
   list(path: string, offset: number, limit: number): Promise<CloudPage>;
   lookup?(path: string): Promise<CloudObject | null>;
@@ -45,29 +47,38 @@ export interface CloudCustodyBackend {
   open(context: TaskExecutionContext, input: { scopePath: string; sourceRemotePath?: string; allowUpload: boolean; verifyBytes: boolean; targetDirectory?: string }): Promise<CloudSession>;
 }
 
-export function cloudPath(value: unknown): string {
-  if (typeof value !== 'string' || value.length > 2048 || /[\u0000-\u001f\u007f\\]/u.test(value)
-    || value !== CLOUD_ROOT && !value.startsWith(CLOUD_ROOT + '/')
-    || value.split('/').slice(1).some(part => !part || ['.', '..', '~'].includes(part))) {
-    throw new DirectError('INVALID_CLOUD_PATH', '需要已登记网盘根内的明确路径，不接受相对路径或目录穿越。');
-  }
-  return value;
-}
 export function inCloudScope(scope: string, path: string): boolean { return path === scope || path.startsWith(scope + '/'); }
 
-/** 只取实际 CLI 的对象身份、类型、长度和摘要；丢弃账号 URL、富文本和诊断。 */
+function officialLinks(value: Record<string, JsonValue>) {
+  return { returnUrl: baiduReturnUrl(value.return_url), returnMarkdown: baiduReturnMarkdown(value.return_markdown) };
+}
+/** 列表与写入回执经调用方核对为同一对象后，保留两者实际提供的查看信息。 */
+export function cloudObjectWithLinks(object: CloudObject, receipt?: CloudLinks | null): CloudObject {
+  return { id: object.id, path: object.path, kind: object.kind, size: object.size, md5: object.md5,
+    returnUrl: baiduReturnUrl(object.returnUrl) ?? baiduReturnUrl(receipt?.returnUrl),
+    returnMarkdown: baiduReturnMarkdown(object.returnMarkdown) ?? baiduReturnMarkdown(receipt?.returnMarkdown) };
+}
+const CLOUD_BACKEND_VERSION = 'baidu-drive-custody/4';
+/** v4 仅扩展查看信息，旧对象及未决写入的占位继续绑定同一程序、账号和原目录身份。 */
+export function cloudObjectBinding(versions: Record<string, string | null>): Record<string, string | null> {
+  return versions.cloudBackend === CLOUD_BACKEND_VERSION ? { ...versions, cloudBackend: 'baidu-drive-custody/3' } : versions;
+}
+
+/** 列表外层的查看链接属于目录，只有条目自身的链接才能归于该文件。 */
 export function parseCloudPage(value: JsonValue, directory: string, offset: number, limit: number): CloudPage {
   let container: Record<string, JsonValue> | null = object(value) ? value : null;
   if (container && object(container.data)) container = container.data;
-  const raw = Array.isArray(value) ? value : container && ['items', 'list', 'files'].map(key => container![key]).find(Array.isArray);
+  const raw = Array.isArray(value) ? value : container && ['items', 'list', 'files', 'data'].map(key => container![key]).find(Array.isArray);
   if (!Array.isArray(raw) || raw.length > limit) throw new DirectError('CLOUD_LIST_UNVERIFIED', '网盘没有返回本页可核对的有界目录清单。');
   const items = raw.map(item => cloudObject(item));
   if (items.some(item => posix.dirname(item.path) !== directory)) throw new DirectError('CLOUD_DIRECTORY_AMBIGUOUS', '网盘返回了目录自身或范围外对象，不能将目录当作文件或空目录。');
-  const marker = container?.has_more;
-  if (marker !== undefined && ![true, false, 0, 1].includes(marker as boolean | number)) throw new DirectError('CLOUD_LIST_UNVERIFIED', '网盘分页结束标记不能核对。');
-  const hasMore = marker === undefined ? raw.length === limit : marker === true || marker === 1;
+  const markers = [object(value) ? value.has_more : undefined, container?.has_more].filter(marker => marker !== undefined);
+  if (!markers.every(marker => [true, false, 0, 1].includes(marker as boolean | number))) throw new DirectError('CLOUD_LIST_UNVERIFIED', '网盘分页结束标记不能核对。');
+  const hasMore = markers.length ? markers.some(Boolean) : raw.length === limit;
   if (hasMore && !raw.length) throw new DirectError('CLOUD_LIST_UNVERIFIED', '网盘分页未结束但没有进度，不能判定缺失。');
-  return { items, hasMore, nextOffset: hasMore ? offset + raw.length : null };
+  const outer = object(value) ? officialLinks(value) : null, inner = container && officialLinks(container);
+  return { items, hasMore, nextOffset: hasMore ? offset + raw.length : null,
+    returnUrl: outer?.returnUrl ?? inner?.returnUrl ?? null, returnMarkdown: outer?.returnMarkdown ?? inner?.returnMarkdown ?? null };
 }
 function cloudObject(value: JsonValue): CloudObject {
   if (!object(value)) throw new DirectError('CLOUD_OBJECT_UNVERIFIED', '网盘对象元数据无法核对。');
@@ -77,7 +88,7 @@ function cloudObject(value: JsonValue): CloudObject {
   if (!/^[0-9]{1,30}$/u.test(id) || ![true, false, 0, 1].includes(value.isdir as boolean | number)
     || !Number.isSafeInteger(value.size) || Number(value.size) < 0) throw new DirectError('CLOUD_OBJECT_UNVERIFIED', '网盘对象缺少精确编号、文件类型或长度，不能据此判断缺失。');
   const md5 = typeof value.md5 === 'string' && /^[a-f0-9]{32}$/iu.test(value.md5) ? value.md5.toLowerCase() : null;
-  return { id, path: cloudPath(value.path), kind: value.isdir === true || value.isdir === 1 ? 'directory' : 'file', size: Number(value.size), md5 };
+  return { id, path: cloudPath(value.path), kind: value.isdir === true || value.isdir === 1 ? 'directory' : 'file', size: Number(value.size), md5, ...officialLinks(value) };
 }
 function object(value: JsonValue): value is Record<string, JsonValue> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function sameObject(left: CloudObject, right: CloudObject): boolean {
@@ -93,7 +104,7 @@ function receipt(value: JsonValue): ReceiptMetadata | null {
   if (!object(value)) return null;
   const path = value.path ?? value.remote_path, id = value.fsid ?? value.fs_id;
   if (path !== undefined || id !== undefined) {
-    const result: ReceiptMetadata = {};
+    const result: ReceiptMetadata = officialLinks(value);
     for (const supplied of [value.path, value.remote_path].filter(item => item !== undefined)) {
       if (typeof supplied !== 'string' || !supplied) throw new DirectError('CLOUD_RECEIPT_UNVERIFIED', '原生回执的目标路径无法核对。');
       const normalized = cloudPath(supplied.startsWith('/') ? supplied : CLOUD_ROOT + '/' + supplied);
@@ -118,11 +129,15 @@ function receipt(value: JsonValue): ReceiptMetadata | null {
     if (typeof value.md5 === 'string' && /^[a-f0-9]{32}$/iu.test(value.md5)) result.md5 = value.md5.toLowerCase();
     return result;
   }
-  for (const key of ['data', 'file', 'files', 'result']) if (value[key]) { const result = receipt(value[key]); if (result) return result; }
-  return null;
+  const links = officialLinks(value);
+  for (const key of ['data', 'file', 'files', 'result']) if (value[key]) {
+    const result = receipt(value[key]);
+    if (result) return { ...result, returnUrl: result.returnUrl ?? links.returnUrl, returnMarkdown: result.returnMarkdown ?? links.returnMarkdown };
+  }
+  return links.returnUrl || links.returnMarkdown ? links : null;
 }
 function receiptMatches(reported: ReceiptMetadata, actual: CloudObject): boolean {
-  return Object.entries(reported).every(([key, value]) => actual[key as keyof CloudObject] === value);
+  return (['id', 'path', 'kind', 'size', 'md5'] as const).every(key => reported[key] === undefined || reported[key] === actual[key]);
 }
 
 /** 使用原有登记程序、账号安全引用和进程授权；不安装、登录、搜索个人根或删除远端。 */
@@ -146,9 +161,10 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
       return { available: true };
     } catch { return { available: false, reason: '网盘程序或原生账号引用的对象身份不可用；需要恢复原登记，不自动登录。' }; }
   };
-  const versionBinding = { cloudBackend: 'baidu-drive-custody/3', cloudConnection: configuration
-    ? createHash('sha256').update(JSON.stringify(configuration)).digest('hex') : null, cloudBinding: configuration
-    ? createHash('sha256').update(JSON.stringify({ configuration, identities: registeredIdentities })).digest('hex') : null };
+  const { sharePasscodeRefs: _shareRefs, ...account } = configuration ?? {};
+  const versionBinding = { cloudBackend: CLOUD_BACKEND_VERSION, cloudConnection: configuration
+    ? createHash('sha256').update(JSON.stringify(account)).digest('hex') : null, cloudBinding: configuration
+    ? createHash('sha256').update(JSON.stringify({ configuration: account, identities: registeredIdentities })).digest('hex') : null };
   return { versionBinding, availability,
     async open(context, input) {
       if (!configuration || !availability().available) throw new DirectError('CLOUD_UNAVAILABLE', availability().reason!);
@@ -260,7 +276,7 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
           if (!input.verifyBytes) throw new DirectError('CLOUD_READ_AUTHORIZATION_REQUIRED', '本次仅核对目录与文件名，尚未明确授权下载原件核证。');
           if (remote.kind !== 'file' || remote.size < 1 || remote.size > maxBytes || maxBytes > CLOUD_MAX_BYTES) throw new DirectError('CLOUD_READ_BUDGET', '原件读回超出本次单件字节预算，目录不能当作文件。');
           const before = await exact(remote.path);
-          if (!before || JSON.stringify(before) !== JSON.stringify(remote)) throw new DirectError('CLOUD_OBJECT_CHANGED', '读回前远端对象的编号、类型、长度或摘要已变化。');
+          if (!before || !sameObject(before, remote)) throw new DirectError('CLOUD_OBJECT_CHANGED', '读回前远端对象的编号、类型、长度或摘要已变化。');
           const destination = join(workspace.path, 'cloud-read-' + randomUUID());
           const effectId = randomUUID();
           await context.emit({ type: 'side_effect_started', effectId, description: '读回所选网盘原件到独立受控暂存', operation: { remoteId: remote.id, path: remote.path } });
@@ -268,7 +284,7 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
             if (pending(await invoke(['download', remote.path, destination]))) throw new DirectError('CLOUD_READ_PENDING', '网盘只确认下载已受理，尚无完整原件读回。', true);
             const fingerprint = await workspace.fingerprint(destination, maxBytes), bytes = await workspace.readPrefix(destination, remote.size);
             const after = await exact(remote.path);
-            if (fingerprint.bytes !== remote.size || bytes.length !== remote.size || !after || JSON.stringify(before) !== JSON.stringify(after)
+            if (fingerprint.bytes !== remote.size || bytes.length !== remote.size || !after || !sameObject(before, after)
               || remote.md5 && createHash('md5').update(bytes).digest('hex') !== remote.md5) throw new DirectError('CLOUD_READBACK_MISMATCH', '原件读回长度、远端版本或内容摘要不一致。');
             await context.emit({ type: 'side_effect_result', effectId, outcome: 'succeeded', evidence: '远端单文件前后身份、完整字节长度及所提供的摘要已核对。' });
             return bytes;
@@ -292,7 +308,7 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
             const reported = receipt(value), actual = await exact(path);
             if (!reported || !actual || reported.path !== path || reported.id !== actual.id || !receiptMatches(reported, actual)
               || actual.kind !== 'file' || actual.size !== bytes.length) throw new DirectError('CLOUD_UPLOAD_UNKNOWN_RESULT', '上传回执与原目标的编号、类型或长度不符，不能认定完成或重传。', true);
-            retained = false; return actual;
+            retained = false; return cloudObjectWithLinks(actual, reported);
           } catch (error) {
             if (error instanceof DirectError && error.unknown) throw error;
             throw new DirectError('CLOUD_UPLOAD_UNKNOWN_RESULT', '上传已经发出，但原生回执或精确目标未能核对；保留本次暂存并只核对原目标，不重新上传。', true);
@@ -325,9 +341,10 @@ export function createBaiduCustodyBackend(options: { configuration?: BaiduDriveC
               || reported && !receiptMatches(reported, actual)) {
               throw new DirectError('CLOUD_COPY_UNKNOWN_RESULT', '盘内复制后的原位置版本或精确目标元数据不一致，请沿原目标核对，不能重发或上传。', true);
             }
-            await context.emit({ type: 'side_effect_result', effectId, outcome: 'succeeded', evidence: '网盘复制回执、文件名、大小、编号及原位置/目标元数据已核对；未下载读回。', data: { target: actual as unknown as JsonValue } });
+            const target = cloudObjectWithLinks(actual, reported);
+            await context.emit({ type: 'side_effect_result', effectId, outcome: 'succeeded', evidence: '网盘复制回执、文件名、大小、编号及原位置/目标元数据已核对；未下载读回。', data: { target: target as unknown as JsonValue } });
             retained = false;
-            return actual;
+            return target;
           } catch (error) {
             if (error instanceof DirectError && error.unknown) throw error;
             throw new DirectError('CLOUD_COPY_UNKNOWN_RESULT', '盘内复制已经发出，但执行回执或原目标未能核对；请沿原目标读回，不能重发、改名或改成本地上传。', true);
