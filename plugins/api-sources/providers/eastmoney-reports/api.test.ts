@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import type { JsonValue } from '../../../../contracts/task-contracts.js';
 import { buildEastmoneyReportDetailRequest, buildEastmoneyReportRequest, decodeEastmoneyReportDetail,
   decodeEastmoneyReports, normalizeEastmoneyReportRequest } from './api.js';
@@ -469,6 +469,342 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
   }
   assert.throws(() => decodeEastmoneyReportDetail(request, html(`<script>var zwinfo={"pdfUrl":"${pdf}"};</script><script>zwinfo={};</script>`)),
     invalidDetail('详情脚本包含无法静态核对的研报或附件声明。'));
-  const largeHtml = html(`<div id="zwinfo"><div class="report-download" ${Array.from({ length: 2048 }, (_, i) => `data-x-${i}="1"`).join(' ')}>${`<a href="${pdf}">下载</a>`.repeat(2048)}</div>${'<div>'.repeat(2048)}${'</span>'.repeat(2048)}${'</div>'.repeat(2048)}</div>`);
-  assert.equal(decodeEastmoneyReportDetail(request, largeHtml).pdfUrl, pdf);
+});
+
+const detailRequest = { category: 'macro' as const, encodeUrl: 'fixture' };
+const infoA = 'AP202601010001', infoB = 'AP202601010002';
+const fileA = `H3_${infoA}_1.pdf`, fileB = `H3_${infoB}_1.pdf`;
+const pdfRoot = 'https://pdf.dfcfw.com/pdf/';
+const pdfA = pdfRoot + fileA, pdfB = pdfRoot + fileB;
+const detailPdf = (body: string) => decodeEastmoneyReportDetail(detailRequest, html(body)).pdfUrl;
+const inlineScript = (body: string, attrs = '') => `<script ${attrs}>${body}</script>`;
+const assignPdf = (pdf: string) => `window.pdf='${pdf}';`;
+const anchor = (href: string, attrs = 'download') => `<a ${attrs} href="${href}">PDF</a>`;
+const report = (body: string) => `<div id="zwinfo">${body}</div>`;
+const unverified = invalidDetail('详情脚本包含无法静态核对的研报或附件声明。');
+const conflictingCode = invalidDetail('研报详情元数据与附件声明指向不同的 infoCode。');
+
+test('Eastmoney verifies complete classic scripts and observes Annex B line boundaries and explicit semicolons', () => {
+  const proof = assignPdf(pdfA);
+  for (const body of [proof + ' /*', proof + ' --> trailing', proof + ' /* same line */ --> trailing', proof + ' const ;',
+    '/* never closed ' + proof]) {
+    assert.throws(() => detailPdf(report(anchor(pdfA)) + inlineScript(body)), unverified, body);
+  }
+  for (const newline of ['\n', '\r', '\r\n', '\u2028', '\u2029']) {
+    assert.equal(detailPdf(inlineScript(`window.pdf='${pdfA}'${newline};`)), pdfA);
+    assert.equal(detailPdf(inlineScript(`window.pdf='${pdfA}' // comment${newline};`)), pdfA);
+    assert.equal(detailPdf(inlineScript(`--> heading${newline}${proof}${newline} \t--> trailing`)), pdfA);
+    assert.equal(detailPdf(inlineScript(`${proof} /* a${newline}b */ --> trailing`)), pdfA);
+  }
+  assert.equal(detailPdf(inlineScript('<!-- heading\n' + proof)), pdfA);
+  for (const body of [proof, '<!-- heading\n' + proof, 'export {}; ' + proof]) {
+    assert.throws(() => detailPdf(inlineScript(body, 'type=module')), unverified);
+  }
+  assert.equal(detailPdf(inlineScript('export {};', 'type=module nomodule') + inlineScript(proof)), pdfA);
+});
+
+test('Eastmoney applies nomodule and legacy for/event only to classic scripts', () => {
+  const first = inlineScript(assignPdf(pdfA));
+  for (const attrs of ['type=module nomodule', 'type=MoDuLe for=document event=click', 'type=module nomodule for="" event=""']) {
+    assert.throws(() => detailPdf(first + inlineScript(assignPdf(pdfB), attrs)), unverified, attrs);
+  }
+  for (const attrs of ['nomodule', 'for=document event=onload', 'for=window event=onclick', 'for="" event=""',
+    'for="window\u00a0" event=onload', 'for=window event="onload ( )"', 'language="javascript "']) {
+    assert.throws(() => detailPdf(inlineScript(assignPdf(pdfB), attrs)), noPdf, attrs);
+    assert.equal(detailPdf(first + inlineScript(assignPdf(pdfB), attrs)), pdfA, attrs);
+  }
+  for (const attrs of ['for=window event=onload', 'for=" \tWINDOW" event="OnLoad()\n"', 'for=document', 'event=onclick',
+    'type="" language=vbscript', 'type=" Text/JavaScript "']) {
+    assert.equal(detailPdf(inlineScript(assignPdf(pdfA), attrs)), pdfA, attrs);
+  }
+});
+
+test('Eastmoney rejects unverified metadata mutations anywhere in executable scripts', () => {
+  const first = inlineScript(assignPdf(pdfA));
+  const mutations = ['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '&&=', '||=', '??=', '**=']
+    .map(operator => `pdf ${operator} "";`);
+  mutations.push('function pdf() {}', 'function* pdf() {}', 'class pdf extends Base {}', 'let /* binding */ pdf\nvoid 0;',
+    '++pdf;', 'pdf--;', 'delete (pdf);', '({key: pdf} = value);', '([pdf, ...rest] = value);',
+    'for (pdf of list) {}', 'pdf /* gap */ &&= "";', String.raw`\u0070df ||= "";`, String.raw`\u{70}df = "";`,
+    String.raw`const \u0061 = 1;`, String.raw`window.name = "\x78";`, 'self[key] = 1;', 'void globalThis.pdf;',
+    'Object.defineProperty(this, "pdf", {});', 'log(zwinfo);');
+  for (const body of mutations) {
+    assert.throws(() => detailPdf(first + inlineScript(body)), unverified, body);
+    assert.throws(() => detailPdf(first + `<aside>${inlineScript(body)}</aside>`), unverified, body);
+  }
+  assert.equal(detailPdf(first + inlineScript('Object.assign(window.theme, {dark: true});')), pdfA);
+});
+
+test('Eastmoney counts zwinfo objects before ownership filtering and checks statement order', () => {
+  const object = `var zwinfo={"pdfUrl":"${pdfA}"};`;
+  for (const wrapper of ['<aside>', '<div class=related>', '<fieldset>', '<div data-encode-url=other>']) {
+    const extra = wrapper + inlineScript('zwinfo={};') + `</${wrapper.slice(1).split(/[ >]/u)[0]}>`;
+    for (const body of [inlineScript(object) + extra, extra + inlineScript(object)]) assert.throws(() => detailPdf(body), unverified);
+  }
+  assert.equal(detailPdf(inlineScript(object) + '<template>' + inlineScript('zwinfo={};') + '</template>'), pdfA);
+  assert.equal(detailPdf(inlineScript(object) + inlineScript('zwinfo={};', 'nomodule')), pdfA);
+  const property = `zwinfo.infoCode='${infoA}';`;
+  for (const binding of ['let', 'const', 'var']) {
+    assert.throws(() => detailPdf(inlineScript(property + `${binding} zwinfo={};` + assignPdf(pdfA))), unverified);
+    assert.equal(detailPdf(inlineScript(`${binding} zwinfo={};` + property + assignPdf(pdfA))), pdfA);
+  }
+  assert.throws(() => detailPdf(inlineScript('let zwinfo={}; window.' + property + assignPdf(pdfA))), unverified);
+});
+
+test('Eastmoney uses HTML and MathML integration points and the foreign-content breakout rules', () => {
+  const conflict = inlineScript(`zwinfo.infoCode='${infoB}';`);
+  const main = report(anchor(pdfA));
+  const contexts: [string, string][] = [];
+  for (const tag of ['foreignObject', 'desc', 'title']) contexts.push([`<svg><${tag}>`, `</${tag}></svg>`]);
+  for (const tag of ['mi', 'mo', 'mn', 'ms', 'mtext']) contexts.push([`<math><${tag}>`, `</${tag}></math>`]);
+  for (const encoding of ['TEXT/HTML', 'application/XHTML+xml']) {
+    contexts.push([`<math><annotation-xml encoding="${encoding}">`, '</annotation-xml></math>']);
+  }
+  contexts.push(['<math><annotation-xml><svg><foreignObject>', '</foreignObject></svg></annotation-xml></math>']);
+  for (const [open, close] of contexts) {
+    assert.throws(() => detailPdf(main + open + conflict + close), conflictingCode, open);
+    assert.equal(detailPdf(report(open + anchor(pdfB) + close)), pdfB, open);
+    assert.throws(() => detailPdf(`<div data-encode-url="other">${open}${inlineScript(assignPdf(pdfB))}${close}</div>`), noPdf, open);
+  }
+  for (const tag of ['b', 'big', 'blockquote', 'body', 'br', 'center', 'code', 'dd', 'div', 'dl', 'dt', 'em', 'embed',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head', 'hr', 'i', 'img', 'li', 'listing', 'menu', 'meta', 'nobr',
+    'ol', 'p', 'pre', 'ruby', 's', 'small', 'span', 'strong', 'strike', 'sub', 'sup', 'table', 'tt', 'u', 'ul', 'var',
+    'font color=""', 'font face=x', 'font size=1']) {
+    assert.throws(() => detailPdf(main + `<svg><g><${tag}>${conflict}</g></svg>`), conflictingCode, tag);
+  }
+  for (const open of ['<svg><g><font>', '<math><mrow>', '<svg><title/>', '<math><mtext/>',
+    '<math><mtext><mglyph>', '<math><mi><malignmark>', '<math><annotation-xml encoding=" text/html ">']) {
+    assert.equal(detailPdf(main + open + conflict), pdfA, open);
+  }
+  for (const end of ['</p>', '</br>']) assert.throws(() => detailPdf(main + '<svg><g>' + end + conflict), conflictingCode);
+  assert.throws(() => detailPdf(main + '<svg><title/></svg>' + conflict), conflictingCode);
+});
+
+test('Eastmoney tokenizes a leading equals sign as an attribute name on ordinary and raw end tags', () => {
+  const a = inlineScript(assignPdf(pdfA)), b = inlineScript(assignPdf(pdfB));
+  for (const prefix of ['<div></div', '<textarea>x</textarea', '<script>void 0;</script']) {
+    for (const attr of [' ="', " ='", ' = "', ' foo="" ="']) {
+      assert.throws(() => detailPdf(a + prefix + attr + '>' + b + '">'), conflictingCode, prefix + attr);
+    }
+    assert.equal(detailPdf(a + prefix + ` == " > ${b} ">`), pdfA);
+  }
+  assert.throws(() => detailPdf(a + '<div =">' + b + '">'), conflictingCode);
+});
+
+test('Eastmoney respects nested list scopes, optional end tags and sibling anchors', () => {
+  const link = anchor(pdfB, '');
+  for (const list of ['ul', 'ol', 'menu']) {
+    const body = `<ul><li data-encode-url=other><${list}><li>${anchor(pdfB)}</${list}></ul>`;
+    assert.throws(() => detailPdf(report(body)), noPdf, list);
+  }
+  for (const [first, second] of [
+    ['<head class="report-download"><meta>', '<body>'], ['<head class="report-download"><title>t</title>', ''],
+    ['<p class="report-download">a', '<section>'], ['<a class="report-download">a', ''],
+    ['<ul><li class="report-download">a', '<li>'], ['<dl><dd class="report-download">a', '<dt>'],
+    ['<ruby><rt class="report-download">a', '<rp>'], ['<ruby><rp class="report-download">a', '<rt>'],
+    ['<table><colgroup class="report-download"><col>', '<tbody><tr><td>'],
+    ['<table><caption class="report-download">a', '<tbody><tr><td>'],
+    ['<table><thead class="report-download"><tr><th>a', '<tbody><tr><td>'],
+    ['<table><tbody class="report-download"><tr><td>a', '<tbody><tr><td>'],
+    ['<table><tbody class="report-download"><tr><td>a', '<tfoot><tr><td>'],
+    ['<table><tfoot class="report-download"><tr><td>a', '<caption>'],
+    ['<table><tr class="report-download"><td>a', '<tr><th>'],
+    ['<table><tr><th class="report-download">a', '<td>'],
+    ['<table><tr><td class="report-download">a', '<th>'],
+  ]) assert.throws(() => detailPdf(first + second + link), noPdf, first + second);
+  assert.equal(detailPdf(`<table><tbody class="report-download"><tr><td><table><tbody><tr><td>${link}</table></table>`), pdfB);
+  assert.equal(detailPdf(report('<a data-encode-url=other>before' + anchor(pdfB))), pdfB);
+  for (const tag of ['div', 'article', 'b', 'em']) {
+    assert.throws(() => detailPdf(report(`<a><${tag} data-encode-url=other>text${anchor(pdfB)}`)), noPdf, tag);
+    assert.equal(detailPdf(`<a><${tag} class=report-download>text${link}`), pdfB, tag);
+  }
+  assert.equal(detailPdf(report(`<a><span data-encode-url=other><div>text${anchor(pdfB)}`)), pdfB);
+  const crossedAnchor = (blocks: number) => '<a class=report-download>' + '<div>'.repeat(blocks) + link;
+  assert.throws(() => detailPdf(crossedAnchor(7)), noPdf);
+  assert.equal(detailPdf(crossedAnchor(8)), pdfB);
+  assert.equal(detailPdf(crossedAnchor(2048) + '<a></a>'.repeat(2048)), pdfB);
+  for (const boundary of ['menu', 'section', 'article', 'fieldset']) {
+    assert.throws(() => detailPdf(report(`<ul><li data-encode-url=other><${boundary}><li>${anchor(pdfB)}`)), noPdf);
+  }
+  assert.throws(() => detailPdf(report(`<ruby><rt data-encode-url=other><span><rp>${anchor(pdfB)}`)), noPdf);
+  const tableInParagraph = `<p class=report-download><table><tr><td>${link}</table>`;
+  assert.equal(detailPdf(tableInParagraph), pdfB);
+  assert.throws(() => detailPdf('<!doctype html>' + tableInParagraph), noPdf);
+  assert.equal(detailPdf('<!doctype html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">' + tableInParagraph), pdfB);
+  assert.throws(() => detailPdf('<!doctype html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "legacy.dtd">' + tableInParagraph), noPdf);
+  for (const tag of ['option', 'optgroup']) {
+    for (const end of ['', `</${tag}>`]) {
+      const select = `<select><${tag} class=related>相关阅读${end}<${tag}>${inlineScript('void 0;')}</select>`;
+      assert.equal(detailPdf(report(select + anchor(pdfB))), pdfB);
+    }
+  }
+  // select 之外只有当前 option 被隐式弹出。未闭合的 optgroup 可以包含后一个 optgroup。
+  const outsideSelect = (tag: string) => report(`<${tag} class=related>相关阅读<${tag}>${inlineScript('void 0;')}</${tag}></${tag}>${anchor(pdfB)}`);
+  assert.throws(() => detailPdf(outsideSelect('option')), noPdf);
+  assert.equal(detailPdf(outsideSelect('optgroup')), pdfB);
+});
+
+test('Eastmoney uses the parent of the nearest table for fostered content', () => {
+  const link = anchor(pdfB, '');
+  for (const part of ['', '<thead>', '<tbody>', '<tfoot>', '<tr>', '<tbody><tr>']) {
+    assert.throws(() => detailPdf(`<table class=report-download>${part}${link}</table>`), noPdf, part);
+    assert.equal(detailPdf(`<div class=report-download><table data-encode-url=other>${part}<div>${link}</div></table></div>`), pdfB, part);
+  }
+  for (const part of ['<caption>', '<tr><th>', '<tbody><tr><td>']) {
+    assert.equal(detailPdf(`<table class=report-download>${part}${link}</table>`), pdfB, part);
+    assert.throws(() => detailPdf(report(`<table data-encode-url=other>${part}${anchor(pdfB)}</table>`)), noPdf, part);
+  }
+  assert.equal(detailPdf(`<div class=report-download><table data-encode-url=other><tbody><form>${link}</table></div>`), pdfB);
+  assert.equal(detailPdf(report(`<table><caption>相关阅读</caption>${anchor(pdfB)}</table>`)), pdfB);
+  assert.equal(detailPdf(`<table class=report-download><td><table data-encode-url=other>${link}</table></table>`), pdfB);
+});
+
+test('Eastmoney leaves noscript raw and keeps every close tag inside its innermost template', () => {
+  const a = inlineScript(assignPdf(pdfA)), b = inlineScript(assignPdf(pdfB));
+  assert.throws(() => detailPdf(a + '<noscript><textarea></noscript>' + b), conflictingCode);
+  for (const tag of ['div', 'aside', 'table', 'span', 'svg']) {
+    const open = tag === 'svg' ? '<svg><foreignObject>' : `<${tag}>`;
+    assert.throws(() => detailPdf(open + `<template></${tag}>${b}${anchor(pdfB, 'class=report-download')}</template>`), noPdf, tag);
+  }
+  assert.equal(detailPdf(a + `<div><template><template></div></template>${b}</template></div>`), pdfA);
+  assert.equal(detailPdf(a + `<noscript>${b}${anchor(pdfB, 'class=report-download')}</noscript>`), pdfA);
+});
+
+test('Eastmoney keeps related text contiguous across inert and empty scripts', () => {
+  for (const script of [inlineScript('{}', 'type=application/json'), inlineScript('let x=1;', 'nomodule'),
+    inlineScript(assignPdf(pdfA), 'for=document event=onload'), '<script></script>', '<script> \t\r\n </script>']) {
+    for (const heading of ['相关' + script + '阅读', '相关阅读' + script]) {
+      assert.throws(() => detailPdf(report(`<div class=related>${heading}</div>${anchor(pdfB)}`)), noPdf);
+      assert.throws(() => detailPdf(report(`<h2>${heading}</h2>${anchor(pdfB)}`)), noPdf);
+    }
+  }
+});
+
+test('Eastmoney decodes all 106 case-sensitive legacy character references', () => {
+  // 名称依 ISO-8859-1 码位顺序排列，另有四个 ASCII 字符及六个大写别名。
+  const latin1 = ('nbsp iexcl cent pound curren yen brvbar sect uml copy ordf laquo not shy reg macr '
+    + 'deg plusmn sup2 sup3 acute micro para middot cedil sup1 ordm raquo frac14 frac12 frac34 iquest '
+    + 'Agrave Aacute Acirc Atilde Auml Aring AElig Ccedil Egrave Eacute Ecirc Euml Igrave Iacute Icirc Iuml '
+    + 'ETH Ntilde Ograve Oacute Ocirc Otilde Ouml times Oslash Ugrave Uacute Ucirc Uuml Yacute THORN szlig '
+    + 'agrave aacute acirc atilde auml aring aelig ccedil egrave eacute ecirc euml igrave iacute icirc iuml '
+    + 'eth ntilde ograve oacute ocirc otilde ouml divide oslash ugrave uacute ucirc uuml yacute thorn yuml').split(' ');
+  const names = [...latin1, 'amp', 'lt', 'gt', 'quot', 'AMP', 'LT', 'GT', 'QUOT', 'COPY', 'REG'];
+  const expected = [...latin1.map((_, i) => String.fromCodePoint(160 + i)), ...'&<>"&<>"©®'].join('|');
+  assert.equal(names.length, 106);
+  for (const semi of ['', ';']) {
+    const query = names.map(name => '&' + name + semi).join('|');
+    assert.equal(detailPdf(report(anchor(pdfA + '?' + query))), new URL(pdfA + '?' + expected).href);
+    assert.throws(() => detailPdf(report(`相&shy${semi}关阅读${anchor(pdfB)}`)), noPdf);
+    assert.throws(() => detailPdf(report(`相&nbsp${semi}关阅读${anchor(pdfB)}`)), noPdf);
+  }
+  assert.equal(detailPdf(report('相&SHY关阅读' + anchor(pdfB))), pdfB);
+  assert.equal(detailPdf(report(anchor(pdfA + '?q=&notin;|&centerdot;'))), new URL(pdfA + '?q=∉|·').href);
+  assert.equal(detailPdf(report(anchor(pdfA + '?x=&copycat&y=&amp=z'))), pdfA + '?x=&copycat&y=&amp=z');
+});
+
+test('Eastmoney resolves anchors, embedded previews and related descendants against the first document base', () => {
+  const base = `<base href="${pdfRoot}">`;
+  for (const relative of [anchor(fileB), `<iframe src="${fileB}"></iframe>`, inlineScript(`var zwinfo={attachUrl:'${fileB}'};`)]) {
+    for (const content of [base + relative, relative + base]) {
+      assert.equal(detailPdf(report(content)), pdfB);
+      assert.throws(() => detailPdf(report(anchor(pdfA) + content)), conflictingCode);
+    }
+  }
+  for (const href of ['data:text/plain,x', 'javascript:void(0)', 'ftp://example.test/', 'https://[invalid']) {
+    const baseFallback = `<base href="${href}"><base href="http://example.test/">`;
+    const relative = anchor(pdfB.slice('https:'.length));
+    assert.equal(detailPdf(report(relative) + baseFallback), pdfB, href);
+    assert.throws(() => detailPdf(report(anchor(pdfA) + relative) + baseFallback), conflictingCode, href);
+  }
+  for (const inert of [`<template>${base}</template>`, `<noscript>${base}</noscript>`, `<svg><g>${base}</g></svg>`,
+    `<math><mrow>${base}</mrow></math>`]) {
+    assert.throws(() => detailPdf(report(anchor(fileB)) + inert), noPdf);
+    assert.equal(detailPdf(inert + '<base>' + report(anchor(fileB)) + base), pdfB);
+  }
+  assert.equal(detailPdf('<svg><foreignObject>' + base + '</foreignObject></svg>' + report(anchor(fileB))), pdfB);
+  // 真正的 PDF 后代使 related 成为自包含推荐区，普通链接保留标题对外层的作用。
+  const related = (href: string) => report(`<div class=related>相关阅读${anchor(href)}</div>${anchor(pdfA)}`);
+  assert.equal(detailPdf(related(fileB) + base), pdfA);
+  assert.throws(() => detailPdf(related('article.html') + base), noPdf);
+  // 同一原始 href 的每一次归属声明仍须独立核对。
+  assert.throws(() => detailPdf(report(anchor(fileA) + anchor(fileA, `download data-info-code="${infoB}"`)) + base),
+    invalidDetail('研报详情标识与附件标识不符。'));
+});
+
+// 通过公开入口测量实际传入 WHATWG URL 构造器的次数和字符量，计入基准 URL。
+function measureDetail(t: TestContext, label: string, input: Uint8Array, check: () => void) {
+  const NativeURL = globalThis.URL;
+  let calls = 0, characters = 0;
+  const instrumented = t.mock.method(globalThis, 'URL', class extends NativeURL {
+    constructor(value: string | URL, base?: string | URL) {
+      calls += 1;
+      characters += String(value).length + (base === undefined ? 0 : String(base).length);
+      super(value, base);
+    }
+  });
+  const start = performance.now();
+  try {
+    check();
+  } finally {
+    instrumented.mock.restore();
+  }
+  const elapsed = performance.now() - start;
+  t.diagnostic(`${label} · ${elapsed.toFixed(1)} ms · ${calls} URL constructions · ${characters} input characters`);
+  assert.ok(elapsed < 2000, `${label} took ${elapsed} ms`);
+  assert.ok(characters <= input.byteLength * 4, `${characters} URL characters for ${input.byteLength} bytes of HTML`);
+  return calls;
+}
+
+test('Eastmoney bounds the 2,048-attribute, repeated-link and unmatched-close fixture', t => {
+  const count = 2048;
+  const attributes = Array.from({ length: count }, (_, i) => `data-x-${i}="1"`).join(' ');
+  const tree = '<div>'.repeat(count) + '</span>'.repeat(count) + '</div>'.repeat(count);
+  const input = html(report(`<div class="report-download" ${attributes}>${anchor(pdfA, '').repeat(count)}</div>${tree}`));
+  const calls = measureDetail(t, '2,048 repeated links', input, () => {
+    assert.equal(decodeEastmoneyReportDetail(detailRequest, input).pdfUrl, pdfA);
+  });
+  assert.ok(calls <= 4, `duplicates caused ${calls} URL constructions`);
+});
+
+test('Eastmoney coalesces short fragments on a long base and stops at the first distinct PDF or infoCode', t => {
+  const basePdf = pdfA + '?signature=' + 'x'.repeat(65_536);
+  const fragments = Array.from({ length: 2048 }, (_, i) => anchor('#' + i)).join('');
+  const input = html(report(fragments) + `<base href="${basePdf}#initial">`);
+  const calls = measureDetail(t, 'long base and 2,048 fragments', input, () => {
+    assert.equal(decodeEastmoneyReportDetail(detailRequest, input).pdfUrl, basePdf);
+  });
+  assert.ok(calls <= 4, `fragment references caused ${calls} URL constructions`);
+
+  const suffix = Array.from({ length: 2048 }, (_, i) => anchor('?unused=' + i)).join('');
+  for (const [second, reason] of [[pdfB, conflictingCode], ['?different', invalidDetail('研报详情存在多个不同附件定位，须明确选择。')]] as const) {
+    const ambiguous = html(`<base href="${basePdf}">` + report(anchor('#one') + anchor(second) + suffix));
+    const calls = measureDetail(t, 'early conflict', ambiguous, () => {
+      assert.throws(() => decodeEastmoneyReportDetail(detailRequest, ambiguous), reason);
+    });
+    assert.ok(calls <= 5, `the first conflict took ${calls} URL constructions`);
+  }
+});
+
+test('Eastmoney resolves path and query references with bounded base lengths', t => {
+  const deep = pdfRoot + 'folder/'.repeat(2048) + 'page';
+  const misses = Array.from({ length: 2048 }, (_, i) => anchor('other' + i)).join('');
+  const input = html(`<base href="${deep}">` + report(misses + anchor('../'.repeat(2048) + fileA)));
+  measureDetail(t, 'deep base and short non-PDF references', input, () => {
+    assert.equal(decodeEastmoneyReportDetail(detailRequest, input).pdfUrl, pdfA);
+  });
+
+  for (const base of [pdfA + '?token=one#old', pdfRoot + 'x/y/file', 'http://example.test/x', 'https://user:pass@pdf.dfcfw.com/pdf/file']) {
+    for (const href of ['', '#page=2', '?q=1#p', '//pdf.dfcfw.com/pdf/' + fileB, '../' + fileB, fileB + ' #p',
+      '/pdf/' + fileB + '?q=1  #p', '%2e%2e/' + fileB, 'https:#new', 'https:?' + fileB, 'https:http://invalid.test',
+      '\\pdf\\' + fileA, '\\\\pdf.dfcfw.com\\pdf\\' + fileA]) {
+      const expected = URL.parse(href, base);
+      if (expected) expected.hash = '';
+      const doc = report(anchor(href)) + `<base href="${base}">`;
+      if (expected?.origin === 'https://pdf.dfcfw.com' && !expected.username && !expected.password && [fileA, fileB].some(file => expected.pathname === '/pdf/' + file)) {
+        assert.equal(detailPdf(doc), expected.href, href);
+      } else {
+        assert.throws(() => detailPdf(doc), noPdf, href);
+      }
+    }
+  }
 });
