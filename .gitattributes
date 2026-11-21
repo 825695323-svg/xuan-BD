@@ -10,3 +10,11 @@
 *.woff2 binary
 # Exact captured public HTML evidence: keep original bytes/whitespace, never normalize.
 apps/server/fixtures/official-event/*.html -text -whitespace
+# Keep the public font license byte-for-byte.
+apps/web/public/licenses/inter-OFL.txt -text -whitespace
+# Preserve byte-verified license files for the vendored Admin runtime.
+apps/web/public/licenses/class-variance-authority-* -text -whitespace
+apps/web/public/licenses/clsx-* -text -whitespace
+apps/web/public/licenses/tailwind-merge-* -text -whitespace
+apps/web/public/licenses/tailwindcss-* -text -whitespace
+apps/web/public/licenses/tw-animate-css-* -text -whitespace

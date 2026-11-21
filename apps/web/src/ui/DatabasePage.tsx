@@ -1,3 +1,4 @@
+import { BusinessPageHeader, BusinessSidebar } from './BusinessSidebar';
 import { RetrievalStoragePanel } from './RetrievalStoragePanel';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Boxes, CheckCircle2, ChevronRight, ShieldAlert, FileText, GitBranch, ListChecks, RefreshCw } from 'lucide-react';
@@ -62,10 +63,11 @@ export function DatabasePage({ onBringToConversation }: DatabasePageProps) {
     { id: 'jobs', label: words('工作台任务', 'Workbench tasks'), icon: <ListChecks size={16} /> },
   ];
   return <div className="data-page database-page">
-    <aside className="data-nav" aria-label={words('数据库分类', 'Database sections')}>
+    <BusinessPageHeader />
+    <BusinessSidebar className="data-nav" aria-label={words('数据库分类', 'Database sections')}>
       {nav.map(item => <button type="button" key={item.id} className="data-nav-item" aria-current={section === item.id ? 'true' : undefined}
         onClick={() => setSection(item.id)}><span className="database-nav-label">{item.icon}{item.label}</span><span className="data-nav-dot" aria-hidden="true" /></button>)}
-    </aside>
+    </BusinessSidebar>
     <section className="data-panel database-panel" aria-label={words('数据库', 'Database')}>
       {section === 'r1' && <R1Panel />}
       {section === 'files' && <FileList />}

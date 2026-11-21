@@ -1,3 +1,5 @@
+import { CatalogCategory, CatalogChildren, CatalogRow, CatalogSidebar } from './CatalogSidebar';
+import { WorkbenchCard } from './WorkbenchCard';
 import { useEffect, useState } from 'react';
 import type { ToolLibraryTool, ToolLibraryView } from '../../../../contracts/tool-library';
 import { request } from '../api';
@@ -29,10 +31,13 @@ function isTool(value: unknown): value is ToolLibraryTool {
         && typeof line.expression === 'string' && (line.note === undefined || typeof line.note === 'string')));
 }
 
+const MAX_CATALOG_ITEMS = 128;
+
 function asView(value: unknown): ToolLibraryView {
   if (!isRecord(value) || (value.status !== 'ready' && value.status !== 'unavailable')
     || !(value.reason === null || typeof value.reason === 'string')
-    || !Array.isArray(value.tools) || value.tools.length > 1 || !value.tools.every(isTool)) {
+    || !Array.isArray(value.tools) || value.tools.length > MAX_CATALOG_ITEMS || !value.tools.every(isTool)
+    || new Set(value.tools.map(tool => tool.id)).size !== value.tools.length) {
     throw new Error('Invalid tool-library response');
   }
   return value as unknown as ToolLibraryView;
@@ -46,6 +51,12 @@ export function ToolsPage() {
   const [catalog, setCatalog] = useState<CatalogLoad>({ state: 'loading' });
   const [reload, setReload] = useState(0);
   const [query, setQuery] = useState('');
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const toggle = (id: string) => setCollapsed(current => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
   useEffect(() => {
     let active = true;
     void request('/api/ui/tool-library').then(asView).then(view => {
@@ -82,25 +93,31 @@ export function ToolsPage() {
   const formula = selected?.definition?.formula;
   const requirements = selected?.missing ?? [];
 
-  return <div className="data-page page-panes">
-    <aside className="data-nav" aria-label={words('算法目录', 'Algorithm catalog')}>
-      <div className="sidebar-search-slot">
-        <PageSearch compact label={words('搜索算法、编号或用途', 'Search algorithms, IDs or purposes')} value={query} onChange={setQuery} />
-      </div>
-    </aside>
-    <div className="page-cards" aria-label={words('算法条目', 'Algorithm entries')}>
-      <div className="object-list">
-        {visible.map(tool => <button type="button" key={tool.id} className="object-card"
-          aria-current={selectedId === tool.id ? 'true' : undefined} onClick={() => selection.select(tool.id)}>
-          <span className="object-card-main">
-            <span className="object-card-title">{tool.title}</span>
-            <span className="object-card-meta">{tool.id}</span>
-          </span>
-          <span className="object-card-state" data-state={tool.status}>{labels[tool.status]}</span>
-        </button>)}
-        {tools.length > 0 && visible.length === 0 && <PageEmpty>{words('没有匹配的算法条目。', 'No matching algorithms.')}</PageEmpty>}
-      </div>
-    </div>
+  const categories = [
+    ['market', words('行情指标', 'Market indicators')], ['financial', words('财务', 'Financial')],
+    ['adjustment', words('复权', 'Adjustments')], ['statistics', words('统计', 'Statistics')],
+    ['utility', words('工具', 'Utilities')], ['other', words('其他算法', 'Other algorithms')],
+  ] as const;
+  const knownCategories = new Set<string>(categories.map(([id]) => id));
+  const groupOf = (tool: ToolLibraryTool) => tool.category && knownCategories.has(tool.category) ? tool.category : 'other';
+
+  return <div className="catalog-page">
+    <CatalogSidebar label={words('算法目录', 'Algorithm catalog')} search={
+      <PageSearch compact label={words('搜索算法、编号或用途', 'Search algorithms, IDs or purposes')} value={query} onChange={setQuery} />}>
+      {categories.map(([id, title]) => {
+        const rows = visible.filter(tool => groupOf(tool) === id);
+        const expanded = !collapsed.has(id) || !!search;
+        return rows.length > 0 && <CatalogCategory key={id} label={title} className="is-group"
+          expanded={expanded} onClick={() => toggle(id)}>
+          {expanded && <CatalogChildren aria-label={title}>{rows.map(tool =>
+            <CatalogRow key={tool.id} label={tool.title} meta={tool.id} badge={labels[tool.status]} state={tool.status}
+              selected={selectedId === tool.id} onSelect={() => selection.select(tool.id)} />
+          )}</CatalogChildren>}
+        </CatalogCategory>;
+      })}
+      {tools.length > 0 && visible.length === 0 && <li><PageEmpty>{words('没有匹配的算法条目。', 'No matching algorithms.')}</PageEmpty></li>}
+    </CatalogSidebar>
+    <WorkbenchCard className="catalog-detail-card">
     <ObjectDetailPanel label={words('算法详情', 'Algorithm details')} header={<DetailHeader
       title={selectedTitle ?? words('算法', 'Algorithms')}
       status={selected && labels[selected.status]} tone={selected && tones[selected.status]}
@@ -151,6 +168,7 @@ export function ToolsPage() {
         </DetailSection>
       </>}
     </ObjectDetailPanel>
+    </WorkbenchCard>
   </div>;
 }
 
