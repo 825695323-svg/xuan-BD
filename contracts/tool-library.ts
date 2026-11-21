@@ -19,6 +19,8 @@ export interface ToolLibraryTool {
   parameters: ToolLibraryParameter[]; outputFields: string[]; limitations: string[];
   /** 执行契约。旧 parameters 数组仍保留固定数值参数的显示形式。 */
   parameterSchema?: JsonValue;
+  executor?: 'python' | 'typescript';
+  inputContract?: JsonValue;
   /** 以下为登记层字段；旧视图消费方可忽略。 */
   category?: 'market' | 'statistics' | 'financial' | 'adjustment' | 'utility';
   state?: ToolLibraryState;

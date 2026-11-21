@@ -1,6 +1,6 @@
 import type { AlgorithmDefinition, AlgorithmDefinitionSummary } from '../../contracts/algorithm-definition.js';
 import { ALGORITHM_METHOD_IDS, ALGORITHM_METHODS } from './algorithm-types.js';
-import { PURE_ALGORITHM_OPERATORS } from './algorithm-pure-operators.js';
+import { pureMethodVersion, PURE_ALGORITHM_OPERATORS, PURE_VERIFICATION_SOURCE, PURE_OPERATOR_VERSION, PURE_VERIFICATION_VERSION } from './algorithm-pure-operators.js';
 
 const marketDefinitions = ALGORITHM_METHOD_IDS.map((registryId): AlgorithmDefinition => {
   const method = ALGORITHM_METHODS[registryId];
@@ -44,10 +44,15 @@ export const ALGORITHM_DEFINITIONS: readonly AlgorithmDefinition[] = Object.free
     kind: 'definition', id: 'algo.' + operator.id, registryId: operator.id, title: operator.title,
     definitionKind: operator.category === 'financial' ? 'financial' : 'operator', summary: operator.description,
     formula: operator.formula,
-    semantics: [{ key: 'resultSemantics', label: '计算口径', value: operator.description, state: 'fixed' }],
+    semantics: [{ key: 'methodVersion', label: '数学定义版本', value: pureMethodVersion(operator.id), state: 'fixed' },
+      { key: 'parameters', label: '参数', value: operator.parameterDescription, state: 'fixed' },
+      { key: 'input', label: '固定产品字段', value: operator.fields.required.join('、'), state: 'fixed' },
+      { key: 'resultSemantics', label: '计算口径', value: operator.description, state: 'fixed' }],
     warmup: '按声明的期间或日线范围计算。', missingPolicy: operator.missingPolicy,
     implementations: [{ id: 'impl.local.' + operator.id, role: 'primary', language: 'TypeScript',
-      location: operator.source, note: operator.entry }],
+      location: operator.source, version: PURE_OPERATOR_VERSION, note: operator.entry },
+      { id: 'ref.local.' + operator.id, role: 'reference', language: 'TypeScript',
+        location: PURE_VERIFICATION_SOURCE, version: PURE_VERIFICATION_VERSION, note: '从密封原输入独立核对数值、恒等式与空值诊断。' }],
     configurations: [], products: [], legacyAliases: [],
     status: {
       definition: { state: 'frozen', basis: '按登记公式及输入契约计算。' },
@@ -62,7 +67,7 @@ export function definitionFor(registryId: string): AlgorithmDefinition | undefin
 }
 
 export const ALGORITHM_DEFINITION_SUMMARY: AlgorithmDefinitionSummary = Object.freeze({
-  kind: 'definition', version: 'bd.algorithm-definition/2', note: '受控日线指标、财务及复权定义。执行与发布按实际输入核验。',
+  kind: 'definition', version: 'bd.algorithm-definition/3', note: '受控日线指标、财务及复权定义。执行与发布按实际输入核验。',
   counts: { definitions: ALGORITHM_DEFINITIONS.length,
     operators: ALGORITHM_DEFINITIONS.filter(item => item.definitionKind === 'operator').length, withProducts: 0, definitionConflicts: 0,
     implemented: ALGORITHM_DEFINITIONS.length, legacyAliases: 0 },

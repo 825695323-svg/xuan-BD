@@ -15,6 +15,7 @@ import { acceptWorkspaceMaterial } from './accept-material.js';
 import { ConversationMaterialBridge } from './conversation-materials.js';
 import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { CoreDatabase } from '../../platform/state/database.js';
+import { sourceOperationsForAction } from '../../plugins/api-sources/operations.js';
 import { adapterConfigDigest, parseEndpointSource, readEndpointAdapterConfig } from './endpoint-adapter.js';
 import { EndpointAdapterRegistry, readSourceReceiptFromTask } from './endpoint-adapter-registry.js';
 
@@ -115,8 +116,20 @@ test('合法官方页面与附件多原件保持可关联；缺少原有元数�
     assert.equal(issue({ ...historical, sourceReceipts: [page, { ...attachment, status }] }, 'source.fetch'), null);
   assert.equal(issue({ ...historical, sourceId: 'tdx' }, 'source.fetch'), null);
   const { operation: _operation, ...withoutOperation } = historical;
-  assert.equal(issue(withoutOperation, 'source.fetch'), null, '当前官方下载原本没有适配操作，不伪造该元数据扩大接纳范围');
+  assert.equal(issue(withoutOperation, 'source.fetch'), null, '历史任务缺少操作时禁止猜测回填');
   assert.equal(issue(historical, 'source.werss.read'), null, 'WeRSS 继续使用自己的 locator/material 管路');
+});
+
+test('通达信 source.fetch 仅在原任务带有登记操作且原件与成功尝试一致时签发回执', () => {
+  const operation = sourceOperationsForAction('source.fetch').find(op => op.run.action === 'source.fetch' && op.run.sourceId === 'tdx')!.id;
+  const raw = { ...receipts[1]!, connectionId: 'tdx-synthetic', transport: 'native-tcp', status: null };
+  const saved = { operation, sourceId: 'tdx', observedAt: data().observedAt, scopeId: 'CN/A_STOCK',
+    attempts: [{ outcome: 'used', connectionId: raw.connectionId, fileRefId: raw.fileRefId, sha256: raw.sha256 }], sourceReceipts: [raw] };
+  assert.equal(operation, 'minute_bars');
+  assert.equal(issue(saved, 'source.fetch')?.operation, operation);
+  assert.equal(issue({ ...saved, operation: undefined }, 'source.fetch'), null);
+  assert.equal(issue({ ...saved, attempts: [{ ...saved.attempts[0], fileRefId: 'other' }] }, 'source.fetch'), null);
+  assert.equal(readSourceReceiptFromTask({ ...sourceTask(saved, 'source.fetch'), requiresReview: true }, ['direct']), null);
 });
 
 test('投影、成功尝试与候选反馈必须指向同一原件', () => {

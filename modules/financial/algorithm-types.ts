@@ -207,6 +207,13 @@ export const ALGORITHM_METHODS = Object.freeze({
 export type AlgorithmMethodId = keyof typeof ALGORITHM_METHODS;
 export const ALGORITHM_METHOD_IDS = Object.freeze(Object.keys(ALGORITHM_METHODS) as AlgorithmMethodId[]);
 
+export const PURE_OPERATOR_IDS = Object.freeze(['financial_single_quarter', 'financial_ttm', 'financial_growth',
+  'financial_ratios', 'price_adjustment'] as const);
+export type PureOperatorId = typeof PURE_OPERATOR_IDS[number];
+export function isPureOperatorId(value: unknown): value is PureOperatorId {
+  return PURE_OPERATOR_IDS.some(id => id === value);
+}
+
 export function isAlgorithmMethodId(value: unknown): value is AlgorithmMethodId {
   return typeof value === 'string' && Object.hasOwn(ALGORITHM_METHODS, value);
 }
