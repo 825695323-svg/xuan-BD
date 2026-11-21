@@ -29,8 +29,8 @@ export const ALGORITHM_REGISTRY: readonly ToolLibraryTool[] = Object.freeze([
   })),
 ]);
 
-export function registryCounts(): Record<ToolLibraryState, number> {
+export function registryCounts(entries = ALGORITHM_REGISTRY): Record<ToolLibraryState, number> {
   const counts: Record<ToolLibraryState, number> = { executable: 0, assets_only: 0, not_implemented: 0, needs_data: 0 };
-  for (const entry of ALGORITHM_REGISTRY) counts[entry.state ?? 'not_implemented'] += 1;
+  for (const entry of entries) counts[entry.state ?? 'not_implemented'] += 1;
   return counts;
 }

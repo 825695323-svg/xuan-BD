@@ -23,6 +23,38 @@ const text = (key: string, label: string, maxLength = 160, required = true): Ski
   ({ key, label, type: 'text', required, maxLength });
 const view = (value: unknown): Record<string, JsonValue> => ({ kind: 'conversation-algorithm', modelPreview: json(value) });
 
+function previewSource(source: JsonValue) {
+  if (!isWfdRecord(source) || !isWfdRecord(source.resolution)) return source;
+  const resolution = source.resolution, history = isWfdRecord(resolution.historicalRead) ? resolution.historicalRead : {};
+  const diagnostics = Array.isArray(history.diagnostics) ? history.diagnostics : resolution.diagnostics;
+  const historical = [source.perspective, history.actualPerspective, history.requestedPerspective]
+    .some(mode => mode === 'market_known_at' || mode === 'system_held_at');
+  if (!historical && !(Array.isArray(diagnostics) && diagnostics.length)) return source;
+  // 逐行身份、原始诊断及完整读取证据留在原算法结果。模型只读固定身份、摘要与历史范围。
+  return { ...source, resolution: {
+    contract: resolution.contract, operation: resolution.operation, instanceId: resolution.instanceId,
+    productId: resolution.productId, snapshotId: resolution.snapshotId, rowCount: resolution.rowCount,
+    valueProjectionSha256: resolution.valueProjectionSha256,
+    historicalRead: { actualPerspective: history.actualPerspective, actualAt: history.actualAt,
+      actualHeldScope: history.actualHeldScope, actualUsableStage: history.actualUsableStage,
+      countBasis: 'diagnostics_retained_in_original_task',
+      historicalExclusions: Array.isArray(diagnostics) ? historicalExclusionSummary(diagnostics) : null },
+  } };
+}
+
+function previewError(error: { code: string; message: string } | null) {
+  if (error?.code !== 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION') return error;
+  // 旧失败回执的正文可能仍含原始诊断，或在任务错误长度上限处被截断。
+  try {
+    const detail: unknown = JSON.parse(error.message);
+    if (isWfdRecord(detail) && Array.isArray(detail.diagnostics))
+      return { code: error.code, message: JSON.stringify(historicalExclusionSummary(detail.diagnostics)) };
+    if (isWfdRecord(detail) && isWfdRecord(detail.historicalExclusions) && isWfdRecord(detail.historicalExclusions.byReason))
+      return { code: error.code, message: JSON.stringify(historicalExclusionSummary({ byReason: detail.historicalExclusions.byReason })) };
+  } catch { /* 残缺的历史正文没有可安全读回的完整统计。 */ }
+  return { code: error.code, message: '该固定快照在所请求的历史截止没有合格版本。' };
+}
+
 interface HistoricalIntent {
   action: 'algorithms.calculate' | 'algorithms.screen'; historyMode: string; cutoff: string;
   snapshotId: unknown; productId: unknown; methodId?: unknown; heldScope?: unknown; usableStage?: unknown;
@@ -190,7 +222,7 @@ export class ConversationAlgorithmBridge {
         authority.assert();
         return { summary: '已读取固定截面筛选合同；未读取数据或执行规则。', data: view(this.screenCapability(rulesVersion)) };
       }
-      const contract = basicAlgorithmToolContract(this.modelCatalog(service, rulesVersion), methodId, rulesVersion ?? null);
+      const contract = basicAlgorithmToolContract(this.modelCatalog(service, rulesVersion), methodId, rulesVersion);
       authority.assert();
       return { summary: '已读取基础算法独立接口及真实可用状态；未采用或执行任何方法。',
         data: view({ ...contract, screening: this.screenCapability(rulesVersion) }) };
@@ -203,7 +235,7 @@ export class ConversationAlgorithmBridge {
         ? '已读取基础算法目录、固定代码版本与 WFD 快照能力；本动作只读，不创建计算。'
         : screening.available ? '固定截面筛选可用；受控指标执行器未装配。本次只读返回各工具合同。'
           : `算法运行条件尚未就绪（${catalog.reason ?? '执行器或 WFD 快照端口不可用'}）；本次仅返回目录。`,
-        data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog, undefined, rulesVersion ?? null).methods,
+        data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog, undefined, rulesVersion).methods,
           screening,
           database: json(catalog.inputs.fixedSnapshots), guidance: {
           humanInput: '用户说明 WFD 数据和目标算法，由模型读取真实快照与方法契约形成调用，无需人工逐次计算确认。',
@@ -260,6 +292,8 @@ export class ConversationAlgorithmBridge {
       if (frozenAlgorithmCapabilities(rulesVersion).allFactorDefinitions && !isAlgorithmMethodId(calculation.methodId))
         throw new TaskError('INVALID_ALGORITHM_METHOD', '计算仅接受已登记的日线方法。');
       this.assertMethodAllowed(calculation.methodId, rulesVersion);
+      if (this.options.companion.productionModuleSwitches?.calculate === false)
+        throw new TaskError('PRODUCTION_CALCULATION_DISABLED', '计算模块已停用。');
       this.assertCalculationMaterials(calculation);
       const publisher = this.options.companion.derivedPublisher;
       if (!service || !publisher) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE',
@@ -318,10 +352,11 @@ export class ConversationAlgorithmBridge {
 
   private screenCapability(rulesVersion?: number) {
     if (!algorithmAllowedByRules('strategy_screen', rulesVersion))
-      return { available: false, reason: '受控截面筛选要求本会话冻结规则 v21 或以上。' };
+      return { available: false, executable: false, reason: '受控截面筛选要求本会话冻结规则 v21 或以上。' };
     const enabled = this.options.companion.productionModuleSwitches?.calculate !== false;
     const reader = hasScreenReader(this.options.companion.r1Workspace);
-    return { ...strategyScreenContract(), available: enabled && reader,
+    const available = enabled && reader;
+    return { ...strategyScreenContract(), available, executable: available,
       reason: !enabled ? '计算模块已停用。' : !reader ? '受信 WFD 固定读取连接未就绪。' : null };
   }
 
@@ -329,7 +364,12 @@ export class ConversationAlgorithmBridge {
   private modelCatalog(service: WorkspaceServices['algorithms'], rulesVersion?: number): AlgorithmCatalogView {
     if (service) {
       const catalog = service.catalog();
-      return { ...catalog, methods: catalog.methods.filter(method => algorithmAllowedByRules(method.id, rulesVersion)) };
+      const methods = catalog.methods.filter(method => algorithmAllowedByRules(method.id, rulesVersion));
+      const reason = !frozenAlgorithmCapabilities(rulesVersion).methods.length ? '本会话没有允许新计算的冻结规则。'
+        : this.options.companion.productionModuleSwitches?.calculate === false ? '计算模块已停用。' : null;
+      if (reason) return { ...catalog, enabled: false, status: 'unavailable', reason,
+        methods: methods.map(method => ({ ...method, status: 'unavailable', reason })) };
+      return { ...catalog, methods };
     }
     const reason = '受控指标计算服务未装配。';
     const fixed = hasScreenReader(this.options.companion.r1Workspace);
@@ -374,10 +414,10 @@ export class ConversationAlgorithmBridge {
     const result = value.result;
     return { taskId: value.taskId, requestId: value.requestId, methodId: value.methodId, status: value.status,
       taskVersion: value.taskVersion, requiresReview: value.requiresReview, createdAt: value.createdAt, updatedAt: value.updatedAt,
-      error: value.error, publication: value.publication, guidance: value.guidance,
+      error: previewError(value.error), publication: value.publication, guidance: value.guidance,
       result: result ? { taskId: result.taskId, methodId: result.methodId, methodVersion: result.methodVersion,
         implementationVersion: result.implementationVersion, contractVersion: result.contractVersion, environment: result.environment,
-        parameters: result.parameters, inputDigest: result.inputDigest, source: result.source, metadata: result.metadata,
+        parameters: result.parameters, inputDigest: result.inputDigest, source: previewSource(result.source), metadata: result.metadata,
         coverage: result.coverage, validInterval: result.validInterval, invalidIntervals: result.invalidIntervals,
         gaps: result.gaps, limitations: result.limitations, publication: result.publication, persistence: result.persistence,
         rowCount: result.rows.length, rows: result.rows.slice(0, 8),

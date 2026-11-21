@@ -111,21 +111,33 @@ test('real algorithm host freezes publication separately from fixed reads and bi
     try {
       assert.equal(realWorkspace.capabilities().configuration.state, 'configured');
       assert.equal(registry.get('algorithms.screen').availability.available, true);
-      const baseline = companion.r1Runtime.currentIdentity();
+      const connection = companion.r1Runtime.currentIdentity();
+      const baseline = companion.r1Runtime.currentReadBinding();
+      assert.deepEqual(realWorkspace.readBinding(), baseline);
       const task = { ...frozen.get('algorithms.screen')!, versions: registry.captureVersions('algorithms.screen', {}) };
       for (const [file, digest] of [['protocol/schemas/wfd-read-product.schema.json', 'readSchemaSha256'],
-        ['protocol/schemas/wfd-common.schema.json', 'readSchemaSha256'], ['wfd_sdk/product_query.py', 'queryImplSha256']] as const) {
+        ['protocol/schemas/wfd-common.schema.json', 'readSchemaSha256'], ['wfd_sdk/product_query.py', 'queryImplSha256'],
+        ['wfd_sdk/indexed_tabular_query.py', 'queryImplSha256']] as const) {
         assert.match(baseline[digest], /^[0-9a-f]{64}$/u);
         const path = join(externalRoot, file), original = fs.readFileSync(path);
         try {
           fs.appendFileSync(path, '\n');
-          const current = companion.r1Runtime.currentIdentity();
+          const current = companion.r1Runtime.currentReadBinding();
+          assert.deepEqual(companion.r1Runtime.currentIdentity(), connection);
           assert.notEqual(current[digest], baseline[digest]);
           assert.deepEqual({ ...current, [digest]: baseline[digest] }, baseline, '仅对应外置文件摘要改变');
           assert.throws(() => registry.assertTaskVersions(task), { code: 'DIRECT_VERSION_CONFLICT' });
         } finally { fs.writeFileSync(path, original); }
         registry.assertTaskVersions(task);
       }
+      const readerPath = join(externalRoot, 'wfd_sdk/indexed_tabular_query.py');
+      fs.renameSync(readerPath, readerPath + '.offline');
+      try {
+        assert.deepEqual(realWorkspace.capabilities().connection, connection);
+        assert.throws(() => realWorkspace.readBinding(), /indexed_tabular_query.py/u);
+        assert.throws(() => registry.assertTaskVersions(task));
+      } finally { fs.renameSync(readerPath + '.offline', readerPath); }
+      registry.assertTaskVersions(task);
     } finally { companion.r1Workspace = workspace; }
   });
 

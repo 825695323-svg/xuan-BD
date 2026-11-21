@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync, type BigIntStats } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { SourceCheck, SourceConnection, SourceOperationId, SourceOperationPolicy, SourcePolicy, SourceSettingsDocument, SourceSettingsView } from '../../contracts/source-settings.js';
 import { CAPTURE_SOURCE_IDS, CAPTURE_SOURCES, type CaptureSourceId } from '../../plugins/capture-sources/contracts.js';
@@ -289,12 +290,23 @@ export class SourceSettingsService {
     throw new CoreError('SOURCE_SETTINGS_BUSY', '来源设置正在另一进程保存；本次未更改配置，请稍后重试。', 409);
   }
   private recoverDeadLock(lockPath: string): boolean {
-    const guardPath = lockPath + '.recover';
-    let guard: number | undefined, fd: number | undefined;
+    const guardPath = this.path + '.recover.sqlite';
+    let guard: DatabaseSync | undefined, fd: number | undefined;
     try {
-      // 所有回收者先独占同一路径，再观察主锁。活进程只释放自己的主锁。
-      guard = openSync(guardPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-      writeFileSync(guard, JSON.stringify({ version: 1, pid: process.pid, token: randomUUID() }));
+      // 此私有文件永久复用同一 inode。回收进程退出后内核释放 SQLite 写锁。
+      try {
+        const created = openSync(guardPath, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+        closeSync(created);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      const node = lstatSync(guardPath, { bigint: true });
+      if (!node.isFile() || node.nlink !== 1n || (node.mode & 0o7777n) !== 0o600n) return false;
+      guard = new DatabaseSync(guardPath);
+      guard.exec('PRAGMA busy_timeout = 5000');
+      guard.exec('BEGIN IMMEDIATE');
+      const locked = lstatSync(guardPath, { bigint: true });
+      if (locked.dev !== node.dev || locked.ino !== node.ino || locked.nlink !== 1n || locked.mode !== node.mode) return false;
       const before = lstatSync(lockPath, { bigint: true });
       if (!before.isFile() || before.nlink !== 1n || before.size > 1024n) return false;
       fd = openSync(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -312,13 +324,12 @@ export class SourceSettingsService {
       if (current.dev !== before.dev || current.ino !== before.ino || current.size !== before.size
         || current.mtimeNs !== before.mtimeNs || current.ctimeNs !== before.ctimeNs) return false;
       unlinkSync(lockPath);
+      guard.exec('COMMIT');
       return true;
     } catch { return false; }
     finally {
       if (fd !== undefined) try { closeSync(fd); } catch { /* 已关闭。 */ }
-      if (guard !== undefined) {
-        try { unlinkSync(guardPath); } finally { closeSync(guard); }
-      }
+      guard?.close(); // 未提交的事务在关闭时回滚。
     }
   }
   private releaseLock(lock: SourceSettingsLock): void {

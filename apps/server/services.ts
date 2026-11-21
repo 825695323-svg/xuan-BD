@@ -338,7 +338,8 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       const workspace = options.workspaceServices?.r1Workspace;
       return directDependencyVersions(entry.action, implementation,
         { ...conversationAlgorithms!.versionBinding, ...(publishes ? { execution: options.workspaceServices?.algorithms?.versionBinding ?? null } : {}),
-          ...(readsWfd ? { r1: workspace?.versionBinding ?? null, r1Connection: workspace?.capabilities?.().connection ?? null } : {}) }, {});
+          ...(readsWfd ? { r1: workspace?.versionBinding ?? null, r1Connection: workspace?.capabilities?.().connection ?? null,
+            r1ReadBinding: workspace?.readBinding?.() ?? null } : {}) }, {});
     });
   }
   for (const entry of conversationProcessing?.registrations ?? []) { direct.registry.register(entry); direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'], { ...(options.workspaceServices?.processing?.versionBinding ?? {}) }, {})); }

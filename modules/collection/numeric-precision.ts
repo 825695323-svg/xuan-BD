@@ -107,6 +107,11 @@ function binaryValue(bits: bigint, fractionBits: number, exponentBits: number): 
   const signed = isNegative ? -significand : significand;
   return { value: power < 0 ? rational(signed, 1n << BigInt(-power)) : rational(signed << BigInt(power)), negative: isNegative };
 }
+export function exactBinary64(value: number): Fraction {
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, value);
+  return binaryValue(view.getBigUint64(0), 52, 11).value ?? fail('NONFINITE', '无法核对非有限浮点数。');
+}
 function rawEvidence(operand: NumericOperand): RawEvidence | IndeterminatePrecision {
   const precision = operand.precision;
   const value = decimal(operand.value);

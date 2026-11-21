@@ -193,16 +193,18 @@ export async function readPublishedWfdSemanticDefinition(raw: unknown,
     note: '正式定义只按原 WFD Snapshot 读取；仅查询，不采用/修订口径，也不触发自动标注或计算。' };
 }
 
-export function factorLibraryView(factorId?: string) {
+export function factorLibraryView(factorId?: string, allowed?: (id: string) => boolean) {
   if (factorId !== undefined && (!identifier(factorId) || factorId.length > 128))
     return fail('PRODUCTION_FACTOR_ID', '因子编号格式无效；不能作为动态程序、脚本或表达式。');
-  const entries = factorId ? ALGORITHM_REGISTRY.filter(item => item.id === factorId)
-    : ALGORITHM_REGISTRY.slice(0, 50);
+  const registry = allowed ? ALGORITHM_REGISTRY.filter(item => allowed(item.id)) : ALGORITHM_REGISTRY;
+  const entries = factorId ? registry.filter(item => item.id === factorId) : registry.slice(0, 50);
   if (factorId && !entries.length) return fail('PRODUCTION_FACTOR_NOT_FOUND', '受信登记中没有该因子编号。');
   return { version: ALGORITHM_REGISTRY_VERSION, kind: 'read_only_factor_library',
     designOnly: true, note: ALGORITHM_REGISTRY_NOTE, sharedRegistryWith: ALGORITHM_RUNTIME,
-    definitions: ALGORITHM_DEFINITION_SUMMARY, counts: registryCounts(),
-    total: ALGORITHM_REGISTRY.length, selected: entries.length,
+    definitions: { ...ALGORITHM_DEFINITION_SUMMARY, counts: { ...ALGORITHM_DEFINITION_SUMMARY.counts,
+      definitions: registry.length, implemented: registry.length,
+      operators: registry.filter(item => definitionFor(item.id)?.definitionKind === 'operator').length } },
+    counts: registryCounts(registry), total: registry.length, selected: entries.length,
     items: entries.map(item => ({ ...item, definition: definitionFor(item.id) ?? null,
       publication: 'not_granted_by_library', execution: 'not_granted_by_library' })) };
 }

@@ -27,8 +27,9 @@ const request = () => ({ snapshotId: 's_synthetic_screen', productId: 'p_synthet
   factorNames: ['momentum'], keyField: 'code', filter: 'momentum > 15', orderBy: 'rank(momentum)', topN: 2 });
 const cell = (value: unknown, dataType = 'text', valueState = 'valid_value') =>
   ({ value, value_state: valueState, data_type: dataType, unit: { unit_code: dataType === 'text' ? 'text' : 'ratio' } });
+const syntheticContract = { digest: 'sha256:' + 'c'.repeat(64) };
 const row = (code: string, momentum: unknown, date = '20260102', state = 'valid_value'): WfdRecord => ({
-  record_ref: { logical_key: `synthetic/${date}/${code}`, revision_id: 'r_synthetic_v1' }, business_time: { status: 'unknown' },
+  contract_ref: syntheticContract, record_ref: { logical_key: `synthetic/${date}/${code}`, revision_id: 'r_synthetic_v1' }, business_time: { status: 'unknown' },
   values: { code: cell(code), trade_date: cell(date), momentum: cell(momentum, 'decimal', state) },
 });
 const hasCode = (expected: string) => (error: unknown) => error instanceof TaskError && error.code === expected;
@@ -62,6 +63,7 @@ function fixture() {
         usable_stage: input.usable_stage, business_time_range: null, subject: null, query_hash: 'sha256:' + 'a'.repeat(64),
         budget: { max_scan_bytes: input.max_scan_bytes }, diagnostics: [], complete: !hasMore, rows: structuredClone(rows).map(raw => {
           if (input.history_mode === 'market_known_at') return { ...raw,
+            times: { public_time: { status: 'known', earliest_utc: '2026-01-01T09:00:00Z', latest_exclusive_utc: '2026-01-01T09:00:01Z' } },
             eligibility: { decision: 'eligible', reason: 'evidence_interval_ended_before_cutoff' } };
           if (input.history_mode === 'system_held_at') {
             const held_at = '2026-01-02T09:29:00Z';
@@ -169,6 +171,12 @@ test('WFD reported_zero 原值参与排名；缺失不补零，矛盾的零值�
     assert.equal((result.exclusionCounts as WfdRecord).missing_factor, 1);
     const zeroOnly = await f.execute({ ...request(), filter: 'not (momentum != 0)' });
     assert.deepEqual((zeroOnly.selected as WfdRecord[]).map(item => item.key), ['ZERO']);
+    f.state.pages = [[row('ZERO', '0', '20260102', 'reported_zero')]];
+    const zero = (f.state.pages[0][0].values as Record<string, WfdRecord>).momentum;
+    zero.data_type = 'integer';
+    assert.equal(((await f.execute({ ...request(), filter: 'momentum == 0' })).selected as WfdRecord[])[0].key, 'ZERO');
+    zero.data_type = 'text';
+    await assert.rejects(f.execute(), hasCode('STRATEGY_SCREEN_WFD_RESPONSE'));
     f.state.pages[0]![0] = row('ZERO', '1', '20260102', 'reported_zero');
     await assert.rejects(f.execute(), hasCode('STRATEGY_SCREEN_WFD_RESPONSE'));
   } finally { f.close(); }
@@ -261,8 +269,24 @@ test('普通产品及兼容顶层返回均固定定义和合同，仅相同版�
   const version = { definition_ref: definition, contract_ref: contract, fields: [{ field_code: 'momentum' }] };
   const metadata = { definition_refs: [definition], contract_refs: [contract], contract_versions: [version] };
   try {
-    const unversioned = (await f.execute()).fixedRead as WfdRecord;
-    for (const name of ['definitionRefs', 'contractRef', 'contractVersionsSha256']) assert.equal(name in unversioned, false);
+    assert.deepEqual(((await f.execute()).fixedRead as WfdRecord).contractRef, syntheticContract);
+    f.state.changeResult = value => { for (const raw of value.rows as WfdRecord[]) delete raw.contract_ref; };
+    await assert.rejects(f.execute(), hasCode('STRATEGY_SCREEN_DEFINITION_MIXED'));
+    f.state.changeResult = value => {
+      value.product = metadata;
+      for (const raw of value.rows as WfdRecord[]) delete raw.contract_ref;
+    };
+    assert.deepEqual(((await f.execute()).fixedRead as WfdRecord).definitionRef, definition);
+    f.state.changeResult = value => {
+      value.product = { definition_refs: [definition] };
+      delete (value.rows as WfdRecord[])[0].contract_ref;
+    };
+    assert.deepEqual(((await f.execute()).fixedRead as WfdRecord).contractRef, syntheticContract);
+    f.state.changeResult = value => {
+      value.contract_versions = [{ version: 'v1' }];
+      for (const raw of value.rows as WfdRecord[]) delete raw.contract_ref;
+    };
+    assert.equal(((await f.execute()).fixedRead as WfdRecord).contractVersionsSha256, wfdSha256(canonicalWfdJson([{ version: 'v1' }])));
     for (const nested of [true, false]) {
       f.state.changeResult = value => {
         Object.assign(value, nested ? { product: metadata } : metadata);
@@ -273,6 +297,8 @@ test('普通产品及兼容顶层返回均固定定义和合同，仅相同版�
       assert.equal(fixed.contractVersionsSha256, wfdSha256(canonicalWfdJson([version])));
     }
     for (const change of [
+      (value: WfdRecord) => { for (const raw of value.rows as WfdRecord[]) raw.contract_ref = {}; },
+      (value: WfdRecord) => { delete (value.rows as WfdRecord[])[0].contract_ref; },
       (value: WfdRecord) => { value.product = { definition_refs: [definition, { ...definition, version: 'v2' }] }; },
       (value: WfdRecord) => { value.contract_versions = [version, { ...version, contract_ref: other }]; },
       (value: WfdRecord) => { value.product = metadata; value.contract_versions = [{ ...version, contract_ref: other }]; },
@@ -311,7 +337,14 @@ test('每一历史行须有匹配视角的合格判决和截止前的实际持�
           (raw: WfdRecord) => { raw.held_scope = 'other'; },
           (raw: WfdRecord) => { raw.usable_stage = 'acquired'; },
           (raw: WfdRecord) => { (raw.eligibility as WfdRecord).usable_stage = 'acquired'; },
-        ] : []),
+        ] : [
+          (raw: WfdRecord) => { delete raw.times; },
+          (raw: WfdRecord) => { raw.times = { public_time: { status: 'unknown' } }; },
+          ...[['2026-01-03T00:00:00Z', '2026-01-04T00:00:00Z'], ['2026-01-01T00:00:00Z', '2026-01-02T09:30:01Z'],
+            [at, '2026-01-01T00:00:00Z'], ['invalid', at]].map(([start, end]) => (raw: WfdRecord) => {
+            raw.times = { public_time: { status: 'known', earliest_utc: start, latest_exclusive_utc: end } };
+          }),
+        ]),
       ]) {
         f.state.changeResult = value => change((value.rows as WfdRecord[])[0]!);
         await assert.rejects(f.execute(call), hasCode('STRATEGY_SCREEN_ROW_INELIGIBLE'));

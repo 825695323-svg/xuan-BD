@@ -1,3 +1,4 @@
+import { isFinancialStatement, type FinancialStatement } from '../../../../contracts/source-acquisition.js';
 import type { JsonValue } from '../../../../contracts/task-contracts.js';
 import { DirectError } from '../../../../platform/runtime/file-workspace.js';
 import { parseSourceJson, sourceNumberRoundTrips } from '../../source-acquisition.js';
@@ -5,7 +6,7 @@ import { thsApi, thsSource } from './api.js';
 
 // 协议参考 quantitative_analysis@2edbc3eaf799f4d8f42c99fccba3b8fc08554f10
 // app/utils/data_sources/fuyao_client.py；仅适配端点协议，不迁移上游存储、环境变量或调度代码。
-const financialEndpoints = { income: 'income-statements', balance_sheet: 'balance-sheets', cash_flow: 'cash-flow-statements' } as const;
+const financialEndpoints = { income: 'income-statements', balance_sheet: 'balance-sheets', cash_flow: 'cash-flow-statements' } as const satisfies Record<FinancialStatement, string>;
 function invalid(message: string): never { throw new DirectError('SOURCE_PARAMETERS_INVALID', message); }
 const record = (value: unknown): value is Record<string, JsonValue> => !!value && typeof value === 'object' && !Array.isArray(value);
 
@@ -22,12 +23,12 @@ export function buildThsRequest(base: string, operation: string, parameters: Rec
   let path: string;
   if (operation === 'financial_statements') {
     if (!/^\d{6}\.(SH|SZ|BJ)$/u.test(symbol)) invalid('财报目前只接受沪深京完整股票代码。');
-    if (typeof parameters.statement !== 'string' || !Object.hasOwn(financialEndpoints, parameters.statement))
+    if (!isFinancialStatement(parameters.statement))
       invalid('statement 必须为 income、balance_sheet 或 cash_flow。');
     if (parameters.period !== 'quarterly') invalid('首版财报接入要求显式 period:quarterly，报告累计口径保留为来源原值。');
     if (!Number.isSafeInteger(parameters.limit) || Number(parameters.limit) < 1 || Number(parameters.limit) > 20)
       invalid('本次财报读取需明确 1–20 条记录预算。');
-    path = `/api/a-share/financials/${financialEndpoints[parameters.statement as keyof typeof financialEndpoints]}`;
+    path = `/api/a-share/financials/${financialEndpoints[parameters.statement]}`;
   } else path = operation === 'index_constituents' ? '/api/a-share-index/constituents/ths-stock-list' : '/api/a-share/prices/historical';
   const url = new URL(path, base);
   url.searchParams.set('thscode', symbol);

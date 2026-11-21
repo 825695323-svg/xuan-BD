@@ -2,8 +2,9 @@ import type { JsonValue } from '../../contracts/task-contracts.js';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { WfdProductMachineClient } from '../../adapters/database/wfd-product-machine.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
-import { isExplicitUtcInstant } from '../../contracts/financial-value.js';
+import { isExplicitUtcInstant, isNumericReportedZero } from '../../contracts/financial-value.js';
 import type { AlgorithmSnapshotPort, AlgorithmSnapshotRead, AlgorithmSnapshotReference, AlgorithmSnapshotRowEvidence } from './algorithm-types.js';
+import { historicalExclusionSummary } from './historical-exclusions.js';
 import { wfdFixedReadEvidence } from '../collection/purpose-eligibility.js';
 
 /**
@@ -97,8 +98,8 @@ export function extractSelectedCells(rows: WfdRecord[], fields: string[], defini
       const present = cell !== null;
       const definition = definitions?.find(item => item.field_code === field);
       const dataType = definition?.data_type ?? cell?.data_type;
-      const reportedZero = cell?.value_state === 'reported_zero' && (cell.value === '0' || cell.value === 0)
-        && (dataType === 'decimal' || dataType === 'integer') && (!cell.data_type || cell.data_type === dataType);
+      const reportedZero = cell?.value_state === 'reported_zero' && isNumericReportedZero(dataType, cell.value)
+        && (!cell.data_type || cell.data_type === dataType);
       cells.push({
         row: rowIndex,
         field,
@@ -246,7 +247,7 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
         if (fixed.perspective !== undefined && fixed.perspective !== 'snapshot_contents') {
           throw new TaskError('ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', JSON.stringify({
             product_id: fixed.productId, snapshot_id: fixed.snapshotId,
-            perspective: fixed.perspective, at: fixed.at ?? null, diagnostics: diagnostics.slice(0, 64),
+            perspective: fixed.perspective, at: fixed.at ?? null, historicalExclusions: historicalExclusionSummary(diagnostics),
             action: '该固定快照没有在所请求历史视角/截止下合格的具体版本；不退回当前版本或快照内容。',
           }));
         }
@@ -344,7 +345,7 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
           requestedHeldScope: fixed.heldScope ?? null, actualHeldScope: result.held_scope ?? null,
           requestedUsableStage: fixed.usableStage ?? null, actualUsableStage: result.usable_stage ?? null,
           includeHistory: result.include_history ?? null,
-          diagnostics: diagnostics.slice(0, 64),
+          diagnostics,
         },
       } as unknown as JsonValue;
       // 逐行提取实际 WFD 资格、公开/持有时间、修订状态和治理证据，供共用用途资格规则消费。

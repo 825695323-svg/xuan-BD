@@ -32,7 +32,7 @@ interface SourceAttempt {
 }
 function terminalSourceError(error: unknown): boolean {
   return error instanceof DirectError && error.unknown || !!error && typeof error === 'object' && 'code' in error
-    && ['SOURCE_RATE_LIMITED', 'SOURCE_CONFIGURATION_CHANGED', 'SOURCE_RESPONSE_CREDENTIAL_ECHO',
+    && ['SOURCE_RATE_LIMITED', 'SOURCE_RATE_LIMIT_UNVERIFIABLE', 'SOURCE_CONFIGURATION_CHANGED', 'SOURCE_RESPONSE_CREDENTIAL_ECHO',
       'SOURCE_ARTIFACT_PUBLICATION_FAILED'].includes(String(error.code));
 }
 const accountLanes = new Map<string, Promise<void>>();
@@ -296,7 +296,7 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
       try {
         assert(); const key = await credential(connection, options.processRuntime);
         assert();
-        const response = await serial(connection, () => { assert(); return readBytes(new URL(connection.baseUrl + '/api/a-share-index/constituents/ths-stock-list?thscode=000300.SH'), assert, undefined, { 'X-api-key': key }, undefined, {}, options.network); });
+        const response = await serial(connection, () => { assert(); return readBytes(new URL(connection.baseUrl + '/api/a-share-index/constituents/ths-stock-list?thscode=000300.SH'), assert, undefined, { 'X-api-key': key }, undefined, { providerId: 'ths' }, options.network); });
         reachable = true;
         if (responseEchoesCredential(response, key)) throw credentialEchoError();
         decodeThsResponse(decode(response));
@@ -359,7 +359,7 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
         }
       };
       const fetchRetain = async (url: URL, assertCurrent = assert, headers?: Record<string, string>, accountScope = sourceId,
-        request: { method?: 'GET' | 'POST'; body?: string } = {}) => {
+        request: { method?: 'GET' | 'POST'; body?: string; providerId?: string } = {}) => {
         const key = JSON.stringify([url.origin, accountScope]);
         let networkAuthority = networkAuthorities.get(key);
         if (!networkAuthority) {
@@ -382,7 +382,7 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
         if (attempt) { attempt.fileRefId = reference.id; attempt.sha256 = sha256; }
         try { await context.emit({ type: 'checkpoint', checkpoint: { sourceReceipts: receipts as unknown as JsonValue, artifactIds: artifacts, complete: false } }); }
         catch { throw new DirectError('SOURCE_ARTIFACT_PUBLICATION_FAILED', '本地原件回执未能写入任务检查点。'); }
-        if (result.status < 200 || result.status >= 300) throw sourceHttpError(result, !!secret);
+        if (result.status < 200 || result.status >= 300) throw sourceHttpError(result, request.providerId === 'ths');
         return result;
       };
       try {
@@ -474,7 +474,7 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
               sourceAuthority.assert(); assertConnection();
               const headers = { ...request.headers, ...(request.requiresCredential ? { 'X-api-key': await credential(candidate, options.processRuntime) } : {}) };
               const result = await serial(candidate, async () => { sourceAuthority.assert(); assertConnection();
-                return fetchRetain(requestURL, () => { sourceAuthority.assert(); assertConnection(); }, headers, accountScope, request); });
+                return fetchRetain(requestURL, () => { sourceAuthority.assert(); assertConnection(); }, headers, accountScope, { ...request, providerId: candidate.pluginId }); });
               const legacyThs = candidate.pluginId === 'ths' && operation !== 'financial_statements';
               const decoded = request.decode(result.bytes, legacyThs ? decode(result) : undefined);
               assertConnection(); validated = true;
@@ -655,7 +655,7 @@ function decode(source: SourceBytes): string {
   return iconv.decode(source.bytes, charset);
 }
 async function readBytes(url: URL, assertCurrent: () => void, context?: TaskExecutionContext, headers?: Record<string, string>, existingAuthority?: DirectAuthority,
-  request: { method?: 'GET' | 'POST'; body?: string } = {}, network: SourceNetwork = {}): Promise<SourceBytes> {
+  request: { method?: 'GET' | 'POST'; body?: string; providerId?: string } = {}, network: SourceNetwork = {}): Promise<SourceBytes> {
   validatePublicWebUrl(url.href);
   const signal = context ? AbortSignal.any([context.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
   const authority = existingAuthority ?? (context ? await acquireAuthority(context, `source.read.${hash(url.origin).slice(0, 16)}`, { origin: url.origin }, [{ action: 'network', target: { kind: 'network', origin: url.origin } }]) : undefined);
@@ -672,8 +672,11 @@ async function readBytes(url: URL, assertCurrent: () => void, context?: TaskExec
     assert(); response = await (network.transport ?? pinnedRequest)({ url, address: addresses[0]!, signal, headers, assertAuthorized: assert,
       method: request.method ?? 'GET', ...(request.body === undefined ? {} : { body: request.body }) });
     if (response.status === 429) throw new DirectError('SOURCE_RATE_LIMITED', '来源返回 HTTP 429 限流，本次任务停止。');
-    if (response.headers['content-encoding'] && String(response.headers['content-encoding']).toLowerCase() !== 'identity')
+    if (response.headers['content-encoding'] && String(response.headers['content-encoding']).trim().toLowerCase() !== 'identity') {
+      if (request.providerId === 'ths' && response.status >= 400)
+        throw new DirectError('SOURCE_RATE_LIMIT_UNVERIFIABLE', '扶摇返回压缩的 HTTP 错误响应，无法核验业务限流码，本次任务停止。');
       throw new DirectError('SOURCE_ENCODING_UNSUPPORTED', '来源忽略了不压缩请求；未把未解码字节当完整原文。');
+    }
     if (response.status === 206 || response.headers['content-range'])
       throw new DirectError('SOURCE_RESPONSE_INCOMPLETE', '来源返回部分响应，未作为完整原件接收。');
     const chunks: Buffer[] = []; let count = 0;

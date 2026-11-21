@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { parseHTML } from 'linkedom';
+import { isReportEncodeUrl } from '../../../../contracts/source-acquisition.js';
 import type { ReportSubjectEvidence } from '../../../../contracts/source-settings.js';
 import type { JsonValue } from '../../../../contracts/task-contracts.js';
 import { DirectError } from '../../../../platform/runtime/file-workspace.js';
@@ -163,7 +164,7 @@ export function decodeEastmoneyReports(request: EastmoneyReportRequest, rawBytes
 export function buildEastmoneyReportDetailRequest(parameters: Record<string, JsonValue>) {
   if (Object.keys(parameters).some(key => !['category', 'encodeUrl'].includes(key))
     || parameters.category !== 'strategy' && parameters.category !== 'macro'
-    || typeof parameters.encodeUrl !== 'string' || !parameters.encodeUrl.trim() || parameters.encodeUrl.length > 2048 || /[\u0000-\u001f]/u.test(parameters.encodeUrl))
+    || !isReportEncodeUrl(parameters.encodeUrl))
     return fail('研报详情须提供 strategy/macro 类别和有效 encodeUrl。');
   const request: EastmoneyReportDetailRequest = { category: parameters.category, encodeUrl: parameters.encodeUrl };
   const url = new URL(detailPaths[request.category], 'https://data.eastmoney.com');
@@ -190,11 +191,57 @@ function detailMetadata(literal: string): Record<string, JsonValue> | null {
   return values;
 }
 
+const relatedTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)/u;
+const sectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt,[class*="title" i]';
+const relatedSelector = 'aside,nav,footer,[role="navigation"],[aria-label*="相关"],[aria-label*="推荐"],[aria-label*="延伸阅读"],'
+  + '[class*="related" i],[id*="related" i],[class*="recommend" i],[id*="recommend" i],.rel-list,.xgyd,.xgyb';
+
+function headingLevel(element: Element): number {
+  if (/^H[1-6]$/u.test(element.tagName)) return Number(element.tagName[1]);
+  const aria = element.getAttribute('aria-level');
+  return aria && /^[1-6]$/u.test(aria) ? Number(aria) : 6;
+}
+
+/** 从阅读小节标题到同级或更高标题之间的内容，限定在同一正文容器内。 */
+function relatedSections(document: Document) {
+  const excluded = new WeakSet<Element>();
+  function markFollowing(title: ChildNode, level: number) {
+    for (let node = title.nextSibling; node; node = node.nextSibling) {
+      if (node.nodeType !== 1) continue;
+      const next = node as Element;
+      if (next.matches(sectionHeadings) && headingLevel(next) <= level) break;
+      excluded.add(next);
+    }
+  }
+  for (const element of document.querySelectorAll(sectionHeadings + ',p,strong,b,span,div,section,article')) {
+    if (excluded.has(element)) continue;
+    // 兼容正文中直接写“相关阅读：”再跟下载链接的片段。
+    if (element.childElementCount && !element.matches(sectionHeadings)) {
+      for (const child of element.childNodes)
+        if (child.nodeType === 3 && relatedTitle.test(child.textContent?.trim() ?? '')) markFollowing(child, 6);
+      continue;
+    }
+    if (!relatedTitle.test(element.textContent?.trim() ?? '')) continue;
+    let heading = element;
+    // 标题可以独占一层包装，链接列表与包装节点同级。
+    while (heading.parentElement?.matches('div,span,header,strong,b') && heading.parentElement.childElementCount === 1
+      && heading.parentElement.textContent?.trim() === heading.textContent?.trim()) heading = heading.parentElement;
+    excluded.add(heading);
+    markFollowing(heading, headingLevel(element));
+  }
+  return (element: Element) => {
+    if (element.closest(relatedSelector) || element.tagName === 'A' && relatedTitle.test(element.textContent?.trim() ?? '')) return true;
+    for (let node: Element | null = element; node; node = node.parentElement) if (excluded.has(node)) return true;
+    return false;
+  };
+}
+
 /** 复用现有 HTML 解析依赖；仅返回同源固定格式 PDF 定位，不下载、不执行脚本。 */
 export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailRequest, rawBytes: Uint8Array) {
   const bound = buildEastmoneyReportDetailRequest({ ...request });
   const { document } = parseHTML(decodeUtf8(rawBytes));
-  const candidates = new Map<string, string>();
+  const candidates = new Map<string, string>(), declaredCodes = new Set<string>();
+  const related = relatedSections(document);
   const collect = (candidate: string, expectedInfoCode?: string | null) => {
     let url: URL;
     try { url = new URL(candidate, bound.url); } catch { return; }
@@ -203,29 +250,48 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
     if (match && expectedInfoCode && match[1] !== expectedInfoCode) return invalid('研报详情标识与附件标识不符。');
     if (match) candidates.set(url.href, match[1]!);
   };
-  const related = 'aside, nav, footer, [role="navigation"], [aria-label*="相关"], [class*="related" i], [id*="related" i], [class*="recommend" i]';
   const attachment = '#zwinfo a[download][href], #zwinfo > iframe[src], .report-download a[href], a.report-download[href], a[data-encode-url][href], [data-encode-url] a[href]';
   for (const element of document.querySelectorAll(attachment)) {
-    if (element.closest(related)) continue;
+    if (related(element)) continue;
     const owner = element.closest('[data-encode-url]')?.getAttribute('data-encode-url');
     if (owner != null && owner !== request.encodeUrl) continue;
     collect(element.getAttribute('href') ?? element.getAttribute('src')!, element.closest('[data-info-code]')?.getAttribute('data-info-code'));
   }
   // 只读详情变量的静态赋值。普通脚本中的字符串、相关推荐和任意独立链接没有报告归属。
   for (const script of document.querySelectorAll('script:not([src])')) {
-    if (script.closest(related)) continue;
-    const source = (script.textContent ?? '').trim();
-    const pdf = /^window\.pdf\s*=\s*(["'])(https:\/\/pdf\.dfcfw\.com\/pdf\/H3_AP\d{8,20}_1\.pdf)\1\s*;?$/u.exec(source);
-    if (pdf) collect(pdf[2]);
-    const assignment = /^(?:(?:var|let|const)\s+|window\.)?zwinfo\s*=\s*(\{[\s\S]*\})\s*;?$/u.exec(source);
-    if (!assignment) continue;
-    const info = detailMetadata(assignment[1]);
-    if (!info) continue;
-    if (info.encodeUrl !== undefined && info.encodeUrl !== request.encodeUrl) return invalid('研报详情标识与请求不符。');
-    const infoCode = infoCodeOf(info.infoCode);
-    for (const key of ['pdfUrl', 'pdf_url', 'attachUrl', 'attach_url'])
-      if (typeof info[key] === 'string') collect(info[key], infoCode);
+    if (related(script)) continue;
+    let source = (script.textContent ?? '').trim();
+    // 同一脚本可依次声明元数据和附件。只消费可识别的静态赋值，不执行页面代码。
+    while (source) {
+      const pdf = /^window\.pdf\s*=\s*(["'])(https:\/\/pdf\.dfcfw\.com\/pdf\/H3_AP\d{8,20}_1\.pdf)\1\s*(?:;|$)/u.exec(source);
+      if (pdf) {
+        collect(pdf[2]);
+        source = source.slice(pdf[0].length).trimStart();
+        continue;
+      }
+      const assignment = /^(?:(?:var|let|const)\s+|window\.)?zwinfo\s*=\s*(\{[\s\S]*?\})\s*(?:;|$)/u.exec(source);
+      if (!assignment) {
+        const code = /^(?:window\s*\.\s*)?zwinfo\s*\.\s*infoCode\s*=\s*(["'])(AP\d{8,20})\1\s*(?:;|$)/u.exec(source);
+        if (code) {
+          declaredCodes.add(code[2]);
+          source = source.slice(code[0].length).trimStart();
+          continue;
+        }
+        if (/\b(?:zwinfo(?:\s*\.\s*infoCode)?|window\s*\.\s*pdf)\s*=(?!=)/u.test(source))
+          return invalid('详情脚本包含无法静态核对的研报或附件声明。');
+        break;
+      }
+      const info = detailMetadata(assignment[1]);
+      if (!info) return invalid('研报详情元数据无法核对。');
+      if (info.encodeUrl !== undefined && info.encodeUrl !== request.encodeUrl) return invalid('研报详情标识与请求不符。');
+      const infoCode = infoCodeOf(info.infoCode);
+      if (infoCode) declaredCodes.add(infoCode);
+      for (const key of ['pdfUrl', 'pdf_url', 'attachUrl', 'attach_url'])
+        if (typeof info[key] === 'string') collect(info[key], infoCode);
+      source = source.slice(assignment[0].length).trimStart();
+    }
   }
+  if (new Set([...declaredCodes, ...candidates.values()]).size > 1) return invalid('研报详情元数据与附件声明指向不同的 infoCode。');
   if (candidates.size !== 1) return invalid(candidates.size ? '研报详情存在多个不同附件定位，须明确选择。' : '研报详情没有可验证的 PDF 附件定位。');
   const [pdfUrl, infoCode] = [...candidates.entries()][0]!;
   return { decoderVersion: 'eastmoney-report-detail/1' as const, providerId: 'eastmoney' as const, request: bound.request,

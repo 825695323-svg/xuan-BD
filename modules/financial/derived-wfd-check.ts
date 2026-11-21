@@ -2,7 +2,7 @@ import { TaskError } from '../../platform/jobs/tasks.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { ALGORITHM_METHODS, ALGORITHM_NULL_STATES, MACD_SEMANTICS, isAlgorithmMethodId, type AlgorithmComputedResult, type AlgorithmData } from './algorithm-types.js';
 import { verifyAlgorithmNumbers } from './algorithm-reference.js';
-import { indexAlgorithmDiagnostics, normalizeDecimal } from './algorithm-service.js';
+import { normalizeDecimal } from './algorithm-service.js';
 import { matchesVolumeDefinition } from './product-machine-snapshot.js';
 import { add, negative, readExactDecimal } from '../collection/numeric-precision.js';
 import { checkR1Cell } from '../collection/r1-tabular.js';
@@ -81,7 +81,8 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
     || resolution?.rowCount !== result.rows.length || result.coverage.suppliedRows !== result.rows.length)
     fail('DERIVED_SOURCE_MISMATCH', '算法结果与实际 WFD 快照读取的产品、快照或记录数量不一致。');
 
-  verifyAlgorithmNumbers(result, input);
+  // 引用独立公式逐格核实的原因。MACD 在此要求诊断集合为空。
+  const reasons = verifyAlgorithmNumbers(result, input);
   const mapped = isWfdRecord(verifiedSrc.fieldMapping) ? verifiedSrc.fieldMapping : {};
   const column = String(mapped.close ?? '');
   const definitions = (verifiedFields.definitions as unknown[]).filter(isWfdRecord);
@@ -108,7 +109,6 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
   if (!productSubject || !['kind','namespace','id'].every(key => typeof productSubject[key] === 'string'))
     fail('DERIVED_SUBJECT_MISSING', '来源快照缺少已核对的业务主体身份。');
   const rows: WfdRecord[] = [];
-  const reasons = indexAlgorithmDiagnostics(macd ? [] : result.diagnostics ?? [], 'DERIVED_NULL_REASON_MISSING');
   const columnDigits = new Map<string, { integer: number; scale: number }>();
   for (let i = 0; i < result.rows.length; i++) {
     const data = result.rows[i]!, observed = verifiedSourceRows[i];
@@ -134,18 +134,17 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
       if (!Object.hasOwn(data, code)) fail('DERIVED_OUTPUT_FIELD_MISSING', `第 ${i+1} 条缺少算法输出 ${code}。`);
       const value = data[code];
       let cell: { data_type: 'decimal'; value_state: string; value: string | null };
-      if (!macd && value === null) {
+      if (value === null) {
         const key = `${data.timestamp}/${code}`, reason = reasons.get(key);
         if (!reason) fail('DERIVED_NULL_REASON_MISSING', `${data.timestamp} 的 ${code} 空值缺少对应的合法诊断。`);
         cell = { data_type: 'decimal', value_state: ALGORITHM_NULL_STATES[reason], value: null };
-        reasons.delete(key);
       } else {
         if (typeof value !== 'number' || !Number.isFinite(value) || (macd && !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(String(value))))
           fail('DERIVED_OUTPUT_TYPE', `第 ${i+1} 条 ${code} 不是无损可写入的十进制数。`);
         cell = { data_type: 'decimal', value_state: 'valid_value', value: macd ? String(value) : publicationDecimal(value, code) };
       }
       checkR1Cell('decimal', cell.value_state, cell.value, code);
-      if (!macd && cell.value !== null) {
+      if (cell.value !== null) {
         // WFD 为整列选择同一个 DECIMAL，最多整数位和最多小数位可能来自不同行。
         const [whole, fraction = ''] = cell.value.split('.'), prior = columnDigits.get(code);
         const integer = Math.max(prior?.integer ?? 0, whole.replace(/^-/, '').length);
@@ -163,7 +162,6 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
   if (rows.some((row, i) => i > 0 && row.business_key === rows[i-1]!.business_key)
     || new Set(rows.map(row => row.business_key)).size !== rows.length)
     fail('DERIVED_BUSINESS_KEYS', '不同来源行生成了相同的派生业务键，拒绝丢失观测。');
-  if (reasons.size) fail('DERIVED_NULL_REASON_MISSING', '存在无法匹配到输出空值的计算诊断。');
   const mathDefinition = macd ? { method: result.methodId,
     version: result.methodVersion, semantics: MACD_SEMANTICS } : {
     version: result.methodVersion, semantics: { outputs: method.outputs, resultSemantics: method.resultSemantics },

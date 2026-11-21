@@ -1,4 +1,4 @@
-import { ALGORITHM_METHOD_IDS, isAlgorithmMethodId, type AlgorithmCatalogView, type AlgorithmMethodId } from './algorithm-types.js';
+import { isAlgorithmMethodId, type AlgorithmCatalogView, type AlgorithmMethodId } from './algorithm-types.js';
 import { MACD_SNAPSHOT_SEMANTIC_CONTRACT } from './product-machine-snapshot.js';
 import { ALGORITHM_REGISTRY, ALGORITHM_REGISTRY_VERSION } from './algorithm-registry.js';
 import { definitionFor } from './algorithm-definitions.js';
@@ -12,10 +12,10 @@ interface FrozenAlgorithmCapabilities {
   readonly screen: boolean;
 }
 // 固定 v20 已审核的方法，后续注册新公式不能给已经冻结的会话追授能力。
-const dailyV20 = Object.freeze(['macd', 'ma', 'ema', 'rsi', 'boll', 'roc', 'obv', 'returns', 'volatility', 'max_drawdown',
-  'alpha191_014', 'alpha191_031', 'alpha191_116', 'alpha191_168', 'alpha191_189'] as const satisfies readonly AlgorithmMethodId[]);
+const dailyV20 = Object.freeze(['macd', 'ma', 'ema', 'rsi', 'boll', 'roc', 'obv', 'returns', 'volatility', 'max_drawdown'] as const satisfies readonly AlgorithmMethodId[]);
+const dailyV21 = Object.freeze([...dailyV20, 'alpha191_014', 'alpha191_031', 'alpha191_116', 'alpha191_168', 'alpha191_189'] as const satisfies readonly AlgorithmMethodId[]);
 const frozenCapabilities: readonly (FrozenAlgorithmCapabilities & { since: number })[] = [
-  Object.freeze({ since: 21, methods: dailyV20, allFactorDefinitions: true, screen: true }),
+  Object.freeze({ since: 21, methods: dailyV21, allFactorDefinitions: true, screen: true }),
   Object.freeze({ since: 20, methods: dailyV20, allFactorDefinitions: true, screen: false }),
   Object.freeze({ since: 18, methods: Object.freeze(['macd'] as const), allFactorDefinitions: false, screen: false }),
 ];
@@ -39,11 +39,12 @@ export function algorithmActionAllowed(action: string, version?: number): boolea
 }
 
 /** 目录暴露已登记的受控指标，实现就绪状态由受信执行器报告。 */
-export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, selectedMethod?: string, rulesVersion?: number | null) {
-  // 无会话的静态目录仍可展示登记定义。会话调用始终传入父运行的冻结能力。
-  const rules = rulesVersion === undefined ? undefined : frozenAlgorithmCapabilities(rulesVersion ?? undefined);
+export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, selectedMethod?: string, rulesVersion?: number) {
+  const rules = frozenAlgorithmCapabilities(rulesVersion);
+  const enabled = rules.methods.length > 0 && catalog.enabled;
+  const status = enabled ? catalog.status : 'unavailable';
   const methods = ALGORITHM_REGISTRY.filter(item => isAlgorithmMethodId(item.id)
-      && (rules?.methods ?? ALGORITHM_METHOD_IDS).includes(item.id)
+      && rules.methods.includes(item.id)
       && (selectedMethod === undefined || item.id === selectedMethod))
     .map(item => {
       const actual = catalog.methods.find(method => method.id === item.id);
@@ -52,7 +53,7 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
         parameters: actual?.parameters ?? item.parameterSchema ?? item.parameters,
         requiredFields: actual?.requiredFields ?? item.requiredInputs, outputFields: item.outputFields,
         limitations: item.limitations, definition: definitionFor(item.id),
-        executable: !!rules && actual?.status === 'ready', executor: 'python', interface: 'algorithms.calculate',
+        executable: status === 'available' && actual?.status === 'ready', executor: 'python', interface: 'algorithms.calculate',
         methodVersion: actual?.methodVersion ?? 'unavailable', implementationVersion: actual?.implementationVersion ?? 'unavailable',
         input: { kind: 'fixed_snapshot', referenceKind: 'wfd_fixed_snapshot',
           requiredIdentity: ['instanceId', 'productId', 'snapshotId', 'definitionRevision'],
@@ -65,11 +66,11 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
         output: { state: 'computed', publication: 'independent_verification_then_existing_r1_fixed_readback' },
       };
     });
-  return { version: BD_SESSION_TOOL_CONTRACT_VERSION, registryVersion: ALGORITHM_REGISTRY_VERSION,
-    owner: 'bd_agents', discoveryAction: 'algorithms.contract', calculateAction: rules?.methods.length ? 'algorithms.calculate' : null,
-    screenAction: rules?.screen ? 'algorithms.screen' : null,
-    screenContract: rules?.screen ? { action: 'algorithms.contract', methodId: 'strategy_screen' } : null,
-    publishAction: rules?.methods.length ? 'algorithms.publish' : null, statusAction: 'algorithms.status',
+  return { enabled, status, version: BD_SESSION_TOOL_CONTRACT_VERSION, registryVersion: ALGORITHM_REGISTRY_VERSION,
+    owner: 'bd_agents', discoveryAction: 'algorithms.contract', calculateAction: rules.methods.length ? 'algorithms.calculate' : null,
+    screenAction: rules.screen ? 'algorithms.screen' : null,
+    screenContract: rules.screen ? { action: 'algorithms.contract', methodId: 'strategy_screen' } : null,
+    publishAction: rules.methods.length ? 'algorithms.publish' : null, statusAction: 'algorithms.status',
     sourcePolicy: 'WFD fixed snapshot only; no managed file, no latest, no hidden acquisition',
     agentTriggered: true, uiExecution: false, agentMaySelfAuthorize: false,
     methods, unknownMethod: selectedMethod !== undefined && methods.length === 0 };
@@ -97,5 +98,5 @@ export function bdSessionToolContract(catalog: AlgorithmCatalogView, rulesVersio
       ...(rules.screen ? [{ id: 'strategy_screening', title: '受控截面筛选',
         tools: ['algorithms.contract', 'algorithms.screen'],
         next: '先读取 methodId=strategy_screen 的合同，明确固定 WFD 产品、日期与历史视角；完整分页后执行有限筛选规则，候选与证据返回原任务，不自动发布或下单。' }] : []),
-    ], algorithms: basicAlgorithmToolContract(catalog, undefined, rulesVersion ?? null) };
+    ], algorithms: basicAlgorithmToolContract(catalog, undefined, rulesVersion) };
 }

@@ -353,26 +353,30 @@ def execute(request):
           signal: new AbortController().signal, assertAuthorized() {} } as unknown as TaskExecutionContext;
         const { data } = action === 'data.modules.factors' ? await processing.execute(context, action, args) : await bridge.execute(context);
         assert.ok(isWfdRecord(data));
-        return data.modelPreview as { methods?: { methodId: string }[]; methodDirectory?: { methodId: string }[];
-          algorithms?: { methods: { id: string }[] }; status?: string; methodId?: string; taskId: string;
+        return data.modelPreview as { enabled?: boolean; methods?: { methodId: string; executable: boolean }[]; methodDirectory?: { methodId: string }[];
+          algorithms?: { enabled: boolean; status: string; methods: { id: string }[] }; status?: string; methodId?: string; taskId: string;
           screening: { action?: string }; screenAction: string | null; catalog: { items: { id: string }[]; total: number } };
       }
       for (const [runId, methods] of [
         ['run-v18', ['macd']], ['run-v19', ['macd']],
-        ['run-v20', ALGORITHM_METHOD_IDS], ['run-v21', ALGORITHM_METHOD_IDS], ['run-without-rules', []],
+        ['run-v20', ['macd', 'ma', 'ema', 'rsi', 'boll', 'roc', 'obv', 'returns', 'volatility', 'max_drawdown']], ['run-v21', ALGORITHM_METHOD_IDS], ['run-without-rules', []],
       ] as const) {
         origin.parentRunId = runId;
         const contract = await invoke('algorithms.contract');
         assert.deepEqual(contract.methods?.map(method => method.methodId), methods);
+        assert.equal(contract.enabled, methods.length > 0);
+        assert.equal(contract.status, methods.length ? 'available' : 'unavailable');
         const capabilities = await invoke('algorithms.capabilities');
         assert.deepEqual(capabilities.algorithms?.methods.map(method => method.id), methods);
+        assert.equal(capabilities.algorithms?.enabled, methods.length > 0);
+        assert.equal(capabilities.algorithms?.status, methods.length ? 'available' : 'unavailable');
         assert.deepEqual(capabilities.methodDirectory?.map(method => method.methodId), methods);
         assert.equal(contract.screenAction, runId === 'run-v21' ? 'algorithms.screen' : null);
         assert.equal(contract.screening.action, contract.screenAction ?? undefined);
         assert.equal(capabilities.screening.action, contract.screenAction ?? undefined);
         assert.equal(JSON.stringify(await invoke('bd.session.capabilities')).includes('algorithms.screen'), runId === 'run-v21');
         const factors = (await invoke('data.modules.factors')).catalog;
-        const expectedFactors = (frozenVersions.get(runId) ?? 0) >= 20 ? ALGORITHM_REGISTRY.map(item => item.id) : methods;
+        const expectedFactors = (frozenVersions.get(runId) ?? 0) >= 20 ? ALGORITHM_REGISTRY.filter(item => item.state === 'assets_only' || methods.some(id => id === item.id)).map(item => item.id) : methods;
         assert.deepEqual(factors.items.map(item => item.id), expectedFactors);
         assert.equal(factors.total, expectedFactors.length);
         if (!methods.some(method => method === 'alpha191_014')) {
@@ -380,6 +384,12 @@ def execute(request):
           await assert.rejects(invoke('algorithms.calculate', { calculationJson: '{"methodId":"alpha191_014"}' }), { code: 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES' });
         }
       }
+      origin.parentRunId = 'run-v21';
+      assert.equal((await invoke('algorithms.contract', { methodId: 'ma' })).methods?.[0]?.executable, true);
+      companion.productionModuleSwitches = { calculate: false };
+      assert.equal((await invoke('algorithms.contract', { methodId: 'ma' })).methods?.[0]?.executable, false);
+      assert.equal(bridge.registrations.find(entry => entry.action === 'algorithms.calculate')!.available!().available, false);
+      companion.productionModuleSwitches = { calculate: true };
       origin.parentRunId = 'run-v19';
       const rejected = { code: 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES', message: /v19.*macd/u };
       await assert.rejects(invoke('algorithms.contract', { methodId: 'ma' }), rejected);

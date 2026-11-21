@@ -64,6 +64,8 @@ export class R1WorkspaceService {
     return { r1Workspace: R1_WORKSPACE_VERSION, protocol: 'wfd.structured-ingest/1.0', profile: 'data_only' };
   }
 
+  readBinding() { return this.options.runtime?.currentReadBinding() ?? null; }
+
   capabilities(): R1CapabilitiesView {
     let connection: R1ConnectionIdentity | null = null, configuration = this.options.configuration;
     if (this.options.runtime) {

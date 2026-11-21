@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -318,6 +319,33 @@ test('Fuyao HTTP business rate limits and in-flight changes terminate before a s
       assert.equal(f.calls.length, 1);
     } finally { f.close(); }
   }
+});
+
+test('Fuyao compressed HTTP errors with unverifiable business codes stop before the backup account', async () => {
+  for (const businessCode of [4001, 5000]) {
+    const f = fixture(gzipSync(bytes({ code: businessCode })), 503);
+    try {
+      configureThs(f, 'synthetic-only', 'financial_statements');
+      f.state.headers = { 'content-encoding': 'gzip' };
+      const args = argsOf('financial_statements', financial);
+      await assert.rejects(f.runtime.execute(f.context('source.api.read', args), 'source.api.read', args),
+        code('SOURCE_RATE_LIMIT_UNVERIFIABLE'));
+      assert.equal(f.calls.length, 1);
+      assert.equal(f.state.closed, 1);
+    } finally { f.close(); }
+  }
+});
+
+test('Fuyao decodable HTTP service errors retain the configured fallback', async () => {
+  const f = fixture(bytes({ code: 0, data: { item: [] } }));
+  try {
+    configureThs(f, 'synthetic-only', 'financial_statements');
+    f.state.responseForCall = () => f.calls.length === 1 ? { bytes: bytes({ code: 5000 }), status: 503 }
+      : { bytes: bytes({ code: 0, data: { item: [] } }), status: 200 };
+    const args = argsOf('financial_statements', financial);
+    await f.runtime.execute(f.context('source.api.read', args), 'source.api.read', args);
+    assert.equal(f.calls.length, 2);
+  } finally { f.close(); }
 });
 
 test('Credential echoes in raw text, URL encodings and JSON strings leave only restricted response metadata', async () => {

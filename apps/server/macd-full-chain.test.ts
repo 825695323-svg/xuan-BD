@@ -14,6 +14,7 @@ import { buildStructuredIngestDocument } from '../../modules/collection/r1-struc
 import { ALGORITHM_METHOD_IDS, ALGORITHM_RUNTIME } from '../../modules/financial/algorithm-types.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { ProcessRuntime } from '../../platform/runtime/programs.js';
+import { digestOperationArgs } from '../../platform/security/permissions.js';
 import { CoreDatabase } from '../../platform/state/database.js';
 import { createFullChainFixture } from './full-chain-test-support.js';
 import { localAlgorithmConfiguration } from './financial-configuration.js';
@@ -207,6 +208,12 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
       const { taskId, wfdPublication } = data;
       const result = algorithms.view(taskId).result!;
       assert.ok(result);
+      const current = runtime.currentIdentity();
+      const oldConnection = Object.fromEntries((['connectionId', 'protocol', 'profile', 'mode', 'purpose', 'runtimeIdentity',
+        'store', 'runtime', 'callerId', 'namespace', 'configSha256', 'schemaSha256', 'entrySha256', 'pythonPath', 'entryPath'] as const)
+        .map(key => [key, current[key]]));
+      assert.equal((result.source as WfdRecord).connectionIdentityDigest, digestOperationArgs(oldConnection),
+        '派生任务持久化的连接摘要须与旧 R1 身份完全相同，随后按原任务号恢复发布');
       assert.equal(result.rows.length, suppliedCloses.length);
       const associations = workspace.r1!.localExplanation(wfdPublication.requestId).associations as WfdRecord[];
       assert.equal(associations.length, suppliedCloses.length);

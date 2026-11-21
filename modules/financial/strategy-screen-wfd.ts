@@ -1,10 +1,12 @@
 import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
-import { isExplicitUtcInstant } from '../../contracts/financial-value.js';
+import { isExplicitUtcInstant, isNumericReportedZero } from '../../contracts/financial-value.js';
 import type { R1ProductRead, R1ProductReadInput } from '../../contracts/r1-contracts.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
 import type { AlgorithmSubmissionContext } from './algorithm-types.js';
 import { readHistorySelection } from '../collection/r1-product-reader.js';
 import { screenStrategy, STRATEGY_SCREEN_LIMITS, STRATEGY_SCREEN_VERSION, type StrategyScreenInput } from './strategy-screen.js';
+
+export { historicalExclusionSummary } from './historical-exclusions.js';
 
 export const STRATEGY_SCREEN_WFD_VERSION = 'bd.strategy-screen-wfd/2';
 export const STRATEGY_SCREEN_READ_LIMITS = Object.freeze({ pages: 100, rows: 10_000, bytes: 16_777_216, resultBytes: 900_000, timeoutMs: 60_000 });
@@ -61,6 +63,14 @@ function checkHistoricalRow(row: WfdRecord, request: Request) {
     || eligibility.reason !== undefined && eligibility.reason !== (request.historyMode === 'market_known_at'
       ? 'evidence_interval_ended_before_cutoff' : 'held_at_usable_stage'))
     fail('STRATEGY_SCREEN_ROW_INELIGIBLE', '历史读取行缺少当前视角的 WFD 合格判决。');
+  if (request.historyMode === 'market_known_at') {
+    const time = isWfdRecord(row.times) ? row.times.public_time : null;
+    if (!isWfdRecord(time) || time.status !== 'known'
+      || !isExplicitUtcInstant(time.earliest_utc) || !isExplicitUtcInstant(time.latest_exclusive_utc)
+      || Date.parse(time.earliest_utc) >= Date.parse(time.latest_exclusive_utc)
+      || Date.parse(time.latest_exclusive_utc) > Date.parse(request.at!))
+      fail('STRATEGY_SCREEN_ROW_INELIGIBLE', '历史读取行缺少完整且在所选截止前结束的已知公开时间区间。');
+  }
   if (request.historyMode === 'system_held_at' && (
     row.held_scope !== request.heldScope || row.usable_stage !== request.usableStage
     || !isExplicitUtcInstant(row.held_at) || Date.parse(row.held_at) > Date.parse(request.at!)
@@ -88,32 +98,25 @@ function productVersions(result: WfdRecord) {
   const definitionRefs = list('definition_refs'), contractVersions = list('contract_versions'), contractRefs = list('contract_refs');
   const version = contractVersions?.[0];
   const fixedRef = (ref: unknown, versionRef: unknown) => {
-    if (versionRef != null && !isWfdRecord(versionRef)
+    if (versionRef != null && !versionIdentity(versionRef) || ref != null && !versionIdentity(ref)
       || ref != null && versionRef != null && canonicalWfdJson(ref) !== canonicalWfdJson(versionRef)) return mixedDefinition();
     return ref ?? versionRef ?? null;
   };
-  return { definitionRefs, contractVersions, contractRefs,
-    definitionRef: fixedRef(definitionRefs?.[0], version?.definition_ref),
-    contractRef: fixedRef(contractRefs?.[0], version?.contract_ref) };
+  const definitionRef = fixedRef(definitionRefs?.[0], version?.definition_ref);
+  const contractRef = fixedRef(contractRefs?.[0], version?.contract_ref);
+  return { definitionRefs, contractVersions, contractRefs, definitionRef, contractRef,
+    hasVersion: !!(definitionRef || contractRef || versionIdentity(version)) };
 }
 
-function checkRowVersion(ref: unknown, expected: unknown, previous: WfdRecord | null, first: boolean) {
-  if (ref != null && (!isWfdRecord(ref) || !Object.keys(ref).length)
-    || !first && canonicalWfdJson(ref ?? null) !== canonicalWfdJson(previous)
-    || ref != null && expected != null && canonicalWfdJson(ref) !== canonicalWfdJson(expected)) return mixedDefinition();
-  return ref ?? null;
+function versionIdentity(ref: unknown): ref is WfdRecord {
+  return isWfdRecord(ref) && [ref.digest, ref.version, ref.id].some(fixed);
 }
 
-export function historicalExclusionSummary(diagnostics: readonly WfdRecord[]) {
-  const byReason: Record<string, number> = {};
-  let excludedCount = 0;
-  for (const diagnostic of diagnostics) {
-    const reason = String(diagnostic.reason);
-    const count = reason === 'HELD_STAGE_AFTER_CUTOFF' ? Number(diagnostic.count) : 1;
-    byReason[reason] = (byReason[reason] ?? 0) + count;
-    excludedCount += count;
-  }
-  return { source: 'WFD', scope: 'fixed_product_not_date_filtered', excludedCount, byReason };
+function checkRowVersion(ref: unknown, expected: unknown, previous: WfdRecord | null) {
+  if (ref == null) return previous;
+  if (!versionIdentity(ref) || expected != null && canonicalWfdJson(ref) !== canonicalWfdJson(expected)
+    || previous !== null && canonicalWfdJson(ref) !== canonicalWfdJson(previous)) return mixedDefinition();
+  return ref;
 }
 
 function normalize(value: unknown): Request {
@@ -285,16 +288,17 @@ export async function screenFixedWfdStrategy(value: unknown, read: Reader, signa
         if (request.readMode === 'indexed') fail('STRATEGY_SCREEN_WFD_RESPONSE', '索引返回明确标的集合之外的行。');
         continue;
       }
-      rowContract = checkRowVersion(raw.contract_ref, versions.contractRef, rowContract, records.length === 0);
-      rowDefinition = checkRowVersion(raw.definition_ref, versions.definitionRef, rowDefinition, records.length === 0);
+      if (!versions.hasVersion && raw.contract_ref == null) mixedDefinition();
+      rowContract = checkRowVersion(raw.contract_ref, versions.contractRef, rowContract);
+      rowDefinition = checkRowVersion(raw.definition_ref, versions.definitionRef, rowDefinition);
       if (selectedKeys.has(keyCell.value)) fail('STRATEGY_SCREEN_CROSS_SECTION_UNKNOWN', '同一截面标的有多行或多个版本，必须先明确数据口径。');
       selectedKeys.add(keyCell.value);
       const record: Record<string, unknown> = { [request.keyField]: keyCell.value };
       for (const name of request.factorNames) {
         const cell = values[name];
         const reportedZero = isWfdRecord(cell) && cell.value_state === 'reported_zero';
-        if (reportedZero && cell.value !== '0' && cell.value !== 0)
-          fail('STRATEGY_SCREEN_WFD_RESPONSE', '因子的 reported_zero 状态没有携带明确数值零，不能补零或采用非零值。');
+        if (reportedZero && !isNumericReportedZero(cell.data_type, cell.value))
+          fail('STRATEGY_SCREEN_WFD_RESPONSE', '因子的 reported_zero 状态要求 decimal 或 integer 类型及明确的零值。');
         const usable = isWfdRecord(cell) && (cell.value_state === 'valid_value' || reportedZero);
         // reported_zero 是有来源声明的有效零；其余非值态即使携带数值仍保持缺项。
         record[name] = usable ? cell.value : null;
@@ -319,6 +323,7 @@ export async function screenFixedWfdStrategy(value: unknown, read: Reader, signa
       fail('STRATEGY_SCREEN_WFD_BUDGET', '分页预算已耗尽，未把部分截面作为完整输入。');
     cursor = page.next_cursor; cursors.add(cursor);
   } while (cursor);
+  if (!versions.hasVersion && !rowContract) mixedDefinition();
   if (request.selection.keys?.some(item => !selectedKeys.has(item)))
     fail('STRATEGY_SCREEN_WFD_INCOMPLETE', '固定数据没有覆盖明确要求的全部标的；未以缺项为零继续排名。');
   active();

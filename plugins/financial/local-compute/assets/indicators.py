@@ -1,5 +1,6 @@
 """Registered indicators over supplied daily observations."""
 import math
+import sys
 
 from _common import exact_keys, require, validate_bars
 from operators import combine, next_state, rolling_windows, smooth, standard_deviation
@@ -189,9 +190,14 @@ def alpha191_116(close, params, rows):
         if window is None:
             values.append(WARMUP)
             continue
-        # Center the price as well as the observation number to avoid subtracting large sums.
-        values.append(math.fsum(((index - 9.5) / 665) * (value - window[0])
-                                for index, value in enumerate(window)))
+        # Opposite observation weights cancel equal endpoints before combining smaller differences.
+        differences = [window[19 - k] - window[k] for k in range(10)]
+        # The ten positive weights sum to 50. Scale first only when their numerator can overflow.
+        if max(map(abs, differences)) >= sys.float_info.max / 50:
+            slope = math.fsum(((9.5 - k) / 665) * delta for k, delta in enumerate(differences))
+        else:
+            slope = math.fsum((9.5 - k) * delta for k, delta in enumerate(differences)) / 665
+        values.append(slope)
     return {"ALPHA191_116": values}
 
 

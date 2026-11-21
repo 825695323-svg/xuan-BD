@@ -183,14 +183,14 @@ test('统一登记表、定义和两个目录包含新增五个因子，财务�
   assert.ok(factors.items.every(item => item.execution === 'not_granted_by_library'
     && item.publication === 'not_granted_by_library'));
   assert.deepEqual(toolLibrary.tools.slice(-5).map(item => item.category), ['financial', 'financial', 'financial', 'financial', 'adjustment']);
-  assert.deepEqual(basicAlgorithmToolContract(catalog).methods.map(item => item.methodId), ALGORITHM_METHOD_IDS);
+  assert.deepEqual(basicAlgorithmToolContract(catalog, undefined, 21).methods.map(item => item.methodId), ALGORITHM_METHOD_IDS);
   for (const id of reusedFactorIds) {
-    const selected = basicAlgorithmToolContract(catalog, id);
+    const selected = basicAlgorithmToolContract(catalog, id, 21);
     assert.equal(selected.unknownMethod, false);
     assert.deepEqual(selected.methods.map(item => item.methodId), [id]);
   }
   for (const id of pureIds)
-    assert.equal(basicAlgorithmToolContract(catalog, id).unknownMethod, true);
+    assert.equal(basicAlgorithmToolContract(catalog, id, 21).unknownMethod, true);
   const detached = new ToolLibraryService().view().tools;
   assert.ok(detached.every(item => item.status === 'unavailable'));
 });

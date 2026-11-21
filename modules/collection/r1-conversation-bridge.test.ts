@@ -935,6 +935,11 @@ test('F05 actual personal R1 prepare → host-confirmed real Python publish with
       const fixed = h.companion.r1Workspace!.get(preparedRequestId);
       assert.equal(fixed.rowCount, 2); assert.equal(fixed.submitTaskId, null); assert.equal(submitCalls, 0);
       assert.equal(fixed.planId, planned.planId); assert.deepEqual(fixed.connection.profile, 'data_only');
+      const savedBinding = h.companionDatabase.connection.prepare('SELECT binding_json FROM r1_workspace_requests WHERE request_id=?').get(preparedRequestId)!;
+      assert.deepEqual(Object.keys(JSON.parse(String(savedBinding.binding_json))).sort(), [
+        'connectionId', 'protocol', 'profile', 'mode', 'purpose', 'runtimeIdentity', 'store', 'runtime', 'callerId', 'namespace',
+        'configSha256', 'schemaSha256', 'entrySha256', 'pythonPath', 'entryPath',
+      ].sort(), '原 R1 请求只冻结 9f520b78 的连接身份字段');
       const replay = await invoke(h, selected.input, 'data.r1.prepare', prepareArgs(selected.input, planned.planId), 'python-r1-prepare');
       assert.equal(replay.preview.taskId, prepared.preview.taskId, 'Same toolCall must reuse its actual local task.');
       const repeated = await invoke(h, selected.input, 'data.r1.prepare', prepareArgs(selected.input, planned.planId), 'python-r1-prepare-again');
@@ -958,6 +963,8 @@ test('F05 actual personal R1 prepare → host-confirmed real Python publish with
       const pendingModel = await invoke(h, selected.input, 'data.r1.get', { requestId: preparedRequestId }, 'python-r1-get-pending');
       assert.equal(pendingModel.preview.data.state, 'pending_unknown'); assertModelView(pendingModel.preview.data, f);
       const originalConversation = selected.input.conversationId, originalBranch = selected.input.branchId;
+      const readSchema = join(f.schemaPath, '..', 'wfd-read-product.schema.json');
+      writeFileSync(readSchema, readFileSync(readSchema, 'utf8') + '\n');
       await h.close(); h = await host(f);
       h.companion.r1Runtime!.client.submit = async () => { submitCalls++; throw new Error('Restart recovery attempted a forbidden resubmit.'); };
       const resumedInput = await startInput(h, '请沿原request、原任务和原连接核对结果，不重新提交。', 'python-recovery-user-resume',

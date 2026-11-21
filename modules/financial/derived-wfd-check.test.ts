@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ALGORITHM_METHODS, MACD_SEMANTICS, type AlgorithmComputedResult, type AlgorithmData } from './algorithm-types.js';
+import { verifyAlgorithmNumbers } from './algorithm-reference.js';
 import { checkDerivedForWfd } from './derived-wfd-check.js';
 import { checkR1Cell } from '../collection/r1-tabular.js';
 import { buildStructuredIngestDocument, type R1HandoffService } from '../collection/r1-structured-handoff.js';
@@ -21,6 +22,7 @@ const sample = (): AlgorithmComputedResult => ({
   metadata: { ...frozenInput().metadata },
   coverage: { suppliedRows: 1 },
   eligibility: { input: { status: 'eligible' } },
+  diagnostics: [],
   rows: [{ timestamp: '2026-11-01', available_at: '2026-11-01T23:59:59Z', DIFF: 0, DEA: 0, MACD: 0, ZERO: 0 }],
   source: { kind: 'wfd_fixed_snapshot', instanceId: 'instance_test',
     productId: 'p_test', snapshotId: 'snap_test',
@@ -102,8 +104,12 @@ test('同一天的 BOLL 多列空值须分别有唯一的已知诊断', () => {
     assert.deepEqual(row.values[code], { data_type: 'decimal', value_state: 'insufficient_warmup', value: null });
     checkR1Cell('decimal', row.values[code].value_state, row.values[code].value, code);
   }
+  result.diagnostics = diagnostics.toReversed();
+  assert.doesNotThrow(check);
+  result.diagnostics = [...diagnostics, { ...diagnostics[0], output: 'EXTRA' }];
+  assert.throws(check, { code: 'DERIVED_DIAGNOSTIC_UNEXPECTED' });
   for (const invalid of [[], diagnostics.slice(1), [...diagnostics, diagnostics[0]],
-    ...[{ timestamp: '2026-11-02' }, { output: 'OTHER' }, { reason: 'missing_unknown' }].map(change =>
+    ...[{ timestamp: '2026-11-02' }, { output: 'OTHER' }, { reason: 'missing_unknown' }, { extra: 'unverified' }, { reason: 'undefined_flat_rsi' }, { reason: 'undefined_zero_denominator' }].map(change =>
       [{ ...diagnostics[0], ...change }, ...diagnostics.slice(1)])]) {
     result.diagnostics = invalid;
     assert.throws(check, { code: 'DERIVED_NULL_REASON_MISSING' });
@@ -151,6 +157,38 @@ test('缺真实 WFD 行身份及单位时拒绝发布', () => {
   assert.throws(() => checkDerivedForWfd(missing, binding, 'derived-1', frozenInput()), {
     code: 'DERIVED_SOURCE_INVALID',
   });
+});
+
+test('MACD 数值行拒绝额外诊断，整列 DECIMAL 精度在 38 位边界逐列核验', () => {
+  const result = sample(), input = frozenInput();
+  result.diagnostics = [{ timestamp: result.rows[0].timestamp, output: 'DEA', reason: 'undefined_flat_rsi' }];
+  assert.throws(() => verifyAlgorithmNumbers(result, input), { code: 'DERIVED_DIAGNOSTIC_UNEXPECTED' });
+  assert.throws(() => checkDerivedForWfd(result, binding, 'macd-diagnostic', input), { code: 'DERIVED_DIAGNOSTIC_UNEXPECTED' });
+  result.diagnostics = [];
+  const resolution = (result.source as { resolution: { rowCount: number; envelope: { rows: {
+    business_key: string; subject: object; observation_time: { earliest_utc: string; latest_exclusive_utc: string } }[] } } }).resolution;
+  const first = resolution.envelope.rows[0];
+  input.rows = [1, 1.13, 2e20].map((close, i) => ({ ...input.rows[0], close, timestamp: `2026-11-0${i+1}`,
+    available_at: `2026-11-0${i+1}T23:59:59Z` }));
+  resolution.envelope.rows = input.rows.map(({ timestamp }, i) => ({ ...first, business_key: timestamp,
+    observation_time: { ...first.observation_time, earliest_utc: timestamp + 'T00:00:00Z', latest_exclusive_utc: `2026-11-0${i+2}T00:00:00Z` } }));
+  resolution.rowCount = result.coverage.suppliedRows = 3;
+  result.metadata.window_end = input.metadata.window_end = input.rows[2].timestamp;
+  for (const big of [2e20, 2e21]) {
+    input.rows[2].close = big;
+    let short = 1, long = 1, signal = 0;
+    result.rows = input.rows.map(({ timestamp, available_at, close }) => {
+      short += (close - short) * (2 / 13); long += (close - long) * (2 / 27);
+      const diff = short - long;
+      signal += (diff - signal) / 5;
+      return { timestamp, available_at, DIFF: diff, DEA: signal, MACD: 2 * (diff - signal), ZERO: 0 };
+    });
+    for (const row of result.rows) for (const code of ALGORITHM_METHODS.macd.outputFields)
+      checkR1Cell('decimal', 'valid_value', String(row[code]), code);
+    const check = () => checkDerivedForWfd(result, binding, 'macd-column', input);
+    if (big === 2e20) assert.doesNotThrow(check);
+    else assert.throws(check, { code: 'DERIVED_COLUMN_PRECISION', message: /DIFF.*21.*18/u });
+  }
 });
 
 test('独立数值核对拒绝非固定周期', () => {

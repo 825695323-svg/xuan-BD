@@ -11,6 +11,7 @@ import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/databas
 import type { OperatorContext, ProcessingPlanInput } from './processing-plan.js';
 import type { ProcessingQuality } from '../../contracts/processing-quality.js';
 import { processingQualitySummary } from './processing-quality.js';
+import { isAlgorithmMethodId } from '../financial/algorithm-types.js';
 import { algorithmAllowedByRules, frozenAlgorithmCapabilities } from '../financial/basic-algorithm-tool-contract.js';
 import { PRODUCTION_MODULES, stepModuleForAction, readWfdModulePage,
   productionModuleDirectory, factorLibraryView, semanticDictionaryView, sourceSemanticView,
@@ -487,15 +488,10 @@ export class ConversationProcessingBridge {
   private factorLibrary(origin: ModelTaskOrigin, factorId?: string) {
     const version = this.options.core.runConfiguration(origin.parentRunId)?.internalAgentRules?.version;
     const rules = frozenAlgorithmCapabilities(version);
-    if (rules.allFactorDefinitions) return factorLibraryView(factorId);
-    if (factorId && !algorithmAllowedByRules(factorId, version))
+    const allowed = (id: string) => isAlgorithmMethodId(id) ? algorithmAllowedByRules(id, version) : rules.allFactorDefinitions;
+    if (factorId && !allowed(factorId))
       throw new TaskError('ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES', '本会话冻结规则不允许读取该因子定义。');
-    const catalog = factorLibraryView('macd');
-    const items = catalog.items.filter(item => algorithmAllowedByRules(item.id, version));
-    return { ...catalog, total: items.length, selected: items.length, items,
-      counts: { ...catalog.counts, executable: items.length, assets_only: 0 },
-      definitions: { ...catalog.definitions, counts: { ...catalog.definitions.counts,
-        definitions: items.length, operators: 0, implemented: items.length } } };
+    return factorLibraryView(factorId, allowed);
   }
   private verifyUserMessage(origin: ModelTaskOrigin, messageId: string, quote: string): boolean {
     if (!quote.trim()) return false;

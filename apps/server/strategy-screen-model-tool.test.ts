@@ -106,6 +106,8 @@ function syntheticReader() {
           revision_id: 'r_future', subject: { id: 'future-subject' }, reason: 'time_interval_starts_after_cutoff',
           decision: 'ineligible', diagnostic_source: 'product_service_eligibility' }] : [], complete: true,
         rows: [['A', '2'], ['B', '5']].map(([code, momentum]) => ({
+          contract_ref: { digest: 'sha256:' + 'a'.repeat(64) },
+          times: { public_time: { status: 'known', earliest_utc: '2026-01-01T09:00:00Z', latest_exclusive_utc: '2026-01-02T09:30:00Z' } },
           eligibility: { decision: 'eligible', reason: 'evidence_interval_ended_before_cutoff' },
           record_ref: { logical_key: `synthetic-${code}`, revision_id: 'r_synthetic' }, business_time: { status: 'unknown' },
           values: { code: cell(code), trade_date: cell('2026-01-02'), momentum: cell(momentum, 'decimal') } })),
@@ -169,7 +171,7 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     }
     const contract = preview(await perform.execute('screen-contract', { action: 'algorithms.contract', args: { methodId: 'strategy_screen' } },
       undefined, undefined, toolContext));
-    assert.equal(contract.data.executor, 'typescript'); assert.equal(contract.data.available, true);
+    assert.equal(contract.data.executor, 'typescript'); assert.equal(contract.data.available, true); assert.equal(contract.data.executable, true);
     const screenJson = JSON.stringify({ snapshotId: 's_synthetic', productId: 'p_synthetic', historyMode: 'snapshot_contents',
       selection: { dateField: 'trade_date', date: '2026-01-02', dateFormat: 'YYYY-MM-DD' }, factorNames: ['momentum'],
       keyField: 'code', filter: 'momentum > 0', orderBy: 'rank(momentum)', topN: 1 });
@@ -194,6 +196,9 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     switches.calculate = false;
     const disabled = preview(await list.execute('screen-list-disabled', { query: 'algorithms.screen' }, undefined, undefined, toolContext));
     assert.equal(disabled.actions[0].available, false);
+    const disabledContract = preview(await perform.execute('screen-contract-disabled', { action: 'algorithms.contract', args: { methodId: 'strategy_screen' } },
+      undefined, undefined, toolContext));
+    assert.equal(disabledContract.data.executable, false);
     await assert.rejects(perform.execute('screen-disabled', args, undefined, undefined, toolContext));
     assert.equal(synthetic.calls.length, 1, '停用后新调用不读取数据');
     switches.calculate = true;
@@ -221,10 +226,21 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
 
     // 保留宿主、工具与用户消息的真实绑定，仅截获服务 submit 边界。
     const calls: unknown[][] = [];
-    companion.algorithms = { versionBinding: { synthetic: '1' }, submit(...args: unknown[]) {
+    companion.algorithms = { versionBinding: { synthetic: '1' },
+      catalog: () => ({ enabled: true, status: 'available', methods: [{ id: 'macd', status: 'ready' }] }), submit(...args: unknown[]) {
       calls.push(args); throw new Error('synthetic submit captured');
     } } as unknown as NonNullable<typeof companion.algorithms>;
     companion.derivedPublisher = { publish: () => assert.fail('capture must not publish') } as unknown as NonNullable<typeof companion.derivedPublisher>;
+    for (const enabled of [true, false]) {
+      switches.calculate = enabled;
+      const action = preview(await list.execute('list-calculate-' + enabled, { query: 'algorithms.calculate' }, undefined, undefined, toolContext))
+        .actions.find((item: WfdRecord) => item.action === 'algorithms.calculate');
+      const contract = preview(await perform.execute('contract-calculate-' + enabled, { action: 'algorithms.contract', args: { methodId: 'macd' } },
+        undefined, undefined, toolContext));
+      assert.equal(action.available, enabled);
+      assert.equal(contract.data.methods[0].executable, enabled);
+    }
+    switches.calculate = true;
     const declaration = JSON.stringify({ purpose: 'historical_compute', action: 'algorithms.calculate',
       historyMode: 'market_known_at', cutoff: at, methodId: 'macd', productId: 'p_synthetic' });
     const calcInput = await nextInput(declaration, 'synthetic-historical-calculation');

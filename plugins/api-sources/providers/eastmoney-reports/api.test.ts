@@ -126,6 +126,25 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<script>var zwinfo = { infoCode: 'AP202601010001', attach_url: '${pdf}' };</script>`,
     `<div class="report-download"><a href="${pdf}">下载本研报</a></div>`])
     assert.equal(decodeEastmoneyReportDetail(request, html(main + related)).pdfUrl, pdf);
+  const mainLink = `<a download href="${pdf}">下载原文</a>`, otherLink = `<a download href="${other}">下载 PDF</a>`;
+  for (const title of ['相关阅读', '相关研报', '推荐阅读', '延伸阅读']) {
+    for (const section of [`<div>${title}：${otherLink}</div>`, `<section><h2>${title}</h2>${otherLink}</section>`,
+      `<div><span>${title}：</span></div><ul><li>${otherLink}</li></ul>`]) {
+      assert.equal(decodeEastmoneyReportDetail(request, html(`<article id="zwinfo">${mainLink}${section}</article>`)).pdfUrl, pdf);
+      assert.throws(() => decodeEastmoneyReportDetail(request, html(`<article id="zwinfo">${section}</article>`)), code('SOURCE_REPORT_RESPONSE_INVALID'));
+    }
+  }
+  const metadata = 'var zwinfo = {"infoCode":"AP202601010001"};', scriptPdf = (url: string) => `window.pdf="${url}";`;
+  for (const declarations of [[metadata, scriptPdf(other)], [scriptPdf(other), metadata]]) {
+    for (const separator of ['', '</script><script>'])
+      assert.throws(() => decodeEastmoneyReportDetail(request, html('<script>' + declarations.join(separator) + '</script>')),
+        code('SOURCE_REPORT_RESPONSE_INVALID'));
+  }
+  assert.equal(decodeEastmoneyReportDetail(request, html(`<script>${metadata}${scriptPdf(pdf)}</script>`)).pdfUrl, pdf);
+  assert.equal(decodeEastmoneyReportDetail(request, html(`<div id="zwinfo"><h2>相关阅读</h2>${otherLink}<h2>本研报附件</h2>${mainLink}</div>`)).pdfUrl, pdf);
+  for (const declaration of ['zwinfo.infoCode="AP202601010002";', 'log(); zwinfo.infoCode="AP202601010002";'])
+    assert.throws(() => decodeEastmoneyReportDetail(request, html(`<script>${declaration}</script><script>${scriptPdf(pdf)}</script>`)),
+      code('SOURCE_REPORT_RESPONSE_INVALID'));
   for (const body of [related, `<nav><a href="${pdf}">相关</a></nav>`, `<a href="${pdf}">相关阅读</a>`,
     `<article id="zwinfo"><section><h2>相关阅读</h2><a href="${pdf}">PDF</a></section></article>`,
     `<div data-encode-url="other"><a href="${pdf}">PDF</a></div>`,

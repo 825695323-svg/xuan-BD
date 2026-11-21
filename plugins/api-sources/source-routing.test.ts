@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, chmodSync, statSync, symlinkSync } from 'node:fs';
 import { once } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { publicWebRequestHeaders } from '../../platform/capabilities/browser/public-web.js';
@@ -17,6 +18,7 @@ import type { AuthorizationReceipt } from '../../platform/security/permissions.j
 import { CoreDatabase } from '../../platform/state/database.js';
 import { publicKlineProviders } from './public-kline.js';
 import { createSourceRuntime } from './runtime.js';
+import { sourceRequestKey } from './source-acquisition.js';
 import { sourceCandidateFeedback, sourceOperations } from './operations.js';
 import { thsSource } from './providers/ths/api.js';
 
@@ -214,6 +216,14 @@ test('Public POST has one case-insensitive header per name, with the last explic
 
 test('Receipt request keys bind the actual financial statement and report detail identifier', () => {
   const base = { scopeId: 'CN/A_STOCK', acquiredAtUtc: '2026-01-05T00:00:00Z', originals: [{ fileRefId: 'original', sha256: 'a'.repeat(64) }] };
+  const common = { scopeId: base.scopeId, subjectId: null, start: null, end: null, adjustment: null };
+  for (const [operationId, invalid] of [
+    ['financial_statements', [{}, { statement: '' }, { statement: 'quarterly' }]],
+    ['research_report_detail', [{}, { encodeUrl: ' ' }, { encodeUrl: 'x'.repeat(2049) }]],
+  ] as const) {
+    for (const fields of invalid) assert.throws(() => sourceRequestKey({ ...common, operationId, ...fields }),
+      { code: 'SOURCE_REQUEST_INVALID' });
+  }
   const reportKeys = ['income', 'balance_sheet', 'cash_flow'].map(statement => {
     const projection = buildApiReadRequest('ths', thsSource.apiBaseUrl, 'financial_statements', {
       thscode: '600001.SH', statement, period: 'quarterly', limit: 2 }).decode(Buffer.from('{"code":0,"data":{"item":[]}}'));
@@ -261,27 +271,84 @@ test('First registration chooses a stable free ID, preserves colliding policies 
   } finally { database.close(); rmSync(root, { recursive: true }); }
 });
 
-test('Only the holder of the recovery guard can reclaim a dead owner; a subsequent live owner keeps its inode', () => {
-  const root = mkdtempSync(join(tmpdir(), 'source-recovery-')), database = new CoreDatabase(':memory:');
+test('Killed SQLite recovery releases its transaction; another process saves through a stale legacy guard', { timeout: 20_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'source-recovery-')), path = join(root, 'settings.json'), lock = path + '.lock';
+  const db = new CoreDatabase(':memory:'), service = new SourceSettingsService(path, db);
+  t.after(() => { db.close(); rmSync(root, { recursive: true }); });
+  const initial = service.update(service.get());
+  const exited = spawnSync(process.execPath, ['-e', '']);
+  assert.equal(exited.status, 0);
+  const dead = JSON.stringify({ version: 1, pid: exited.pid, token: 'exited-owner' });
+  writeFileSync(lock, dead, { flag: 'wx' });
+  writeFileSync(lock + '.recover', 'stale-legacy-guard', { flag: 'wx' });
+  const program = `
+    import { writeSync } from 'node:fs';
+    import { DatabaseSync } from 'node:sqlite';
+    import { SourceSettingsService } from './platform/config/source-settings.ts';
+    import { CoreDatabase } from './platform/state/database.ts';
+    const db = new CoreDatabase(':memory:');
+    const service = new SourceSettingsService(process.argv[1], db);
+    if (process.argv[2] === 'interrupt') {
+      const exec = DatabaseSync.prototype.exec;
+      DatabaseSync.prototype.exec = function (sql) {
+        const result = exec.call(this, sql);
+        if (sql === 'BEGIN IMMEDIATE') {
+          writeSync(1, 'locked');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+        }
+        return result;
+      };
+    }
+    writeSync(1, String(service.update(service.get()).revision));
+    db.close();`;
+  const args = ['--import', 'tsx', '--input-type=module', '-e', program, path];
+  const child = spawn(process.execPath, [...args, 'interrupt'], { stdio: ['ignore', 'pipe', 'inherit'] });
+  t.after(() => { if (!child.signalCode && child.exitCode === null) child.kill('SIGKILL'); });
+  const exit = once(child, 'exit');
+  const ready = await Promise.race([once(child.stdout, 'data'), exit]);
+  assert.equal(String(ready[0]), 'locked');
+  const contender = new DatabaseSync(path + '.recover.sqlite');
   try {
-    const path = join(root, 'settings.json'), service = new SourceSettingsService(path, database);
-    const initial = service.get(), lock = path + '.lock', guard = lock + '.recover';
+    contender.exec('PRAGMA busy_timeout = 0');
+    assert.throws(() => contender.exec('BEGIN IMMEDIATE'), { errcode: 5 }); // SQLITE_BUSY
+  } finally { contender.close(); }
+  assert.equal(readFileSync(lock, 'utf8'), dead);
+  child.kill('SIGKILL');
+  assert.deepEqual(await exit, [null, 'SIGKILL']);
+  const next = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 8000 });
+  assert.equal(next.status, 0, next.stderr);
+  assert.equal(Number(next.stdout), initial.revision + 1);
+  assert.equal(service.get().revision, initial.revision + 1);
+  assert.equal(statSync(path + '.recover.sqlite').mode & 0o777, 0o600);
+  assert.ok(!existsSync(lock));
+  const live = JSON.stringify({ version: 1, pid: process.pid, token: 'next-holder' });
+  writeFileSync(lock, live, { flag: 'wx' });
+  assert.throws(() => service.update(service.get()), { code: 'SOURCE_SETTINGS_BUSY' });
+  assert.equal(readFileSync(lock, 'utf8'), live);
+});
+
+test('Recovery refuses symlinks and nonprivate SQLite guard files before reclaiming the primary lock', () => {
+  const root = mkdtempSync(join(tmpdir(), 'source-private-guard-')), db = new CoreDatabase(':memory:');
+  try {
+    const path = join(root, 'settings'), service = new SourceSettingsService(path, db), guard = path + '.recover.sqlite';
     const exited = spawnSync(process.execPath, ['-e', '']);
     assert.equal(exited.status, 0);
-    const dead = JSON.stringify({ version: 1, pid: exited.pid, token: 'exited-owner' });
-    writeFileSync(lock, dead, { flag: 'wx' });
-    writeFileSync(guard, 'concurrent-recovery', { flag: 'wx' });
-    assert.throws(() => service.update(initial), { code: 'SOURCE_SETTINGS_BUSY' });
-    assert.equal(readFileSync(lock, 'utf8'), dead);
-    assert.equal(readFileSync(guard, 'utf8'), 'concurrent-recovery');
-    rmSync(guard);
-    assert.equal(service.update(initial).revision, initial.revision + 1);
-    assert.ok(!existsSync(guard) && !existsSync(lock));
-    const live = JSON.stringify({ version: 1, pid: process.pid, token: 'next-holder' });
-    writeFileSync(lock, live, { flag: 'wx' });
+    const dead = JSON.stringify({ version: 1, pid: exited.pid, token: 'dead' });
+    writeFileSync(path + '.lock', dead);
+    const target = join(root, 'other');
+    writeFileSync(target, 'other');
+    symlinkSync(target, guard);
     assert.throws(() => service.update(service.get()), { code: 'SOURCE_SETTINGS_BUSY' });
-    assert.equal(readFileSync(lock, 'utf8'), live);
-  } finally { database.close(); rmSync(root, { recursive: true }); }
+    assert.equal(readFileSync(target, 'utf8'), 'other');
+    rmSync(guard);
+    writeFileSync(guard, '');
+    chmodSync(guard, 0o644);
+    assert.throws(() => service.update(service.get()), { code: 'SOURCE_SETTINGS_BUSY' });
+    assert.equal(readFileSync(path + '.lock', 'utf8'), dead);
+    chmodSync(guard, 0o600);
+    const initial = service.get();
+    assert.equal(service.update(initial).revision, initial.revision + 1);
+  } finally { db.close(); rmSync(root, { recursive: true }); }
 });
 
 test('Racing saves from independent processes reclaim one stale settings lock and advance the revision once', { timeout: 30000 }, async t => {

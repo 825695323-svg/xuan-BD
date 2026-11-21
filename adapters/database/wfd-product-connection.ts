@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { readConnectionRegistry, registeredConnection } from '../../platform/config/connections.js';
 import { ConfigError } from '../../platform/runtime/errors.js';
 import type { ResourceBindings } from '../../platform/resources/bindings.js';
+import type { R1ReadBinding } from '../../contracts/r1-contracts.js';
 import { WfdProductMachineClient } from './wfd-product-machine.js';
 import { canonicalWfdJson, wfdSha256 } from './wfd-transport.js';
 
@@ -35,8 +36,7 @@ export interface ResolvedProductMachineConnection {
   callerId: string;
   trustedActorNamespace: string;
   schemaPath: string;
-  readSchemaSha256: string;
-  queryImplSha256: string;
+  readBinding(): R1ReadBinding;
   client: WfdProductMachineClient;
   profile: ProductMachineConnectionProfile;
 }
@@ -130,9 +130,8 @@ export function resolveProductMachineConnection(resources: ResourceBindings,
   const protocolRoot = absoluteDir(config.protocol_root, 'protocol_root');
   const projectRoot = absoluteDir(config.project_root, 'project_root');
   const schemaPath = resolve(protocolRoot, 'schemas/wfd-structured-ingest.schema.json');
-  const readSchemas = ['wfd-read-product.schema.json', 'wfd-common.schema.json'].map(name =>
-    [name, wfdSha256(readFileSync(absoluteFile(resolve(protocolRoot, 'schemas', name), name)))]);
-  const queryPath = absoluteFile(resolve(projectRoot, 'wfd_sdk/product_query.py'), 'product_query.py');
+  const digestFiles = (root: string, names: string[]) => wfdSha256(canonicalWfdJson(names.map(name =>
+    [name, wfdSha256(readFileSync(absoluteFile(resolve(root, name), name)))])));
   const client = new WfdProductMachineClient({
     pythonPath: profile.python_path,
     entryPath: profile.entry_path,
@@ -147,8 +146,10 @@ export function resolveProductMachineConnection(resources: ResourceBindings,
     callerId: caller.caller_id,
     trustedActorNamespace: caller.trusted_actor_namespace,
     schemaPath,
-    readSchemaSha256: wfdSha256(canonicalWfdJson(readSchemas)),
-    queryImplSha256: wfdSha256(readFileSync(queryPath)),
+    readBinding: () => ({
+      readSchemaSha256: digestFiles(resolve(protocolRoot, 'schemas'), ['wfd-read-product.schema.json', 'wfd-common.schema.json']),
+      queryImplSha256: digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_query.py', 'indexed_tabular_query.py']),
+    }),
     client,
     profile,
   };

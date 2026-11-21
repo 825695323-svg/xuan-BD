@@ -10,7 +10,7 @@ import type { EndpointAdapterRegistry } from '../modules/collection/endpoint-ada
 import type { JsonValue } from './task-contracts.js';
 import type { AlgorithmCatalogView, AlgorithmTaskView } from '../modules/financial/algorithm-types.js';
 import type { TaskRecord } from '../platform/jobs/tasks.js';
-import type { R1CapabilitiesView, R1RequestView, R1ProductRead, R1ProductDiscovery, R1SnapshotStatus } from './r1-contracts.js';
+import type { R1CapabilitiesView, R1ReadBinding, R1RequestView, R1ProductRead, R1ProductDiscovery, R1SnapshotStatus } from './r1-contracts.js';
 import type { ProductionModuleId } from '../modules/collection/production-module-ports.js';
 import type { SourceFieldProfileStore, SemanticProductRegistryStore } from '../modules/collection/source-field-profile.js';
 
@@ -30,6 +30,7 @@ export interface AlgorithmConversationPort {
 export interface R1ConversationPort {
   readonly versionBinding: Record<string, string | null>;
   capabilities(): R1CapabilitiesView;
+  readBinding?(): R1ReadBinding | null;
   /** 只读查询当前已发布快照身份，后续查询必须固定此快照，不接收当前/最新的动态别名。 */
   snapshotStatus?(signal?: AbortSignal): Promise<R1SnapshotStatus>;
   /** 仅宿主实际装配时开放的 WFD 固定快照只读分页，非模型自报来源。 */

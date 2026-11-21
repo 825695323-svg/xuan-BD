@@ -84,6 +84,8 @@ export interface R1PrepareInput {
     definitionMode?: 'reuse'; definitionRef?: Record<string, unknown>;
     revisions?: Record<string, { previous: { product_id: string; snapshot_id: string; logical_key: string; revision_id: string }; reason: string }> };
 }
+export interface R1ReadBinding { readSchemaSha256: string; queryImplSha256: string }
+
 interface R1ConnectionIdentityBase {
   connectionId: string; protocol: 'wfd.structured-ingest/1.0'; profile: 'data_only';
   runtimeIdentity: string;

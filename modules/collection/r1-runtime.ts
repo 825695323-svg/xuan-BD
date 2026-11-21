@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import type { R1ConnectionIdentity } from '../../contracts/r1-contracts.js';
+import type { R1ConnectionIdentity, R1ReadBinding } from '../../contracts/r1-contracts.js';
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
 import type { ResourceBindings } from '../../platform/resources/bindings.js';
@@ -32,7 +32,8 @@ export interface R1Runtime {
   service: R1HandoffService;
   client: WfdStructuredIngestClient;
   /** Re-resolve the registered identity and hash its actual files before every dispatch/recovery. */
-  currentIdentity(): R1ConnectionIdentity & Pick<ResolvedProductMachineConnection, 'readSchemaSha256' | 'queryImplSha256'>;
+  currentIdentity(): R1ConnectionIdentity;
+  currentReadBinding(): R1ReadBinding;
 }
 export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
   const registeredSelection = () => options.resources.document.resources.connections_registry
@@ -47,7 +48,7 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
     requireG5Admission: options.requireG5Admission ?? connection.profile.mode === 'production' });
   const client = new WfdStructuredIngestClient(connection.client, connection.schemaPath);
   const initialConfig = JSON.parse(readFileSync(connection.configPath, 'utf8')) as Record<string, unknown>;
-  const currentIdentity: R1Runtime['currentIdentity'] = () => {
+  const currentConnection = () => {
     if ((options.connectionId ?? registeredSelection()) !== selectedConnectionId) {
       throw new TaskError('R1_CONNECTION_RELOAD_REQUIRED', '手动投喂的受控连接选择已变化；须核对后重新装配，原请求不改绑。');
     }
@@ -59,6 +60,10 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
       throw new TaskError('R1_CONNECTION_RELOAD_REQUIRED', '连接登记或内部进程入口已变化；现有客户端不能展示新连接却调用旧入口，须核对后重新装配。');
     }
     if (config.profile !== 'data_only') throw new TaskError('R1_PROFILE_REQUIRED', '新交接只允许已登记的 data_only 连接；旧 profile 不能被重放。');
+    return { actual, raw };
+  };
+  const currentIdentity: R1Runtime['currentIdentity'] = () => {
+    const { actual, raw } = currentConnection();
     const usage = actual.profile.mode === 'production'
       ? { mode: 'production' as const, purpose: 'production' as const }
       : { mode: 'user_test' as const, purpose: 'user_test' as const };
@@ -66,10 +71,9 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
       ...usage, runtimeIdentity: actual.profile.harness_binding.root_id,
       store: actual.store, runtime: actual.runtime, callerId: actual.callerId, namespace: actual.trustedActorNamespace,
       configSha256: wfdSha256(raw), schemaSha256: wfdSha256(readFileSync(actual.schemaPath)),
-      readSchemaSha256: actual.readSchemaSha256, queryImplSha256: actual.queryImplSha256,
       entrySha256: wfdSha256(readFileSync(actual.profile.entry_path)),
       pythonPath: actual.profile.python_path, entryPath: actual.profile.entry_path };
   };
   if (connection.profile.mode === 'production') currentIdentity();
-  return { connection, service, client, currentIdentity };
+  return { connection, service, client, currentIdentity, currentReadBinding: () => currentConnection().actual.readBinding() };
 }

@@ -1036,6 +1036,7 @@ function validateRawOutput(data: AlgorithmData, raw: JsonValue, request: Algorit
   });
   const diagnostics = json(result.diagnostics) as JsonValue[];
   if (methodId === 'macd') {
+    if (diagnostics.length) throw new TaskError('ALGORITHM_OUTPUT_INVALID', 'MACD 数值结果含有多余诊断。');
     validateMacdOutputState(result, rows);
     return { rows, diagnostics, validInterval: { start: rows[0]!.timestamp, end: rows.at(-1)!.timestamp },
       invalidIntervals: [], validRows: rows.length, leadingInvalidRows: 0, hasWarmup: false };
@@ -1069,7 +1070,7 @@ export function indexAlgorithmDiagnostics(diagnostics: JsonValue[], errorCode: '
   if (!Array.isArray(diagnostics)) throw new TaskError(errorCode, '缺少逐字段计算诊断数组。');
   for (const item of diagnostics) {
     const { timestamp, output, reason } = isWfdRecord(item) ? item : {};
-    if (typeof timestamp !== 'string' || typeof output !== 'string'
+    if (!isWfdRecord(item) || Object.keys(item).length !== 3 || typeof timestamp !== 'string' || typeof output !== 'string'
       || typeof reason !== 'string' || !Object.hasOwn(ALGORITHM_NULL_STATES, reason)) {
       throw new TaskError(errorCode, '计算诊断的日期、输出字段或原因无效。');
     }
@@ -1327,6 +1328,8 @@ export function captureCodeBinding(): { version: string; files: Record<string, s
   const selected: Array<[string, string]> = [
     [`algorithm-service${extension}`, join(directory, `algorithm-service${extension}`)],
     [`algorithm-types${extension}`, join(directory, `algorithm-types${extension}`)],
+    [`contracts/financial-value${extension}`, fileURLToPath(new URL(`../../contracts/financial-value${extension}`, import.meta.url))],
+    [`historical-exclusions${extension}`, join(directory, `historical-exclusions${extension}`)],
     [`product-machine-snapshot${extension}`, join(directory, `product-machine-snapshot${extension}`)],
     [`purpose-eligibility${extension}`, fileURLToPath(new URL(`../collection/purpose-eligibility${extension}`, import.meta.url))],
     [`plugins/financial/local-compute/assets${extension}`, fileURLToPath(new URL(`../../plugins/financial/local-compute/assets${extension}`, import.meta.url))],

@@ -86,7 +86,7 @@ describe('复用因子的真实封闭 Python 资产', { skip: configuredPython ?
     ] as const) {
       const input = syntheticInput(prices), raw = execute(methodId, input), field = ALGORITHM_METHODS[methodId].outputFields[0];
       assert.equal(raw.ok, true, raw.error ?? 'Python 计算未成功');
-      const result = { methodId, parameters: {}, metadata: input.metadata, rows: raw.rows.map((row, index) => ({
+      const result = { methodId, parameters: {}, diagnostics: raw.diagnostics, metadata: input.metadata, rows: raw.rows.map((row, index) => ({
         ...row, timestamp: input.rows[index].timestamp, available_at: input.rows[index].available_at,
       })) };
       const actual = raw.rows.at(-1)![field];
@@ -116,6 +116,10 @@ describe('复用因子的真实封闭 Python 资产', { skip: configuredPython ?
     }
   });
 
+  test('斜率的分子可溢出时仍保留有限的回归斜率', () => {
+    const prices = [...Array<number>(19).fill(1), 1e308];
+    near(column('alpha191_116', prices)[19], 1e308 / 70);
+  });
   test('不足预热只产生空值和诊断，不补零或补历史', () => {
     for (const id of factorIds) {
       const result = execute(id, syntheticInput([10, 12, 11], id === 'alpha191_168' ? [1, 2, 3] : undefined));
@@ -324,6 +328,22 @@ describe('合成固定快照经原任务、派生核验与 WFD 协议', { skip: 
     validateWfdDocuments(examples);
   });
 
+  test('大数镜像端点不掩盖 1.01 的斜率，原任务和派生文档均保留负值', async () => {
+    const id = 'slope-symmetric-extremes', prices = [1e15, 1.01, ...Array<number>(17).fill(1), 1e15];
+    const done = await submit(id, 'alpha191_116', syntheticInput(prices));
+    assert.equal(done.status, 'succeeded', JSON.stringify(done.error));
+    const result = algorithms.view(done.id).result!, input = algorithms.verifiedInput(done.id);
+    const expected = -17 / 133000, actual = result.rows[19].ALPHA191_116;
+    assert.ok(typeof actual === 'number' && Math.abs(actual - expected) < 2e-19);
+    verifyAlgorithmNumbers(result, input);
+    const checked = checkDerivedForWfd(result, binding, id, input);
+    const rows = checked.structured.payload.rows as { values: WfdRecord }[];
+    assert.deepEqual(rows[19].values.ALPHA191_116, { data_type: 'decimal', value_state: 'valid_value', value: '-0.000127819548872181' });
+    result.rows[19].ALPHA191_116 = 0;
+    assert.throws(() => verifyAlgorithmNumbers(result, input), { code: 'DERIVED_NUMERIC_MISMATCH' });
+    assert.throws(() => checkDerivedForWfd(result, binding, id, input), { code: 'DERIVED_NUMERIC_MISMATCH' });
+  });
+
   test('零分母、非正对数和全平 RSI 的真实诊断都生成 not_applicable', async () => {
     for (const [id, values, params, field, index, reason] of [
       ['roc', [0, 10], { period: 1 }, 'ROC', 1, 'undefined_zero_denominator'],
@@ -336,6 +356,8 @@ describe('合成固定快照经原任务、派生核验与 WFD 协议', { skip: 
       assert.deepEqual(result.diagnostics.at(-1), { timestamp: input.rows[index].timestamp, output: field, reason });
       const rows = checkDerivedForWfd(result, binding, id, input).structured.payload.rows as { values: WfdRecord }[];
       assert.deepEqual(rows[index].values[field], { data_type: 'decimal', value_state: 'not_applicable', value: null });
+      result.diagnostics[result.diagnostics.length - 1] = { timestamp: input.rows[index].timestamp, output: field, reason: 'insufficient_warmup' };
+      assert.throws(() => checkDerivedForWfd(result, binding, id, input), { code: 'DERIVED_NULL_REASON_MISSING' });
     }
   });
 
