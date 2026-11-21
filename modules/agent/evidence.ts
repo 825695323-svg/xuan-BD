@@ -41,8 +41,10 @@ export class AgentEvidenceService {
   }
   decodeCursorOffset(scope: EvidenceScope, reference: { evidenceId: string; sha256: string }, cursor: string): number | null {
     if (typeof cursor !== 'string' || cursor.length > 4096) return null;
-    const [encoded, signature, extra] = cursor.split('.');
-    if (!encoded || !signature || extra) return null;
+    const parts = cursor.split('.');
+    if (parts.length !== 2 || !parts[0] || !parts[1]
+      || !/^[A-Za-z0-9_-]+$/u.test(parts[0]) || !/^[A-Za-z0-9_-]+$/u.test(parts[1])) return null;
+    const [encoded, signature] = parts;
     const expected = createHmac('sha256', this.secret).update(encoded).digest(), provided = Buffer.from(signature, 'base64url');
     if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) return null;
     let parsed: unknown;
@@ -50,6 +52,11 @@ export class AgentEvidenceService {
     if (!Array.isArray(parsed) || parsed.length !== 4 || parsed[0] !== reference.evidenceId || parsed[1] !== reference.sha256
       || parsed[2] !== scopeText(scope) || typeof parsed[3] !== 'number' || !Number.isSafeInteger(parsed[3]) || parsed[3] < 0) return null;
     return parsed[3];
+  }
+  expectedPage(scope: EvidenceScope, reference: { evidenceId: string; sha256: string }, start: number, limit = 8000): EvidencePage | null {
+    const retained = this.inspectRetained(scope, reference);
+    if (!retained) return null;
+    return this.slicePage(Buffer.from(retained.text, 'utf8'), reference, scope, start, limit);
   }
   read(scope: EvidenceScope, request: { evidenceId: string; sha256: string; cursor?: string; offset?: number; maxBytes?: number },
     assertAccess: (source: EvidenceSource) => void): EvidencePage {
@@ -64,23 +71,31 @@ export class AgentEvidenceService {
       start = decoded;
     }
     const limit = request.maxBytes ?? 8000;
-    if (!Number.isSafeInteger(start) || start < 0 || start > row.total_bytes || !Number.isSafeInteger(limit) || limit < 4 || limit > 8000) throw invalid();
     const body = Buffer.from(row.body);
-    if (body.length !== row.total_bytes || createHash('sha256').update(body).digest('hex') !== row.sha256
-      || start < body.length && (body[start]! & 0xc0) === 0x80) throw invalid();
+    if (body.length !== row.total_bytes || createHash('sha256').update(body).digest('hex') !== row.sha256) throw invalid();
+    const result = this.slicePage(body, { evidenceId: row.id, sha256: row.sha256 }, scope, start, limit);
+    if (!result) throw invalid();
+    assertAccess(source);
+    return result;
+  }
+  private slicePage(body: Buffer, reference: { evidenceId: string; sha256: string }, scope: EvidenceScope,
+    start: number, limit: number): EvidencePage | null {
+    if (!Number.isSafeInteger(start) || start < 0 || start > body.length
+      || !Number.isSafeInteger(limit) || limit < 4 || limit > 8000
+      || start < body.length && (body[start]! & 0xc0) === 0x80) return null;
     let end = Math.min(body.length, start + limit);
     const page = (): EvidencePage => {
       while (end < body.length && (body[end]! & 0xc0) === 0x80) end -= 1;
-      const cursor = this.cursorFor(scope, { evidenceId: row.id, sha256: row.sha256 }, end);
-      return { evidenceId: row.id, sha256: row.sha256, totalBytes: body.length, format: 'utf8', text: body.subarray(start, end).toString('utf8'),
+      const cursor = this.cursorFor(scope, reference, end);
+      return { evidenceId: reference.evidenceId, sha256: reference.sha256, totalBytes: body.length, format: 'utf8',
+        text: body.subarray(start, end).toString('utf8'),
         startByte: start, endByte: end, nextCursor: end < body.length ? cursor : null, done: end === body.length };
     };
     let result = page();
     while (Buffer.byteLength(JSON.stringify(result), 'utf8') > MAX_EVIDENCE_PAGE_BYTES && end > start) {
       end = start + Math.floor((end - start) * 0.8); result = page();
     }
-    if (!result.done && end <= start) throw invalid();
-    assertAccess(source);
+    if (!result.done && end <= start) return null;
     return result;
   }
   inspectRetained(scope: EvidenceScope, reference: { evidenceId: string; sha256: string }): { source: EvidenceSource; text: string } | null {

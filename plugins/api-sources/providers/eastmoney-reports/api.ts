@@ -194,6 +194,7 @@ function detailMetadata(literal: string): Record<string, JsonValue> | null {
 const relatedTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])：:—\-·•])/u;
 const relatedWrapperTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])：:]*$/u;
 const inlineRelatedHeading = /(?:^|[\s。！？；.!?\n])([【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])：:—\-·•]))/gu;
+const mainAttachmentHeading = /^[【[(\s]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)(?:$|[\s】\])：:—\-·•（(])/u;
 const sectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt,[class*="title" i]';
 const relatedSelector = 'aside,nav,footer,[role="navigation"],[aria-label*="相关"],[aria-label*="推荐"],[aria-label*="延伸阅读"],'
   + '[class*="related" i],[id*="related" i],[class*="recommend" i],[id*="recommend" i],.rel-list,.xgyd,.xgyb';
@@ -227,9 +228,9 @@ function isPureInlineTitleBlock(element: Element): boolean {
 
 function leadingHeading(element: Element): Element | null {
   let current: Element | null = element;
-  for (let depth = 0; current && depth < 4; depth += 1) {
+  for (let depth = 0; current && depth < 32; depth += 1) {
     if (current.matches(sectionHeadings)) return current;
-    if (!current.matches('div,section,article,header')) return null;
+    if (!current.matches('div,section,article,header,main')) return null;
     let first: Element | null = null;
     for (const child of current.childNodes) {
       if (child.nodeType === 3) {
@@ -246,18 +247,26 @@ function leadingHeading(element: Element): Element | null {
   return null;
 }
 
-function hasMeaningfulAfter(node: ChildNode, parent: Element, trailingTextInNode: string): boolean {
-  if (trailingTextInNode.trim()) return true;
-  for (let next = node.nextSibling; next; next = next.nextSibling) {
-    if (next.nodeType === 3 && (next.textContent ?? '').trim()) return true;
+function isProseAfterInlineMatch(targetNode: ChildNode, trailingInTarget: string): boolean {
+  if (trailingInTarget.replace(/[\s】\])：:—\-·•]/gu, '').length > 0) return true;
+  for (let next = targetNode.nextSibling; next; next = next.nextSibling) {
+    if (next.nodeType === 3) {
+      if ((next.textContent ?? '').replace(/[\s】\])：:—\-·•]/gu, '').length > 0) return true;
+      continue;
+    }
     if (next.nodeType === 1) {
       const el = next as Element;
       if (['BR', 'HR', 'WBR'].includes(el.tagName)) continue;
-      if (el.matches(inlineTextElements) && !(el.textContent ?? '').trim() && !el.querySelector('a,iframe')) continue;
-      return true;
+      if (el.matches('a,iframe,ul,ol,dl,table,div,p,section,article')) return false;
+      if (el.matches(inlineTextElements)) {
+        if (el.querySelector('a,iframe')) return false;
+        if ((el.textContent ?? '').replace(/[\s】\])：:—\-·•]/gu, '').length > 0) return true;
+        continue;
+      }
+      return false;
     }
   }
-  return !parent.matches('p,div,header,section,article');
+  return false;
 }
 
 /** 从阅读小节标题到同级或更高标题之间的内容，限定在同一正文容器内。 */
@@ -267,16 +276,19 @@ function relatedSections(document: Document) {
     for (let node: Element | null = element; node; node = node.parentElement) if (excluded.has(node)) return true;
     return false;
   };
-  function markFollowing(title: ChildNode, level: number) {
+  function markFollowing(title: ChildNode, level: number): boolean {
     for (let node = title.nextSibling; node; node = node.nextSibling) {
       if (node.nodeType !== 1) continue;
       const next = node as Element;
       const nextHeading = leadingHeading(next);
-      if (nextHeading && headingLevel(nextHeading) <= level && !relatedTitle.test(nextHeading.textContent?.trim() ?? '')) break;
+      const nextHeadingText = nextHeading?.textContent?.trim() ?? '';
+      if (nextHeading && !relatedTitle.test(nextHeadingText)
+        && (headingLevel(nextHeading) <= level || mainAttachmentHeading.test(nextHeadingText))) return true;
       excluded.add(next);
     }
+    return false;
   }
-  for (const element of document.querySelectorAll(sectionHeadings + ',p,strong,b,em,i,small,u,mark,span,div,header,section,article')) {
+  for (const element of document.querySelectorAll(sectionHeadings + ',p,strong,b,em,i,small,u,mark,span,div,header,section,article,main,li,dd,blockquote,td')) {
     if (isExcluded(element)) continue;
     if ((element.matches(sectionHeadings) || isPureInlineTitleBlock(element)) && relatedTitle.test(element.textContent?.trim() ?? '')) {
       let heading = element;
@@ -293,14 +305,17 @@ function relatedSections(document: Document) {
       if (!run.length) return;
       const fullText = run.map(piece => piece.text).join('');
       inlineRelatedHeading.lastIndex = 0;
-      const match = inlineRelatedHeading.exec(fullText);
-      if (!match) return;
-      const matchEnd = match.index + match[0].length;
-      const targetPiece = run.find(piece => matchEnd > piece.start && matchEnd <= piece.end) ?? run[run.length - 1]!;
-      markFollowing(targetPiece.node, 2);
-      const trailingInTarget = targetPiece.node.nodeType === 3 ? targetPiece.text.slice(matchEnd - targetPiece.start) : '';
-      if (!hasMeaningfulAfter(targetPiece.node, element, trailingInTarget)) {
-        markFollowing(element, 2);
+      let match: RegExpExecArray | null;
+      while ((match = inlineRelatedHeading.exec(fullText)) !== null) {
+        const matchEnd = match.index + match[0].length;
+        const targetPiece = run.find(piece => matchEnd > piece.start && matchEnd <= piece.end) ?? run[run.length - 1]!;
+        const trailingInTarget = fullText.slice(matchEnd, targetPiece.end);
+        if (isProseAfterInlineMatch(targetPiece.node, trailingInTarget)) continue;
+        const stoppedInside = markFollowing(targetPiece.node, 2);
+        if (!stoppedInside && !element.matches('#zwinfo,article,section,main')) {
+          markFollowing(element, 2);
+        }
+        break;
       }
     };
     let run: InlinePiece[] = [], offset = 0;

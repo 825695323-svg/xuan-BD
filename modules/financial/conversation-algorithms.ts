@@ -59,7 +59,9 @@ export function isValidEligibilityCutoff(value: unknown): value is string {
     const offH = Number(match[8]), offM = Number(match[9]);
     if (offH > 23 || offM > 59) return false;
   }
-  const calendar = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  const calendar = new Date(0);
+  calendar.setUTCFullYear(year, month - 1, day);
+  calendar.setUTCHours(hour, minute, second, 0);
   if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day
     || calendar.getUTCHours() !== hour || calendar.getUTCMinutes() !== minute || calendar.getUTCSeconds() !== second) return false;
   return Number.isFinite(Date.parse(value));

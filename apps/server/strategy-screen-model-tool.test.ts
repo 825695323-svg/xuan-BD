@@ -299,7 +299,8 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     const bridge = services.modelTools as unknown as {
       assertHistoricalAlgorithmPreview(c: unknown, t: unknown, s: unknown, r?: unknown): void;
       evidence: { retain(s: unknown, src: unknown, text: string): { evidenceId: string; sha256: string; totalBytes: number; format: 'utf8' };
-        read(s: unknown, req: { evidenceId: string; sha256: string; offset?: number; maxBytes?: number }, assertAccess: () => void): Record<string, unknown> };
+        read(s: unknown, req: { evidenceId: string; sha256: string; offset?: number; maxBytes?: number }, assertAccess: () => void): Record<string, unknown>;
+        decodeCursorOffset(s: unknown, ref: { evidenceId: string; sha256: string }, cursor: string): number | null };
     };
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.calculate', result: { data: { modelPreview: leaked } } },
       scope), { code: 'MODEL_SHARE_REVOKED' });
@@ -326,21 +327,28 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     const safeText = JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview });
     const safeRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, safeText);
     const safeStatusTask = { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: safeCalcPreview } } };
+    const defaultSlice = bridge.evidence.read(scope, { ...safeRef }, () => {});
     const validSlice = bridge.evidence.read(scope, { ...safeRef, maxBytes: 10 }, () => {});
     const pageArgs = JSON.stringify({ ...safeRef, maxBytes: 10 });
     const pagedCall = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, complete: false,
-      note: '完整结果按固定摘要保管；使用core_evidence_read续取nextCursor，done=true表示已读到末尾。', evidence: validSlice }) };
+      note: '完整结果按固定摘要保管；使用core_evidence_read续取nextCursor，done=true表示已读到末尾。', evidence: defaultSlice }) };
     assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview(pagedCall, safeStatusTask, scope, safeRef));
     const pageWrapper = { ...callRow, tool_name: 'core_evidence_read', args_json: pageArgs, preview_json: JSON.stringify(validSlice) };
     assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview(pageWrapper, safeStatusTask, scope));
+    assert.equal(bridge.evidence.decodeCursorOffset(scope, safeRef, `${String(validSlice.nextCursor)}.`), null);
     for (const badSlice of [
       { ...validSlice, done: true, nextCursor: null },
       { ...validSlice, format: 'raw' },
       { ...validSlice, nextCursor: 'tampered.sig' },
+      { ...validSlice, nextCursor: `${String(validSlice.nextCursor)}.` },
     ]) {
       assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, tool_name: 'core_evidence_read',
         args_json: pageArgs, preview_json: JSON.stringify(badSlice) }, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
     }
+    const shortSlice = bridge.evidence.read(scope, { ...safeRef, offset: 0, maxBytes: 64 }, () => {});
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, tool_name: 'core_evidence_read',
+      args_json: JSON.stringify({ ...safeRef, offset: 0, maxBytes: 256 }), preview_json: JSON.stringify(shortSlice) }, safeStatusTask, scope),
+      { code: 'MODEL_SHARE_REVOKED' });
     const secondRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, safeText.replace('safe-calc', 'safe-calc-b'));
     const secondSlice = bridge.evidence.read(scope, { ...secondRef, maxBytes: 10 }, () => {});
     const eofSlice = bridge.evidence.read(scope, { ...safeRef, offset: safeRef.totalBytes }, () => {});
@@ -375,14 +383,16 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
           blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64),
           action: '该固定快照在所请求的历史视角/截止下未通过用途资格；完整核对明细保留在原任务审计记录。' }) } } } } }, scope), { code: 'MODEL_SHARE_REVOKED' });
     }
-    const leapPreview = { error: {
-      code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: JSON.stringify({ ruleVersion: 'bd.purpose-eligibility/2', status: 'ineligible',
-        purpose: 'historical_compute', history: { mode: 'market_known_at', cutoff: '2024-02-29T00:00:00Z', perspective: 'market_known_at', historical: true },
-        blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64),
-        action: '该固定快照在所请求的历史视角/截止下未通过用途资格；完整核对明细保留在原任务审计记录。' }) } };
-    assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, action: 'algorithms.status',
-      preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: leapPreview }) },
-      { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: leapPreview } } }, scope));
+    for (const validCutoff of ['2024-02-29T00:00:00Z', '0001-01-01T00:00:00Z', '0096-02-29T00:00:00Z']) {
+      const validEarlyPreview = { error: {
+        code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: JSON.stringify({ ruleVersion: 'bd.purpose-eligibility/2', status: 'ineligible',
+          purpose: 'historical_compute', history: { mode: 'market_known_at', cutoff: validCutoff, perspective: 'market_known_at', historical: true },
+          blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64),
+          action: '该固定快照在所请求的历史视角/截止下未通过用途资格；完整核对明细保留在原任务审计记录。' }) } };
+      assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, action: 'algorithms.status',
+        preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: validEarlyPreview }) },
+        { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: validEarlyPreview } } }, scope));
+    }
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview(statusCheckCall, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
       code: 'ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE', message: 'record_id=sample-42 r_secret' } } } } }, scope), { code: 'MODEL_SHARE_REVOKED' });
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview(statusCheckCall, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
@@ -591,21 +601,30 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
       const newP2Body = JSON.parse((projectedNewP2.content[0] as { text: string }).text) as Record<string, any>;
       assert.equal(newP2Body.evidenceId, firstBody.evidence.evidenceId);
       assert.ok(newP2Body.startByte > 0 && newP2Body.nextCursor);
-      const callNewRow = services.database.connection.prepare('SELECT id,preview_json,ticket_json,task_id FROM model_tool_calls WHERE tool_call_id=?')
-        .get('new-ev-p2') as { id: string; preview_json: string; ticket_json: string; task_id: string };
+      const callNewRow = services.database.connection.prepare('SELECT id,preview_json,ticket_json,task_id,parent_run_id,parent_generation FROM model_tool_calls WHERE tool_call_id=?')
+        .get('new-ev-p2') as { id: string; preview_json: string; ticket_json: string; task_id: string; parent_run_id: string; parent_generation: number };
       const origTicket = JSON.parse(callNewRow.ticket_json) as Record<string, any>;
+      const newPagedScope = { conversationId: newPagedInput.conversationId, branchId: newPagedInput.branchId, subject: 'personal', modelDigest: callRow.model_digest };
+      const newPageArgs = services.database.connection.prepare('SELECT args_json FROM model_tool_calls WHERE id=?').get(callNewRow.id) as { args_json: string };
+      const newReq = JSON.parse(newPageArgs.args_json) as { evidenceId: string; sha256: string; cursor: string };
+      const expectedOffset = bridge.evidence.decodeCursorOffset(newPagedScope, newReq, newReq.cursor)!;
+      const newShortSlice = bridge.evidence.read(newPagedScope, { evidenceId: newReq.evidenceId, sha256: newReq.sha256, offset: expectedOffset, maxBytes: 64 }, () => {});
+      const matchedShare = (payload: Record<string, unknown>) => ({
+        mashiroShare: { callId: callNewRow.id, parentRunId: callNewRow.parent_run_id, generation: Number(callNewRow.parent_generation), digest: digestOperationArgs(payload as any) },
+      });
       for (const badNewPage of [
         { ...newP2Body, done: true, nextCursor: null },
         { ...newP2Body, format: 'raw' },
         { ...newP2Body, nextCursor: 'tampered.sig' },
         { ...newP2Body, startByte: 0, text: newP2Body.text },
+        newShortSlice,
         { ...newP2Body, evidenceId: secondRef.evidenceId, sha256: secondRef.sha256, startByte: secondSlice.startByte, endByte: secondSlice.endByte, totalBytes: secondSlice.totalBytes, text: secondSlice.text, nextCursor: secondSlice.nextCursor },
       ]) {
         services.database.connection.prepare('UPDATE model_tool_calls SET preview_json=?,ticket_json=? WHERE id=?')
-          .run(JSON.stringify(badNewPage), JSON.stringify({ ...origTicket, previewDigest: digestOperationArgs(badNewPage) }), callNewRow.id);
+          .run(JSON.stringify(badNewPage), JSON.stringify({ ...origTicket, previewDigest: digestOperationArgs(badNewPage as any) }), callNewRow.id);
         const withheldNew = services.modelTools.projectToolResult({
           role: 'toolResult', toolCallId: 'new-ev-p2', toolName: 'core_evidence_read', isError: false, timestamp: Date.now(),
-          content: newPage2.content as any, details: newPage2.details as any,
+          content: newPage2.content as any, details: matchedShare(badNewPage),
         }, newPagedInput, undefined, model);
         assert.equal((withheldNew.details as Record<string, unknown>).mashiroShareWithheld, true);
       }

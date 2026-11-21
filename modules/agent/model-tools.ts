@@ -3,7 +3,7 @@ import { SOURCE_ACTIONS } from '../../plugins/api-sources/runtime.js';
 import { CONVERSION_ACTION_IDS } from '../../contracts/conversion.js';
 import { randomUUID } from 'node:crypto';
 import { ImageOcrError, readOcrImage } from './ocr.js';
-import { AgentEvidenceService, MAX_EVIDENCE_PAGE_BYTES, evidenceDigest, type EvidenceScope, type EvidenceSource } from './evidence.js';
+import { AgentEvidenceService, evidenceDigest, type EvidenceScope, type EvidenceSource } from './evidence.js';
 import { contextEvidenceText, taskCompletionSource } from './trusted-context.js';
 import { basename, extname, relative, resolve, sep } from 'node:path';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -1733,26 +1733,12 @@ export class CoreModelTools {
       }
       if (!isSafeHistoricalAlgorithmPreview(preview)) throw publicError('MODEL_SHARE_REVOKED');
     };
-    const assertValidPageSlice = (retainedText: string, reference: { evidenceId: string; sha256: string }, ev: unknown,
-      expectedStartByte?: number, expectedMaxBytes = 8000) => {
-      if (!isObject(ev) || Object.keys(ev).some(k => !EVIDENCE_PAGE_KEYS.has(k))
-        || ev.evidenceId !== reference.evidenceId || ev.sha256 !== reference.sha256
-        || ev.format !== 'utf8' || typeof ev.text !== 'string'
-        || typeof ev.startByte !== 'number' || !Number.isSafeInteger(ev.startByte) || ev.startByte < 0
-        || typeof ev.endByte !== 'number' || !Number.isSafeInteger(ev.endByte) || ev.endByte < ev.startByte)
+    const assertValidPageSlice = (reference: { evidenceId: string; sha256: string }, ev: unknown,
+      expectedStartByte: number, expectedMaxBytes = 8000) => {
+      if (!isObject(ev) || Object.keys(ev).some(k => !EVIDENCE_PAGE_KEYS.has(k))) throw publicError('MODEL_SHARE_REVOKED');
+      const expected = this.evidence.expectedPage(scope, reference, expectedStartByte, expectedMaxBytes);
+      if (!expected || digestOperationArgs(ev as JsonValue) !== digestOperationArgs(expected as unknown as JsonValue))
         throw publicError('MODEL_SHARE_REVOKED');
-      if (expectedStartByte !== undefined && ev.startByte !== expectedStartByte) throw publicError('MODEL_SHARE_REVOKED');
-      if (ev.endByte - ev.startByte > expectedMaxBytes || Buffer.byteLength(JSON.stringify(ev), 'utf8') > MAX_EVIDENCE_PAGE_BYTES)
-        throw publicError('MODEL_SHARE_REVOKED');
-      const bytes = Buffer.from(retainedText, 'utf8');
-      if (ev.endByte > bytes.length || ev.totalBytes !== bytes.length) throw publicError('MODEL_SHARE_REVOKED');
-      if (typeof ev.done !== 'boolean' || ev.done !== (ev.endByte === bytes.length)) throw publicError('MODEL_SHARE_REVOKED');
-      if (ev.done) {
-        if (ev.nextCursor !== null) throw publicError('MODEL_SHARE_REVOKED');
-      } else if (ev.endByte <= ev.startByte || typeof ev.nextCursor !== 'string' || ev.nextCursor !== this.evidence.cursorFor(scope, reference, ev.endByte)) {
-        throw publicError('MODEL_SHARE_REVOKED');
-      }
-      if (bytes.subarray(ev.startByte, ev.endByte).toString('utf8') !== ev.text) throw publicError('MODEL_SHARE_REVOKED');
     };
     const assertSafeEnvelope = (obj: Record<string, unknown>, originCall: CallRow, originTask: TaskRecord, allowPagingWrapper: boolean) => {
       const allowedKeys = allowPagingWrapper ? ALGORITHM_ENVELOPE_KEYS : RETAINED_ALGORITHM_ENVELOPE_KEYS;
@@ -1777,14 +1763,14 @@ export class CoreModelTools {
       }
     };
     const inspectEvidencePayload = (reference: { evidenceId: string; sha256: string },
-      expectedOriginCallId?: string, pageCheck?: { value: unknown; expectedStartByte?: number; expectedMaxBytes?: number }) => {
+      expectedOriginCallId?: string, pageCheck?: { value: unknown; expectedStartByte: number; expectedMaxBytes?: number }) => {
       const retained = this.evidence.inspectRetained(scope, reference);
       if (!retained) throw publicError('MODEL_SHARE_REVOKED');
       if (expectedOriginCallId !== undefined && retained.source.callId !== expectedOriginCallId) throw publicError('MODEL_SHARE_REVOKED');
       const originCall = expectedOriginCallId === call.id ? call : this.getCall(retained.source.callId);
       if (!originCall.task_id) throw publicError('MODEL_SHARE_REVOKED');
       const originTask = originCall.task_id === task.id ? task : this.options.getTasks().get(originCall.task_id);
-      if (pageCheck) assertValidPageSlice(retained.text, reference, pageCheck.value, pageCheck.expectedStartByte, pageCheck.expectedMaxBytes);
+      if (pageCheck) assertValidPageSlice(reference, pageCheck.value, pageCheck.expectedStartByte, pageCheck.expectedMaxBytes);
       if (!isAlgorithmAction(originTask.action)) return;
       let retainedParsed: unknown;
       try { retainedParsed = JSON.parse(retained.text); } catch { throw publicError('MODEL_SHARE_REVOKED'); }
@@ -1813,11 +1799,11 @@ export class CoreModelTools {
       if (typeof call.preview_json === 'string') {
         let parsed: unknown;
         try { parsed = JSON.parse(call.preview_json); } catch { throw publicError('MODEL_SHARE_REVOKED'); }
-        assertValidPageSlice(retained.text, reqRef, parsed, expectedStart, maxBytes);
+        assertValidPageSlice(reqRef, parsed, expectedStart, maxBytes);
       }
       if (task.action === EVIDENCE_ACTION) {
         const resultPage = isObject(task.result?.data) ? task.result.data.page : undefined;
-        assertValidPageSlice(retained.text, reqRef, resultPage, expectedStart, maxBytes);
+        assertValidPageSlice(reqRef, resultPage, expectedStart, maxBytes);
       }
       if (!isAlgorithmAction(originTask.action)) return;
       const originData = originTask.result?.data, originPreview = isObject(originData) ? originData.modelPreview : null;
