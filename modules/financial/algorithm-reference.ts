@@ -8,8 +8,10 @@ const same = (actual: unknown, expected: number | null) => expected === null ? a
   : typeof actual === 'number' && Number.isFinite(actual) && Number.isFinite(expected)
     && Math.abs(actual - expected) <= 1e-10 * Math.max(1, Math.abs(expected));
 
+type NumericResult = Pick<AlgorithmComputedResult, 'metadata' | 'methodId' | 'parameters' | 'rows'>;
+
 /** 从原任务冻结的行重算，与 Python 实现和原输出声明独立。 */
-export function verifyAlgorithmNumbers(result: AlgorithmComputedResult, input: AlgorithmData): void {
+export function verifyAlgorithmNumbers(result: NumericResult, input: AlgorithmData): void {
   const rows = result.rows, source = input.rows;
   if (source.length !== rows.length || !source.length || input.metadata.series_id !== result.metadata.series_id
     || canonicalWfdJson(input.metadata) !== canonicalWfdJson(result.metadata)) {
@@ -39,7 +41,7 @@ export function verifyAlgorithmNumbers(result: AlgorithmComputedResult, input: A
   }
 }
 
-function verifyMacdNumbers(result: AlgorithmComputedResult, close: number[]): void {
+function verifyMacdNumbers(result: NumericResult, close: number[]): void {
   const p = isWfdRecord(result.parameters) ? result.parameters : {};
   if (p.short_period !== 12 || p.long_period !== 26 || p.signal_period !== 9 || p.init !== 'first_valid')
     mismatch('MACD 参数不是固定 12/26/9 首值初始化。');
@@ -140,17 +142,23 @@ function referenceColumns(request: IndicatorRequest, close: number[], source: Al
     case 'alpha191_031':
       return { ALPHA191_031: close.map((value, index) => {
         if (index < 11) return null;
-        const center = nonnegativeMean(close.slice(index - 11, index + 1));
-        return center === 0 ? null : 100 * ((value - center) / center);
+        const window = close.slice(index - 11, index + 1), scale = Math.max(...window);
+        if (scale === 0) return null;
+        const scaled = window.map(price => price / scale), last = value / scale;
+        // mean(last - price) = last - mean(price), evaluated entirely in the scaled window.
+        return 100 * (mean(scaled.map(price => last - price)) / mean(scaled));
       }) };
     case 'alpha191_116':
       return { ALPHA191_116: close.map((_, index) => {
         if (index < 19) return null;
         const window = close.slice(index - 19, index + 1);
-        // Pairwise covariance identity independently checks the Python centered-weight formula.
-        let slope = 0;
-        for (let i = 0; i < 20; i++) for (let j = i + 1; j < 20; j++) {
-          slope += ((j - i) / 13300) * (window[j]! - window[i]!);
+        // Opposite weights cancel before summation, including exactly symmetric prices.
+        let slope = 0, correction = 0;
+        for (let i = 0; i < 10; i++) {
+          const pair = ((9.5 - i) / 665) * (window[19 - i]! - window[i]!);
+          const term = pair - correction, next = slope + term;
+          correction = (next - slope) - term;
+          slope = next;
         }
         return slope;
       }) };

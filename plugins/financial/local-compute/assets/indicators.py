@@ -173,8 +173,13 @@ def alpha191_031(close, params, rows):
         if window is None:
             values.append(WARMUP)
             continue
-        center = nonnegative_mean(window)
-        values.append(100 * ((window[-1] - center) / center) if center else ZERO_DENOMINATOR)
+        scale = max(window)
+        if not scale:
+            values.append(ZERO_DENOMINATOR)
+            continue
+        scaled_total = math.fsum(price / scale for price in window)
+        # (last - mean) / mean on the scaled window, cancelling the common window length.
+        values.append(100 * (len(window) * (window[-1] / scale) - scaled_total) / scaled_total)
     return {"ALPHA191_031": values}
 
 

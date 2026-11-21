@@ -10,10 +10,10 @@ import type { ProcessRuntime } from '../../platform/runtime/programs.js';
 import type { JsonValue, TaskEffectRecord, TaskRecoveryResult } from '../../contracts/task-contracts.js';
 import { canonical, captureAssets, executeFinancialAssets, financialDigest, verifyAssets, type FinancialAssetBundle } from '../../plugins/financial/local-compute/assets.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
-import { MACD_SNAPSHOT_SEMANTIC_CONTRACT } from './product-machine-snapshot.js';
+import { MACD_SNAPSHOT_SEMANTIC_CONTRACT, matchesVolumeDefinition } from './product-machine-snapshot.js';
 import {
   ALGORITHM_CALL_ACTION, ALGORITHM_CONTRACT_VERSION, ALGORITHM_METHODS, ALGORITHM_METHOD_IDS, ALGORITHM_RUNTIME,
-  ALGORITHM_INPUT_ADAPTER_VERSION, invalidAlgorithmParameter, isAlgorithmMethodId,
+  ALGORITHM_INPUT_ADAPTER_VERSION, ALGORITHM_NULL_STATES, invalidAlgorithmParameter, isAlgorithmMethodId,
   type AlgorithmBar, type AlgorithmCalendar, type AlgorithmCallRequest, type AlgorithmCatalogView,
   type AlgorithmComputedResult, type AlgorithmData, type AlgorithmDateFormats, type AlgorithmEnvironment, type AlgorithmFieldMapping,
   type AlgorithmDiagnosticReason, type AlgorithmFixedSnapshotSource, type AlgorithmGap, type AlgorithmInvalidInterval,
@@ -419,8 +419,8 @@ export class LocalAlgorithmService {
       const fields = isWfdRecord(resolution?.fields) ? resolution.fields : null;
       const definition = Array.isArray(fields?.definitions)
         ? fields.definitions.find(field => isWfdRecord(field) && field.field_code === volumeColumn) : null;
-      if (!volumeUnit || !isWfdRecord(definition) || definition.unit_code !== volumeUnit)
-        throw new TaskError('ALGORITHM_UNIT_MISMATCH', `${ALGORITHM_METHODS[request.methodId].operation} 声明的 volumeUnit 与 WFD 固定成交量字段定义不一致。`);
+      if (!matchesVolumeDefinition(definition, volumeUnit))
+        throw new TaskError('ALGORITHM_UNIT_MISMATCH', `${ALGORITHM_METHODS[request.methodId].operation} 须映射数值型成交量字段，且 volumeUnit 须与其固定数量单位一致。`);
     }
     if (!Array.isArray(read.evidence) || read.evidence.length !== read.rows.length) {
       throw new TaskError('ALGORITHM_SNAPSHOT_ELIGIBILITY_EVIDENCE_MISSING', '固定快照端口未返回逐行实际资格/公开时间/修订/限制证据；不能调用共用规则前先假报通过。');
@@ -667,7 +667,7 @@ export class LocalAlgorithmService {
     const row = this.db.prepare('SELECT bundle_json FROM algorithm_assets WHERE version=?').get(version);
     if (!row) throw new TaskError('ALGORITHM_IMPLEMENTATION_UNAVAILABLE', '原任务固定实现不可取回，拒绝换版。');
     const bundle = JSON.parse(String(row.bundle_json)) as FinancialAssetBundle;
-    verifyAssets(bundle);
+    verifyAssets(bundle, version);
     return bundle;
   }
 
@@ -1064,21 +1064,24 @@ function validateMacdOutputState(result: Record<string, unknown>, rows: Algorith
   }
 }
 
-const DIAGNOSTIC_REASONS: readonly AlgorithmDiagnosticReason[] = [
-  'insufficient_warmup', 'undefined_zero_denominator', 'undefined_flat_rsi', 'undefined_nonpositive_log_price',
-];
-
-function indicatorCoverage(rows: AlgorithmResultRow[], fields: readonly string[], diagnostics: JsonValue[]) {
+export function indexAlgorithmDiagnostics(diagnostics: JsonValue[], errorCode: 'ALGORITHM_OUTPUT_INVALID' | 'DERIVED_NULL_REASON_MISSING') {
   const reasons = new Map<string, AlgorithmDiagnosticReason>();
+  if (!Array.isArray(diagnostics)) throw new TaskError(errorCode, '缺少逐字段计算诊断数组。');
   for (const item of diagnostics) {
-    const { timestamp, output, reason } = record(item, '计算诊断');
-    const key = `${timestamp}/${output}`;
-    if (typeof timestamp !== 'string' || typeof output !== 'string' || reasons.has(key)
-      || !DIAGNOSTIC_REASONS.includes(reason as AlgorithmDiagnosticReason)) {
-      throw new TaskError('ALGORITHM_OUTPUT_INVALID', '计算诊断字段、原因或数量不符。');
+    const { timestamp, output, reason } = isWfdRecord(item) ? item : {};
+    if (typeof timestamp !== 'string' || typeof output !== 'string'
+      || typeof reason !== 'string' || !Object.hasOwn(ALGORITHM_NULL_STATES, reason)) {
+      throw new TaskError(errorCode, '计算诊断的日期、输出字段或原因无效。');
     }
+    const key = `${timestamp}/${output}`;
+    if (reasons.has(key)) throw new TaskError(errorCode, `${timestamp} 的 ${output} 有重复诊断。`);
     reasons.set(key, reason as AlgorithmDiagnosticReason);
   }
+  return reasons;
+}
+
+function indicatorCoverage(rows: AlgorithmResultRow[], fields: readonly string[], diagnostics: JsonValue[]) {
+  const reasons = indexAlgorithmDiagnostics(diagnostics, 'ALGORITHM_OUTPUT_INVALID');
   let validStart: string | null = null, validEnd: string | null = null;
   let validRows = 0, leadingInvalidRows = 0;
   const invalidIntervals: AlgorithmInvalidInterval[] = [];
@@ -1317,7 +1320,7 @@ function required<T>(value: T | undefined, label: string): T {
   return value;
 }
 function describeError(error: unknown): string { return error instanceof Error && error.message ? error.message.slice(0, 1000) : String(error).slice(0, 1000); }
-/** 冻结实际参与输入转换、时间解释和结果校验的 TS 模块字节；只用于执行绑定，历史结果读取不比较它。 */
+/** 冻结输入转换、结果校验、Python 加载器及进程启动代码，供任务重执行时核对。 */
 export function captureCodeBinding(): { version: string; files: Record<string, string> } {
   const current = fileURLToPath(import.meta.url), extension = extname(current), directory = dirname(current);
   const files: Record<string, string> = {};
@@ -1326,6 +1329,8 @@ export function captureCodeBinding(): { version: string; files: Record<string, s
     [`algorithm-types${extension}`, join(directory, `algorithm-types${extension}`)],
     [`product-machine-snapshot${extension}`, join(directory, `product-machine-snapshot${extension}`)],
     [`purpose-eligibility${extension}`, fileURLToPath(new URL(`../collection/purpose-eligibility${extension}`, import.meta.url))],
+    [`plugins/financial/local-compute/assets${extension}`, fileURLToPath(new URL(`../../plugins/financial/local-compute/assets${extension}`, import.meta.url))],
+    [`platform/runtime/process${extension}`, fileURLToPath(new URL(`../../platform/runtime/process${extension}`, import.meta.url))],
   ];
   for (const [name, path] of selected) files[name] = createHash('sha256').update(readFileSync(path)).digest('hex');
   return { version: `sha256:${financialDigest(files)}`, files };

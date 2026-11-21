@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ALGORITHM_METHODS, MACD_SEMANTICS, type AlgorithmComputedResult, type AlgorithmData } from './algorithm-types.js';
 import { checkDerivedForWfd } from './derived-wfd-check.js';
+import { checkR1Cell } from '../collection/r1-tabular.js';
 import { buildStructuredIngestDocument, type R1HandoffService } from '../collection/r1-structured-handoff.js';
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { digestOperationArgs } from '../../platform/security/permissions.js';
@@ -71,9 +72,76 @@ test('业务日期与真实固定快照不一致时拒绝入库', () => {
 });
 
 test('合成算法结果不能作为生产数据入 WFD', () => {
-  assert.throws(() => checkDerivedForWfd(sample(), { ...binding, mode: 'production' }, 'derived-1', frozenInput()), {
-    code: 'DERIVED_SYNTHETIC_FORBIDDEN',
-  });
+  for (const environment of ['synthetic-test', 'local-review'] as const) for (const synthetic of [true, false]) {
+    const result = sample(), input = frozenInput();
+    result.environment = environment;
+    result.metadata.synthetic = input.metadata.synthetic = synthetic;
+    const check = () => checkDerivedForWfd(result, { ...binding, mode: 'production' }, 'derived-1', input);
+    if (synthetic || environment === 'synthetic-test') assert.throws(check, { code: 'DERIVED_SYNTHETIC_FORBIDDEN' });
+    else assert.doesNotThrow(check);
+  }
+});
+
+function oneRowIndicator(methodId: 'ema' | 'boll' | 'alpha191_168', parameters: AlgorithmComputedResult['parameters'],
+  outputs: Record<string, number | null>, close = 12.5) {
+  const input = frozenInput(), result = sample();
+  input.rows[0]!.close = close;
+  const { timestamp, available_at } = input.rows[0]!;
+  Object.assign(result, { methodId, methodVersion: ALGORITHM_METHODS[methodId].version, parameters,
+    rows: [{ timestamp, available_at, ...outputs }], diagnostics: [] });
+  return { result, input, check: () => checkDerivedForWfd(result, binding, 'synthetic-indicator', input) };
+}
+
+test('同一天的 BOLL 多列空值须分别有唯一的已知诊断', () => {
+  const fields = ALGORITHM_METHODS.boll.outputFields;
+  const { result, check } = oneRowIndicator('boll', { period: 2, std_dev: 2 }, Object.fromEntries(fields.map(key => [key, null])));
+  const diagnostics = fields.map(output => ({ timestamp: result.rows[0]!.timestamp, output, reason: 'insufficient_warmup' }));
+  result.diagnostics = diagnostics;
+  const [row] = check().structured.payload.rows as { values: Record<string, { value_state: string; value: null }> }[];
+  for (const code of fields) {
+    assert.deepEqual(row.values[code], { data_type: 'decimal', value_state: 'insufficient_warmup', value: null });
+    checkR1Cell('decimal', row.values[code].value_state, row.values[code].value, code);
+  }
+  for (const invalid of [[], diagnostics.slice(1), [...diagnostics, diagnostics[0]],
+    ...[{ timestamp: '2026-11-02' }, { output: 'OTHER' }, { reason: 'missing_unknown' }].map(change =>
+      [{ ...diagnostics[0], ...change }, ...diagnostics.slice(1)])]) {
+    result.diagnostics = invalid;
+    assert.throws(check, { code: 'DERIVED_NULL_REASON_MISSING' });
+  }
+});
+
+test('发布半偶舍入处理偶数与奇数中点、进位和次正规数，原算法行逐字保留', () => {
+  for (const [close, expected] of [[0.5e-18, '0'], [1.5e-18, '0.000000000000000002'],
+    [2.5e-18, '0.000000000000000002'], [9.5e-18, '0.00000000000000001'],
+    [Number.MIN_VALUE, '0'], [1e-18, '0.000000000000000001'], [1e37, '1' + '0'.repeat(37)]] as const) {
+    const { result, check } = oneRowIndicator('ema', { period: 2, init: 'first_valid' }, { EMA: close }, close);
+    const checked = check();
+    const [row] = checked.structured.payload.rows as { values: { EMA: { value: string } } }[];
+    assert.equal(row.values.EMA.value, expected);
+    assert.equal(checked.originalBytes.toString(), canonicalWfdJson(result.rows));
+    assert.equal(result.rows[0].EMA, close);
+  }
+  const tooLarge = oneRowIndicator('ema', { period: 2, init: 'first_valid' }, { EMA: 1e38 }, 1e38);
+  assert.throws(tooLarge.check, { code: 'R1_TABULAR_PRECISION' });
+  const nonfinite = oneRowIndicator('ema', { period: 2, init: 'first_valid' }, { EMA: Infinity });
+  assert.throws(nonfinite.check, { code: 'DERIVED_NUMERIC_MISMATCH' });
+});
+
+test('派生端独立拒绝将 turnover/cny 或非数值列映射成成交量', () => {
+  const { result, input, check } = oneRowIndicator('alpha191_168', {}, { ALPHA191_168: null });
+  result.diagnostics = [{ timestamp: input.rows[0].timestamp, output: 'ALPHA191_168', reason: 'insufficient_warmup' }];
+  input.rows[0].volume = 0;
+  const source = result.source as { fieldMapping: Record<string, string>; semantics?: { volumeUnit: string };
+    resolution: { fields: { definitions: { field_code: string; data_type: string; unit_code: string }[] } } };
+  source.fieldMapping.volume = 'turnover';
+  const volume = { field_code: 'turnover', data_type: 'decimal', unit_code: 'cny' };
+  source.resolution.fields.definitions.push(volume);
+  for (const [unit, dataType] of [['cny', 'decimal'], ['volume_cny', 'integer'], ['share', 'text']]) {
+    volume.unit_code = result.metadata.volume_unit = input.metadata.volume_unit = unit;
+    volume.data_type = dataType;
+    source.semantics = { volumeUnit: unit };
+    assert.throws(check, { code: 'DERIVED_UNIT_UNKNOWN' });
+  }
 });
 
 test('缺真实 WFD 行身份及单位时拒绝发布', () => {
@@ -180,19 +248,45 @@ test('固定派生未送达时沿原号重试并重新核用途，结果未知�
 });
 
 
-/** Historical declaration fixture only; never a second execution implementation. */
-function legacyDocument(result: AlgorithmComputedResult, requestId: string) {
-  const document = buildStructuredIngestDocument(checkDerivedForWfd(result, binding, requestId, frozenInput()).structured);
+/** 按旧版的定义身份构造冻结请求样本。 */
+function legacyDocument(result: AlgorithmComputedResult, requestId: string, input = frozenInput()) {
+  const document = buildStructuredIngestDocument(checkDerivedForWfd(result, binding, requestId, input).structured);
   const output = (document.outputs as Array<Record<string, unknown>>)[0]!;
   const algorithm = (output.definition as Record<string, unknown>).algorithm_definition as Record<string, unknown>;
-  algorithm.result_semantics = '调用既有 12/26/9 MACD 实现，以所供窗口首条收盘价初始化短、长 EMA 与 DEA；返回 DIFF、DEA、MACD 和 ZERO。';
-  algorithm.definition_version = 'v' + wfdSha256(canonicalWfdJson({ method: result.methodId,
-    version: result.methodVersion, implementation: result.implementationVersion })).slice(0, 20);
+  const method = ALGORITHM_METHODS[result.methodId];
+  algorithm.result_semantics = result.methodId === 'macd'
+    ? '调用既有 12/26/9 MACD 实现，以所供窗口首条收盘价初始化短、长 EMA 与 DEA；返回 DIFF、DEA、MACD 和 ZERO。'
+    : `${method.resultSemantics} 本次参数为 ${canonicalWfdJson(result.parameters)}。`;
+  algorithm.definition_version = 'v' + wfdSha256(canonicalWfdJson(result.methodId === 'macd' ? { method: result.methodId,
+    version: result.methodVersion, implementation: result.implementationVersion } : {
+    version: result.methodVersion, semantics: { outputs: method.outputs, resultSemantics: method.resultSemantics },
+    parameters: result.parameters,
+  })).slice(0, 20);
+  return signFrozenDocument(document);
+}
+
+function signFrozenDocument(document: ReturnType<typeof buildStructuredIngestDocument>) {
   const unsigned = structuredClone(document);
   delete (unsigned.request_identity as Record<string, unknown>).submission_digest;
   (document.request_identity as Record<string, unknown>).submission_digest = 'sha256:' + wfdSha256(canonicalWfdJson(unsigned));
   return document;
 }
+
+test('已有合规 EMA 请求可原样核验，旧请求中的超标十进制不能沿原号重写', () => {
+  const params = { period: 2, init: 'first_valid' };
+  const { result, input } = oneRowIndicator('ema', params, { EMA: 12.5 });
+  const prior = legacyDocument(result, 'frozen-ema', input);
+  const recovered = checkDerivedForWfd(result, binding, 'frozen-ema', input, prior);
+  assert.deepEqual(buildStructuredIngestDocument(recovered.structured), prior);
+  const tiny = oneRowIndicator('ema', params, { EMA: 2.5e-18 }, 2.5e-18);
+  const invalid = legacyDocument(tiny.result, 'invalid-ema', tiny.input);
+  assert.throws(() => checkDerivedForWfd(tiny.result, binding, 'invalid-ema', tiny.input, invalid),
+    { code: 'DERIVED_FROZEN_DOCUMENT_CHANGED' }, '旧版本也不能接受被事后舍入的值');
+  const [output] = invalid.outputs as { payload: { rows: { values: { EMA: { value: string } } }[] } }[];
+  output.payload.rows[0].values.EMA.value = '0.0000000000000000025';
+  signFrozenDocument(invalid);
+  assert.throws(() => checkDerivedForWfd(tiny.result, binding, 'invalid-ema', tiny.input, invalid), { code: 'DERIVED_FROZEN_DOCUMENT_CHANGED' });
+});
 
 test('implementation changes preserve formal semantics and rows but keep distinct execution evidence', () => {
   const first = sample(), second = structuredClone(first);

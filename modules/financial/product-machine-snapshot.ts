@@ -55,6 +55,16 @@ export interface ProductMachineFieldDefinition {
   measurement_nature: string | null;
 }
 
+// WFD 已知数量单位及明确的成交量别名。带 volume_ 前缀的单位也须能确定实际量纲。
+const VOLUME_UNITS = new Set(['share', 'shares', 'lot', 'lots', 'lot_100_shares', 'hand', 'hands',
+  'contract', 'contracts', 'unit', 'units', 'count', 'vehicle']);
+
+export function matchesVolumeDefinition(field: unknown, declaredUnit: unknown): boolean {
+  return isWfdRecord(field) && (field.data_type === 'decimal' || field.data_type === 'integer')
+    && typeof declaredUnit === 'string' && field.unit_code === declaredUnit
+    && VOLUME_UNITS.has(declaredUnit.toLowerCase().replace(/^volume_/u, ''));
+}
+
 export interface ProductMachineCellMetadata {
   row: number;
   field: string;
@@ -75,8 +85,8 @@ export interface ProductMachineCellInspection {
 
 /**
  * 逐单元格保留 value/value_state/data_type/unit_code/unit_ref，不把
- * unknown/null 与 not_applicable/null 抹成同一个裸 null。算法只接受
- * value_state=valid_value 且 value 非 null 的单元格；其余明确拒绝。
+ * unknown/null 与 not_applicable/null 抹成同一个裸 null。数值列的 reported_zero
+ * 只接受规范的 '0' 或 0，保留原始单元格证据，计算投影统一为数值 0。
  */
 export function extractSelectedCells(rows: WfdRecord[], fields: string[], definitions?: ProductMachineFieldDefinition[],
   defaultUnitCode?: string | null): ProductMachineCellInspection {
@@ -86,6 +96,9 @@ export function extractSelectedCells(rows: WfdRecord[], fields: string[], defini
       const cell = valueCell(row, field);
       const present = cell !== null;
       const definition = definitions?.find(item => item.field_code === field);
+      const dataType = definition?.data_type ?? cell?.data_type;
+      const reportedZero = cell?.value_state === 'reported_zero' && (cell.value === '0' || cell.value === 0)
+        && (dataType === 'decimal' || dataType === 'integer') && (!cell.data_type || cell.data_type === dataType);
       cells.push({
         row: rowIndex,
         field,
@@ -96,8 +109,8 @@ export function extractSelectedCells(rows: WfdRecord[], fields: string[], defini
         unit_code: cell?.unit_code ?? null,
         unit_ref: cell?.unit_ref ?? null,
         declared_unit_code: definition?.unit_code ?? (fields.length === 1 ? defaultUnitCode ?? null : null),
-        safe_value_state: present && cell?.value_state === 'valid_value'
-          && cell.value !== null && cell.value !== undefined,
+        safe_value_state: reportedZero || (present && cell.value_state === 'valid_value'
+          && cell.value !== null && cell.value !== undefined),
       });
     }
   }
@@ -623,12 +636,12 @@ function verifyFixedFields(product: WfdRecord, rows: WfdRecord[], reference: Alg
     throw new TaskError('ALGORITHM_SNAPSHOT_CELL_STATE_UNSUPPORTED', JSON.stringify({
       product_id: reference.productId,
       snapshot_id: reference.snapshotId,
-      reason: 'algorithm input requires value_state=valid_value and a non-null value for every selected cell',
+      reason: 'selected cells require a non-null valid_value or a numeric reported_zero carrying zero',
       unsafe: cellInspection.unsafe.slice(0, 64),
     }));
   }
   const mappingFields = [reference.fieldMapping.timestamp, reference.fieldMapping.close,
-    reference.fieldMapping.open, reference.fieldMapping.high, reference.fieldMapping.low, reference.fieldMapping.available_at]
+    reference.fieldMapping.open, reference.fieldMapping.high, reference.fieldMapping.low, reference.fieldMapping.volume, reference.fieldMapping.available_at]
     .filter((field): field is string => typeof field === 'string' && field.length > 0);
   const mappingNotRequested = mappingFields.filter(field => !reference.fields.includes(field));
   if (mappingNotRequested.length) {
@@ -647,7 +660,7 @@ function projectValueRows(rows: WfdRecord[], fields: string[]): Record<string, u
     for (const field of fields) {
       const cell = valueCell(row, field);
       if (!cell) throw new TaskError('ALGORITHM_SNAPSHOT_FIELDS_MISMATCH', `第 ${index} 行缺少固定定义字段 ${field}。`);
-      projected[field] = cell.value;
+      projected[field] = cell.value_state === 'reported_zero' ? 0 : cell.value;
     }
     return projected;
   });

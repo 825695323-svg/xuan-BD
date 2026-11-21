@@ -433,7 +433,14 @@ export interface AlgorithmSnapshotPort {
   read(reference: AlgorithmSnapshotReference, context: { signal: AbortSignal; taskId?: string }): Promise<AlgorithmSnapshotRead>;
 }
 
-export type AlgorithmDiagnosticReason = 'insufficient_warmup' | 'undefined_zero_denominator' | 'undefined_flat_rsi' | 'undefined_nonpositive_log_price';
+export const ALGORITHM_NULL_STATES = Object.freeze({
+  insufficient_warmup: 'insufficient_warmup',
+  zero_denominator: 'not_applicable',
+  undefined_zero_denominator: 'not_applicable',
+  undefined_flat_rsi: 'not_applicable',
+  undefined_nonpositive_log_price: 'not_applicable',
+} as const);
+export type AlgorithmDiagnosticReason = keyof typeof ALGORITHM_NULL_STATES;
 export interface AlgorithmInvalidInterval { start: string; end: string; reason: 'insufficient_history' | AlgorithmDiagnosticReason; count: number }
 export interface AlgorithmGap { code: string; message: string; scope?: string }
 
