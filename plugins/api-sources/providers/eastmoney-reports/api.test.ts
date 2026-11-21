@@ -138,11 +138,15 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
       `<p><b>${title}</b>：</p><div class="report-download">${otherLink}</div>`,
       `<p><small>${title}</small></p><ul><li>${otherLink}</li></ul>`,
       `<p><em>相关</em>${title.slice(2)}</p><ul><li>${otherLink}</li></ul>`,
-      `<p><em>相关</em>${title.slice(2)}：${otherLink}</p>`]) {
+      `<p><em>相关</em>${title.slice(2)}：${otherLink}</p>`,
+      `<div>正文<span> </span><em>相关</em>${title.slice(2)}：${otherLink}</div>`,
+      `<p>正文<span> </span><em>相关</em>${title.slice(2)}：</p><ul><li>${otherLink}</li></ul>`]) {
       assert.equal(decodeEastmoneyReportDetail(request, html(`<article id="zwinfo">${mainLink}${section}</article>`)).pdfUrl, pdf);
       assert.throws(() => decodeEastmoneyReportDetail(request, html(`<article id="zwinfo">${section}</article>`)), code('SOURCE_REPORT_RESPONSE_INVALID'));
     }
   }
+  assert.equal(decodeEastmoneyReportDetail(request, html(`<article id="zwinfo"><p><small>相关阅读量</small>是本研报分析指标。</p>${mainLink}</article>`)).pdfUrl, pdf);
+  assert.equal(decodeEastmoneyReportDetail(request, html(`<div id="zwinfo"><h2>相关阅读</h2>${otherLink}<div><h2>本研报附件</h2>${mainLink}</div></div>`)).pdfUrl, pdf);
   const metadata = 'var zwinfo = {"infoCode":"AP202601010001"};', scriptPdf = (url: string) => `window.pdf="${url}";`;
   for (const declarations of [[metadata, scriptPdf(other)], [scriptPdf(other), metadata]]) {
     for (const separator of ['', '</script><script>'])

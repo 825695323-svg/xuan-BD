@@ -14,6 +14,7 @@ import { createR1HandoffRuntime, type R1Runtime } from '../../modules/collection
 import { buildStructuredIngestDocument } from '../../modules/collection/r1-structured-handoff.js';
 import { screenFixedWfdStrategy } from '../../modules/financial/strategy-screen-wfd.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
+import { digestOperationArgs } from '../../platform/security/permissions.js';
 import { CoreDatabase } from '../../platform/state/database.js';
 import { createFullChainFixture } from './full-chain-test-support.js';
 import { createApplicationServices } from './services.js';
@@ -126,19 +127,20 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
   skip: !process.env.XUAN_FULL_CHAIN_ROOT && '需要显式 XUAN_FULL_CHAIN_ROOT（隔离测试根）；不使用真实 WFD 或模型。', timeout: 30_000,
 }, async t => {
   const f = createFullChainFixture({ name: 'strategy-screen-model' }), synthetic = syntheticReader();
-  let capture!: (input: BackendInput) => void, finish!: () => void;
-  const captured = new Promise<BackendInput>(resolve => { capture = resolve; });
-  const gate = new Promise<void>(resolve => { finish = resolve; });
+  let capture!: (input: BackendInput) => void, finish: () => void = () => {};
+  const gates = new Map<string, () => void>();
   const backend: Backend = { id: 'synthetic-screen-capture', async createSession(): Promise<BackendSession> {
     const checkpoint = { backendId: this.id, format: 'synthetic-capture', version: 1, sessionRef: 'screen-capture', payload: null };
     return { id: 'screen-capture', send: async (input, emit) => {
       await emit({ type: 'run_started' });
       await emit({ type: 'input_consumed', inputId: input.inputId, messageKey: input.messageId });
-      capture(input); await gate;
-      return { outcome: 'interrupted', rawStopReason: 'synthetic-finished', checkpoint };
+      const runGate = new Promise<void>(resolve => { gates.set(input.runId, resolve); });
+      capture(input); await runGate;
+      return { outcome: 'completed', checkpoint };
     }, steer: async () => ({ disposition: 'handled' }), exportCheckpoint: async () => checkpoint,
-    abort: async () => { finish(); }, dispose: () => { finish(); } };
+    abort: async () => { for (const done of gates.values()) done(); gates.clear(); }, dispose: () => { for (const done of gates.values()) done(); gates.clear(); } };
   } };
+  finish = () => { for (const done of gates.values()) done(); gates.clear(); };
   const resources = new ResourceBindings(f.runtime), switches = { calculate: true };
   const companionDb = new CoreDatabase(join(f.runtime, 'state/companion.sqlite'));
   const companionCore = new PersonalCore(backend, { database: companionDb });
@@ -152,6 +154,7 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     privateRoot: join(f.runtime, 'state/personal-private'), resources, workspaceServices: companion });
   try {
     assert.equal(companion.algorithms, undefined, '纯 TS 筛选不能要求 Python 指标服务');
+    const captured = new Promise<BackendInput>(resolve => { capture = resolve; });
     core.sendMessage(core.defaultConversationId, '对隔离合成固定截面运行有限筛选，返回候选，不发布或下单。', 'synthetic-screen-user');
     const input = await captured;
     const tools = services.modelTools.toolFactory({ model, getCurrentInput: () => input });
@@ -296,7 +299,7 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     const bridge = services.modelTools as unknown as {
       assertHistoricalAlgorithmPreview(c: unknown, t: unknown, s: unknown, r?: unknown): void;
       evidence: { retain(s: unknown, src: unknown, text: string): { evidenceId: string; sha256: string; totalBytes: number; format: 'utf8' };
-        read(s: unknown, req: { evidenceId: string; sha256: string; maxBytes?: number }, assertAccess: () => void): Record<string, unknown> };
+        read(s: unknown, req: { evidenceId: string; sha256: string; offset?: number; maxBytes?: number }, assertAccess: () => void): Record<string, unknown> };
     };
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.calculate', result: { data: { modelPreview: leaked } } },
       scope), { code: 'MODEL_SHARE_REVOKED' });
@@ -324,10 +327,11 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     const safeRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, safeText);
     const safeStatusTask = { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: safeCalcPreview } } };
     const validSlice = bridge.evidence.read(scope, { ...safeRef, maxBytes: 10 }, () => {});
+    const pageArgs = JSON.stringify({ ...safeRef, maxBytes: 10 });
     const pagedCall = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, complete: false,
       note: '完整结果按固定摘要保管；使用core_evidence_read续取nextCursor，done=true表示已读到末尾。', evidence: validSlice }) };
     assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview(pagedCall, safeStatusTask, scope, safeRef));
-    const pageWrapper = { ...callRow, tool_name: 'core_evidence_read', preview_json: JSON.stringify(validSlice) };
+    const pageWrapper = { ...callRow, tool_name: 'core_evidence_read', args_json: pageArgs, preview_json: JSON.stringify(validSlice) };
     assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview(pageWrapper, safeStatusTask, scope));
     for (const badSlice of [
       { ...validSlice, done: true, nextCursor: null },
@@ -335,8 +339,15 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
       { ...validSlice, nextCursor: 'tampered.sig' },
     ]) {
       assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, tool_name: 'core_evidence_read',
-        preview_json: JSON.stringify(badSlice) }, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
+        args_json: pageArgs, preview_json: JSON.stringify(badSlice) }, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
     }
+    const secondRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, safeText.replace('safe-calc', 'safe-calc-b'));
+    const secondSlice = bridge.evidence.read(scope, { ...secondRef, maxBytes: 10 }, () => {});
+    const eofSlice = bridge.evidence.read(scope, { ...safeRef, offset: safeRef.totalBytes }, () => {});
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, tool_name: 'core_evidence_read',
+      args_json: pageArgs, preview_json: JSON.stringify(secondSlice) }, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, tool_name: 'core_evidence_read',
+      args_json: pageArgs, preview_json: JSON.stringify(eofSlice) }, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
     const tamperedWrapper = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, complete: false,
       evidence: { ...validSlice, text: 'TAMPERED!!' } }) };
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview(tamperedWrapper, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
@@ -351,18 +362,32 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     const retainedDualRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, retainedDualText);
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview }) },
       safeStatusTask, scope, retainedDualRef), { code: 'MODEL_SHARE_REVOKED' });
+    const statusCheckCall = { ...callRow, action: 'algorithms.status', preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview }) };
     for (const forgedField of [
       { ruleVersion: 'synthetic-rev-42', cutoff: at },
       { ruleVersion: 'bd.purpose-eligibility/2', cutoff: 'synthetic-rev-42' },
+      { ruleVersion: 'bd.purpose-eligibility/2', cutoff: '2025-02-29T00:00:00Z' },
+      { ruleVersion: 'bd.purpose-eligibility/2', cutoff: '2026-04-31T00:00:00+08:00' },
     ]) {
-      assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
+      assert.throws(() => bridge.assertHistoricalAlgorithmPreview(statusCheckCall, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
         code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: JSON.stringify({ ruleVersion: forgedField.ruleVersion, status: 'ineligible',
           purpose: 'historical_compute', history: { mode: 'market_known_at', cutoff: forgedField.cutoff, perspective: 'market_known_at', historical: true },
           blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64),
           action: '该固定快照在所请求的历史视角/截止下未通过用途资格；完整核对明细保留在原任务审计记录。' }) } } } } }, scope), { code: 'MODEL_SHARE_REVOKED' });
     }
-    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
+    const leapPreview = { error: {
+      code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: JSON.stringify({ ruleVersion: 'bd.purpose-eligibility/2', status: 'ineligible',
+        purpose: 'historical_compute', history: { mode: 'market_known_at', cutoff: '2024-02-29T00:00:00Z', perspective: 'market_known_at', historical: true },
+        blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64),
+        action: '该固定快照在所请求的历史视角/截止下未通过用途资格；完整核对明细保留在原任务审计记录。' }) } };
+    assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, action: 'algorithms.status',
+      preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: leapPreview }) },
+      { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: leapPreview } } }, scope));
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(statusCheckCall, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
       code: 'ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE', message: 'record_id=sample-42 r_secret' } } } } }, scope), { code: 'MODEL_SHARE_REVOKED' });
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(statusCheckCall, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
+      code: 'ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE', message: '历史版本选择存在待补证据；完整核对明细保留在原任务审计记录。',
+      nextAction: 'record_id=sample-42' } } } } }, scope), { code: 'MODEL_SHARE_REVOKED' });
     const companionHost = companion as unknown as { algorithms?: { versionBinding: Record<string, string>; catalog(): unknown; submit(...args: unknown[]): unknown; view?(id: string): unknown } };
     const prevAlg = companionHost.algorithms;
     let injectedStatusError: { code: string; message: string } | null = null;
@@ -403,6 +428,16 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
         code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: forgedCutoffOnly });
       assert.doesNotMatch(JSON.stringify(statusForgedCutoff), /synthetic-rev-99/u);
       assert.equal(JSON.parse(statusForgedCutoff.data.error.message).history.cutoff, null);
+
+      const invalidCalendarCutoff = await invokeStatusWithError('req-status-sanitize-4', {
+        code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: JSON.stringify({ ruleVersion: 'bd.purpose-eligibility/2', status: 'ineligible', purpose: 'historical_compute',
+          history: { mode: 'market_known_at', cutoff: '2025-02-29T00:00:00Z', perspective: 'market_known_at', historical: true },
+          blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64) }) });
+      assert.equal(JSON.parse(invalidCalendarCutoff.data.error.message).history.cutoff, null);
+
+      const statusRulesLeak = await invokeStatusWithError('req-status-sanitize-5', {
+        code: 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES', message: '本会话冻结的内置代理规则 v18 仅允许 macd。record_id=sample-42' });
+      assert.doesNotMatch(JSON.stringify(statusRulesLeak), /sample-42/u);
     } finally { companionHost.algorithms = prevAlg; }
     const smuggledSummary = JSON.stringify({ ok: true, taskId: callRow.task_id, summary: 'leaked r_future', data: safeCalcPreview });
     const smuggledRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, smuggledSummary);
@@ -478,8 +513,32 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
       content: [{ type: 'text', text: 'raw rule failure' }],
     }, historyInput, undefined, model).content[0] as { text: string }).text).message as string;
     assert.doesNotMatch(forgedRuleErrMsg, /sample-42/u);
+    for (const [suffixIdx, [act, msg]] of ([
+      ['algorithms.contract', 'record_id=sample-42'],
+      ['data.modules.factors', 'apps/server/services.ts'],
+      ['algorithms.calculate', '本会话冻结的内置代理规则 v18 仅允许 macd。 '],
+      ['algorithms.calculate', '本会话冻结的内置代理规则 v18 仅允许 macd。\0'],
+      ['algorithms.calculate', '本会话冻结的内置代理规则\tv18 仅允许 macd。'],
+    ] as const).entries()) {
+      const reqId = `req-rule-edge-${suffixIdx}`, tcId = `tc-rule-edge-${suffixIdx}`;
+      const tEdge = services.database.transaction(() => services.tasks.createInTransaction({
+        conversationId: historyInput.conversationId, title: reqId, runtimeId: 'direct', action: act, args: {}, requestId: reqId }));
+      tEdge.publish();
+      services.database.connection.prepare("UPDATE tasks SET status='failed', error=? WHERE id=?")
+        .run(JSON.stringify({ code: 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES', message: msg }), tEdge.task.id);
+      services.database.connection.prepare(`INSERT INTO model_tool_calls(id,conversation_id,branch_id,parent_run_id,parent_generation,input_id,message_id,tool_call_id,tool_name,action,args_json,payload_digest,model_json,model_digest,selection_json,task_request_id,task_id,state,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        `call-${reqId}`, historyInput.conversationId, historyInput.branchId, historyInput.runId, historyInput.generation,
+        historyInput.inputId, historyInput.messageId, tcId, 'perform_action', act, '{}', 'd',
+        callRow.model_json, callRow.model_digest, '[]', reqId, tEdge.task.id, 'prepared', Date.now(), Date.now());
+      const outMsg = JSON.parse((services.modelTools.projectToolResult({
+        role: 'toolResult', toolCallId: tcId, toolName: 'perform_action', isError: true, timestamp: Date.now(),
+        content: [{ type: 'text', text: 'raw rule edge' }],
+      }, historyInput, undefined, model).content[0] as { text: string }).text).message as string;
+      assert.equal(outMsg, '本会话冻结规则不允许所选方法或因子；完整核对明细保留在原任务审计记录。');
+    }
 
-    // 真实超长历史筛选结果分页（core_evidence_read 同输入续页 1..N 全数放行且不含未来修订）。
+    // 真实超长历史筛选结果分页（core_evidence_read 同输入与新输入续页 1..N 全数放行，异常新输入缓存页撤回）。
     const pagedInput = await nextInput(`请按市场可知视角，以 ${at} 为截止筛选历史候选。`, 'synthetic-paged-history');
     const pagedTools = services.modelTools.toolFactory({ model, getCurrentInput: () => pagedInput });
     const pagedScreenTool = pagedTools.find(t => t.name === 'perform_action')!;
@@ -515,6 +574,41 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
       const assembled = JSON.parse(accumulated) as { data: { selected: unknown[] } };
       assert.equal(assembled.data.selected.length, 95);
       assert.doesNotMatch(accumulated, /r_future|future-key|future-subject/u);
+      // 换到同会话下一条新输入走 model.evidence.read 也能正常续页，而异常缓存页一律撤回。
+      gates.get(pagedInput.runId)?.();
+      gates.delete(pagedInput.runId);
+      while (core.isRunActive(pagedInput.runId, pagedInput.generation)) await new Promise<void>(resolve => setImmediate(resolve));
+      const pendingNewInput = new Promise<BackendInput>(resolve => { capture = resolve; });
+      core.sendMessage(pagedInput.conversationId, '在新输入继续读取同一证据分页。', 'synthetic-new-input-paging');
+      const newPagedInput = await pendingNewInput;
+      const newEvTool = services.modelTools.toolFactory({ model, getCurrentInput: () => newPagedInput }).find(t => t.name === 'core_evidence_read')!;
+      const newPage2 = await newEvTool.execute('new-ev-p2', { evidenceId: firstBody.evidence.evidenceId, sha256: firstBody.evidence.sha256,
+        cursor: firstBody.evidence.nextCursor } as any, undefined, undefined, toolContext);
+      const projectedNewP2 = services.modelTools.projectToolResult({
+        role: 'toolResult', toolCallId: 'new-ev-p2', toolName: 'core_evidence_read', isError: false, timestamp: Date.now(),
+        content: newPage2.content as any, details: newPage2.details as any,
+      }, newPagedInput, undefined, model);
+      const newP2Body = JSON.parse((projectedNewP2.content[0] as { text: string }).text) as Record<string, any>;
+      assert.equal(newP2Body.evidenceId, firstBody.evidence.evidenceId);
+      assert.ok(newP2Body.startByte > 0 && newP2Body.nextCursor);
+      const callNewRow = services.database.connection.prepare('SELECT id,preview_json,ticket_json,task_id FROM model_tool_calls WHERE tool_call_id=?')
+        .get('new-ev-p2') as { id: string; preview_json: string; ticket_json: string; task_id: string };
+      const origTicket = JSON.parse(callNewRow.ticket_json) as Record<string, any>;
+      for (const badNewPage of [
+        { ...newP2Body, done: true, nextCursor: null },
+        { ...newP2Body, format: 'raw' },
+        { ...newP2Body, nextCursor: 'tampered.sig' },
+        { ...newP2Body, startByte: 0, text: newP2Body.text },
+        { ...newP2Body, evidenceId: secondRef.evidenceId, sha256: secondRef.sha256, startByte: secondSlice.startByte, endByte: secondSlice.endByte, totalBytes: secondSlice.totalBytes, text: secondSlice.text, nextCursor: secondSlice.nextCursor },
+      ]) {
+        services.database.connection.prepare('UPDATE model_tool_calls SET preview_json=?,ticket_json=? WHERE id=?')
+          .run(JSON.stringify(badNewPage), JSON.stringify({ ...origTicket, previewDigest: digestOperationArgs(badNewPage) }), callNewRow.id);
+        const withheldNew = services.modelTools.projectToolResult({
+          role: 'toolResult', toolCallId: 'new-ev-p2', toolName: 'core_evidence_read', isError: false, timestamp: Date.now(),
+          content: newPage2.content as any, details: newPage2.details as any,
+        }, newPagedInput, undefined, model);
+        assert.equal((withheldNew.details as Record<string, unknown>).mashiroShareWithheld, true);
+      }
     } finally { synthetic.setLargeScreenRows(false); }
   } finally {
     finish();

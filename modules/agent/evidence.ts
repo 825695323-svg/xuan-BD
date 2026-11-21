@@ -39,6 +39,18 @@ export class AgentEvidenceService {
     const encoded = Buffer.from(JSON.stringify([reference.evidenceId, reference.sha256, scopeText(scope), offset])).toString('base64url');
     return encoded + '.' + createHmac('sha256', this.secret).update(encoded).digest('base64url');
   }
+  decodeCursorOffset(scope: EvidenceScope, reference: { evidenceId: string; sha256: string }, cursor: string): number | null {
+    if (typeof cursor !== 'string' || cursor.length > 4096) return null;
+    const [encoded, signature, extra] = cursor.split('.');
+    if (!encoded || !signature || extra) return null;
+    const expected = createHmac('sha256', this.secret).update(encoded).digest(), provided = Buffer.from(signature, 'base64url');
+    if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) return null;
+    let parsed: unknown;
+    try { parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')); } catch { return null; }
+    if (!Array.isArray(parsed) || parsed.length !== 4 || parsed[0] !== reference.evidenceId || parsed[1] !== reference.sha256
+      || parsed[2] !== scopeText(scope) || typeof parsed[3] !== 'number' || !Number.isSafeInteger(parsed[3]) || parsed[3] < 0) return null;
+    return parsed[3];
+  }
   read(scope: EvidenceScope, request: { evidenceId: string; sha256: string; cursor?: string; offset?: number; maxBytes?: number },
     assertAccess: (source: EvidenceSource) => void): EvidencePage {
     const row = this.row(scope, request.evidenceId), source = JSON.parse(row.source_json) as EvidenceSource;
@@ -46,14 +58,10 @@ export class AgentEvidenceService {
     if (request.sha256 !== row.sha256) throw invalid();
     let start = request.offset ?? 0;
     if (request.cursor !== undefined) {
-      if (request.offset !== undefined || request.cursor.length > 4096) throw invalid();
-      const [encoded, signature, extra] = request.cursor.split('.');
-      if (!encoded || !signature || extra) throw invalid();
-      const expected = createHmac('sha256', this.secret).update(encoded).digest(), provided = Buffer.from(signature, 'base64url');
-      if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) throw invalid();
-      let cursor: unknown; try { cursor = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')); } catch { throw invalid(); }
-      if (!Array.isArray(cursor) || cursor.length !== 4 || cursor[0] !== row.id || cursor[1] !== row.sha256 || cursor[2] !== scopeText(scope)) throw invalid();
-      start = cursor[3] as number;
+      if (request.offset !== undefined) throw invalid();
+      const decoded = this.decodeCursorOffset(scope, { evidenceId: row.id, sha256: row.sha256 }, request.cursor);
+      if (decoded === null) throw invalid();
+      start = decoded;
     }
     const limit = request.maxBytes ?? 8000;
     if (!Number.isSafeInteger(start) || start < 0 || start > row.total_bytes || !Number.isSafeInteger(limit) || limit < 4 || limit > 8000) throw invalid();

@@ -45,10 +45,24 @@ function previewSource(source: JsonValue) {
 
 const ELIGIBILITY_FALLBACK = '该固定快照未通过所请求用途的资格核对；完整明细保留在原任务审计记录。';
 const HISTORY_INCOMPLETE_FALLBACK = '历史版本选择存在待补证据；完整核对明细保留在原任务审计记录。';
+export const SAFE_ALGORITHM_RULES_ERROR = /^本会话(?:缺少可用的冻结规则版本，无法核验方法|冻结的内置代理规则 v\d+ (?:仅允许 macd|未允许此方法。截面筛选要求 v21 或以上)|冻结规则不允许读取该因子定义)。$/u;
+export const ALGORITHM_RULES_FALLBACK = '本会话冻结规则不允许所选方法或因子；完整核对明细保留在原任务审计记录。';
 const ELIGIBILITY_RULE_VERSION_RE = /^bd\.purpose-eligibility\/\d+$/u;
-const ELIGIBILITY_CUTOFF_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u;
-function isValidEligibilityCutoff(value: unknown): value is string {
-  return typeof value === 'string' && ELIGIBILITY_CUTOFF_INSTANT_RE.test(value) && Number.isFinite(Date.parse(value));
+const ELIGIBILITY_CUTOFF_INSTANT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|([+-])(\d{2}):(\d{2}))$/u;
+export function isValidEligibilityCutoff(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = ELIGIBILITY_CUTOFF_INSTANT_RE.exec(value);
+  if (!match || match[1] === '0000') return false;
+  const year = Number(match[1]), month = Number(match[2]), day = Number(match[3]);
+  const hour = Number(match[4]), minute = Number(match[5]), second = Number(match[6]);
+  if (match[7]) {
+    const offH = Number(match[8]), offM = Number(match[9]);
+    if (offH > 23 || offM > 59) return false;
+  }
+  const calendar = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day
+    || calendar.getUTCHours() !== hour || calendar.getUTCMinutes() !== minute || calendar.getUTCSeconds() !== second) return false;
+  return Number.isFinite(Date.parse(value));
 }
 function isValidEligibilityHistory(value: unknown): value is Record<string, unknown> {
   if (!isWfdRecord(value)) return false;
@@ -102,13 +116,17 @@ function sanitizeEligibilityMessage(rawMessage: string): string {
 }
 
 function previewError(error: { code: string; message: string } | null) {
-  if (error?.code === 'PURPOSE_ELIGIBILITY_INELIGIBLE' || error?.code === 'PURPOSE_ELIGIBILITY_INSUFFICIENT') {
+  if (!error) return null;
+  if (error.code === 'PURPOSE_ELIGIBILITY_INELIGIBLE' || error.code === 'PURPOSE_ELIGIBILITY_INSUFFICIENT') {
     return { code: error.code, message: sanitizeEligibilityMessage(error.message) };
   }
-  if (error?.code === 'ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE') {
+  if (error.code === 'ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE') {
     return { code: error.code, message: HISTORY_INCOMPLETE_FALLBACK };
   }
-  if (error?.code !== 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION') return error;
+  if (error.code === 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES') {
+    return { code: error.code, message: typeof error.message === 'string' && SAFE_ALGORITHM_RULES_ERROR.test(error.message) ? error.message : ALGORITHM_RULES_FALLBACK };
+  }
+  if (error.code !== 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION') return { code: error.code, message: error.message };
   // 旧失败回执的正文可能仍含原始诊断，或在任务错误长度上限处被截断。
   try {
     const detail: unknown = JSON.parse(error.message);

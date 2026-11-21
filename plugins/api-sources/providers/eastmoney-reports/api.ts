@@ -191,8 +191,9 @@ function detailMetadata(literal: string): Record<string, JsonValue> | null {
   return values;
 }
 
-const relatedTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)/u;
+const relatedTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])：:—\-·•])/u;
 const relatedWrapperTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])：:]*$/u;
+const inlineRelatedHeading = /(?:^|[\s。！？；.!?\n])([【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])：:—\-·•]))/gu;
 const sectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt,[class*="title" i]';
 const relatedSelector = 'aside,nav,footer,[role="navigation"],[aria-label*="相关"],[aria-label*="推荐"],[aria-label*="延伸阅读"],'
   + '[class*="related" i],[id*="related" i],[class*="recommend" i],[id*="recommend" i],.rel-list,.xgyd,.xgyb';
@@ -224,6 +225,41 @@ function isPureInlineTitleBlock(element: Element): boolean {
   return element.matches(inlineWrapperElements) && !element.querySelector(inlineNonBlockForbidden);
 }
 
+function leadingHeading(element: Element): Element | null {
+  let current: Element | null = element;
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    if (current.matches(sectionHeadings)) return current;
+    if (!current.matches('div,section,article,header')) return null;
+    let first: Element | null = null;
+    for (const child of current.childNodes) {
+      if (child.nodeType === 3) {
+        if ((child.textContent ?? '').trim()) return null;
+      } else if (child.nodeType === 1) {
+        const el = child as Element;
+        if (['BR', 'HR', 'WBR'].includes(el.tagName)) continue;
+        first = el;
+        break;
+      }
+    }
+    current = first;
+  }
+  return null;
+}
+
+function hasMeaningfulAfter(node: ChildNode, parent: Element, trailingTextInNode: string): boolean {
+  if (trailingTextInNode.trim()) return true;
+  for (let next = node.nextSibling; next; next = next.nextSibling) {
+    if (next.nodeType === 3 && (next.textContent ?? '').trim()) return true;
+    if (next.nodeType === 1) {
+      const el = next as Element;
+      if (['BR', 'HR', 'WBR'].includes(el.tagName)) continue;
+      if (el.matches(inlineTextElements) && !(el.textContent ?? '').trim() && !el.querySelector('a,iframe')) continue;
+      return true;
+    }
+  }
+  return !parent.matches('p,div,header,section,article');
+}
+
 /** 从阅读小节标题到同级或更高标题之间的内容，限定在同一正文容器内。 */
 function relatedSections(document: Document) {
   const excluded = new WeakSet<Element>();
@@ -235,45 +271,57 @@ function relatedSections(document: Document) {
     for (let node = title.nextSibling; node; node = node.nextSibling) {
       if (node.nodeType !== 1) continue;
       const next = node as Element;
-      if (next.matches(sectionHeadings) && headingLevel(next) <= level) break;
+      const nextHeading = leadingHeading(next);
+      if (nextHeading && headingLevel(nextHeading) <= level && !relatedTitle.test(nextHeading.textContent?.trim() ?? '')) break;
       excluded.add(next);
     }
   }
   for (const element of document.querySelectorAll(sectionHeadings + ',p,strong,b,em,i,small,u,mark,span,div,header,section,article')) {
     if (isExcluded(element)) continue;
-    // 兼容正文中直接写“相关阅读：”或“<em>相关</em>阅读：”再跟下载链接的片段；纯行内标题块直接作为小节标题上溯标记后续节点。
-    if (!element.matches(sectionHeadings) && !isPureInlineTitleBlock(element)) {
-      let inlinePrefix = '';
-      for (const child of element.childNodes) {
-        if (child.nodeType === 3) {
-          const text = child.textContent ?? '';
-          inlinePrefix += text;
-          if (relatedTitle.test(text.trim()) || relatedTitle.test(inlinePrefix.trim())) {
-            markFollowing(child, 2);
-            inlinePrefix = '';
-          }
-        } else if (child.nodeType === 1) {
-          const el = child as Element;
-          if (el.matches(inlineTextElements) && !el.querySelector(inlineNonBlockForbidden)) {
-            const text = el.textContent ?? '';
-            inlinePrefix += text;
-            if (relatedTitle.test(text.trim()) || relatedTitle.test(inlinePrefix.trim())) {
-              markFollowing(child, 2);
-              inlinePrefix = '';
-            }
-          } else {
-            inlinePrefix = '';
-          }
-        }
-      }
+    if ((element.matches(sectionHeadings) || isPureInlineTitleBlock(element)) && relatedTitle.test(element.textContent?.trim() ?? '')) {
+      let heading = element;
+      // 标题可以独占一层包装（可含 <br> 等空排版标签），链接列表与包装节点同级。
+      while (heading.parentElement && isHarmlessWrapper(heading.parentElement, heading)) heading = heading.parentElement;
+      excluded.add(heading);
+      markFollowing(heading, headingLevel(element));
       continue;
     }
-    if (!relatedTitle.test(element.textContent?.trim() ?? '')) continue;
-    let heading = element;
-    // 标题可以独占一层包装（可含 <br> 等空排版标签），链接列表与包装节点同级。
-    while (heading.parentElement && isHarmlessWrapper(heading.parentElement, heading)) heading = heading.parentElement;
-    excluded.add(heading);
-    markFollowing(heading, headingLevel(element));
+    if (element.matches(sectionHeadings)) continue;
+    // 兼容正文中以普通句子结尾或带前缀的拆散行内相关阅读标题（如“正文<span> </span><em>相关</em>阅读：”）。
+    type InlinePiece = { node: ChildNode; text: string; start: number; end: number };
+    const scanRun = (run: InlinePiece[]) => {
+      if (!run.length) return;
+      const fullText = run.map(piece => piece.text).join('');
+      inlineRelatedHeading.lastIndex = 0;
+      const match = inlineRelatedHeading.exec(fullText);
+      if (!match) return;
+      const matchEnd = match.index + match[0].length;
+      const targetPiece = run.find(piece => matchEnd > piece.start && matchEnd <= piece.end) ?? run[run.length - 1]!;
+      markFollowing(targetPiece.node, 2);
+      const trailingInTarget = targetPiece.node.nodeType === 3 ? targetPiece.text.slice(matchEnd - targetPiece.start) : '';
+      if (!hasMeaningfulAfter(targetPiece.node, element, trailingInTarget)) {
+        markFollowing(element, 2);
+      }
+    };
+    let run: InlinePiece[] = [], offset = 0;
+    for (const child of element.childNodes) {
+      if (child.nodeType === 3) {
+        const text = child.textContent ?? '';
+        run.push({ node: child, text, start: offset, end: offset + text.length });
+        offset += text.length;
+      } else if (child.nodeType === 1) {
+        const el = child as Element;
+        if (el.matches(inlineTextElements) && !el.querySelector(inlineNonBlockForbidden)) {
+          const text = el.textContent ?? '';
+          run.push({ node: child, text, start: offset, end: offset + text.length });
+          offset += text.length;
+        } else {
+          scanRun(run);
+          run = []; offset = 0;
+        }
+      }
+    }
+    scanRun(run);
   }
   return (element: Element) => {
     if (element.closest(relatedSelector) || element.tagName === 'A' && relatedTitle.test(element.textContent?.trim() ?? '')) return true;
