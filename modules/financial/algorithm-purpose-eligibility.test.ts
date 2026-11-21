@@ -291,6 +291,11 @@ test('本机算法固定快照：4月历史只接受3月版本，5月修订与�
       assert.ok(['PURPOSE_ELIGIBILITY_INELIGIBLE', 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION'].includes(String(done.error?.code)), JSON.stringify(done.error));
       if (done.error?.code === 'PURPOSE_ELIGIBILITY_INELIGIBLE') {
         assert.doesNotMatch(done.error.message, /r_synthetic_may|"checks"|"timings"|2026-05-/u);
+        const parsedErr = JSON.parse(done.error.message) as { history: { mode: string; cutoff: string; perspective: string; historical: boolean } };
+        assert.equal(parsedErr.history.mode, 'market_known_at');
+        assert.equal(parsedErr.history.cutoff, '2026-04-30T00:00:00Z');
+        assert.equal(parsedErr.history.perspective, 'market_known_at');
+        assert.equal(parsedErr.history.historical, true);
         const auditRow = host.database.connection.prepare('SELECT raw_result_json,raw_result_digest FROM algorithm_calls WHERE task_id=?')
           .get(submitted.taskId) as { raw_result_json: string | null; raw_result_digest: string | null };
         assert.ok(auditRow.raw_result_json && auditRow.raw_result_digest);
@@ -304,6 +309,8 @@ test('本机算法固定快照：4月历史只接受3月版本，5月修订与�
         const statusReply = await bridge.execute({ task: { id: 'status-may', action: 'algorithms.status', args: { taskId: submitted.taskId } },
           signal: new AbortController().signal, assertAuthorized() {} } as unknown as TaskExecutionContext);
         assert.doesNotMatch(JSON.stringify(statusReply), /r_synthetic_may|"checks"|"timings"|2026-05-/u);
+        const statusErr = JSON.parse(((statusReply.data as { modelPreview: { error: { message: string } } }).modelPreview).error.message);
+        assert.deepEqual(statusErr.history, { mode: 'market_known_at', cutoff: '2026-04-30T00:00:00Z', perspective: 'market_known_at', historical: true });
       }
     } finally { await host.close(); }
 
@@ -316,6 +323,16 @@ test('本机算法固定快照：4月历史只接受3月版本，5月修订与�
       const done = await settle(host.tasks, submitted.taskId);
       assert.equal(done.error?.code, 'PURPOSE_ELIGIBILITY_INELIGIBLE', JSON.stringify(done.error));
       assert.match(String(done.error?.message), /USAGE_RESTRICTED/);
+      const origin = { conversationId: 'c-cur', branchId: 'b-cur', parentRunId: 'r-cur' } as ModelTaskOrigin;
+      const bridge = new ConversationAlgorithmBridge({ database: host.database, origin: () => origin, rulesVersion: () => 21,
+        companion: { algorithms: host.algorithms, tasks: host.tasks, derivedPublisher: { publish: async () => ({ published: false,
+          state: 'not_requested' }) } } as unknown as WorkspaceServices });
+      host.database.connection.prepare('INSERT INTO conversation_algorithm_links VALUES(?,?,?,?,?)')
+        .run(submitted.taskId, 'local-cur', 'calculate', JSON.stringify(origin), Date.now());
+      const curStatus = await bridge.execute({ task: { id: 'status-cur', action: 'algorithms.status', args: { taskId: submitted.taskId } },
+        signal: new AbortController().signal, assertAuthorized() {} } as unknown as TaskExecutionContext);
+      const curPreview = JSON.parse(((curStatus.data as { modelPreview: { error: { message: string } } }).modelPreview).error.message);
+      assert.ok(Array.isArray(curPreview.checks) && curPreview.purpose === 'current_compute');
     } finally { await host.close(); }
   });
 

@@ -132,6 +132,8 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
       `<div><span>${title}：</span></div><ul><li>${otherLink}</li></ul>`,
       `<p><strong>${title}</strong></p><ul><li>${otherLink}</li></ul>`,
       `<p><strong>${title}</strong><br></p><ul><li>${otherLink}</li></ul>`,
+      `<p>${title}<br></p><ul><li>${otherLink}</li></ul>`,
+      `<p><em>${title}</em></p><ul><li>${otherLink}</li></ul>`,
       `<p><strong>${title}</strong></p><h3>小标题</h3><ul><li>${otherLink}</li></ul>`,
       `<p><b>${title}</b>：</p><div class="report-download">${otherLink}</div>`]) {
       assert.equal(decodeEastmoneyReportDetail(request, html(`<article id="zwinfo">${mainLink}${section}</article>`)).pdfUrl, pdf);

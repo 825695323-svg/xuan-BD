@@ -83,6 +83,19 @@ const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_A
   // 只读清单与资格检查不产生外部写入，仍需本机版本和任务引用核验。
   'artifact.manifest', 'artifact.inspect', 'artifact.candidates.inspect',
   'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.screen', 'algorithms.status', 'bd.session.capabilities']);
+const READ_SOURCE_PUBLIC_DETAILS = new Set([
+  '源码路径须为工程内的相对路径，长度不超过 512。',
+  '源码读取不能越出工程根，请用相对路径。',
+  '源码读取只支持工程内的文本源码文件；node_modules、dist、构建产物、凭据类路径与二进制一律拒绝。',
+  '文件不可读或超过 512 KiB 上限。',
+]);
+const SAFE_ELIGIBILITY_ACTIONS = new Set([
+  '该固定快照未通过所请求用途的资格核对；完整明细保留在原任务审计记录。',
+  '该固定快照在所请求的历史视角/截止下未通过用途资格；完整核对明细保留在原任务审计记录。',
+]);
+const ALGORITHM_ACTIONS = new Set(['algorithms.screen', 'algorithms.calculate', 'data.modules.calculate', 'algorithms.status']);
+const EVIDENCE_PAGE_KEYS = new Set(['evidenceId', 'sha256', 'totalBytes', 'format', 'text', 'startByte', 'endByte', 'nextCursor', 'done']);
+const ALGORITHM_ENVELOPE_KEYS = new Set(['ok', 'taskId', 'action', 'data', 'taskStatus', 'localPersistence', 'artifactIds', 'summary', 'complete', 'evidence', 'note']);
 const SHARE_NOTICE = '本次选定资料及动作结果将按当前权限发送给当前模型，大结果按证据分页读取；删除和修改既有内容仍需审核。';
 const SAFE_TASK_FAILURES: Readonly<Record<string, string>> = Object.freeze({
   PROCESSING_AGENT_STAGE_SELECTION: 'AGENTS新加工计划必须显式指定stages；先只选择parse解析，读取实际结果后再按需增加阶段。',
@@ -273,7 +286,7 @@ export class CoreModelTools {
       let code = 'MODEL_ACTION_FAILED';
       const failure = this.db.prepare('SELECT * FROM model_tool_calls WHERE parent_run_id=? AND parent_generation=? AND tool_call_id=? AND tool_name=?')
         .get(input.runId, input.generation, result.toolCallId, result.toolName) as unknown as CallRow | undefined;
-      // 参数校验在建立任务之前就会失败，没有 model_tool_calls 记录；仅允许校验类公开码保留受限中文原因，拒绝结构化或历史摘要附加文本。
+      // 参数校验在建立任务之前就会失败，没有 model_tool_calls 记录；仅允许只读源码入口的 4 条固定中文校验提示保留细节，其余一律收敛为固定文案。
       let recognized = false;
       for (const publicCode of ['MODEL_RESULT_TOO_LARGE', 'MODEL_ARGS_INVALID', 'MODEL_ACTION_UNAVAILABLE', 'MODEL_ACTION_NOT_ALLOWED',
         'MODEL_FILE_NOT_SELECTED', 'MODEL_ACTION_STOPPED', 'MODEL_ACTION_REQUIRES_REVIEW', 'MODEL_SHARE_NOT_APPROVED', 'MODEL_SHARE_REVOKED', 'MODEL_IMAGE_LIMIT']) {
@@ -281,12 +294,10 @@ export class CoreModelTools {
         if (original === safe) { code = publicCode; text = safe; recognized = true; break; }
         if (original.startsWith(`${safe}具体原因：`)) {
           const suffix = original.slice(safe.length + '具体原因：'.length);
-          const checked = safeFailureDetail(suffix);
           const allowDetail = ['MODEL_ARGS_INVALID', 'MODEL_FILE_NOT_SELECTED'].includes(publicCode)
             && !failure?.task_id
-            && checked !== undefined && checked === suffix
-            && !/[{}[\]"]|(?:revision_id|published_at|withdrawn_at|held_at|checks|timings|diagnostics|business_key|logical_key|r_[a-z0-9_]+)/iu.test(checked);
-          code = publicCode; text = allowDetail ? `${safe}具体原因：${checked}` : safe; recognized = true; break;
+            && READ_SOURCE_PUBLIC_DETAILS.has(suffix);
+          code = publicCode; text = allowDetail ? original : safe; recognized = true; break;
         }
       }
       if (failure?.conversation_id === input.conversationId && failure.branch_id === input.branchId && failure.model_digest === this.channel(model).digest) {
@@ -298,13 +309,10 @@ export class CoreModelTools {
             && task.action === failure.action && task.requestId === failure.task_request_id && task.conversationId === input.conversationId;
           const taskCode = bound ? task.error?.code : undefined;
           const failureDetail = taskCode ? safeFailureDetail(task?.error?.message) : undefined;
-          const historicalAlgError = ['ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', 'PURPOSE_ELIGIBILITY_INELIGIBLE', 'PURPOSE_ELIGIBILITY_INSUFFICIENT']
-            .includes(String(taskCode))
-            && ['algorithms.screen', 'algorithms.calculate', 'data.modules.calculate', 'algorithms.status'].includes(failure.action);
           if (taskCode && Object.hasOwn(SAFE_TASK_FAILURES, taskCode)) {
             code = taskCode; text = SAFE_TASK_FAILURES[taskCode]!;
-          } else if (historicalAlgError) {
-            text = '本次历史资格核对未通过；完整核对明细保留在原任务审计记录。';
+          } else if (ALGORITHM_ACTIONS.has(failure.action)) {
+            text = '本次算法或历史资格核对未完成；完整核对明细保留在本机原任务记录。';
           } else if (failureDetail && !/[{}[\]"]/u.test(failureDetail)) {
             // 受控插件的固定中文原因直接交给模型；错误码保持稳定，避免把内部码当契约。
             text = `本次动作未完成：${failureDetail}`;
@@ -1699,7 +1707,7 @@ export class CoreModelTools {
     for (const selected of [...ticket.sources, ...ticket.outputs]) this.requireProof(selected, call.conversation_id);
   }
 
-  /** 旧任务原回执继续保管。历史预览或旧证据续页不能重放带原始排除诊断或未经核验分页包装的正文。 */
+  /** 旧任务原回执继续保管。历史预览或旧证据续页不能重放带原始排除诊断、未核验包络/摘要或伪造分页包装的正文。 */
   private assertHistoricalAlgorithmPreview(call: CallRow, task: TaskRecord, scope: EvidenceScope,
     evidenceRef?: { evidenceId: string; sha256: string }): void {
     const isScreen = task.action === 'algorithms.screen';
@@ -1717,16 +1725,50 @@ export class CoreModelTools {
       }
       if (!isSafeHistoricalAlgorithmPreview(preview)) throw publicError('MODEL_SHARE_REVOKED');
     };
-    const inspectEvidencePayload = (reference: { evidenceId: string; sha256: string }, pageCheck?: { startByte: number; endByte: number; text: string }) => {
-      const retained = this.evidence.inspectRetained(scope, reference);
-      if (!retained || retained.source.callId !== call.id) throw publicError('MODEL_SHARE_REVOKED');
-      if (pageCheck) {
-        const slice = Buffer.from(retained.text, 'utf8').subarray(pageCheck.startByte, pageCheck.endByte).toString('utf8');
-        if (slice !== pageCheck.text) throw publicError('MODEL_SHARE_REVOKED');
+    const assertValidPageSlice = (retainedText: string, ev: unknown) => {
+      if (!isObject(ev) || Object.keys(ev).some(k => !EVIDENCE_PAGE_KEYS.has(k))
+        || typeof ev.evidenceId !== 'string' || typeof ev.sha256 !== 'string' || typeof ev.text !== 'string'
+        || typeof ev.startByte !== 'number' || !Number.isSafeInteger(ev.startByte) || ev.startByte < 0
+        || typeof ev.endByte !== 'number' || !Number.isSafeInteger(ev.endByte) || ev.endByte < ev.startByte)
+        throw publicError('MODEL_SHARE_REVOKED');
+      const bytes = Buffer.from(retainedText, 'utf8');
+      if (ev.endByte > bytes.length) throw publicError('MODEL_SHARE_REVOKED');
+      if (ev.totalBytes !== undefined && ev.totalBytes !== bytes.length) throw publicError('MODEL_SHARE_REVOKED');
+      if (bytes.subarray(ev.startByte, ev.endByte).toString('utf8') !== ev.text) throw publicError('MODEL_SHARE_REVOKED');
+    };
+    const assertSafeEnvelope = (obj: Record<string, unknown>, originCall: CallRow) => {
+      if (Object.keys(obj).some(k => !ALGORITHM_ENVELOPE_KEYS.has(k))) throw publicError('MODEL_SHARE_REVOKED');
+      if (obj.ok !== undefined && obj.ok !== true) throw publicError('MODEL_SHARE_REVOKED');
+      if (obj.taskId !== undefined && obj.taskId !== task.id) throw publicError('MODEL_SHARE_REVOKED');
+      if (obj.action !== undefined && obj.action !== task.action) throw publicError('MODEL_SHARE_REVOKED');
+      if (obj.taskStatus !== undefined && obj.taskStatus !== task.status) throw publicError('MODEL_SHARE_REVOKED');
+      if (obj.complete !== undefined && obj.complete !== false) throw publicError('MODEL_SHARE_REVOKED');
+      if (obj.note !== undefined && obj.note !== '完整结果按固定摘要保管；使用core_evidence_read续取nextCursor，done=true表示已读到末尾。')
+        throw publicError('MODEL_SHARE_REVOKED');
+      if (obj.artifactIds !== undefined
+        && digestOperationArgs(obj.artifactIds as JsonValue) !== digestOperationArgs((task.result?.artifactIds ?? []) as JsonValue))
+        throw publicError('MODEL_SHARE_REVOKED');
+      if (obj.summary !== undefined || obj.localPersistence !== undefined) {
+        const expectedLP = this.localPersistence(originCall, task);
+        if (obj.localPersistence !== undefined
+          && digestOperationArgs(obj.localPersistence as JsonValue) !== digestOperationArgs(expectedLP as JsonValue))
+          throw publicError('MODEL_SHARE_REVOKED');
+        const expectedSummary = `${this.options.registry.get(task.action).title}已完成。${expectedLP.statement}`;
+        if (obj.summary !== undefined && obj.summary !== expectedSummary) throw publicError('MODEL_SHARE_REVOKED');
       }
+    };
+    const inspectEvidencePayload = (reference: { evidenceId: string; sha256: string },
+      expectedOriginCallId?: string, pageCheck?: Record<string, unknown>) => {
+      const retained = this.evidence.inspectRetained(scope, reference);
+      if (!retained) throw publicError('MODEL_SHARE_REVOKED');
+      if (expectedOriginCallId !== undefined && retained.source.callId !== expectedOriginCallId) throw publicError('MODEL_SHARE_REVOKED');
+      const originCall = expectedOriginCallId === call.id ? call : this.getCall(retained.source.callId);
+      if (originCall.task_id !== task.id) throw publicError('MODEL_SHARE_REVOKED');
+      if (pageCheck) assertValidPageSlice(retained.text, pageCheck);
       let retainedParsed: unknown;
       try { retainedParsed = JSON.parse(retained.text); } catch { throw publicError('MODEL_SHARE_REVOKED'); }
       if (!isObject(retainedParsed) || retainedParsed.data === undefined) throw publicError('MODEL_SHARE_REVOKED');
+      assertSafeEnvelope(retainedParsed, originCall);
       assertSafePayload(retainedParsed.data);
     };
     const data = task.result?.data, taskPreview = isObject(data) ? data.modelPreview : null;
@@ -1736,21 +1778,23 @@ export class CoreModelTools {
       let parsed: unknown;
       try { parsed = JSON.parse(call.preview_json); } catch { throw publicError('MODEL_SHARE_REVOKED'); }
       if (!isObject(parsed)) throw publicError('MODEL_SHARE_REVOKED');
-      if (parsed.data !== undefined) {
-        assertSafePayload(parsed.data);
-      } else if (isObject(parsed.evidence)) {
-        const ev = parsed.evidence;
-        if (typeof ev.evidenceId !== 'string' || typeof ev.sha256 !== 'string' || typeof ev.text !== 'string'
-          || typeof ev.startByte !== 'number' || !Number.isSafeInteger(ev.startByte) || ev.startByte < 0
-          || typeof ev.endByte !== 'number' || !Number.isSafeInteger(ev.endByte) || ev.endByte < ev.startByte)
+      if (call.tool_name === EVIDENCE_TOOL) {
+        if (Object.keys(parsed).some(k => !EVIDENCE_PAGE_KEYS.has(k))
+          || typeof parsed.evidenceId !== 'string' || typeof parsed.sha256 !== 'string')
           throw publicError('MODEL_SHARE_REVOKED');
-        inspectEvidencePayload({ evidenceId: ev.evidenceId, sha256: ev.sha256 },
-          { startByte: ev.startByte, endByte: ev.endByte, text: ev.text });
+        inspectEvidencePayload({ evidenceId: parsed.evidenceId, sha256: parsed.sha256 }, undefined, parsed);
       } else {
-        throw publicError('MODEL_SHARE_REVOKED');
+        assertSafeEnvelope(parsed, call);
+        if (parsed.data === undefined && parsed.evidence === undefined) throw publicError('MODEL_SHARE_REVOKED');
+        if (parsed.data !== undefined) assertSafePayload(parsed.data);
+        if (parsed.evidence !== undefined) {
+          if (!isObject(parsed.evidence) || typeof parsed.evidence.evidenceId !== 'string' || typeof parsed.evidence.sha256 !== 'string')
+            throw publicError('MODEL_SHARE_REVOKED');
+          inspectEvidencePayload({ evidenceId: parsed.evidence.evidenceId, sha256: parsed.evidence.sha256 }, call.id, parsed.evidence);
+        }
       }
     }
-    if (evidenceRef) inspectEvidencePayload(evidenceRef);
+    if (evidenceRef) inspectEvidencePayload(evidenceRef, call.tool_name === EVIDENCE_TOOL ? undefined : call.id);
   }
 
   private preview(call: CallRow, task: TaskRecord): JsonValue {
@@ -2028,23 +2072,37 @@ function isSafeHistoricalSummary(value: unknown): boolean {
   }
   return total === value.excludedCount;
 }
+function isValidEligibilityHistoryShape(value: unknown): value is Record<string, unknown> {
+  if (!isObject(value)) return false;
+  if (Object.keys(value).some(key => !['mode', 'cutoff', 'perspective', 'historical'].includes(key))) return false;
+  const modeOk = value.mode === null || ['snapshot_contents', 'market_known_at', 'system_held_at'].includes(String(value.mode));
+  const perspectiveOk = value.perspective === null || ['snapshot_contents', 'market_known_at', 'system_held_at'].includes(String(value.perspective));
+  return modeOk && perspectiveOk && (value.cutoff === null || typeof value.cutoff === 'string') && typeof value.historical === 'boolean';
+}
+function isStrictCurrentComputeHistoryShape(history: unknown): boolean {
+  return isValidEligibilityHistoryShape(history)
+    && history.historical === false
+    && (history.mode === null || history.mode === 'snapshot_contents')
+    && history.cutoff === null
+    && (history.perspective === null || history.perspective === 'snapshot_contents');
+}
 function isSafeEligibilityErrorMessage(message: unknown): boolean {
-  if (message === '该固定快照未通过所请求用途的资格核对；完整明细保留在原任务审计记录。') return true;
+  if (typeof message === 'string' && SAFE_ELIGIBILITY_ACTIONS.has(message)) return true;
   if (typeof message !== 'string') return false;
   let parsed: unknown;
   try { parsed = JSON.parse(message); } catch { return false; }
   if (!isObject(parsed)) return false;
+  if (typeof parsed.ruleVersion !== 'string' || !parsed.ruleVersion) return false;
+  if (typeof parsed.status !== 'string' || !['ineligible', 'insufficient_evidence'].includes(parsed.status)) return false;
+  if (typeof parsed.purpose !== 'string') return false;
+  if (parsed.evidenceSha256 !== null && (typeof parsed.evidenceSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(parsed.evidenceSha256))) return false;
+  if (parsed.history !== null && !isValidEligibilityHistoryShape(parsed.history)) return false;
+  if (parsed.purpose === 'current_compute' && isStrictCurrentComputeHistoryShape(parsed.history)) return true;
   const allowedKeys = new Set(['ruleVersion', 'status', 'purpose', 'history', 'blockingGapCodes', 'evidenceSha256', 'action']);
   if (Object.keys(parsed).some(key => !allowedKeys.has(key))) return false;
-  if ('checks' in parsed || 'timings' in parsed || 'gaps' in parsed || 'historyUse' in parsed || 'diagnostics' in parsed || 'revision_id' in parsed) return false;
   if (!Array.isArray(parsed.blockingGapCodes)
     || parsed.blockingGapCodes.some(item => typeof item !== 'string' || !/^[A-Z0-9_]+$/u.test(item))) return false;
-  if (parsed.history !== null && parsed.history !== undefined) {
-    if (!isObject(parsed.history)) return false;
-    if (Object.entries(parsed.history).some(([key, val]) =>
-      !['mode', 'at', 'heldScope', 'usableStage'].includes(key) || !(val === null || typeof val === 'string'))) return false;
-  }
-  return typeof parsed.action === 'string' && !/revision_id|r_[a-z0-9_]+/iu.test(parsed.action);
+  return typeof parsed.action === 'string' && SAFE_ELIGIBILITY_ACTIONS.has(parsed.action);
 }
 function isSafeHistoricalAlgorithmPreview(preview: Record<string, unknown>): boolean {
   if (isObject(preview.error)) {

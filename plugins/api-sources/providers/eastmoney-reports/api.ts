@@ -204,10 +204,20 @@ function headingLevel(element: Element): number {
 }
 
 function isHarmlessWrapper(parent: Element, heading: Element): boolean {
-  if (!parent.matches('div,span,header,strong,b,p')) return false;
+  if (!parent.matches('div,span,header,strong,b,em,i,p')) return false;
   if (!(parent.textContent?.trim() === heading.textContent?.trim() || relatedWrapperTitle.test(parent.textContent?.trim() ?? ''))) return false;
   for (const child of parent.children) {
     if (child === heading) continue;
+    if (['BR', 'HR', 'WBR'].includes(child.tagName)) continue;
+    if (['SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL'].includes(child.tagName)
+      && !(child.textContent ?? '').trim() && !child.querySelector('a,iframe')) continue;
+    return false;
+  }
+  return true;
+}
+
+function hasOnlyHarmlessChildren(element: Element): boolean {
+  for (const child of element.children) {
     if (['BR', 'HR', 'WBR'].includes(child.tagName)) continue;
     if (['SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL'].includes(child.tagName)
       && !(child.textContent ?? '').trim() && !child.querySelector('a,iframe')) continue;
@@ -227,10 +237,10 @@ function relatedSections(document: Document) {
       excluded.add(next);
     }
   }
-  for (const element of document.querySelectorAll(sectionHeadings + ',p,strong,b,span,div,section,article')) {
+  for (const element of document.querySelectorAll(sectionHeadings + ',p,strong,b,em,i,span,div,section,article')) {
     if (excluded.has(element)) continue;
-    // 兼容正文中直接写“相关阅读：”再跟下载链接的片段。
-    if (element.childElementCount && !element.matches(sectionHeadings)) {
+    // 兼容正文中直接写“相关阅读：”再跟下载链接的片段，但对只含 <br> 等空排版子元素的标题块直接上溯标记后续节点。
+    if (element.childElementCount && !element.matches(sectionHeadings) && !hasOnlyHarmlessChildren(element)) {
       for (const child of element.childNodes)
         if (child.nodeType === 3 && relatedTitle.test(child.textContent?.trim() ?? '')) markFollowing(child, 2);
       continue;

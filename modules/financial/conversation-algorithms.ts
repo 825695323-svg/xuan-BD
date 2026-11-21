@@ -44,27 +44,49 @@ function previewSource(source: JsonValue) {
 }
 
 const ELIGIBILITY_FALLBACK = '该固定快照未通过所请求用途的资格核对；完整明细保留在原任务审计记录。';
+function isValidEligibilityHistory(value: unknown): value is Record<string, unknown> {
+  if (!isWfdRecord(value)) return false;
+  if (Object.keys(value).some(key => !['mode', 'cutoff', 'perspective', 'historical'].includes(key))) return false;
+  const modeOk = value.mode === null || ['snapshot_contents', 'market_known_at', 'system_held_at'].includes(String(value.mode));
+  const perspectiveOk = value.perspective === null || ['snapshot_contents', 'market_known_at', 'system_held_at'].includes(String(value.perspective));
+  return modeOk && perspectiveOk && (value.cutoff === null || typeof value.cutoff === 'string') && typeof value.historical === 'boolean';
+}
+function isStrictCurrentComputeHistory(history: unknown): boolean {
+  return isValidEligibilityHistory(history)
+    && history.historical === false
+    && (history.mode === null || history.mode === 'snapshot_contents')
+    && history.cutoff === null
+    && (history.perspective === null || history.perspective === 'snapshot_contents');
+}
 function sanitizeEligibilityMessage(rawMessage: string): string {
   try {
     const detail: unknown = JSON.parse(rawMessage);
-    if (isWfdRecord(detail) && (detail.purpose === 'historical_compute' || detail.purpose === 'current_compute')) {
-      const history = isWfdRecord(detail.history) ? Object.fromEntries(
-        Object.entries(detail.history).filter(([key, val]) => ['mode', 'at', 'heldScope', 'usableStage'].includes(key) && (val === null || typeof val === 'string'))
-      ) : null;
-      const gapCodes = Array.isArray(detail.blockingGapCodes)
-        ? detail.blockingGapCodes.filter((item): item is string => typeof item === 'string' && /^[A-Z0-9_]+$/u.test(item))
-        : Array.isArray(detail.gaps)
-          ? detail.gaps.map(item => isWfdRecord(item) && typeof item.code === 'string' && /^[A-Z0-9_]+$/u.test(item.code) ? item.code : null).filter((item): item is string => item !== null)
-          : [];
-      return canonicalWfdJson({
-        ruleVersion: typeof detail.ruleVersion === 'string' ? detail.ruleVersion : null,
-        status: typeof detail.status === 'string' ? detail.status : null,
-        purpose: detail.purpose,
-        history,
-        blockingGapCodes: [...new Set(gapCodes)],
-        evidenceSha256: typeof detail.evidenceSha256 === 'string' ? detail.evidenceSha256 : null,
-        action: ELIGIBILITY_FALLBACK,
-      });
+    if (isWfdRecord(detail)) {
+      if (detail.purpose === 'current_compute' && isStrictCurrentComputeHistory(detail.history)) return rawMessage;
+      if (detail.purpose === 'historical_compute' || detail.purpose === 'current_compute') {
+        const history = isWfdRecord(detail.history) ? {
+          mode: detail.history.mode === null || ['snapshot_contents', 'market_known_at', 'system_held_at'].includes(String(detail.history.mode))
+            ? detail.history.mode : null,
+          cutoff: detail.history.cutoff === null || typeof detail.history.cutoff === 'string' ? detail.history.cutoff : null,
+          perspective: detail.history.perspective === null || ['snapshot_contents', 'market_known_at', 'system_held_at'].includes(String(detail.history.perspective))
+            ? detail.history.perspective : null,
+          historical: typeof detail.history.historical === 'boolean' ? detail.history.historical : detail.purpose === 'historical_compute',
+        } : null;
+        const gapCodes = Array.isArray(detail.blockingGapCodes)
+          ? detail.blockingGapCodes.filter((item): item is string => typeof item === 'string' && /^[A-Z0-9_]+$/u.test(item))
+          : Array.isArray(detail.gaps)
+            ? detail.gaps.map(item => isWfdRecord(item) && typeof item.code === 'string' && /^[A-Z0-9_]+$/u.test(item.code) ? item.code : null).filter((item): item is string => item !== null)
+            : [];
+        return canonicalWfdJson({
+          ruleVersion: typeof detail.ruleVersion === 'string' ? detail.ruleVersion : null,
+          status: ['ineligible', 'insufficient_evidence'].includes(String(detail.status)) ? detail.status : null,
+          purpose: detail.purpose,
+          history,
+          blockingGapCodes: [...new Set(gapCodes)],
+          evidenceSha256: typeof detail.evidenceSha256 === 'string' && /^[a-f0-9]{64}$/u.test(detail.evidenceSha256) ? detail.evidenceSha256 : null,
+          action: ELIGIBILITY_FALLBACK,
+        });
+      }
     }
   } catch { /* 残缺或非结构化历史错误正文不予透传。 */ }
   return ELIGIBILITY_FALLBACK;

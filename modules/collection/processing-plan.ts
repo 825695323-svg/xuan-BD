@@ -825,8 +825,8 @@ export class ProcessingPlanService {
         const binding = this.options.financialReaderIdentity();
         if (!binding) fail('FINANCIAL_FIXED', '财务固定读取连接尚未选定。');
         table.financialReaderBinding = wfdSha256(canonicalWfdJson(binding));
-        if (options.freezeFinancialReadBinding !== false && this.options.financialReadBinding) {
-          const readBinding = this.options.financialReadBinding();
+        if (options.freezeFinancialReadBinding !== false) {
+          const readBinding = this.options.financialReadBinding?.();
           if (!isValidR1ReadBinding(readBinding)) fail('FINANCIAL_FIXED', '财务固定读取实现绑定缺失，不能冻结外部查询版本。');
           table.financialReadBindingDigest = wfdSha256(canonicalWfdJson(readBinding));
         }
@@ -1529,6 +1529,8 @@ export class ProcessingPlanService {
       assertStepBinding();
       const output = computed.passthrough ? dependencies[0]!.output : this.options.objects.put(computed.bytes, 'application/json');
       if (!output) fail('PROCESSING_OBJECT', '步骤产物没有受管对象引用。');
+      this.assertActive(context);
+      assertStepBinding();
       this.db.prepare(`UPDATE processing_plan_steps SET state='succeeded',output_json=?,output_digest=?,check_scope_json=?,gaps_json=?,
         error_json=NULL,completed_at=?,attempt_task_id=?,semantic_json=?,normalization_json=? WHERE plan_id=? AND step_id=?`).run(canonicalWfdJson(output), computed.digest,
         canonicalWfdJson(computed.checkScope), canonicalWfdJson(gaps), Date.now(), context.task.id,

@@ -84,6 +84,7 @@ function syntheticReader() {
     store: '/synthetic/store', runtime: '/synthetic/runtime', configSha256: '1'.repeat(64), schemaSha256: '2'.repeat(64),
     entrySha256: '3'.repeat(64), pythonPath: '/synthetic/not-executed', entryPath: '/synthetic/not-executed.py' };
   const calls: WfdRecord[] = [];
+  let largeScreenRows = false;
   const reply = (result: WfdRecord) => ({ result, response: {}, transport: {} }) as WfdProductMachineReply;
   const client = {
     contractDiscovery: async (snapshotId: string) => reply({ snapshot_id: snapshotId, product_count: 1,
@@ -105,19 +106,20 @@ function syntheticReader() {
         diagnostics: input.history_mode === 'market_known_at' ? [{ product_id: input.product_id, business_key: 'future-key',
           revision_id: 'r_future', subject: { id: 'future-subject' }, reason: 'time_interval_starts_after_cutoff',
           decision: 'ineligible', diagnostic_source: 'product_service_eligibility' }] : [], complete: true,
-        rows: [['A', '2'], ['B', '5']].map(([code, momentum]) => ({
+        rows: (largeScreenRows ? Array.from({ length: 95 }, (_, idx) => [`S${String(idx).padStart(4, '0')}_${'X'.repeat(90)}`, String(idx + 1)]) : [['A', '2'], ['B', '5']])
+          .map(([code, momentum]) => ({
           contract_ref: { digest: 'sha256:' + 'a'.repeat(64) },
           times: { public_time: { status: 'known', earliest_utc: '2026-01-01T09:00:00Z', latest_exclusive_utc: '2026-01-02T09:30:00Z' } },
           eligibility: { decision: 'eligible', reason: 'evidence_interval_ended_before_cutoff' },
           record_ref: { logical_key: `synthetic-${code}`, revision_id: 'r_synthetic' }, business_time: { status: 'unknown' },
           values: { code: cell(code), trade_date: cell('2026-01-02'), momentum: cell(momentum, 'decimal') } })),
-        page: { page_size: input.page_size, returned_rows: 2, total_rows: 2, remaining_rows: 2,
+        page: { page_size: input.page_size, returned_rows: largeScreenRows ? 95 : 2, total_rows: largeScreenRows ? 95 : 2, remaining_rows: largeScreenRows ? 95 : 2,
           has_more: false, next_cursor: null, page_complete: true } });
     },
   };
   const reader = new R1ProductReader({ runtime: () => ({ client: client as unknown as R1Runtime['client'], currentIdentity: () => identity }),
     control: () => ({ stopped: false, generation: 1 }) });
-  return { reader, calls, identity };
+  return { reader, calls, identity, setLargeScreenRows(value: boolean) { largeScreenRows = value; } };
 }
 
 test('AGENTS discovers and executes strategy screen through real perform_action / TaskService; replay is fixed and disable blocks new work', {
@@ -290,44 +292,123 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     const callRow = services.database.connection.prepare('SELECT * FROM model_tool_calls WHERE task_id=?').get(historicalResult.data.taskId) as Record<string, any> | undefined;
     assert.ok(callRow);
     const scope = { conversationId: callRow.conversation_id, branchId: callRow.branch_id, subject: 'personal', modelDigest: callRow.model_digest };
+    const realTask = services.tasks.get(historicalResult.data.taskId);
     const bridge = services.modelTools as unknown as {
       assertHistoricalAlgorithmPreview(c: unknown, t: unknown, s: unknown, r?: unknown): void;
       evidence: { retain(s: unknown, src: unknown, text: string): { evidenceId: string; sha256: string; totalBytes: number } };
     };
-    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { action: 'algorithms.calculate', result: { data: { modelPreview: leaked } } },
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.calculate', result: { data: { modelPreview: leaked } } },
       scope), { code: 'MODEL_SHARE_REVOKED' });
-    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { action: 'algorithms.status', result: { data: { modelPreview: { error: {
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
       code: 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', message: JSON.stringify({ diagnostics: [{ revision_id: 'r_future' }] }) } } } } }, scope),
       { code: 'MODEL_SHARE_REVOKED' });
-    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { action: 'algorithms.status', result: { data: { modelPreview: { error: {
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
       code: 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', message: JSON.stringify({ source: 'WFD', scope: 'fixed_product_not_date_filtered',
         excludedCount: 1, byReason: { fabricated_reason_not_registered: 1 } }) } } } } }, scope), { code: 'MODEL_SHARE_REVOKED' });
-    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { action: 'algorithms.status', result: { data: { modelPreview: { error: {
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
       code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: JSON.stringify({ purpose: 'historical_compute', checks: [{ detail: 'r_future' }] }) } } } } }, scope),
+      { code: 'MODEL_SHARE_REVOKED' });
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
+      code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: JSON.stringify({ ruleVersion: 'bd.purpose-eligibility/2',
+        status: { checks: [{ detail: 'r_future' }] }, purpose: 'historical_compute', history: null,
+        blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64),
+        action: '该固定快照在所请求的历史视角/截止下未通过用途资格；完整核对明细保留在原任务审计记录。' }) } } } } }, scope),
       { code: 'MODEL_SHARE_REVOKED' });
     const safeCalcPreview = { taskId: 'safe-calc', status: 'failed', error: { code: 'PURPOSE_ELIGIBILITY_INELIGIBLE',
       message: JSON.stringify({ ruleVersion: 'bd.purpose-eligibility/2', status: 'ineligible', purpose: 'historical_compute',
-        history: { mode: 'market_known_at', at }, blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64),
+        history: { mode: 'market_known_at', cutoff: at, perspective: 'market_known_at', historical: true },
+        blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64),
         action: '该固定快照在所请求的历史视角/截止下未通过用途资格；完整核对明细保留在原任务审计记录。' }) } };
     const safeText = JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview });
     const safeRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, safeText);
+    const safeStatusTask = { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: safeCalcPreview } } };
     const pagedCall = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, complete: false,
       evidence: { ...safeRef, startByte: 0, endByte: 10, text: Buffer.from(safeText, 'utf8').subarray(0, 10).toString('utf8') } }) };
-    assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview(pagedCall, { action: 'algorithms.status', result: { data: { modelPreview: safeCalcPreview } } }, scope, safeRef));
+    assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview(pagedCall, safeStatusTask, scope, safeRef));
+    const pageWrapper = { ...callRow, tool_name: 'core_evidence_read', preview_json: JSON.stringify({
+      ...safeRef, format: 'utf8', startByte: 0, endByte: 10, text: Buffer.from(safeText, 'utf8').subarray(0, 10).toString('utf8'),
+      nextCursor: null, done: false }) };
+    assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview(pageWrapper, safeStatusTask, scope));
     const tamperedWrapper = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, complete: false,
       evidence: { ...safeRef, startByte: 0, endByte: 10, text: 'TAMPERED!!' } }) };
-    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(tamperedWrapper, { action: 'algorithms.status', result: { data: { modelPreview: safeCalcPreview } } }, scope),
-      { code: 'MODEL_SHARE_REVOKED' });
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(tamperedWrapper, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
+    const outOfRangeSlice = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, complete: false,
+      evidence: { ...safeRef, startByte: 99999, endByte: 100010, text: '' } }) };
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(outOfRangeSlice, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
+    const dualFieldBypass = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview,
+      evidence: { ...safeRef, startByte: 0, endByte: 10, text: 'TAMPERED!!' } }) };
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(dualFieldBypass, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
+    const smuggledSummary = JSON.stringify({ ok: true, taskId: callRow.task_id, summary: 'leaked r_future', data: safeCalcPreview });
+    const smuggledRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, smuggledSummary);
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview }) },
+      safeStatusTask, scope, smuggledRef), { code: 'MODEL_SHARE_REVOKED' });
     const leakedText = JSON.stringify({ ok: true, taskId: callRow.task_id, data: leaked });
     const leakedRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, leakedText);
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview }) },
-      { action: 'algorithms.status', result: { data: { modelPreview: safeCalcPreview } } }, scope, leakedRef), { code: 'MODEL_SHARE_REVOKED' });
+      safeStatusTask, scope, leakedRef), { code: 'MODEL_SHARE_REVOKED' });
     const invalidMsg = '工具参数无效，请使用动作表的字段和当前会话引用编号。';
-    const projectedErr = services.modelTools.projectToolResult({
-      role: 'toolResult', toolCallId: 'synthetic-err', toolName: 'perform_action', isError: true, timestamp: Date.now(),
-      content: [{ type: 'text', text: `${invalidMsg}具体原因：r_future {"checks":[]}` }],
-    }, historyInput, undefined, model);
-    assert.equal(JSON.parse((projectedErr.content[0] as { text: string }).text).message, invalidMsg);
+    for (const detail of ['r_future {"checks":[]}', 'record_id=sample-42 subject=sample-subject']) {
+      const projectedErr = services.modelTools.projectToolResult({
+        role: 'toolResult', toolCallId: 'synthetic-err', toolName: 'perform_action', isError: true, timestamp: Date.now(),
+        content: [{ type: 'text', text: `${invalidMsg}具体原因：${detail}` }],
+      }, historyInput, undefined, model);
+      assert.equal(JSON.parse((projectedErr.content[0] as { text: string }).text).message, invalidMsg);
+    }
+    const createdFailed = services.database.transaction(() => services.tasks.createInTransaction({
+      conversationId: historyInput.conversationId, title: 'failed alg', runtimeId: 'direct',
+      action: 'algorithms.screen', args: {}, requestId: 'req-failed-alg' }));
+    createdFailed.publish();
+    const failedAlgId = createdFailed.task.id, failedCallId = 'failed-alg-call';
+    services.database.connection.prepare("UPDATE tasks SET status='failed', error=? WHERE id=?")
+      .run(JSON.stringify({ code: 'ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE', message: 'record_id=sample-42 r_secret' }), failedAlgId);
+    services.database.connection.prepare(`INSERT INTO model_tool_calls(id,conversation_id,branch_id,parent_run_id,parent_generation,input_id,message_id,tool_call_id,tool_name,action,args_json,payload_digest,model_json,model_digest,selection_json,task_request_id,task_id,state,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      failedCallId, historyInput.conversationId, historyInput.branchId, historyInput.runId, historyInput.generation,
+      historyInput.inputId, historyInput.messageId, 'tc-failed-alg', 'perform_action', 'algorithms.screen', '{}', 'd',
+      callRow.model_json, callRow.model_digest, '[]', 'req-failed-alg', failedAlgId, 'prepared', Date.now(), Date.now());
+    const algErrMsg = JSON.parse((services.modelTools.projectToolResult({
+      role: 'toolResult', toolCallId: 'tc-failed-alg', toolName: 'perform_action', isError: true, timestamp: Date.now(),
+      content: [{ type: 'text', text: 'raw failure' }],
+    }, historyInput, undefined, model).content[0] as { text: string }).text).message as string;
+    assert.doesNotMatch(algErrMsg, /sample-42|r_secret/u);
+
+    // 真实超长历史筛选结果分页（core_evidence_read 同输入续页 1..N 全数放行且不含未来修订）。
+    const pagedInput = await nextInput(`请按市场可知视角，以 ${at} 为截止筛选历史候选。`, 'synthetic-paged-history');
+    const pagedTools = services.modelTools.toolFactory({ model, getCurrentInput: () => pagedInput });
+    const pagedScreenTool = pagedTools.find(t => t.name === 'perform_action')!;
+    const evTool = pagedTools.find(t => t.name === 'core_evidence_read')!;
+    synthetic.setLargeScreenRows(true);
+    try {
+      const bigScreenJson = JSON.stringify({ snapshotId: 's_synthetic', productId: 'p_synthetic', historyMode: 'market_known_at', at,
+        selection: { dateField: 'trade_date', date: '2026-01-02', dateFormat: 'YYYY-MM-DD' }, factorNames: ['momentum'],
+        keyField: 'code', filter: 'momentum > 0', orderBy: 'momentum', topN: 95 });
+      const firstPaged = await pagedScreenTool.execute('big-screen-1', { action: 'algorithms.screen', args: { screenJson: bigScreenJson } }, undefined, undefined, toolContext);
+      const projectedFirst = services.modelTools.projectToolResult({
+        role: 'toolResult', toolCallId: 'big-screen-1', toolName: 'perform_action', isError: false, timestamp: Date.now(),
+        content: firstPaged.content as any, details: firstPaged.details as any,
+      }, pagedInput, undefined, model);
+      const firstBody = JSON.parse((projectedFirst.content[0] as { text: string }).text) as { evidence?: { evidenceId: string; sha256: string; text: string; nextCursor: string | null; done: boolean } };
+      assert.ok(firstBody.evidence && firstBody.evidence.nextCursor && !firstBody.evidence.done, '须触发多页分页包装');
+      let accumulated = firstBody.evidence.text, cursor: string | null = firstBody.evidence.nextCursor, pagesRead = 1;
+      while (cursor) {
+        const callId = `big-screen-${pagesRead + 1}`;
+        const page = await evTool.execute(callId, { evidenceId: firstBody.evidence.evidenceId, sha256: firstBody.evidence.sha256, cursor } as any, undefined, undefined, toolContext);
+        const projectedPage = services.modelTools.projectToolResult({
+          role: 'toolResult', toolCallId: callId, toolName: 'core_evidence_read', isError: false, timestamp: Date.now(),
+          content: page.content as any, details: page.details as any,
+        }, pagedInput, undefined, model);
+        const body = JSON.parse((projectedPage.content[0] as { text: string }).text) as { evidenceId?: string; text: string; nextCursor: string | null; done: boolean };
+        assert.equal(body.evidenceId, firstBody.evidence.evidenceId);
+        accumulated += body.text;
+        cursor = body.nextCursor;
+        pagesRead += 1;
+        assert.ok(pagesRead <= 20);
+      }
+      assert.ok(pagesRead >= 3);
+      const assembled = JSON.parse(accumulated) as { data: { selected: unknown[] } };
+      assert.equal(assembled.data.selected.length, 95);
+      assert.doesNotMatch(accumulated, /r_future|future-key|future-subject/u);
+    } finally { synthetic.setLargeScreenRows(false); }
   } finally {
     finish();
     await services.tasks.dispose(); await core.dispose(); services.segments?.close(); services.files.closeTemporaryRetention(); database.close();

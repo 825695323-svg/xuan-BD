@@ -338,8 +338,10 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     direct.registry.bindVersions(entry.action, () => {
       const workspace = options.workspaceServices?.r1Workspace;
       const r1ReadBinding = readsWfd ? (workspace?.readBinding?.() ?? null) : null;
-      const r1Caps = readsWfd ? workspace?.capabilities?.() : null;
-      if (readsWfd && r1Caps?.connection && (r1Caps.configuration === undefined || r1Caps.configuration.state === 'configured') && !isValidR1ReadBinding(r1ReadBinding)) {
+      const r1Caps = readsWfd && typeof workspace?.capabilities === 'function' ? workspace.capabilities() : null;
+      const requiresReadBinding = !!workspace && (typeof workspace.capabilities !== 'function'
+        || !!r1Caps?.connection && (r1Caps.configuration === undefined || r1Caps.configuration.state === 'configured'));
+      if (readsWfd && requiresReadBinding && !isValidR1ReadBinding(r1ReadBinding)) {
         throw new TaskError('DIRECT_DEPENDENCY_UNAVAILABLE', 'WFD 固定读取绑定缺失，不能冻结外置查询实现。');
       }
       return directDependencyVersions(entry.action, implementation,
