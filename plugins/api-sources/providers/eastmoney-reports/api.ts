@@ -195,7 +195,10 @@ const relatedTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延�
 const relatedWrapperTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])：:]*$/u;
 const inlineRelatedHeading = /(?:^|[\s。！？；.!?\n])([【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])：:—\-·•]))/gu;
 const mainAttachmentHeading = /^[【[(\s]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)(?:$|[\s】\])：:—\-·•（(])/u;
-const sectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt,[class*="title" i]';
+const explicitSectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt';
+const sectionHeadings = `${explicitSectionHeadings},[class*="title" i]`;
+const rootBoundaryContainers = '#zwinfo,article,section,main,body,html';
+const containerBlocks = 'body,p,div,header,section,article,main,li,dd,blockquote,td,th,figcaption';
 const relatedSelector = 'aside,nav,footer,[role="navigation"],[aria-label*="相关"],[aria-label*="推荐"],[aria-label*="延伸阅读"],'
   + '[class*="related" i],[id*="related" i],[class*="recommend" i],[id*="recommend" i],.rel-list,.xgyd,.xgyb';
 
@@ -207,10 +210,12 @@ function headingLevel(element: Element): number {
 
 const inlineWrapperElements = 'div,span,header,strong,b,em,i,small,u,mark,p';
 const inlineTextElements = 'span,strong,b,em,i,small,u,mark';
+const inlineFlowElements = 'span,strong,b,em,i,small,u,mark,font,sub,sup,label,abbr,cite,code,time,ins,del,s,q,bdi,bdo,ruby,rt,rp,kbd,samp,var,data,dfn';
+const decorativeInlineTags = new Set(['WBR', 'IMG', 'INPUT', 'SVG', 'PICTURE', 'SOURCE', 'CANVAS']);
 const inlineNonBlockForbidden = 'a,iframe,ul,ol,li,dl,table,section,article,aside,nav,div,p,h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt,form,blockquote,pre';
 
 function isHarmlessWrapper(parent: Element, heading: Element): boolean {
-  if (!parent.matches(inlineWrapperElements)) return false;
+  if (parent.matches(`${rootBoundaryContainers},.report-download`) || !parent.matches(inlineWrapperElements)) return false;
   if (!(parent.textContent?.trim() === heading.textContent?.trim() || relatedWrapperTitle.test(parent.textContent?.trim() ?? ''))) return false;
   for (const child of parent.children) {
     if (child === heading) continue;
@@ -250,88 +255,124 @@ function leadingHeading(element: Element): Element | null {
 type InlinePiece = { node: ChildNode; text: string; start: number; end: number };
 type InlineSegment = { pieces: InlinePiece[]; endedAt: Element | null };
 
-const sentenceTerminator = /[。！？；!?]/u;
+const leadingListItem = /^[\s\n]*(?:\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}[.、)）]|[①-⑳])(?=$|[\s\n\p{L}\p{N}《「【])/u;
+const sentenceEndStrict = /(?:[。；]|(?<![\d.])\.(?!\d))[\s"'”’）)】\]]*$/u;
+const sentenceEndGeneral = /(?:[。！？；!?]|(?<![\d.])\.(?!\d))[\s"'”’）)】\]]*$/u;
 
 function hasFlatProse(text: string): boolean {
   return text.replace(/[\s【】[\]()（）：:—\-·•]/gu, '').length > 0;
 }
 
-function appendFlattenedPieces(
-  node: ChildNode,
-  containerChild: ChildNode,
-  pieces: InlinePiece[],
-  state: { offset: number },
-): void {
-  if (node.nodeType === 3) {
-    const text = node.textContent ?? '';
-    if (!text) return;
-    pieces.push({ node: containerChild, text, start: state.offset, end: state.offset + text.length });
-    state.offset += text.length;
-    return;
-  }
-  if (node.nodeType !== 1) return;
-  const el = node as Element;
-  if (el.tagName === 'BR' || el.tagName === 'HR') {
-    pieces.push({ node: containerChild, text: '\n', start: state.offset, end: state.offset + 1 });
-    state.offset += 1;
-    return;
-  }
-  if (el.tagName === 'WBR') return;
-  for (const child of el.childNodes) appendFlattenedPieces(child, containerChild, pieces, state);
+function endsWithSentence(afterMatch: string): boolean {
+  const trimmed = afterMatch.trim();
+  if (!trimmed) return false;
+  if (/。/u.test(trimmed)) return true;
+  return leadingListItem.test(afterMatch) ? sentenceEndStrict.test(trimmed) : sentenceEndGeneral.test(trimmed);
 }
 
-function collectInlineSegments(element: Element): InlineSegment[] {
+function collectInlineSegments(container: Document | Element): InlineSegment[] {
   const segments: InlineSegment[] = [];
-  let pieces: InlinePiece[] = [], state = { offset: 0 };
-  for (const child of element.childNodes) {
-    if (child.nodeType === 3) {
-      appendFlattenedPieces(child, child, pieces, state);
+  let pieces: InlinePiece[] = [], offset = 0;
+  const stack: ChildNode[] = [];
+  for (let i = container.childNodes.length - 1; i >= 0; i -= 1) stack.push(container.childNodes[i]!);
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (node.nodeType === 3) {
+      const text = node.textContent ?? '';
+      if (!text) continue;
+      pieces.push({ node, text, start: offset, end: offset + text.length });
+      offset += text.length;
       continue;
     }
-    if (child.nodeType !== 1) continue;
-    const el = child as Element;
-    if (el.tagName === 'BR' || el.tagName === 'HR' || el.tagName === 'WBR'
-      || (el.matches(inlineTextElements) && !el.querySelector(inlineNonBlockForbidden))) {
-      appendFlattenedPieces(el, child, pieces, state);
+    if (node.nodeType !== 1) continue;
+    const el = node as Element;
+    if (el.tagName === 'BR' || el.tagName === 'HR') {
+      pieces.push({ node: el, text: '\n', start: offset, end: offset + 1 });
+      offset += 1;
+      continue;
+    }
+    if (decorativeInlineTags.has(el.tagName) && !el.querySelector('a,iframe')) continue;
+    if (el.matches(inlineFlowElements) && !el.matches(explicitSectionHeadings)) {
+      for (let i = el.childNodes.length - 1; i >= 0; i -= 1) stack.push(el.childNodes[i]!);
       continue;
     }
     if (pieces.length) segments.push({ pieces, endedAt: el });
     pieces = [];
-    state = { offset: 0 };
+    offset = 0;
   }
   if (pieces.length) segments.push({ pieces, endedAt: null });
   return segments;
 }
 
 function isProseSegmentAfterMatch(afterMatch: string, endedAt: Element | null): boolean {
-  const hasTrailingLinkOrList = Boolean(
-    endedAt && (endedAt.matches('a,iframe,ul,ol') || (endedAt.matches(inlineTextElements) && endedAt.querySelector('a,iframe'))),
-  );
-  return hasTrailingLinkOrList ? sentenceTerminator.test(afterMatch) : hasFlatProse(afterMatch);
+  const hasTrailingLinkOrList = Boolean(endedAt && endedAt.matches('a,iframe,ul,ol'));
+  return hasTrailingLinkOrList ? endsWithSentence(afterMatch) : hasFlatProse(afterMatch);
 }
 
 /** 从阅读小节标题到同级或更高标题之间的内容，限定在同一正文容器内。 */
 function relatedSections(document: Document) {
-  const excluded = new WeakSet<Element>();
+  const excluded = new WeakSet<Node>();
   const isExcluded = (element: Element): boolean => {
     for (let node: Element | null = element; node; node = node.parentElement) if (excluded.has(node)) return true;
     return false;
   };
-  function markFollowing(title: ChildNode, level: number): boolean {
-    for (let node = title.nextSibling; node; node = node.nextSibling) {
-      if (node.nodeType !== 1) continue;
-      const next = node as Element;
-      const nextHeading = leadingHeading(next);
-      const nextHeadingText = nextHeading?.textContent?.trim() ?? '';
-      if (nextHeading && !relatedTitle.test(nextHeadingText)
-        && (headingLevel(nextHeading) <= level || mainAttachmentHeading.test(nextHeadingText))) return true;
-      excluded.add(next);
+  const hasInternalExclusion = (element: Element, boundary: Element): boolean => {
+    for (let node: Element | null = element; node && node !== boundary; node = node.parentElement) {
+      if (excluded.has(node)) return true;
+    }
+    return false;
+  };
+  function markFollowing(title: Node, level: number): boolean {
+    for (let node: Node | null = title.nextSibling; node; node = node.nextSibling) {
+      if (node.nodeType === 1) {
+        const next = node as Element;
+        const nextHeading = leadingHeading(next);
+        const nextHeadingText = nextHeading?.textContent?.trim() ?? '';
+        if (nextHeading && !relatedTitle.test(nextHeadingText)
+          && (headingLevel(nextHeading) <= level || mainAttachmentHeading.test(nextHeadingText))) return true;
+      }
+      excluded.add(node);
     }
     return false;
   }
-  for (const element of document.querySelectorAll(sectionHeadings + ',p,strong,b,em,i,small,u,mark,span,div,header,section,article,main,li,dd,blockquote,td')) {
+  function markFollowingWithinContainer(startNode: ChildNode, container: Document | Element, level: number): boolean {
+    let current: Node | null = startNode;
+    while (current && current !== container) {
+      if (markFollowing(current, level)) return true;
+      current = current.parentNode;
+    }
+    return false;
+  }
+  function scanContainer(container: Document | Element, allowParentSiblings: boolean): void {
+    // 兼容正文中以普通句子结尾或带前缀的拆散行内相关阅读标题（如“正文<span> </span><em>相关</em>阅读：”）。
+    for (const segment of collectInlineSegments(container)) {
+      if (excluded.has(segment.pieces[0]!.node)) continue;
+      const fullText = segment.pieces.map(piece => piece.text).join('');
+      inlineRelatedHeading.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      let shouldStopContainer = false;
+      while ((match = inlineRelatedHeading.exec(fullText)) !== null) {
+        const matchEnd = match.index + match[0].length;
+        const targetPiece = segment.pieces.find(piece => matchEnd > piece.start && matchEnd <= piece.end)
+          ?? segment.pieces[segment.pieces.length - 1]!;
+        const afterMatch = fullText.slice(matchEnd);
+        if (isProseSegmentAfterMatch(afterMatch, segment.endedAt)) continue;
+        const stoppedInside = markFollowingWithinContainer(targetPiece.node, container, 2);
+        if (!stoppedInside) {
+          if (allowParentSiblings && container.nodeType === 1 && !(container as Element).matches(rootBoundaryContainers)) {
+            markFollowing(container, 2);
+          }
+          shouldStopContainer = true;
+        }
+        break;
+      }
+      if (shouldStopContainer) break;
+    }
+  }
+  for (const element of document.querySelectorAll(`${sectionHeadings},${containerBlocks}`)) {
     if (isExcluded(element)) continue;
-    const isSectionHeading = element.matches(sectionHeadings);
+    const isExplicitHeading = element.matches(explicitSectionHeadings);
+    const isSectionHeading = isExplicitHeading || element.matches('[class*="title" i]');
     const isStandaloneBlockTitle = element.matches('div,p,header')
       && isPureInlineTitleBlock(element)
       && relatedWrapperTitle.test(element.textContent?.trim() ?? '');
@@ -339,41 +380,23 @@ function relatedSections(document: Document) {
       let heading = element;
       // 标题可以独占一层包装（可含 <br> 等空排版标签），链接列表与包装节点同级。
       while (heading.parentElement && isHarmlessWrapper(heading.parentElement, heading)) heading = heading.parentElement;
-      if ((!isSectionHeading || !element.matches(inlineTextElements) || heading !== element || !element.parentElement || element.parentElement.tagName === 'BODY')
+      if ((isExplicitHeading || !isSectionHeading || !element.matches(inlineTextElements) || heading !== element || !element.parentElement || element.parentElement.tagName === 'BODY')
         && relatedTitle.test(heading.textContent?.trim() ?? '')) {
         excluded.add(heading);
         markFollowing(heading, headingLevel(element));
         continue;
       }
     }
-    if (isSectionHeading) continue;
-    if (element.matches(inlineTextElements) && !element.querySelector(inlineNonBlockForbidden)
-      && element.parentElement && element.parentElement.tagName !== 'BODY') continue;
-    // 兼容正文中以普通句子结尾或带前缀的拆散行内相关阅读标题（如“正文<span> </span><em>相关</em>阅读：”）。
-    for (const segment of collectInlineSegments(element)) {
-      const fullText = segment.pieces.map(piece => piece.text).join('');
-      inlineRelatedHeading.lastIndex = 0;
-      let match: RegExpExecArray | null;
-      let matched = false;
-      while ((match = inlineRelatedHeading.exec(fullText)) !== null) {
-        const matchEnd = match.index + match[0].length;
-        const targetPiece = segment.pieces.find(piece => matchEnd > piece.start && matchEnd <= piece.end)
-          ?? segment.pieces[segment.pieces.length - 1]!;
-        const afterMatch = fullText.slice(matchEnd);
-        if (isProseSegmentAfterMatch(afterMatch, segment.endedAt)) continue;
-        const stoppedInside = markFollowing(targetPiece.node, 2);
-        if (!stoppedInside && !element.matches('#zwinfo,article,section,main')) {
-          markFollowing(element, 2);
-        }
-        matched = true;
-        break;
-      }
-      if (matched) break;
-    }
+    if (element.matches(inlineTextElements) || (isSectionHeading && !element.matches(containerBlocks))) continue;
+    scanContainer(element, true);
   }
-  return (element: Element) => {
-    if (element.closest(relatedSelector) || element.tagName === 'A' && relatedTitle.test(element.textContent?.trim() ?? '')) return true;
-    return isExcluded(element);
+  if (!document.body) scanContainer(document, false);
+  return {
+    isRelated(element: Element) {
+      if (element.closest(relatedSelector) || element.tagName === 'A' && relatedTitle.test(element.textContent?.trim() ?? '')) return true;
+      return isExcluded(element);
+    },
+    hasInternalExclusion,
   };
 }
 
@@ -393,7 +416,7 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
   };
   // 只读详情变量的静态赋值。普通脚本中的字符串、相关推荐和任意独立链接没有报告归属。
   for (const script of document.querySelectorAll('script:not([src])')) {
-    if (related(script)) continue;
+    if (related.isRelated(script)) continue;
     let source = (script.textContent ?? '').trim();
     // 同一脚本可依次声明元数据和附件。只消费可识别的静态赋值，不执行页面代码。
     while (source) {
@@ -431,16 +454,20 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
     if (owner != null && owner !== request.encodeUrl) continue;
     const expectedInfoCode = element.closest('[data-info-code]')?.getAttribute('data-info-code');
     const downloadBox = element.closest('.report-download') ?? (element.matches('a.report-download[href]') ? element : null);
+    const boxOwner = downloadBox?.getAttribute('data-encode-url');
+    const boxInfoCode = downloadBox?.getAttribute('data-info-code');
+    const boxHeading = downloadBox ? leadingHeading(downloadBox) : null;
     const attestedMainDownload = Boolean(
       downloadBox
-      && owner === request.encodeUrl
-      && expectedInfoCode
-      && declaredCodes.has(expectedInfoCode)
+      && boxOwner === request.encodeUrl && owner === request.encodeUrl
+      && boxInfoCode && declaredCodes.has(boxInfoCode) && expectedInfoCode === boxInfoCode
       && !element.closest(relatedSelector)
       && !(element.tagName === 'A' && relatedTitle.test(element.textContent?.trim() ?? ''))
-      && !relatedTitle.test(downloadBox.textContent?.trim() ?? ''),
+      && !relatedTitle.test(downloadBox.textContent?.trim() ?? '')
+      && !(boxHeading && relatedTitle.test(boxHeading.textContent?.trim() ?? ''))
+      && !related.hasInternalExclusion(element, downloadBox),
     );
-    if (!attestedMainDownload && related(element)) continue;
+    if (!attestedMainDownload && related.isRelated(element)) continue;
     collect(element.getAttribute('href') ?? element.getAttribute('src')!, expectedInfoCode);
   }
   if (new Set([...declaredCodes, ...candidates.values()]).size > 1) return invalid('研报详情元数据与附件声明指向不同的 infoCode。');
