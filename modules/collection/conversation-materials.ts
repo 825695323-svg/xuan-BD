@@ -10,6 +10,7 @@ import { acquireAuthority, fileCapability } from '../../platform/runtime/file-wo
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
 import type { BackendInput } from '../../contracts/backend.js';
 import type { WorkspaceServices } from '../../contracts/workspace-services.js';
+import { SOURCE_DOWNLOAD_ACTIONS, readSourceReceiptFromTask, type AdapterReceiptEvidence } from './endpoint-adapter-registry.js';
 import { acceptWorkspaceMaterial, MATERIAL_CUSTODY_LIMIT } from './accept-material.js';
 import type { MaterialCategory } from './materials/contracts.js';
 import { createMediaPluginRegistrations, mediaPluginCatalog, type MaterialMediaAdapter } from './materials/plugins.js';
@@ -29,6 +30,14 @@ export interface ConversationMaterialOptions {
   assertPath(path: string): void;
   /** 仅受信宿主提供组件；采用惰性绑定避免改写任务身份或构造第二个运行时。 */
   mediaAdapters?: () => readonly MaterialMediaAdapter[];
+}
+type PersonalSourceOriginal = { taskId: string; evidence: AdapterReceiptEvidence };
+function personalSourceOriginal(task: Record<string, unknown>, taskId: string, result: TaskResult, fileRefId: string): PersonalSourceOriginal | undefined {
+  if (task.owner_role !== 'personal' || task.requires_review !== 0 || !Array.isArray(result?.artifactIds) || !result.artifactIds.includes(fileRefId)) return;
+  const evidence = readSourceReceiptFromTask({ action: String(task.action), runtimeId: String(task.runtime_id),
+    status: String(task.status), result }, ['direct']);
+  const entries = evidence?.receipts.filter(entry => entry.fileRefId === fileRefId);
+  if (evidence && entries?.length === 1) return { taskId, evidence: { ...evidence, receipts: entries } };
 }
 type LinkRow = { material_id: string; service_task_id: string; sha256: string; file_ref_id: string; file_ref_version: number };
 type WebMaterialEvidence = {
@@ -113,10 +122,24 @@ export class ConversationMaterialBridge {
     const selection = this.options.core.selectedAttachmentsForInput(input);
     let bound = selection.find(item => item.fileRefId === args.fileRefId);
     const requested = this.options.files.getRef(String(args.fileRefId));
-    const governedProducer = requested.source === 'generated' && requested.relations.some(item => item.kind === 'task'
-      && ['web.read_public', 'source.werss.read', 'source.wechat.extract'].includes(String(this.options.database.connection.prepare('SELECT action FROM tasks WHERE id=?').get(item.id)?.action)));
+    const producers = requested.source === 'generated' ? requested.relations.filter(item => item.kind === 'task')
+      .map(item => ({ taskId: item.id, action: String(this.options.database.connection.prepare('SELECT action FROM tasks WHERE id=?').get(item.id)?.action) })) : [];
+    const governedProducer = producers.some(item => ['web.read_public', 'source.werss.read', 'source.wechat.extract'].includes(item.action));
     const generated = !bound || governedProducer ? this.generatedMaterial(requested.id, origin) : undefined;
     if (governedProducer && !generated?.web && !generated?.werss && !generated?.wechat) throw new TaskError('MATERIAL_NOT_SELECTED', '来源正文不属于当前会话分支的可核对祖先任务。');
+    // 明确选件的读取权限来自本次选择，来源身份仍只取个人库中生成该文件的成功任务。
+    let sourceOriginal = generated?.sourceOriginal;
+    if (bound && action === 'material.read' && this.options.companion.endpointAdapters?.recordTrustedSourceHandoff) {
+      for (const { taskId, action: producer } of producers) {
+        if (!SOURCE_DOWNLOAD_ACTIONS.includes(producer)) continue;
+        const task = this.options.database.connection.prepare('SELECT * FROM tasks WHERE id=?').get(taskId);
+        if (!task?.result) continue;
+        const found = personalSourceOriginal(task, taskId, JSON.parse(String(task.result)), requested.id);
+        if (!found) continue;
+        if (sourceOriginal && sourceOriginal.taskId !== taskId) throw new TaskError('MATERIAL_RECEIPT_MISMATCH', '多个成功来源任务声明了同一文件。');
+        sourceOriginal = found;
+      }
+    }
     if (!bound && generated) bound = { fileRefId: generated.fileRefId, version: generated.version, category: 'unclassified' };
     if (!bound) throw new TaskError('MATERIAL_NOT_SELECTED', '原件不属于本次消息或当前分支祖先的明确附件。');
     const reference = this.options.files.verify(bound.fileRefId);
@@ -145,6 +168,8 @@ export class ConversationMaterialBridge {
           approvalId: authority.approvalId, maxBytes: MATERIAL_CUSTODY_LIMIT });
         authority.assert(); this.options.files.verify(reference.id);
         const sha256 = createHash('sha256').update(bytes).digest('hex');
+        if (sourceOriginal && sourceOriginal.evidence.receipts[0]!.sha256 !== sha256)
+          throw new TaskError('MATERIAL_RECEIPT_MISMATCH', '个人侧文件实际字节与来源成功回执不符。');
         const serviceTaskId = await acceptWorkspaceMaterial(companion, { bytes, name: reference.displayName,
           category: bound.category, requestId: `conversation:${reference.id}:v${reference.version}` });
         const materialId = (companion.tasks.get(serviceTaskId).args as { materialId: string }).materialId;
@@ -166,6 +191,13 @@ export class ConversationMaterialBridge {
       authority.assert();
       const material = companion.materials!.get(link.material_id), original = companion.materials!.readOriginal(link.material_id);
       if (material.envelope.sha256 !== link.sha256) throw new TaskError('MATERIAL_RECEIPT_MISMATCH', '两端接收的原件摘要未能核对。');
+      if (sourceOriginal && companion.endpointAdapters?.recordTrustedSourceHandoff) {
+        const workspaceFileRefId = material.envelope.fileRefId;
+        if (!workspaceFileRefId) throw new TaskError('MATERIAL_RECEIPT_MISMATCH', '工作台材料缺少已保管文件身份。');
+        companion.endpointAdapters.recordTrustedSourceHandoff({ sourceTaskId: sourceOriginal.taskId,
+          sourceFileRefId: reference.id, sha256: link.sha256, materialId: link.material_id,
+          workspaceFileRefId, evidence: sourceOriginal.evidence });
+      }
       let text: string | null = null;
       if (material.preview.source) {
         try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(original.bytes); }
@@ -190,6 +222,7 @@ export class ConversationMaterialBridge {
       const conversionPreview = xlsxConversion && upstreamPreview?.format === 'xlsx'
         && Buffer.byteLength(JSON.stringify(upstreamPreview)) <= 6_000 ? upstreamPreview as JsonValue : null;
       const modelPreview = { materialId: link.material_id, originalSha256: link.sha256, category: bound.category,
+        ...(sourceOriginal && companion.endpointAdapters?.recordTrustedSourceHandoff ? { sourceReceiptTaskId: sourceOriginal.taskId } : {}),
         filename: reference.displayName, support: xlsxConversion ? 'needs_adapter' : material.preview.support,
         format: xlsxConversion ? 'json-document' : material.preview.format,
         ...(generated?.web ? { webSource: { sourceURL: generated.web.sourceURL, finalURL: generated.web.finalURL,
@@ -318,10 +351,14 @@ export class ConversationMaterialBridge {
       while (messageId) { if (seen.has(messageId)) break; seen.add(messageId); if (messageId === prior.messageId) { ancestor = true; break; }
         const message = this.options.core.store.message(messageId); if (message.conversation_id !== origin.conversationId) break; messageId = message.parent_id; }
       if (!ancestor) continue;
-      const task = this.options.database.connection.prepare('SELECT action,args,status,result,versions FROM tasks WHERE id=?').get(relation.id);
-      if (!task || task.status !== 'succeeded' || !/^(conversion\.|pdf\.extract$|image\.ocr$|audio\.transcribe$|material\.transcribe$|web\.read_public$|source\.werss\.read$|source\.wechat\.extract$)/.test(String(task.action))) continue;
+      const task = this.options.database.connection.prepare('SELECT * FROM tasks WHERE id=?').get(relation.id);
+      const sourceDownload = SOURCE_DOWNLOAD_ACTIONS.includes(String(task?.action));
+      if (!task || task.status !== 'succeeded' || !sourceDownload && !/^(conversion\.|pdf\.extract$|image\.ocr$|audio\.transcribe$|material\.transcribe$|web\.read_public$|source\.werss\.read$|source\.wechat\.extract$)/.test(String(task.action))) continue;
       const result = task.result ? JSON.parse(String(task.result)) : null;
       if (!result || !Array.isArray(result.artifactIds) || !result.artifactIds.includes(reference.id)) continue;
+      const sourceOriginal = sourceDownload && task.conversation_id === origin.conversationId
+        ? personalSourceOriginal(task, relation.id, result, reference.id) : undefined;
+      if (sourceDownload && !sourceOriginal) continue;
       const web = task.action === 'web.read_public'
         ? this.webMaterialEvidence(reference, relation.id, JSON.parse(String(task.args)), result) : undefined;
       const werss = task.action === 'source.werss.read'
@@ -329,7 +366,7 @@ export class ConversationMaterialBridge {
       const wechat = task.action === 'source.wechat.extract'
         ? this.wechatMaterialEvidence(reference, relation.id, JSON.parse(String(task.args)), result) : undefined;
       return { fileRefId: reference.id, version: reference.version, processingTask: { taskId: relation.id, action: String(task.action),
-        versions: JSON.parse(String(task.versions)), resultDigest: digestOperationArgs(result), data: result.data ?? null }, web, werss, wechat };
+        versions: JSON.parse(String(task.versions)), resultDigest: digestOperationArgs(result), data: result.data ?? null }, web, werss, wechat, sourceOriginal };
     }
     return undefined;
   }

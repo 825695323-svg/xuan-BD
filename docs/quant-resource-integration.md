@@ -33,7 +33,7 @@
 }
 ```
 
-`limit` 必须显式提供，范围 1–10000。日期接受 `YYYY-MM-DD` 或 `YYYYMMDD`。返回的日线保留原始成交量和成交额，并标记 `native_unverified`；必须在后续语义核对中确认单位。行数达到 `limit` 不证明日期窗完整，也不会自动请求下一批。
+`limit` 的范围为 1–10000，省略时使用 320。日期接受 `YYYY-MM-DD` 或 `YYYYMMDD`。交易日及请求边界按 `Asia/Shanghai` 解析。每行 `rawText` 保留价格、成交量和成交额的原始数字词素，缺值为 null。无法安全往返原值的数值会使该响应校验失败。未回显的证券、周期与复权口径在 `identityProvenance` 中标为 `request`。成交量与成交额的单位标记为 `native_unverified`；必须在后续语义核对中确认单位。行数达到 `limit` 不证明日期窗完整，也不会自动请求下一批。
 
 ### 东方财富研报
 
@@ -49,7 +49,7 @@
 }
 ```
 
-类别为 `industry`、`stock`、`strategy`、`macro`、`new_stock`。其中 `stock` 还须提供完整证券代码 `symbol`，其他类别不接受该字段。个股请求由适配器构造成已登记端点上的 JSON POST，经过与 GET 相同的公开地址解析、IP 固定和网络授权。
+类别为 `industry`、`stock`、`strategy`、`macro`、`new_stock`。其中 `stock` 还须提供完整证券代码 `symbol`，其他类别不接受该字段。个股请求只把六位代码发往已登记的 JSON POST 端点。投影的 `requested_symbol` 保留完整请求代码，`stock_code` 保存实际响应。缺码或只回显六位数字时，投影与候选反馈都会标出主体核对范围。
 
 `page` 范围 1–10000，`pageSize` 范围 1–100。每个调用只取一页；返回总数、页号、下一页与分页声明，缺失信息保持未知。发布时间同时保留 `publish_time_raw`、日期投影和来源精度，不把日期提升为精确公开时刻。
 
@@ -68,9 +68,9 @@
 }
 ```
 
-`statement` 为 `income`、`balance_sheet` 或 `cash_flow`，`period` 当前必须显式为 `quarterly`，`limit` 范围 1–20。请求使用现有 `https://fuyao.aicubes.cn` 连接；密钥仍取自已配置安全引用。HTTP 成功之后还核对业务 `code`，`4001` 限流停止当前任务。
+`statement` 为 `income`、`balance_sheet` 或 `cash_flow`，`period` 当前必须显式为 `quarterly`，`limit` 范围 1–20。请求使用现有 `https://fuyao.aicubes.cn` 连接；密钥取自已配置安全引用。HTTP 429 或业务码 4001 会停止当前任务。响应回显密钥时，任务只记录受限标记、摘要、HTTP 状态和字节数。
 
-返回保持 `source_reported_not_single_quarter_or_ttm`：报表原值可能包含累计口径，本适配器不直接声称其为标准单季或 TTM。公告时间和历史可见性继续交由既有证据及 WFD 历史规则核定。本轮没有供应商密钥，财报完成了请求与解码测试，未进行实际账号取数。
+财报行中的数值以原始十进制文本保存，包括尾零和指数。返回保持 `source_reported_not_single_quarter_or_ttm`：报表原值可能包含累计口径，本适配器不直接声称其为标准单季或 TTM。公告时间和历史可见性继续交由既有证据及 WFD 历史规则核定。本轮没有供应商密钥，财报完成了请求与解码测试，未进行实际账号取数。
 
 ### 原件与失败处理
 
@@ -147,7 +147,7 @@ node --import tsx --test modules/financial/reused-quant-factors.test.ts modules/
 node --import tsx --test modules/financial/strategy-screen.test.ts modules/financial/strategy-screen-wfd.test.ts
 ```
 
-另将 `XUAN_FULL_CHAIN_ROOT` 指向本轮新建的隔离测试父目录，运行 `node --import tsx --test apps/server/strategy-screen-model-tool.test.ts apps/server/endpoint-adapter-receipt.test.ts`，可核查真实会话入口和 TaskService 回执消费。测试使用合成底层传输，不调用用户的真实来源或生产 WFD。
+另将 `XUAN_FULL_CHAIN_ROOT` 指向本轮新建的隔离测试父目录，运行 `node --import tsx --test apps/server/strategy-screen-model-tool.test.ts modules/collection/endpoint-adapter-receipt.test.ts`，可核查真实会话入口和 TaskService 回执消费。测试使用合成底层传输，不调用用户的真实来源或生产 WFD。
 
 完整工程门禁仍按 [AGENTS.md](../AGENTS.md) 执行；最终执行结果以提交说明／PR 中的实际记录为准。Linux 全量回归没有在本次增量中默认启动。
 

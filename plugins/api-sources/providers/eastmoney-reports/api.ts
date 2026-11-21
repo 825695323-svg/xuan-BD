@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { parseHTML } from 'linkedom';
+import type { ReportSubjectEvidence } from '../../../../contracts/source-settings.js';
 import type { JsonValue } from '../../../../contracts/task-contracts.js';
 import { DirectError } from '../../../../platform/runtime/file-workspace.js';
 
@@ -99,7 +100,7 @@ export function decodeEastmoneyReports(request: EastmoneyReportRequest, rawBytes
   const total = integer(payload.hits, 'hits'), totalPages = integer(payload.TotalPage, 'TotalPage'), reportedPage = integer(payload.pageNo, 'pageNo');
   if (reportedPage !== null && reportedPage !== bound.page) return invalid('研报返回页号与请求不符。');
   if (payload.data.length > bound.pageSize || total !== null && payload.data.length > total
-    || totalPages !== null && bound.page > Math.max(1, totalPages)
+    || totalPages === 0 && payload.data.length > 0 || totalPages !== null && bound.page > Math.max(1, totalPages)
     || total !== null && totalPages !== null && totalPages !== Math.ceil(total / bound.pageSize))
     return invalid('研报条数或分页元数据矛盾。');
   if (total !== null && payload.data.length !== Math.min(bound.pageSize, Math.max(0, total - (bound.page - 1) * bound.pageSize)))
@@ -123,11 +124,14 @@ export function decodeEastmoneyReports(request: EastmoneyReportRequest, rawBytes
       if (publishDate < bound.start || publishDate > bound.end) return invalid('研报发布日期超出显式检索窗。');
     }
     const stockCode = text(value.stockCode, 'stockCode');
-    if (bound.category === 'stock' && stockCode !== null && stockCode !== bound.symbol!.split('.')[0])
+    if (bound.category === 'stock' && stockCode !== null && stockCode !== bound.symbol && stockCode !== bound.symbol!.split('.')[0])
       return invalid('个股研报返回了其他证券。');
     const detailUrl = infoCode ? `https://data.eastmoney.com/report/info/${infoCode}.html`
       : buildEastmoneyReportDetailRequest({ category: bound.category, encodeUrl: encodeUrl! }).url.href;
     return { report_key: key, category: bound.category, info_code: infoCode, encode_url: encodeUrl,
+      ...(bound.symbol ? { requested_symbol: bound.symbol, subject_verified: stockCode === bound.symbol,
+        subjectVerification: stockCode === null ? 'unverified_missing_stock_code' : stockCode === bound.symbol
+          ? 'verified_full_code' : 'code_prefix_only_exchange_unverified' } : {}),
       title: text(value.title, 'title'), stock_code: stockCode, stock_name: text(value.stockName, 'stockName'),
       org_name: text(value.orgSName, 'orgSName') ?? text(value.orgName, 'orgName'),
       publish_time_raw: publishTimeRaw, publish_date: publishDate,
@@ -138,10 +142,18 @@ export function decodeEastmoneyReports(request: EastmoneyReportRequest, rawBytes
       pdf_url: infoCode ? `https://pdf.dfcfw.com/pdf/H3_${infoCode}_1.pdf` : null,
       source_page: bound.page, source_row: index + 1, raw: value };
   });
+  let subject: ReportSubjectEvidence | undefined;
+  if (bound.symbol) {
+    const stock_codes = [...new Set(rows.map(row => row.stock_code).filter(code => code !== null))];
+    const subject_verified = rows.length > 0 && rows.every(row => row.subject_verified);
+    subject = { requested_symbol: bound.symbol, stock_codes, subject_verified,
+      subjectVerification: !rows.length ? 'no_rows' : rows.some(row => row.stock_code === null) ? 'unverified_missing_stock_code'
+        : subject_verified ? 'verified_full_code' : 'code_prefix_only_exchange_unverified' };
+  }
   const continuation = reportedPage === null || totalPages === null ? 'not_declared'
     : bound.page < totalPages ? 'available' : 'finished';
   return { decoderVersion: 'eastmoney-reports/1' as const, providerId: 'eastmoney' as const, request: bound,
-    recordCount: rows.length, rows, rawSha256: createHash('sha256').update(rawBytes).digest('hex'),
+    recordCount: rows.length, rows, ...(subject ? { subject } : {}), rawSha256: createHash('sha256').update(rawBytes).digest('hex'),
     page: bound.page, reportedPage, total, totalPages, nextPage: continuation === 'available' ? bound.page + 1 : null,
     continuation, coverageState: 'not_established' as const, historyAvailability: 'not_established' as const,
     paginationRaw: { hits: payload.hits ?? null, TotalPage: payload.TotalPage ?? null, pageNo: payload.pageNo ?? null, size: payload.size ?? null } };
@@ -151,7 +163,7 @@ export function decodeEastmoneyReports(request: EastmoneyReportRequest, rawBytes
 export function buildEastmoneyReportDetailRequest(parameters: Record<string, JsonValue>) {
   if (Object.keys(parameters).some(key => !['category', 'encodeUrl'].includes(key))
     || parameters.category !== 'strategy' && parameters.category !== 'macro'
-    || typeof parameters.encodeUrl !== 'string' || !parameters.encodeUrl.trim() || parameters.encodeUrl.length > 2048)
+    || typeof parameters.encodeUrl !== 'string' || !parameters.encodeUrl.trim() || parameters.encodeUrl.length > 2048 || /[\u0000-\u001f]/u.test(parameters.encodeUrl))
     return fail('研报详情须提供 strategy/macro 类别和有效 encodeUrl。');
   const request: EastmoneyReportDetailRequest = { category: parameters.category, encodeUrl: parameters.encodeUrl };
   const url = new URL(detailPaths[request.category], 'https://data.eastmoney.com');
@@ -159,22 +171,61 @@ export function buildEastmoneyReportDetailRequest(parameters: Record<string, Jso
   return { url, method: 'GET' as const, headers: { Accept: 'text/html', Referer: headers.Referer }, request };
 }
 
+/** 接受 JSON 或仅含静态字符串的旧式 JS 对象字面量；脚本从不执行。 */
+function detailMetadata(literal: string): Record<string, JsonValue> | null {
+  try {
+    const parsed: unknown = JSON.parse(literal);
+    return object(parsed) ? parsed : null;
+  } catch { /* 旧式详情脚本也会使用未加引号的字段名或单引号字符串。 */ }
+  const body = literal.slice(1, -1).trim();
+  const field = /\s*(?:([a-zA-Z_][\w]*)|"([\w]+)"|'([\w]+)')\s*:\s*(?:"([^"\\]*)"|'([^'\\]*)')\s*(?:,|$)/gy;
+  const values: Record<string, string> = Object.create(null);
+  while (field.lastIndex < body.length) {
+    const match = field.exec(body);
+    if (!match) return null;
+    const key = match[1] ?? match[2] ?? match[3];
+    if (Object.hasOwn(values, key)) return null;
+    values[key] = match[4] ?? match[5];
+  }
+  return values;
+}
+
 /** 复用现有 HTML 解析依赖；仅返回同源固定格式 PDF 定位，不下载、不执行脚本。 */
 export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailRequest, rawBytes: Uint8Array) {
   const bound = buildEastmoneyReportDetailRequest({ ...request });
   const { document } = parseHTML(decodeUtf8(rawBytes));
   const candidates = new Map<string, string>();
-  const collect = (candidate: string) => {
+  const collect = (candidate: string, expectedInfoCode?: string | null) => {
     let url: URL;
     try { url = new URL(candidate, bound.url); } catch { return; }
     if (url.protocol !== 'https:' || url.hostname !== 'pdf.dfcfw.com' || url.port || url.username || url.password) return;
     const match = /^\/pdf\/H3_(AP\d{8,20})_1\.pdf$/u.exec(url.pathname);
+    if (match && expectedInfoCode && match[1] !== expectedInfoCode) return invalid('研报详情标识与附件标识不符。');
     if (match) candidates.set(url.href, match[1]!);
   };
-  for (const element of document.querySelectorAll('a[href], iframe[src], embed[src], object[data]'))
-    collect(element.getAttribute('href') ?? element.getAttribute('src') ?? element.getAttribute('data') ?? '');
-  for (const script of document.querySelectorAll('script'))
-    for (const match of (script.textContent ?? '').matchAll(/https:\/\/pdf\.dfcfw\.com\/pdf\/H3_AP\d{8,20}_1\.pdf(?=["'\s<>)]|$)/gu)) collect(match[0]);
+  const related = 'aside, nav, footer, [role="navigation"], [aria-label*="相关"], [class*="related" i], [id*="related" i], [class*="recommend" i]';
+  const attachment = '#zwinfo a[download][href], #zwinfo > iframe[src], .report-download a[href], a.report-download[href], a[data-encode-url][href], [data-encode-url] a[href]';
+  for (const element of document.querySelectorAll(attachment)) {
+    if (element.closest(related)) continue;
+    const owner = element.closest('[data-encode-url]')?.getAttribute('data-encode-url');
+    if (owner != null && owner !== request.encodeUrl) continue;
+    collect(element.getAttribute('href') ?? element.getAttribute('src')!, element.closest('[data-info-code]')?.getAttribute('data-info-code'));
+  }
+  // 只读详情变量的静态赋值。普通脚本中的字符串、相关推荐和任意独立链接没有报告归属。
+  for (const script of document.querySelectorAll('script:not([src])')) {
+    if (script.closest(related)) continue;
+    const source = (script.textContent ?? '').trim();
+    const pdf = /^window\.pdf\s*=\s*(["'])(https:\/\/pdf\.dfcfw\.com\/pdf\/H3_AP\d{8,20}_1\.pdf)\1\s*;?$/u.exec(source);
+    if (pdf) collect(pdf[2]);
+    const assignment = /^(?:(?:var|let|const)\s+|window\.)?zwinfo\s*=\s*(\{[\s\S]*\})\s*;?$/u.exec(source);
+    if (!assignment) continue;
+    const info = detailMetadata(assignment[1]);
+    if (!info) continue;
+    if (info.encodeUrl !== undefined && info.encodeUrl !== request.encodeUrl) return invalid('研报详情标识与请求不符。');
+    const infoCode = infoCodeOf(info.infoCode);
+    for (const key of ['pdfUrl', 'pdf_url', 'attachUrl', 'attach_url'])
+      if (typeof info[key] === 'string') collect(info[key], infoCode);
+  }
   if (candidates.size !== 1) return invalid(candidates.size ? '研报详情存在多个不同附件定位，须明确选择。' : '研报详情没有可验证的 PDF 附件定位。');
   const [pdfUrl, infoCode] = [...candidates.entries()][0]!;
   return { decoderVersion: 'eastmoney-report-detail/1' as const, providerId: 'eastmoney' as const, request: bound.request,

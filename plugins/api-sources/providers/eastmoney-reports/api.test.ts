@@ -70,7 +70,7 @@ test('Eastmoney empty or absent pagination remains distinct from confirmed full 
 
 test('Eastmoney rejects contradictory pages, duplicates, malformed identities and dates', () => {
   for (const variant of [{ ...response(), pageNo: 2 }, { ...response(), hits: 1 }, { ...response(), TotalPage: 3 },
-    { ...response(), data: [] }, { ...response(), data: [row('01'), row('01')] }, { data: null },
+    { TotalPage: 0, data: [row('01')] }, { ...response(), data: [] }, { ...response(), data: [row('01'), row('01')] }, { data: null },
     { data: [{ ...row('01'), infoCode: '../outside' }] }, { data: [{ ...row('01'), publishDate: '2026-02-01' }] },
     { data: [{ ...row('01'), publishDate: '2026-01-99' }] }])
     assert.throws(() => decodeEastmoneyReports(request, bytes(variant)), code('SOURCE_REPORT_RESPONSE_INVALID'));
@@ -102,4 +102,34 @@ test('Eastmoney detail parsing locates a unique fixed-host attachment without do
     `<a href="${pdf}">x</a><a href="https://pdf.dfcfw.com/pdf/H3_AP202601010002_1.pdf">y</a>`])
     assert.throws(() => decodeEastmoneyReportDetail(request, html(body)), code('SOURCE_REPORT_RESPONSE_INVALID'));
   assert.throws(() => buildEastmoneyReportDetailRequest({ category: 'stock', encodeUrl: 'fixture' }), code('SOURCE_PARAMETERS_INVALID'));
+});
+
+test('Eastmoney distinguishes the requested exchange from the identity actually present in a stock report', () => {
+  const stock = { ...request, category: 'stock' as const, symbol: '600001.SH' };
+  for (const [stockCode, status] of [[null, 'unverified_missing_stock_code'], ['600001', 'code_prefix_only_exchange_unverified'],
+    ['600001.SH', 'verified_full_code']] as const) {
+    const result = decodeEastmoneyReports(stock, bytes({ data: [{ ...row('01'), stockCode }] }));
+    assert.equal(result.rows[0].requested_symbol, stock.symbol);
+    assert.equal(result.rows[0].stock_code, stockCode);
+    assert.equal(result.rows[0].subjectVerification, status);
+    assert.equal(result.subject?.subject_verified, stockCode === stock.symbol);
+    assert.deepEqual(result.subject?.stock_codes, stockCode ? [stockCode] : []);
+  }
+  assert.throws(() => decodeEastmoneyReports(stock, bytes({ data: [{ ...row('01'), stockCode: '600001.SZ' }] })), code('SOURCE_REPORT_RESPONSE_INVALID'));
+});
+
+test('Eastmoney only binds the report detail attachment from its own metadata or download container', () => {
+  const request = { category: 'macro' as const, encodeUrl: 'fixture' };
+  const pdf = 'https://pdf.dfcfw.com/pdf/H3_AP202601010001_1.pdf', other = pdf.replace('0001', '0002');
+  const related = `<aside><div class="report-download"><a href="${other}">相关阅读</a></div></aside>`;
+  for (const main of [`<script>var zwinfo = ${JSON.stringify({ encodeUrl: 'fixture', infoCode: 'AP202601010001', attach_url: pdf })};</script>`,
+    `<script>var zwinfo = { infoCode: 'AP202601010001', attach_url: '${pdf}' };</script>`,
+    `<div class="report-download"><a href="${pdf}">下载本研报</a></div>`])
+    assert.equal(decodeEastmoneyReportDetail(request, html(main + related)).pdfUrl, pdf);
+  for (const body of [related, `<nav><a href="${pdf}">相关</a></nav>`, `<a href="${pdf}">相关阅读</a>`,
+    `<article id="zwinfo"><section><h2>相关阅读</h2><a href="${pdf}">PDF</a></section></article>`,
+    `<div data-encode-url="other"><a href="${pdf}">PDF</a></div>`,
+    `<script>var related = {"pdfUrl":"${pdf}"};</script>`,
+    `<script>var zwinfo={"infoCode":"AP202601010002","pdfUrl":"${pdf}"};</script>`])
+    assert.throws(() => decodeEastmoneyReportDetail(request, html(body)), code('SOURCE_REPORT_RESPONSE_INVALID'));
 });

@@ -102,7 +102,9 @@ try {
         'apps/server/endpoint-adapter-r1.test.ts',
         'apps/server/record-evidence-r1.test.ts']
       : [...['modules/collection', 'modules/collection/data-processing', 'apps/server', 'platform/config', 'platform/resources',
-        'platform/capabilities/conversion', 'platform/capabilities/ocr', 'plugins/api-sources', 'plugins/api-sources/providers/werss', 'plugins/api-sources/providers/wechat'].flatMap(directory =>
+        'platform/capabilities/conversion', 'platform/capabilities/ocr', 'plugins/api-sources',
+        'plugins/api-sources/providers/tickflow', 'plugins/api-sources/providers/eastmoney-reports', 'plugins/api-sources/providers/ths',
+        'plugins/api-sources/providers/werss', 'plugins/api-sources/providers/wechat'].flatMap(directory =>
         readdirSync(join(codeRoot, directory), { withFileTypes: true }).filter(entry => entry.isFile() && entry.name.endsWith('.test.ts'))
           .map(entry => join(directory, entry.name))),
         'scripts/adopt-product-machine-wiring.test.ts', 'scripts/adopt-polars-python.test.ts'].sort();

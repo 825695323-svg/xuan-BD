@@ -19,15 +19,43 @@ function keys(value: string[]): void {
   if (!Array.isArray(value) || value.length > 10000 || value.some(item => !text(item)))
     fail('SOURCE_KEYS_INVALID', '行键必须明确且有界；不从时间首尾推定行键。');
 }
+/** Node 24 在严格 JSON 解析时提供原始数字词素，保留对象/数组位置和字符串类型。 */
+export function parseSourceJson(text: string, numberValue: (parent: object, key: string, value: number, raw: string) => unknown): unknown {
+  return JSON.parse(text, function (this: object, key, value, context?: { source: string }) {
+    if (typeof value !== 'number') return value;
+    if (typeof context?.source !== 'string') throw new Error('JSON number source unavailable');
+    return numberValue(this, key, value, context.source);
+  });
+}
+
+function decimalIdentity(text: string): string {
+  const [mantissa, exponent = '0'] = text.toLowerCase().split('e');
+  const [whole, fraction = ''] = mantissa.split('.');
+  const digits = (whole + fraction).replace(/^-?0*/u, '');
+  if (!digits) return '0';
+  let end = digits.length;
+  while (digits[end - 1] === '0') end--;
+  return (text.startsWith('-') ? '-' : '') + digits.slice(0, end) + 'e' + (Number(exponent) - fraction.length + digits.length - end);
+}
+
+/** 供必须兼容 Number 的字段核对。输入词素由 JSON 解析器提供，只忽略十进制等值写法。 */
+export function sourceNumberRoundTrips(value: number, raw: string): boolean {
+  return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value))
+    && decimalIdentity(raw) === decimalIdentity(String(value));
+}
 /** 请求身份不依赖供应商实现；稳定操作身份不授予网络或发布权限。 */
-export function sourceRequestKey(request: AcquisitionRequest): string {
-  if (!request || Object.keys(request).sort().join(',') !== 'adjustment,end,operationId,scopeId,start,subjectId'
+type LogicalRequest = AcquisitionRequest & { statement?: string; encodeUrl?: string };
+export function sourceRequestKey(request: LogicalRequest): string {
+  if (!request || Object.keys(request).filter(key => key !== 'statement' && key !== 'encodeUrl').sort().join(',') !== 'adjustment,end,operationId,scopeId,start,subjectId'
+    || 'statement' in request && (request.operationId !== 'financial_statements' || typeof request.statement !== 'string' || !['income', 'balance_sheet', 'cash_flow'].includes(request.statement))
+    || 'encodeUrl' in request && (request.operationId !== 'research_report_detail' || !text(request.encodeUrl))
     || !text(request.scopeId) || typeof request.operationId !== 'string' || !/^[a-z][a-z0-9_.:-]{0,99}$/u.test(request.operationId)
     || [request.subjectId, request.start, request.end, request.adjustment].some(value => value !== null && !text(value)))
     fail('SOURCE_REQUEST_INVALID', '只接受明确的逻辑请求字段，未知保持 null。');
-  return hash([request.scopeId, request.operationId, request.subjectId, request.start, request.end, request.adjustment]);
+  return hash([request.scopeId, request.operationId, request.subjectId, request.start, request.end, request.adjustment,
+    ...(request.statement === undefined ? [] : [request.statement]), ...(request.encodeUrl === undefined ? [] : [request.encodeUrl])]);
 }
-export function beginSourceAcquisition(request: AcquisitionRequest, binding: AcquisitionBinding,
+export function beginSourceAcquisition(request: LogicalRequest, binding: AcquisitionBinding,
   budget: AcquisitionCheckpoint['budget']): AcquisitionCheckpoint {
   const requestKey = sourceRequestKey(request); bindingKey(binding);
   if ([request.subjectId, request.start, request.end, request.adjustment].some(value => value === null))
@@ -42,7 +70,7 @@ function pageDigest(page: AcquisitionPage): string {
     page.original.sha256, page.rowCount, page.keys]);
 }
 /** 一次只接受一页，不自动请求、重试或切备用。 */
-function appendSourcePage(saved: AcquisitionCheckpoint, request: AcquisitionRequest,
+function appendSourcePage(saved: AcquisitionCheckpoint, request: LogicalRequest,
   binding: AcquisitionBinding, page: AcquisitionPage): AcquisitionCheckpoint {
   if (saved.version !== 'bd.source-acquisition/1' || sourceRequestKey(request) !== saved.requestKey
     || sourceRequestKey(saved.request) !== saved.requestKey || bindingKey(binding) !== bindingKey(saved.binding))
@@ -77,7 +105,7 @@ function checkedCheckpoint(saved: AcquisitionCheckpoint): AcquisitionCheckpoint 
   if (replay.pages.length !== saved.pages.length) fail('SOURCE_CHECKPOINT_INVALID', '检查点重复保存同一页。');
   return replay;
 }
-export function acceptSourcePage(saved: AcquisitionCheckpoint, request: AcquisitionRequest,
+export function acceptSourcePage(saved: AcquisitionCheckpoint, request: LogicalRequest,
   binding: AcquisitionBinding, page: AcquisitionPage): AcquisitionCheckpoint {
   return appendSourcePage(checkedCheckpoint(saved), request, binding, page);
 }
@@ -115,12 +143,12 @@ export function reviewSourceAcquisition(saved: AcquisitionCheckpoint, coverage?:
     gaps, returnTo: 'agents', publication: 'not_requested' };
 }
 export function sourceFailureDisposition(code: string): { outcome: AcquisitionOutcome; automaticRetry: false; returnTo: 'agents' } {
-  const outcome: AcquisitionOutcome = ['SOURCE_PERMISSION_DENIED', 'SOURCE_AUTH_REQUIRED'].includes(code) ? 'no_permission'
+  const outcome: AcquisitionOutcome = ['SOURCE_PERMISSION_DENIED', 'SOURCE_AUTH_REQUIRED', 'SOURCE_UNAUTHORIZED', 'SOURCE_FORBIDDEN'].includes(code) ? 'no_permission'
     : code === 'SOURCE_HISTORY_UNSUPPORTED' ? 'unsupported_history'
     : ['SOURCE_NOT_READY', 'SOURCE_RATE_LIMITED'].includes(code) ? 'not_ready' : 'failed';
   return { outcome, automaticRetry: false, returnTo: 'agents' };
 }
-export function sourceReceiptReview(request: AcquisitionRequest, rowCount: number | null): SourceReceiptReview {
+export function sourceReceiptReview(request: LogicalRequest, rowCount: number | null): SourceReceiptReview {
   if (rowCount !== null && (!Number.isSafeInteger(rowCount) || rowCount < 0))
     fail('SOURCE_PAGE_INVALID', '观测行数未知时用 null，不能以非法数值替代。');
   return { requestKey: sourceRequestKey(request), outcome: rowCount !== null && rowCount > 0 ? 'data' as const : 'undetermined' as const,
