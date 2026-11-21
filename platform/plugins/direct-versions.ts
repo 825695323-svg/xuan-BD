@@ -17,6 +17,8 @@ const common = ['platform/plugins/direct-versions.ts', 'platform/plugins/registr
   'platform/security/path-protection.ts', 'platform/config/source-settings.ts', 'platform/runtime/file-workspace.ts', 'platform/jobs/tasks.ts'];
 /** 固定产品读取与索引核验可单独绑定；只读筛选不借用 R1 写入和 G5 准入实现。 */
 const r1ReadImplementation = ['modules/collection/r1-product-reader.ts', 'modules/collection/r1-indexed-query.ts',
+  'modules/collection/r1-workspace.ts', 'modules/collection/r1-runtime.ts', 'modules/collection/r1-structured-handoff.ts',
+  'apps/server/services.ts', 'adapters/database/wfd-product-connection.ts',
   'modules/collection/purpose-eligibility.ts', 'contracts/r1-contracts.ts', 'contracts/financial-value.ts',
   'adapters/database/wfd-product-machine.ts', 'adapters/database/wfd-transport.ts', 'adapters/database/wfd-error.ts',
   'wfd/product/protocol/schemas/wfd-read-product.schema.json', 'wfd/product/protocol/schemas/wfd-common.schema.json'] as const;
@@ -61,6 +63,7 @@ const groups = {
   algorithmRead: r1ReadImplementation,
   // 仅实际派生发布动作与 r1 组共同绑定；普通目录、状态和筛选不依赖发布代码。
   algorithmPublication: ['modules/financial/derived-wfd-publisher.ts', 'modules/financial/derived-wfd-check.ts',
+    'plugins/financial/local-compute/assets.ts', 'platform/runtime/process.ts',
     'modules/financial/algorithm-reference.ts', 'modules/financial/algorithm-types.ts', 'modules/financial/algorithm-service.ts',
     'modules/collection/wfd-publish-restriction.ts', 'modules/collection/r1-source.ts', 'modules/collection/r1-evidence.ts',
     'modules/collection/source-field-profile.ts', 'wfd/product/protocol/schemas/wfd-structured-ingest.schema.json'],
@@ -70,10 +73,10 @@ const groups = {
   materialProcess: ['modules/collection/materials/semantic.ts', 'modules/collection/materials/semantic-contracts.ts', 'modules/collection/data-processing/table-cleaner/index.ts'],
   materialTranscription: ['modules/collection/materials/media-adapter.ts'],
   r1: [...r1ReadImplementation, 'modules/collection/g5-admission-receipt.ts', 'modules/collection/r1-g5-admission.ts',
-    'modules/collection/conversation-r1.ts', 'modules/collection/r1-workspace.ts', 'modules/collection/r1-record-evidence.ts', 'modules/collection/r1-output-dependencies.ts', 'modules/collection/r1-publication-set-evidence.ts', 'modules/collection/r1-fixed-row-consumption.ts', 'modules/collection/structured-retrieval.ts', 'modules/collection/r1-runtime.ts',
-    'modules/collection/r1-structured-handoff.ts', 'modules/collection/conversation-processing.ts', 'modules/collection/processing-plan.ts', 'modules/collection/data-processing/ocr-claim.ts', 'apps/server/ocr-review.ts', 'apps/server/transcription-review.ts', 'platform/capabilities/transcription/local.ts', 'apps/server/media-review-source.ts', 'platform/capabilities/ocr/evidence.ts',
+    'modules/collection/conversation-r1.ts', 'modules/collection/r1-record-evidence.ts', 'modules/collection/r1-output-dependencies.ts', 'modules/collection/r1-publication-set-evidence.ts', 'modules/collection/r1-fixed-row-consumption.ts', 'modules/collection/structured-retrieval.ts',
+    'modules/financial/basic-algorithm-tool-contract.ts', 'modules/collection/conversation-processing.ts', 'modules/collection/processing-plan.ts', 'modules/collection/data-processing/ocr-claim.ts', 'apps/server/ocr-review.ts', 'apps/server/transcription-review.ts', 'platform/capabilities/transcription/local.ts', 'apps/server/media-review-source.ts', 'platform/capabilities/ocr/evidence.ts',
     'contracts/workspace-services.ts', 'contracts/r1-contracts.ts', 'adapters/database/wfd-product-machine.ts', 'adapters/database/wfd-transport.ts',
-    'adapters/database/wfd-product-connection.ts', 'platform/config/connections.ts', 'platform/resources/bindings.ts',
+    'platform/config/connections.ts', 'platform/resources/bindings.ts',
     'modules/collection/r1-paged-readback.ts', 'modules/collection/r1-event.ts', 'modules/collection/r1-relation.ts',
     'wfd/product/protocol/schemas/wfd-common.schema.json', 'modules/collection/r1-tabular.ts', 'modules/collection/data-processing/global-supply-trade.ts', 'modules/collection/data-processing/financial-fixed.ts', 'modules/collection/candidate-service.ts', 'modules/collection/candidate-object-storage.ts'],
 } as const;

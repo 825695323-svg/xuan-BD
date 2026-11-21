@@ -17,6 +17,8 @@ import { CoreDatabase } from '../../platform/state/database.js';
 import { captureAssets, executeFinancialAssets, financialDigest, PYTHON_BRIDGE } from '../../plugins/financial/local-compute/assets.js';
 import { assertInternalAgentRules, captureInternalAgentRules } from '../agent/instructions/rules.js';
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
+import type { PersonalCore } from '../agent/runtime/core.js';
+import { ConversationProcessingBridge } from '../collection/conversation-processing.js';
 import { factorLibraryView } from '../collection/production-module-ports.js';
 import { wfdFixedReadEvidence } from '../collection/purpose-eligibility.js';
 import { ALGORITHM_REGISTRY } from './algorithm-registry.js';
@@ -330,29 +332,34 @@ def execute(request):
       assert.deepEqual(result.rows.map(row => row.RSI), [null, null, 100, null, 100]);
     });
 
-    test('冻结 v18/v19 的会话只发现和派发 MACD，v20 或缺省版本保留全部方法', async () => {
-      const frozenVersions = new Map([['run-v18', 18], ['run-v19', 19], ['run-v20', 20]]);
+    test('v18 至 v21 的发现、因子库、派发与恢复发布共用冻结范围；缺失版本保留只读结果', async () => {
+      const frozenVersions = new Map([['run-v18', 18], ['run-v19', 19], ['run-v20', 20], ['run-v21', 21]]);
       const origin: ModelTaskOrigin = { callId: 'frozen-rules', conversationId: 'conversation', parentRunId: 'run-v19',
         parentGeneration: 1, inputId: 'input', branchId: 'branch', messageId: 'message', modelDigest: 'model',
         endpointDigest: 'endpoint', toolCallId: 'tool', toolName: 'perform_action', notice: '',
         receiver: { provider: 'fixture', model: 'fixture', origin: 'fixture' } };
-      const companion = { algorithms, tasks, derivedPublisher: { async publish() {
+      const published: string[] = [];
+      const companion = { algorithms, tasks, bd: { assertDispatch() {} }, derivedPublisher: { async publish(taskId: string) {
+        published.push(taskId);
         return { requestId: 'fixture', state: 'not_requested', published: false, requiresRecovery: false,
           fixedReadback: false, error: null };
       } } } as unknown as WorkspaceServices;
       const bridge = new ConversationAlgorithmBridge({ database, companion, origin: () => origin,
         rulesVersion: runId => frozenVersions.get(runId) });
+      const core = { runConfiguration: (runId: string) => ({ internalAgentRules: { version: frozenVersions.get(runId) } }) } as PersonalCore;
+      const processing = new ConversationProcessingBridge({ database, companion, core, origin: () => origin });
       async function invoke(action: string, args: Record<string, JsonValue> = {}) {
         const context = { task: { id: `${origin.parentRunId}:${action}`, action, args },
           signal: new AbortController().signal, assertAuthorized() {} } as unknown as TaskExecutionContext;
-        const { data } = await bridge.execute(context);
+        const { data } = action === 'data.modules.factors' ? await processing.execute(context, action, args) : await bridge.execute(context);
         assert.ok(isWfdRecord(data));
         return data.modelPreview as { methods?: { methodId: string }[]; methodDirectory?: { methodId: string }[];
-          algorithms?: { methods: { id: string }[] }; status?: string; methodId?: string };
+          algorithms?: { methods: { id: string }[] }; status?: string; methodId?: string; taskId: string;
+          screening: { action?: string }; screenAction: string | null; catalog: { items: { id: string }[]; total: number } };
       }
       for (const [runId, methods] of [
         ['run-v18', ['macd']], ['run-v19', ['macd']],
-        ['run-v20', ALGORITHM_METHOD_IDS], ['run-without-rules', ALGORITHM_METHOD_IDS],
+        ['run-v20', ALGORITHM_METHOD_IDS], ['run-v21', ALGORITHM_METHOD_IDS], ['run-without-rules', []],
       ] as const) {
         origin.parentRunId = runId;
         const contract = await invoke('algorithms.contract');
@@ -360,6 +367,18 @@ def execute(request):
         const capabilities = await invoke('algorithms.capabilities');
         assert.deepEqual(capabilities.algorithms?.methods.map(method => method.id), methods);
         assert.deepEqual(capabilities.methodDirectory?.map(method => method.methodId), methods);
+        assert.equal(contract.screenAction, runId === 'run-v21' ? 'algorithms.screen' : null);
+        assert.equal(contract.screening.action, contract.screenAction ?? undefined);
+        assert.equal(capabilities.screening.action, contract.screenAction ?? undefined);
+        assert.equal(JSON.stringify(await invoke('bd.session.capabilities')).includes('algorithms.screen'), runId === 'run-v21');
+        const factors = (await invoke('data.modules.factors')).catalog;
+        const expectedFactors = (frozenVersions.get(runId) ?? 0) >= 20 ? ALGORITHM_REGISTRY.map(item => item.id) : methods;
+        assert.deepEqual(factors.items.map(item => item.id), expectedFactors);
+        assert.equal(factors.total, expectedFactors.length);
+        if (!methods.some(method => method === 'alpha191_014')) {
+          await assert.rejects(invoke('data.modules.factors', { factorId: 'alpha191_014' }), { code: 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES' });
+          await assert.rejects(invoke('algorithms.calculate', { calculationJson: '{"methodId":"alpha191_014"}' }), { code: 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES' });
+        }
       }
       origin.parentRunId = 'run-v19';
       const rejected = { code: 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES', message: /v19.*macd/u };
@@ -376,12 +395,29 @@ def execute(request):
       });
       assert.equal(macd.methodId, 'macd');
       assert.equal(macd.status, 'succeeded');
-      for (const runId of ['run-v20', 'run-without-rules']) {
+      let maId = '';
+      for (const runId of ['run-v20', 'run-v21']) {
         origin.parentRunId = runId;
-        const result = await invoke('algorithms.calculate', ma);
+        const result = await invoke(runId === 'run-v20' ? 'data.modules.calculate' : 'algorithms.calculate', ma);
         assert.equal(result.methodId, 'ma');
         assert.equal(result.status, 'succeeded');
+        maId = result.taskId;
+        await invoke('algorithms.publish', { taskId: maId });
+        assert.equal(published.at(-1), maId);
       }
+      origin.parentRunId = 'run-v19';
+      await invoke('algorithms.publish', { taskId: macd.taskId });
+      const publicationCount = published.length;
+      for (const runId of ['run-v18', 'run-v19', 'run-without-rules']) {
+        origin.parentRunId = runId;
+        await assert.rejects(invoke('algorithms.publish', { taskId: maId }), { code: 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES' });
+        assert.equal((await invoke('algorithms.status', { taskId: maId })).methodId, 'ma');
+      }
+      for (const action of ['algorithms.calculate', 'data.modules.calculate'])
+        await assert.rejects(invoke(action, { calculationJson: JSON.stringify({ methodId: 'macd', parameters: macdParameters, source }) }),
+          { code: 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES' });
+      await assert.rejects(invoke('algorithms.publish', { taskId: macd.taskId }), { code: 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES' });
+      assert.equal(published.length, publicationCount);
     });
 
     test('WFD 独立复核拒绝算法服务结果中的单行数值篡改', async () => {
@@ -395,25 +431,30 @@ def execute(request):
     });
   });
 
-test('内置代理规则捕获 v20 并验证旧任务冻结的 v18 和 v19', () => {
+test('内置代理规则捕获 v21，旧任务仅凭各自冻结的 v18、v19、v20 正文与摘要恢复', () => {
   const current: FrozenRunConfiguration = { modelId: null, provider: null, thinkingLevel: 'off', preferenceRevision: null,
     modelConfigurationVersion: null, personaSelectionRevision: 0, agentDisplayName: null, personaRecords: [], personaText: '',
     ...captureInternalAgentRules() };
-  assert.equal(current.internalAgentRules?.version, 20);
+  assert.equal(current.internalAgentRules?.version, 21);
   assertInternalAgentRules(current);
   assert.ok(current.internalAgentRulesText);
 
   // v18 到 v20 的前十二条相同，完整历史正文由下列固定摘要约束。
   const boundary = current.internalAgentRulesText.indexOf('\n\n13. **算法边界**');
   assert.ok(boundary > 0);
-  const v18 = current.internalAgentRulesText.slice(0, boundary) + '\n';
+  const v18 = current.internalAgentRulesText.slice(0, boundary).replace(/^1\. .+$/mu,
+    '1. **身份与范围**：你是 xuan BD（数据处理与导入应用）的内置操作代理，只处理来源采集、转换、解析、清洗、标注、核对、结构化、基础算法和导入交接。研究、交易、回测及独立 xuan 不属于本应用。') + '\n';
+  const v20 = v18 + '\n13. **算法边界**：只调用 `algorithms.contract`（算法契约）和 `algorithms.capabilities`（当前可用性）中已正式登记、可用且通过契约核验的受控算法。固定 MACD 沿用 12/26/9、首值初始化和 2 倍柱值口径。输入只引用已发布 WFD 固定快照，逐项核对方法参数、字段及输入语义。计算后须独立核对原输入与结果，经当前用途限制核验后沿同一 R1 请求确认发布并固定读回。禁止调用未登记算法或外部算法包；连接变化或结果未知时禁止换库、换号或重算绕过。\n';
   const v19 = v18 + '\n13. **算法边界**：当前仅保留固定 12/26/9 MACD，首值初始化且柱值系数为 2。先核 `algorithms.contract`（算法契约）与 `algorithms.capabilities`（当前可用性），输入只能引用已发布 WFD 固定快照。不得调用已移出的均线、财务期间运算、宏观同比或未实现的复权算法，不自行执行外部算法包。计算后须独立核对原输入与结果，经当前用途限制核验后沿同一 R1 请求发布并固定读回；连接变化或结果未知时不得换库、换号或重算绕过。\n';
   for (const [version, digest, text] of [
     [18, 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c', v18],
     [19, '38342f494b3a83fc5f0512c1fd42515a49877ea61f70e62c6ce3089b257ff45c', v19],
+    [20, 'd6c8ecfc20feabf9d1512654d4123e54a803d6029ade74fdd70205a51e1ba49c', v20],
   ] as const) {
     assertInternalAgentRules({ ...current, internalAgentRulesText: text,
       internalAgentRules: { id: 'xuan-bd-internal-agent', version, digest } });
+    assert.throws(() => assertInternalAgentRules({ ...current,
+      internalAgentRules: { id: 'xuan-bd-internal-agent', version, digest } }), { code: 'RUN_CONFIGURATION_UNAVAILABLE' });
   }
 });
 

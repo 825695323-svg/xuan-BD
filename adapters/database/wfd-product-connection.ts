@@ -4,6 +4,7 @@ import { readConnectionRegistry, registeredConnection } from '../../platform/con
 import { ConfigError } from '../../platform/runtime/errors.js';
 import type { ResourceBindings } from '../../platform/resources/bindings.js';
 import { WfdProductMachineClient } from './wfd-product-machine.js';
+import { canonicalWfdJson, wfdSha256 } from './wfd-transport.js';
 
 /**
  * 已登记的 WFD 产品机器连接。
@@ -34,6 +35,8 @@ export interface ResolvedProductMachineConnection {
   callerId: string;
   trustedActorNamespace: string;
   schemaPath: string;
+  readSchemaSha256: string;
+  queryImplSha256: string;
   client: WfdProductMachineClient;
   profile: ProductMachineConnectionProfile;
 }
@@ -124,14 +127,17 @@ export function resolveProductMachineConnection(resources: ResourceBindings,
   if (typeof caller.caller_id !== 'string' || typeof caller.trusted_actor_namespace !== 'string') {
     return fail('产品机器配置缺少实际调用者身份。');
   }
-  const protocolRoot = typeof config.protocol_root === 'string' ? config.protocol_root : null;
-  if (!protocolRoot) return fail('产品机器配置缺少 protocol_root。');
+  const protocolRoot = absoluteDir(config.protocol_root, 'protocol_root');
+  const projectRoot = absoluteDir(config.project_root, 'project_root');
   const schemaPath = resolve(protocolRoot, 'schemas/wfd-structured-ingest.schema.json');
+  const readSchemas = ['wfd-read-product.schema.json', 'wfd-common.schema.json'].map(name =>
+    [name, wfdSha256(readFileSync(absoluteFile(resolve(protocolRoot, 'schemas', name), name)))]);
+  const queryPath = absoluteFile(resolve(projectRoot, 'wfd_sdk/product_query.py'), 'product_query.py');
   const client = new WfdProductMachineClient({
     pythonPath: profile.python_path,
     entryPath: profile.entry_path,
     configPath: profile.config_path,
-    projectRoot: absoluteDir(config.project_root, 'project_root'),
+    projectRoot,
   });
   return {
     connectionId: profile.id,
@@ -141,6 +147,8 @@ export function resolveProductMachineConnection(resources: ResourceBindings,
     callerId: caller.caller_id,
     trustedActorNamespace: caller.trusted_actor_namespace,
     schemaPath,
+    readSchemaSha256: wfdSha256(canonicalWfdJson(readSchemas)),
+    queryImplSha256: wfdSha256(readFileSync(queryPath)),
     client,
     profile,
   };

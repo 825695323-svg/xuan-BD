@@ -27,6 +27,7 @@ import { piTaskRequestId } from './runtime/pi-task-runtime.js';
 import type { BdService } from './service.js';
 import { mediaPluginCatalog, type MaterialMediaPluginDescriptor } from '../collection/materials/plugins.js';
 import type { ConversationAlgorithmBridge } from '../financial/conversation-algorithms.js';
+import { algorithmActionAllowed } from '../financial/basic-algorithm-tool-contract.js';
 import { BusinessGoalError, type BusinessGoalService } from '../../platform/jobs/business-goals.js';
 import { directImplementationVersion, guardDirectContext } from '../../platform/plugins/direct-versions.js';
 
@@ -172,7 +173,7 @@ export interface ModelTaskOrigin {
 }
 export interface CoreModelToolOptions {
   database: CoreDatabase;
-  core: Pick<PersonalCore, 'isRunActive'>;
+  core: Pick<PersonalCore, 'isRunActive'> & Partial<Pick<PersonalCore, 'runConfiguration'>>;
   permissions: PermissionService;
   files: FileReferenceService;
   registry: SkillRegistry;
@@ -328,6 +329,8 @@ export class CoreModelTools {
         this.assertSkillToolCall(call, input, model);
       } else if (call.tool_name === 'list_actions') {
         if (call.action !== CATALOGUE_ACTION || call.task_id !== null || call.ticket_json !== null) throw publicError('MODEL_SHARE_REVOKED');
+        if (JSON.parse(call.preview_json).rulesVersion !== (this.options.core.runConfiguration?.(input.runId)?.internalAgentRules?.version ?? null))
+          throw publicError('MODEL_SHARE_REVOKED');
       } else if (Object.hasOwn(PERSONAL_TOOLS, call.tool_name)) {
         if (call.action !== PERSONAL_TOOLS[call.tool_name] || call.task_id !== null || call.ticket_json !== null) throw publicError('MODEL_SHARE_REVOKED');
       } else if (this.options.service?.toolNames.includes(call.tool_name)) {
@@ -709,6 +712,7 @@ export class CoreModelTools {
       UNION SELECT m.id,m.parent_id FROM messages m JOIN path p ON m.id=p.parent_id WHERE m.conversation_id=?) SELECT id FROM path WHERE id=?`)
       .get(scope.branchId, scope.conversationId, scope.conversationId, source.messageId);
     const ticket = JSON.parse(call.ticket_json) as ShareTicket, task = this.options.getTasks().get(call.task_id);
+    this.assertHistoricalScreenPreview(task);
     if (!ancestor || task.ownerRole !== scope.subject || task.status !== 'succeeded' || task.requiresReview || !task.result
       || task.currentRunId !== ticket.runId || task.currentAttemptId !== ticket.attemptId || task.generation !== ticket.generation
       || ticket.resultDigest !== digestOperationArgs(task.result) || !ticket.sources || !ticket.outputs) throw publicError('MODEL_SHARE_REVOKED');
@@ -795,10 +799,13 @@ export class CoreModelTools {
       const payloadDigest = digestOperationArgs({ name: 'list_actions', action: CATALOGUE_ACTION, args, inputId: input.inputId,
         messageId: input.messageId, branchId: input.branchId, modelDigest: channel.digest });
       let call = this.reserve(input, toolCallId, 'list_actions', CATALOGUE_ACTION, args, payloadDigest, channel.model, channel.digest);
+      const rulesVersion = this.options.core.runConfiguration?.(input.runId)?.internalAgentRules?.version;
+      const saved = call.preview_json ? JSON.parse(call.preview_json) : null;
       let preview: JsonValue;
-      if (call.preview_json) preview = JSON.parse(call.preview_json) as JsonValue;
+      if (saved && saved.rulesVersion === (rulesVersion ?? null)) preview = saved;
       else {
         const all = this.options.registry.list().filter((skill) => MODEL_ACTIONS.has(skill.action) && skill.runtimeId === 'direct' && skill.kind === 'direct'
+          && algorithmActionAllowed(skill.action, rulesVersion)
           && (!args.query || `${skill.action} ${skill.title} ${skill.description}`.toLocaleLowerCase().includes(args.query)))
           .map((skill) => {
             const plugin = (this.options.mediaPlugins?.() ?? mediaPluginCatalog()).find(candidate => candidate.id === skill.action);
@@ -809,7 +816,7 @@ export class CoreModelTools {
         const scope = 'query先去首尾空白，再按不区分大小写的整段子串匹配动作名、标题或说明，不按空格拆词；回执query为规范化值。total和done只指当前query的匹配集合。0项请改短关键字或精确action，或以空query沿nextOffset分页查看全部。';
         const page = (actions: typeof all) => {
           const next = args.offset + actions.length;
-          return { ok: true, query: args.query, actions, total: all.length, offset: args.offset,
+          return { ok: true, rulesVersion: rulesVersion ?? null, query: args.query, actions, total: all.length, offset: args.offset,
             nextOffset: next < all.length ? next : null, done: next >= all.length, scope };
         };
         const actions: typeof all = [];
@@ -1146,6 +1153,8 @@ export class CoreModelTools {
       if (name === 'perform_action' && isObject(params) && params.action === 'image.ocr'
         && (!factory.runImageOcr || !factory.model.input?.includes('image'))) throw publicError('MODEL_IMAGE_UNSUPPORTED');
       const routed = this.prepare(name, params, known);
+      if (name === 'perform_action' && !known?.task_id && !algorithmActionAllowed(routed.action,
+        this.options.core.runConfiguration?.(input.runId)?.internalAgentRules?.version)) throw publicError('MODEL_ACTION_NOT_ALLOWED');
       if (routed.action === 'image.ocr' && (!factory.runImageOcr || !factory.model.input?.includes('image'))) throw publicError('MODEL_IMAGE_UNSUPPORTED');
       const channel = this.channel(factory.model);
       const payloadDigest = digestOperationArgs({ name, action: routed.action, args: routed.args, inputId: input.inputId,
@@ -1637,6 +1646,7 @@ export class CoreModelTools {
       || call.branch_id !== input.branchId || (capturedModelDigest ?? this.channel(model).digest) !== call.model_digest || !call.task_id || !call.ticket_json) throw publicError('MODEL_SHARE_REVOKED');
     const ticket = JSON.parse(call.ticket_json) as ShareTicket;
     const task = this.options.getTasks().get(call.task_id);
+    this.assertHistoricalScreenPreview(task);
     const attempt = this.options.getTasks().getAttempts(ticket.runId).find((candidate) => candidate.id === ticket.attemptId);
     const events = this.options.getTasks().events(task.id).filter((event) => event.attemptId === ticket.attemptId);
     const terminal = events.at(-1);
@@ -1662,6 +1672,16 @@ export class CoreModelTools {
         generation: input.generation, operationId: 'model.result.share' }, ticket.capabilities);
     }
     for (const selected of [...ticket.sources, ...ticket.outputs]) this.requireProof(selected, call.conversation_id);
+  }
+
+  /** 旧任务原回执继续保管。历史预览或旧证据续页不能重放带原始排除诊断的正文。 */
+  private assertHistoricalScreenPreview(task: TaskRecord): void {
+    if (task.action !== 'algorithms.screen') return;
+    const data = task.result?.data, preview = isObject(data) ? data.modelPreview : null;
+    const fixed = isObject(preview) ? preview.fixedRead : null;
+    if (!isObject(fixed) || !isObject(fixed.historicalExclusions)
+      || fixed.historyMode !== 'snapshot_contents' && 'diagnostics' in fixed.historicalExclusions)
+      throw publicError('MODEL_SHARE_REVOKED');
   }
 
   private preview(call: CallRow, task: TaskRecord): JsonValue {
