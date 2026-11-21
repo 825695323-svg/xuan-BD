@@ -198,7 +198,13 @@ const mainAttachmentHeading = /^[【[(\s]*(?:本?研报附件|本?报告附件|�
 const explicitSectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt';
 const sectionHeadings = `${explicitSectionHeadings},[class*="title" i]`;
 const rootBoundaryContainers = '#zwinfo,article,section,main,body,html';
-const containerBlocks = 'body,p,div,header,section,article,main,li,dd,blockquote,td,th,figcaption';
+const standaloneTitleBlocks = 'div,p,header,summary,figcaption';
+const spillableInlineBlocks = 'div,p,header,summary';
+const skippedScanTags = new Set([
+  'HTML', 'HEAD', 'META', 'LINK', 'TITLE', 'STYLE', 'SCRIPT', 'NOSCRIPT', 'TEMPLATE',
+  'A', 'IFRAME', 'BR', 'HR', 'WBR', 'IMG', 'INPUT', 'SVG', 'PICTURE', 'SOURCE', 'CANVAS',
+  'VIDEO', 'AUDIO', 'AREA', 'BASE', 'COL', 'EMBED', 'PARAM', 'TRACK', 'OBJECT',
+]);
 const relatedSelector = 'aside,nav,footer,[role="navigation"],[aria-label*="相关"],[aria-label*="推荐"],[aria-label*="延伸阅读"],'
   + '[class*="related" i],[id*="related" i],[class*="recommend" i],[id*="recommend" i],.rel-list,.xgyd,.xgyb';
 
@@ -220,6 +226,8 @@ function isHarmlessWrapper(parent: Element, heading: Element): boolean {
   for (const child of parent.children) {
     if (child === heading) continue;
     if (['BR', 'HR', 'WBR'].includes(child.tagName)) continue;
+    if (decorativeInlineTags.has(child.tagName)
+      && !(child.textContent ?? '').trim() && !child.querySelector('a,iframe')) continue;
     if (child.matches(inlineTextElements)
       && !(child.textContent ?? '').trim() && !child.querySelector('a,iframe')) continue;
     return false;
@@ -254,6 +262,9 @@ function leadingHeading(element: Element): Element | null {
 
 type InlinePiece = { node: ChildNode; text: string; start: number; end: number };
 type InlineSegment = { pieces: InlinePiece[]; endedAt: Element | null };
+type WalkFrame =
+  | { kind: 'node'; node: ChildNode }
+  | { kind: 'closeInline'; node: Element; startPieceIndex: number; startOffset: number; startSegmentCount: number };
 
 const leadingListItem = /^[\s\n]*(?:\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}[.、)）]|[①-⑳])(?=$|[\s\n\p{L}\p{N}《「【])/u;
 const sentenceEndStrict = /(?:[。；]|(?<![\d.])\.(?!\d))[\s"'”’）)】\]]*$/u;
@@ -266,17 +277,38 @@ function hasFlatProse(text: string): boolean {
 function endsWithSentence(afterMatch: string): boolean {
   const trimmed = afterMatch.trim();
   if (!trimmed) return false;
-  if (/。/u.test(trimmed)) return true;
   return leadingListItem.test(afterMatch) ? sentenceEndStrict.test(trimmed) : sentenceEndGeneral.test(trimmed);
+}
+
+function pushChildNodesReversed(parent: Node, stack: WalkFrame[]): void {
+  const children = parent.childNodes;
+  for (let i = children.length - 1; i >= 0; i -= 1) stack.push({ kind: 'node', node: children[i]! });
 }
 
 function collectInlineSegments(container: Document | Element): InlineSegment[] {
   const segments: InlineSegment[] = [];
   let pieces: InlinePiece[] = [], offset = 0;
-  const stack: ChildNode[] = [];
-  for (let i = container.childNodes.length - 1; i >= 0; i -= 1) stack.push(container.childNodes[i]!);
+  const stack: WalkFrame[] = [];
+  pushChildNodesReversed(container, stack);
   while (stack.length) {
-    const node = stack.pop()!;
+    const frame = stack.pop()!;
+    if (frame.kind === 'closeInline') {
+      const lastPiece = pieces[pieces.length - 1];
+      if (segments.length === frame.startSegmentCount
+        && offset > frame.startOffset
+        && offset - frame.startOffset <= 32
+        && lastPiece
+        && !/\s$/u.test(lastPiece.text)) {
+        let inlineText = '';
+        for (let i = frame.startPieceIndex; i < pieces.length; i += 1) inlineText += pieces[i]!.text;
+        if (relatedWrapperTitle.test(inlineText.trim())) {
+          pieces.push({ node: frame.node, text: ' ', start: offset, end: offset + 1 });
+          offset += 1;
+        }
+      }
+      continue;
+    }
+    const { node } = frame;
     if (node.nodeType === 3) {
       const text = node.textContent ?? '';
       if (!text) continue;
@@ -291,9 +323,22 @@ function collectInlineSegments(container: Document | Element): InlineSegment[] {
       offset += 1;
       continue;
     }
-    if (decorativeInlineTags.has(el.tagName) && !el.querySelector('a,iframe')) continue;
+    if (el.matches(relatedSelector)) {
+      if (pieces.length) segments.push({ pieces, endedAt: el });
+      pieces = [];
+      offset = 0;
+      continue;
+    }
+    if (decorativeInlineTags.has(el.tagName) && (el.childNodes.length === 0 || !el.querySelector('a,iframe'))) continue;
     if (el.matches(inlineFlowElements) && !el.matches(explicitSectionHeadings)) {
-      for (let i = el.childNodes.length - 1; i >= 0; i -= 1) stack.push(el.childNodes[i]!);
+      stack.push({
+        kind: 'closeInline',
+        node: el,
+        startPieceIndex: pieces.length,
+        startOffset: offset,
+        startSegmentCount: segments.length,
+      });
+      pushChildNodesReversed(el, stack);
       continue;
     }
     if (pieces.length) segments.push({ pieces, endedAt: el });
@@ -305,7 +350,9 @@ function collectInlineSegments(container: Document | Element): InlineSegment[] {
 }
 
 function isProseSegmentAfterMatch(afterMatch: string, endedAt: Element | null): boolean {
-  const hasTrailingLinkOrList = Boolean(endedAt && endedAt.matches('a,iframe,ul,ol'));
+  const hasTrailingLinkOrList = Boolean(
+    endedAt && (endedAt.matches('a,iframe,ul,ol') || (!leadingHeading(endedAt) && endedAt.querySelector('a,iframe'))),
+  );
   return hasTrailingLinkOrList ? endsWithSentence(afterMatch) : hasFlatProse(afterMatch);
 }
 
@@ -369,28 +416,40 @@ function relatedSections(document: Document) {
       if (shouldStopContainer) break;
     }
   }
-  for (const element of document.querySelectorAll(`${sectionHeadings},${containerBlocks}`)) {
-    if (isExcluded(element)) continue;
+  for (const element of document.querySelectorAll('*')) {
+    if (skippedScanTags.has(element.tagName)) continue;
     const isExplicitHeading = element.matches(explicitSectionHeadings);
     const isSectionHeading = isExplicitHeading || element.matches('[class*="title" i]');
-    const isStandaloneBlockTitle = element.matches('div,p,header')
+    const isInlineFlow = element.matches(inlineFlowElements);
+    if (isInlineFlow && !isSectionHeading) continue;
+    if (element.closest(relatedSelector)) continue;
+    const downloadBox = element.closest('.report-download');
+    const alreadyExcluded = downloadBox ? hasInternalExclusion(element, downloadBox) : isExcluded(element);
+    if (alreadyExcluded) continue;
+    const isStandaloneBlockTitle = !isInlineFlow
+      && element.matches(standaloneTitleBlocks)
+      && !element.matches(`${rootBoundaryContainers},.report-download`)
       && isPureInlineTitleBlock(element)
       && relatedWrapperTitle.test(element.textContent?.trim() ?? '');
     if (isSectionHeading || isStandaloneBlockTitle) {
       let heading = element;
       // 标题可以独占一层包装（可含 <br> 等空排版标签），链接列表与包装节点同级。
       while (heading.parentElement && isHarmlessWrapper(heading.parentElement, heading)) heading = heading.parentElement;
-      if ((isExplicitHeading || !isSectionHeading || !element.matches(inlineTextElements) || heading !== element || !element.parentElement || element.parentElement.tagName === 'BODY')
+      if ((isExplicitHeading || !isSectionHeading || !isInlineFlow || heading !== element)
         && relatedTitle.test(heading.textContent?.trim() ?? '')) {
         excluded.add(heading);
-        markFollowing(heading, headingLevel(element));
+        if (!heading.matches(`${rootBoundaryContainers},.report-download`)) {
+          markFollowing(heading, headingLevel(element));
+        }
         continue;
       }
     }
-    if (element.matches(inlineTextElements) || (isSectionHeading && !element.matches(containerBlocks))) continue;
-    scanContainer(element, true);
+    if (isInlineFlow || isExplicitHeading) continue;
+    const allowParentSiblings = element.matches(spillableInlineBlocks)
+      && !element.matches(`${rootBoundaryContainers},.report-download`);
+    scanContainer(element, allowParentSiblings);
   }
-  if (!document.body) scanContainer(document, false);
+  scanContainer(document, false);
   return {
     isRelated(element: Element) {
       if (element.closest(relatedSelector) || element.tagName === 'A' && relatedTitle.test(element.textContent?.trim() ?? '')) return true;

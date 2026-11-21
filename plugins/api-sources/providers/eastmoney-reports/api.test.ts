@@ -158,12 +158,21 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div id="zwinfo">${mainLink}<p>相关阅读：1. ${otherLink}</p></div>`,
     `<div id="zwinfo">${mainLink}<p><strong>相关阅读：</strong>1. 某行业研报 ${otherLink}</p></div>`,
     `<div id="zwinfo">${mainLink}<p><strong>相关阅读：</strong>1. 某行业研报<img alt="">${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<span><span role="heading" aria-level="2">相关阅读</span><img alt=""></span>1. 某行业研报 ${otherLink}</div>`,
     `<div id="zwinfo">${mainLink}<span role="heading" aria-level="2">相关阅读</span>1. 某行业研报 ${otherLink}</div>`,
     `<div id="zwinfo">${mainLink}<p><strong>相关阅读：</strong>1. 需求见底？三季度行业展望 ${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<p><strong>相关阅读：</strong>1. 需求见底。三季度行业展望 ${otherLink}</p></div>`,
     `<div id="zwinfo">${mainLink}<p><strong>相关阅读：</strong>1. 需求见底了吗？ ${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<p><strong>相关阅读</strong>1. 某行业研报 ${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<span class="title">相关阅读</span>1. 某行业研报 ${otherLink}</div>`,
     `<article id="zwinfo">${mainLink}<p><strong>相关阅读</strong></p>1. 某行业研报 ${otherLink}</article>`,
     `<div id="zwinfo">${mainLink}<p><strong>相关阅读：</strong><span><br>某行业研报 </span>${otherLink}</p></div>`,
+    `<div id="zwinfo"><details><summary>附录</summary><span>相关阅读：${otherLink}</span></details>${mainLink}</div>`,
+    `<div id="zwinfo"><figure><figcaption>附录</figcaption><span>相关阅读：${otherLink}</span></figure>${mainLink}</div>`,
+    `<ul id="zwinfo"><li>${mainLink}</li><li>相关阅读：1. 某行业研报<div>${otherLink}</div></li></ul>`,
+    `<div id="zwinfo">${mainLink}<h2>相关阅读</h2>${otherLink}<h2>本研报附件</h2></div>`,
     `<div id="zwinfo">相关阅读：${otherLink}<h2>本研报附件</h2>${mainLink}推荐阅读：<a download href="https://pdf.dfcfw.com/pdf/H3_AP202601010003_1.pdf">下载</a></div>`,
+    `<div id="zwinfo"><span class="title">相关阅读</span>参见正文说明。${mainLink}</div>`,
     `<div id="zwinfo"><p>1. 相关阅读：参见正文说明。${mainLink}</p></div>`,
     `<div id="zwinfo"><p>1. 相关阅读：参见正文说明.${mainLink}</p></div>`,
     `<div id="zwinfo"><p><em>相关阅读</em> 参见正文说明。${mainLink}</p></div>`,
@@ -180,6 +189,12 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
   }
   const attestedBox = `<div class="report-download" data-encode-url="fixture" data-info-code="AP202601010001"><a href="${pdf}">下载原文</a></div>`;
   const attestedScript = `<script>var zwinfo=${JSON.stringify({ encodeUrl: 'fixture', infoCode: 'AP202601010001' })};</script>`;
+  for (const body of [
+    `<div id="zwinfo">${attestedScript}${mainLink}<p><strong>相关阅读</strong></p><div class="report-download" data-encode-url="fixture" data-info-code="AP202601010001"><p>下载提示</p><h3>推荐阅读</h3><a href="${other}">推荐PDF</a></div></div>`,
+    `<div id="zwinfo">${attestedScript}<cite class="related">相关阅读：${otherLink}</cite><a data-encode-url="fixture" data-info-code="AP202601010001" href="${pdf}">下载原文</a></div>`,
+  ]) {
+    assert.equal(decodeEastmoneyReportDetail(request, html(body)).pdfUrl, pdf);
+  }
   for (const numberedLead of [
     '<p>1. 相关阅读：参见正文说明。</p>',
     '<p>1. 相关阅读：<br>参见正文说明。</p>',
@@ -200,17 +215,30 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div id="zwinfo"><p>相关阅读：<br>1. 某行业研报 ${otherLink}</p></div>`,
     `<div id="zwinfo"><p><strong>相关阅读：</strong>1. 某行业研报 ${otherLink}</p></div>`,
     `<div id="zwinfo"><p><strong>相关阅读：</strong>1. 某行业研报<img alt="">${otherLink}</p></div>`,
+    `<div id="zwinfo"><span><span role="heading" aria-level="2">相关阅读</span><img alt=""></span>1. 某行业研报 ${otherLink}</div>`,
     `<div id="zwinfo"><span role="heading" aria-level="2">相关阅读</span>1. 某行业研报 ${otherLink}</div>`,
     `<div id="zwinfo"><p><strong>相关阅读：</strong>1. 需求见底？三季度行业展望 ${otherLink}</p></div>`,
+    `<div id="zwinfo"><p><strong>相关阅读：</strong>1. 需求见底。三季度行业展望 ${otherLink}</p></div>`,
     `<div id="zwinfo"><p><strong>相关阅读：</strong>1. 需求见底了吗？ ${otherLink}</p></div>`,
+    `<div id="zwinfo"><p><strong>相关阅读</strong>1. 某行业研报 ${otherLink}</p></div>`,
+    `<div id="zwinfo"><span class="title">相关阅读</span>1. 某行业研报 ${otherLink}</div>`,
     `<article id="zwinfo"><p><strong>相关阅读</strong></p>1. 某行业研报 ${otherLink}</article>`,
     `<div id="zwinfo"><p><strong>相关阅读：</strong><span><br>某行业研报 </span>${otherLink}</p></div>`,
+    `<div id="zwinfo"><details><summary>附录</summary><span>相关阅读：${otherLink}</span></details></div>`,
+    `<div id="zwinfo"><figure><figcaption>附录</figcaption><span>相关阅读：${otherLink}</span></figure></div>`,
+    `<ul id="zwinfo"><li>相关阅读：1. 某行业研报<div>${otherLink}</div></li></ul>`,
   ]) {
     assert.throws(() => decodeEastmoneyReportDetail(request, html(relOnly)), noPdf);
   }
   const deepSpanOpen = '<span>'.repeat(4000), deepSpanClose = '</span>'.repeat(4000);
   assert.equal(decodeEastmoneyReportDetail(request, html(`<div id="zwinfo"><p>${deepSpanOpen}<em>相关阅读</em> 参见正文说明。${mainLink}${deepSpanClose}</p></div>`)).pdfUrl, pdf);
   assert.throws(() => decodeEastmoneyReportDetail(request, html(`<div id="zwinfo"><p>${deepSpanOpen}相关阅读：1. 某行业研报 ${otherLink}${deepSpanClose}</p></div>`)), noPdf);
+  const wideSiblingSpans = '<span></span>'.repeat(64);
+  assert.equal(decodeEastmoneyReportDetail(request, html(`<div id="zwinfo"><p>${wideSiblingSpans}<em>相关阅读</em> 参见正文说明。${mainLink}</p></div>`)).pdfUrl, pdf);
+  assert.throws(() => decodeEastmoneyReportDetail(request, html(`<div id="zwinfo"><p>${wideSiblingSpans}相关阅读：1. 某行业研报 ${otherLink}</p></div>`)), noPdf);
+  for (const emptyLike of ['', 'plain text', '<!-- comment -->']) {
+    assert.throws(() => decodeEastmoneyReportDetail(request, html(emptyLike)), noPdf);
+  }
   assert.equal(decodeEastmoneyReportDetail(request, html(`<article id="zwinfo"><p><small>相关阅读量</small>是本研报分析指标。</p>${mainLink}</article>`)).pdfUrl, pdf);
   assert.equal(decodeEastmoneyReportDetail(request, html(`<div id="zwinfo"><h2>相关阅读</h2>${otherLink}<div><h2>本研报附件</h2>${mainLink}</div></div>`)).pdfUrl, pdf);
   const metadata = 'var zwinfo = {"infoCode":"AP202601010001"};', scriptPdf = (url: string) => `window.pdf="${url}";`;
@@ -238,8 +266,13 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div data-encode-url="other"><a href="${pdf}">PDF</a></div>`,
     `<script>var related = {"pdfUrl":"${pdf}"};</script>`])
     assert.throws(() => decodeEastmoneyReportDetail(request, html(body)), noPdf);
-  assert.throws(() => decodeEastmoneyReportDetail(request, html(`<div class="report-download"><a href="${other}">下载</a></div><div id="zwinfo"><h2>相关阅读</h2></div>${attestedScript}`)),
-    invalidDetail('研报详情元数据与附件声明指向不同的 infoCode。'));
+  for (const rootWrapper of [
+    `<div class="report-download"><a href="${other}">下载</a></div><div id="zwinfo"><h2>相关阅读</h2></div>${attestedScript}`,
+    `<div class="report-download"><a href="${other}">下载</a></div><div id="zwinfo"><strong>相关阅读</strong></div>${attestedScript}`,
+  ]) {
+    assert.throws(() => decodeEastmoneyReportDetail(request, html(rootWrapper)),
+      invalidDetail('研报详情元数据与附件声明指向不同的 infoCode。'));
+  }
   assert.throws(() => decodeEastmoneyReportDetail(request, html(`<div class="report-download" data-encode-url="fixture" data-info-code="AP202601010001"><a href="${other}">下载原文</a></div>${attestedScript}`)),
     invalidDetail('研报详情标识与附件标识不符。'));
   assert.throws(() => decodeEastmoneyReportDetail(request, html(`<script>var zwinfo={"infoCode":"AP202601010002","pdfUrl":"${pdf}"};</script>`)),
