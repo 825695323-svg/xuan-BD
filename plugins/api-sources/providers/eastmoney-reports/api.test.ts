@@ -284,6 +284,23 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div id="zwinfo"><p>开始前请先看<a href="/guide">使用指南</a>（推荐阅读）</p><p>${mainLink}</p></div>`,
     `<div id="zwinfo"><p><a href="/guide">核对</a> 相关阅读&nbsp;统计后即可${mainLink}。</p></div>`,
     `<div id="zwinfo"><p><a href="/guide">核对</a> 相关阅读\u3000统计后即可${mainLink}。</p></div>`,
+    `<div id="zwinfo">${mainLink}<a download href="${other}">【相关<br>研报】</a></div>`,
+    `<div id="zwinfo">${mainLink}<p>相关阅读：<a href="#report2">钢价会回升吗？</a></p><div id="report2">${otherLink}</div></div>`,
+    `<div id="zwinfo">${mainLink}<h2>相关阅读</h2><p><a class="report-title" data-encode-url="other" href="/report/2">原文下载</a></p>${otherLink}</div>`,
+    `<div id="zwinfo">${mainLink}<div class="report-download"><a href="/toc">目录</a>【相关阅读 】${otherLink}</div></div>`,
+    `<div id="zwinfo">${mainLink}<div class="report-download"><a href="/toc">目录</a><strong class="title">（相关阅读）</strong>${otherLink}</div></div>`,
+    `<div id="zwinfo">${mainLink}相关阅读：<a href="/report/2">行业展望（数据详见正文）</a> <time>2026-01-05</time> ${otherLink}</div>`,
+    `<div id="zwinfo">${mainLink}相关阅读：<a href="/report/2">配套报告原文</a>见${otherLink}</div>`,
+    `<div id="zwinfo">${mainLink}<p><a href="/toc">目录</a><strong class="title"> 相关阅读</strong> 行业展望 ${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<p>目录&#x2028;相关阅读 行业展望 ${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<div class="report-download"><a href="/toc">目录</a>相关阅读：<a href="${other}"> 下载 PDF</a></div></div>`,
+    `<div id="zwinfo">${mainLink}<p>相关阅读：行业展望</p><a role="heading" aria-level="2" download href="${other}">行业展望</a></div>`,
+    `<div id="zwinfo"><p>按表中定义， 相关阅读 统计值仅供参考，请${mainLink}。</p></div>`,
+    `<div id="zwinfo"><p>请核对 <a id="more">相关阅读</a> 统计值后再${mainLink}。</p></div>`,
+    `<div id="zwinfo">相关阅读：本研报的下载地址见<a class="report-download" href="${pdf}">下载原文</a></div>`,
+    `<div id="zwinfo"><p>相关阅读：本研报的下载地址见<a id="file"></a>${mainLink}</p></div>`,
+    `<div id="zwinfo"><p>开始前请先看<a href="/guide">使用指南</a> （推荐阅读）</p><p>${mainLink}</p></div>`,
+    `<div id="zwinfo"><p>相关阅读：<a href="#body">参见本报告</a></p><p id="body">${mainLink}</p></div>`,
   ]) {
     assert.equal(decodeEastmoneyReportDetail(request, html(body)).pdfUrl, pdf);
   }
@@ -366,6 +383,17 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div id="zwinfo"><div class="report-download"><a href="/toc">目录</a>【相关阅读】${' '.repeat(28)}<a href="${other}">下载 PDF</a></div></div>`,
     `<div id="zwinfo"><p>相关阅读：行业展望</p><h3>${otherLink}</h3></div>`,
     `<div id="zwinfo"><ul><li><p>相关阅读：行业展望</p><h2>分类索引</h2>${otherLink}</li></ul></div>`,
+    `<div id="zwinfo"><a download href="${other}">【相关<br>研报】</a></div>`,
+    `<div id="zwinfo"><p>相关阅读：<a href="#report2">钢价会回升吗？</a></p><div id="report2">${otherLink}</div></div>`,
+    `<div id="zwinfo"><h2>相关阅读</h2><p><a class="report-title" data-encode-url="other" href="/report/2">原文下载</a></p>${otherLink}</div>`,
+    `<div id="zwinfo"><div class="report-download"><a href="/toc">目录</a>【相关阅读 】${otherLink}</div></div>`,
+    `<div id="zwinfo"><div class="report-download"><a href="/toc">目录</a><strong class="title">（相关阅读）</strong>${otherLink}</div></div>`,
+    `<div id="zwinfo">相关阅读：<a href="/report/2">行业展望（数据详见正文）</a> <time>2026-01-05</time> ${otherLink}</div>`,
+    `<div id="zwinfo">相关阅读：<a href="/report/2">配套报告原文</a>见${otherLink}</div>`,
+    `<div id="zwinfo"><p><a href="/toc">目录</a><strong class="title"> 相关阅读</strong> 行业展望 ${otherLink}</p></div>`,
+    `<div id="zwinfo"><p>目录&#x2028;相关阅读 行业展望 ${otherLink}</p></div>`,
+    `<div id="zwinfo"><div class="report-download"><a href="/toc">目录</a>相关阅读：<a href="${other}"> 下载 PDF</a></div></div>`,
+    `<div id="zwinfo"><p>相关阅读：行业展望</p><a role="heading" aria-level="2" download href="${other}">行业展望</a></div>`,
   ]) {
     assert.throws(() => decodeEastmoneyReportDetail(request, html(relOnly)), noPdf);
   }
