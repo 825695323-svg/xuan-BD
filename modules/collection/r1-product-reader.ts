@@ -2,7 +2,7 @@ import { R1_CONTEXT_OPERATIONS, type R1ContextOperation, type R1ContextRead } fr
 import type { R1ConnectionIdentity, R1DefinitionIntent, R1DefinitionReview, R1ProductDiscovery, R1ProductRead, R1ProductSelection, R1ReadConnection, R1SnapshotStatus, R1TabularSelection } from '../../contracts/r1-contracts.js';
 import { WfdProductMachineError } from '../../adapters/database/wfd-product-machine.js';
 import type { WfdFilterPlan } from '../../adapters/database/wfd-product-machine.js';
-import { canonicalWfdJson, isWfdRecord, type WfdRecord } from '../../adapters/database/wfd-transport.js';
+import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
 import { isExplicitUtcInstant } from '../../contracts/financial-value.js';
 import { ELIGIBILITY_HISTORY_MODES, type EligibilityHistoryMode } from './purpose-eligibility.js';
@@ -12,7 +12,7 @@ import { assertSelectionFields, parseMembership, parseTabularSelection, resolveM
 
 export const R1_READ_LIMITS = Object.freeze({ pageSize: 100, maxScanRows: 5000, maxScanBytes: 16_777_216,
   maxResultBytes: 2_097_152, maxDiscoveryProducts: 1000, maxFields: 64, timeoutMs: 30_000 });
-type ReadRuntime = Pick<R1Runtime, 'client' | 'currentIdentity'>;
+type ReadRuntime = Pick<R1Runtime, 'client'> & { currentIdentity(): R1ConnectionIdentity };
 const identifier = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(value);
 const fixed = (value: unknown): value is string => identifier(value) && !/^(latest|current)$/iu.test(value);
 function fail(code: string, message: string): never { throw new TaskError(code, message); }
@@ -120,7 +120,7 @@ export class R1ProductReader {
     }, signal);
   }
 
-  async readProduct(value: unknown, signal?: AbortSignal): Promise<R1ProductRead> {
+  async readProduct(value: unknown, signal?: AbortSignal): Promise<R1ProductRead & { connectionSha256: string }> {
     const input = body(value, ['snapshotId', 'productId', 'fields', 'cursor', 'historyMode', 'at', 'heldScope', 'usableStage',
       'includeDefinitionPublication', 'definitionPublicationAt', 'selection', 'membership', 'pageSize']);
     const history = readHistorySelection(input);
@@ -227,7 +227,8 @@ export class R1ProductReader {
       const page = await readPage(target, resolved?.selection ?? selection, input.cursor ?? null, pageSize, resolved?.digest);
       const result = resolved ? { ...page, membership: { ...resolved.proof, digest: resolved.digest } } : page;
       boundedResult(result);
-      return { snapshotId, productId, historyMode: history.mode, connection: connection(identity), result, limits };
+      return { snapshotId, productId, historyMode: history.mode, connection: connection(identity),
+        connectionSha256: wfdSha256(canonicalWfdJson(identity)), result, limits };
     }, signal, limits.timeoutMs);
   }
 
@@ -346,13 +347,15 @@ export class R1ProductReader {
 
   private async run<T>(work: (runtime: ReadRuntime, identity: R1ConnectionIdentity, active: () => void, wait: AbortSignal) => Promise<T>,
     signal?: AbortSignal, timeoutMs: number = R1_READ_LIMITS.timeoutMs): Promise<T> {
+    const started = performance.now();
     const initial = this.options.control();
     if (initial.stopped) fail('BD_STOPPED', '服务已停止，不受理新的 WFD 查询。');
     const runtime = this.options.runtime(), identity = runtime.currentIdentity(), fingerprint = canonicalWfdJson(identity);
     if (identity.profile !== 'data_only') fail('R1_PROFILE_REQUIRED', '此读取入口只允许绑定的 data_only 连接。');
     const wait = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]);
     const active = () => {
-      if (wait.aborted) fail('R1_READ_ABORTED', `本次只读等待已中止或超过 ${timeoutMs / 1000} 秒；没有自动重试。`);
+      if (wait.aborted || performance.now() - started >= timeoutMs)
+        fail('R1_READ_ABORTED', `本次只读等待已中止或超过 ${timeoutMs / 1000} 秒；没有自动重试。`);
       const now = this.options.control();
       if (now.stopped || now.generation !== initial.generation) fail('BD_STOPPED', '查询等待期间停止代次已变化；本次旧结果未采用。');
       if (canonicalWfdJson(runtime.currentIdentity()) !== fingerprint) fail('R1_CONNECTION_BINDING_CHANGED', '查询期间绑定连接身份已变化；请核对后重新装配。');
@@ -382,7 +385,7 @@ function boundedResult(value: WfdRecord): void {
 
 
 /** 只固定读取意图；版本选择、时间证据和实例台账仍由既有 WFD 查询执行。 */
-function readHistorySelection(input: WfdRecord) {
+export function readHistorySelection(input: WfdRecord) {
   const mode = input.historyMode === undefined ? 'snapshot_contents' : input.historyMode;
   if (!(ELIGIBILITY_HISTORY_MODES as readonly unknown[]).includes(mode))
     fail('R1_READ_INPUT', '历史视角须为实际登记的固定快照、市场可知或系统持有模式。');

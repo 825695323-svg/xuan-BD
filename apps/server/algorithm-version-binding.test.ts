@@ -37,11 +37,21 @@ function changedImplementation(suffix: string, check: () => void): void {
 test('real algorithm host freezes publication separately from fixed reads and binds WFD without a Python algorithm service', {
   skip: !process.env.XUAN_FULL_CHAIN_ROOT && '需要显式 XUAN_FULL_CHAIN_ROOT（隔离宿主版本回归）；不读取真实 WFD。', timeout: 30_000,
 }, async t => {
-  const f = createFullChainFixture({ name: 'algorithm-versions' }), resources = new ResourceBindings(f.runtime);
+  const f = createFullChainFixture({ name: 'algorithm-versions', machine: !!process.env.WFD_PYTHON });
+  const externalRoot = join(f.root, 'external-wfd');
+  if (f.machine) {
+    fs.mkdirSync(externalRoot);
+    for (const name of ['protocol', 'wfd_sdk']) fs.cpSync(join(codeRoot, 'wfd/product', name), join(externalRoot, name), { recursive: true });
+    const config = JSON.parse(fs.readFileSync(f.configPath, 'utf8'));
+    fs.writeFileSync(f.configPath, JSON.stringify({ ...config, project_root: externalRoot, protocol_root: join(externalRoot, 'protocol') }));
+  }
+  const resources = new ResourceBindings(f.runtime);
   const companionDb = new CoreDatabase(join(f.runtime, 'state/companion.sqlite'));
   const companionCore = new PersonalCore(backend, { database: companionDb });
   const companion = createApplicationServices(companionCore, companionDb, { role: 'service', health, projectRoot: f.runtime,
-    codeRoot, privateRoot: join(f.runtime, 'state/companion-private'), resources });
+    codeRoot, privateRoot: join(f.runtime, 'state/companion-private'), resources,
+    materials: { environment: 'synthetic-test' }, r1ConnectionId: 'full-chain-test' });
+  const realWorkspace = companion.r1Workspace;
   let version = { r1Workspace: 'synthetic-read/1', protocol: 'wfd.structured-ingest/1.0', profile: 'data_only' };
   let connection = { connectionId: 'synthetic-fixed-read', profile: 'data_only', configSha256: 'a'.repeat(64) };
   const workspace = { get versionBinding() { return version; }, capabilities: () => ({ connection }),
@@ -67,7 +77,7 @@ test('real algorithm host freezes publication separately from fixed reads and bi
     const r1Baseline = directImplementationVersion(['r1']);
     for (const path of ['modules/financial/derived-wfd-publisher.ts', 'modules/financial/derived-wfd-check.ts',
       'modules/financial/algorithm-reference.ts', 'modules/collection/wfd-publish-restriction.ts',
-      'modules/collection/r1-structured-handoff.ts', 'modules/collection/source-field-profile.ts',
+      'plugins/financial/local-compute/assets.ts', 'platform/runtime/process.ts', 'modules/collection/source-field-profile.ts',
       'modules/collection/g5-admission-receipt.ts', 'modules/collection/r1-g5-admission.ts']) {
       changedImplementation(path, () => {
         for (const action of publication) assert.throws(() => verify(action), { code: 'DIRECT_DEPENDENCY_UNAVAILABLE' }, path);
@@ -81,6 +91,8 @@ test('real algorithm host freezes publication separately from fixed reads and bi
 
   await t.test('fixed product reader, indexed query and protocol changes reject screen versions and recover after byte restoration', () => {
     for (const path of ['modules/collection/r1-product-reader.ts', 'modules/collection/r1-indexed-query.ts',
+      'modules/collection/r1-workspace.ts', 'modules/collection/r1-runtime.ts', 'modules/collection/r1-structured-handoff.ts',
+      'apps/server/services.ts', 'adapters/database/wfd-product-connection.ts',
       'contracts/r1-contracts.ts', 'contracts/financial-value.ts', 'adapters/database/wfd-product-machine.ts',
       'wfd/product/protocol/schemas/wfd-read-product.schema.json']) {
       changedImplementation(path, () => {
@@ -89,6 +101,45 @@ test('real algorithm host freezes publication separately from fixed reads and bi
       });
       for (const action of actions) verify(action);
     }
+  });
+
+  await t.test('external protocol and Python query bytes invalidate the frozen connection independently of repository copies', {
+    skip: !f.machine && '外置 WFD 连接回归需要显式 WFD_PYTHON',
+  }, () => {
+    assert.ok(realWorkspace && companion.r1Runtime, companion.r1Configuration?.reason ?? 'missing isolated R1');
+    companion.r1Workspace = realWorkspace;
+    try {
+      assert.equal(realWorkspace.capabilities().configuration.state, 'configured');
+      assert.equal(registry.get('algorithms.screen').availability.available, true);
+      const baseline = companion.r1Runtime.currentIdentity();
+      const task = { ...frozen.get('algorithms.screen')!, versions: registry.captureVersions('algorithms.screen', {}) };
+      for (const [file, digest] of [['protocol/schemas/wfd-read-product.schema.json', 'readSchemaSha256'],
+        ['protocol/schemas/wfd-common.schema.json', 'readSchemaSha256'], ['wfd_sdk/product_query.py', 'queryImplSha256']] as const) {
+        assert.match(baseline[digest], /^[0-9a-f]{64}$/u);
+        const path = join(externalRoot, file), original = fs.readFileSync(path);
+        try {
+          fs.appendFileSync(path, '\n');
+          const current = companion.r1Runtime.currentIdentity();
+          assert.notEqual(current[digest], baseline[digest]);
+          assert.deepEqual({ ...current, [digest]: baseline[digest] }, baseline, '仅对应外置文件摘要改变');
+          assert.throws(() => registry.assertTaskVersions(task), { code: 'DIRECT_VERSION_CONFLICT' });
+        } finally { fs.writeFileSync(path, original); }
+        registry.assertTaskVersions(task);
+      }
+    } finally { companion.r1Workspace = workspace; }
+  });
+
+  await t.test('Python algorithm service upgrades invalidate calculation and publication only', () => {
+    let revision = 'one';
+    companion.algorithms = { get versionBinding() { return { python: revision }; } } as NonNullable<typeof companion.algorithms>;
+    try {
+      const before = actions.map(action => ({ ...frozen.get(action)!, versions: registry.captureVersions(action, {}) }));
+      revision = 'two';
+      for (const task of before) {
+        if (publication.includes(task.action)) assert.throws(() => registry.assertTaskVersions(task), { code: 'DIRECT_VERSION_CONFLICT' });
+        else registry.assertTaskVersions(task);
+      }
+    } finally { companion.algorithms = undefined; }
   });
 
   await t.test('reader implementation binding and actual connection are frozen even without an algorithm service; missing ports stay null-safe', () => {

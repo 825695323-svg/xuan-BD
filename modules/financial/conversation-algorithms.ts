@@ -1,18 +1,20 @@
 import type { CoreDatabase } from '../../platform/state/database.js';
 import type { WorkspaceServices } from '../../contracts/workspace-services.js';
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
+import type { PersonalCore } from '../agent/runtime/core.js';
 import type { SkillRegistration } from '../../platform/plugins/registry.js';
 import type { SkillField } from '../../contracts/skill-contracts.js';
 import { TaskError, type TaskExecutionContext } from '../../platform/jobs/tasks.js';
 import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
-import { isWfdRecord } from '../../adapters/database/wfd-transport.js';
+import { canonicalWfdJson, isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
-import { ALGORITHM_CONTRACT_VERSION, ALGORITHM_RUNTIME, type AlgorithmCatalogView } from './algorithm-types.js';
-import { algorithmAllowedByRules, basicAlgorithmToolContract, bdSessionToolContract,
+import { ALGORITHM_CONTRACT_VERSION, ALGORITHM_RUNTIME, isAlgorithmMethodId, type AlgorithmCatalogView, type AlgorithmSubmissionContext } from './algorithm-types.js';
+import type { LocalAlgorithmService } from './algorithm-service.js';
+import { algorithmAllowedByRules, basicAlgorithmToolContract, bdSessionToolContract, frozenAlgorithmCapabilities,
   BD_SESSION_TOOL_CONTRACT_VERSION } from './basic-algorithm-tool-contract.js';
 import { ALGORITHM_REGISTRY_VERSION } from './algorithm-registry.js';
 import { productionModuleDirectory, processingSessionContract } from '../collection/production-module-ports.js';
-import { screenFixedWfdStrategy, strategyScreenContract, STRATEGY_SCREEN_WFD_VERSION } from './strategy-screen-wfd.js';
+import { historicalExclusionSummary, screenFixedWfdStrategy, strategyScreenContract, STRATEGY_SCREEN_WFD_VERSION } from './strategy-screen-wfd.js';
 import { STRATEGY_SCREEN_VERSION } from './strategy-screen.js';
 
 const ACTIONS = new Set(['bd.session.capabilities', 'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.screen', 'algorithms.publish', 'algorithms.status', 'data.modules.calculate']);
@@ -20,6 +22,52 @@ const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as
 const text = (key: string, label: string, maxLength = 160, required = true): SkillField =>
   ({ key, label, type: 'text', required, maxLength });
 const view = (value: unknown): Record<string, JsonValue> => ({ kind: 'conversation-algorithm', modelPreview: json(value) });
+
+interface HistoricalIntent {
+  action: 'algorithms.calculate' | 'algorithms.screen'; historyMode: string; cutoff: string;
+  snapshotId: unknown; productId: unknown; methodId?: unknown; heldScope?: unknown; usableStage?: unknown;
+}
+
+/** 只认当前分支最后一个已消费的真实用户输入。结构化用途声明须由用户本人作出，不能从工具参数摘取任意原话。 */
+export function conversationAlgorithmSubmission(core: PersonalCore, origin: ModelTaskOrigin, intent?: HistoricalIntent): AlgorithmSubmissionContext | undefined {
+  if (!core.isRunActive(origin.parentRunId, origin.parentGeneration)) return;
+  let source;
+  try { source = core.captureTaskCompletionOrigin(origin.inputId); }
+  catch { return; }
+  const command = core.store.command(origin.inputId);
+  if (source.conversationId !== origin.conversationId || source.branchId !== origin.branchId
+    || source.sourceMessageId !== origin.messageId || source.sourceGeneration !== origin.parentGeneration
+    || command.run_id !== origin.parentRunId) return;
+  const message = core.store.message(origin.messageId);
+  if (message.conversation_id !== origin.conversationId || message.role !== 'user' || message.text !== command.text) return;
+  if (intent && !matchesHistoricalDeclaration(message.text, intent)) return;
+  const context = { authority: 'user-message' as const, messageId: message.id, quote: message.text, observedAtUtc: message.created_at,
+    conversationId: origin.conversationId, branchId: origin.branchId, parentRunId: origin.parentRunId };
+  return context;
+}
+
+function matchesHistoricalDeclaration(text: string, intent: HistoricalIntent): boolean {
+  const perspective = intent.historyMode === 'market_known_at' ? '市场可知' : '系统持有';
+  const operation = intent.action === 'algorithms.screen' ? '筛选历史候选' : '执行历史计算';
+  if (text.trim().replace(/。$/u, '') === `请按${perspective}视角，以 ${intent.cutoff} 为截止${operation}`) return true;
+  let declaration: unknown;
+  try { declaration = JSON.parse(text); }
+  catch { return false; }
+  return isWfdRecord(declaration) && declaration.purpose === 'historical_compute' && declaration.action === intent.action
+    && declaration.historyMode === intent.historyMode && declaration.cutoff === intent.cutoff
+    && Object.entries(declaration).every(([key, value]) => key === 'purpose'
+      || Object.hasOwn(intent, key) && value === intent[key as keyof HistoricalIntent]);
+}
+
+function hasScreenReader(port: WorkspaceServices['r1Workspace']): boolean {
+  if (typeof port?.readProduct !== 'function') return false;
+  if (!port.capabilities) return true;
+  try {
+    const caps = port.capabilities();
+    return !!caps?.connection && typeof caps.connection.connectionId === 'string' && !!caps.connection.connectionId.trim()
+      && (caps.configuration === undefined || caps.configuration?.state === 'configured');
+  } catch { return false; }
+}
 
 /**
  * 基础算法与当前会话分支的工具桥：固定方法执行并经过一次独立核对写回 WFD。
@@ -33,9 +81,10 @@ export class ConversationAlgorithmBridge {
   readonly versionBinding = { algorithmRegistry: ALGORITHM_REGISTRY_VERSION, sessionTools: BD_SESSION_TOOL_CONTRACT_VERSION,
     strategyScreen: STRATEGY_SCREEN_VERSION, strategyScreenInput: STRATEGY_SCREEN_WFD_VERSION };
   readonly registrations: readonly SkillRegistration[];
-  constructor(private readonly options: { database: CoreDatabase; companion: WorkspaceServices;
+  constructor(private readonly options: { database: CoreDatabase; companion: WorkspaceServices & { algorithms?: Pick<LocalAlgorithmService, 'submit'> };
     origin(taskId: string): ModelTaskOrigin | null;
     rulesVersion(runId: string): number | undefined;
+    submissionContext?(origin: ModelTaskOrigin, intent?: HistoricalIntent): AlgorithmSubmissionContext | undefined;
  }) {
     options.database.migrate('conversation_algorithm_links', 1, `CREATE TABLE conversation_algorithm_links(
       service_task_id TEXT PRIMARY KEY,local_task_id TEXT NOT NULL,operation TEXT NOT NULL,origin_json TEXT NOT NULL,created_at INTEGER NOT NULL);
@@ -48,11 +97,10 @@ export class ConversationAlgorithmBridge {
       available: () => {
         const calculationAvailable = !!options.companion.algorithms;
         const enabled = options.companion.productionModuleSwitches?.calculate !== false;
-        const screenAvailable = !!options.companion.r1Workspace?.readProduct;
         const discovery = ['algorithms.capabilities', 'algorithms.contract', 'bd.session.capabilities'].includes(action);
-        const available = action === 'algorithms.screen' ? screenAvailable && enabled
+        const available = action === 'algorithms.screen' ? enabled && hasScreenReader(options.companion.r1Workspace)
           : action === 'data.modules.calculate' || action === 'algorithms.calculate' ? calculationAvailable && enabled
-            : calculationAvailable || discovery && screenAvailable || action === 'bd.session.capabilities' && !!options.companion.processing;
+            : calculationAvailable || discovery && !!options.companion.r1Workspace?.readProduct || action === 'bd.session.capabilities' && !!options.companion.processing;
         return { available, ...(!available
           ? { reason: action === 'algorithms.screen' ? !enabled ? '计算模块已停用。' : '受信 WFD 固定读取未装配。'
             : action === 'bd.session.capabilities'
@@ -104,8 +152,8 @@ export class ConversationAlgorithmBridge {
     // 直接模型动作必须先取得当前模型分享回执；否则 saveResultProof 会拒绝返回。
     const authority = await acquireAuthority(context, action, args, []);
     authority.assert(); this.options.companion.bd?.assertDispatch();
+    const rulesVersion = this.options.rulesVersion(origin.parentRunId);
     if (action === 'bd.session.capabilities') {
-      const rulesVersion = this.options.rulesVersion(origin.parentRunId);
       const catalog = this.modelCatalog(service, rulesVersion);
       const contract = bdSessionToolContract(catalog, rulesVersion);
       const processing = this.options.companion.processing?.catalog();
@@ -125,8 +173,8 @@ export class ConversationAlgorithmBridge {
             ...processingSessionContract(), engine: cleaning,
             source: '受管原件及冻结来源；不读取计算公式注册表' },
           calculation: { description: '读取 WFD 固定数据，执行已登记的受控日线指标',
-            discovery: 'algorithms.contract', execute: 'algorithms.calculate',
-            publish: 'algorithms.publish', engine: service ? contract.algorithms : null,
+            discovery: 'algorithms.contract', execute: contract.algorithms.calculateAction,
+            publish: contract.algorithms.publishAction, engine: service ? contract.algorithms : null,
             source: 'WFD fixed snapshot; not original cleaning candidates' },
           screening: this.screenCapability(rulesVersion),
           sharedVerification: 'production-verifier (行、类型、结果摘要) + 领域专属方法核验',
@@ -136,19 +184,18 @@ export class ConversationAlgorithmBridge {
     }
     if (action === 'algorithms.contract') {
       const methodId = typeof args.methodId === 'string' && args.methodId.trim() ? args.methodId.trim() : undefined;
-      const rulesVersion = this.options.rulesVersion(origin.parentRunId);
-      if (methodId !== undefined) this.assertMethodAllowed(methodId, rulesVersion);
+      if (methodId !== undefined && (methodId === 'strategy_screen' || isAlgorithmMethodId(methodId)
+        || !frozenAlgorithmCapabilities(rulesVersion).allFactorDefinitions)) this.assertMethodAllowed(methodId, rulesVersion);
       if (methodId === 'strategy_screen') {
         authority.assert();
         return { summary: '已读取固定截面筛选合同；未读取数据或执行规则。', data: view(this.screenCapability(rulesVersion)) };
       }
-      const contract = basicAlgorithmToolContract(this.modelCatalog(service, rulesVersion), methodId, rulesVersion);
+      const contract = basicAlgorithmToolContract(this.modelCatalog(service, rulesVersion), methodId, rulesVersion ?? null);
       authority.assert();
       return { summary: '已读取基础算法独立接口及真实可用状态；未采用或执行任何方法。',
         data: view({ ...contract, screening: this.screenCapability(rulesVersion) }) };
     }
     if (action === 'algorithms.capabilities') {
-      const rulesVersion = this.options.rulesVersion(origin.parentRunId);
       const catalog = this.modelCatalog(service, rulesVersion);
       const screening = this.screenCapability(rulesVersion);
       authority.assert();
@@ -156,7 +203,7 @@ export class ConversationAlgorithmBridge {
         ? '已读取基础算法目录、固定代码版本与 WFD 快照能力；本动作只读，不创建计算。'
         : screening.available ? '固定截面筛选可用；受控指标执行器未装配。本次只读返回各工具合同。'
           : `算法运行条件尚未就绪（${catalog.reason ?? '执行器或 WFD 快照端口不可用'}）；本次仅返回目录。`,
-        data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog, undefined, rulesVersion).methods,
+        data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog, undefined, rulesVersion ?? null).methods,
           screening,
           database: json(catalog.inputs.fixedSnapshots), guidance: {
           humanInput: '用户说明 WFD 数据和目标算法，由模型读取真实快照与方法契约形成调用，无需人工逐次计算确认。',
@@ -167,7 +214,7 @@ export class ConversationAlgorithmBridge {
         } }) };
     }
     if (action === 'algorithms.screen') {
-      this.assertMethodAllowed('strategy_screen', this.options.rulesVersion(origin.parentRunId));
+      this.assertMethodAllowed('strategy_screen', rulesVersion);
       const port = this.options.companion.r1Workspace;
       if (!port?.readProduct) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '截面筛选需要实际 WFD 固定读取端口。');
       let request: unknown;
@@ -175,33 +222,58 @@ export class ConversationAlgorithmBridge {
         throw new TaskError('STRATEGY_SCREEN_WFD_INPUT', '筛选动作仅接受有界 screenJson。');
       try { request = JSON.parse(args.screenJson); }
       catch { throw new TaskError('STRATEGY_SCREEN_WFD_INPUT', 'screenJson 不是有效 JSON。'); }
+      const intent: HistoricalIntent | undefined = isWfdRecord(request) && request.historyMode !== 'snapshot_contents'
+        && typeof request.historyMode === 'string' && typeof request.at === 'string'
+        ? { action, historyMode: request.historyMode, cutoff: request.at, snapshotId: request.snapshotId,
+          productId: request.productId, heldScope: request.heldScope, usableStage: request.usableStage } : undefined;
+      const submission = intent && this.options.submissionContext?.(origin, intent);
+      const originalSubmission = submission && canonicalWfdJson(submission);
+      const purposeContext = submission && intent ? { ...submission, purpose: 'historical_compute' as const,
+        historyMode: intent.historyMode, cutoff: intent.cutoff } : undefined;
       const assertCurrent = () => {
         authority.assert(); this.options.companion.bd?.assertDispatch();
         if (this.options.companion.productionModuleSwitches?.calculate === false)
           throw new TaskError('PRODUCTION_CALCULATION_DISABLED', '计算模块已停用，未继续读取或返回筛选结果。');
         const currentOrigin = this.options.origin(context.task.id);
         if (!currentOrigin || currentOrigin.conversationId !== origin.conversationId || currentOrigin.branchId !== origin.branchId
-          || currentOrigin.parentRunId !== origin.parentRunId)
+          || currentOrigin.parentRunId !== origin.parentRunId || currentOrigin.inputId !== origin.inputId || currentOrigin.messageId !== origin.messageId)
           throw new TaskError('ALGORITHM_CONVERSATION_REQUIRED', '本次筛选的会话身份发生变化。');
+        if (this.options.companion.r1Workspace !== port || !hasScreenReader(port))
+          throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '截面筛选缺少已配置的 WFD 固定读取连接。');
+        if (originalSubmission && canonicalWfdJson(this.options.submissionContext?.(origin, intent) ?? null) !== originalSubmission)
+          throw new TaskError('ALGORITHM_PURPOSE_EVIDENCE_REQUIRED', '历史用途的原用户输入或操作者声明已变化。');
       };
       assertCurrent();
-      const result = await screenFixedWfdStrategy(request, (input, signal) => port.readProduct!(input, signal), context.signal, assertCurrent);
+      const result = await screenFixedWfdStrategy(request, (input, signal) => port.readProduct!(input, signal), context.signal, assertCurrent, purposeContext);
       assertCurrent();
+      const { historicalExclusions, ...fixedRead } = result.fixedRead;
       return { summary: `已从完整固定截面 ${result.counts.input} 行中返回 ${result.counts.selected} 个研究候选；未发布或下单。`,
-        data: view({ ...result, taskId: context.task.id }) };
+        data: { ...view({ ...result, taskId: context.task.id, fixedRead: { ...fixedRead,
+          historicalExclusions: historicalExclusionSummary(historicalExclusions.diagnostics) } }),
+          historicalExclusions: json(historicalExclusions), ...(purposeContext ? { purposeContext: json(purposeContext) } : {}) } };
     }
     if (action === 'algorithms.calculate' || action === 'data.modules.calculate') {
       let calculation: unknown;
       try { calculation = JSON.parse(String(args.calculationJson)); }
       catch { throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求不是有效JSON。'); }
       if (!isWfdRecord(calculation)) throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求必须是对象。');
-      this.assertMethodAllowed(calculation.methodId, this.options.rulesVersion(origin.parentRunId));
+      if (frozenAlgorithmCapabilities(rulesVersion).allFactorDefinitions && !isAlgorithmMethodId(calculation.methodId))
+        throw new TaskError('INVALID_ALGORITHM_METHOD', '计算仅接受已登记的日线方法。');
+      this.assertMethodAllowed(calculation.methodId, rulesVersion);
       this.assertCalculationMaterials(calculation);
       const publisher = this.options.companion.derivedPublisher;
       if (!service || !publisher) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE',
         '计算模块未装配，不能把清洗管线当算法执行器。');
       // 已登记指标沿原 TaskService 执行，保留原任务与版本身份。
-      const submitted = service.submit('conversation:algorithms:' + context.task.id, calculation);
+      const usage = isWfdRecord(calculation.usage) ? calculation.usage : null;
+      const reference = isWfdRecord(calculation.source) && isWfdRecord(calculation.source.reference) ? calculation.source.reference : {};
+      const intent: HistoricalIntent | undefined = usage?.purpose === 'historical_compute'
+        ? { action: 'algorithms.calculate', historyMode: String(usage.historyMode), cutoff: String(usage.cutoff),
+          snapshotId: reference.snapshotId, productId: reference.productId, methodId: calculation.methodId,
+          heldScope: reference.heldScope, usableStage: reference.usableStage } : undefined;
+      const submission = this.options.submissionContext?.(origin, intent);
+      if (intent && !submission) throw new TaskError('ALGORITHM_PURPOSE_EVIDENCE_REQUIRED', '历史计算需要本次真实用户输入中的历史用途声明。');
+      const submitted = service.submit('conversation:algorithms:' + context.task.id, calculation, submission);
       const taskId = submitted.taskId;
       this.link(taskId, context.task.id, 'calculate', origin);
       await this.wait(context, taskId);
@@ -227,6 +299,10 @@ export class ConversationAlgorithmBridge {
       const task = this.options.companion.tasks.get(taskId);
       if (task.status !== 'succeeded' || task.requiresReview)
         throw new TaskError('DERIVED_RESULT_NOT_READY', '原计算任务未完成，不重新计算或更换任务身份。');
+      const original = service.view(taskId);
+      this.assertMethodAllowed(original.methodId, rulesVersion);
+      if (task.runtimeId !== ALGORITHM_RUNTIME || !isAlgorithmMethodId(original.methodId) || original.taskId !== taskId)
+        throw new TaskError('ALGORITHM_TASK_ID', '恢复发布须使用本分支原计算任务及其登记方法。');
       const publication = await publisher.publish(taskId, context.signal);
       authority.assert();
       return { summary: publication.published ? '原生产计算结果已完成 WFD 正式读回。'
@@ -241,11 +317,12 @@ export class ConversationAlgorithmBridge {
   }
 
   private screenCapability(rulesVersion?: number) {
-    const allowed = algorithmAllowedByRules('strategy_screen', rulesVersion);
+    if (!algorithmAllowedByRules('strategy_screen', rulesVersion))
+      return { available: false, reason: '受控截面筛选要求本会话冻结规则 v21 或以上。' };
     const enabled = this.options.companion.productionModuleSwitches?.calculate !== false;
-    const reader = !!this.options.companion.r1Workspace?.readProduct;
-    return { ...strategyScreenContract(), available: allowed && enabled && reader,
-      reason: !allowed ? '本会话冻结规则只允许 MACD。' : !enabled ? '计算模块已停用。' : !reader ? '受信 WFD 固定读取未装配。' : null };
+    const reader = hasScreenReader(this.options.companion.r1Workspace);
+    return { ...strategyScreenContract(), available: enabled && reader,
+      reason: !enabled ? '计算模块已停用。' : !reader ? '受信 WFD 固定读取连接未就绪。' : null };
   }
 
   /** 代理只读取真实 WFD 固定快照目录；受管原件不再提供计算资格。 */
@@ -255,7 +332,7 @@ export class ConversationAlgorithmBridge {
       return { ...catalog, methods: catalog.methods.filter(method => algorithmAllowedByRules(method.id, rulesVersion)) };
     }
     const reason = '受控指标计算服务未装配。';
-    const fixed = !!this.options.companion.r1Workspace?.capabilities().connection;
+    const fixed = hasScreenReader(this.options.companion.r1Workspace);
     return {
       contractVersion: ALGORITHM_CONTRACT_VERSION, runtime: ALGORITHM_RUNTIME,
       environment: 'local-review', status: 'unavailable', enabled: false, reason,
@@ -276,8 +353,11 @@ export class ConversationAlgorithmBridge {
   }
 
   private assertMethodAllowed(methodId: unknown, rulesVersion?: number): void {
-    if (!algorithmAllowedByRules(methodId, rulesVersion)) throw new TaskError('ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES',
-      `本会话冻结的内置代理规则 v${rulesVersion} 仅允许 macd。新增指标要求规则 v20 或以上。`);
+    if (algorithmAllowedByRules(methodId, rulesVersion)) return;
+    const methods = frozenAlgorithmCapabilities(rulesVersion).methods;
+    throw new TaskError('ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES', !methods.length ? '本会话缺少可用的冻结规则版本，无法核验方法。'
+      : methods.length === 1 ? `本会话冻结的内置代理规则 v${rulesVersion} 仅允许 macd。`
+        : `本会话冻结的内置代理规则 v${rulesVersion} 未允许此方法。截面筛选要求 v21 或以上。`);
   }
 
   /** 计算请求只能引用 WFD 固定快照；权限由原服务读取端口继续核实。 */

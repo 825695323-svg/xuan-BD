@@ -36,7 +36,7 @@ import { BdService } from '../../modules/agent/service.js';
 import { CollectionService } from '../../modules/collection/service.js';
 import type { ChartOfAccountsRegistry } from '../../modules/collection/data-processing/financial-coa-registry.js';
 import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
-import { ConversationAlgorithmBridge } from '../../modules/financial/conversation-algorithms.js';
+import { ConversationAlgorithmBridge, conversationAlgorithmSubmission } from '../../modules/financial/conversation-algorithms.js';
 import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
 import type { LocalAlgorithmFactory } from './financial-configuration.js';
 import { ConversationProcessingBridge } from '../../modules/collection/conversation-processing.js';
@@ -289,6 +289,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     assertPath: path => direct.assertPublicPath(path), mediaAdapters: () => mediaAdapters }) : undefined;
   const conversationAlgorithms = options.workspaceServices?.toolLibrary ? new ConversationAlgorithmBridge({
     database, companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
+    submissionContext: (origin, intent) => conversationAlgorithmSubmission(core, origin, intent),
     rulesVersion: runId => core.runConfiguration(runId)?.internalAgentRules?.version }) : undefined;
   const conversationProcessing = options.workspaceServices ? new ConversationProcessingBridge({ database, core, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
   const conversationR1 = options.role !== 'service' && options.workspaceServices?.r1Workspace
@@ -336,7 +337,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     direct.registry.bindVersions(entry.action, () => {
       const workspace = options.workspaceServices?.r1Workspace;
       return directDependencyVersions(entry.action, implementation,
-        { ...conversationAlgorithms!.versionBinding, execution: options.workspaceServices?.algorithms?.versionBinding ?? null,
+        { ...conversationAlgorithms!.versionBinding, ...(publishes ? { execution: options.workspaceServices?.algorithms?.versionBinding ?? null } : {}),
           ...(readsWfd ? { r1: workspace?.versionBinding ?? null, r1Connection: workspace?.capabilities?.().connection ?? null } : {}) }, {});
     });
   }
@@ -453,7 +454,8 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const workspaceFieldProfiles = r1Runtime?.connection.profile.mode === 'production' || hasSourceProfiles
     ? sourceFieldProfiles : undefined;
   const r1Workspace: R1WorkspaceService | undefined = r1 && processing && materials ? new R1WorkspaceService({ database, tasks: currentTasks,
-    handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration,
+    handoff: r1, processing, materials, runtime: r1Runtime,
+    configuration: r1Configuration.state === 'ready' ? { state: 'configured', reason: null } : r1Configuration,
     fieldProfiles: workspaceFieldProfiles, semanticProducts }) : undefined;
   const algorithms = options.configureAlgorithms?.({ database, tasks: currentTasks, permissions, r1Runtime });
   const toolLibrary = options.role === 'service' ? new ToolLibraryService({ algorithms }) : undefined;

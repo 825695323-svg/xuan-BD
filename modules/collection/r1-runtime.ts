@@ -32,7 +32,7 @@ export interface R1Runtime {
   service: R1HandoffService;
   client: WfdStructuredIngestClient;
   /** Re-resolve the registered identity and hash its actual files before every dispatch/recovery. */
-  currentIdentity(): R1ConnectionIdentity;
+  currentIdentity(): R1ConnectionIdentity & Pick<ResolvedProductMachineConnection, 'readSchemaSha256' | 'queryImplSha256'>;
 }
 export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
   const registeredSelection = () => options.resources.document.resources.connections_registry
@@ -47,7 +47,7 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
     requireG5Admission: options.requireG5Admission ?? connection.profile.mode === 'production' });
   const client = new WfdStructuredIngestClient(connection.client, connection.schemaPath);
   const initialConfig = JSON.parse(readFileSync(connection.configPath, 'utf8')) as Record<string, unknown>;
-  const currentIdentity = (): R1ConnectionIdentity => {
+  const currentIdentity: R1Runtime['currentIdentity'] = () => {
     if ((options.connectionId ?? registeredSelection()) !== selectedConnectionId) {
       throw new TaskError('R1_CONNECTION_RELOAD_REQUIRED', '手动投喂的受控连接选择已变化；须核对后重新装配，原请求不改绑。');
     }
@@ -66,6 +66,7 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
       ...usage, runtimeIdentity: actual.profile.harness_binding.root_id,
       store: actual.store, runtime: actual.runtime, callerId: actual.callerId, namespace: actual.trustedActorNamespace,
       configSha256: wfdSha256(raw), schemaSha256: wfdSha256(readFileSync(actual.schemaPath)),
+      readSchemaSha256: actual.readSchemaSha256, queryImplSha256: actual.queryImplSha256,
       entrySha256: wfdSha256(readFileSync(actual.profile.entry_path)),
       pythonPath: actual.profile.python_path, entryPath: actual.profile.entry_path };
   };
