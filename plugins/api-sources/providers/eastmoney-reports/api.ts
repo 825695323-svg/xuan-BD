@@ -192,21 +192,21 @@ function detailMetadata(literal: string): Record<string, JsonValue> | null {
 }
 
 const relatedTitle = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/u;
+const relatedHeadingAtBoundary = /^(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/u;
+const relatedBeforeTarget = /(?:^|(?<=[\s。！？；.!?])|(?<=(?:^|[\s。！？；.!?])[【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:—\-·•]*$/u;
 const relatedWrapperTitle = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:]*$/u;
 const inlineRelatedHeading = /(?:^|(?<=[\s。！？；.!?])|(?<=(?:^|[\s。！？；.!?])[【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/gu;
 const mainAttachmentHeading = /^[【[(\s]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)(?:$|[\s】\])：:—\-·•（(])/u;
+const leadingListItem = /^[\s\n]*(?:\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])(?=$|[\s\n\p{L}\p{N}《「【])/u;
 const explicitSectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt';
-const sectionHeadings = `${explicitSectionHeadings},[class*="title" i]`;
 const rootBoundaryContainers = '#zwinfo,article,section,main,body,html';
-const standaloneTitleBlocks = 'div,p,header,summary,figcaption';
-const spillableInlineBlocks = 'div,p,header,summary,figcaption';
-const skippedScanTags = new Set([
-  'HTML', 'HEAD', 'META', 'LINK', 'TITLE', 'STYLE', 'SCRIPT', 'NOSCRIPT', 'TEMPLATE',
-  'A', 'IFRAME', 'BR', 'HR', 'WBR', 'IMG', 'INPUT', 'SVG', 'PICTURE', 'SOURCE', 'CANVAS',
-  'VIDEO', 'AUDIO', 'AREA', 'BASE', 'COL', 'EMBED', 'PARAM', 'TRACK', 'OBJECT',
-]);
 const relatedSelector = 'aside,nav,footer,[role="navigation"],[aria-label*="相关"],[aria-label*="推荐"],[aria-label*="延伸阅读"],'
   + '[class*="related" i],[id*="related" i],[class*="recommend" i],[id*="recommend" i],.rel-list,.xgyd,.xgyb';
+const inlineFlowElements = 'span,strong,b,em,i,small,u,mark,font,sub,sup,label,abbr,cite,code,time,ins,del,s,q,bdi,bdo,ruby,rt,rp,kbd,samp,var,data,dfn';
+const decorativeInlineTags = new Set(['WBR', 'IMG', 'INPUT', 'SVG', 'PICTURE', 'SOURCE', 'CANVAS']);
+const isolatedContainerTags = new Set(['ARTICLE', 'SECTION', 'MAIN', 'BODY', 'HTML', 'DETAILS', 'FIGURE', 'FIELDSET', 'DIALOG', 'TABLE', 'BLOCKQUOTE', 'UL', 'OL', 'LI', 'DD', 'DL']);
+const listTags = new Set(['UL', 'OL', 'LI', 'DL']);
+const nonContentTags = new Set(['HEAD', 'META', 'LINK', 'TITLE', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
 
 function headingLevel(element: Element): number {
   if (/^H[1-6]$/u.test(element.tagName)) return Number(element.tagName[1]);
@@ -214,344 +214,559 @@ function headingLevel(element: Element): number {
   return aria && /^[1-6]$/u.test(aria) ? Number(aria) : 2;
 }
 
-const inlineWrapperElements = 'div,span,header,strong,b,em,i,small,u,mark,p';
-const inlineTextElements = 'span,strong,b,em,i,small,u,mark';
-const inlineFlowElements = 'span,strong,b,em,i,small,u,mark,font,sub,sup,label,abbr,cite,code,time,ins,del,s,q,bdi,bdo,ruby,rt,rp,kbd,samp,var,data,dfn';
-const decorativeInlineTags = new Set(['WBR', 'IMG', 'INPUT', 'SVG', 'PICTURE', 'SOURCE', 'CANVAS']);
-const inlineNonBlockForbidden = 'a,iframe,ul,ol,li,dl,table,section,article,aside,nav,main,body,html,#zwinfo,.report-download,div,p,h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt,form,blockquote,pre';
+type DomFlags = {
+  canFlattenInline: WeakMap<Element, boolean>;
+  hasRootBoundary: WeakMap<Element, boolean>;
+  hasNestedExplicitHeading: WeakMap<Element, boolean>;
+};
 
-function isHarmlessWrapper(parent: Element, heading: Element): boolean {
-  if (heading.matches(`${rootBoundaryContainers},.report-download`)
-    || parent.matches(`${rootBoundaryContainers},.report-download`)
-    || !parent.matches(inlineWrapperElements)) return false;
-  if (!(parent.textContent?.trim() === heading.textContent?.trim() || relatedWrapperTitle.test(parent.textContent?.trim() ?? ''))) return false;
-  for (const child of parent.children) {
-    if (child === heading) continue;
-    if (['BR', 'HR', 'WBR'].includes(child.tagName)) continue;
-    if (decorativeInlineTags.has(child.tagName)
-      && !(child.textContent ?? '').trim() && !child.querySelector('a,iframe')) continue;
-    if (child.matches(inlineTextElements)
-      && !(child.textContent ?? '').trim() && !child.querySelector('a,iframe')) continue;
-    return false;
+function precomputeDomFlags(document: Document): DomFlags {
+  const canFlattenInline = new WeakMap<Element, boolean>();
+  const hasRootBoundary = new WeakMap<Element, boolean>();
+  const hasNestedExplicitHeading = new WeakMap<Element, boolean>();
+  const hasAnchorOrFrame = new WeakMap<Element, boolean>();
+  const stack: Array<{ node: Element; visited: boolean }> = [];
+  const docChildren: NodeListOf<ChildNode> = document.childNodes;
+  for (let i = docChildren.length - 1; i >= 0; i -= 1) {
+    const child: ChildNode = docChildren[i]!;
+    if (child.nodeType === 1) stack.push({ node: child as Element, visited: false });
   }
-  return true;
-}
-
-function isPureInlineTitleBlock(element: Element): boolean {
-  return !element.querySelector(inlineNonBlockForbidden);
-}
-
-function outermostDownloadBox(element: Element): Element | null {
-  let box = element.closest('.report-download');
-  while (box?.parentElement) {
-    const outer = box.parentElement.closest('.report-download');
-    if (!outer) break;
-    box = outer;
-  }
-  return box;
-}
-
-function leadingHeading(element: Element): Element | null {
-  let current: Element | null = element;
-  for (let depth = 0; current && depth < 32; depth += 1) {
-    if (current.matches(sectionHeadings)) return current;
-    if (!current.matches('div,section,article,header,main')) return null;
-    let first: Element | null = null;
-    for (const child of current.childNodes) {
-      if (child.nodeType === 3) {
-        if ((child.textContent ?? '').trim()) return null;
-      } else if (child.nodeType === 1) {
-        const el = child as Element;
-        if (['BR', 'HR', 'WBR'].includes(el.tagName)) continue;
-        first = el;
-        break;
-      }
-    }
-    current = first;
-  }
-  return null;
-}
-
-type InlinePiece = { node: ChildNode; text: string; start: number; end: number };
-type InlineSegment = { pieces: InlinePiece[]; endedAt: Element | null };
-
-const leadingListItem = /^[\s\n]*(?:\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])(?=$|[\s\n\p{L}\p{N}《「【])/u;
-
-function pushChildNodesReversed(parent: Node, stack: ChildNode[]): void {
-  const children = parent.childNodes;
-  for (let i = children.length - 1; i >= 0; i -= 1) stack.push(children[i]!);
-}
-
-function collectInlineSegments(container: Document | Element): InlineSegment[] {
-  const segments: InlineSegment[] = [];
-  let pieces: InlinePiece[] = [], offset = 0;
-  const stack: ChildNode[] = [];
-  pushChildNodesReversed(container, stack);
   while (stack.length) {
-    const node = stack.pop()!;
+    const top = stack[stack.length - 1]!;
+    const el = top.node;
+    if (!top.visited) {
+      top.visited = true;
+      const children: NodeListOf<ChildNode> = el.childNodes;
+      for (let i = children.length - 1; i >= 0; i -= 1) {
+        const child: ChildNode = children[i]!;
+        if (child.nodeType === 1) stack.push({ node: child as Element, visited: false });
+      }
+      continue;
+    }
+    stack.pop();
+    let rootB = el.matches(rootBoundaryContainers);
+    let nestedH = false;
+    let allFlat = true;
+    let linkOrFrameChild = false;
+    const children: NodeListOf<ChildNode> = el.childNodes;
+    for (let i = 0; i < children.length; i += 1) {
+      const child: ChildNode = children[i]!;
+      if (child.nodeType !== 1) continue;
+      const ce = child as Element;
+      if (hasRootBoundary.get(ce)) rootB = true;
+      if (ce.matches(explicitSectionHeadings) || hasNestedExplicitHeading.get(ce)) nestedH = true;
+      if (!canFlattenInline.get(ce)) allFlat = false;
+      if (ce.tagName === 'A' || ce.tagName === 'IFRAME' || hasAnchorOrFrame.get(ce)) linkOrFrameChild = true;
+    }
+    hasRootBoundary.set(el, rootB);
+    hasNestedExplicitHeading.set(el, nestedH);
+    hasAnchorOrFrame.set(el, linkOrFrameChild);
+    let flat = false;
+    if (el.tagName === 'BR' || el.tagName === 'HR') {
+      flat = true;
+    } else if (decorativeInlineTags.has(el.tagName)) {
+      flat = !linkOrFrameChild && !rootB && !nestedH && allFlat;
+    } else if (el.tagName === 'IFRAME') {
+      flat = !el.matches(relatedSelector) && !el.matches('.report-download');
+    } else if (el.tagName === 'A' || el.matches(inlineFlowElements)) {
+      flat = allFlat
+        && !el.matches(relatedSelector)
+        && !el.matches(rootBoundaryContainers)
+        && !el.matches('.report-download')
+        && !el.matches(explicitSectionHeadings);
+    }
+    canFlattenInline.set(el, flat);
+  }
+  return { canFlattenInline, hasRootBoundary, hasNestedExplicitHeading };
+}
+
+type Scope = {
+  relatedLevel: number | null;
+  inRelatedSelector: boolean;
+  inList: boolean;
+  isDownloadBox: boolean;
+  outerRelated: boolean;
+  boxAncestorLocalRelated: boolean;
+  inAttachmentLink: boolean;
+};
+
+type AttrScope = {
+  nearestEncodeUrl: string | null;
+  nearestInfoCode: string | null;
+  nearestDownloadBox: Element | null;
+  inZwinfo: boolean;
+};
+
+type AttachmentInfo = {
+  inRelatedSelector: boolean;
+  outerRelated: boolean;
+  localRelated: boolean;
+  owner: string | null;
+  expectedInfoCode: string | null;
+  downloadBox: Element | null;
+};
+
+type RunTarget = {
+  element: Element;
+  start: number;
+  end: number;
+  owner: string | null;
+  expectedInfoCode: string | null;
+  inRelatedSelf: boolean;
+};
+
+type TitleLinkTrigger = { start: number; end: number; endsWithPunct: boolean };
+
+function recordRunTargets(
+  targets: RunTarget[],
+  fromIndex: number,
+  toIndex: number,
+  inRelatedSelector: boolean,
+  outerRelated: boolean,
+  localRelated: boolean,
+  downloadBox: Element | null,
+  attachmentMap: WeakMap<Element, AttachmentInfo>,
+): void {
+  for (let i = fromIndex; i < toIndex; i += 1) {
+    const t = targets[i]!;
+    if (!attachmentMap.has(t.element)) {
+      attachmentMap.set(t.element, {
+        inRelatedSelector: inRelatedSelector || t.inRelatedSelf,
+        outerRelated,
+        localRelated,
+        owner: t.owner,
+        expectedInfoCode: t.expectedInfoCode,
+        downloadBox,
+      });
+    }
+  }
+}
+
+function scanInlineRun(
+  container: Element | Document,
+  startIdx: number,
+  endIdx: number,
+  onlyRun: boolean,
+  cur: Scope,
+  attr: AttrScope,
+  attachmentMap: WeakMap<Element, AttachmentInfo>,
+): void {
+  const children: NodeListOf<ChildNode> = container.childNodes;
+  type RunFrame =
+    | { kind: 'node'; node: ChildNode; owner: string | null; infoCode: string | null }
+    | { kind: 'closeAnchor'; el: Element; start: number; owner: string | null; infoCode: string | null };
+  const stack: RunFrame[] = [];
+  for (let i = endIdx - 1; i >= startIdx; i -= 1) {
+    stack.push({ kind: 'node', node: children[i]!, owner: attr.nearestEncodeUrl, infoCode: attr.nearestInfoCode });
+  }
+  let runText = '';
+  let hasTitleClass = false;
+  const runTargets: RunTarget[] = [];
+  const titleLinkTriggers: TitleLinkTrigger[] = [];
+  const anchorStarts = new Set<number>();
+  while (stack.length) {
+    const frame = stack.pop()!;
+    if (frame.kind === 'closeAnchor') {
+      const end = runText.length;
+      const linkText = runText.slice(frame.start, end).trim();
+      const el = frame.el;
+      const isCandidate = el.hasAttribute('href')
+        && ((attr.inZwinfo && el.hasAttribute('download')) || attr.nearestDownloadBox !== null || frame.owner !== null);
+      if (isCandidate) {
+        runTargets.push({
+          element: el,
+          start: frame.start,
+          end,
+          owner: frame.owner,
+          expectedInfoCode: frame.infoCode,
+          inRelatedSelf: relatedTitle.test(linkText),
+        });
+      }
+      if (relatedWrapperTitle.test(linkText)) {
+        titleLinkTriggers.push({
+          start: frame.start,
+          end,
+          endsWithPunct: /[】\])））：:—\-·•]$/u.test(linkText),
+        });
+      }
+      continue;
+    }
+    const { node } = frame;
     if (node.nodeType === 3) {
       const text = node.textContent ?? '';
-      if (!text) continue;
-      pieces.push({ node, text, start: offset, end: offset + text.length });
-      offset += text.length;
+      if (text) runText += text;
       continue;
     }
     if (node.nodeType !== 1) continue;
     const el = node as Element;
     if (el.tagName === 'BR' || el.tagName === 'HR') {
-      pieces.push({ node: el, text: '\n', start: offset, end: offset + 1 });
-      offset += 1;
+      runText += '\n';
       continue;
     }
-    if (el.matches(relatedSelector) || el.matches(`${rootBoundaryContainers},.report-download`)) {
-      if (pieces.length) segments.push({ pieces, endedAt: el });
-      pieces = [];
-      offset = 0;
+    if (decorativeInlineTags.has(el.tagName)) continue;
+    if (el.tagName === 'IFRAME') {
+      const isZwinfoDirect = container.nodeType === 1 && (container as Element).id === 'zwinfo';
+      if (isZwinfoDirect && el.hasAttribute('src')) {
+        runTargets.push({
+          element: el,
+          start: runText.length,
+          end: runText.length,
+          owner: frame.owner,
+          expectedInfoCode: frame.infoCode,
+          inRelatedSelf: false,
+        });
+      }
       continue;
     }
-    if (decorativeInlineTags.has(el.tagName) && (el.childNodes.length === 0 || !el.querySelector('a,iframe'))) continue;
-    if (el.matches(inlineFlowElements) && !el.matches(explicitSectionHeadings)) {
-      pushChildNodesReversed(el, stack);
+    const nextOwner = el.getAttribute('data-encode-url') ?? frame.owner;
+    const nextInfoCode = el.getAttribute('data-info-code') ?? frame.infoCode;
+    if (el.tagName === 'A') {
+      const anchorStart = runText.length;
+      anchorStarts.add(anchorStart);
+      stack.push({ kind: 'closeAnchor', el, start: anchorStart, owner: nextOwner, infoCode: nextInfoCode });
+      const ac: NodeListOf<ChildNode> = el.childNodes;
+      for (let i = ac.length - 1; i >= 0; i -= 1) stack.push({ kind: 'node', node: ac[i]!, owner: nextOwner, infoCode: nextInfoCode });
       continue;
     }
-    if (pieces.length) segments.push({ pieces, endedAt: el });
-    pieces = [];
-    offset = 0;
+    if (el.hasAttribute('class') && el.matches('[class*="title" i]')) hasTitleClass = true;
+    const ic: NodeListOf<ChildNode> = el.childNodes;
+    for (let i = ic.length - 1; i >= 0; i -= 1) stack.push({ kind: 'node', node: ic[i]!, owner: nextOwner, infoCode: nextInfoCode });
   }
-  if (pieces.length) segments.push({ pieces, endedAt: null });
-  return segments;
+
+  // 独占块主附件标题停靠（如 <p><span class="title">本研报附件</span></p>）。
+  if (onlyRun && runTargets.length === 0 && !cur.inList && !cur.inRelatedSelector && cur.relatedLevel !== null
+    && container.nodeType === 1 && ((container as Element).matches('[class*="title" i]') || hasTitleClass)
+    && mainAttachmentHeading.test(runText.trim())) {
+    cur.relatedLevel = null;
+    return;
+  }
+
+  if (cur.inRelatedSelector || cur.relatedLevel !== null) {
+    recordRunTargets(
+      runTargets,
+      0,
+      runTargets.length,
+      cur.inRelatedSelector,
+      cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null),
+      cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null),
+      attr.nearestDownloadBox,
+      attachmentMap,
+    );
+    return;
+  }
+
+  if (runText.length === 0 && runTargets.length === 0) return;
+
+  const triggers: number[] = [];
+  if (runText.length > 0) {
+    inlineRelatedHeading.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = inlineRelatedHeading.exec(runText)) !== null) {
+      triggers.push(m.index + m[0].length);
+    }
+    for (const target of runTargets) {
+      if (target.start > 0) {
+        const sliceStart = Math.max(0, target.start - 16);
+        const prefixSlice = (sliceStart > 0 ? 'X' : '') + runText.slice(sliceStart, target.start);
+        if (relatedBeforeTarget.test(prefixSlice)) triggers.push(target.start);
+      }
+      if (target.end < runText.length) {
+        const afterTarget = relatedHeadingAtBoundary.exec(runText.slice(target.end, target.end + 32));
+        if (afterTarget) triggers.push(target.end + afterTarget[0].length);
+      }
+    }
+  }
+  for (const t of titleLinkTriggers) {
+    const leftOk = t.start === 0 || /[\s。！？；.!?【[(（]/u.test(runText[t.start - 1]!) || anchorStarts.has(t.start);
+    if (!leftOk) continue;
+    const rightOk = t.endsWithPunct
+      || t.end === runText.length
+      || anchorStarts.has(t.end)
+      || /^[\s】\])））：:—\-·•《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]/u.test(runText.slice(t.end, t.end + 16));
+    if (rightOk) triggers.push(t.end);
+  }
+  if (triggers.length === 0) {
+    recordRunTargets(runTargets, 0, runTargets.length, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap);
+    return;
+  }
+  triggers.sort((a, b) => a - b);
+
+  let targetIdx = 0;
+  let prevGapEnd = 0;
+  let cachedGapEnd = -1;
+  let trimmedEnd = 0;
+  let lastFullStop = -1;
+  let lastProseChar = -1;
+  let coreEnd = -1;
+  let lastNonPunct = -1;
+  let nonSpaceIdx = 0;
+
+  for (let ti = 0; ti < triggers.length; ti += 1) {
+    const triggerEnd = triggers[ti]!;
+    if (ti > 0 && triggerEnd === triggers[ti - 1]) continue;
+    while (targetIdx < runTargets.length && runTargets[targetIdx]!.start < triggerEnd) targetIdx += 1;
+    const nextTarget = targetIdx < runTargets.length ? runTargets[targetIdx]! : null;
+    const gapEnd = nextTarget ? nextTarget.start : runText.length;
+
+    if (gapEnd !== cachedGapEnd) {
+      const floor = cachedGapEnd === -1 ? 0 : prevGapEnd;
+      prevGapEnd = cachedGapEnd === -1 ? 0 : cachedGapEnd;
+      trimmedEnd = gapEnd;
+      while (trimmedEnd > floor && /\s/u.test(runText[trimmedEnd - 1]!)) trimmedEnd -= 1;
+      lastFullStop = -1;
+      lastProseChar = -1;
+      coreEnd = -1;
+      lastNonPunct = -1;
+      for (let i = trimmedEnd - 1; i >= floor; i -= 1) {
+        const ch = runText[i]!;
+        if (lastFullStop === -1 && ch === '。') lastFullStop = i;
+        if (lastProseChar === -1 && !/[\s【】[\]()（）：:—\-·•]/u.test(ch)) lastProseChar = i;
+        if (coreEnd === -1 && !/[\s"'”’）)】\]]/u.test(ch)) coreEnd = i;
+        if (lastNonPunct === -1 && !/[\s。！？；.!?,，:：—\-·•]/u.test(ch)) lastNonPunct = i;
+        if (lastFullStop !== -1 && lastProseChar !== -1 && coreEnd !== -1 && lastNonPunct !== -1) break;
+      }
+      cachedGapEnd = gapEnd;
+      prevGapEnd = gapEnd;
+    }
+
+    if (nonSpaceIdx < triggerEnd) nonSpaceIdx = triggerEnd;
+    while (nonSpaceIdx < trimmedEnd && /\s/u.test(runText[nonSpaceIdx]!)) nonSpaceIdx += 1;
+
+    let isProse: boolean;
+    if (lastProseChar < triggerEnd) {
+      isProse = false;
+    } else {
+      const openChar = nonSpaceIdx < trimmedEnd ? runText[nonSpaceIdx] : '';
+      const closeChar = openChar === '《' ? '》' : openChar === '「' ? '」' : openChar === '【' ? '】' : '';
+      const isBareQuotedTitle = Boolean(
+        closeChar && lastNonPunct > nonSpaceIdx && runText[lastNonPunct] === closeChar
+        && runText.indexOf(closeChar, nonSpaceIdx + 1) === lastNonPunct,
+      );
+      const isNumbered = nonSpaceIdx < trimmedEnd && leadingListItem.test(runText.slice(nonSpaceIdx, nonSpaceIdx + 16));
+      if (isNumbered || isBareQuotedTitle) {
+        isProse = false;
+      } else if (
+        lastFullStop >= triggerEnd
+        || (coreEnd >= nonSpaceIdx && (
+          /[。！？；!?]/u.test(runText[coreEnd]!)
+          || (runText[coreEnd]! === '.' && coreEnd > nonSpaceIdx && !/[\d.]/u.test(runText[coreEnd - 1]!))
+        ))
+      ) {
+        isProse = true;
+      } else {
+        isProse = nextTarget === null;
+      }
+    }
+    if (isProse) continue;
+
+    recordRunTargets(runTargets, 0, targetIdx, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap);
+    recordRunTargets(
+      runTargets,
+      targetIdx,
+      runTargets.length,
+      false,
+      cur.outerRelated || !cur.isDownloadBox,
+      cur.boxAncestorLocalRelated || cur.isDownloadBox,
+      attr.nearestDownloadBox,
+      attachmentMap,
+    );
+    cur.relatedLevel = 2;
+    return;
+  }
+
+  recordRunTargets(runTargets, 0, runTargets.length, false, cur.outerRelated, cur.boxAncestorLocalRelated, attr.nearestDownloadBox, attachmentMap);
 }
 
-function isStoppingHeading(heading: Element, level: number): boolean {
-  if (heading.tagName === 'A' && heading.getAttribute('role') !== 'heading') return false;
-  if (heading.tagName !== 'A' && heading.closest('a')) return false;
-  const text = heading.textContent?.trim() ?? '';
-  if (relatedTitle.test(text)) return false;
-  const inList = Boolean(heading.closest('ul,ol,li'));
-  if (heading.matches(explicitSectionHeadings)) {
-    if (inList) return mainAttachmentHeading.test(text);
-    return headingLevel(heading) <= level || mainAttachmentHeading.test(text);
-  }
-  if (inList || !mainAttachmentHeading.test(text)) return false;
-  if (!heading.matches(inlineFlowElements)) return true;
-  return Boolean(heading.parentElement && isHarmlessWrapper(heading.parentElement, heading));
-}
+/** 单趟前序文档作用域遍历：严格 O(N)，零递归，隔离根边界与多层下载框。 */
+function analyzeEastmoneySections(document: Document) {
+  const flags = precomputeDomFlags(document);
+  const excludedScripts = new WeakSet<Element>();
+  const attachmentMap = new WeakMap<Element, AttachmentInfo>();
+  const scopeStack: Scope[] = [{
+    relatedLevel: null,
+    inRelatedSelector: false,
+    inList: false,
+    isDownloadBox: false,
+    outerRelated: false,
+    boxAncestorLocalRelated: false,
+    inAttachmentLink: false,
+  }];
+  const attrStack: AttrScope[] = [{
+    nearestEncodeUrl: null,
+    nearestInfoCode: null,
+    nearestDownloadBox: null,
+    inZwinfo: false,
+  }];
 
-function findFirstStoppingHeading(element: Element, level: number): Element | null {
-  if (element.matches(sectionHeadings) && isStoppingHeading(element, level)) return element;
-  for (const heading of element.querySelectorAll(sectionHeadings)) {
-    if (isStoppingHeading(heading, level)) return heading;
-  }
-  return null;
-}
+  type DfsFrame =
+    | { kind: 'visit'; node: Element; inZwinfoDirect: boolean }
+    | { kind: 'run'; container: Element | Document; start: number; end: number; onlyRun: boolean }
+    | { kind: 'leave'; popScope: boolean; popAttr: boolean };
+  const dfsStack: DfsFrame[] = [];
 
-function walkBeforeStop(root: Node, stopHeading: Element, onBefore: (node: ChildNode) => boolean | void): void {
-  if (stopHeading === root) return;
-  const pathToStop = new Set<Node>();
-  for (let anc: Node | null = stopHeading; anc && anc !== root; anc = anc.parentNode) pathToStop.add(anc);
-  let current: Node | null = root;
-  while (current && current !== stopHeading) {
-    let nextCursor: Node | null = null;
-    const children: NodeListOf<ChildNode> = current.childNodes;
+  const enqueueChildren = (container: Element | Document, includeLeave?: { popScope: boolean; popAttr: boolean }) => {
+    const children: NodeListOf<ChildNode> = container.childNodes;
+    const steps: DfsFrame[] = [];
+    let runStart = -1;
+    const flushRun = (end: number) => {
+      if (runStart !== -1) {
+        steps.push({ kind: 'run', container, start: runStart, end, onlyRun: false });
+        runStart = -1;
+      }
+    };
+    const parentIsZwinfo = container.nodeType === 1 && (container as Element).id === 'zwinfo';
     for (let i = 0; i < children.length; i += 1) {
       const child: ChildNode = children[i]!;
-      if (child === stopHeading || pathToStop.has(child)) {
-        nextCursor = child;
-        break;
-      }
-      if (onBefore(child) === true) return;
-    }
-    current = nextCursor;
-  }
-}
-
-function hasLinkBeforeStoppingHeading(container: Element, stopHeading: Element): boolean {
-  let found = false;
-  walkBeforeStop(container, stopHeading, child => {
-    if (child.nodeType === 1) {
-      const el = child as Element;
-      if (el.matches('a,iframe') || Boolean(el.querySelector('a,iframe'))) {
-        found = true;
-        return true;
-      }
-    }
-  });
-  return found;
-}
-
-function nextElementSibling(node: Node): Element | null {
-  for (let sib = node.nextSibling; sib; sib = sib.nextSibling) {
-    if (sib.nodeType === 1) return sib as Element;
-  }
-  return null;
-}
-
-function elementHasTrailingLink(el: Element): boolean {
-  if (el.matches('a,iframe,ul,ol')) return true;
-  const stopHeading = findFirstStoppingHeading(el, 2);
-  return stopHeading
-    ? hasLinkBeforeStoppingHeading(el, stopHeading)
-    : Boolean(el.querySelector('a,iframe'));
-}
-
-/** 从阅读小节标题到同级或更高标题之间的内容，限定在同一正文容器内。 */
-function relatedSections(document: Document) {
-  const excluded = new WeakSet<Node>();
-  const selfRelatedBoxes = new WeakSet<Element>();
-  const isExcluded = (element: Element): boolean => {
-    for (let node: Element | null = element; node; node = node.parentElement) if (excluded.has(node)) return true;
-    return false;
-  };
-  const hasInternalExclusion = (element: Element, boundary: Element): boolean => {
-    if (selfRelatedBoxes.has(boundary)) return true;
-    for (let node: Element | null = element; node && node !== boundary; node = node.parentElement) {
-      if (excluded.has(node) || selfRelatedBoxes.has(node)) return true;
-    }
-    return false;
-  };
-  function markFollowing(title: Node, level: number): boolean {
-    for (let node: Node | null = title.nextSibling; node; node = node.nextSibling) {
-      if (node.nodeType === 1) {
-        const next = node as Element;
-        const stopHeading = findFirstStoppingHeading(next, level);
-        if (stopHeading) {
-          if (stopHeading !== next) walkBeforeStop(next, stopHeading, child => { excluded.add(child); });
-          return true;
-        }
-      }
-      excluded.add(node);
-    }
-    return false;
-  }
-  function markFollowingWithinContainer(startNode: ChildNode, container: Document | Element, level: number): boolean {
-    let current: Node | null = startNode;
-    while (current && current !== container) {
-      if (current.nodeType === 1 && (current as Element).matches(`${rootBoundaryContainers},.report-download`)) return true;
-      if (markFollowing(current, level)) return true;
-      current = current.parentNode;
-    }
-    return false;
-  }
-  function scanContainer(container: Document | Element, allowParentSiblings: boolean): void {
-    // 兼容正文中以普通句子结尾或带前缀的拆散行内相关阅读标题（如“正文<span> </span><em>相关</em>阅读：”）。
-    for (const segment of collectInlineSegments(container)) {
-      if (excluded.has(segment.pieces[0]!.node)) continue;
-      const fullText = segment.pieces.map(piece => piece.text).join('');
-      inlineRelatedHeading.lastIndex = 0;
-      let match = inlineRelatedHeading.exec(fullText);
-      if (!match) continue;
-
-      let trimmedEnd = fullText.length;
-      while (trimmedEnd > 0 && /\s/u.test(fullText[trimmedEnd - 1]!)) trimmedEnd -= 1;
-      const lastFullStop = trimmedEnd > 0 ? fullText.lastIndexOf('。', trimmedEnd - 1) : -1;
-      let lastProseChar = trimmedEnd - 1;
-      while (lastProseChar >= 0 && /[\s【】[\]()（）：:—\-·•]/u.test(fullText[lastProseChar]!)) lastProseChar -= 1;
-      let coreEnd = trimmedEnd - 1;
-      while (coreEnd >= 0 && /[\s"'”’）)】\]]/u.test(fullText[coreEnd]!)) coreEnd -= 1;
-      let lastNonPunct = trimmedEnd - 1;
-      while (lastNonPunct >= 0 && /[\s。！？；.!?,，:：—\-·•]/u.test(fullText[lastNonPunct]!)) lastNonPunct -= 1;
-
-      let trailingLinkChecked = false;
-      let cachedTrailingLink = false;
-      const getTrailingLink = (isListOrQuoted: boolean): boolean => {
-        if (trailingLinkChecked) return cachedTrailingLink;
-        trailingLinkChecked = true;
-        if (segment.endedAt) {
-          cachedTrailingLink = elementHasTrailingLink(segment.endedAt);
-        } else if (allowParentSiblings && isListOrQuoted && container.nodeType === 1) {
-          const sib = nextElementSibling(container);
-          cachedTrailingLink = Boolean(sib && elementHasTrailingLink(sib));
+      if (child.nodeType === 3) {
+        if (runStart === -1) runStart = i;
+      } else if (child.nodeType === 1) {
+        const ce = child as Element;
+        if (flags.canFlattenInline.get(ce)) {
+          if (runStart === -1) runStart = i;
         } else {
-          cachedTrailingLink = false;
+          flushRun(i);
+          steps.push({ kind: 'visit', node: ce, inZwinfoDirect: parentIsZwinfo });
         }
-        return cachedTrailingLink;
-      };
-
-      let shouldStopContainer = false;
-      let pieceIndex = 0;
-      let nonSpaceIdx = 0;
-      do {
-        const matchEnd = match.index + match[0].length;
-        while (pieceIndex + 1 < segment.pieces.length && segment.pieces[pieceIndex]!.end < matchEnd) pieceIndex += 1;
-        if (nonSpaceIdx < matchEnd) nonSpaceIdx = matchEnd;
-        while (nonSpaceIdx < trimmedEnd && /\s/u.test(fullText[nonSpaceIdx]!)) nonSpaceIdx += 1;
-
-        let isProse = false;
-        if (lastProseChar >= matchEnd) {
-          const openTitleChar = nonSpaceIdx < trimmedEnd ? fullText[nonSpaceIdx] : '';
-          const closeTitleChar = openTitleChar === '《' ? '》' : openTitleChar === '「' ? '」' : openTitleChar === '【' ? '】' : '';
-          const isBareQuotedTitle = Boolean(closeTitleChar && lastNonPunct > nonSpaceIdx && fullText[lastNonPunct] === closeTitleChar);
-          const isListOrQuotedTitle = (nonSpaceIdx < trimmedEnd && leadingListItem.test(fullText.slice(nonSpaceIdx, nonSpaceIdx + 16)))
-            || isBareQuotedTitle;
-          if (!isListOrQuotedTitle && (
-            lastFullStop >= matchEnd
-            || (coreEnd >= nonSpaceIdx && (
-              /[。！？；!?]/u.test(fullText[coreEnd]!)
-              || (fullText[coreEnd]! === '.' && coreEnd > nonSpaceIdx && !/[\d.]/u.test(fullText[coreEnd - 1]!))
-            ))
-          )) {
-            isProse = true;
-          } else {
-            isProse = !getTrailingLink(isListOrQuotedTitle);
-          }
-        }
-        if (isProse) continue;
-
-        const targetPiece = segment.pieces[pieceIndex]!;
-        const stoppedInside = markFollowingWithinContainer(targetPiece.node, container, 2);
-        if (!stoppedInside) {
-          if (allowParentSiblings && container.nodeType === 1 && !(container as Element).matches(rootBoundaryContainers)) {
-            markFollowing(container, 2);
-          }
-          shouldStopContainer = true;
-        }
-        break;
-      } while ((match = inlineRelatedHeading.exec(fullText)) !== null);
-      if (shouldStopContainer) break;
-    }
-  }
-  for (const element of document.querySelectorAll('*')) {
-    if (skippedScanTags.has(element.tagName) && element.getAttribute('role') !== 'heading') continue;
-    const isBoundaryContainer = element.matches(`${rootBoundaryContainers},.report-download`);
-    const isExplicitHeading = element.matches(explicitSectionHeadings);
-    const isSectionHeading = isExplicitHeading || element.matches('[class*="title" i]');
-    const isInlineFlow = element.matches(inlineFlowElements);
-    if (isInlineFlow && !isSectionHeading && !isBoundaryContainer) continue;
-    if (element.closest(relatedSelector)) continue;
-    const downloadBox = outermostDownloadBox(element);
-    const alreadyExcluded = downloadBox ? hasInternalExclusion(element, downloadBox) : isExcluded(element);
-    if (alreadyExcluded) continue;
-    const isStandaloneBlockTitle = !isInlineFlow
-      && element.matches(standaloneTitleBlocks)
-      && !isBoundaryContainer
-      && isPureInlineTitleBlock(element)
-      && relatedWrapperTitle.test(element.textContent?.trim() ?? '');
-    if (isSectionHeading || isStandaloneBlockTitle) {
-      let heading = element;
-      // 标题可以独占一层包装（可含 <br> 等空排版标签），链接列表与包装节点同级。
-      while (heading.parentElement && isHarmlessWrapper(heading.parentElement, heading)) heading = heading.parentElement;
-      if ((isExplicitHeading || !isSectionHeading || !isInlineFlow || heading !== element)
-        && !heading.querySelector(rootBoundaryContainers)
-        && relatedTitle.test(heading.textContent?.trim() ?? '')) {
-        excluded.add(heading);
-        if (heading.matches('.report-download')) selfRelatedBoxes.add(heading);
-        if (!heading.matches(`${rootBoundaryContainers},.report-download`)) {
-          markFollowing(heading, headingLevel(element));
-        }
-        continue;
       }
     }
-    if ((isInlineFlow && !isBoundaryContainer) || isExplicitHeading) continue;
-    const allowParentSiblings = element.matches(spillableInlineBlocks) && !isBoundaryContainer;
-    scanContainer(element, allowParentSiblings);
+    flushRun(children.length);
+    if (steps.length === 1 && steps[0]!.kind === 'run') steps[0]!.onlyRun = true;
+    if (includeLeave && (includeLeave.popScope || includeLeave.popAttr)) dfsStack.push({ kind: 'leave', ...includeLeave });
+    for (let i = steps.length - 1; i >= 0; i -= 1) dfsStack.push(steps[i]!);
+  };
+
+  enqueueChildren(document);
+
+  while (dfsStack.length) {
+    const frame = dfsStack.pop()!;
+    if (frame.kind === 'leave') {
+      if (frame.popScope) scopeStack.pop();
+      if (frame.popAttr) attrStack.pop();
+      continue;
+    }
+    const cur = scopeStack[scopeStack.length - 1]!;
+    const attr = attrStack[attrStack.length - 1]!;
+    if (frame.kind === 'run') {
+      scanInlineRun(frame.container, frame.start, frame.end, frame.onlyRun, cur, attr, attachmentMap);
+      continue;
+    }
+
+    const el = frame.node;
+    if (nonContentTags.has(el.tagName)) continue;
+    if (el.tagName === 'SCRIPT') {
+      if (cur.inRelatedSelector || cur.relatedLevel !== null || cur.boxAncestorLocalRelated || cur.outerRelated) {
+        excludedScripts.add(el);
+      }
+      continue;
+    }
+
+    if (el.tagName === 'IFRAME') {
+      if (frame.inZwinfoDirect && el.hasAttribute('src')) {
+        const isRel = cur.inRelatedSelector || el.matches(relatedSelector);
+        attachmentMap.set(el, {
+          inRelatedSelector: isRel,
+          outerRelated: cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null),
+          localRelated: cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null),
+          owner: el.getAttribute('data-encode-url') ?? attr.nearestEncodeUrl,
+          expectedInfoCode: el.getAttribute('data-info-code') ?? attr.nearestInfoCode,
+          downloadBox: attr.nearestDownloadBox,
+        });
+      }
+      continue;
+    }
+
+    const isRelSelector = el.matches(relatedSelector);
+    const isDownloadBox = el.matches('.report-download');
+    const isRootBoundary = el.matches(rootBoundaryContainers);
+    const isIsolated = isRelSelector || isDownloadBox || isRootBoundary || isolatedContainerTags.has(el.tagName);
+
+    const hasEncodeAttr = el.hasAttribute('data-encode-url');
+    const hasInfoAttr = el.hasAttribute('data-info-code');
+    const isZwinfoId = el.id === 'zwinfo';
+    const nextEncodeUrl = hasEncodeAttr ? el.getAttribute('data-encode-url') : attr.nearestEncodeUrl;
+    const nextInfoCode = hasInfoAttr ? el.getAttribute('data-info-code') : attr.nearestInfoCode;
+
+    const isAnchorCandidate = el.tagName === 'A' && el.hasAttribute('href')
+      && (isDownloadBox || (attr.inZwinfo && el.hasAttribute('download')) || attr.nearestDownloadBox !== null || nextEncodeUrl !== null);
+
+    if (isAnchorCandidate) {
+      const outerRel = cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null);
+      const localRel = cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null);
+      const anchorText = el.textContent?.trim() ?? '';
+      attachmentMap.set(el, {
+        inRelatedSelector: cur.inRelatedSelector || isRelSelector || relatedTitle.test(anchorText),
+        outerRelated: outerRel,
+        localRelated: localRel,
+        owner: nextEncodeUrl,
+        expectedInfoCode: nextInfoCode,
+        downloadBox: isDownloadBox ? el : attr.nearestDownloadBox,
+      });
+    }
+
+    let popScope = false;
+    if (isIsolated || isAnchorCandidate) {
+      popScope = true;
+      if (isRelSelector) {
+        scopeStack.push({
+          ...cur,
+          inRelatedSelector: true,
+          inList: cur.inList || listTags.has(el.tagName),
+          inAttachmentLink: cur.inAttachmentLink || isAnchorCandidate,
+        });
+      } else if (isDownloadBox) {
+        scopeStack.push({
+          relatedLevel: null,
+          inRelatedSelector: cur.inRelatedSelector,
+          inList: cur.inList || listTags.has(el.tagName),
+          isDownloadBox: true,
+          outerRelated: cur.outerRelated || (!cur.isDownloadBox && cur.relatedLevel !== null),
+          boxAncestorLocalRelated: cur.boxAncestorLocalRelated || (cur.isDownloadBox && cur.relatedLevel !== null),
+          inAttachmentLink: cur.inAttachmentLink || isAnchorCandidate,
+        });
+      } else {
+        scopeStack.push({
+          ...cur,
+          inList: cur.inList || listTags.has(el.tagName),
+          inAttachmentLink: cur.inAttachmentLink || isAnchorCandidate,
+        });
+      }
+    }
+
+    const pushAttr = hasEncodeAttr || hasInfoAttr || isZwinfoId || isDownloadBox;
+    if (pushAttr) {
+      attrStack.push({
+        nearestEncodeUrl: nextEncodeUrl,
+        nearestInfoCode: nextInfoCode,
+        nearestDownloadBox: isDownloadBox ? el : attr.nearestDownloadBox,
+        inZwinfo: attr.inZwinfo || isZwinfoId,
+      });
+    }
+
+    const activeScope = scopeStack[scopeStack.length - 1]!;
+    if (el.matches(explicitSectionHeadings)
+      && !el.matches(`${rootBoundaryContainers},.report-download`)
+      && !flags.hasRootBoundary.get(el)
+      && !flags.hasNestedExplicitHeading.get(el)) {
+      const text = el.textContent?.trim() ?? '';
+      if (relatedTitle.test(text)) {
+        if (!activeScope.inRelatedSelector) {
+          const level = headingLevel(el);
+          activeScope.relatedLevel = activeScope.relatedLevel === null ? level : Math.min(activeScope.relatedLevel, level);
+        }
+      } else if (!activeScope.inAttachmentLink && !activeScope.inRelatedSelector && activeScope.relatedLevel !== null) {
+        const shouldStop = activeScope.inList
+          ? mainAttachmentHeading.test(text)
+          : (headingLevel(el) <= activeScope.relatedLevel || mainAttachmentHeading.test(text));
+        if (shouldStop) activeScope.relatedLevel = null;
+      }
+    }
+
+    enqueueChildren(el, { popScope, popAttr: pushAttr });
   }
-  scanContainer(document, false);
+
   return {
-    isRelated(element: Element) {
-      if (element.closest(relatedSelector) || element.tagName === 'A' && relatedTitle.test(element.textContent?.trim() ?? '')) return true;
-      return isExcluded(element);
-    },
-    hasInternalExclusion,
+    isScriptExcluded: (script: Element) => excludedScripts.has(script),
+    getAttachment: (element: Element) => attachmentMap.get(element),
   };
 }
 
@@ -560,7 +775,7 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
   const bound = buildEastmoneyReportDetailRequest({ ...request });
   const { document } = parseHTML(decodeUtf8(rawBytes));
   const candidates = new Map<string, string>(), declaredCodes = new Set<string>();
-  const related = relatedSections(document);
+  const sections = analyzeEastmoneySections(document);
   const collect = (candidate: string, expectedInfoCode?: string | null) => {
     let url: URL;
     try { url = new URL(candidate, bound.url); } catch { return; }
@@ -571,7 +786,7 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
   };
   // 只读详情变量的静态赋值。普通脚本中的字符串、相关推荐和任意独立链接没有报告归属。
   for (const script of document.querySelectorAll('script:not([src])')) {
-    if (related.isRelated(script)) continue;
+    if (sections.isScriptExcluded(script)) continue;
     let source = (script.textContent ?? '').trim();
     // 同一脚本可依次声明元数据和附件。只消费可识别的静态赋值，不执行页面代码。
     while (source) {
@@ -603,38 +818,22 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
       source = source.slice(assignment[0].length).trimStart();
     }
   }
-  const boxRelatedCache = new WeakMap<Element, boolean>();
-  const isRelatedDownloadBox = (box: Element | null): boolean => {
-    if (!box) return false;
-    const cached = boxRelatedCache.get(box);
-    if (cached !== undefined) return cached;
-    const boxHeading = leadingHeading(box);
-    const result = relatedTitle.test(box.textContent?.trim() ?? '')
-      || Boolean(boxHeading && relatedTitle.test(boxHeading.textContent?.trim() ?? ''));
-    boxRelatedCache.set(box, result);
-    return result;
-  };
   const attachment = '#zwinfo a[download][href], #zwinfo > iframe[src], .report-download a[href], a.report-download[href], a[data-encode-url][href], [data-encode-url] a[href]';
   for (const element of document.querySelectorAll(attachment)) {
-    const owner = element.closest('[data-encode-url]')?.getAttribute('data-encode-url');
-    if (owner != null && owner !== request.encodeUrl) continue;
-    const expectedInfoCode = element.closest('[data-info-code]')?.getAttribute('data-info-code');
-    const downloadBox = element.closest('.report-download') ?? (element.matches('a.report-download[href]') ? element : null);
-    const outerBox = outermostDownloadBox(element);
-    if (isRelatedDownloadBox(downloadBox) || isRelatedDownloadBox(outerBox)) continue;
-    const boxOwner = downloadBox?.getAttribute('data-encode-url');
-    const boxInfoCode = downloadBox?.getAttribute('data-info-code');
+    const status = sections.getAttachment(element);
+    if (!status) continue;
+    if (status.owner != null && status.owner !== request.encodeUrl) continue;
+    const boxOwner = status.downloadBox?.getAttribute('data-encode-url');
+    const boxInfoCode = status.downloadBox?.getAttribute('data-info-code');
     const attestedMainDownload = Boolean(
-      downloadBox
-      && boxOwner === request.encodeUrl && owner === request.encodeUrl
-      && boxInfoCode && declaredCodes.has(boxInfoCode) && expectedInfoCode === boxInfoCode
-      && !element.closest(relatedSelector)
-      && !(element.tagName === 'A' && relatedTitle.test(element.textContent?.trim() ?? ''))
-      && !related.hasInternalExclusion(element, downloadBox)
-      && !(outerBox && related.hasInternalExclusion(element, outerBox)),
+      status.downloadBox
+      && boxOwner === request.encodeUrl && status.owner === request.encodeUrl
+      && boxInfoCode && declaredCodes.has(boxInfoCode) && status.expectedInfoCode === boxInfoCode
+      && !status.inRelatedSelector
+      && !status.localRelated,
     );
-    if (!attestedMainDownload && related.isRelated(element)) continue;
-    collect(element.getAttribute('href') ?? element.getAttribute('src')!, expectedInfoCode);
+    if (status.inRelatedSelector || status.localRelated || (!attestedMainDownload && status.outerRelated)) continue;
+    collect(element.getAttribute('href') ?? element.getAttribute('src')!, status.expectedInfoCode);
   }
   if (new Set([...declaredCodes, ...candidates.values()]).size > 1) return invalid('研报详情元数据与附件声明指向不同的 infoCode。');
   if (candidates.size !== 1) return invalid(candidates.size ? '研报详情存在多个不同附件定位，须明确选择。' : '研报详情没有可验证的 PDF 附件定位。');
