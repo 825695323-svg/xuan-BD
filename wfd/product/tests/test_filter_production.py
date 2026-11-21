@@ -423,3 +423,14 @@ def test_candidate_wire_stays_compatible_and_unknown_is_not_empty(tmp_path):
     zero = query(service, config, candidate(3))
     assert zero['status'] == 'matched'
     assert zero['objects'][0]['values']['close']['value_state'] == 'reported_zero'
+
+
+def test_filter_hides_unqualified_definition_before_field_binding(tmp_path):
+    from test_product_query import known_second
+    service, config, args = query_fixture(tmp_path)
+    args.update(history_mode='market_known_at', knowledge_cutoff=known_second(2026, 1, 10))
+    args['metrics'][0]['field'] = 'undisclosed_field'
+    result = query(service, config, args)
+    assert result['status'] == 'coverage_insufficient'
+    assert result['bindings'] == [] and result['coverage']['products'] == []
+    assert result['objects'] == [] and len(result['indeterminate']) == len(args['universe']['subjects'])

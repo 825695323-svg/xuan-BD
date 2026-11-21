@@ -318,3 +318,32 @@ def test_accepted_original_parent_change_refuses_real_machine_recovery_without_n
     assert response['result']['errors'][0]['code']=='PARENT_CHANGED'
     assert service.engine.head()['snapshot_id']==moved['snapshot_id']
     assert sorted((service.root/'catalog/commits').glob('*.json'))==markers
+
+
+def test_same_request_recovers_original_receipt_after_head_moves(tmp_path):
+    service, doc, first, _, addition = seeded(tmp_path)
+    path = service.root / first["formal_publication_ref"]
+    original = path.read_bytes()
+    second = service.submit(request([addition], "next-fixed-snapshot", parent=first["snapshot_id"]))
+    assert second["state"] == "published_formal"
+    path.unlink()
+    with pytest.raises(ValueError, match="FORMAL_RECEIPT_MISSING"):
+        service.request_status(doc["request_identity"])
+    assert not path.exists()
+    recovered = service.submit(doc)
+    assert recovered["state"] == "published_formal", recovered
+    assert recovered["snapshot_id"] == first["snapshot_id"]
+    assert recovered["holding_status"] == first["holding_status"]
+    assert path.read_bytes() == original
+    assert service.engine.head()["snapshot_id"] == second["snapshot_id"]
+
+
+def test_missing_receipt_and_lost_holding_fact_cannot_invent_a_clock(tmp_path):
+    service, doc, first, _, _ = seeded(tmp_path)
+    path = service.root / first["formal_publication_ref"]
+    path.unlink()
+    facts = service.root / "catalog/product_service/holdings" / first["holding_status"]["instance_id"]
+    for fact in facts.glob("*.json"):
+        fact.unlink()
+    assert service.submit(doc)["state"] == "recovery_conflict"
+    assert not path.exists()

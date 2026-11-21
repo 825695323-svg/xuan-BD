@@ -763,6 +763,9 @@ class WFDDataOnlyService(WFDProductService):
 
     def _save_status(self, record):
         self._restore_duplicate_results(record)
+        if record.get("formal_publication_ref"):
+            raw = (self.root / record["formal_publication_ref"]).read_bytes()
+            record["formal_receipt_sha256"] = sha(raw)
         self._write_status(self._status_path(record["request_key"]), record)
 
     @staticmethod
@@ -792,7 +795,10 @@ class WFDDataOnlyService(WFDProductService):
             if name in record:
                 result[name] = copy.deepcopy(record[name])
         if result["formal_publication_ref"]:
-            formal = json.loads((self.root / result["formal_publication_ref"]).read_text("utf-8"))
+            path = self.root / result["formal_publication_ref"]
+            if not path.is_file():
+                raise ValueError("FORMAL_RECEIPT_MISSING")
+            formal = json.loads(path.read_text("utf-8"))
             result["holding_status"] = self._formal_holding_status(formal)
             known = {item["output_key"] for item in result["output_results"]}
             result["output_results"].extend(copy.deepcopy(item) for item in
@@ -2012,24 +2018,35 @@ class WFDDataOnlyService(WFDProductService):
             # write failure is recoverable, not a failed publication to resend.
             pass
 
+    def _ledger_readable_time(self, record, instance_id):
+        from .product_holdings import HoldingLedger, HoldingError
+        proof = {"kind": "data_only_publish", "request_key": record["request_key"],
+                 "snapshot_id": record["snapshot_id"]}
+        facts = [fact for fact in HoldingLedger(self.root, instance_id).facts()
+                 if fact["snapshot_id"] == record["snapshot_id"] and fact.get("proof") == proof]
+        if not facts:
+            return None
+        expected = {(output["product_id"], r["record_id"], r["record_version"])
+                    for output in record["outputs"] for r in output["records"]}
+        found, times = set(), set()
+        for fact in facts:
+            for row in fact["records"]:
+                if set(row["stages"]) != {"published_readable"}:
+                    raise HoldingError("HOLDING_STAGE_INVALID")
+                found.add((fact["product_id"], row["record_id"], row["record_version"]))
+                times.add(row["stages"]["published_readable"])
+        if expected != found or len(times) != 1:
+            raise HoldingError("HOLDING_RECEIPT_FACT_MISMATCH")
+        return times.pop()
+
     def _formal_holding_status(self, record):
         holding = record.get("holding")
         if holding is None:
             return {"state": "not_recorded", "reason": "no_ordinary_readable_proof"}
-        from .product_holdings import HoldingLedger, HoldingError
+        from .product_holdings import HoldingError
         try:
-            facts = HoldingLedger(self.root, holding["instance_id"]).facts()
-            for output in self._formal_holding_groups(record):
-                wanted = {(r["record_id"], r["record_version"]) for r in output["records"]}
-                found = {(r["record_id"], r["record_version"])
-                         for fact in facts if fact.get("product_id") == output["product_id"]
-                         and fact.get("snapshot_id") == record["snapshot_id"]
-                         and fact.get("proof", {}).get("request_key") == record["request_key"]
-                         and fact.get("proof", {}).get("kind") == "data_only_publish"
-                         for r in fact["records"] if r.get("stages") == {
-                             "published_readable": holding["published_readable_at"]}}
-                if wanted != found:
-                    return {"state": "pending", "reason": "same_request_submit_can_recover"}
+            if self._ledger_readable_time(record, holding["instance_id"]) != holding["published_readable_at"]:
+                return {"state": "pending", "reason": "same_request_submit_can_recover"}
             return {"state": "recorded", "instance_id": holding["instance_id"],
                     "published_readable_at": holding["published_readable_at"]}
         except (OSError, ValueError, HoldingError, KeyError):
@@ -2183,15 +2200,28 @@ class WFDDataOnlyService(WFDProductService):
             record["duplicate_policy"] = "skip_identical_append"
         if unpublished:
             record["unpublished_outputs"] = unpublished
-        if record_holdings and self._local_holdings:
-            from .product_holdings import resolve_target_instance, _now
-            instance = resolve_target_instance(self.root, create=True)
-            # Persist the true verification time atomically with its receipt.
-            # An existing volume uses its actual identity, not an invented one.
-            # R2 preparation disables this; its stages are observed on target.
-            record["holding"] = {"format_version": "wfd.data-only-readable-proof/1.0",
-                                 "instance_id": instance["instance_id"],
-                                 "published_readable_at": _now()}
+        if self._local_holdings:
+            from .product_holdings import HoldingError, resolve_target_instance, _now
+            try:
+                instance = resolve_target_instance(self.root, create=record_holdings)
+            except HoldingError as exc:
+                if exc.code != "HOLDING_INSTANCE_UNBOUND":
+                    raise
+            else:
+                stamp = (_now() if record_holdings else
+                         self._ledger_readable_time(record, instance["instance_id"]))
+                if stamp is not None:
+                    record["holding"] = {"format_version": "wfd.data-only-readable-proof/1.0",
+                                         "instance_id": instance["instance_id"],
+                                         "published_readable_at": stamp}
+        # A later HEAD may have moved. Verify activation above, then reproduce
+        # the original checks only if the complete receipt matches its pinned bytes.
+        prior = None if record_holdings else self._load_status(request_key)
+        if prior and prior.get("formal_receipt_sha256"):
+            record["checks"] = prior["formal_publication_checks"]
+            if sha(canonical(record)) != prior["formal_receipt_sha256"]:
+                return None, {"formal_receipt_matches": False}, "formal_receipt_conflict"
+            checks = record["checks"]
         self.engine._write_immutable(formal_path, canonical(record))
         if record_holdings:
             self._record_formal_holdings(record)
@@ -2241,7 +2271,21 @@ class WFDDataOnlyService(WFDProductService):
                             "production_publishable": False}
                 if self._terminal(prior.get("state")):
                     if self.has_permission("publish") and prior.get("formal_publication_ref"):
-                        formal = json.loads((self.root / prior["formal_publication_ref"]).read_text("utf-8"))
+                        path = self.root / prior["formal_publication_ref"]
+                        if not path.is_file():
+                            self.require_permission("submit")
+                            state = self.engine.state.read() or {}
+                            sid = prior["snapshot_id"]
+                            if not (sid == state.get("active_head") or any(
+                                    item.get("snapshot_id") == sid for item in state.get("activation_history", []))):
+                                raise ValueError("FORMAL_RECEIPT_ACTIVATION_UNVERIFIED")
+                            recovered = self._recover_submission(
+                                key, candidate, fingerprint, self._load_intent(key), self.engine._known_request(key),
+                                persist=False, recover_holdings=True)
+                            if recovered is None:
+                                raise ValueError("FORMAL_RECEIPT_MISSING")
+                            return recovered
+                        formal = json.loads(path.read_text("utf-8"))
                         self._record_formal_holdings(formal)
                     return self._public_status(prior, replay=True)
         try:
