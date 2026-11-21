@@ -1,10 +1,10 @@
 import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { readConnectionRegistry, registeredConnection } from '../../platform/config/connections.js';
 import { ConfigError } from '../../platform/runtime/errors.js';
 import type { ResourceBindings } from '../../platform/resources/bindings.js';
 import type { R1ReadBinding } from '../../contracts/r1-contracts.js';
-import { WfdProductMachineClient } from './wfd-product-machine.js';
+import { bundleHostPath, WfdProductMachineClient } from './wfd-product-machine.js';
 import { canonicalWfdJson, wfdSha256 } from './wfd-transport.js';
 
 /**
@@ -37,6 +37,7 @@ export interface ResolvedProductMachineConnection {
   trustedActorNamespace: string;
   schemaPath: string;
   readBinding(): R1ReadBinding;
+  bundleImplSha256(): string;
   client: WfdProductMachineClient;
   profile: ProductMachineConnectionProfile;
 }
@@ -44,12 +45,17 @@ export interface ResolvedProductMachineConnection {
 const fail = (message: string): never => { throw new ConfigError(message); };
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
+function matchesRegisteredPath(value: unknown, registered: string): boolean {
+  if (process.platform !== 'win32') return value === registered;
+  const actual = bundleHostPath(value), expected = bundleHostPath(registered);
+  return actual !== null && expected !== null && relative(actual, expected) === '';
+}
 const absoluteFile = (value: unknown, label: string): string => {
   if (typeof value !== 'string' || !isAbsolute(value) || value.includes('\0')) return fail(`${label}需要明确的绝对路径。`);
   let stat;
   try { stat = lstatSync(value); } catch { return fail(`${label}当前不可达。`); }
   if (!stat.isFile() || stat.isSymbolicLink()) return fail(`${label}必须是无符号链接的普通文件。`);
-  if (realpathSync(value) !== resolve(value)) return fail(`${label}包含非规范路径。`);
+  if (relative(realpathSync(value), resolve(value)) !== '') return fail(`${label}包含非规范路径。`);
   return value;
 };
 const absoluteProgram = (value: unknown, label: string): string => {
@@ -65,7 +71,7 @@ const absoluteDir = (value: unknown, label: string): string => {
   let stat;
   try { stat = lstatSync(value); } catch { return fail(`${label}当前不可达。`); }
   if (!stat.isDirectory() || stat.isSymbolicLink()) return fail(`${label}必须是无符号链接的目录。`);
-  if (realpathSync(value) !== resolve(value)) return fail(`${label}包含非规范路径。`);
+  if (relative(realpathSync(value), resolve(value)) !== '') return fail(`${label}包含非规范路径。`);
   return value;
 };
 
@@ -109,18 +115,18 @@ export function resolveProductMachineConnection(resources: ResourceBindings,
   if (!raw) return fail(`连接 ${connectionId} 尚未在受控登记中。`);
   const profile = parseProductMachineConnectionProfile(raw, options);
   if (profile.id !== connectionId) return fail('连接登记 id 与选择不一致。');
-  if (profile.harness_binding.root !== resources.runtimeRoot
+  if (!matchesRegisteredPath(profile.harness_binding.root, resources.runtimeRoot)
     || profile.harness_binding.root_id !== resources.document.runtimeIdentity) {
     return fail('连接登记不属于当前运行根身份。');
   }
   const configStat = lstatSync(profile.config_path);
-  if ((configStat.mode & 0o022) !== 0) return fail('产品机器配置不得组/其他可写。');
+  if (process.platform !== 'win32' && (configStat.mode & 0o022) !== 0) return fail('产品机器配置不得组/其他可写。');
   let config: Record<string, unknown>;
   try { config = JSON.parse(readFileSync(profile.config_path, 'utf8')) as Record<string, unknown>; }
   catch { return fail('产品机器配置无法解析。'); }
   if (!record(config) || config.protocol_version !== 'wfd.product-machine-config/0.1'
-    || config.connection_id !== profile.id || config.store !== profile.store
-    || config.runtime !== profile.runtime) {
+    || config.connection_id !== profile.id || !matchesRegisteredPath(config.store, profile.store)
+    || !matchesRegisteredPath(config.runtime, profile.runtime)) {
     return fail('产品机器配置与连接登记身份、store 或 runtime 不一致。');
   }
   const caller = record(config.caller) ? config.caller : {};
@@ -148,8 +154,9 @@ export function resolveProductMachineConnection(resources: ResourceBindings,
     schemaPath,
     readBinding: () => ({
       readSchemaSha256: digestFiles(resolve(protocolRoot, 'schemas'), ['wfd-read-product.schema.json', 'wfd-common.schema.json']),
-      queryImplSha256: digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_query.py', 'indexed_tabular_query.py']),
+      queryImplSha256: digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_query.py', 'indexed_tabular_query.py', 'filter_plan.py']),
     }),
+    bundleImplSha256: () => digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_machine_bundle.py', 'product_bundle.py']),
     client,
     profile,
   };

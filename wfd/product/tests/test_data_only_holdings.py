@@ -80,6 +80,10 @@ def test_old_receipt_without_proof_is_not_upgraded_on_retry(tmp_path):
     legacy = json.loads(receipt_path.read_text()); legacy.pop("holding")
     # Explicit isolated old-format fixture, never a migration or production edit.
     receipt_path.write_text(json.dumps(legacy))
+    state_path = service.root / service._status_path(result["request_key"])
+    status = json.loads(state_path.read_bytes())
+    del status["formal_receipt_sha256"]
+    state_path.write_text(json.dumps(status))
     facts = HoldingLedger(service.root, result["holding_status"]["instance_id"])
     for path in facts.dir.iterdir():
         path.unlink()
@@ -89,6 +93,60 @@ def test_old_receipt_without_proof_is_not_upgraded_on_retry(tmp_path):
     assert retried["holding_status"]["state"] == "not_recorded"
     assert receipt_path.read_bytes() == before
     assert facts.facts() == []
+
+
+@pytest.mark.parametrize("damage", ["raw_whitespace", "holding_time"])
+def test_formal_digest_guards_status_replay_and_ledger(tmp_path, monkeypatch, damage):
+    service = make_data_service(tmp_path)
+    doc, result = published(service)
+    receipt = service.root / result["formal_publication_ref"]
+    original = receipt.read_bytes()
+    ledger = HoldingLedger(service.root, result["holding_status"]["instance_id"])
+    facts = ledger.facts()
+    if damage == "raw_whitespace":
+        receipt.write_bytes(original + b"\n")
+    else:
+        changed = json.loads(original)
+        changed["holding"]["published_readable_at"] = "2099-01-01T00:00:00Z"
+        receipt.write_text(json.dumps(changed))
+    status = service.request_status(doc["request_identity"])
+    assert status["state"] == "recovery_conflict"
+    assert status["formal_publication_verified"] is False and status["formal_publication_ref"] is None
+    assert status["errors"][0]["code"] == "FORMAL_RECEIPT_DIGEST_MISMATCH"
+    monkeypatch.setattr(service, "_record_formal_holdings", lambda *_: pytest.fail("unverified proof consumed"))
+    with pytest.raises(ValueError, match="FORMAL_RECEIPT_DIGEST_MISMATCH"):
+        service.submit(doc)
+    with pytest.raises(HoldingError, match="FORMAL_RECEIPT_DIGEST_MISMATCH"):
+        ledger.record_batch(**proof_args(result))
+    assert ledger.facts() == facts
+    receipt.write_bytes(original)
+    assert service.request_status(doc["request_identity"])["formal_publication_verified"] is True
+
+
+@pytest.mark.parametrize("field", ["snapshot_id", "request_key", "request_identity", "product_id", "record_version",
+                                   "output_key", "output_snapshot", "contract_refs"])
+def test_legacy_formal_receipt_requires_complete_request_and_output_identity(tmp_path, field):
+    service = make_data_service(tmp_path)
+    doc, result = published(service)
+    state_path = service.root / service._status_path(result["request_key"])
+    status = json.loads(state_path.read_bytes())
+    del status["formal_receipt_sha256"]
+    state_path.write_text(json.dumps(status))
+    assert service.request_status(doc["request_identity"])["formal_publication_verified"] is True
+    path = service.root / result["formal_publication_ref"]
+    formal = json.loads(path.read_bytes())
+    if field == "request_identity":
+        formal[field]["request_id"] = "different"
+    elif field in {"request_key", "snapshot_id"}:
+        formal[field] = "different"
+    elif field == "record_version":
+        formal["outputs"][0]["records"][0][field] = "different"
+    else:
+        formal["outputs"][0]["snapshot_id" if field == "output_snapshot" else field] = "different"
+    path.write_text(json.dumps(formal))
+    assert service.request_status(doc["request_identity"])["formal_publication_verified"] is False
+    with pytest.raises(ValueError, match="FORMAL_RECEIPT_(IDENTITY_MISMATCH|OUTPUT_CONFLICT)"):
+        service.submit(doc)
 
 
 def test_receipt_scopes_product_records_and_forbids_caller_times(tmp_path):

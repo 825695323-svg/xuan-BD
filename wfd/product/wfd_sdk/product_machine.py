@@ -22,10 +22,11 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 MACHINE_PROTOCOL = "wfd.product-machine/0.1"
 MACHINE_CONFIG_PROTOCOL = "wfd.product-machine-config/0.1"
@@ -75,6 +76,8 @@ WRITE_OPERATIONS = {*BUNDLE_WRITES, *DEFINITION_REPLACEMENT_WRITES, "submit", "r
                     "batch_begin", "batch_put_chunk", "batch_finalize",
                     "register_write_target", "register_adjustment_anchor",
                     *USAGE_WRITE_OPERATIONS}
+# Exports publish a package directory without opening the database for writing.
+SIDE_EFFECT_OPERATIONS = WRITE_OPERATIONS | set(BUNDLE_ROLES)
 # Operations whose results carry one entry per output and therefore need a
 # bounded, pageable view when the configured response budget is smaller than
 # the full service result.
@@ -265,6 +268,38 @@ def _read_json_bounded(stream, limit):
         raise ValueError("REQUEST_JSON_INVALID:" + str(exc)) from exc
 
 
+def _parse_bundle_host_path(value, path_type=Path):
+    if not isinstance(value, str) or not value or re.search(r"[\x00-\x1f\x7f-\x9f]", value):
+        raise ValueError("BUNDLE_PATH_INVALID")
+    path = path_type(value)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("BUNDLE_PATH_INVALID")
+    if isinstance(path, PureWindowsPath):
+        if (not re.fullmatch(r"[A-Za-z]:", path.drive) or
+                any(part.endswith((" ", ".")) or re.search(r'[<>:"|?*]', part) or PureWindowsPath(part).is_reserved()
+                    for part in path.parts[1:])):
+            raise ValueError("BUNDLE_PATH_INVALID")
+    elif value.startswith("//") or "\\" in value:
+        raise ValueError("BUNDLE_PATH_INVALID")
+    return path
+
+
+def _canonical_bundle_path(value):
+    path = _parse_bundle_host_path(value)
+    if path.resolve() != path:
+        raise ValueError("BUNDLE_PATH_INVALID")
+    # Windows may resolve a non-symlink reparse point to the same spelling.
+    if os.name == "nt":
+        for part in (*path.parents, path):
+            try:
+                attributes = part.lstat().st_file_attributes
+            except FileNotFoundError:
+                continue
+            if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise ValueError("BUNDLE_PATH_INVALID")
+    return path
+
+
 def _require_absolute_file(path, label):
     value = Path(path)
     if not value.is_absolute():
@@ -280,7 +315,7 @@ def _require_absolute_file(path, label):
 def _load_config(path, expected_sha256=None):
     config_path = _require_absolute_file(path, "config")
     mode = config_path.stat().st_mode
-    if mode & 0o022:
+    if os.name == "posix" and mode & 0o022:
         raise ValueError("CONFIG_UNSAFE:config must not be group/world writable")
     raw = config_path.read_bytes()
     if expected_sha256 is not None and "sha256:" + hashlib.sha256(raw).hexdigest() != expected_sha256:
@@ -305,10 +340,12 @@ def _load_config(path, expected_sha256=None):
             raise ValueError("CONFIG_INVALID:" + label)
         if not Path(value).is_absolute():
             raise ValueError("CONFIG_INVALID:" + label + " must be absolute")
-    store = Path(store_value).resolve()
-    runtime = Path(runtime_value).resolve()
-    project_root = Path(project_value).resolve()
-    protocol_root = Path(protocol_value).resolve()
+    roots = (store_value, runtime_value, project_value, protocol_value)
+    if config.get("bundle_access") is not None:
+        # Validate the registered project before adding any of its code to the import path.
+        store, runtime, project_root, protocol_root = map(_canonical_bundle_path, roots)
+    else:
+        store, runtime, project_root, protocol_root = (Path(value).resolve() for value in roots)
     if not store.is_dir():
         raise ValueError("CONFIG_NOT_FOUND:store")
     if store == runtime or store in runtime.parents or runtime in store.parents:
@@ -417,7 +454,7 @@ def _load_config(path, expected_sha256=None):
             raise ValueError("CONFIG_INVALID:bundle_access requires local data_only")
         from wfd_sdk.product_machine_bundle import load_access
         from wfd_sdk.product_governance import normalize_source_policies
-        bundle_access = load_access(config["bundle_access"], store_value, runtime_value, project_value, protocol_value)
+        bundle_access = load_access(config["bundle_access"], store, runtime, project_root, protocol_root)
         sources = normalize_source_policies(sources)
     from wfd_sdk.definition_replacement_registry import access
     replacement_access = access(config.get("definition_replacement_access"))
@@ -884,9 +921,7 @@ def _status_view(status, identity, offset, limit, detail="summary", include_reco
             "record_sha256": (_canonical_digest(record)
                               if isinstance(record, dict) else None),
         } if formal else None),
-        "formal_publication_verified": bool(
-            status.get("formal_publication_verified")
-            or (formal and formal.get("path"))),
+        "formal_publication_verified": bool(status.get("formal_publication_verified", formal and formal.get("path"))),
         "output_results": [_compact_output(item, detail, row_offset, row_limit)
                            for item in outputs[offset:offset + included]],
         "view": "bounded_page",
@@ -1195,7 +1230,7 @@ def _write_context(service, config, request, response=None):
         arguments = {}
     context = {
         "operation": operation,
-        "may_have_written": operation in WRITE_OPERATIONS,
+        "may_have_written": operation in SIDE_EFFECT_OPERATIONS,
         "do_not_resubmit_with_new_identity": operation in {"submit", "recovery"},
     }
     if operation in {"submit", "recovery"}:
@@ -1234,9 +1269,10 @@ def _write_context(service, config, request, response=None):
             if service is not None and config is not None:
                 context["known_batch_state"] = _batches_status_brief(
                     service, config, batch_id)
-    elif operation in BUNDLE_WRITES:
-        context.update(do_not_resubmit_with_new_identity=True,
-                       descriptor_sha256=arguments.get("descriptor_sha256"),
+    elif operation in BUNDLE_ROLES:
+        result = (response or {}).get("result") or {}
+        context.update(do_not_resubmit_with_new_identity=True, request_id=request.get("request_id"),
+                       descriptor_sha256=arguments.get("descriptor_sha256") or result.get("descriptor_sha256"),
                        recovery_action="verify the original bundle request and descriptor digest")
     elif operation == "evidence_ingest":
         context["note"] = ("custody bytes may already be written before a receipt "
@@ -1268,7 +1304,7 @@ def _output_failure_response(exc, config, service, request, response, started):
     try:
         context = _write_context(service, config, request, response)
     except Exception as context_error:  # reporting must not fail the fallback
-        context = {"operation": operation, "may_have_written": operation in WRITE_OPERATIONS,
+        context = {"operation": operation, "may_have_written": operation in SIDE_EFFECT_OPERATIONS,
                    "state_query_error": type(context_error).__name__ + ": " + str(context_error)}
     details = {
         "response_written": False,
@@ -1959,21 +1995,22 @@ def _error_response(exc, config, service, request, started):
             pass
     action = _action_for(code, operation)
     write_context = None
-    if operation in WRITE_OPERATIONS:
+    if operation in SIDE_EFFECT_OPERATIONS:
         try:
             write_context = _write_context(service, config, request, None)
         except Exception as context_error:
             write_context = {"operation": operation,
                              "may_have_written": True,
                              "state_query_error": type(context_error).__name__ + ": " + str(context_error)}
-        if operation in BUNDLE_WRITES:
+        if operation in BUNDLE_ROLES:
             action += " 请按原分包请求编号、绑定与描述文件摘要核对目标状态。"
         else:
             action = (action + " 本操作属于写操作：不要假定未写入，也不要换新身份重投；"
                   "请用同一 request_identity/batch_id 查询真实状态后按 recovery 处理。")
-    if operation in BUNDLE_WRITES and code in {
+    if operation in BUNDLE_ROLES and code in {
             "CALLER_PERMISSION_DENIED", "SOURCE_READ_PERMISSION_MISSING", "SOURCE_NOT_ADMITTED",
             "WRITE_AUTHORITY_REQUIRED", "BUNDLE_CONFIG_CHANGED", "BUNDLE_PATH_INVALID",
+            "BUNDLE_OPERATION_NOT_CONFIGURED", "SOURCE_EXPORT_PERMISSION_MISSING", "REQUEST_INVALID",
             "BUNDLE_DESCRIPTOR_DIGEST_MISMATCH", "OPERATION_UNSUPPORTED"} and write_context is not None:
         write_context["may_have_written"] = False
     if write_context is not None:
@@ -2047,7 +2084,7 @@ def main(argv=None):
         operation = request.get("operation") if isinstance(request, dict) else None
         response_too_large = (response is not None and _json_bytes(response) > limit)
         try:
-            if response is not None and (operation in WRITE_OPERATIONS or not response_too_large):
+            if response is not None and (operation in SIDE_EFFECT_OPERATIONS or not response_too_large):
                 fallback = _output_failure_response(exc, config, service, request,
                                                     response, started)
             else:
@@ -2064,7 +2101,7 @@ def main(argv=None):
                     "message": ("the operation may have completed but the failure response "
                                 "could not be constructed fully"),
                     "action": _action_for("PROCESS_OUTPUT_FAILED", operation),
-                    "details": {"write_may_have_happened": operation in WRITE_OPERATIONS},
+                    "details": {"write_may_have_happened": operation in SIDE_EFFECT_OPERATIONS},
                     "retryable": False,
                 },
                 "request_identity": None,
@@ -2080,7 +2117,7 @@ def main(argv=None):
                     "code": "PROCESS_OUTPUT_FAILED",
                     "message": "operation result could not be written; state must be queried",
                     "action": _action_for("PROCESS_OUTPUT_FAILED", operation),
-                    "details": {"write_may_have_happened": operation in WRITE_OPERATIONS,
+                    "details": {"write_may_have_happened": operation in SIDE_EFFECT_OPERATIONS,
                                 "request_identity": fallback.get("request_identity")},
                     "retryable": False,
                 },
@@ -2096,7 +2133,7 @@ def main(argv=None):
                     "error": {"code": "PROCESS_OUTPUT_FAILED",
                               "message": "process could not write a bounded response",
                               "action": _action_for("PROCESS_OUTPUT_FAILED", operation),
-                              "details": {"write_may_have_happened": operation in WRITE_OPERATIONS},
+                              "details": {"write_may_have_happened": operation in SIDE_EFFECT_OPERATIONS},
                               "retryable": False},
                     "request_identity": fallback.get("request_identity"),
                 }, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")

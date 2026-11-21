@@ -198,6 +198,39 @@ def _valid_bundle(tmp_path):
     return descriptor, product_id, snapshot_id
 
 
+@pytest.mark.parametrize("change", ["replaced_bytes", "symlink_to_identical_bytes"])
+def test_import_rechecks_catalog_object_at_immutable_write(tmp_path, monkeypatch, change):
+    from wfd_sdk import product_bundle
+    descriptor, _, _ = _valid_bundle(tmp_path)
+    bundle, target = tmp_path / "bundle", tmp_path / "target"
+    record = next(r for r in descriptor["records"] if "/definitions/" in r["relative_path"])
+    obj = bundle / "objects" / record["sha256"]
+    original = obj.read_bytes()
+    verify = product_bundle._verify_structured_bundle
+
+    def verify_then_replace(*args):
+        verified = verify(*args)
+        replacement = tmp_path / "replacement"
+        if change == "replaced_bytes":
+            replacement.write_bytes(original + b"\n")
+            replacement.replace(obj)
+        else:
+            obj.rename(replacement)
+            obj.symlink_to(replacement)
+        return verified
+
+    with monkeypatch.context() as patch:
+        patch.setattr(product_bundle, "_verify_structured_bundle", verify_then_replace)
+        with pytest.raises(ValueError, match="STRUCTURED_RECORD_DIGEST_MISMATCH|STRUCTURED_(SYMLINK_FORBIDDEN|PATH_ESCAPE)"):
+            import_structured_bundle(bundle, target, runtime_root=tmp_path / "rt")
+    assert not (target / record["relative_path"]).exists()
+    obj.unlink()
+    obj.write_bytes(original)
+    _, recovered = import_structured_bundle(bundle, target, runtime_root=tmp_path / "rt")
+    assert recovered["target_snapshot_id"] == descriptor["target_snapshot_id"]
+    assert (target / record["relative_path"]).read_bytes() == original
+
+
 def test_structured_subject_selection_cannot_return_another_subject(tmp_path):
     source, service, snapshot_id, product_id = _make_daily_slice(tmp_path)
     with pytest.raises(ValueError, match="STRUCTURED_SUBJECT_NOT_IN_PRODUCT_SCOPE"):

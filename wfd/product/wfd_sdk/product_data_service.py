@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timedelta, timezone
+from operator import itemgetter
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -398,6 +399,11 @@ def validate_data_only_metadata(declaration):
 
 from .joint_state import read_guard as joint_read_guard
 
+
+class FormalReceiptError(ValueError):
+    """The persisted publication proof cannot authenticate this request."""
+
+
 class WFDDataOnlyService(WFDProductService):
     """Structured-data profile with no source/evidence/lineage persistence."""
 
@@ -693,8 +699,13 @@ class WFDDataOnlyService(WFDProductService):
         return identity
 
     # ---------------------------------------------------------------- status
-    def _status_path(self, key):
+    @staticmethod
+    def _status_path(key):
         return f"catalog/product_service/data_only_status/{key}.json"
+
+    @staticmethod
+    def _formal_path(key):
+        return f"catalog/product_service/data_only_formal_publications/{key}.json"
 
     def _intent_path(self, key):
         return f"catalog/product_service/data_only_intents/{key}.json"
@@ -711,7 +722,8 @@ class WFDDataOnlyService(WFDProductService):
                 and isinstance(intent.get("input_fingerprint"), str)
                 and re.fullmatch(r"[0-9a-f]{64}", intent["input_fingerprint"]))
 
-    def _plan_path(self, key):
+    @staticmethod
+    def _plan_path(key):
         return f"catalog/product_service/data_only_submission_plans/{key}.json"
 
     def _load_plan(self, key):
@@ -763,9 +775,6 @@ class WFDDataOnlyService(WFDProductService):
 
     def _save_status(self, record):
         self._restore_duplicate_results(record)
-        if record.get("formal_publication_ref"):
-            raw = (self.root / record["formal_publication_ref"]).read_bytes()
-            record["formal_receipt_sha256"] = sha(raw)
         self._write_status(self._status_path(record["request_key"]), record)
 
     @staticmethod
@@ -774,7 +783,7 @@ class WFDDataOnlyService(WFDProductService):
                          "published_sandbox", "partially_published_sandbox", "rejected",
                          "unchanged", "conflicts_pending"}
 
-    def _public_status(self, record, replay=False):
+    def _public_status(self, record, replay=False, record_holdings=False):
         result = {
             "protocol_version": DATA_ONLY_PROTOCOL,
             "profile": DATA_ONLY_PROFILE,
@@ -786,7 +795,7 @@ class WFDDataOnlyService(WFDProductService):
             "output_results": copy.deepcopy(record.get("output_results", [])),
             "formal_publication_ref": record.get("formal_publication_ref"),
             "formal_publication_checks": copy.deepcopy(record.get("formal_publication_checks")),
-            "formal_publication_verified": bool(record.get("formal_publication_ref")),
+            "formal_publication_verified": False,
             "errors": copy.deepcopy(record.get("errors", [])),
             "idempotent_replay": replay or bool(record.get("idempotent_replay")),
             "production_publishable": False,
@@ -795,10 +804,10 @@ class WFDDataOnlyService(WFDProductService):
             if name in record:
                 result[name] = copy.deepcopy(record[name])
         if result["formal_publication_ref"]:
-            path = self.root / result["formal_publication_ref"]
-            if not path.is_file():
-                raise ValueError("FORMAL_RECEIPT_MISSING")
-            formal = json.loads(path.read_text("utf-8"))
+            formal, _ = self.read_formal_receipt(self.root, record["request_key"], record)
+            result["formal_publication_verified"] = True
+            if record_holdings:
+                self._record_formal_holdings(formal)
             result["holding_status"] = self._formal_holding_status(formal)
             known = {item["output_key"] for item in result["output_results"]}
             result["output_results"].extend(copy.deepcopy(item) for item in
@@ -837,7 +846,15 @@ class WFDDataOnlyService(WFDProductService):
                     "state": "unknown", "snapshot_id": None, "output_results": [],
                     "formal_publication_ref": None, "errors": [],
                     "production_publishable": False}
-        return self._public_status(record, replay=True)
+        try:
+            return self._public_status(record, replay=True)
+        except FormalReceiptError as exc:
+            if str(exc) == "FORMAL_RECEIPT_MISSING":
+                raise
+            return self._public_status({**record, "state": "recovery_conflict", "output_results": [],
+                                        "formal_publication_ref": None, "formal_publication_checks": None,
+                                        "errors": [_issue(str(exc), "Stored formal receipt failed verification")]},
+                                       replay=True)
 
     @staticmethod
     def _record_equal(left, right):
@@ -986,10 +1003,9 @@ class WFDDataOnlyService(WFDProductService):
         if not results:
             return None
         # Immutable formal receipt is authoritative even after HEAD advances.
-        formal_path = f"catalog/product_service/data_only_formal_publications/{key}.json"
+        formal_path = self._formal_path(key)
         if (self.root / formal_path).is_file():
-            formal_path, checks, state = self._formalize(
-                key, identity, fingerprint, results, receipt, recover_holdings=recover_holdings)
+            formal, checks, state = self._formalize(key, identity, fingerprint, results, receipt)
             if state == "formal_receipt_conflict":
                 record = {"format_version": DATA_ONLY_STATUS_FORMAT, "profile": DATA_ONLY_PROFILE,
                           "request_key": key, "request_identity": copy.deepcopy(identity),
@@ -1010,12 +1026,12 @@ class WFDDataOnlyService(WFDProductService):
                           "request_key": key, "request_identity": copy.deepcopy(identity),
                           "input_fingerprint": fingerprint, "state": "published_formal",
                           "snapshot_id": sid, "output_results": results,
-                          "formal_publication_ref": formal_path,
+                          **formal,
                           "formal_publication_checks": checks,
                           "errors": [], "idempotent_replay": False}
                 if persist:
                     self._save_status(record)
-                return self._public_status(record, replay=True)
+                return self._public_status(record, replay=True, record_holdings=recover_holdings)
         state_doc = self.engine.state.read() or {}
         current = state_doc.get("active_head")
         history = {item.get("snapshot_id") for item in state_doc.get("activation_history", [])
@@ -1037,7 +1053,7 @@ class WFDDataOnlyService(WFDProductService):
                 activation_result = {"ok": False, "code": "RECOVERY_HEAD_CONFLICT",
                                      "detail": "current HEAD is not the original parent"}
         if activated:
-            formal_path, checks, formal_state = self._formalize(
+            formal, checks, formal_state = self._formalize(
                 key, identity, fingerprint, results, receipt,
                 historically_activated=(sid in history and current != sid))
             if formal_state == "published_formal":
@@ -1050,7 +1066,7 @@ class WFDDataOnlyService(WFDProductService):
             else:
                 state = "published_sandbox"
         else:
-            formal_path, checks = None, None
+            formal, checks = None, None
             for item in results:
                 item["publication_state"] = "committed_pending_activation"
                 item["engine_publication_state"] = "committed_pending_activation"
@@ -1059,13 +1075,13 @@ class WFDDataOnlyService(WFDProductService):
                   "request_key": key, "request_identity": copy.deepcopy(identity),
                   "input_fingerprint": fingerprint, "state": state,
                   "snapshot_id": sid, "output_results": results,
-                  "formal_publication_ref": formal_path,
+                  **(formal or {"formal_publication_ref": None}),
                   "formal_publication_checks": checks,
                   "recovery": copy.deepcopy(activation_result),
                   "errors": [], "idempotent_replay": False}
         if persist:
             self._save_status(record)
-        return self._public_status(record, replay=True)
+        return self._public_status(record, replay=True, record_holdings=recover_holdings)
 
     # ---------------------------------------------------------------- submit
     @staticmethod
@@ -1974,23 +1990,62 @@ class WFDDataOnlyService(WFDProductService):
     @staticmethod
     def _formal_outputs_match(record, results):
         results = WFDDataOnlyService._publication_results(results)
-        outputs = record.get("outputs") or []
-        if len(outputs) != len(results):
+        outputs = record.get("outputs")
+        if not isinstance(outputs, list) or not results or len(outputs) != len(results):
             return False
-        by_key = {(item.get("output_key"), item.get("product_id")): item for item in outputs}
-        if len(by_key) != len(outputs):
-            return False
+        by_key = {item["output_key"]: item for item in outputs}
+        record_order = itemgetter("record_id", "record_version")
         for result in results:
-            existing = by_key.get((result.get("output_key"), result.get("product_id")))
-            if existing is None:
+            existing = by_key.pop(result["output_key"], None)
+            if (existing is None or existing.get("snapshot_id") != record["snapshot_id"]
+                    or result.get("snapshot_id", record["snapshot_id"]) != record["snapshot_id"]
+                    or any(existing.get(key) != result.get(key) for key in
+                           ("product_id", "definition_ref", "contract_refs", "contract_bundle_ref"))):
                 return False
-            left = sorted(existing.get("records") or [],
-                          key=lambda item: (item.get("record_id"), item.get("record_version")))
-            right = sorted(result.get("records") or [],
-                           key=lambda item: (item.get("record_id"), item.get("record_version")))
-            if left != right:
+            if not result["records"] or sorted(existing["records"], key=record_order) != sorted(result["records"], key=record_order):
                 return False
-        return True
+        return not by_key
+
+    @classmethod
+    def read_formal_receipt(cls, root, key, status, *, unpublished=None):
+        """Verify and parse one read. Older status files pin the output identities instead of a digest."""
+        ref = cls._formal_path(key)
+        if status.get("request_key") != key or status.get("formal_publication_ref") != ref:
+            raise FormalReceiptError("FORMAL_RECEIPT_IDENTITY_MISMATCH")
+        path = root / ref
+        if path.is_symlink() or not path.is_file():
+            raise FormalReceiptError("FORMAL_RECEIPT_MISSING")
+        raw = path.read_bytes()
+        digest = sha(raw)
+        pinned = "formal_receipt_sha256" in status
+        if pinned and status["formal_receipt_sha256"] != digest:
+            raise FormalReceiptError("FORMAL_RECEIPT_DIGEST_MISMATCH")
+        try:
+            formal = json.loads(raw)
+            if (not isinstance(formal, dict) or formal.get("format_version") != DATA_ONLY_FORMAL_FORMAT
+                    or formal.get("profile") != DATA_ONLY_PROFILE
+                    or formal.get("formal_publication_state") != "published_formal"
+                    or any(formal.get(field) != status[field] for field in
+                           ("request_key", "request_identity", "input_fingerprint", "snapshot_id"))):
+                raise FormalReceiptError("FORMAL_RECEIPT_IDENTITY_MISMATCH")
+            if not pinned:
+                results = status["output_results"]
+                if unpublished is None:
+                    unpublished = cls._unpublished_outputs(results)
+                    # A recovered legacy status may contain only successful outputs.
+                    if not unpublished and formal.get("unpublished_outputs"):
+                        plan_path = root / cls._plan_path(key)
+                        if plan_path.is_file():
+                            plan = json.loads(plan_path.read_bytes())
+                            if all(plan.get(field) == status[field] for field in
+                                   ("request_key", "request_identity", "input_fingerprint")):
+                                unpublished = plan.get("unpublished_outputs", [])
+                if (not cls._formal_outputs_match(formal, results) or formal.get("unpublished_outputs", []) != unpublished
+                        or ("formal_publication_checks" in status and formal.get("checks") != status["formal_publication_checks"])):
+                    raise FormalReceiptError("FORMAL_RECEIPT_OUTPUT_CONFLICT")
+        except (KeyError, TypeError, AttributeError, UnicodeError, json.JSONDecodeError) as exc:
+            raise FormalReceiptError("FORMAL_RECEIPT_INVALID") from exc
+        return formal, digest
 
     @staticmethod
     def _formal_holding_groups(record):
@@ -2126,7 +2181,7 @@ class WFDDataOnlyService(WFDProductService):
         return checks, output_records
 
     def _formalize(self, request_key, identity, fingerprint, results, publication,
-                   historically_activated=False, record_holdings=False, recover_holdings=False):
+                   historically_activated=False, record_holdings=False):
         duplicate_policy = any("row_results" in item for item in results)
         unpublished = self._unpublished_outputs(results)
         if not unpublished:
@@ -2138,20 +2193,21 @@ class WFDDataOnlyService(WFDProductService):
         if not sid:
             return None, None, "registered_not_published"
         snapshot = self.engine.read_snapshot(sid)
-        formal_path = f"catalog/product_service/data_only_formal_publications/{request_key}.json"
+        formal_path = self._formal_path(request_key)
         existing_path = self.root / formal_path
+        prior = self._load_status(request_key)
         if existing_path.is_file():
-            existing = json.loads(existing_path.read_text("utf-8"))
-            if (existing.get("request_key") == request_key
-                    and existing.get("snapshot_id") == sid
-                    and existing.get("formal_publication_state") == "published_formal"):
-                if (self._formal_outputs_match(existing, results)
-                        and existing.get("unpublished_outputs", []) == unpublished):
-                    if record_holdings or recover_holdings:
-                        self._record_formal_holdings(existing)
-                    return formal_path, copy.deepcopy(existing.get("checks")), "published_formal"
-                return None, {"formal_receipt_matches": False,
-                              "recovery_error": "FORMAL_RECEIPT_OUTPUT_CONFLICT"}, "formal_receipt_conflict"
+            expected = {"request_key": request_key, "snapshot_id": sid, "request_identity": identity,
+                        "input_fingerprint": fingerprint, "formal_publication_ref": formal_path,
+                        "output_results": results}
+            if prior and "formal_receipt_sha256" in prior:
+                expected["formal_receipt_sha256"] = prior["formal_receipt_sha256"]
+            try:
+                existing, digest = self.read_formal_receipt(self.root, request_key, expected, unpublished=unpublished)
+            except FormalReceiptError as exc:
+                return None, {"formal_receipt_matches": False, "recovery_error": str(exc)}, "formal_receipt_conflict"
+            return ({"formal_publication_ref": formal_path, "formal_receipt_sha256": digest},
+                    existing["checks"], "published_formal")
         checks = {
             "caller_publish_role": self.has_permission("publish"),
             "engine_not_sandbox": self.engine.sandbox is False,
@@ -2216,16 +2272,15 @@ class WFDDataOnlyService(WFDProductService):
                                          "published_readable_at": stamp}
         # A later HEAD may have moved. Verify activation above, then reproduce
         # the original checks only if the complete receipt matches its pinned bytes.
-        prior = None if record_holdings else self._load_status(request_key)
-        if prior and prior.get("formal_receipt_sha256"):
+        if prior and "formal_receipt_sha256" in prior:
             record["checks"] = prior["formal_publication_checks"]
-            if sha(canonical(record)) != prior["formal_receipt_sha256"]:
-                return None, {"formal_receipt_matches": False}, "formal_receipt_conflict"
             checks = record["checks"]
-        self.engine._write_immutable(formal_path, canonical(record))
-        if record_holdings:
-            self._record_formal_holdings(record)
-        return formal_path, checks, "published_formal"
+        raw = canonical(record)
+        digest = sha(raw)
+        if prior and "formal_receipt_sha256" in prior and digest != prior["formal_receipt_sha256"]:
+            return None, {"formal_receipt_matches": False}, "formal_receipt_conflict"
+        self.engine._write_immutable(formal_path, raw)
+        return {"formal_publication_ref": formal_path, "formal_receipt_sha256": digest}, checks, "published_formal"
 
     def _prepare_bulk_product(self, document, header, prior_product=None):
         from . import indexed_bulk as bulk
@@ -2285,9 +2340,7 @@ class WFDDataOnlyService(WFDProductService):
                             if recovered is None:
                                 raise ValueError("FORMAL_RECEIPT_MISSING")
                             return recovered
-                        formal = json.loads(path.read_text("utf-8"))
-                        self._record_formal_holdings(formal)
-                    return self._public_status(prior, replay=True)
+                    return self._public_status(prior, replay=True, record_holdings=self.has_permission("publish"))
         try:
             identity = self._validate_document(doc)
         except ValueError as exc:
@@ -2664,9 +2717,9 @@ class WFDDataOnlyService(WFDProductService):
             state = ("registered_not_published" if any(
                 item.get("registration_state") in {"registered", "reused"} for item in results)
                 else "rejected")
-            formal_path, checks = None, None
+            formal, checks = None, None
         else:
-            formal_path, checks, state = self._formalize(
+            formal, checks, state = self._formalize(
                 key, identity, fingerprint, results, receipt, record_holdings=True)
             if state == "published_formal":
                 for item in results:
@@ -2685,11 +2738,11 @@ class WFDDataOnlyService(WFDProductService):
                   "request_key": key, "request_identity": identity,
                   "input_fingerprint": fingerprint, "state": state,
                   "snapshot_id": receipt.get("snapshot_id"), "output_results": results,
-                  "formal_publication_ref": formal_path,
+                  **(formal or {"formal_publication_ref": None}),
                   "formal_publication_checks": checks,
                   "errors": [], "idempotent_replay": False}
         self._save_status(record)
-        return self._public_status(record)
+        return self._public_status(record, record_holdings=True)
 
     def _internal_fingerprint(self, doc, key):
         # Sanitized internal documents are deterministic for the same admitted

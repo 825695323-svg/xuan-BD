@@ -33,6 +33,7 @@ export interface R1Runtime {
   client: WfdStructuredIngestClient;
   /** Re-resolve the registered identity and hash its actual files before every dispatch/recovery. */
   currentIdentity(): R1ConnectionIdentity;
+  currentBundleIdentity(): R1ConnectionIdentity & { bundleImplSha256: string | null };
   currentReadBinding(): R1ReadBinding;
 }
 export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
@@ -60,10 +61,9 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
       throw new TaskError('R1_CONNECTION_RELOAD_REQUIRED', '连接登记或内部进程入口已变化；现有客户端不能展示新连接却调用旧入口，须核对后重新装配。');
     }
     if (config.profile !== 'data_only') throw new TaskError('R1_PROFILE_REQUIRED', '新交接只允许已登记的 data_only 连接；旧 profile 不能被重放。');
-    return { actual, raw };
+    return { actual, raw, config };
   };
-  const currentIdentity: R1Runtime['currentIdentity'] = () => {
-    const { actual, raw } = currentConnection();
+  const identityOf = ({ actual, raw }: ReturnType<typeof currentConnection>): R1ConnectionIdentity => {
     const usage = actual.profile.mode === 'production'
       ? { mode: 'production' as const, purpose: 'production' as const }
       : { mode: 'user_test' as const, purpose: 'user_test' as const };
@@ -74,6 +74,13 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
       entrySha256: wfdSha256(readFileSync(actual.profile.entry_path)),
       pythonPath: actual.profile.python_path, entryPath: actual.profile.entry_path };
   };
+  const currentIdentity = () => identityOf(currentConnection());
   if (connection.profile.mode === 'production') currentIdentity();
-  return { connection, service, client, currentIdentity, currentReadBinding: () => currentConnection().actual.readBinding() };
+  return { connection, service, client, currentIdentity,
+    currentBundleIdentity: () => {
+      const current = currentConnection();
+      // A data_only connection without package access can still serve ordinary R1 requests.
+      return { ...identityOf(current), bundleImplSha256: current.config.bundle_access == null ? null : current.actual.bundleImplSha256() };
+    },
+    currentReadBinding: () => currentConnection().actual.readBinding() };
 }

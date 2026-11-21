@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
-import { isAbsolute, join, normalize } from 'node:path';
-import { WFD_BUNDLE_FORMAT, WFD_BUNDLE_OPERATIONS, type WfdBundleOperation, type WfdBundleReceipt,
-  isWfdBundleProducts, type WfdProductMachineTransport } from '../../adapters/database/wfd-product-machine.js';
+import { join, relative } from 'node:path';
+import { WFD_BUNDLE_FORMAT, WFD_BUNDLE_OPERATIONS, WfdProductMachineError, type WfdBundleOperation, type WfdBundleReceipt,
+  bundleHostPath, isWfdBundleProducts, type WfdProductMachineTransport } from '../../adapters/database/wfd-product-machine.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { CoreError } from '../../platform/runtime/errors.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
@@ -12,7 +12,7 @@ const id = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const snapshot = /^s_[a-f0-9]{24}$/u;
 const sha = /^sha256:[a-f0-9]{64}$/u;
 const packageName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/u;
-type BundleRuntime = Pick<R1Runtime, 'currentIdentity'> & {
+type BundleRuntime = Pick<R1Runtime, 'currentBundleIdentity'> & {
   connection: Pick<R1Runtime['connection'], 'client' | 'configPath' | 'connectionId' | 'callerId' | 'trustedActorNamespace'>;
 };
 interface Options {
@@ -30,7 +30,7 @@ function token(value: unknown, pattern: RegExp): string {
   return value;
 }
 function inputFor(operation: WfdBundleOperation, value: unknown) {
-  const importing = WFD_BUNDLE_OPERATIONS[operation].write;
+  const importing = WFD_BUNDLE_OPERATIONS[operation].writesDatabase;
   const b = object(value, ['requestId', 'packageName', ...(importing ? ['descriptorSha256'] : ['snapshotId', 'products']),
     ...(operation === 'bundle_export_delta' ? ['baselineSnapshotId'] : [])]);
   const base = { requestId: token(b.requestId, id), packageName: token(b.packageName, packageName) };
@@ -56,8 +56,7 @@ export class R1BundleService {
       state TEXT NOT NULL, receipt_json TEXT, error_code TEXT)`);
   }
 
-  private currentBinding() {
-    const identity = this.options.runtime.currentIdentity();
+  private currentBinding(identity = this.options.runtime.currentBundleIdentity()) {
     if (identity.profile !== 'data_only') throw new CoreError('R1_PROFILE_REQUIRED', '独立小库需要 data_only 连接。');
     return wfdSha256(canonicalWfdJson([this.versionBinding, identity]));
   }
@@ -103,13 +102,16 @@ export class R1BundleService {
     const { requestId } = input, generation = this.check();
     const fingerprint = wfdSha256(canonicalWfdJson([operation, input]));
     const db = this.options.database.connection;
+    let previouslyUnconfirmed = false;
     const cached = this.options.database.transaction(() => {
       const row = this.row(requestId);
       if (row && (row.binding !== this.binding || row.fingerprint !== fingerprint))
         throw new CoreError('R1_BUNDLE_REQUEST_CONFLICT', '原分包请求编号已绑定其他内容或连接。');
       if (row?.receipt_json) return JSON.parse(String(row.receipt_json)) as WfdBundleReceipt;
+      previouslyUnconfirmed = row?.state === 'outcome_unknown' || row?.state === 'dispatching';
       db.prepare(`INSERT INTO r1_bundle_requests(request_id,operation,binding,fingerprint,state)
-        VALUES(?,?,?,?,'dispatching') ON CONFLICT(request_id) DO UPDATE SET state='dispatching',error_code=NULL`)
+        VALUES(?,?,?,?,'dispatching') ON CONFLICT(request_id) DO UPDATE SET state='dispatching',error_code=NULL
+        WHERE state='failed'`)
         .run(requestId, operation, this.binding, fingerprint);
       return null;
     });
@@ -126,10 +128,14 @@ export class R1BundleService {
       return { ...base, receipt: JSON.parse(String(this.row(requestId)!.receipt_json)) as WfdBundleReceipt };
     }).catch((error: unknown) => {
       const code = error instanceof Error && 'code' in error ? String(error.code) : 'R1_BUNDLE_DISPATCH_FAILED';
-      const unknown = received || code === 'PROCESS_OUTPUT_FAILED' || (error instanceof Error && 'mayHaveBeenAccepted' in error && error.mayHaveBeenAccepted)
-        || code === 'BD_STOPPED' || code === 'R1_CONNECTION_BINDING_CHANGED';
-      db.prepare('UPDATE r1_bundle_requests SET state=?,error_code=? WHERE request_id=? AND receipt_json IS NULL')
-        .run(unknown ? 'outcome_unknown' : 'failed', code, requestId);
+      const uncertain = error instanceof WfdProductMachineError && error.mayHaveBeenAccepted;
+      const unknown = received || uncertain || previouslyUnconfirmed;
+      const updated = db.prepare(`UPDATE r1_bundle_requests SET state=CASE WHEN state='outcome_unknown' THEN state ELSE ? END,
+        error_code=? WHERE request_id=? AND receipt_json IS NULL RETURNING state`)
+        .get(unknown ? 'outcome_unknown' : 'failed', code, requestId);
+      if (!uncertain && (unknown || updated?.state === 'outcome_unknown')) throw new WfdProductMachineError(code,
+        error instanceof Error ? error.message : '分包结果待沿原请求编号和描述文件摘要核对。',
+        { operation, requestId, cause: error, mayHaveBeenAccepted: true });
       throw error;
     }).finally(() => this.pending.delete(requestId));
     this.pending.set(requestId, call);
@@ -139,10 +145,11 @@ export class R1BundleService {
   private async execute(operation: WfdBundleOperation, input: ReturnType<typeof inputFor>) {
     const runtime = this.options.runtime, client = runtime.connection.client;
     const raw = readFileSync(runtime.connection.configPath);
-    if (wfdSha256(raw) !== runtime.currentIdentity().configSha256)
-      throw new CoreError('R1_CONNECTION_BINDING_CHANGED', '读取分包目录时配置身份已变化。');
-    const root: unknown = JSON.parse(raw.toString('utf8')).bundle_access?.package_root;
-    if (typeof root !== 'string' || !isAbsolute(root) || normalize(root) !== root || realpathSync(root) !== root
+    const identity = runtime.currentBundleIdentity();
+    if (wfdSha256(raw) !== identity.configSha256 || this.currentBinding(identity) !== this.binding)
+      throw new CoreError('R1_CONNECTION_BINDING_CHANGED', '派发前分包配置或实现摘要已变化。');
+    const root = bundleHostPath(JSON.parse(raw.toString('utf8')).bundle_access?.package_root);
+    if (!root || relative(realpathSync(root), root) !== ''
       || !lstatSync(root).isDirectory()) throw new CoreError('R1_BUNDLE_ROOT_UNAVAILABLE', '尚未登记可用的规范分包目录。');
     const package_path = join(root, input.packageName);
     const entry = lstatSync(package_path, { throwIfNoEntry: false });

@@ -64,6 +64,18 @@ test('HTTP full, delta and reference bundles use a real isolated WFD process and
     const packages = join(f.root, 'packages'), target = join(f.root, 'delivered');
     mkdirSync(packages, { mode: 0o700 });
     const plain = JSON.parse(readFileSync(f.configPath, 'utf8'));
+    const exportEntry = join(f.root, 'export-acknowledgement.py');
+    writeFileSync(exportEntry, [
+      'import sys', 'sys.path.insert(0, ' + JSON.stringify(plain.project_root) + ')',
+      'from wfd_sdk import product_machine as machine', 'write = machine._write_response',
+      'def output(response, limit):',
+      '    if response.get("request_id") == "lost-export" and (response.get("result") or {}).get("status") == "exported":',
+      '        sys.stdout.buffer.write(b"{")', '    else:', '        write(response, limit)',
+      'machine._write_response = output', 'raise SystemExit(machine.main())', '',
+    ].join('\n'));
+    const registry = JSON.parse(readFileSync(f.registryPath, 'utf8'));
+    registry.connections[0].entry_path = exportEntry;
+    writeFileSync(f.registryPath, JSON.stringify(registry));
     const config = { ...plain, caller: { ...plain.caller, roles: [...plain.caller.roles, 'export'] },
       bundle_access: { dataset_id: dataset, source_ids: ['synthetic'], operations: Object.keys(WFD_BUNDLE_OPERATIONS),
         package_root: packages, target_store: target },
@@ -121,6 +133,17 @@ test('HTTP full, delta and reference bundles use a real isolated WFD process and
     assert.equal(full.products[0]!.row_count, 1);
     const descriptor = (name: string) => join(packages, name, 'financial_bundle.json');
     assert.equal(full.descriptor_sha256, 'sha256:' + wfdSha256(readFileSync(descriptor('base'))));
+    const lost = { ...fullInput, requestId: 'lost-export', packageName: 'lost-export' };
+    const failedReply = await call('full/export', lost);
+    assert.equal(failedReply.status, 409);
+    assert.equal(failedReply.data.code, 'WFD_PRODUCT_MACHINE_RESPONSE');
+    assert.equal(failedReply.data.mayHaveBeenAccepted, true);
+    const diskDigest = 'sha256:' + wfdSha256(readFileSync(descriptor(lost.packageName)));
+    assert.equal((await ok('requests/lost-export')).state, 'outcome_unknown');
+    const recovered = (await ok('full/export', lost)).receipt;
+    assert.equal(recovered.status, 'already_exported');
+    assert.equal(recovered.descriptor_sha256, diskDigest);
+    assert.deepEqual((await ok('requests/lost-export')).receipt, recovered);
     assert.deepEqual((await ok('full/export', fullInput)).receipt, full);
     assert.equal((await call('full/export', { ...fullInput, snapshotId: 's_' + '2'.repeat(24) })).data.code, 'R1_BUNDLE_REQUEST_CONFLICT');
     const repeated = await ok('full/export', { ...fullInput, requestId: 'verify-existing-package' });
