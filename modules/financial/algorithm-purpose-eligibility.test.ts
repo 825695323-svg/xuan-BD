@@ -243,6 +243,17 @@ test('历史计算及 status 仅向模型返回原因计数，完整未来修订
           const old = await invoke('algorithms.status', { taskId: calculated.taskId }, 'legacy-status');
           assert.equal(old.error?.code, status.error!.code);
         }
+        diagnostics.splice(0, diagnostics.length, { decision: 'indeterminate', reason: 'INSTANCE_HOLDING_COVERAGE_GAP',
+          revision_id: 'r_future_indeterminate', subject: { id: 'future-subject' } } as typeof diagnostics[number]);
+        const incomplete = await invoke('algorithms.calculate', { calculationJson: JSON.stringify(request) }, 'calculate-indeterminate-zero');
+        assert.equal(incomplete.error?.code, 'ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE');
+        assert.doesNotMatch(JSON.stringify(incomplete), /r_future|future-subject/u);
+        const incompleteAudit = host.database.connection.prepare('SELECT state,raw_result_json,raw_result_digest FROM algorithm_calls WHERE task_id=?')
+          .get(incomplete.taskId) as { state: string; raw_result_json: string | null; raw_result_digest: string | null };
+        assert.equal(incompleteAudit.state, 'failed');
+        assert.ok(incompleteAudit.raw_result_json && incompleteAudit.raw_result_digest);
+        assert.equal(JSON.parse(incompleteAudit.raw_result_json).kind, 'historical_snapshot_incomplete');
+        assert.deepEqual(JSON.parse(incompleteAudit.raw_result_json).diagnostics, diagnostics);
       }
     }
   } finally { await host.close(); }
@@ -278,6 +289,22 @@ test('本机算法固定快照：4月历史只接受3月版本，5月修订与�
         { authority: 'operator-http', requestId: 'snapshot-may-april', observedAtUtc: '2026-04-30T00:00:00Z' });
       const done = await settle(host.tasks, submitted.taskId);
       assert.ok(['PURPOSE_ELIGIBILITY_INELIGIBLE', 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION'].includes(String(done.error?.code)), JSON.stringify(done.error));
+      if (done.error?.code === 'PURPOSE_ELIGIBILITY_INELIGIBLE') {
+        assert.doesNotMatch(done.error.message, /r_synthetic_may|"checks"|"timings"|2026-05-/u);
+        const auditRow = host.database.connection.prepare('SELECT raw_result_json,raw_result_digest FROM algorithm_calls WHERE task_id=?')
+          .get(submitted.taskId) as { raw_result_json: string | null; raw_result_digest: string | null };
+        assert.ok(auditRow.raw_result_json && auditRow.raw_result_digest);
+        assert.ok(Array.isArray(JSON.parse(auditRow.raw_result_json).checks));
+        const origin = { conversationId: 'c1', branchId: 'b1', parentRunId: 'r1' } as ModelTaskOrigin;
+        const bridge = new ConversationAlgorithmBridge({ database: host.database, origin: () => origin, rulesVersion: () => 21,
+          companion: { algorithms: host.algorithms, tasks: host.tasks, derivedPublisher: { publish: async () => ({ published: false,
+            state: 'not_requested' }) } } as unknown as WorkspaceServices });
+        host.database.connection.prepare('INSERT INTO conversation_algorithm_links VALUES(?,?,?,?,?)')
+          .run(submitted.taskId, 'local-may', 'calculate', JSON.stringify(origin), Date.now());
+        const statusReply = await bridge.execute({ task: { id: 'status-may', action: 'algorithms.status', args: { taskId: submitted.taskId } },
+          signal: new AbortController().signal, assertAuthorized() {} } as unknown as TaskExecutionContext);
+        assert.doesNotMatch(JSON.stringify(statusReply), /r_synthetic_may|"checks"|"timings"|2026-05-/u);
+      }
     } finally { await host.close(); }
 
     host = open(root, fakePort([marchRow], { publishable: false, compute_eligible: false, audit_reproduction: false,

@@ -5,6 +5,7 @@ const historicalReasons = new Set(['time_interval_starts_after_cutoff', 'WITHDRA
   'HELD_STAGE_AFTER_CUTOFF', 'WITHDRAWN_AT_HELD_CUTOFF', 'NO_HOLDING_FACT_FOR_RECORD_VERSION',
   'INSTANCE_HOLDING_COVERAGE_GAP', 'REVISION_BRANCH_CONFLICT', 'PUBLICATION_OR_HELD_TIME_UNKNOWN',
   'TIME_PRECISION_INSUFFICIENT', 'RELATION_EFFECTIVE_PERIOD']);
+export const HISTORICAL_EXCLUSION_REASONS = new Set([...historicalReasons, 'other']);
 
 export function historicalExclusionSummary(input: readonly unknown[] | { byReason: WfdRecord }) {
   const byReason: Record<string, number> = {};

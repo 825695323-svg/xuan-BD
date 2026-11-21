@@ -185,3 +185,72 @@ test('conversation replay checks the current trusted message verifier and branch
       (error: unknown) => !!error && typeof error === 'object' && 'code' in error && error.code === 'PROCESSING_USAGE_EVIDENCE');
   } finally { f.database.close(); }
 });
+
+test('financialReadBinding keeps legacy plan replay idempotent and rejects mid-step reader drift before commit', async () => {
+  const database = new CoreDatabase(), records = new Map<string, TaskRecord>();
+  const bytes = Buffer.from('k,v\nsynthetic,1\n'), sha = wfdSha256(bytes);
+  let readCalls = 0, readBinding = { readSchemaSha256: 'a'.repeat(64), queryImplSha256: 'b'.repeat(64) };
+  const row = (key: string, val: string) => ({
+    product_id: 'p_fin', snapshot_id: 's_fin',
+    record_ref: { product_id: 'p_fin', snapshot_id: 's_fin', logical_key: key, revision_id: 'r1' },
+    values: { entity: { value_state: 'valid_value', value: 'S' }, accounting_standard: { value_state: 'valid_value', value: 'CAS' },
+      currency: { value_state: 'valid_value', value: 'CNY' }, scope: { value_state: 'valid_value', value: 'consolidated' },
+      concept: { value_state: 'valid_value', value: '营业收入' }, period_type: { value_state: 'valid_value', value: 'duration' },
+      start_date: { value_state: 'valid_value', value: '2025-01-01' }, end_date: { value_state: 'valid_value', value: '2025-03-31' },
+      report_nature: { value_state: 'valid_value', value: 'formal' }, comparability_basis: { value_state: 'valid_value', value: 'reported' },
+      unit: { value_state: 'valid_value', value: 'yuan' }, value: { value_state: 'valid_value', data_type: 'decimal', unit: 'yuan', value: val } },
+  });
+  const shared = {
+    database,
+    tasks: () => ({ getControl: () => ({ stopped: false }), get: (id: string) => records.get(id)!, isRunActive: () => true,
+      createInTransaction: (input: Partial<TaskRecord>) => {
+        const task = { ...input, id: `fin-task-${records.size}`, version: 1, currentAttemptId: 'fin-attempt' } as TaskRecord;
+        records.set(task.id, task); return { task, publish: () => {} };
+      }, start: (id: string) => records.get(id)! }) as never,
+    materials: { get: () => ({ envelope: { filename: 'fin.csv', sha256: sha, byteLength: bytes.length, mediaType: 'text/csv' },
+      preview: { format: 'csv', support: 'supported' } }), readOriginal: () => ({ bytes, sha256: sha }) } as never,
+    objects: { put: (value: Buffer, media_type: string) => ({ kind: 'stored-object', sha256: wfdSha256(value), media_type, byte_length: value.length }),
+      get: () => null, verify: () => true } as never,
+    financialReaderIdentity: () => ({ connectionId: 'fin-conn', runtimeIdentity: 'fin-rt' }),
+    financialReader: async ({ cursor }: { cursor?: string }) => {
+      readCalls += 1;
+      if (readCalls === 2) readBinding = { ...readBinding, queryImplSha256: 'c'.repeat(64) };
+      if (!cursor) {
+        return { connection: { runtimeIdentity: 'fin-rt' },
+          result: { snapshot_id: 's_fin', product_id: 'p_fin', rows: [row('k1', '100')], row_count: 1,
+            has_more: true, next_cursor: 'p2', page: { has_more: true, next_cursor: 'p2', returned_rows: 1 } } };
+      }
+      return { connection: { runtimeIdentity: 'fin-rt' },
+        result: { snapshot_id: 's_fin', product_id: 'p_fin', rows: [row('k2', '200')], row_count: 1,
+          has_more: false, next_cursor: null, page: { has_more: false, next_cursor: null, returned_rows: 1 } } };
+    },
+  };
+  const legacyService = new ProcessingPlanService(shared);
+  const upgradedService = new ProcessingPlanService({ ...shared, financialReadBinding: () => readBinding });
+  const operator: OperatorContext = { operatorId: 'op', requestId: 'legacy-fin-plan', method: 'POST',
+    path: '/api/bd/processing/plans', remoteAddress: '127.0.0.1', observedAt: Date.parse('2026-01-01T00:00:00Z') };
+  const input: ProcessingPlanInput = {
+    routing: { materials: [{ materialId: 'mat-1' }] },
+    outputs: [{ outputId: 'out-1', materialIds: ['mat-1'], stages: ['parse'],
+      tables: [{ materialId: 'mat-1', format: 'financial-fixed', financialCalculation: {
+        version: 'bd-financial-fixed/1', operation: 'standardize',
+        inputs: [{ snapshotId: 's_fin', productId: 'p_fin', businessKeys: ['k1', 'k2'] }] } }] }],
+  };
+  try {
+    const legacyTask = legacyService.preparePlan(input, operator);
+    const replayedTask = upgradedService.preparePlan(input, { ...operator, observedAt: operator.observedAt + 1000 });
+    assert.equal(replayedTask.id, legacyTask.id);
+    const newTask = upgradedService.preparePlan(input, { ...operator, requestId: 'new-fin-plan' });
+    await upgradedService.runtime.execute({ task: newTask, runId: newTask.id, attemptId: 'fin-attempt',
+      generation: 0, signal: new AbortController().signal, emit: async () => {}, consumeBudget: () => ({}) } as unknown as TaskExecutionContext);
+    const plan = upgradedService.findByRequest('new-fin-plan')!.plan!;
+    const parseStep = plan.steps.find(step => step.kind === 'parse')!;
+    assert.ok(typeof parseStep.parameters.financialReadBindingDigest === 'string');
+    const execTask = upgradedService.executeStep(plan.planId, parseStep.stepId, { ...operator, requestId: 'exec-drift' });
+    await assert.rejects(upgradedService.runtime.execute({ task: execTask, runId: execTask.id, attemptId: 'fin-attempt',
+      generation: 0, signal: new AbortController().signal, emit: async () => {}, consumeBudget: () => ({}) } as unknown as TaskExecutionContext),
+      { code: 'FINANCIAL_FIXED' });
+    assert.equal(readCalls, 2);
+    assert.notEqual(upgradedService.get(plan.planId).steps[0]!.state, 'succeeded');
+  } finally { database.close(); }
+});

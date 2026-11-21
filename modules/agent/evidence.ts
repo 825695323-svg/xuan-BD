@@ -72,6 +72,17 @@ export class AgentEvidenceService {
     assertAccess(source);
     return result;
   }
+  inspectRetained(scope: EvidenceScope, reference: { evidenceId: string; sha256: string }): { source: EvidenceSource; text: string } | null {
+    try {
+      const row = this.row(scope, reference.evidenceId);
+      if (row.sha256 !== reference.sha256) return null;
+      const body = Buffer.from(row.body);
+      if (body.length !== row.total_bytes || createHash('sha256').update(body).digest('hex') !== row.sha256) return null;
+      const text = body.toString('utf8');
+      if (Buffer.byteLength(text, 'utf8') !== row.total_bytes) return null;
+      return { source: JSON.parse(row.source_json) as EvidenceSource, text };
+    } catch { return null; }
+  }
   private row(scope: EvidenceScope, id: string): Row {
     const row = this.database.connection.prepare('SELECT * FROM agent_evidence WHERE id=?').get(id) as unknown as Row | undefined;
     if (!row || row.scope_json !== scopeText(scope) || row.id !== 'ev-' + evidenceDigest(JSON.stringify([row.scope_json, row.source_json, row.sha256]))) throw invalid();

@@ -44,6 +44,7 @@ import { ELIGIBILITY_HISTORY_MODES, ELIGIBILITY_PURPOSES, PURPOSE_ELIGIBILITY_RU
   evaluatePurposeEligibility, type EligibilityHistoryMode, type EligibilityPurpose, type PurposeEvidenceClaim } from './purpose-eligibility.js';
 import { processingQuality } from './processing-quality.js';
 import { readPublicationGroups, type R1PublicationGroups } from '../../contracts/r1-publication-set.js';
+import { isValidR1ReadBinding } from '../../contracts/r1-contracts.js';
 
 export const PROCESSING_PLAN_RUNTIME = 'bd.processing-plans';
 export const PROCESSING_PLAN_VERSION = 'bd-processing-plan/1';
@@ -391,7 +392,9 @@ export class ProcessingPlanService {
       // 保留当前受信消息核对函数，并重新核对全部原件、规则与声明，不能直接接受旧摘要。
       normalizationOperator = { ...operator, observedAt: frozen.operator.observedAt };
     }
-    const normalized = this.normalizePlan(input, normalizationOperator);
+    const frozenHadReadBinding = frozen
+      ? frozen.outputs.some(output => output.tables.some(table => table.financialReadBindingDigest !== undefined)) : true;
+    const normalized = this.normalizePlan(input, normalizationOperator, { freezeFinancialReadBinding: frozenHadReadBinding });
     if (previous && frozen) {
       // 旧摘要曾忽略业务同名键，使用首次受理时完整持久化的输入重算。
       if (frozen.scopeKey !== normalized.scopeKey || planRequestDigest(frozen) !== normalized.contentDigest)
@@ -749,7 +752,8 @@ export class ProcessingPlanService {
         dimensions: requestDimensions(dimensions), operatorId: operator.operatorId, intendedAction })) };
   }
 
-  private normalizePlan(input: unknown, operator: OperatorContext): NormalizedPlanInput {
+  private normalizePlan(input: unknown, operator: OperatorContext,
+    options: { freezeFinancialReadBinding?: boolean } = {}): NormalizedPlanInput {
     validateOperator(operator);
     if (Buffer.byteLength(canonicalWfdJson(input), 'utf8') > PROCESSING_LIMITS.maxInputBytes) fail('PROCESSING_INPUT_BUDGET', '计划输入超过 HTTP 请求预算。');
     const raw = readRecord(input, ['routing', 'outputs', 'previousPlanId', 'consistencyGroups'], 'PROCESSING_PLAN_INPUT');
@@ -821,9 +825,9 @@ export class ProcessingPlanService {
         const binding = this.options.financialReaderIdentity();
         if (!binding) fail('FINANCIAL_FIXED', '财务固定读取连接尚未选定。');
         table.financialReaderBinding = wfdSha256(canonicalWfdJson(binding));
-        if (this.options.financialReadBinding) {
+        if (options.freezeFinancialReadBinding !== false && this.options.financialReadBinding) {
           const readBinding = this.options.financialReadBinding();
-          if (!readBinding) fail('FINANCIAL_FIXED', '财务固定读取实现绑定缺失，不能冻结外部查询版本。');
+          if (!isValidR1ReadBinding(readBinding)) fail('FINANCIAL_FIXED', '财务固定读取实现绑定缺失，不能冻结外部查询版本。');
           table.financialReadBindingDigest = wfdSha256(canonicalWfdJson(readBinding));
         }
       }
@@ -1377,6 +1381,7 @@ export class ProcessingPlanService {
     if (step.kind === 'check') { await this.verifyMediaClaims(planId, step.outputId); this.assertActive(context); }
     let computed: { bytes: Buffer; digest: string; checkScope: string[]; gaps: string[]; passthrough?: boolean; normalization?: WfdRecord };
     let semantic: ProcessingSemanticEvidence | null = null;
+    let assertStepBinding = () => {};
     if (step.applicability === 'not_applicable') {
       if (!dependencies.length || !dependencies[0]!.output) fail('PROCESSING_DEPENDENCY', '不适用步骤缺少可传递的上游产物。');
       if (step.kind === 'annotate') {
@@ -1392,16 +1397,37 @@ export class ProcessingPlanService {
       if (!material) fail('PROCESSING_MATERIAL_NOT_FOUND', '解析步骤没有对应材料事实。');
       const original = this.options.materials.readOriginal(params.materialId);
       if (original.sha256 !== material.sha256) fail('PROCESSING_MATERIAL_CHANGED', '解析前材料摘要与计划冻结值不符。');
-      if (params.financialCalculation && (!this.options.financialReader || !this.options.financialReaderIdentity
-        || wfdSha256(canonicalWfdJson(this.options.financialReaderIdentity())) !== params.financialReaderBinding
-        || params.financialReadBindingDigest !== undefined && (!this.options.financialReadBinding
-          || wfdSha256(canonicalWfdJson(this.options.financialReadBinding() ?? null)) !== params.financialReadBindingDigest)))
-        fail('FINANCIAL_FIXED', '固定计划的财务读取连接或外置查询实现已变化；未改绑或读取其他实例。');
+      const assertFinancialBinding = () => {
+        if (!params.financialCalculation) return;
+        const identity = this.options.financialReaderIdentity?.();
+        if (!this.options.financialReader || !identity
+          || wfdSha256(canonicalWfdJson(identity)) !== params.financialReaderBinding) {
+          fail('FINANCIAL_FIXED', '固定计划的财务读取连接已变化；未改绑或读取其他实例。');
+        }
+        if (params.financialReadBindingDigest !== undefined) {
+          const readBinding = this.options.financialReadBinding?.();
+          if (!isValidR1ReadBinding(readBinding)
+            || wfdSha256(canonicalWfdJson(readBinding)) !== params.financialReadBindingDigest) {
+            fail('FINANCIAL_FIXED', '固定计划的财务外置查询实现已变化；未改绑或读取其他实例。');
+          }
+        }
+      };
+      assertStepBinding = assertFinancialBinding;
+      assertFinancialBinding();
+      const pinnedReader: FinancialReader | undefined = params.financialCalculation && this.options.financialReader
+        ? async (value, signal) => {
+          assertFinancialBinding();
+          const reply = await this.options.financialReader!(value, signal);
+          assertFinancialBinding();
+          return reply;
+        }
+        : this.options.financialReader;
       const mediaProjection = ['ocr-review', 'transcription-review'].includes(params.format) ? await this.projectMediaClaim(original.bytes, params) : null;
       this.assertActive(context);
       const projection = mediaProjection ?? (params.format === 'pdf' ? await projectFinancialPdf(original.bytes, params.pdfSelection!, context.signal)
-        : params.format === 'financial-fixed' ? await projectFinancialFixed(params.financialCalculation!, this.options.financialReader!, context.signal,
+        : params.format === 'financial-fixed' ? await projectFinancialFixed(params.financialCalculation!, pinnedReader!, context.signal,
           this.options.financialCoaRegistry) : null);
+      assertFinancialBinding();
       const projected = projection ? parseTableSource(projection.jsonBytes, { ...params, format: 'json', pdfSelection: undefined, financialCalculation: undefined, ocrClaimSelection: undefined, transcriptionClaimSelection: undefined }) : null;
       let parsed: ParsedCandidateTable;
       try {
@@ -1492,6 +1518,7 @@ export class ProcessingPlanService {
       if (semantic && selections.length) semantic.coverage.sourceSelections = selections;
     } else fail('PROCESSING_STEP_KIND', '未知处理步骤。');
     this.assertActive(context);
+    assertStepBinding();
     if (computed.bytes.byteLength > PROCESSING_LIMITS.maxObjectBytes) fail('PROCESSING_OBJECT_BUDGET', '步骤产物超过对象字节预算。');
     const consume = computed.passthrough ? { toolMs: Math.max(1, Date.now() - started) }
       : { storageBytes: computed.bytes.byteLength, toolMs: Math.max(1, Date.now() - started) };
@@ -1499,6 +1526,7 @@ export class ProcessingPlanService {
     const gaps = [...new Set([...(step.gaps ?? []), ...computed.gaps, ...(semantic?.gaps ?? [])])];
     this.options.database.transaction(() => {
       this.assertActive(context);
+      assertStepBinding();
       const output = computed.passthrough ? dependencies[0]!.output : this.options.objects.put(computed.bytes, 'application/json');
       if (!output) fail('PROCESSING_OBJECT', '步骤产物没有受管对象引用。');
       this.db.prepare(`UPDATE processing_plan_steps SET state='succeeded',output_json=?,output_digest=?,check_scope_json=?,gaps_json=?,

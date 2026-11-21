@@ -290,10 +290,11 @@ export class SourceSettingsService {
     throw new CoreError('SOURCE_SETTINGS_BUSY', '来源设置正在另一进程保存；本次未更改配置，请稍后重试。', 409);
   }
   private recoverDeadLock(lockPath: string): boolean {
-    const guardPath = this.path + '.recover.sqlite';
-    let guard: DatabaseSync | undefined, fd: number | undefined;
+    const dir = realpathSync(dirname(this.path));
+    const guardPath = join(dir, `${basename(this.path)}.recover.sqlite`);
+    let guard: DatabaseSync | undefined, guardCheck: number | undefined, fd: number | undefined;
     try {
-      // 此私有文件永久复用同一 inode。回收进程退出后内核释放 SQLite 写锁。
+      // 此私有文件永久复用同一 inode。回收进程退出后内核释放 SQLite 写锁；全程保持句柄钉住节点。
       try {
         const created = openSync(guardPath, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
         closeSync(created);
@@ -302,16 +303,17 @@ export class SourceSettingsService {
       }
       const node = lstatSync(guardPath, { bigint: true }), win32 = process.platform === 'win32';
       if (!node.isFile() || node.nlink !== 1n || (!win32 && (node.mode & 0o7777n) !== 0o600n)) return false;
-      const guardCheck = openSync(guardPath, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try {
-        const openedGuard = fstatSync(guardCheck, { bigint: true });
-        if (!openedGuard.isFile() || openedGuard.dev !== node.dev || openedGuard.ino !== node.ino || openedGuard.nlink !== 1n) return false;
-      } finally { closeSync(guardCheck); }
+      guardCheck = openSync(guardPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const openedGuard = fstatSync(guardCheck, { bigint: true });
+      if (!openedGuard.isFile() || openedGuard.dev !== node.dev || openedGuard.ino !== node.ino || openedGuard.nlink !== 1n
+        || (!win32 && (openedGuard.mode & 0o7777n) !== 0o600n)) return false;
       guard = new DatabaseSync(guardPath);
       guard.exec('PRAGMA busy_timeout = 5000');
       guard.exec('BEGIN IMMEDIATE');
-      const locked = lstatSync(guardPath, { bigint: true });
-      if (locked.dev !== node.dev || locked.ino !== node.ino || locked.nlink !== 1n || (!win32 && locked.mode !== node.mode)) return false;
+      const locked = lstatSync(guardPath, { bigint: true }), pinned = fstatSync(guardCheck, { bigint: true });
+      if (!locked.isFile() || locked.dev !== node.dev || locked.ino !== node.ino || locked.nlink !== 1n
+        || pinned.dev !== node.dev || pinned.ino !== node.ino || pinned.nlink !== 1n
+        || (!win32 && ((locked.mode & 0o7777n) !== 0o600n || (pinned.mode & 0o7777n) !== 0o600n))) return false;
       const before = lstatSync(lockPath, { bigint: true });
       if (!before.isFile() || before.nlink !== 1n || before.size > 1024n) return false;
       fd = openSync(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -335,6 +337,7 @@ export class SourceSettingsService {
     finally {
       if (fd !== undefined) try { closeSync(fd); } catch { /* 已关闭。 */ }
       guard?.close(); // 未提交的事务在关闭时回滚。
+      if (guardCheck !== undefined) try { closeSync(guardCheck); } catch { /* 已关闭。 */ }
     }
   }
   private releaseLock(lock: SourceSettingsLock): void {

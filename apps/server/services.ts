@@ -23,6 +23,7 @@ import { type BackendInput } from '../../contracts/backend.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
 import { createCoreModelTools, type CoreModelTools } from '../../modules/agent/model-tools.js';
 import type { HealthResponse } from '../../contracts/contracts.js';
+import { isValidR1ReadBinding } from '../../contracts/r1-contracts.js';
 import type { MemorySource } from '../../contracts/memory-contracts.js';
 import { ContextLedgerService } from '../../modules/agent/context-ledger.js';
 import { InputRuleService } from '../../modules/agent/input-rules.js';
@@ -338,7 +339,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       const workspace = options.workspaceServices?.r1Workspace;
       const r1ReadBinding = readsWfd ? (workspace?.readBinding?.() ?? null) : null;
       const r1Caps = readsWfd ? workspace?.capabilities?.() : null;
-      if (readsWfd && r1Caps?.connection && (r1Caps.configuration === undefined || r1Caps.configuration.state === 'configured') && !r1ReadBinding) {
+      if (readsWfd && r1Caps?.connection && (r1Caps.configuration === undefined || r1Caps.configuration.state === 'configured') && !isValidR1ReadBinding(r1ReadBinding)) {
         throw new TaskError('DIRECT_DEPENDENCY_UNAVAILABLE', 'WFD 固定读取绑定缺失，不能冻结外置查询实现。');
       }
       return directDependencyVersions(entry.action, implementation,

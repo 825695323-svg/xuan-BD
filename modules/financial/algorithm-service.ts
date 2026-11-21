@@ -10,7 +10,7 @@ import type { ProcessRuntime } from '../../platform/runtime/programs.js';
 import type { JsonValue, TaskEffectRecord, TaskRecoveryResult } from '../../contracts/task-contracts.js';
 import { canonical, captureAssets, executeFinancialAssets, financialDigest, verifyAssets, type FinancialAssetBundle } from '../../plugins/financial/local-compute/assets.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
-import { MACD_SNAPSHOT_SEMANTIC_CONTRACT, matchesVolumeDefinition, readHistoricalRejectionAudit } from './product-machine-snapshot.js';
+import { MACD_SNAPSHOT_SEMANTIC_CONTRACT, matchesVolumeDefinition, readHistoricalRejectionAudit, recordHistoricalRejectionAudit } from './product-machine-snapshot.js';
 import {
   ALGORITHM_CALL_ACTION, ALGORITHM_CONTRACT_VERSION, ALGORITHM_METHODS, ALGORITHM_METHOD_IDS, ALGORITHM_RUNTIME,
   ALGORITHM_INPUT_ADAPTER_VERSION, ALGORITHM_NULL_STATES, invalidAlgorithmParameter, isAlgorithmMethodId,
@@ -766,13 +766,26 @@ function normalizeUsage(value: unknown): AlgorithmUsage {
 
 function assertEligibilityResult(result: PurposeEligibilityResult): PurposeEligibilityResult {
   if (result.status === 'eligible') return result;
-  const payload = canonicalWfdJson({
+  const fullPayload = canonicalWfdJson({
     ruleVersion: result.ruleVersion, status: result.status, purpose: result.purpose,
     history: result.history, historyUse: result.historyUse, timings: result.timings,
     gaps: result.gaps.filter(item => item.blocking), checks: result.checks,
     evidenceSha256: result.evidenceSha256,
   });
-  throw new TaskError(result.status === 'ineligible' ? 'PURPOSE_ELIGIBILITY_INELIGIBLE' : 'PURPOSE_ELIGIBILITY_INSUFFICIENT', payload);
+  const code = result.status === 'ineligible' ? 'PURPOSE_ELIGIBILITY_INELIGIBLE' : 'PURPOSE_ELIGIBILITY_INSUFFICIENT';
+  if (result.purpose === 'historical_compute') {
+    const sanitized = canonicalWfdJson({
+      ruleVersion: result.ruleVersion, status: result.status, purpose: result.purpose,
+      history: result.history,
+      blockingGapCodes: [...new Set(result.gaps.filter(item => item.blocking && typeof item.code === 'string').map(item => item.code))],
+      evidenceSha256: result.evidenceSha256,
+      action: '该固定快照在所请求的历史视角/截止下未通过用途资格；完整核对明细保留在原任务审计记录。',
+    });
+    const error = new TaskError(code, sanitized);
+    recordHistoricalRejectionAudit(error, JSON.parse(fullPayload) as JsonValue);
+    throw error;
+  }
+  throw new TaskError(code, fullPayload);
 }
 
 function normalizeRequest(value: unknown): AlgorithmCallRequest {

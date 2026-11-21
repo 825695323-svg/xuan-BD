@@ -256,22 +256,78 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     assert.partialDeepStrictEqual(calls[0]![2], { authority: 'user-message', quote: declaration, messageId: calcInput.messageId,
       conversationId: calcInput.conversationId, branchId: calcInput.branchId, parentRunId: calcInput.runId });
 
-    // 旧版未脱敏的 historical calculate/status 缓存 preview_json 或证据续页均不得重放，缺失 derivedPublisher 时可用性一致为 false。
+    // 旧版未脱敏的 historical calculate/status 缓存 preview_json、分页包装或错误细节均不得重放；
+    // 缺失 derivedPublisher 时计算合同可执行性同为 false，撤回 Python 权限后 algorithms.publish 仍可恢复发布。
+    const origCaps = companion.r1Workspace!.capabilities, origBinding = companion.r1Workspace!.readBinding;
+    (companion.r1Workspace as unknown as { capabilities?: unknown }).capabilities = undefined;
+    assert.equal(preview(await perform.execute('screen-no-caps', { action: 'algorithms.contract', args: { methodId: 'strategy_screen' } },
+      undefined, undefined, toolContext)).data.executable, false);
+    companion.r1Workspace!.capabilities = origCaps;
+    for (const badBinding of [{}, { readSchemaSha256: '', queryImplSha256: '' }]) {
+      companion.r1Workspace!.readBinding = () => badBinding as never;
+      assert.equal(preview(await perform.execute('screen-bad-binding', { action: 'algorithms.contract', args: { methodId: 'strategy_screen' } },
+        undefined, undefined, toolContext)).data.executable, false);
+    }
+    companion.r1Workspace!.readBinding = origBinding;
+
+    companion.algorithms = { versionBinding: { synthetic: '1' },
+      catalog: () => ({ enabled: true, status: 'unavailable', reason: 'python paused', methods: [{ id: 'macd', status: 'unavailable' }] }),
+      submit() { throw new Error('paused'); } } as unknown as NonNullable<typeof companion.algorithms>;
+    const publishPausedAction = preview(await list.execute('list-publish-python-paused', { query: 'algorithms.publish' }, undefined, undefined, toolContext))
+      .actions.find((item: WfdRecord) => item.action === 'algorithms.publish');
+    assert.equal(publishPausedAction.available, true, '已完成的派生任务恢复发布不依赖 Python 执行许可');
+
     companion.derivedPublisher = undefined;
     const withoutPub = preview(await list.execute('list-calc-no-pub', { query: 'algorithms.calculate' }, undefined, undefined, toolContext))
       .actions.find((item: WfdRecord) => item.action === 'algorithms.calculate');
+    const contractWithoutPub = preview(await perform.execute('contract-calc-no-pub', { action: 'algorithms.contract', args: { methodId: 'macd' } },
+      undefined, undefined, toolContext));
     assert.equal(withoutPub.available, false);
+    assert.equal(contractWithoutPub.data.methods[0].executable, false);
+
     const leaked = { taskId: 'legacy-calc', status: 'succeeded', result: { source: { kind: 'wfd_fixed_snapshot', perspective: 'market_known_at',
       resolution: { historicalRead: { actualPerspective: 'market_known_at', diagnostics: [{ revision_id: 'r_future' }] } } } } };
-    const callRow = services.database.connection.prepare('SELECT id FROM model_tool_calls WHERE task_id=?').get(historicalResult.data.taskId) as { id: string } | undefined;
+    const callRow = services.database.connection.prepare('SELECT * FROM model_tool_calls WHERE task_id=?').get(historicalResult.data.taskId) as Record<string, any> | undefined;
     assert.ok(callRow);
-    assert.throws(() => (services.modelTools as unknown as { assertHistoricalAlgorithmPreview(t: unknown, p?: string): void })
-      .assertHistoricalAlgorithmPreview({ action: 'algorithms.calculate', result: { data: { modelPreview: leaked } } }, JSON.stringify({ data: leaked })),
+    const scope = { conversationId: callRow.conversation_id, branchId: callRow.branch_id, subject: 'personal', modelDigest: callRow.model_digest };
+    const bridge = services.modelTools as unknown as {
+      assertHistoricalAlgorithmPreview(c: unknown, t: unknown, s: unknown, r?: unknown): void;
+      evidence: { retain(s: unknown, src: unknown, text: string): { evidenceId: string; sha256: string; totalBytes: number } };
+    };
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { action: 'algorithms.calculate', result: { data: { modelPreview: leaked } } },
+      scope), { code: 'MODEL_SHARE_REVOKED' });
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { action: 'algorithms.status', result: { data: { modelPreview: { error: {
+      code: 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', message: JSON.stringify({ diagnostics: [{ revision_id: 'r_future' }] }) } } } } }, scope),
       { code: 'MODEL_SHARE_REVOKED' });
-    assert.throws(() => (services.modelTools as unknown as { assertHistoricalAlgorithmPreview(t: unknown, p?: string): void })
-      .assertHistoricalAlgorithmPreview({ action: 'algorithms.status', result: { data: { modelPreview: { error: {
-        code: 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', message: JSON.stringify({ diagnostics: [{ revision_id: 'r_future' }] }) } } } } }),
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { action: 'algorithms.status', result: { data: { modelPreview: { error: {
+      code: 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', message: JSON.stringify({ source: 'WFD', scope: 'fixed_product_not_date_filtered',
+        excludedCount: 1, byReason: { fabricated_reason_not_registered: 1 } }) } } } } }, scope), { code: 'MODEL_SHARE_REVOKED' });
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { action: 'algorithms.status', result: { data: { modelPreview: { error: {
+      code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: JSON.stringify({ purpose: 'historical_compute', checks: [{ detail: 'r_future' }] }) } } } } }, scope),
       { code: 'MODEL_SHARE_REVOKED' });
+    const safeCalcPreview = { taskId: 'safe-calc', status: 'failed', error: { code: 'PURPOSE_ELIGIBILITY_INELIGIBLE',
+      message: JSON.stringify({ ruleVersion: 'bd.purpose-eligibility/2', status: 'ineligible', purpose: 'historical_compute',
+        history: { mode: 'market_known_at', at }, blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64),
+        action: '该固定快照在所请求的历史视角/截止下未通过用途资格；完整核对明细保留在原任务审计记录。' }) } };
+    const safeText = JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview });
+    const safeRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, safeText);
+    const pagedCall = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, complete: false,
+      evidence: { ...safeRef, startByte: 0, endByte: 10, text: Buffer.from(safeText, 'utf8').subarray(0, 10).toString('utf8') } }) };
+    assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview(pagedCall, { action: 'algorithms.status', result: { data: { modelPreview: safeCalcPreview } } }, scope, safeRef));
+    const tamperedWrapper = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, complete: false,
+      evidence: { ...safeRef, startByte: 0, endByte: 10, text: 'TAMPERED!!' } }) };
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(tamperedWrapper, { action: 'algorithms.status', result: { data: { modelPreview: safeCalcPreview } } }, scope),
+      { code: 'MODEL_SHARE_REVOKED' });
+    const leakedText = JSON.stringify({ ok: true, taskId: callRow.task_id, data: leaked });
+    const leakedRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, leakedText);
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview }) },
+      { action: 'algorithms.status', result: { data: { modelPreview: safeCalcPreview } } }, scope, leakedRef), { code: 'MODEL_SHARE_REVOKED' });
+    const invalidMsg = '工具参数无效，请使用动作表的字段和当前会话引用编号。';
+    const projectedErr = services.modelTools.projectToolResult({
+      role: 'toolResult', toolCallId: 'synthetic-err', toolName: 'perform_action', isError: true, timestamp: Date.now(),
+      content: [{ type: 'text', text: `${invalidMsg}具体原因：r_future {"checks":[]}` }],
+    }, historyInput, undefined, model);
+    assert.equal(JSON.parse((projectedErr.content[0] as { text: string }).text).message, invalidMsg);
   } finally {
     finish();
     await services.tasks.dispose(); await core.dispose(); services.segments?.close(); services.files.closeTemporaryRetention(); database.close();

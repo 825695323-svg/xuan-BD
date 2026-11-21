@@ -200,7 +200,20 @@ const relatedSelector = 'aside,nav,footer,[role="navigation"],[aria-label*="相�
 function headingLevel(element: Element): number {
   if (/^H[1-6]$/u.test(element.tagName)) return Number(element.tagName[1]);
   const aria = element.getAttribute('aria-level');
-  return aria && /^[1-6]$/u.test(aria) ? Number(aria) : 6;
+  return aria && /^[1-6]$/u.test(aria) ? Number(aria) : 2;
+}
+
+function isHarmlessWrapper(parent: Element, heading: Element): boolean {
+  if (!parent.matches('div,span,header,strong,b,p')) return false;
+  if (!(parent.textContent?.trim() === heading.textContent?.trim() || relatedWrapperTitle.test(parent.textContent?.trim() ?? ''))) return false;
+  for (const child of parent.children) {
+    if (child === heading) continue;
+    if (['BR', 'HR', 'WBR'].includes(child.tagName)) continue;
+    if (['SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL'].includes(child.tagName)
+      && !(child.textContent ?? '').trim() && !child.querySelector('a,iframe')) continue;
+    return false;
+  }
+  return true;
 }
 
 /** 从阅读小节标题到同级或更高标题之间的内容，限定在同一正文容器内。 */
@@ -219,15 +232,13 @@ function relatedSections(document: Document) {
     // 兼容正文中直接写“相关阅读：”再跟下载链接的片段。
     if (element.childElementCount && !element.matches(sectionHeadings)) {
       for (const child of element.childNodes)
-        if (child.nodeType === 3 && relatedTitle.test(child.textContent?.trim() ?? '')) markFollowing(child, 6);
+        if (child.nodeType === 3 && relatedTitle.test(child.textContent?.trim() ?? '')) markFollowing(child, 2);
       continue;
     }
     if (!relatedTitle.test(element.textContent?.trim() ?? '')) continue;
     let heading = element;
-    // 标题可以独占一层包装，链接列表与包装节点同级。
-    while (heading.parentElement?.matches('div,span,header,strong,b,p') && heading.parentElement.childElementCount === 1
-      && (heading.parentElement.textContent?.trim() === heading.textContent?.trim()
-        || relatedWrapperTitle.test(heading.parentElement.textContent?.trim() ?? ''))) heading = heading.parentElement;
+    // 标题可以独占一层包装（可含 <br> 等空排版标签），链接列表与包装节点同级。
+    while (heading.parentElement && isHarmlessWrapper(heading.parentElement, heading)) heading = heading.parentElement;
     excluded.add(heading);
     markFollowing(heading, headingLevel(element));
   }

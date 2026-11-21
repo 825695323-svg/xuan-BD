@@ -97,15 +97,18 @@ function productVersions(result: WfdRecord) {
   };
   const definitionRefs = list('definition_refs'), contractVersions = list('contract_versions'), contractRefs = list('contract_refs');
   const version = contractVersions?.[0];
+  const standaloneContract = version && version.contract_ref == null && versionIdentity(version)
+    ? Object.fromEntries(Object.entries(version).filter(([key]) => key !== 'definition_ref' && key !== 'fields'))
+    : undefined;
   const fixedRef = (ref: unknown, versionRef: unknown) => {
     if (versionRef != null && !versionIdentity(versionRef) || ref != null && !versionIdentity(ref)
       || ref != null && versionRef != null && canonicalWfdJson(ref) !== canonicalWfdJson(versionRef)) return mixedDefinition();
     return ref ?? versionRef ?? null;
   };
   const definitionRef = fixedRef(definitionRefs?.[0], version?.definition_ref);
-  const contractRef = fixedRef(contractRefs?.[0], version?.contract_ref);
+  const contractRef = fixedRef(contractRefs?.[0], version?.contract_ref ?? standaloneContract);
   return { definitionRefs, contractVersions, contractRefs, definitionRef, contractRef,
-    hasContract: !!(contractRef || versionIdentity(version)) };
+    hasContract: !!contractRef };
 }
 
 function versionIdentity(ref: unknown): ref is WfdRecord {

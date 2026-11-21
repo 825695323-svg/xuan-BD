@@ -233,8 +233,18 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
       if (fixed.perspective && fixed.perspective !== 'snapshot_contents'
         && diagnostics.some(item => isWfdRecord(item) && (item.decision === 'indeterminate'
           || fixed.perspective === 'market_known_at' && item.reason === 'WITHDRAWN_AT_PERSPECTIVE' && !isWfdRecord(item.withdrawal_public_time)))) {
-        throw new TaskError('ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE',
+        const error = new TaskError('ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE',
           '历史版本选择存在待补证据，不能把仍有撤销/公开时间缺口的部分结果送入计算。');
+        recordHistoricalRejectionAudit(error, canonicalRecord({
+          kind: 'historical_snapshot_incomplete',
+          product_id: fixed.productId,
+          snapshot_id: fixed.snapshotId,
+          perspective: fixed.perspective,
+          at: fixed.at ?? null,
+          row_count: rawRows.length,
+          diagnostics,
+        }) as unknown as JsonValue);
+        throw error;
       }
       const declaredRows = typeof result.row_count === 'number' ? result.row_count : null;
       if (declaredRows === null || rawRows.length !== declaredRows) {
@@ -250,7 +260,7 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
             perspective: fixed.perspective, at: fixed.at ?? null, historicalExclusions: historicalExclusionSummary(diagnostics),
             action: '该固定快照没有在所请求历史视角/截止下合格的具体版本；不退回当前版本或快照内容。',
           }));
-          historicalRejectionAudits.set(error, canonicalRecord({
+          recordHistoricalRejectionAudit(error, canonicalRecord({
             kind: 'historical_no_eligible_version',
             product_id: fixed.productId,
             snapshot_id: fixed.snapshotId,
@@ -851,6 +861,10 @@ function assertReference(reference: AlgorithmSnapshotReference): void {
 }
 
 const historicalRejectionAudits = new WeakMap<object, JsonValue>();
+
+export function recordHistoricalRejectionAudit(error: unknown, payload: JsonValue): void {
+  if (error && typeof error === 'object') historicalRejectionAudits.set(error, payload);
+}
 
 export function readHistoricalRejectionAudit(error: unknown): JsonValue | undefined {
   return error && typeof error === 'object' ? historicalRejectionAudits.get(error) : undefined;

@@ -157,6 +157,15 @@ test('real algorithm host freezes publication separately from fixed reads and bi
 
   await t.test('reader implementation binding and actual connection are frozen even without an algorithm service; missing ports stay null-safe', () => {
     const initialVersion = version, initialConnection = connection;
+    const originalWorkspace = companion.r1Workspace!;
+    for (const invalidBinding of [{}, { readSchemaSha256: '', queryImplSha256: '' }, { readSchemaSha256: 'b'.repeat(64), queryImplSha256: 'not-hex' }]) {
+      companion.r1Workspace = { ...originalWorkspace, readBinding: () => invalidBinding } as typeof originalWorkspace;
+      try {
+        for (const action of [...publication, 'algorithms.screen']) {
+          assert.throws(() => registry.captureVersions(action, {}), { code: 'DIRECT_DEPENDENCY_UNAVAILABLE' });
+        }
+      } finally { companion.r1Workspace = originalWorkspace; }
+    }
     for (const change of [() => { version = { ...version, r1Workspace: 'synthetic-read/2' }; },
       () => { connection = { ...connection, configSha256: 'b'.repeat(64) }; },
       () => { companion.r1Workspace = undefined; }]) {

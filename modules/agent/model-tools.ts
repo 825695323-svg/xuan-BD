@@ -28,6 +28,7 @@ import type { BdService } from './service.js';
 import { mediaPluginCatalog, type MaterialMediaPluginDescriptor } from '../collection/materials/plugins.js';
 import type { ConversationAlgorithmBridge } from '../financial/conversation-algorithms.js';
 import { algorithmActionAllowed } from '../financial/basic-algorithm-tool-contract.js';
+import { HISTORICAL_EXCLUSION_REASONS } from '../financial/historical-exclusions.js';
 import { BusinessGoalError, type BusinessGoalService } from '../../platform/jobs/business-goals.js';
 import { directImplementationVersion, guardDirectContext } from '../../platform/plugins/direct-versions.js';
 
@@ -270,15 +271,24 @@ export class CoreModelTools {
       const original = result.content.filter(part => part.type === 'text').map(part => part.text).join('');
       let text = '本次工具执行失败，不能据此判断已完成或要求重新批准旧资料。请核对当前参数、任务状态与失败原因。';
       let code = 'MODEL_ACTION_FAILED';
-      // 参数校验在建立任务之前就会失败，没有 model_tool_calls 记录；先按原始回执识别公开码，避免原因被默认文案覆盖。
+      const failure = this.db.prepare('SELECT * FROM model_tool_calls WHERE parent_run_id=? AND parent_generation=? AND tool_call_id=? AND tool_name=?')
+        .get(input.runId, input.generation, result.toolCallId, result.toolName) as unknown as CallRow | undefined;
+      // 参数校验在建立任务之前就会失败，没有 model_tool_calls 记录；仅允许校验类公开码保留受限中文原因，拒绝结构化或历史摘要附加文本。
       let recognized = false;
       for (const publicCode of ['MODEL_RESULT_TOO_LARGE', 'MODEL_ARGS_INVALID', 'MODEL_ACTION_UNAVAILABLE', 'MODEL_ACTION_NOT_ALLOWED',
         'MODEL_FILE_NOT_SELECTED', 'MODEL_ACTION_STOPPED', 'MODEL_ACTION_REQUIRES_REVIEW', 'MODEL_SHARE_NOT_APPROVED', 'MODEL_SHARE_REVOKED', 'MODEL_IMAGE_LIMIT']) {
         const safe = publicError(publicCode).message;
-        if (original === safe || original.startsWith(`${safe}具体原因：`)) { code = publicCode; text = original; recognized = true; break; }
+        if (original === safe) { code = publicCode; text = safe; recognized = true; break; }
+        if (original.startsWith(`${safe}具体原因：`)) {
+          const suffix = original.slice(safe.length + '具体原因：'.length);
+          const checked = safeFailureDetail(suffix);
+          const allowDetail = ['MODEL_ARGS_INVALID', 'MODEL_FILE_NOT_SELECTED'].includes(publicCode)
+            && !failure?.task_id
+            && checked !== undefined && checked === suffix
+            && !/[{}[\]"]|(?:revision_id|published_at|withdrawn_at|held_at|checks|timings|diagnostics|business_key|logical_key|r_[a-z0-9_]+)/iu.test(checked);
+          code = publicCode; text = allowDetail ? `${safe}具体原因：${checked}` : safe; recognized = true; break;
+        }
       }
-      const failure = this.db.prepare('SELECT * FROM model_tool_calls WHERE parent_run_id=? AND parent_generation=? AND tool_call_id=? AND tool_name=?')
-        .get(input.runId, input.generation, result.toolCallId, result.toolName) as unknown as CallRow | undefined;
       if (failure?.conversation_id === input.conversationId && failure.branch_id === input.branchId && failure.model_digest === this.channel(model).digest) {
         const task = failure.task_id ? this.options.getTasks().get(failure.task_id) : null;
         if (task?.status === 'cancelled') { code = 'MODEL_ACTION_STOPPED'; text = '原任务已取消，不得自行重试。'; }
@@ -288,9 +298,14 @@ export class CoreModelTools {
             && task.action === failure.action && task.requestId === failure.task_request_id && task.conversationId === input.conversationId;
           const taskCode = bound ? task.error?.code : undefined;
           const failureDetail = taskCode ? safeFailureDetail(task?.error?.message) : undefined;
+          const historicalAlgError = ['ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', 'PURPOSE_ELIGIBILITY_INELIGIBLE', 'PURPOSE_ELIGIBILITY_INSUFFICIENT']
+            .includes(String(taskCode))
+            && ['algorithms.screen', 'algorithms.calculate', 'data.modules.calculate', 'algorithms.status'].includes(failure.action);
           if (taskCode && Object.hasOwn(SAFE_TASK_FAILURES, taskCode)) {
             code = taskCode; text = SAFE_TASK_FAILURES[taskCode]!;
-          } else if (failureDetail) {
+          } else if (historicalAlgError) {
+            text = '本次历史资格核对未通过；完整核对明细保留在原任务审计记录。';
+          } else if (failureDetail && !/[{}[\]"]/u.test(failureDetail)) {
             // 受控插件的固定中文原因直接交给模型；错误码保持稳定，避免把内部码当契约。
             text = `本次动作未完成：${failureDetail}`;
           }
@@ -338,7 +353,12 @@ export class CoreModelTools {
         if (!task || task.status !== 'succeeded' || task.action !== serviceAction(call.tool_name)
           || !task.resultRef || call.ticket_json !== null) throw publicError('MODEL_SHARE_REVOKED');
       } else this.assertShare(call, input, model);
-      if (call.tool_name === EVIDENCE_TOOL) this.assertEvidenceOrigin(this.scope(input, model), this.evidence.source(this.scope(input, model), String((JSON.parse(call.args_json) as Record<string, JsonValue>).evidenceId)));
+      if (call.tool_name === EVIDENCE_TOOL) {
+        const evidenceArgs = JSON.parse(call.args_json) as Record<string, JsonValue>;
+        this.assertEvidenceOrigin(this.scope(input, model),
+          this.evidence.source(this.scope(input, model), String(evidenceArgs.evidenceId)),
+          { evidenceId: String(evidenceArgs.evidenceId), sha256: typeof evidenceArgs.sha256 === 'string' ? evidenceArgs.sha256 : '' });
+      }
       // 从核心已提交预览投影，原生历史 content/details 即使被篡改也不能扩大数据范围。
       let text = call.preview_json;
       if (call.tool_name === 'perform_action' && call.task_id && call.ticket_json) {
@@ -701,7 +721,8 @@ export class CoreModelTools {
     return this.evidence.read(scope, { evidenceId: ref.evidenceId, sha256: request.sha256, cursor: request.cursor as string | undefined,
       offset: request.offset as number | undefined, maxBytes: request.maxBytes as number | undefined }, assertSource);
   }
-  private assertEvidenceOrigin(scope: EvidenceScope, source: EvidenceSource): CallRow {
+  private assertEvidenceOrigin(scope: EvidenceScope, source: EvidenceSource,
+    evidenceRef?: { evidenceId: string; sha256: string }): CallRow {
     const call = this.getCall(source.callId);
     if (call.conversation_id !== scope.conversationId || call.branch_id !== scope.branchId || call.model_digest !== scope.modelDigest
       || call.parent_run_id !== source.runId || call.input_id !== source.inputId || call.message_id !== source.messageId || !call.task_id || !call.ticket_json) throw publicError('MODEL_SHARE_REVOKED');
@@ -712,7 +733,7 @@ export class CoreModelTools {
       UNION SELECT m.id,m.parent_id FROM messages m JOIN path p ON m.id=p.parent_id WHERE m.conversation_id=?) SELECT id FROM path WHERE id=?`)
       .get(scope.branchId, scope.conversationId, scope.conversationId, source.messageId);
     const ticket = JSON.parse(call.ticket_json) as ShareTicket, task = this.options.getTasks().get(call.task_id);
-    this.assertHistoricalAlgorithmPreview(task, call.preview_json);
+    this.assertHistoricalAlgorithmPreview(call, task, scope, evidenceRef);
     if (!ancestor || task.ownerRole !== scope.subject || task.status !== 'succeeded' || task.requiresReview || !task.result
       || task.currentRunId !== ticket.runId || task.currentAttemptId !== ticket.attemptId || task.generation !== ticket.generation
       || ticket.resultDigest !== digestOperationArgs(task.result) || !ticket.sources || !ticket.outputs) throw publicError('MODEL_SHARE_REVOKED');
@@ -729,7 +750,7 @@ export class CoreModelTools {
     const scope: EvidenceScope = { conversationId: call.conversation_id, branchId: call.branch_id,
       subject: task.ownerRole, modelDigest: call.model_digest };
     const reference = this.evidence.retain(scope, { callId: call.id, runId: call.parent_run_id, inputId: call.input_id, messageId: call.message_id }, text);
-    const firstPage = this.evidence.read(scope, { ...reference }, source => { this.assertCallParent(call); this.assertEvidenceOrigin(scope, source); });
+    const firstPage = this.evidence.read(scope, { ...reference }, source => { this.assertCallParent(call); this.assertEvidenceOrigin(scope, source, reference); });
     return { ok: true, taskId: call.task_id, taskStatus: task.status, complete: false, summary: value.summary!, localPersistence,
       artifactIds: task.result!.artifactIds ?? [], evidence: firstPage as unknown as JsonValue,
       note: '完整结果按固定摘要保管；使用core_evidence_read续取nextCursor，done=true表示已读到末尾。' };
@@ -1071,7 +1092,7 @@ export class CoreModelTools {
       if (call.tool_name === EVIDENCE_TOOL) {
         const args = JSON.parse(call.args_json) as { evidenceId: string; sha256: string; cursor?: string; offset?: number; maxBytes?: number };
         const scope: EvidenceScope = { conversationId: call.conversation_id, branchId: call.branch_id, subject: context.task.ownerRole, modelDigest: call.model_digest };
-        const page = this.evidence.read(scope, args, source => { this.assertCallParent(call); this.assertEvidenceOrigin(scope, source); });
+        const page = this.evidence.read(scope, args, source => { this.assertCallParent(call); this.assertEvidenceOrigin(scope, source, args); });
         result = { summary: '已按当前授权读取固定证据片段。', data: { page: page as unknown as JsonValue } };
       } else result = { summary: '已核对本次允许分享的会话文件信息。', data: { files: references.map((reference) => metadata(proof(reference))) } };
       this.saveResultProof(context, call, result);
@@ -1161,13 +1182,14 @@ export class CoreModelTools {
         messageId: input.messageId, branchId: input.branchId, modelDigest: channel.digest });
       call = this.reserve(input, toolCallId, name, routed.action, routed.args, payloadDigest, channel.model, channel.digest);
       if (name === EVIDENCE_TOOL) {
-        const scope = this.scope(input, factory.model), source = this.evidence.source(scope, String((routed.args as Record<string, JsonValue>).evidenceId));
-        const origin = this.assertEvidenceOrigin(scope, source);
+        const evidenceArgs = routed.args as unknown as { evidenceId: string; sha256: string };
+        const scope = this.scope(input, factory.model), source = this.evidence.source(scope, String(evidenceArgs.evidenceId));
+        const origin = this.assertEvidenceOrigin(scope, source, evidenceArgs);
         // 同一输入下复用原分享回执；换输入或运行重新核对原证据和当前分享资格。
         if (origin.parent_run_id === input.runId && origin.input_id === input.inputId && Number(origin.parent_generation) === input.generation) {
           this.assertShare(origin, input, factory.model);
           const preview = this.evidence.read(scope, routed.args as unknown as { evidenceId: string; sha256: string },
-            () => { this.assertParent(input, signal); this.assertShare(origin, input, factory.model); this.assertEvidenceOrigin(scope, source); });
+            () => { this.assertParent(input, signal); this.assertShare(origin, input, factory.model); this.assertEvidenceOrigin(scope, source, evidenceArgs); });
           const ticket = JSON.parse(origin.ticket_json!) as ShareTicket;
           this.options.database.transaction(() => {
             this.assertShare(origin, input, factory.model);
@@ -1466,8 +1488,9 @@ export class CoreModelTools {
         && !attached.some(item => item.id === reference.id)) attached.push(reference);
       let selection: FileReference[];
       if (name === EVIDENCE_TOOL) {
-        const scope = this.scope(input, model, modelDigest), source = this.evidence.source(scope, String((args as Record<string, JsonValue>).evidenceId));
-        const origin = this.assertEvidenceOrigin(scope, source), ticket = JSON.parse(origin.ticket_json!) as ShareTicket;
+        const evidenceArgs = args as unknown as { evidenceId: string; sha256: string };
+        const scope = this.scope(input, model, modelDigest), source = this.evidence.source(scope, String(evidenceArgs.evidenceId));
+        const origin = this.assertEvidenceOrigin(scope, source, evidenceArgs), ticket = JSON.parse(origin.ticket_json!) as ShareTicket;
         selection = [...(ticket.sources ?? []), ...(ticket.outputs ?? [])].map(reference => this.requireProof(reference, input.conversationId));
       } else if (metadataOnly) selection = [];
       else if (name === 'list_attached_files') {
@@ -1646,7 +1669,9 @@ export class CoreModelTools {
       || call.branch_id !== input.branchId || (capturedModelDigest ?? this.channel(model).digest) !== call.model_digest || !call.task_id || !call.ticket_json) throw publicError('MODEL_SHARE_REVOKED');
     const ticket = JSON.parse(call.ticket_json) as ShareTicket;
     const task = this.options.getTasks().get(call.task_id);
-    this.assertHistoricalAlgorithmPreview(task, call.preview_json);
+    const callScope: EvidenceScope = { conversationId: call.conversation_id, branchId: call.branch_id,
+      subject: task.ownerRole, modelDigest: call.model_digest };
+    this.assertHistoricalAlgorithmPreview(call, task, callScope);
     const attempt = this.options.getTasks().getAttempts(ticket.runId).find((candidate) => candidate.id === ticket.attemptId);
     const events = this.options.getTasks().events(task.id).filter((event) => event.attemptId === ticket.attemptId);
     const terminal = events.at(-1);
@@ -1674,34 +1699,58 @@ export class CoreModelTools {
     for (const selected of [...ticket.sources, ...ticket.outputs]) this.requireProof(selected, call.conversation_id);
   }
 
-  /** 旧任务原回执继续保管。历史预览或旧证据续页不能重放带原始排除诊断的正文。 */
-  private assertHistoricalAlgorithmPreview(task: TaskRecord, cachedPreviewJson?: string | null): void {
+  /** 旧任务原回执继续保管。历史预览或旧证据续页不能重放带原始排除诊断或未经核验分页包装的正文。 */
+  private assertHistoricalAlgorithmPreview(call: CallRow, task: TaskRecord, scope: EvidenceScope,
+    evidenceRef?: { evidenceId: string; sha256: string }): void {
     const isScreen = task.action === 'algorithms.screen';
     const isCalculateOrStatus = ['algorithms.calculate', 'data.modules.calculate', 'algorithms.status'].includes(task.action);
     if (!isScreen && !isCalculateOrStatus) return;
-    const candidates: unknown[] = [];
-    const data = task.result?.data, taskPreview = isObject(data) ? data.modelPreview : null;
-    if (taskPreview !== null) candidates.push(taskPreview);
-    if (typeof cachedPreviewJson === 'string') {
-      let parsed: unknown;
-      try { parsed = JSON.parse(cachedPreviewJson); } catch { throw publicError('MODEL_SHARE_REVOKED'); }
-      if (isObject(parsed) && parsed.data !== undefined) candidates.push(parsed.data);
-    }
-    if (!candidates.length) {
-      if (isScreen) throw publicError('MODEL_SHARE_REVOKED');
-      return;
-    }
-    for (const preview of candidates) {
+    const assertSafePayload = (preview: unknown) => {
       if (!isObject(preview)) throw publicError('MODEL_SHARE_REVOKED');
       if (isScreen) {
         const fixed = isObject(preview.fixedRead) ? preview.fixedRead : null;
         if (!fixed || !isObject(fixed.historicalExclusions)
-          || fixed.historyMode !== 'snapshot_contents' && 'diagnostics' in fixed.historicalExclusions)
+          || fixed.historyMode !== 'snapshot_contents' && 'diagnostics' in fixed.historicalExclusions
+          || !isSafeHistoricalSummary(fixed.historicalExclusions))
           throw publicError('MODEL_SHARE_REVOKED');
-        continue;
+        return;
       }
       if (!isSafeHistoricalAlgorithmPreview(preview)) throw publicError('MODEL_SHARE_REVOKED');
+    };
+    const inspectEvidencePayload = (reference: { evidenceId: string; sha256: string }, pageCheck?: { startByte: number; endByte: number; text: string }) => {
+      const retained = this.evidence.inspectRetained(scope, reference);
+      if (!retained || retained.source.callId !== call.id) throw publicError('MODEL_SHARE_REVOKED');
+      if (pageCheck) {
+        const slice = Buffer.from(retained.text, 'utf8').subarray(pageCheck.startByte, pageCheck.endByte).toString('utf8');
+        if (slice !== pageCheck.text) throw publicError('MODEL_SHARE_REVOKED');
+      }
+      let retainedParsed: unknown;
+      try { retainedParsed = JSON.parse(retained.text); } catch { throw publicError('MODEL_SHARE_REVOKED'); }
+      if (!isObject(retainedParsed) || retainedParsed.data === undefined) throw publicError('MODEL_SHARE_REVOKED');
+      assertSafePayload(retainedParsed.data);
+    };
+    const data = task.result?.data, taskPreview = isObject(data) ? data.modelPreview : null;
+    if (taskPreview !== null) assertSafePayload(taskPreview);
+    else if (isScreen) throw publicError('MODEL_SHARE_REVOKED');
+    if (typeof call.preview_json === 'string') {
+      let parsed: unknown;
+      try { parsed = JSON.parse(call.preview_json); } catch { throw publicError('MODEL_SHARE_REVOKED'); }
+      if (!isObject(parsed)) throw publicError('MODEL_SHARE_REVOKED');
+      if (parsed.data !== undefined) {
+        assertSafePayload(parsed.data);
+      } else if (isObject(parsed.evidence)) {
+        const ev = parsed.evidence;
+        if (typeof ev.evidenceId !== 'string' || typeof ev.sha256 !== 'string' || typeof ev.text !== 'string'
+          || typeof ev.startByte !== 'number' || !Number.isSafeInteger(ev.startByte) || ev.startByte < 0
+          || typeof ev.endByte !== 'number' || !Number.isSafeInteger(ev.endByte) || ev.endByte < ev.startByte)
+          throw publicError('MODEL_SHARE_REVOKED');
+        inspectEvidencePayload({ evidenceId: ev.evidenceId, sha256: ev.sha256 },
+          { startByte: ev.startByte, endByte: ev.endByte, text: ev.text });
+      } else {
+        throw publicError('MODEL_SHARE_REVOKED');
+      }
     }
+    if (evidenceRef) inspectEvidencePayload(evidenceRef);
   }
 
   private preview(call: CallRow, task: TaskRecord): JsonValue {
@@ -1972,14 +2021,41 @@ function isSafeHistoricalSummary(value: unknown): boolean {
   if (value.source !== 'WFD' || value.scope !== 'fixed_product_not_date_filtered') return false;
   if (typeof value.excludedCount !== 'number' || !Number.isSafeInteger(value.excludedCount) || value.excludedCount < 0) return false;
   if (!isObject(value.byReason)) return false;
-  return Object.values(value.byReason).every(v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0);
+  let total = 0;
+  for (const [reason, count] of Object.entries(value.byReason)) {
+    if (!HISTORICAL_EXCLUSION_REASONS.has(reason) || typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return false;
+    total += count;
+  }
+  return total === value.excludedCount;
+}
+function isSafeEligibilityErrorMessage(message: unknown): boolean {
+  if (message === '该固定快照未通过所请求用途的资格核对；完整明细保留在原任务审计记录。') return true;
+  if (typeof message !== 'string') return false;
+  let parsed: unknown;
+  try { parsed = JSON.parse(message); } catch { return false; }
+  if (!isObject(parsed)) return false;
+  const allowedKeys = new Set(['ruleVersion', 'status', 'purpose', 'history', 'blockingGapCodes', 'evidenceSha256', 'action']);
+  if (Object.keys(parsed).some(key => !allowedKeys.has(key))) return false;
+  if ('checks' in parsed || 'timings' in parsed || 'gaps' in parsed || 'historyUse' in parsed || 'diagnostics' in parsed || 'revision_id' in parsed) return false;
+  if (!Array.isArray(parsed.blockingGapCodes)
+    || parsed.blockingGapCodes.some(item => typeof item !== 'string' || !/^[A-Z0-9_]+$/u.test(item))) return false;
+  if (parsed.history !== null && parsed.history !== undefined) {
+    if (!isObject(parsed.history)) return false;
+    if (Object.entries(parsed.history).some(([key, val]) =>
+      !['mode', 'at', 'heldScope', 'usableStage'].includes(key) || !(val === null || typeof val === 'string'))) return false;
+  }
+  return typeof parsed.action === 'string' && !/revision_id|r_[a-z0-9_]+/iu.test(parsed.action);
 }
 function isSafeHistoricalAlgorithmPreview(preview: Record<string, unknown>): boolean {
-  if (isObject(preview.error) && preview.error.code === 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION') {
-    const message = preview.error.message;
-    if (message !== '该固定快照在所请求的历史截止没有合格版本。') {
-      if (typeof message !== 'string') return false;
-      try { if (!isSafeHistoricalSummary(JSON.parse(message))) return false; } catch { return false; }
+  if (isObject(preview.error)) {
+    if (preview.error.code === 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION') {
+      const message = preview.error.message;
+      if (message !== '该固定快照在所请求的历史截止没有合格版本。') {
+        if (typeof message !== 'string') return false;
+        try { if (!isSafeHistoricalSummary(JSON.parse(message))) return false; } catch { return false; }
+      }
+    } else if (['PURPOSE_ELIGIBILITY_INELIGIBLE', 'PURPOSE_ELIGIBILITY_INSUFFICIENT'].includes(String(preview.error.code))) {
+      if (!isSafeEligibilityErrorMessage(preview.error.message)) return false;
     }
   }
   const result = isObject(preview.result) ? preview.result : null;

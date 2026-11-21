@@ -6,6 +6,7 @@ import type { SkillRegistration } from '../../platform/plugins/registry.js';
 import type { SkillField } from '../../contracts/skill-contracts.js';
 import { TaskError, type TaskExecutionContext } from '../../platform/jobs/tasks.js';
 import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
+import { isValidR1ReadBinding } from '../../contracts/r1-contracts.js';
 import { canonicalWfdJson, isWfdRecord } from '../../adapters/database/wfd-transport.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import { ALGORITHM_CONTRACT_VERSION, ALGORITHM_RUNTIME, isAlgorithmMethodId, type AlgorithmCatalogView, type AlgorithmSubmissionContext } from './algorithm-types.js';
@@ -42,7 +43,37 @@ function previewSource(source: JsonValue) {
   } };
 }
 
+const ELIGIBILITY_FALLBACK = '该固定快照未通过所请求用途的资格核对；完整明细保留在原任务审计记录。';
+function sanitizeEligibilityMessage(rawMessage: string): string {
+  try {
+    const detail: unknown = JSON.parse(rawMessage);
+    if (isWfdRecord(detail) && (detail.purpose === 'historical_compute' || detail.purpose === 'current_compute')) {
+      const history = isWfdRecord(detail.history) ? Object.fromEntries(
+        Object.entries(detail.history).filter(([key, val]) => ['mode', 'at', 'heldScope', 'usableStage'].includes(key) && (val === null || typeof val === 'string'))
+      ) : null;
+      const gapCodes = Array.isArray(detail.blockingGapCodes)
+        ? detail.blockingGapCodes.filter((item): item is string => typeof item === 'string' && /^[A-Z0-9_]+$/u.test(item))
+        : Array.isArray(detail.gaps)
+          ? detail.gaps.map(item => isWfdRecord(item) && typeof item.code === 'string' && /^[A-Z0-9_]+$/u.test(item.code) ? item.code : null).filter((item): item is string => item !== null)
+          : [];
+      return canonicalWfdJson({
+        ruleVersion: typeof detail.ruleVersion === 'string' ? detail.ruleVersion : null,
+        status: typeof detail.status === 'string' ? detail.status : null,
+        purpose: detail.purpose,
+        history,
+        blockingGapCodes: [...new Set(gapCodes)],
+        evidenceSha256: typeof detail.evidenceSha256 === 'string' ? detail.evidenceSha256 : null,
+        action: ELIGIBILITY_FALLBACK,
+      });
+    }
+  } catch { /* 残缺或非结构化历史错误正文不予透传。 */ }
+  return ELIGIBILITY_FALLBACK;
+}
+
 function previewError(error: { code: string; message: string } | null) {
+  if (error?.code === 'PURPOSE_ELIGIBILITY_INELIGIBLE' || error?.code === 'PURPOSE_ELIGIBILITY_INSUFFICIENT') {
+    return { code: error.code, message: sanitizeEligibilityMessage(error.message) };
+  }
   if (error?.code !== 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION') return error;
   // 旧失败回执的正文可能仍含原始诊断，或在任务错误长度上限处被截断。
   try {
@@ -92,13 +123,12 @@ function matchesHistoricalDeclaration(text: string, intent: HistoricalIntent): b
 }
 
 function hasScreenReader(port: WorkspaceServices['r1Workspace']): boolean {
-  if (typeof port?.readProduct !== 'function') return false;
-  if (!port.capabilities) return true;
+  if (typeof port?.readProduct !== 'function' || typeof port.capabilities !== 'function' || typeof port.readBinding !== 'function') return false;
   try {
     const caps = port.capabilities();
     const configured = !!caps?.connection && typeof caps.connection.connectionId === 'string' && !!caps.connection.connectionId.trim()
       && (caps.configuration === undefined || caps.configuration?.state === 'configured');
-    return configured && typeof port.readBinding === 'function' && !!port.readBinding();
+    return configured && isValidR1ReadBinding(port.readBinding());
   } catch { return false; }
 }
 
@@ -132,11 +162,12 @@ export class ConversationAlgorithmBridge {
         const calculationAvailable = hasAlgorithms && !!options.companion.derivedPublisher
           && typeof options.companion.algorithms!.catalog === 'function'
           && options.companion.algorithms!.catalog().status === 'available';
+        const publishAvailable = hasAlgorithms && !!options.companion.derivedPublisher;
         const enabled = options.companion.productionModuleSwitches?.calculate !== false;
         const discovery = ['algorithms.capabilities', 'algorithms.contract', 'bd.session.capabilities'].includes(action);
         const available = action === 'algorithms.screen' ? enabled && hasScreenReader(options.companion.r1Workspace)
           : action === 'data.modules.calculate' || action === 'algorithms.calculate' ? calculationAvailable && enabled
-            : action === 'algorithms.publish' ? calculationAvailable
+            : action === 'algorithms.publish' ? publishAvailable
               : action === 'algorithms.status' ? hasAlgorithms
                 : discovery && (hasAlgorithms || !!options.companion.r1Workspace?.readProduct
                   || action === 'bd.session.capabilities' && !!options.companion.processing);
@@ -374,7 +405,8 @@ export class ConversationAlgorithmBridge {
       const catalog = service.catalog();
       const methods = catalog.methods.filter(method => algorithmAllowedByRules(method.id, rulesVersion));
       const reason = !frozenAlgorithmCapabilities(rulesVersion).methods.length ? '本会话没有允许新计算的冻结规则。'
-        : this.options.companion.productionModuleSwitches?.calculate === false ? '计算模块已停用。' : null;
+        : this.options.companion.productionModuleSwitches?.calculate === false ? '计算模块已停用。'
+          : !this.options.companion.derivedPublisher ? '计算结果的原 R1/WFD 发布适配器未装配。' : null;
       if (reason) return { ...catalog, enabled: false, status: 'unavailable', reason,
         methods: methods.map(method => ({ ...method, status: 'unavailable', reason })) };
       return { ...catalog, methods };

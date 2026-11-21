@@ -85,6 +85,15 @@ export interface R1PrepareInput {
     revisions?: Record<string, { previous: { product_id: string; snapshot_id: string; logical_key: string; revision_id: string }; reason: string }> };
 }
 export interface R1ReadBinding { readSchemaSha256: string; queryImplSha256: string }
+const SHA256_HEX = /^[0-9a-f]{64}$/u;
+export function isValidR1ReadBinding(value: unknown): value is R1ReadBinding {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes('readSchemaSha256') || !keys.includes('queryImplSha256')) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.readSchemaSha256 === 'string' && SHA256_HEX.test(record.readSchemaSha256)
+    && typeof record.queryImplSha256 === 'string' && SHA256_HEX.test(record.queryImplSha256);
+}
 
 interface R1ConnectionIdentityBase {
   connectionId: string; protocol: 'wfd.structured-ingest/1.0'; profile: 'data_only';

@@ -298,6 +298,18 @@ test('普通产品及兼容顶层返回均固定定义和合同，仅相同版�
       for (const raw of value.rows as WfdRecord[]) delete raw.contract_ref;
     };
     assert.equal(((await f.execute()).fixedRead as WfdRecord).contractVersionsSha256, wfdSha256(canonicalWfdJson([{ version: 'v1' }])));
+    f.state.changeResult = value => {
+      value.contract_versions = [{ version: 'v1' }];
+      for (const raw of value.rows as WfdRecord[]) raw.contract_ref = { version: 'v1' };
+    };
+    assert.equal(((await f.execute()).fixedRead as WfdRecord).crossSectionRows, 4);
+    for (const mismatch of [{ version: 'v2' }, { version: 'v1', digest: 'sha256:' + 'f'.repeat(64) }]) {
+      f.state.changeResult = value => {
+        value.contract_versions = [{ version: 'v1' }];
+        for (const raw of value.rows as WfdRecord[]) raw.contract_ref = mismatch;
+      };
+      await assert.rejects(f.execute(), hasCode('STRATEGY_SCREEN_DEFINITION_MIXED'));
+    }
     for (const nested of [true, false]) {
       f.state.changeResult = value => {
         Object.assign(value, nested ? { product: metadata } : metadata);

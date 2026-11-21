@@ -131,6 +131,8 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     for (const section of [`<div>${title}：${otherLink}</div>`, `<section><h2>${title}</h2>${otherLink}</section>`,
       `<div><span>${title}：</span></div><ul><li>${otherLink}</li></ul>`,
       `<p><strong>${title}</strong></p><ul><li>${otherLink}</li></ul>`,
+      `<p><strong>${title}</strong><br></p><ul><li>${otherLink}</li></ul>`,
+      `<p><strong>${title}</strong></p><h3>小标题</h3><ul><li>${otherLink}</li></ul>`,
       `<p><b>${title}</b>：</p><div class="report-download">${otherLink}</div>`]) {
       assert.equal(decodeEastmoneyReportDetail(request, html(`<article id="zwinfo">${mainLink}${section}</article>`)).pdfUrl, pdf);
       assert.throws(() => decodeEastmoneyReportDetail(request, html(`<article id="zwinfo">${section}</article>`)), code('SOURCE_REPORT_RESPONSE_INVALID'));
