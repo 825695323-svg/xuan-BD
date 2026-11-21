@@ -191,20 +191,24 @@ function detailMetadata(literal: string): Record<string, JsonValue> | null {
   return values;
 }
 
-const relatedTitle = /^[【[(\s（]*(?:相\n?关\n?阅\n?读|相\n?关\n?研\n?报|推\n?荐\n?阅\n?读|延\n?伸\n?阅\n?读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/u;
-const relatedHeadingAtBoundary = /^(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|(?:\s*[】\])））：:—\-·•]+)+|\s+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/u;
-const relatedAfterAnchor = /^(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|(?:\s*[】\])））：:—\-·•]+)+|(?=\s*(?:[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])))/u;
-const relatedBeforeTarget = /(?:^|(?<=[\s。！？；.!?])|(?<=(?:^|[\s。！？；.!?])[【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:—\-·•]*$/u;
-const relatedWrapperTitle = /^[【[(\s（]*(?:相\n?关\n?阅\n?读|相\n?关\n?研\n?报|推\n?荐\n?阅\n?读|延\n?伸\n?阅\n?读)[\s】\])））：:]*$/u;
-const relatedBareKeywordCore = /^[【[]*\s*(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:\s*[】\])）：:—\-·•]+)*/u;
+const relatedKwPattern = '(?:相(?:[ \\t]*\\n[ \\t]*)?关(?:[ \\t]*\\n[ \\t]*)?阅(?:[ \\t]*\\n[ \\t]*)?读'
+  + '|相(?:[ \\t]*\\n[ \\t]*)?关(?:[ \\t]*\\n[ \\t]*)?研(?:[ \\t]*\\n[ \\t]*)?报'
+  + '|推(?:[ \\t]*\\n[ \\t]*)?荐(?:[ \\t]*\\n[ \\t]*)?阅(?:[ \\t]*\\n[ \\t]*)?读'
+  + '|延(?:[ \\t]*\\n[ \\t]*)?伸(?:[ \\t]*\\n[ \\t]*)?阅(?:[ \\t]*\\n[ \\t]*)?读)';
+const relatedTitle = new RegExp(`^[【[(\\s（]*${relatedKwPattern}(?:$|[\\s】\\])））：:—\\-·•]+|(?=[《「【[(（]|\\[\\d{1,3}\\]|[(（]\\d{1,3}[)）]|\\d{1,3}(?:\\.(?!\\d)|[、)）])|[①-⑳]))`, 'u');
+const relatedHeadingAtBoundary = new RegExp(`^${relatedKwPattern}(?:$|(?:\\s*[】\\])））：:—\\-·•]+)+|\\s+|(?=[《「【[(（]|\\[\\d{1,3}\\]|[(（]\\d{1,3}[)）]|\\d{1,3}(?:\\.(?!\\d)|[、)）])|[①-⑳]))`, 'u');
+const relatedAfterAnchor = new RegExp(`^${relatedKwPattern}(?:$|(?:\\s*[】\\])））：:—\\-·•]+)+|(?=\\s*(?:[《「【[(（]|\\[\\d{1,3}\\]|[(（]\\d{1,3}[)）]|\\d{1,3}(?:\\.(?!\\d)|[、)）])|[①-⑳])))`, 'u');
+const relatedBeforeTarget = new RegExp(`(?:^|(?<=[\\s。！？；.!?])|(?<=(?:^|[\\s。！？；.!?])[【[(（]))${relatedKwPattern}[\\s】\\])））：:—\\-·•]*$`, 'u');
+const relatedWrapperTitle = new RegExp(`^[【[(\\s（]*${relatedKwPattern}[\\s】\\])））：:]*$`, 'u');
+const relatedBareKeywordCore = new RegExp(`^[【[]*\\s*${relatedKwPattern}(?:\\s*[】\\])）：:—\\-·•]+)*`, 'u');
 const titleLinkRightBoundary = /^(?:[\s】\])））：:—\-·•《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])/u;
-const inlineRelatedHeading = /(?:^|(?<=[\s。！？；.!?])|(?<=(?:^|[\s。！？；.!?])[【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/gu;
+const inlineRelatedHeading = new RegExp(`(?:^|(?<=[\\s。！？；.!?])|(?<=(?:^|[\\s。！？；.!?])[【[(（]))(${relatedKwPattern})(?:$|[\\s】\\])））：:—\\-·•]+|(?=[《「【[(（]|\\[\\d{1,3}\\]|[(（]\\d{1,3}[)）]|\\d{1,3}(?:\\.(?!\\d)|[、)）])|[①-⑳]))`, 'gu');
 const mainAttachmentHeading = /^[【[(\s]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)(?:$|[\s】\])：:—\-·•（(])/u;
 const mainAttachmentWrapperTitle = /^[【[(\s（]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)[\s】\])））：:]*$/u;
 const leadingListItem = /^[\s\n]*(?:\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])(?=$|[\s\n\p{L}\p{N}《「【])/u;
-const proseBodyCueGlobal = /(?:详见正文|参见正文|请见正文|见正文|详见下文|参见下文|见下文|详见本?报告|参见本?报告|请见本?报告|详见本?研报|参见本?研报|请见本?研报|请参阅|正文说明)/gu;
-const proseDownloadTailCue = /(?:下载地址|原文地址|本?研报附件|正文附件|原文附件|附件|原文|下载|入口|链接)见[\s：:]*$/u;
-const proseAnchorText = /^(?:详见|参见|请见|请参阅|见)?(?:正文|下文|上文|本?研报|本?报告)(?:说明|内容|分析)?[。！？；.!?\s]*$/u;
+const proseBodyCueGlobal = /(?:详见正文|参见正文|请见正文|见正文|详见下文|参见下文|见下文|详见本?报告|参见本?报告|请见本?报告|详见本?研报|参见本?研报|请见本?研报|本(?:研报|报告)的?(?:下载地址|原文地址|原文|附件)|请参阅|正文说明)/gu;
+const proseDownloadTailCue = /(?<!上一|其他|另一|相关|推荐)(?<!(?:上一|其他|另一|相关|推荐)(?:份|篇)?(?:研报|报告)的?)(?:下载地址|原文地址|本?研报附件|正文附件|原文附件|附件|原文|下载|入口|链接)见[\s：:]*$/u;
+const proseAnchorText = /^(?:(?:详见|参见|请见|请参阅|见)(?:正文|下文|上文|本?研报|本?报告)|(?:正文|下文|上文)(?:说明|内容|分析)?[。！？；.!?\s]*$)/u;
 const midSentencePrevChar = /[\p{L}\p{N}，,、”’"'）)\]]/u;
 const lineOrSentenceBreakChar = /[\r\n\u2028\u2029。！？；.!?]/u;
 const horizWhitespaceChar = /[^\S\r\n\u2028\u2029]/u;
@@ -244,7 +248,10 @@ function appendNormalizedOwnText(current: string, piece: string, limit = 128): s
   for (let i = 0; i < piece.length && out.length < limit; i += 1) {
     const ch = piece[i]!;
     if (/[\r\n\u2028\u2029]/u.test(ch)) {
-      if (lastCh !== '\n') {
+      if (lastCh === ' ') {
+        out = out.slice(0, -1) + '\n';
+        lastCh = '\n';
+      } else if (lastCh !== '\n') {
         out += '\n';
         lastCh = '\n';
       }
@@ -285,12 +292,30 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
   const isIsolatedBoundary = new WeakMap<Element, boolean>();
   const ownText = new WeakMap<Element, string>();
   const hasAnchorOrFrame = new WeakMap<Element, boolean>();
-  const stack: Array<{ node: Element; parentIsZwinfo: boolean; inList: boolean; needOwnText: boolean; visited: boolean }> = [];
+  const stack: Array<{
+    node: Element;
+    parentIsZwinfo: boolean;
+    inZwinfo: boolean;
+    inDownloadBox: boolean;
+    hasEncodeUrl: boolean;
+    inList: boolean;
+    needOwnText: boolean;
+    visited: boolean;
+  }> = [];
   const docChildren: NodeListOf<ChildNode> = document.childNodes;
   for (let i = docChildren.length - 1; i >= 0; i -= 1) {
     const child: ChildNode = docChildren[i]!;
     if (child.nodeType === 1) {
-      stack.push({ node: child as Element, parentIsZwinfo: false, inList: false, needOwnText: false, visited: false });
+      stack.push({
+        node: child as Element,
+        parentIsZwinfo: false,
+        inZwinfo: false,
+        inDownloadBox: false,
+        hasEncodeUrl: false,
+        inList: false,
+        needOwnText: false,
+        visited: false,
+      });
     }
   }
   while (stack.length) {
@@ -311,6 +336,12 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
       const nextInList = top.inList || listTags.has(el.tagName);
       top.inList = nextInList;
       const isZw = el.id === 'zwinfo';
+      const nextInZw = top.inZwinfo || isZw;
+      const nextInBox = top.inDownloadBox || isBox;
+      const nextHasEncode = top.hasEncodeUrl || el.hasAttribute('data-encode-url');
+      top.inZwinfo = nextInZw;
+      top.inDownloadBox = nextInBox;
+      top.hasEncodeUrl = nextHasEncode;
       const children: NodeListOf<ChildNode> = el.childNodes;
       for (let i = children.length - 1; i >= 0; i -= 1) {
         const child: ChildNode = children[i]!;
@@ -324,6 +355,9 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
           stack.push({
             node: ce,
             parentIsZwinfo: isZw,
+            inZwinfo: nextInZw,
+            inDownloadBox: nextInBox,
+            hasEncodeUrl: nextHasEncode,
             inList: nextInList,
             needOwnText: nextNeedOwnText && !childIso,
             visited: false,
@@ -346,7 +380,11 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
     let linkOrFrameChild = false;
     const selfIsCandidate = !isRel && !isRootSelf && !nonContentTags.has(el.tagName) && (
       isBox
-      || (el.tagName === 'A' && isEastmoneyPdfHref(el.getAttribute('href'), baseUrl))
+      || (
+        el.tagName === 'A'
+        && isEastmoneyPdfHref(el.getAttribute('href'), baseUrl)
+        && (isBox || (top.inZwinfo && el.hasAttribute('download')) || top.inDownloadBox || top.hasEncodeUrl)
+      )
       || (el.tagName === 'IFRAME' && top.parentIsZwinfo && isEastmoneyPdfHref(el.getAttribute('src'), baseUrl))
     );
     let candidateBeforeH = selfIsCandidate;
@@ -516,6 +554,8 @@ function scanInlineRun(
     el: Element;
     start: number;
     targetIndex: number;
+    hasHref: boolean;
+    hasExplicitReportAttr: boolean;
   };
   type CloseTitleFrame = {
     kind: 'closeTitle';
@@ -523,7 +563,14 @@ function scanInlineRun(
     start: number;
   };
   type RunFrame =
-    | { kind: 'node'; node: ChildNode; owner: string | null; infoCode: string | null; isTopChild: boolean }
+    | {
+        kind: 'node';
+        node: ChildNode;
+        owner: string | null;
+        infoCode: string | null;
+        isTopChild: boolean;
+        hasExplicitReportAttr: boolean;
+      }
     | CloseAnchorFrame
     | CloseTitleFrame;
   const stack: RunFrame[] = [];
@@ -534,17 +581,21 @@ function scanInlineRun(
       owner: attr.nearestEncodeUrl,
       infoCode: attr.nearestInfoCode,
       isTopChild: true,
+      hasExplicitReportAttr: false,
     });
   }
   let runText = '';
   let inAnchorDepth = 0;
+  let inHrefAnchorDepth = 0;
   let hasTitleClass = false;
   const runTargets: RunTarget[] = [];
   const titleLinkTriggers: TitleLinkTrigger[] = [];
   const topAnchorSpans: Array<{ start: number; end: number }> = [];
+  const allAnchorSpans: Array<{ start: number; end: number }> = [];
   const titleSpans: Array<{ start: number; end: number }> = [];
   const anchorStarts = new Set<number>();
   const anchorEnds = new Set<number>();
+  const targetStarts = new Set<number>();
   while (stack.length) {
     const frame = stack.pop()!;
     if (frame.kind === 'closeTitle') {
@@ -566,15 +617,19 @@ function scanInlineRun(
     }
     if (frame.kind === 'closeAnchor') {
       inAnchorDepth -= 1;
+      if (frame.hasHref) inHrefAnchorDepth -= 1;
       const end = runText.length;
       anchorEnds.add(end);
+      if (end > frame.start) {
+        allAnchorSpans.push({ start: frame.start, end });
+      }
       const linkText = (flags.ownText.get(frame.el) ?? '').trim();
       if (inAnchorDepth === 0 && end > frame.start && linkText.length > 0) {
         const rawHref = (frame.el.getAttribute('href') ?? '').trim();
         if (
           rawHref.length > 0
           && !rawHref.toLowerCase().startsWith('javascript:')
-          && !proseAnchorText.test(linkText)
+          && (frame.hasExplicitReportAttr || !proseAnchorText.test(linkText))
         ) {
           topAnchorSpans.push({ start: frame.start, end });
         }
@@ -614,9 +669,13 @@ function scanInlineRun(
     if (decorativeInlineTags.has(el.tagName)) continue;
     const nextOwner = el.getAttribute('data-encode-url') ?? frame.owner;
     const nextInfoCode = el.getAttribute('data-info-code') ?? frame.infoCode;
+    const nextExplicitAttr = frame.hasExplicitReportAttr
+      || el.hasAttribute('data-encode-url')
+      || el.hasAttribute('data-info-code');
     if (el.tagName === 'IFRAME') {
       const isZwinfoDirect = frame.isTopChild && container.nodeType === 1 && (container as Element).id === 'zwinfo';
       if (isZwinfoDirect && isEastmoneyPdfHref(el.getAttribute('src'), baseUrl)) {
+        targetStarts.add(runText.length);
         runTargets.push({
           element: el,
           start: runText.length,
@@ -631,11 +690,16 @@ function scanInlineRun(
     if (el.tagName === 'A') {
       const anchorStart = runText.length;
       anchorStarts.add(anchorStart);
+      const hasHref = el.hasAttribute('href');
+      if (!hasHref && inHrefAnchorDepth === 0 && el.hasAttribute('class') && el.matches('[class*="title" i]')) {
+        hasTitleClass = true;
+      }
       const isCandidate = isEastmoneyPdfHref(el.getAttribute('href'), baseUrl)
         && ((attr.inZwinfo && el.hasAttribute('download')) || attr.nearestDownloadBox !== null || nextOwner !== null);
       let targetIndex = -1;
       if (isCandidate) {
         targetIndex = runTargets.length;
+        targetStarts.add(anchorStart);
         runTargets.push({
           element: el,
           start: anchorStart,
@@ -646,25 +710,42 @@ function scanInlineRun(
         });
       }
       inAnchorDepth += 1;
+      if (hasHref) inHrefAnchorDepth += 1;
       stack.push({
         kind: 'closeAnchor',
         el,
         start: anchorStart,
         targetIndex,
+        hasHref,
+        hasExplicitReportAttr: nextExplicitAttr,
       });
       const ac: NodeListOf<ChildNode> = el.childNodes;
       for (let i = ac.length - 1; i >= 0; i -= 1) {
-        stack.push({ kind: 'node', node: ac[i]!, owner: nextOwner, infoCode: nextInfoCode, isTopChild: false });
+        stack.push({
+          kind: 'node',
+          node: ac[i]!,
+          owner: nextOwner,
+          infoCode: nextInfoCode,
+          isTopChild: false,
+          hasExplicitReportAttr: nextExplicitAttr,
+        });
       }
       continue;
     }
     if (el.hasAttribute('class') && el.matches('[class*="title" i]')) {
-      hasTitleClass = true;
+      if (inHrefAnchorDepth === 0) hasTitleClass = true;
       stack.push({ kind: 'closeTitle', el, start: runText.length });
     }
     const ic: NodeListOf<ChildNode> = el.childNodes;
     for (let i = ic.length - 1; i >= 0; i -= 1) {
-      stack.push({ kind: 'node', node: ic[i]!, owner: nextOwner, infoCode: nextInfoCode, isTopChild: false });
+      stack.push({
+        kind: 'node',
+        node: ic[i]!,
+        owner: nextOwner,
+        infoCode: nextInfoCode,
+        isTopChild: false,
+        hasExplicitReportAttr: nextExplicitAttr,
+      });
     }
   }
 
@@ -694,43 +775,58 @@ function scanInlineRun(
   if (runText.length === 0 && runTargets.length === 0) return;
 
   const len = runText.length;
-  const titleDiff = new Int32Array(len + 1);
-  for (let i = 0; i < titleSpans.length; i += 1) {
-    const sp = titleSpans[i]!;
-    titleDiff[sp.start] += 1;
-    titleDiff[sp.end] -= 1;
-  }
-  const midState = new Uint8Array(len + 1);
-  let titleDepth = 0;
-  let lastNonHoriz = '';
-  let lastBeforeBracket = '';
-  for (let i = 0; i < len; i += 1) {
-    titleDepth += titleDiff[i]!;
-    let state = titleDepth > 0 ? 4 : 0;
-    if (midSentencePrevChar.test(lastNonHoriz)) state |= 1;
-    if (midSentencePrevChar.test(lastBeforeBracket)) state |= 2;
-    midState[i] = state;
-    const ch = runText[i]!;
-    if (lineOrSentenceBreakChar.test(ch)) {
-      lastNonHoriz = '';
-      lastBeforeBracket = '';
-    } else if (!horizWhitespaceChar.test(ch)) {
-      lastNonHoriz = ch;
-      if (!/[【[(（]/u.test(ch)) lastBeforeBracket = ch;
-    }
-  }
-  midState[len] = (midSentencePrevChar.test(lastNonHoriz) ? 1 : 0)
-    | (midSentencePrevChar.test(lastBeforeBracket) ? 2 : 0);
-
   const nextBoundaryOrNonSpace = new Int32Array(len + 1);
+  const nextElemBoundary = new Int32Array(len + 1);
   nextBoundaryOrNonSpace[len] = len;
+  nextElemBoundary[len] = len;
   for (let i = len - 1; i >= 0; i -= 1) {
-    if (anchorStarts.has(i) || !/\s/u.test(runText[i]!)) {
+    const isElemStart = anchorStarts.has(i) || targetStarts.has(i);
+    nextElemBoundary[i] = isElemStart ? i : nextElemBoundary[i + 1]!;
+    if (isElemStart || !/\s/u.test(runText[i]!)) {
       nextBoundaryOrNonSpace[i] = i;
     } else {
       nextBoundaryOrNonSpace[i] = nextBoundaryOrNonSpace[i + 1]!;
     }
   }
+
+  const titleLeadStarts = new Set<number>();
+  for (let i = 0; i < titleSpans.length; i += 1) {
+    const sp = titleSpans[i]!;
+    let lead = sp.start;
+    while (lead < sp.end && /\s/u.test(runText[lead]!)) lead += 1;
+    if (lead < sp.end) titleLeadStarts.add(lead);
+  }
+  const anchorDiff = new Int32Array(len + 1);
+  for (let i = 0; i < allAnchorSpans.length; i += 1) {
+    const sp = allAnchorSpans[i]!;
+    anchorDiff[sp.start] += 1;
+    anchorDiff[sp.end] -= 1;
+  }
+  const midState = new Uint8Array(len + 1);
+  let anchorDepthAt = 0;
+  let lastNonHoriz = '';
+  let roundParenMidSentence = false;
+  for (let i = 0; i < len; i += 1) {
+    anchorDepthAt += anchorDiff[i]!;
+    const ch = runText[i]!;
+    if (ch === '（' || ch === '(') {
+      if (midSentencePrevChar.test(lastNonHoriz)) roundParenMidSentence = true;
+    }
+    let state = titleLeadStarts.has(i) ? 4 : 0;
+    if (anchorDepthAt > 0) state |= 8;
+    if (midSentencePrevChar.test(lastNonHoriz)) state |= 1;
+    if (roundParenMidSentence) state |= 2;
+    midState[i] = state;
+    if (ch === '）' || ch === ')' || lineOrSentenceBreakChar.test(ch)) {
+      roundParenMidSentence = false;
+    }
+    if (lineOrSentenceBreakChar.test(ch)) {
+      lastNonHoriz = '';
+    } else if (!horizWhitespaceChar.test(ch)) {
+      lastNonHoriz = ch;
+    }
+  }
+  midState[len] = (midSentencePrevChar.test(lastNonHoriz) ? 1 : 0) | (roundParenMidSentence ? 2 : 0);
 
   const triggers: number[] = [];
   if (len > 0) {
@@ -738,23 +834,27 @@ function scanInlineRun(
     let m: RegExpExecArray | null;
     while ((m = inlineRelatedHeading.exec(runText)) !== null) {
       const mStart = m.index;
-      const rawEnd = mStart + m[0].length;
+      const kwLen = m[1]!.length;
+      const kwEnd = mStart + kwLen;
+      const elemBound = nextElemBoundary[kwEnd]!;
+      const rawEnd = Math.min(mStart + m[0].length, elemBound);
       let coreMatchEnd = rawEnd;
       while (coreMatchEnd > mStart && /\s/u.test(runText[coreMatchEnd - 1]!)) coreMatchEnd -= 1;
       const matchEnd = nextBoundaryOrNonSpace[coreMatchEnd]!;
       const st = midState[mStart]!;
-      const inTitle = (st & 4) !== 0;
-      if (!inTitle) {
-        const prevCh = mStart > 0 ? runText[mStart - 1]! : '';
-        if ((prevCh === '（' || prevCh === '(') && (st & 2) !== 0 && !/[：:]/u.test(m[0])) {
+      const isTitleLead = (st & 4) !== 0;
+      const inAnchor = (st & 8) !== 0;
+      if (!isTitleLead) {
+        if (!inAnchor && (st & 2) !== 0 && !/[：:]/u.test(runText.slice(mStart, rawEnd))) {
           continue;
         }
-        const tail = m[0].slice(4);
+        const tail = runText.slice(kwEnd, rawEnd);
         const isBareSpaceTail = tail.length > 0 && /^[^\S\r\n\u2028\u2029]+$/u.test(tail);
         if (isBareSpaceTail && (st & 1) !== 0) {
           const nextSlice = runText.slice(matchEnd, matchEnd + 16);
           const followedByMarker = matchEnd === len
             || anchorStarts.has(matchEnd)
+            || targetStarts.has(matchEnd)
             || /^[《「【[(（]/u.test(nextSlice)
             || leadingListItem.test(nextSlice);
           if (!followedByMarker) continue;
@@ -764,12 +864,13 @@ function scanInlineRun(
     }
     for (const target of runTargets) {
       if (target.start > 0) {
-        const sliceStart = Math.max(0, target.start - 16);
+        const sliceStart = Math.max(0, target.start - 20);
         const prefixSlice = (sliceStart > 0 ? 'X' : '') + runText.slice(sliceStart, target.start);
         if (relatedBeforeTarget.test(prefixSlice)) triggers.push(target.start);
       }
       if (target.end < len) {
-        const afterTarget = relatedHeadingAtBoundary.exec(runText.slice(target.end, target.end + 32));
+        const bound = Math.min(target.end + 32, nextElemBoundary[target.end]! || (target.end + 32));
+        const afterTarget = relatedHeadingAtBoundary.exec(runText.slice(target.end, bound));
         if (afterTarget) {
           let coreEndPos = target.end + afterTarget[0].length;
           while (coreEndPos > target.end && /\s/u.test(runText[coreEndPos - 1]!)) coreEndPos -= 1;
@@ -779,17 +880,21 @@ function scanInlineRun(
     }
     for (const endPos of anchorEnds) {
       if (endPos < len) {
-        const afterAnchor = relatedAfterAnchor.exec(runText.slice(endPos, endPos + 32));
+        const elemBound = nextElemBoundary[endPos]!;
+        const sliceEnd = elemBound > endPos ? Math.min(endPos + 32, elemBound) : (endPos + 32);
+        const afterAnchor = relatedAfterAnchor.exec(runText.slice(endPos, sliceEnd));
         if (afterAnchor) {
           let coreEndPos = endPos + afterAnchor[0].length;
           while (coreEndPos > endPos && /\s/u.test(runText[coreEndPos - 1]!)) coreEndPos -= 1;
           triggers.push(nextBoundaryOrNonSpace[coreEndPos]!);
         } else {
           const p0 = nextBoundaryOrNonSpace[endPos]!;
-          const bare = relatedBareKeywordCore.exec(runText.slice(p0, p0 + 24));
+          const p0Bound = nextElemBoundary[p0]!;
+          const bareEnd = p0Bound > p0 ? Math.min(p0 + 24, p0Bound) : (p0 + 24);
+          const bare = relatedBareKeywordCore.exec(runText.slice(p0, bareEnd));
           if (bare) {
             const p1 = nextBoundaryOrNonSpace[p0 + bare[0].length]!;
-            if (p1 === len || anchorStarts.has(p1)) {
+            if (p1 === len || anchorStarts.has(p1) || targetStarts.has(p1)) {
               triggers.push(p1);
             }
           }
@@ -806,11 +911,11 @@ function scanInlineRun(
     const nextPos = nextBoundaryOrNonSpace[t.end]!;
     if (!t.isTitleElem) {
       const st = midState[t.start]!;
-      if (t.isRoundParen && (st & 2) !== 0) continue;
       if (!t.endsWithPunct && (st & 1) !== 0) {
         const nextSlice = runText.slice(nextPos, nextPos + 16);
         const followedByMarker = nextPos === len
           || anchorStarts.has(nextPos)
+          || targetStarts.has(nextPos)
           || /^[】\])））：:—\-·•《「【[(（]/u.test(nextSlice)
           || leadingListItem.test(nextSlice);
         if (!followedByMarker) continue;
@@ -819,6 +924,7 @@ function scanInlineRun(
     const rightOk = t.endsWithPunct
       || nextPos === len
       || anchorStarts.has(nextPos)
+      || targetStarts.has(nextPos)
       || titleLinkRightBoundary.test(runText.slice(t.end, t.end + 16));
     if (rightOk) triggers.push(nextPos);
   }
@@ -899,7 +1005,7 @@ function scanInlineRun(
       prevCloseLenticular = -1;
       for (let i = trimmedEnd - 1; i >= floor; i -= 1) {
         const ch = runText[i]!;
-        if (lastFullStop === -1 && ch === '。') lastFullStop = i;
+        if (lastFullStop === -1 && nonTitleRunText[i] === '。') lastFullStop = i;
         if (lastProseChar === -1 && !/[\s【】[\]()（）：:—\-·•]/u.test(ch)) lastProseChar = i;
         if (coreEnd === -1 && !/[\s"'”’）)】\]]/u.test(ch)) coreEnd = i;
         if (lastNonPunct === -1) {
@@ -929,8 +1035,8 @@ function scanInlineRun(
         while ((cm = proseBodyCueGlobal.exec(gapSlice)) !== null) {
           lastProseCueStart = floor + cm.index;
         }
-        if (nextTarget !== null || followedByCandidate) {
-          const tailStart = Math.max(0, gapSlice.length - 16);
+        if (nextTarget !== null) {
+          const tailStart = Math.max(0, gapSlice.length - 24);
           const tailSlice = gapSlice.slice(tailStart);
           const tm = proseDownloadTailCue.exec(tailSlice);
           if (tm) {

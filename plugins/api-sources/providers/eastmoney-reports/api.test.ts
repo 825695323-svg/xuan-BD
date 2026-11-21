@@ -301,6 +301,19 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div id="zwinfo"><p>相关阅读：本研报的下载地址见<a id="file"></a>${mainLink}</p></div>`,
     `<div id="zwinfo"><p>开始前请先看<a href="/guide">使用指南</a> （推荐阅读）</p><p>${mainLink}</p></div>`,
     `<div id="zwinfo"><p>相关阅读：<a href="#body">参见本报告</a></p><p id="body">${mainLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<p>相关阅读：上一份研报的下载地址见</p><a class="report-download" href="${other}">下载该研报</a></div>`,
+    `<div id="zwinfo">${mainLink}<p>相关阅读：<a data-encode-url="other" href="/report/2">参见本报告</a></p>${otherLink}</div>`,
+    `<div id="zwinfo">${mainLink}<p><a href="/toc">目录</a><a href="/related">（相关阅读）</a>${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<div class="report-download"><a href="/toc">目录</a>相关阅读： <a href="${other}">• 下载 PDF</a></div></div>`,
+    `<div id="zwinfo">${mainLink}<a href="/toc">目录</a><a href="/more">【相关阅读】</a><iframe src="${other}"></iframe> 推荐报告</div>`,
+    `<div id="zwinfo">${mainLink}<a download href="${other}">【相关 <br>研报】</a></div>`,
+    `<div id="zwinfo">${mainLink}<p><strong>相关<br>研报</strong></p>${otherLink}</div>`,
+    `<div id="zwinfo">${mainLink}<h2>相关阅读</h2><p><a data-encode-url="other" href="/report/2"><span class="title">原文下载</span></a></p>${otherLink}</div>`,
+    `<div id="zwinfo">${mainLink}相关阅读：<a href="/report/2">需求见底。三季度行业展望</a> <time>2026-01-05</time> ${otherLink}</div>`,
+    `<div id="zwinfo"><p>相关阅读：<a href="#body">详见正文第2节</a></p><p id="body">${mainLink}</p></div>`,
+    `<div id="zwinfo"><h2>相关阅读</h2>${otherLink}<p><a class="title" id="attachments">本研报附件</a></p>${mainLink}</div>`,
+    `<div id="zwinfo"><p><span class="report-title">如何解读 相关阅读 统计指标</span></p>${mainLink}</div>`,
+    `<div id="zwinfo"><p>使用指南 （ 推荐阅读 ）</p><p>${mainLink}</p></div>`,
   ]) {
     assert.equal(decodeEastmoneyReportDetail(request, html(body)).pdfUrl, pdf);
   }
@@ -394,9 +407,25 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div id="zwinfo"><p>目录&#x2028;相关阅读 行业展望 ${otherLink}</p></div>`,
     `<div id="zwinfo"><div class="report-download"><a href="/toc">目录</a>相关阅读：<a href="${other}"> 下载 PDF</a></div></div>`,
     `<div id="zwinfo"><p>相关阅读：行业展望</p><a role="heading" aria-level="2" download href="${other}">行业展望</a></div>`,
+    `<div id="zwinfo"><p>相关阅读：上一份研报的下载地址见</p><a class="report-download" href="${other}">下载该研报</a></div>`,
+    `<div id="zwinfo"><p>相关阅读：<a data-encode-url="other" href="/report/2">参见本报告</a></p>${otherLink}</div>`,
+    `<div id="zwinfo"><p><a href="/toc">目录</a><a href="/related">（相关阅读）</a>${otherLink}</p></div>`,
+    `<div id="zwinfo"><div class="report-download"><a href="/toc">目录</a>相关阅读： <a href="${other}">• 下载 PDF</a></div></div>`,
+    `<div id="zwinfo"><a href="/toc">目录</a><a href="/more">【相关阅读】</a><iframe src="${other}"></iframe> 推荐报告</div>`,
+    `<div id="zwinfo"><a download href="${other}">【相关 <br>研报】</a></div>`,
+    `<div id="zwinfo"><p><strong>相关<br>研报</strong></p>${otherLink}</div>`,
+    `<div id="zwinfo"><h2>相关阅读</h2><p><a data-encode-url="other" href="/report/2"><span class="title">原文下载</span></a></p>${otherLink}</div>`,
+    `<div id="zwinfo">相关阅读：<a href="/report/2">需求见底。三季度行业展望</a> <time>2026-01-05</time> ${otherLink}</div>`,
   ]) {
     assert.throws(() => decodeEastmoneyReportDetail(request, html(relOnly)), noPdf);
   }
+  assert.throws(
+    () => decodeEastmoneyReportDetail(
+      request,
+      html(`<div id="zwinfo"><p>相关阅读：本段说明如何获取本研报原文</p>${attestedScript}<a role="heading" aria-level="2" href="${pdf}">附件说明</a>${otherLink}</div>`),
+    ),
+    invalidDetail('研报详情元数据与附件声明指向不同的 infoCode。'),
+  );
   const deepSpanOpen = '<span>'.repeat(4000), deepSpanClose = '</span>'.repeat(4000);
   assert.equal(decodeEastmoneyReportDetail(request, html(`<div id="zwinfo"><p>${deepSpanOpen}<em>相关阅读</em> 参见正文说明。${mainLink}${deepSpanClose}</p></div>`)).pdfUrl, pdf);
   assert.throws(() => decodeEastmoneyReportDetail(request, html(`<div id="zwinfo"><p>${deepSpanOpen}相关阅读：1. 某行业研报 ${otherLink}${deepSpanClose}</p></div>`)), noPdf);
