@@ -420,7 +420,7 @@ export class LocalAlgorithmService {
       const definition = Array.isArray(fields?.definitions)
         ? fields.definitions.find(field => isWfdRecord(field) && field.field_code === volumeColumn) : null;
       if (!volumeUnit || !isWfdRecord(definition) || definition.unit_code !== volumeUnit)
-        throw new TaskError('ALGORITHM_UNIT_MISMATCH', 'OBV 声明的 volumeUnit 与 WFD 固定成交量字段定义不一致。');
+        throw new TaskError('ALGORITHM_UNIT_MISMATCH', `${ALGORITHM_METHODS[request.methodId].operation} 声明的 volumeUnit 与 WFD 固定成交量字段定义不一致。`);
     }
     if (!Array.isArray(read.evidence) || read.evidence.length !== read.rows.length) {
       throw new TaskError('ALGORITHM_SNAPSHOT_ELIGIBILITY_EVIDENCE_MISSING', '固定快照端口未返回逐行实际资格/公开时间/修订/限制证据；不能调用共用规则前先假报通过。');
@@ -808,12 +808,13 @@ function normalizeSource(value: unknown, methodId: AlgorithmMethodId): Algorithm
 }
 function normalizeSemantics(value: unknown, mapping: Record<string, unknown>, methodId: AlgorithmMethodId): AlgorithmSemantics {
   const semantics = record(value, '输入语义');
+  const needsVolume = ALGORITHM_METHODS[methodId].requiredFields.includes('volume');
   exact(semantics, ['subject', 'frequency', 'timezone', 'priceUnit', 'currency', 'adjustment', 'adjustmentBasis', 'barClosed', 'synthetic', 'availability'],
-    '输入语义', methodId === 'obv' ? ['volumeUnit'] : []);
+    '输入语义', needsVolume ? ['volumeUnit'] : []);
   const volumeUnit = semantics.volumeUnit;
-  if (methodId === 'obv' && (typeof volumeUnit !== 'string' || !volumeUnit.trim() || volumeUnit.length > 128
+  if (needsVolume && (typeof volumeUnit !== 'string' || !volumeUnit.trim() || volumeUnit.length > 128
     || /^(unknown|undefined|n\/?a|未知|未确定|不明)$/iu.test(volumeUnit.trim()))) {
-    throw new TaskError('ALGORITHM_UNIT_MISMATCH', 'OBV 须显式声明 volumeUnit。');
+    throw new TaskError('ALGORITHM_UNIT_MISMATCH', `${ALGORITHM_METHODS[methodId].operation} 须显式声明 volumeUnit。`);
   }
   text(semantics.subject, '标的/序列名称');
   if (semantics.frequency !== '1d') throw new TaskError('ALGORITHM_FREQUENCY_UNSUPPORTED', '当前只接受已明确为日线的输入；分钟/日线加工尚未装配。');
@@ -875,8 +876,8 @@ function normalizeSnapshot(source: Record<string, unknown>, methodId: AlgorithmM
     if (String(value).toLowerCase() === 'latest' || String(value).toLowerCase() === 'current') throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', `固定快照${label}不能使用 latest/current。`);
   }
   const mapping = record(reference.fieldMapping, 'fieldMapping');
-  if (methodId === 'obv' && !Object.hasOwn(mapping, 'volume'))
-    throw new TaskError('INVALID_ALGORITHM_MAPPING', 'OBV 须显式映射成交量字段 volume。');
+  if (ALGORITHM_METHODS[methodId].requiredFields.includes('volume') && !Object.hasOwn(mapping, 'volume'))
+    throw new TaskError('INVALID_ALGORITHM_MAPPING', `${ALGORITHM_METHODS[methodId].operation} 须显式映射成交量字段 volume。`);
   exact(mapping, [...ALGORITHM_METHODS[methodId].requiredFields], 'fieldMapping', ['open', 'high', 'low', 'available_at']);
   for (const [key, column] of Object.entries(mapping)) if (typeof column !== 'string' || !column.trim() || column.length > 256) throw new TaskError('INVALID_ALGORITHM_MAPPING', `字段映射 ${key} 须为非空列名。`);
   const targets = Object.values(mapping) as string[];
@@ -966,7 +967,7 @@ function normalizeSnapshot(source: Record<string, unknown>, methodId: AlgorithmM
 
 function validateData(data: AlgorithmData, methodId: AlgorithmMethodId): void {
   const value = record(data, '算法输入'); exact(value, ['metadata', 'rows'], '算法输入');
-  const hasVolume = methodId === 'obv', closeDomain = ALGORITHM_METHODS[methodId].closeDomain;
+  const hasVolume = ALGORITHM_METHODS[methodId].requiredFields.includes('volume'), closeDomain = ALGORITHM_METHODS[methodId].closeDomain;
   const metadata = record(value.metadata, 'metadata');
   exact(metadata, ['series_id', 'subject', 'frequency', 'timezone', 'price_unit', 'currency', 'adjustment', 'adjustment_basis',
     'window_start', 'window_end', 'as_of', 'availability_basis', 'bar_closed', 'observations_are_consecutive', 'calendar_verification', 'synthetic',

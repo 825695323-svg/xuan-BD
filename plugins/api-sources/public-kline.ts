@@ -2,10 +2,12 @@ import { createHash } from 'node:crypto';
 import type { JsonValue } from '../../contracts/task-contracts.js';
 import type { SourceAssetScope, SourceDataCapability, SourceOperationId } from '../../contracts/source-settings.js';
 import { DirectError } from '../../platform/runtime/file-workspace.js';
+import { buildTickflowDailyRequest, decodeTickflowDailyBars } from './providers/tickflow/api.js';
 
-export type PublicKlineProviderId = 'eastmoney' | 'sina' | 'tencent';
+export type PublicKlineProviderId = 'eastmoney' | 'sina' | 'tencent' | 'tickflow';
 export type PublicKlineOperationId = Extract<SourceOperationId, 'minute_bars' | 'daily_bars'>;
 export type PublicDailyProviderId = 'tencent' | 'eastmoney';
+export type SupportedDailyProviderId = PublicDailyProviderId | 'tickflow';
 export interface PublicDailyRequest { symbol: string; start: string; end: string; adjustment: 'none'; limit?: number }
 export interface PublicDailyBar {
   symbol: string; trade_date: string; open: string; high: string; low: string; close: string;
@@ -37,6 +39,8 @@ export interface PublicKlineProvider {
   operations: PublicKlineOperation[];
   buildUrl(operation: PublicKlineOperationId, parameters: Record<string, JsonValue>): URL;
   headers?: Record<string, string>;
+  /** 新来源只登记为可选连接，不改写已有主备和启停选择。 */
+  initiallyEnabled?: boolean;
 }
 
 const symbolOf = (value: JsonValue): { code: string; market: 'SH' | 'SZ' } => {
@@ -64,12 +68,12 @@ function dailyDate(value: unknown): string {
   return day;
 }
 /** 只在显式不复权请求中使用；未提供adjustment的既有请求保持原行为。 */
-export function normalizePublicDailyRequest(parameters: Record<string, JsonValue>): Required<PublicDailyRequest> {
+export function normalizePublicDailyRequest(parameters: Record<string, JsonValue>, allowBeijing = false): Required<PublicDailyRequest> {
   if (parameters.adjustment !== 'none' || Object.keys(parameters).some(key => !['symbol', 'start', 'end', 'adjustment', 'limit'].includes(key))) {
     throw new DirectError('SOURCE_PARAMETERS_INVALID', '受控日线只接受明确证券、起止日期、条数和adjustment:none（不复权）。');
   }
-  symbolOf(parameters.symbol);
-  const start = dailyDate(parameters.start), end = dailyDate(parameters.end), limit = limitOf(parameters.limit ?? 320, 320);
+  if (!(allowBeijing && typeof parameters.symbol === 'string' && /^\d{6}\.BJ$/u.test(parameters.symbol))) symbolOf(parameters.symbol);
+  const start = dailyDate(parameters.start), end = dailyDate(parameters.end), limit = limitOf(parameters.limit ?? 320, allowBeijing ? 10_000 : 320);
   if (start > end) throw new DirectError('SOURCE_PARAMETERS_INVALID', '日线结束日期不能早于开始日期。');
   return { symbol: String(parameters.symbol), start, end, adjustment: 'none', limit };
 }
@@ -123,14 +127,28 @@ const tencent: PublicKlineProvider = {
   },
 };
 
-export const publicKlineProviders: readonly PublicKlineProvider[] = Object.freeze([eastmoney, sina, tencent]);
+const tickflow: PublicKlineProvider = {
+  id: 'tickflow', title: 'TickFlow 历史日线', alias: 'TickFlow · 无密钥历史日线', shortLabel: 'TickFlow',
+  upstream: 'free-api.tickflow.org', applicationUrl: 'https://tickflow.org/', baseUrl: 'https://free-api.tickflow.org',
+  initiallyEnabled: false,
+  operations: [{ id: 'daily_bars', label: '日线行情', dataCapability: 'history', assetScope: 'equity' }],
+  buildUrl(operation, parameters) {
+    if (operation !== 'daily_bars') throw new DirectError('SOURCE_KIND_UNSUPPORTED', '此 TickFlow 连接仅登记历史日线。');
+    return buildTickflowDailyRequest(parameters).url;
+  },
+};
+
+export const publicKlineProviders: readonly PublicKlineProvider[] = Object.freeze([eastmoney, sina, tencent, tickflow]);
 export const publicKlineProviderIds = publicKlineProviders.map(provider => provider.id);
 export function publicKlineProvider(id: string): PublicKlineProvider | undefined {
   return publicKlineProviders.find(provider => provider.id === id);
 }
 
 /** 解码已保管的显式不复权请求原件；调用方须核对回执URL、原请求及原件摘要。无历史可得性或入库资格推定。 */
-export function decodePublicDailyBars(providerId: PublicDailyProviderId, request: PublicDailyRequest, rawBytes: Uint8Array): DecodedPublicDailyBars {
+export function decodePublicDailyBars(providerId: PublicDailyProviderId, request: PublicDailyRequest, rawBytes: Uint8Array): DecodedPublicDailyBars;
+export function decodePublicDailyBars(providerId: SupportedDailyProviderId, request: PublicDailyRequest, rawBytes: Uint8Array): DecodedPublicDailyBars | ReturnType<typeof decodeTickflowDailyBars>;
+export function decodePublicDailyBars(providerId: SupportedDailyProviderId, request: PublicDailyRequest, rawBytes: Uint8Array): DecodedPublicDailyBars | ReturnType<typeof decodeTickflowDailyBars> {
+  if (providerId === 'tickflow') return decodeTickflowDailyBars(normalizePublicDailyRequest({ ...request }, true), rawBytes);
   const bound = normalizePublicDailyRequest({ ...request }), symbol = symbolOf(bound.symbol);
   if (rawBytes.byteLength > 2 * 1024 * 1024) dailyFailure('日线原件超过2MiB解码预算。');
   let response: unknown;

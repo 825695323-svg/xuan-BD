@@ -65,6 +65,8 @@ const period = (minimum: number, maximum: number): ParameterRule => ({ type: 'in
 const firstValid = { type: 'string', const: 'first_valid' } as const;
 const closeFields = ['timestamp', 'close'] as const;
 const noWarmup = '首行即有效。';
+const quantitativeAnalysisReference = (formula: string) =>
+  `公式参考 henrylin99/quantitative_analysis@2edbc3eaf799f4d8f42c99fccba3b8fc08554f10 app/services/alpha191_formulas.py:${formula}；按公开数学定义适配，独立 TypeScript 核对，不复制上游服务或存储代码。`;
 
 function indicator(method: Omit<AlgorithmMethodDefinition, 'kind' | 'source' | 'outputFields' | 'requiredFields' | 'closeDomain' | 'limitations'>
   & Partial<Pick<AlgorithmMethodDefinition, 'source' | 'requiredFields' | 'closeDomain' | 'limitations'>>): AlgorithmMethodDefinition {
@@ -162,6 +164,43 @@ export const ALGORITHM_METHODS = Object.freeze({
     },
     resultSemantics: '缺省使用从首条观测至当日的累计窗口。显式 period 使用含当日的完整滚动窗口。最大回撤值小于或等于零，窗口最高收盘价可能出现在造成最大回撤的谷值之后。',
     warmup: '累计模式首行即有效。滚动模式前 period−1 行为空，诊断为 insufficient_warmup。',
+  }),
+  alpha191_014: indicator({ operation: 'ALPHA191_014', version: 'alpha191-014/close-delta-5-v1',
+    title: 'Alpha191 014 · 五期绝对动量', description: '计算收盘价相对五个观测前的绝对价差。',
+    reference: quantitativeAnalysisReference('alpha_014'), parameterSchema: parameterSchema({}),
+    outputs: { ALPHA191_014: { expression: 'ALPHA191_014_t = C_t − C_(t−5)', unit: 'close' } },
+    resultSemantics: '固定五个观测的价差，保持已核定收盘价单位；不是百分比收益。',
+    warmup: '前 5 行为空，诊断为 insufficient_warmup。',
+  }),
+  alpha191_031: indicator({ operation: 'ALPHA191_031', version: 'alpha191-031/mean-bias-12-v1',
+    title: 'Alpha191 031 · 十二期均值乖离', description: '计算当日收盘价相对十二期简单均值的百分比偏离。',
+    reference: quantitativeAnalysisReference('alpha_031'), parameterSchema: parameterSchema({}),
+    outputs: { ALPHA191_031: { expression: 'ALPHA191_031_t = 100 × (C_t − mean(C[t−11:t])) / mean(C[t−11:t])', unit: 'percent' } },
+    resultSemantics: '固定十二条完整收盘观测，含当日；百分比数值 1 表示 1%。',
+    warmup: '前 11 行为空，诊断为 insufficient_warmup。',
+  }),
+  alpha191_116: indicator({ operation: 'ALPHA191_116', version: 'alpha191-116/ols-slope-20-v1',
+    title: 'Alpha191 116 · 二十期趋势斜率', description: '将二十期收盘价对等间隔观测序号做含截距线性回归，返回斜率。',
+    reference: quantitativeAnalysisReference('alpha_116'), parameterSchema: parameterSchema({}),
+    outputs: { ALPHA191_116: { expression: 'ALPHA191_116_t = sum((i−10.5) × C_(t−20+i), i=1..20) / 665',
+      unit: 'close', note: '观测序号是无量纲计数，数值表示每观测步的价格变化；不是按自然日或年化斜率。' } },
+    resultSemantics: '固定二十条完整收盘观测，回归含截距。横轴为观测序号 1..20，不填补未供交易日。',
+    warmup: '前 19 行为空，诊断为 insufficient_warmup。',
+  }),
+  alpha191_168: indicator({ operation: 'ALPHA191_168', version: 'alpha191-168/negative-relative-volume-20-v1',
+    title: 'Alpha191 168 · 负相对成交量', description: '计算当日成交量与二十期均量之比的相反数。',
+    reference: quantitativeAnalysisReference('alpha_168'), parameterSchema: parameterSchema({}),
+    requiredFields: ['timestamp', 'close', 'volume'],
+    outputs: { ALPHA191_168: { expression: 'ALPHA191_168_t = −volume_t / mean(volume[t−19:t])', unit: 'ratio' } },
+    resultSemantics: '固定二十条完整成交量观测，同一已核定 volumeUnit 相除后无量纲。全窗口成交量为零时输出空值并诊断，单条零成交量保持零。',
+    warmup: '前 19 行为空，诊断为 insufficient_warmup。',
+  }),
+  alpha191_189: indicator({ operation: 'ALPHA191_189', version: 'alpha191-189/nested-absolute-deviation-6-v1',
+    title: 'Alpha191 189 · 双层绝对偏离', description: '先取收盘价与其六期均值的绝对偏离，再计算偏离的六期均值。',
+    reference: quantitativeAnalysisReference('alpha_189'), parameterSchema: parameterSchema({}),
+    outputs: { ALPHA191_189: { expression: 'D_t = abs(C_t − mean(C[t−5:t])); ALPHA191_189_t = mean(D[t−5:t])', unit: 'close' } },
+    resultSemantics: '两层均为完整六条窗口，需十一条收盘价才有首个结果。每个偏离使用其自身时点的均值，不使用最终窗口均值回填。',
+    warmup: '前 10 行为空，诊断为 insufficient_warmup。',
   }),
 });
 
@@ -292,6 +331,11 @@ export type AlgorithmParametersByMethod = {
   returns: { period: number; mode: 'simple' | 'log' };
   volatility: { period: number; annualization_factor?: number };
   max_drawdown: { period?: number };
+  alpha191_014: Record<string, never>;
+  alpha191_031: Record<string, never>;
+  alpha191_116: Record<string, never>;
+  alpha191_168: Record<string, never>;
+  alpha191_189: Record<string, never>;
 };
 
 export interface AlgorithmUsage {

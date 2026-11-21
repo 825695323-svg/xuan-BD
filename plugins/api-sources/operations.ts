@@ -14,16 +14,23 @@ const providerOperations: Record<string, SourceOperationView[]> = {
       run: { action: 'source.api.read' } },
     { id: 'index_constituents', label: '当前指数成分', dataCapability: 'snapshot', assetScope: 'equity',
       run: { action: 'source.api.read' } },
+    { id: 'financial_statements', label: '利润表／资产负债表／现金流量表', dataCapability: 'history', assetScope: 'equity',
+      run: { action: 'source.api.read' } },
+  ],
+  eastmoney: [
+    { id: 'research_reports', label: '研报列表与附件定位', dataCapability: 'history', assetScope: 'other',
+      run: { action: 'source.api.read' } },
+    { id: 'research_report_detail', label: '研报详情与PDF定位', dataCapability: 'snapshot', assetScope: 'other',
+      run: { action: 'source.api.read' } },
   ],
 };
 
 export function sourceOperations(pluginId: string): SourceOperationView[] {
   const fixed = providerOperations[pluginId];
-  if (fixed) return fixed;
   const publicProvider = publicKlineProvider(pluginId);
-  return publicProvider ? publicProvider.operations.map(operation => ({
+  return [...(fixed ?? []), ...(publicProvider ? publicProvider.operations.map(operation => ({
     ...operation, run: { action: 'source.kline.read' as const },
-  })) : [];
+  })) : [])];
 }
 
 /** 按执行器投影同一目录，供旧请求适配和工具选项复用；不再另写支持动作名单。 */

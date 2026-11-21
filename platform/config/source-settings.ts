@@ -7,7 +7,7 @@ import { CAPTURE_SITE_RULES, captureSiteRule, normalizeCaptureArgs } from '../..
 import type { CaptureSessionService } from '../../plugins/capture-sources/session.js';
 import { thsSource } from '../../plugins/api-sources/providers/ths/api.js';
 import { publicKlineProvider, publicKlineProviders, publicKlineProviderIds } from '../../plugins/api-sources/public-kline.js';
-import { sourceOperations } from '../../plugins/api-sources/operations.js';
+import { sourceOperations, sourceOperationsForAction } from '../../plugins/api-sources/operations.js';
 import { validWerssBaseUrl } from '../../plugins/api-sources/providers/werss/cache.js';
 import { CoreError } from '../runtime/errors.js';
 import { directFileVersion } from '../plugins/direct-versions.js';
@@ -34,12 +34,23 @@ const id = (v: unknown): v is string => typeof v === 'string' && /^[a-z][a-z0-9_
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 /** 忽略服务端更新时间，只比较配置内容；同一请求重放不因 updatedAt 被误判为不同内容。 */
 const operationHash = (value: SourceSettingsDocument) => digest({ ...value, updatedAt: null });
-const hasWerssPlugin = (value: SourceSettingsDocument) => value.plugins.some(item => item.id === 'werss');
-/** 历史操作按其原 schema 比较；只有新增 WeRSS 仍完全禁用时，才忽略内存补出的默认登记。 */
+/** 历史操作按原 schema 比较；升级补出的禁用来源仍未被使用时不改写旧回执。 */
 function comparableForOperation(current: SourceSettingsDocument, historical: SourceSettingsDocument): SourceSettingsDocument {
-  const comparable = !hasWerssPlugin(historical) && current.plugins.find(item => item.id === 'werss')?.enabled === false
-    && !current.connections.some(item => item.pluginId === 'werss')
-    ? { ...current, plugins: current.plugins.filter(item => item.id !== 'werss') } : current;
+  const additions = ['werss', 'tickflow'].filter(provider => !historical.plugins.some(item => item.id === provider)
+    && current.plugins.find(item => item.id === provider)?.enabled === false
+    && (provider === 'werss' ? !current.connections.some(item => item.pluginId === provider)
+      : current.connections.filter(item => item.pluginId === provider).every(connection => {
+        const definition = publicKlineProvider(provider)!;
+        return connection.id === 'tickflow-main' && connection.alias === definition.alias && !connection.enabled
+          && connection.baseUrl === definition.baseUrl && connection.credential === null
+          && connection.scopes.length === 1 && connection.scopes[0] === 'CN/A_STOCK'
+          && connection.tdxMode === undefined && connection.feedIds === undefined;
+      })));
+  const addedConnections = current.connections.filter(item => additions.includes(item.pluginId));
+  const used = addedConnections.some(connection => [...current.policies, ...current.operationPolicies]
+    .some(policy => policy.primary === connection.id || policy.backups.includes(connection.id)));
+  const comparable = !used ? { ...current, plugins: current.plugins.filter(item => !additions.includes(item.id)),
+    connections: current.connections.filter(item => !additions.includes(item.pluginId)) } : current;
   return !Object.hasOwn(historical, 'wechatExtract') && comparable.wechatExtract.enabled === false
     ? Object.fromEntries(Object.entries(comparable).filter(([key]) => key !== 'wechatExtract')) as unknown as SourceSettingsDocument : comparable;
 }
@@ -116,9 +127,10 @@ export class SourceSettingsService {
     if (requestId !== undefined) {
       assertRequestId(requestId);
       const historical = this.operationRow(requestId);
+      const historicalPlugins = object(input) && Array.isArray(input.plugins) ? input.plugins : null;
       // 升级前的原请求只可凭既有 requestId 和原候选摘要精确重放；不把缺失 WeRSS 字段的内容当新配置提交。
-      if (historical && object(input) && (Array.isArray(input.plugins)
-        && !input.plugins.some(item => object(item) && item.id === 'werss') || !Object.hasOwn(input, 'wechatExtract'))) {
+      if (historical && object(input) && (historicalPlugins !== null
+        && ['werss', 'tickflow'].some(provider => !historicalPlugins.some(item => object(item) && item.id === provider)) || !Object.hasOwn(input, 'wechatExtract'))) {
         this.assertReplay(historical, operationHash(input as unknown as SourceSettingsDocument));
         if (String(historical.status) === 'saving' && this.operation(requestId)?.status === 'saving') {
           throw new CoreError('SOURCE_SETTINGS_UNRESOLVED', '该旧请求的保存结果仍无法确认，未覆盖当前配置。', 409);
@@ -375,7 +387,7 @@ export class SourceSettingsService {
         const row = this.database.connection.prepare('SELECT requests,last_requested_at FROM source_usage WHERE account_id=?').get(accountId);
         return { accountId, connectionIds: value.connections.filter(connection => this.accountId(connection) === accountId).map(connection => connection.id), measurement: 'local_attempts' as const, attempts: Number(row?.requests ?? 0), lastAttemptedAt: row ? String(row.last_requested_at) : null };
       }),
-      supportedApiOperations: sourceOperations('ths').map(operation => ({ id: operation.id, label: operation.label })),
+      supportedApiOperations: sourceOperationsForAction('source.api.read').map(operation => ({ id: operation.id, label: operation.label })),
       concurrency: { scope: 'shared_account', activeLimit: 1, numericOfficialLimit: null,
         reason: '每个共享账号串行1为本机保守策略；官方通用并发或每秒数未知，未进行并发上限测试。限流不立即重试。',
         references: [{ title: '同花顺官方调用频率与限流', url: 'https://fuyao.aicubes.cn/docs/api-reference/overview/' },
@@ -502,9 +514,10 @@ function migrateProviderNames(value: Record<string, unknown>): void {
 function migratePublicProviders(value: Record<string, unknown>): void {
   if (!Array.isArray(value.plugins) || !Array.isArray(value.connections)) return;
   for (const provider of publicKlineProviders) {
-    if (!value.plugins.some(item => object(item) && item.id === provider.id)) value.plugins.push({ id: provider.id, enabled: true });
-    if (!value.connections.some(item => object(item) && item.pluginId === provider.id)) {
-      value.connections.push({ id: `${provider.id}-main`, pluginId: provider.id, alias: provider.alias, enabled: true, baseUrl: provider.baseUrl, credential: null, scopes: ['CN/A_STOCK'] });
+    const firstRegistration = !value.plugins.some(item => object(item) && item.id === provider.id);
+    if (firstRegistration) value.plugins.push({ id: provider.id, enabled: provider.initiallyEnabled ?? true });
+    if ((provider.id !== 'tickflow' || firstRegistration) && !value.connections.some(item => object(item) && item.pluginId === provider.id)) {
+      value.connections.push({ id: `${provider.id}-main`, pluginId: provider.id, alias: provider.alias, enabled: provider.initiallyEnabled ?? true, baseUrl: provider.baseUrl, credential: null, scopes: ['CN/A_STOCK'] });
     }
   }
 }
@@ -527,12 +540,12 @@ function defaults(connectionsRegistryPath?: string): SourceSettingsDocument {
     if (selected?.endpoint === thsSource.apiBaseUrl && object(credential) && credential.kind === 'keychain-item-reference'
       && typeof credential.service === 'string' && typeof credential.account === 'string') reference = { kind: 'keychain', service: credential.service, account: credential.account };
   } catch { /* 未配置机器保持缺项，按当前引用重新检查。 */ }
-  return { revision: 1, updatedAt: null, plugins: [{ id: 'tdx', enabled: true }, { id: 'ths', enabled: true }, ...publicKlineProviders.map(provider => ({ id: provider.id, enabled: true })), { id: 'werss', enabled: false }],
+  return { revision: 1, updatedAt: null, plugins: [{ id: 'tdx', enabled: true }, { id: 'ths', enabled: true }, ...publicKlineProviders.map(provider => ({ id: provider.id, enabled: provider.initiallyEnabled ?? true })), { id: 'werss', enabled: false }],
     wechatExtract: defaultWechatExtract(),
     execution: { maxConcurrentPerAccount: 1, minimumIntervalMs: 1000 },
     connections: [{ id: 'tdx-main', pluginId: 'tdx', alias: '通达信 · 待核数据服务账号', enabled: false, baseUrl: 'tdxaidata://data-service', credential: null, scopes: ['CN/A_STOCK'], tdxMode: 'data_service' },
       { id: 'ths-finance-api', pluginId: 'ths', alias: '同花顺金融数据 · 本机账号', enabled: true, baseUrl: endpoint, credential: reference, scopes: ['CN/A_STOCK'] },
-      ...publicKlineProviders.map(provider => ({ id: `${provider.id}-main`, pluginId: provider.id, alias: provider.alias, enabled: true, baseUrl: provider.baseUrl, credential: null, scopes: ['CN/A_STOCK'] }))],
+      ...publicKlineProviders.map(provider => ({ id: `${provider.id}-main`, pluginId: provider.id, alias: provider.alias, enabled: provider.initiallyEnabled ?? true, baseUrl: provider.baseUrl, credential: null, scopes: ['CN/A_STOCK'] }))],
     policies: scopes.map(scope => ({ scopeId: scope.id, enabled: true, mode: scope.id === 'global' ? 'override' : 'inherit', primary: scope.id === 'global' ? 'ths-finance-api' : null, backups: [] })),
     operationPolicies: [],
     capture: CAPTURE_SOURCE_IDS.map(sourceId => ({ sourceId, enabled: true, operation: CAPTURE_SITE_RULES.find(rule => rule.sourceId === sourceId)!.operation, parameters: {}, watchTargets: [] })) };
