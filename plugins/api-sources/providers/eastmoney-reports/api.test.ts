@@ -272,6 +272,18 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div id="zwinfo">${mainLink}<p>相关阅读：行业展望</p><h3>按行业分类</h3><a class="report-download" href="${other}">推荐</a></div>`,
     `<div id="zwinfo">${mainLink}相关阅读：<a href="/list">上市公司年报下载地址在哪里？</a>${otherLink}</div>`,
     `<div id="zwinfo"><p>${'<a href="/item">普通链接文本</a> '.repeat(1000)}${mainLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<a download href="${other}">相关阅读<br>行业展望</a></div>`,
+    `<div id="zwinfo">${mainLink}相关阅读：<a href="/report/2">年报下载地址见公告</a> <time>2026-01-05</time> ${otherLink}</div>`,
+    `<div id="zwinfo">${mainLink}<p><a href="/toc">目录</a> › <strong class="title">相关阅读</strong> 行业展望 ${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<p><a id="more">相关阅读</a><a href="/report/2">行业展望</a>${otherLink}</p></div>`,
+    `<div id="zwinfo">${mainLink}<div class="report-download"><a href="/toc">目录</a>【相关阅读】<a href="${other}"> 下载 PDF</a></div></div>`,
+    `<div id="zwinfo">${mainLink}<div class="report-download"><a href="/toc">目录</a>【相关阅读】${' '.repeat(28)}<a href="${other}">下载 PDF</a></div></div>`,
+    `<div id="zwinfo">${mainLink}<p>相关阅读：行业展望</p><h3>${otherLink}</h3></div>`,
+    `<div id="zwinfo">${mainLink}<ul><li><p>相关阅读：行业展望</p><h2>分类索引</h2>${otherLink}</li></ul></div>`,
+    `<div id="zwinfo"><p>相关阅读：<a href="#body">详见正文</a>。</p><p id="body">${mainLink}</p></div>`,
+    `<div id="zwinfo"><p>开始前请先看<a href="/guide">使用指南</a>（推荐阅读）</p><p>${mainLink}</p></div>`,
+    `<div id="zwinfo"><p><a href="/guide">核对</a> 相关阅读&nbsp;统计后即可${mainLink}。</p></div>`,
+    `<div id="zwinfo"><p><a href="/guide">核对</a> 相关阅读\u3000统计后即可${mainLink}。</p></div>`,
   ]) {
     assert.equal(decodeEastmoneyReportDetail(request, html(body)).pdfUrl, pdf);
   }
@@ -346,6 +358,14 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div id="zwinfo"><a download href="${other}">【${' '.repeat(30)}相关阅读】</a></div>`,
     `<div id="zwinfo"><p>相关阅读：行业展望</p><h3>按行业分类</h3><a class="report-download" href="${other}">推荐</a></div>`,
     `<div id="zwinfo">相关阅读：<a href="/list">上市公司年报下载地址在哪里？</a>${otherLink}</div>`,
+    `<div id="zwinfo"><a download href="${other}">相关阅读<br>行业展望</a></div>`,
+    `<div id="zwinfo">相关阅读：<a href="/report/2">年报下载地址见公告</a> <time>2026-01-05</time> ${otherLink}</div>`,
+    `<div id="zwinfo"><p><a href="/toc">目录</a> › <strong class="title">相关阅读</strong> 行业展望 ${otherLink}</p></div>`,
+    `<div id="zwinfo"><p><a id="more">相关阅读</a><a href="/report/2">行业展望</a>${otherLink}</p></div>`,
+    `<div id="zwinfo"><div class="report-download"><a href="/toc">目录</a>【相关阅读】<a href="${other}"> 下载 PDF</a></div></div>`,
+    `<div id="zwinfo"><div class="report-download"><a href="/toc">目录</a>【相关阅读】${' '.repeat(28)}<a href="${other}">下载 PDF</a></div></div>`,
+    `<div id="zwinfo"><p>相关阅读：行业展望</p><h3>${otherLink}</h3></div>`,
+    `<div id="zwinfo"><ul><li><p>相关阅读：行业展望</p><h2>分类索引</h2>${otherLink}</li></ul></div>`,
   ]) {
     assert.throws(() => decodeEastmoneyReportDetail(request, html(relOnly)), noPdf);
   }

@@ -196,13 +196,15 @@ const relatedHeadingAtBoundary = /^(?:相关阅读|相关研报|推荐阅读|延
 const relatedAfterAnchor = /^(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s]*[】\])））：:—\-·•]+[\s]*|[\s]*(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/u;
 const relatedBeforeTarget = /(?:^|(?<=[\s。！？；.!?])|(?<=(?:^|[\s。！？；.!?])[【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:—\-·•]*$/u;
 const relatedWrapperTitle = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:]*$/u;
-const relatedBareKeywordPrefix = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:—\-·•]*/u;
+const relatedBareKeywordCore = /^[【[]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[】\])）：:—\-·•]*/u;
 const titleLinkRightBoundary = /^(?:[\s】\])））：:—\-·•《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])/u;
 const inlineRelatedHeading = /(?:^|(?<=[\s。！？；.!?])|(?<=(?:^|[\s。！？；.!?])[【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/gu;
 const mainAttachmentHeading = /^[【[(\s]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)(?:$|[\s】\])：:—\-·•（(])/u;
 const mainAttachmentWrapperTitle = /^[【[(\s（]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)[\s】\])））：:]*$/u;
 const leadingListItem = /^[\s\n]*(?:\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])(?=$|[\s\n\p{L}\p{N}《「【])/u;
-const proseBodyCueGlobal = /(?:详见正文|参见正文|见正文|见下文|请参阅|正文说明|下载地址见|原文地址见|附件见|下载见|原文见|入口见|链接见)/gu;
+const proseBodyCueGlobal = /(?:详见正文|参见正文|请见正文|见正文|详见下文|参见下文|见下文|请参阅|正文说明)/gu;
+const proseDownloadTailCue = /(?:下载地址|原文地址|本?研报附件|正文附件|原文附件|附件|原文|下载|入口|链接)见[\s：:]*$/u;
+const proseAnchorText = /^(?:详见|参见|请见|见)?(?:正文|下文|上文|本研报|本报告)(?:说明)?[。！？；.!?\s]*$/u;
 const explicitSectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt';
 const rootBoundaryContainers = '#zwinfo,article,section,main,body,html';
 const relatedSelector = 'aside,nav,footer,[role="navigation"],[aria-label*="相关"],[aria-label*="推荐"],[aria-label*="延伸阅读"],'
@@ -275,12 +277,12 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
   const isIsolatedBoundary = new WeakMap<Element, boolean>();
   const ownText = new WeakMap<Element, string>();
   const hasAnchorOrFrame = new WeakMap<Element, boolean>();
-  const stack: Array<{ node: Element; parentIsZwinfo: boolean; needOwnText: boolean; visited: boolean }> = [];
+  const stack: Array<{ node: Element; parentIsZwinfo: boolean; inList: boolean; needOwnText: boolean; visited: boolean }> = [];
   const docChildren: NodeListOf<ChildNode> = document.childNodes;
   for (let i = docChildren.length - 1; i >= 0; i -= 1) {
     const child: ChildNode = docChildren[i]!;
     if (child.nodeType === 1) {
-      stack.push({ node: child as Element, parentIsZwinfo: false, needOwnText: false, visited: false });
+      stack.push({ node: child as Element, parentIsZwinfo: false, inList: false, needOwnText: false, visited: false });
     }
   }
   while (stack.length) {
@@ -293,10 +295,11 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
       const isRootSelf = el.matches(rootBoundaryContainers);
       const isIsoSelf = isRel || isBox || isRootSelf || isolatedContainerTags.has(el.tagName) || nonContentTags.has(el.tagName);
       isIsolatedBoundary.set(el, isIsoSelf);
-      const selfConsumesOwnText = el.matches(explicitSectionHeadings)
-        || (el.tagName === 'A' && el.hasAttribute('href'));
+      const selfConsumesOwnText = el.matches(explicitSectionHeadings) || el.tagName === 'A';
       const nextNeedOwnText = selfConsumesOwnText || top.needOwnText;
       top.needOwnText = nextNeedOwnText;
+      const nextInList = top.inList || listTags.has(el.tagName);
+      top.inList = nextInList;
       const isZw = el.id === 'zwinfo';
       const children: NodeListOf<ChildNode> = el.childNodes;
       for (let i = children.length - 1; i >= 0; i -= 1) {
@@ -311,6 +314,7 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
           stack.push({
             node: ce,
             parentIsZwinfo: isZw,
+            inList: nextInList,
             needOwnText: nextNeedOwnText && !childIso,
             visited: false,
           });
@@ -330,7 +334,7 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
     let childStopsOuter = false;
     let allFlat = true;
     let linkOrFrameChild = false;
-    let candidateBeforeH = !isRel && !isRootSelf && !nonContentTags.has(el.tagName) && !isExplicitH && (
+    let candidateBeforeH = !isRel && !isRootSelf && !nonContentTags.has(el.tagName) && (
       isBox
       || (el.tagName === 'A' && isEastmoneyPdfHref(el.getAttribute('href'), baseUrl))
       || (el.tagName === 'IFRAME' && top.parentIsZwinfo && isEastmoneyPdfHref(el.getAttribute('src'), baseUrl))
@@ -355,21 +359,25 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
       if (ceStopsOuter) childStopsOuter = true;
       if (!canFlattenInline.get(ce)) allFlat = false;
       if (ce.tagName === 'A' || ce.tagName === 'IFRAME' || hasAnchorOrFrame.get(ce)) linkOrFrameChild = true;
-      if (!isExplicitH && !hitHeading && !isRel && !isRootSelf && !nonContentTags.has(el.tagName)) {
+      if (!hitHeading && !isRel && !isRootSelf && !nonContentTags.has(el.tagName)) {
         if (hasCandidateBeforeHeading.get(ce)) candidateBeforeH = true;
         if (ceStopsOuter) hitHeading = true;
       }
       if (top.needOwnText && own.length < 128 && !isIsolatedBoundary.get(ce)) {
-        own = appendNormalizedOwnText(own, ownText.get(ce) ?? '', 128);
+        const piece = ce.tagName === 'BR' || ce.tagName === 'HR' ? '\n' : (ownText.get(ce) ?? '');
+        own = appendNormalizedOwnText(own, piece, 128);
       }
     }
     let selfStopsLevel2 = false;
     if (isExplicitH && !isIsoSelf && !rootB && !nestedH) {
       const hText = own.trim();
       if (hText.length > 0 && hText.length <= 64 && !/[。！？；]/u.test(hText) && !relatedTitle.test(hText)) {
-        selfStopsLevel2 = headingLevel(el) <= 2 || mainAttachmentHeading.test(hText);
+        selfStopsLevel2 = top.inList
+          ? mainAttachmentHeading.test(hText)
+          : (headingLevel(el) <= 2 || mainAttachmentHeading.test(hText));
       }
     }
+    if (selfStopsLevel2) candidateBeforeH = false;
     hasRootBoundary.set(el, rootB);
     hasNestedExplicitHeading.set(el, nestedH);
     stopsOuterRelated.set(el, !isIsoSelf && (selfStopsLevel2 || childStopsOuter));
@@ -513,16 +521,25 @@ function scanInlineRun(
   const topAnchorSpans: Array<{ start: number; end: number }> = [];
   const anchorStarts = new Set<number>();
   const anchorEnds = new Set<number>();
+  const titleStarts = new Set<number>();
   while (stack.length) {
     const frame = stack.pop()!;
     if (frame.kind === 'closeAnchor') {
       inAnchorDepth -= 1;
       const end = runText.length;
       anchorEnds.add(end);
-      if (inAnchorDepth === 0) {
-        topAnchorSpans.push({ start: frame.start, end });
-      }
       const linkText = (flags.ownText.get(frame.el) ?? '').trim();
+      if (inAnchorDepth === 0) {
+        const rawHref = (frame.el.getAttribute('href') ?? '').trim();
+        if (
+          rawHref.length > 0
+          && !rawHref.startsWith('#')
+          && !rawHref.toLowerCase().startsWith('javascript:')
+          && !proseAnchorText.test(linkText)
+        ) {
+          topAnchorSpans.push({ start: frame.start, end });
+        }
+      }
       if (frame.targetIndex !== -1) {
         const target = runTargets[frame.targetIndex]!;
         target.end = end;
@@ -569,6 +586,10 @@ function scanInlineRun(
     if (el.tagName === 'A') {
       const anchorStart = runText.length;
       anchorStarts.add(anchorStart);
+      if (el.hasAttribute('class') && el.matches('[class*="title" i]')) {
+        hasTitleClass = true;
+        titleStarts.add(anchorStart);
+      }
       const isCandidate = isEastmoneyPdfHref(el.getAttribute('href'), baseUrl)
         && ((attr.inZwinfo && el.hasAttribute('download')) || attr.nearestDownloadBox !== null || nextOwner !== null);
       let targetIndex = -1;
@@ -596,7 +617,10 @@ function scanInlineRun(
       }
       continue;
     }
-    if (el.hasAttribute('class') && el.matches('[class*="title" i]')) hasTitleClass = true;
+    if (el.hasAttribute('class') && el.matches('[class*="title" i]')) {
+      hasTitleClass = true;
+      titleStarts.add(runText.length);
+    }
     const ic: NodeListOf<ChildNode> = el.childNodes;
     for (let i = ic.length - 1; i >= 0; i -= 1) {
       stack.push({ kind: 'node', node: ic[i]!, owner: nextOwner, infoCode: nextInfoCode, isTopChild: false });
@@ -637,13 +661,13 @@ function scanInlineRun(
     while ((m = inlineRelatedHeading.exec(runText)) !== null) {
       while (scanPos < m.index) {
         const ch = runText[scanPos]!;
-        if (ch !== ' ' && ch !== '\t') lastNonHorizChar = ch;
+        if (!/[^\S\r\n]/u.test(ch)) lastNonHorizChar = ch;
         scanPos += 1;
       }
       const matchEnd = m.index + m[0].length;
       const tail = m[0].slice(4);
-      const isBareSpaceTail = tail.length > 0 && /^[ \t]+$/u.test(tail);
-      const isMidClause = lastNonHorizChar !== '' && !/[\n\r。！？；.!?【[(（]/u.test(lastNonHorizChar);
+      const isBareSpaceTail = tail.length > 0 && /^[^\S\r\n]+$/u.test(tail);
+      const isMidClause = !titleStarts.has(m.index) && /[\p{L}\p{N}]/u.test(lastNonHorizChar);
       if (isBareSpaceTail && isMidClause) {
         const nextSlice = runText.slice(matchEnd, matchEnd + 16);
         const followedByMarker = matchEnd === runText.length
@@ -671,9 +695,15 @@ function scanInlineRun(
         if (afterAnchor) {
           triggers.push(endPos + afterAnchor[0].length);
         } else {
-          const bare = relatedBareKeywordPrefix.exec(runText.slice(endPos, endPos + 24));
-          if (bare && (endPos + bare[0].length === runText.length || anchorStarts.has(endPos + bare[0].length))) {
-            triggers.push(endPos + bare[0].length);
+          let p = endPos;
+          while (p < runText.length && !anchorStarts.has(p) && /\s/u.test(runText[p]!)) p += 1;
+          const bare = relatedBareKeywordCore.exec(runText.slice(p, p + 16));
+          if (bare) {
+            p += bare[0].length;
+            while (p < runText.length && !anchorStarts.has(p) && /\s/u.test(runText[p]!)) p += 1;
+            if (p === runText.length || anchorStarts.has(p)) {
+              triggers.push(p);
+            }
           }
         }
       }
@@ -783,6 +813,15 @@ function scanInlineRun(
         let cm: RegExpExecArray | null;
         while ((cm = proseBodyCueGlobal.exec(gapSlice)) !== null) {
           lastProseCueStart = floor + cm.index;
+        }
+        if (nextTarget !== null && !anchorEnds.has(trimmedEnd)) {
+          const tailStart = Math.max(0, gapSlice.length - 16);
+          const tailSlice = gapSlice.slice(tailStart);
+          const tm = proseDownloadTailCue.exec(tailSlice);
+          if (tm) {
+            const cuePos = floor + tailStart + tm.index;
+            if (cuePos > lastProseCueStart) lastProseCueStart = cuePos;
+          }
         }
       }
       cachedGapEnd = gapEnd;
