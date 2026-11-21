@@ -191,9 +191,9 @@ function detailMetadata(literal: string): Record<string, JsonValue> | null {
   return values;
 }
 
-const relatedTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])：:—\-·•]|(?=\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}[.、)）]|[①-⑳]))/u;
-const relatedWrapperTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])：:]*$/u;
-const inlineRelatedHeading = /(?:^|[\s。！？；.!?\n])([【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])：:—\-·•]|(?=\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}[.、)）]|[①-⑳])))/gu;
+const relatedTitle = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/u;
+const relatedWrapperTitle = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:]*$/u;
+const inlineRelatedHeading = /(?:^|(?<=[\s。！？；.!?【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/gu;
 const mainAttachmentHeading = /^[【[(\s]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)(?:$|[\s】\])：:—\-·•（(])/u;
 const explicitSectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt';
 const sectionHeadings = `${explicitSectionHeadings},[class*="title" i]`;
@@ -218,10 +218,12 @@ const inlineWrapperElements = 'div,span,header,strong,b,em,i,small,u,mark,p';
 const inlineTextElements = 'span,strong,b,em,i,small,u,mark';
 const inlineFlowElements = 'span,strong,b,em,i,small,u,mark,font,sub,sup,label,abbr,cite,code,time,ins,del,s,q,bdi,bdo,ruby,rt,rp,kbd,samp,var,data,dfn';
 const decorativeInlineTags = new Set(['WBR', 'IMG', 'INPUT', 'SVG', 'PICTURE', 'SOURCE', 'CANVAS']);
-const inlineNonBlockForbidden = 'a,iframe,ul,ol,li,dl,table,section,article,aside,nav,div,p,h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt,form,blockquote,pre';
+const inlineNonBlockForbidden = 'a,iframe,ul,ol,li,dl,table,section,article,aside,nav,main,body,html,#zwinfo,.report-download,div,p,h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt,form,blockquote,pre';
 
 function isHarmlessWrapper(parent: Element, heading: Element): boolean {
-  if (parent.matches(`${rootBoundaryContainers},.report-download`) || !parent.matches(inlineWrapperElements)) return false;
+  if (heading.matches(`${rootBoundaryContainers},.report-download`)
+    || parent.matches(`${rootBoundaryContainers},.report-download`)
+    || !parent.matches(inlineWrapperElements)) return false;
   if (!(parent.textContent?.trim() === heading.textContent?.trim() || relatedWrapperTitle.test(parent.textContent?.trim() ?? ''))) return false;
   for (const child of parent.children) {
     if (child === heading) continue;
@@ -273,7 +275,7 @@ function leadingHeading(element: Element): Element | null {
 type InlinePiece = { node: ChildNode; text: string; start: number; end: number };
 type InlineSegment = { pieces: InlinePiece[]; endedAt: Element | null };
 
-const leadingListItem = /^[\s\n]*(?:\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}[.、)）]|[①-⑳])(?=$|[\s\n\p{L}\p{N}《「【])/u;
+const leadingListItem = /^[\s\n]*(?:\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])(?=$|[\s\n\p{L}\p{N}《「【])/u;
 
 function pushChildNodesReversed(parent: Node, stack: ChildNode[]): void {
   const children = parent.childNodes;
@@ -321,8 +323,15 @@ function collectInlineSegments(container: Document | Element): InlineSegment[] {
 }
 
 function isStoppingHeading(heading: Element, level: number): boolean {
+  if (heading.tagName === 'A' && heading.getAttribute('role') !== 'heading') return false;
   const text = heading.textContent?.trim() ?? '';
-  return !relatedTitle.test(text) && (headingLevel(heading) <= level || mainAttachmentHeading.test(text));
+  if (relatedTitle.test(text)) return false;
+  if (heading.matches(explicitSectionHeadings)) {
+    return headingLevel(heading) <= level || mainAttachmentHeading.test(text);
+  }
+  return !heading.matches(inlineFlowElements)
+    && !heading.closest('ul,ol,li,a')
+    && mainAttachmentHeading.test(text);
 }
 
 function findFirstStoppingHeading(element: Element, level: number): Element | null {
@@ -333,16 +342,52 @@ function findFirstStoppingHeading(element: Element, level: number): Element | nu
   return null;
 }
 
+function walkBeforeStop(root: Node, stopHeading: Element, onBefore: (node: ChildNode) => boolean | void): void {
+  if (stopHeading === root) return;
+  const pathToStop = new Set<Node>();
+  for (let anc: Node | null = stopHeading; anc && anc !== root; anc = anc.parentNode) pathToStop.add(anc);
+  let current: Node | null = root;
+  while (current && current !== stopHeading) {
+    let nextCursor: Node | null = null;
+    const children: NodeListOf<ChildNode> = current.childNodes;
+    for (let i = 0; i < children.length; i += 1) {
+      const child: ChildNode = children[i]!;
+      if (child === stopHeading || pathToStop.has(child)) {
+        nextCursor = child;
+        break;
+      }
+      if (onBefore(child) === true) return;
+    }
+    current = nextCursor;
+  }
+}
+
+function hasLinkBeforeStoppingHeading(container: Element, stopHeading: Element): boolean {
+  let found = false;
+  walkBeforeStop(container, stopHeading, child => {
+    if (child.nodeType === 1) {
+      const el = child as Element;
+      if (el.matches('a,iframe') || Boolean(el.querySelector('a,iframe'))) {
+        found = true;
+        return true;
+      }
+    }
+  });
+  return found;
+}
+
 /** 从阅读小节标题到同级或更高标题之间的内容，限定在同一正文容器内。 */
 function relatedSections(document: Document) {
   const excluded = new WeakSet<Node>();
+  const selfRelatedBoxes = new WeakSet<Element>();
   const isExcluded = (element: Element): boolean => {
     for (let node: Element | null = element; node; node = node.parentElement) if (excluded.has(node)) return true;
     return false;
   };
   const hasInternalExclusion = (element: Element, boundary: Element): boolean => {
+    if (selfRelatedBoxes.has(boundary)) return true;
     for (let node: Element | null = element; node && node !== boundary; node = node.parentElement) {
-      if (excluded.has(node)) return true;
+      if (excluded.has(node) || selfRelatedBoxes.has(node)) return true;
     }
     return false;
   };
@@ -352,23 +397,7 @@ function relatedSections(document: Document) {
         const next = node as Element;
         const stopHeading = findFirstStoppingHeading(next, level);
         if (stopHeading) {
-          if (stopHeading === next) return true;
-          const pathToStop = new Set<Node>();
-          for (let anc: Node | null = stopHeading; anc && anc !== next; anc = anc.parentNode) pathToStop.add(anc);
-          let current: Node | null = next;
-          while (current && current !== stopHeading) {
-            let nextCursor: Node | null = null;
-            const children: NodeListOf<ChildNode> = current.childNodes;
-            for (let i = 0; i < children.length; i += 1) {
-              const child: ChildNode = children[i]!;
-              if (child === stopHeading || pathToStop.has(child)) {
-                nextCursor = child;
-                break;
-              }
-              excluded.add(child);
-            }
-            current = nextCursor;
-          }
+          if (stopHeading !== next) walkBeforeStop(next, stopHeading, child => { excluded.add(child); });
           return true;
         }
       }
@@ -390,9 +419,17 @@ function relatedSections(document: Document) {
     for (const segment of collectInlineSegments(container)) {
       if (excluded.has(segment.pieces[0]!.node)) continue;
       const fullText = segment.pieces.map(piece => piece.text).join('');
+      inlineRelatedHeading.lastIndex = 0;
+      let match = inlineRelatedHeading.exec(fullText);
+      if (!match) continue;
+
       const hasTrailingLinkOrList = Boolean(
-        segment.endedAt && (segment.endedAt.matches('a,iframe,ul,ol')
-          || (!findFirstStoppingHeading(segment.endedAt, 2) && segment.endedAt.querySelector('a,iframe'))),
+        segment.endedAt && (segment.endedAt.matches('a,iframe,ul,ol') || (() => {
+          const stopHeading = findFirstStoppingHeading(segment.endedAt, 2);
+          return stopHeading
+            ? hasLinkBeforeStoppingHeading(segment.endedAt, stopHeading)
+            : Boolean(segment.endedAt.querySelector('a,iframe'));
+        })()),
       );
       let trimmedEnd = fullText.length;
       while (trimmedEnd > 0 && /\s/u.test(fullText[trimmedEnd - 1]!)) trimmedEnd -= 1;
@@ -402,12 +439,10 @@ function relatedSections(document: Document) {
       let coreEnd = trimmedEnd - 1;
       while (coreEnd >= 0 && /[\s"'”’）)】\]]/u.test(fullText[coreEnd]!)) coreEnd -= 1;
 
-      inlineRelatedHeading.lastIndex = 0;
-      let match: RegExpExecArray | null;
       let shouldStopContainer = false;
       let pieceIndex = 0;
       let nonSpaceIdx = 0;
-      while ((match = inlineRelatedHeading.exec(fullText)) !== null) {
+      do {
         const matchEnd = match.index + match[0].length;
         while (pieceIndex + 1 < segment.pieces.length && segment.pieces[pieceIndex]!.end < matchEnd) pieceIndex += 1;
         if (nonSpaceIdx < matchEnd) nonSpaceIdx = matchEnd;
@@ -438,7 +473,7 @@ function relatedSections(document: Document) {
           shouldStopContainer = true;
         }
         break;
-      }
+      } while ((match = inlineRelatedHeading.exec(fullText)) !== null);
       if (shouldStopContainer) break;
     }
   }
@@ -463,8 +498,10 @@ function relatedSections(document: Document) {
       // 标题可以独占一层包装（可含 <br> 等空排版标签），链接列表与包装节点同级。
       while (heading.parentElement && isHarmlessWrapper(heading.parentElement, heading)) heading = heading.parentElement;
       if ((isExplicitHeading || !isSectionHeading || !isInlineFlow || heading !== element)
+        && !heading.querySelector('#zwinfo,.report-download')
         && relatedTitle.test(heading.textContent?.trim() ?? '')) {
         excluded.add(heading);
+        if (heading.matches('.report-download')) selfRelatedBoxes.add(heading);
         if (!heading.matches(`${rootBoundaryContainers},.report-download`)) {
           markFollowing(heading, headingLevel(element));
         }
@@ -543,6 +580,7 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
     const boxOwner = downloadBox?.getAttribute('data-encode-url');
     const boxInfoCode = downloadBox?.getAttribute('data-info-code');
     const boxHeading = downloadBox ? leadingHeading(downloadBox) : null;
+    const outerHeading = outerBox ? leadingHeading(outerBox) : null;
     const attestedMainDownload = Boolean(
       downloadBox
       && boxOwner === request.encodeUrl && owner === request.encodeUrl
@@ -550,7 +588,9 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
       && !element.closest(relatedSelector)
       && !(element.tagName === 'A' && relatedTitle.test(element.textContent?.trim() ?? ''))
       && !relatedTitle.test(downloadBox.textContent?.trim() ?? '')
+      && !(outerBox && relatedTitle.test(outerBox.textContent?.trim() ?? ''))
       && !(boxHeading && relatedTitle.test(boxHeading.textContent?.trim() ?? ''))
+      && !(outerHeading && relatedTitle.test(outerHeading.textContent?.trim() ?? ''))
       && !related.hasInternalExclusion(element, downloadBox)
       && !(outerBox && related.hasInternalExclusion(element, outerBox)),
     );
