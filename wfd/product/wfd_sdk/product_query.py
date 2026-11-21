@@ -743,7 +743,7 @@ class ProductQuery:
     def _preflight_snapshot(self, snapshot_id):
         return self._snapshot_metadata(snapshot_id)
 
-    def fixed_filter_products(self, *, snapshot_id, product_ids, max_scan_bytes):
+    def fixed_filter_products(self, *, snapshot_id, product_ids, max_scan_bytes, history=None):
         """Authorize fixed filter bindings without an unbudgeted payload discovery.
 
         The ordinary service discovery verifies all snapshot payloads. A
@@ -762,8 +762,20 @@ class ProductQuery:
             raise ProductQueryError("BULK_PARTITION_LOCATOR_REQUIRED", "Use batch_read_page for indexed products")
         entries = [entry for entry in manifest["files"] if entry.get("product_id") in selected]
         self._authorize_metadata_sources(self._source_ids_from_entries(entries), require_nonempty=bool(entries))
+        unqualified = set()
+        if history and history["history_mode"] == "market_known_at":
+            at, _ = self._knowledge_cutoff(history)
+            for entry in entries:
+                try:
+                    self._guard_history_metadata([entry], history, at)
+                except ProductQueryError as exc:
+                    if exc.code != "HISTORY_DEFINITION_TIME_UNSUPPORTED":
+                        raise
+                    unqualified.add(entry["product_id"])
+            entries = [entry for entry in entries if entry["product_id"] not in unqualified]
         products = self._manifest_products(entries)
         return {"products": list(products.values()), "metadata_bytes": metadata_bytes,
+                "unqualified_products": sorted(unqualified),
                 **({"row_version_object_validation_bytes": object_bytes} if object_bytes else {})}
 
     def _manifest_products(self, entries):
