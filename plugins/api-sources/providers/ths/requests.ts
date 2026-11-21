@@ -1,6 +1,7 @@
 import type { JsonValue } from '../../../../contracts/task-contracts.js';
 import { DirectError } from '../../../../platform/runtime/file-workspace.js';
-import { thsSource } from './api.js';
+import { parseSourceJson, sourceNumberRoundTrips } from '../../source-acquisition.js';
+import { thsApi, thsSource } from './api.js';
 
 // 协议参考 quantitative_analysis@2edbc3eaf799f4d8f42c99fccba3b8fc08554f10
 // app/utils/data_sources/fuyao_client.py；仅适配端点协议，不迁移上游存储、环境变量或调度代码。
@@ -42,25 +43,48 @@ export function buildThsRequest(base: string, operation: string, parameters: Rec
   return url;
 }
 
-export function decodeThsResponse(bytes: Uint8Array): Record<string, JsonValue> {
+/** 财报投影把数值词素转为文本，包括嵌套字段。业务码始终按外层对象的原始数值类型核对。 */
+export function decodeThsResponse(bytes: Uint8Array | string, financial = false): Record<string, JsonValue> {
   let value: unknown;
-  try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
-  catch { throw new DirectError('SOURCE_RESPONSE_INVALID', '来源响应不是完整 UTF-8 JSON，原件应保留。'); }
+  const codes = new WeakMap<object, number>();
+  try {
+    const text = typeof bytes === 'string' ? bytes : new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    value = parseSourceJson(text, (parent, key, value, raw) => {
+      if (key === 'code' && Number.isSafeInteger(value) && sourceNumberRoundTrips(value, raw)) codes.set(parent, value);
+      return financial ? raw : value;
+    });
+  } catch { throw new DirectError('SOURCE_RESPONSE_INVALID', '来源响应不是完整的 JSON。'); }
   if (!record(value)) throw new DirectError('SOURCE_RESPONSE_INVALID', '来源响应必须是业务对象。');
-  if (value.code === 4001) throw new DirectError('SOURCE_RATE_LIMITED', '来源返回 code 4001 限流；不自动重试或切换同账号别名。');
-  if (value.code !== 0) throw new DirectError('SOURCE_BUSINESS_ERROR', `来源业务状态 code ${String(value.code ?? 'unknown')}，未当作成功数据。`);
-  return value;
+  const code = codes.get(value);
+  switch (code) {
+    case thsApi.successCode: value.code = 0; return value;
+    case thsApi.rateLimitedCode: throw new DirectError('SOURCE_RATE_LIMITED', '来源返回 code 4001 限流，本次任务停止。');
+    case thsApi.unauthenticatedCode: throw new DirectError('SOURCE_UNAUTHORIZED', '来源返回 code 2001，凭据认证失败。');
+    case thsApi.permissionDeniedCode: throw new DirectError('SOURCE_FORBIDDEN', '来源返回 code 2003，账号缺少所需权限。');
+    default: throw new DirectError('SOURCE_BUSINESS_ERROR', '来源业务状态 code unknown，未当作成功数据。');
+  }
 }
+
+const reportKeys = new Set(['report_date', 'report_date_ms', 'report_period', 'period_end', 'period_end_ms', 'fiscal_period',
+  'end_date', 'reportDate', 'reportPeriod', 'report_date_ts', 'reportDateMs', 'periodEnd', 'periodEndMs', '报告期', '报告日期']);
+const financialFields = {
+  income: ['operating_income', 'operating_revenue', 'total_revenue', 'net_profit', 'netProfit', 'revenue', 'operatingIncome', '营业收入', '净利润'],
+  balance_sheet: ['total_assets', 'total_liabilities', 'total_equity', 'totalAssets', 'totalLiabilities', '资产总计', '负债合计'],
+  cash_flow: ['operating_cash_flow', 'net_cash_flow', 'net_cash_from_operating_activities', 'operatingCashFlow', '经营活动产生的现金流量净额'],
+} as const;
 
 export function projectThsFinancials(parameters: Record<string, JsonValue>, bytes: Uint8Array) {
   buildThsRequest(thsSource.apiBaseUrl, 'financial_statements', parameters);
-  const response = decodeThsResponse(bytes);
+  const response = decodeThsResponse(bytes, true);
+  const fields = new Set<string>(financialFields[parameters.statement as keyof typeof financialFields]);
   if (!record(response.data) || !Array.isArray(response.data.item) || response.data.item.length > Number(parameters.limit)
-    || response.data.item.some(row => !record(row) || row.thscode !== undefined && row.thscode !== parameters.thscode))
-    throw new DirectError('SOURCE_FINANCIAL_RESPONSE_INVALID', '财报原始记录、标的或记录预算不符；未把缺失 item 当成空表。');
-  return { decoderVersion: 'ths-financial-native/1', providerId: 'ths', statement: parameters.statement,
+    || response.data.item.some(row => !record(row) || row.thscode !== undefined && row.thscode !== parameters.thscode
+      || !Object.entries(row).some(([key, value]) => (reportKeys.has(key) || fields.has(key))
+        && typeof value === 'string' && value.trim().length > 0)))
+    throw new DirectError('SOURCE_FINANCIAL_RESPONSE_INVALID', '财报记录缺少可识别的报表期间或财务字段，或标的、条数与请求不符。');
+  return { decoderVersion: 'ths-financial-native/2', providerId: 'ths', statement: parameters.statement,
     symbol: parameters.thscode, period: parameters.period, recordCount: response.data.item.length,
-    rows: response.data.item, timestampPolicy: 'retain_source_values_and_precision',
+    rows: response.data.item, numericEncoding: 'source_decimal_text', timestampPolicy: 'retain_source_values_and_precision',
     periodSemantics: 'source_reported_not_single_quarter_or_ttm',
     historicalAvailability: 'not_established', coverageState: 'not_established' };
 }

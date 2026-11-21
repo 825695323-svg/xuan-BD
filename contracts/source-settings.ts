@@ -23,15 +23,21 @@ export interface SourceOperationView {
   run: { action: 'source.kline.read' | 'source.api.read' } | { action: 'source.fetch'; sourceId: 'tdx' };
 }
 
+export interface ReportSubjectEvidence {
+  requested_symbol: string;
+  stock_codes: string[];
+  subject_verified: boolean;
+  subjectVerification: 'verified_full_code' | 'code_prefix_only_exchange_unverified' | 'unverified_missing_stock_code' | 'no_rows';
+}
 export interface SourceCandidateFeedback {
   contract: 'bd.source-candidate-feedback/1';
   logicalRequest: { scopeId: string; operationId: SourceOperationView['id'];
-    subjectId: string | null; start: string | null; end: string | null; adjustment: string | null };
+    subjectId: string | null; start: string | null; end: string | null; adjustment: string | null; statement?: string; encodeUrl?: string };
   actualSource: { providerId: string; connectionId: string };
   observation: { state: 'rows_observed' | 'empty_unconfirmed' | 'raw_only';
     rowCount: number | null; acquiredAtUtc: string };
   coverage: { actualStart: string | null; actualEnd: string | null; completeness: 'not_established' };
-  evidence: { originalRefs: { fileRefId: string; sha256: string }[] };
+  evidence: { originalRefs: { fileRefId: string; sha256: string }[]; subject?: ReportSubjectEvidence };
   semanticStatus: 'not_verified';
   /** 由实际下载回执产生；不虚构尚未装配的游标或覆盖声明。 */
   acquisition?: SourceReceiptReview;

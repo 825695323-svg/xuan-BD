@@ -1,4 +1,4 @@
-import type { SourceCandidateFeedback, SourceOperationView } from '../../contracts/source-settings.js';
+import type { ReportSubjectEvidence, SourceCandidateFeedback, SourceOperationView } from '../../contracts/source-settings.js';
 import { publicKlineProvider, publicKlineProviders } from './public-kline.js';
 import { sourceReceiptReview } from './source-acquisition.js';
 
@@ -45,6 +45,7 @@ export function sourceOperationsForAction(action: SourceOperationView['run']['ac
 export function sourceCandidateFeedback(input: {
   scopeId: string; operationId: SourceOperationView['id']; providerId: string; connectionId: string;
   acquiredAtUtc: string; subjectId?: string; start?: string; end?: string; adjustment?: string;
+  statement?: string; encodeUrl?: string; subject?: ReportSubjectEvidence;
   rowCount?: number; actualStart?: string | null; actualEnd?: string | null;
   originals: { fileRefId: string; sha256: string }[];
 }): SourceCandidateFeedback {
@@ -57,14 +58,16 @@ export function sourceCandidateFeedback(input: {
   const state = input.rowCount === undefined ? 'raw_only' : input.rowCount === 0 ? 'empty_unconfirmed' : 'rows_observed';
   const logicalRequest: SourceCandidateFeedback['logicalRequest'] = { scopeId: input.scopeId, operationId: input.operationId,
     subjectId: input.subjectId ?? null, start: input.start ?? null, end: input.end ?? null,
-    adjustment: input.adjustment ?? null };
+    adjustment: input.adjustment ?? null, ...(input.statement === undefined ? {} : { statement: input.statement }),
+    ...(input.encodeUrl === undefined ? {} : { encodeUrl: input.encodeUrl }) };
   return {
     contract: 'bd.source-candidate-feedback/1', logicalRequest,
     actualSource: { providerId: input.providerId, connectionId: input.connectionId },
     observation: { state, rowCount: input.rowCount ?? null, acquiredAtUtc: input.acquiredAtUtc },
     coverage: { actualStart: input.actualStart ?? null, actualEnd: input.actualEnd ?? null,
       completeness: 'not_established' },
-    evidence: { originalRefs: input.originals.map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })) },
+    evidence: { originalRefs: input.originals.map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })),
+      ...(input.subject ? { subject: input.subject } : {}) },
     semanticStatus: 'not_verified', acquisition: sourceReceiptReview(logicalRequest, input.rowCount ?? null),
     gaps: [state === 'raw_only' ? '当前只有保管的原始响应；业务记录、空响应性质及覆盖未解析。'
       : state === 'empty_unconfirmed' ? '本次没有观测到记录；未证明来源确认无数据，不能补零或声明历史完整。'

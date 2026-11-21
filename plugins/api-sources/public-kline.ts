@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { JsonValue } from '../../contracts/task-contracts.js';
 import type { SourceAssetScope, SourceDataCapability, SourceOperationId } from '../../contracts/source-settings.js';
 import { DirectError } from '../../platform/runtime/file-workspace.js';
-import { buildTickflowDailyRequest, decodeTickflowDailyBars } from './providers/tickflow/api.js';
+import { buildTickflowDailyRequest, decodeTickflowDailyBars, publicDailyLimit } from './providers/tickflow/api.js';
 
 export type PublicKlineProviderId = 'eastmoney' | 'sina' | 'tencent' | 'tickflow';
 export type PublicKlineOperationId = Extract<SourceOperationId, 'minute_bars' | 'daily_bars'>;
@@ -73,7 +73,7 @@ export function normalizePublicDailyRequest(parameters: Record<string, JsonValue
     throw new DirectError('SOURCE_PARAMETERS_INVALID', '受控日线只接受明确证券、起止日期、条数和adjustment:none（不复权）。');
   }
   if (!(allowBeijing && typeof parameters.symbol === 'string' && /^\d{6}\.BJ$/u.test(parameters.symbol))) symbolOf(parameters.symbol);
-  const start = dailyDate(parameters.start), end = dailyDate(parameters.end), limit = limitOf(parameters.limit ?? 320, allowBeijing ? 10_000 : 320);
+  const start = dailyDate(parameters.start), end = dailyDate(parameters.end), limit = publicDailyLimit(parameters.limit, allowBeijing ? undefined : 320);
   if (start > end) throw new DirectError('SOURCE_PARAMETERS_INVALID', '日线结束日期不能早于开始日期。');
   return { symbol: String(parameters.symbol), start, end, adjustment: 'none', limit };
 }

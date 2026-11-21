@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import type { Server } from 'node:http';
@@ -19,6 +19,7 @@ import { isolatedPythonArgs } from '../../platform/resources/native-check.mjs';
 import { LocalDataLifecycle } from '../../platform/runtime/local-data-lifecycle.js';
 import { PersonalCore } from '../../modules/agent/runtime/core.js';
 import { ALGORITHM_REGISTRY } from '../../modules/financial/algorithm-registry.js';
+import type { SourceFieldProfile } from '../../modules/collection/source-field-profile.js';
 import { DIMENSION_KEYS } from '../../modules/collection/processing-routing.js';
 import { WfdProductMachineClient, WfdProductMachineError } from '../../adapters/database/wfd-product-machine.js';
 import { parseProductMachineConnectionProfile, resolveProductMachineConnection } from '../../adapters/database/wfd-product-connection.js';
@@ -73,6 +74,29 @@ function fixture(machine = false, units: Record<string, { dimension: string }> =
   json(join(runtime, '.xuan-runtime.json'), { version: 1, application: 'xuan-bd', identity });
   json(join(runtime, 'config/machine.bindings.json'), { version: 1, revision: 1, runtimeIdentity: identity, resources });
   return { root, runtime, configPath, registryPath, store, wfdRuntime };
+}
+// 仅在三个 production 注册夹具中采用合成档案，按实际 CSV 字段和频率区分系列。
+function registerFixtureProfiles(f: ReturnType<typeof fixture>, bars = false): void {
+  const directory = join(f.runtime, 'config/source-fields');
+  mkdirSync(directory);
+  for (const frequency of bars ? ['day', 'minute'] as const : ['day'] as const) {
+    const sourceId = bars ? 'controlled-bar-fixture' : 'fixture-one';
+    const series = bars ? 'controlled-bars-' + frequency : '';
+    const profile: SourceFieldProfile = {
+      version: 'bd.source-field-profile/1', profileId: sourceId + '-' + frequency, sourceId, series, frequency,
+      fields: bars ? ['open', 'high', 'low', 'close', 'volume', 'amount'].map(field => ({
+        originalHeader: field, fieldCode: field, dataType: 'decimal', role: 'value',
+        unitCode: field === 'volume' ? 'share' : field === 'amount' ? 'cny' : 'cny_per_share',
+        measurement: 'Synthetic unadjusted ' + frequency + ' bar ' + field,
+      })) : [{ originalHeader: 'value_decimal', fieldCode: 'r1.web.metric', dataType: 'decimal',
+        role: 'value', unitCode: 'count', measurement: 'Synthetic count within the declared observation interval' }],
+      adjustment: { status: 'raw' }, timeBucket: { labelSemantics: 'start', interval: 'closed_open',
+        lengthMinutes: frequency === 'minute' ? 1 : 1440, timezone: bars ? 'Asia/Shanghai' : 'UTC' },
+      confirmation: { status: 'operator_confirmed', basis: 'Isolated fixture CSV and explicit target definitions',
+        confirmedAtUtc: '2026-01-06T00:00:00Z' },
+    };
+    json(join(directory, profile.profileId + '.json'), profile);
+  }
 }
 async function host(f: ReturnType<typeof fixture>, webRoot?: string, materialEnvironment: 'synthetic-test' | 'local-review' = 'synthetic-test',
   r1ConnectionId: string | null = 'r1-web-test') {
@@ -930,6 +954,7 @@ test('R1 explicitly selected production registration works only with matching mo
   { skip: !python ? 'Explicit WFD_PYTHON required.' : false, timeout: 180000 }, async () => {
     const f = fixture(true);
     const registry = JSON.parse(readFileSync(f.registryPath, 'utf8'));
+    registerFixtureProfiles(f);
     registry.connections[0].mode = 'production'; registry.connections[0].purpose = 'production';
     writeFileSync(f.registryPath, JSON.stringify(registry));
     const rawProfile = registry.connections[0], resources = new ResourceBindings(f.runtime);
@@ -978,6 +1003,7 @@ test('R1 explicitly selected production registration works only with matching mo
 test('R1 actual Web selects production through the bound manual ingest registry field',
   { skip: !python ? 'Explicit WFD_PYTHON required.' : false, timeout: 180000 }, async () => {
     const f = fixture(true), registry = JSON.parse(readFileSync(f.registryPath, 'utf8'));
+    registerFixtureProfiles(f);
     registry.connections[0].mode = 'production'; registry.connections[0].purpose = 'production';
     const selected = { ...registry, manual_ingest_connection_id: 'r1-web-test' };
     for (const invalid of [
@@ -1035,10 +1061,19 @@ test('R1 registry-selected production admits qualified daily and minute bars and
   { skip: !python ? 'Explicit WFD_PYTHON required.' : false, timeout: 180000 }, async () => {
     const f = fixture(true, { cny_per_share: { dimension: 'money_per_share' }, share: { dimension: 'quantity' }, cny: { dimension: 'money' } });
     const registry = JSON.parse(readFileSync(f.registryPath, 'utf8'));
+    registerFixtureProfiles(f, true);
     registry.connections[0].mode = 'production'; registry.connections[0].purpose = 'production';
     registry.manual_ingest_connection_id = 'r1-web-test'; writeFileSync(f.registryPath, JSON.stringify(registry));
     const h = await host(f, undefined, undefined, null);
     try {
+      const productionBarPlan = (draft: R1PrepareInput, csv: Buffer, nature?: string) => {
+        const directory = join(f.root, 'controlled-bars-' + (draft.mapping as R1TabularMapping).bar!.frequency);
+        mkdirSync(directory, { recursive: true });
+        const path = join(directory, draft.requestId + '.csv');
+        writeFileSync(path, csv, { flag: 'wx' });
+        draft.source.requested_url = pathToFileURL(path).href;
+        return barPlan(h, draft, csv, nature);
+      };
       const connection = (await h.call('/r1/capabilities')).connection;
       assert.equal(connection.mode, 'production'); assert.equal(connection.purpose, 'production');
       assert.equal(connection.store, f.store); assert.equal(connection.profile, 'data_only');
@@ -1065,7 +1100,7 @@ test('R1 registry-selected production admits qualified daily and minute bars and
         if (variant === 'unknown-unit') {
           (draft.target.definition.field_semantic_context as Record<string, Record<string, Record<string, unknown>>>).volume!.measurement!.unit_code = 'unknown';
         }
-        const built = await barPlan(h, draft, barCsv('day', variant === 'bad-ohlc'), variant === 'forecast' ? 'forecast' : 'direct-observation');
+        const built = await productionBarPlan(draft, barCsv('day', variant === 'bad-ohlc'), variant === 'forecast' ? 'forecast' : 'direct-observation');
         assert.equal(built.plan.outputs[0]!.state, 'structured');
         assert.equal(built.plan.outputs[0]!.publishEligible, false);
         const blocked = await h.call('/r1/prepare', built.input, 409);
@@ -1079,7 +1114,7 @@ test('R1 registry-selected production admits qualified daily and minute bars and
         const draft = barInput('prod-license-' + suffix, 'day');
         if (license === undefined) delete draft.source.license;
         else draft.source.license = license;
-        const built = await barPlan(h, draft, barCsv('day'));
+        const built = await productionBarPlan(draft, barCsv('day'));
         assert.equal(built.plan.outputs[0]!.publishEligible, true);
         const prepared: R1RequestView = await h.call('/r1/prepare', built.input, 201);
         assert.equal(prepared.state, 'prepared_profile_pending');
@@ -1087,9 +1122,9 @@ test('R1 registry-selected production admits qualified daily and minute bars and
         assert.equal(frozen.license, license);
         assert.equal(submittedStates.length, 0);
       }
-      let parent: string | null = null;
+      let parent: string | null = null, daySnapshot: string | null = null;
       for (const frequency of ['day', 'minute'] as const) {
-        const built = await barPlan(h, barInput('prod-financial-' + frequency, frequency, parent), barCsv(frequency));
+        const built = await productionBarPlan(barInput('prod-financial-' + frequency, frequency, parent), barCsv(frequency));
         assert.equal(built.plan.outputs[0]!.publishEligible, true);
         assert.equal((built.plan.outputs[0]!.semantic as { quality: string }).quality, 'pass');
         const prepared: R1RequestView = await h.call('/r1/prepare', built.input, 201);
@@ -1132,8 +1167,11 @@ test('R1 registry-selected production admits qualified daily and minute bars and
         assert.equal(ref.snapshot_id, link.snapshot_id);
         assert.equal(actualReads.length, frequency === 'day' ? 1 : 2);
         parent = String(link.snapshot_id);
+        if (frequency === 'day') daySnapshot = parent;
       }
-      const conflicted = await barPlan(h, barInput('prod-parent-conflict', 'day', 'r1-parent-does-not-exist'), barCsv('day'));
+      // 已存在的旧快照可通过 G5 读取，到实际提交时才由 WFD 拒绝过期父身份。
+      assert.ok(daySnapshot && daySnapshot !== parent);
+      const conflicted = await productionBarPlan(barInput('prod-parent-conflict', 'day', daySnapshot), barCsv('day'));
       const prepared: R1RequestView = await h.call('/r1/prepare', conflicted.input, 201);
       const readCount = actualReads.length;
       const submission = await h.call(`/r1/requests/${prepared.requestId}/submit`, { confirmationDigest: prepared.documentSha256 }, 202);

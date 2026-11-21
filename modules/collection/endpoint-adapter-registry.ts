@@ -19,7 +19,11 @@ export interface AdapterReceiptEvidence {
   operation: string; observedAt: string; adjustment?: 'none' | 'qfq' | 'hfq' | 'unknown'; market?: string;
   /** 任务结果里声明的请求字段（只作冲突核对；实际字段以选中回执 URL 为准）。 */
   requestedFields?: string[]; requestedFields2?: string[];
-  receipts: { url: string; sha256: string; fileRefId: string; contentType: string }[];
+  receipts: { url: string; sha256: string; fileRefId: string; contentType: string; connectionId?: string }[];
+}
+interface TrustedSourceHandoff {
+  sourceTaskId: string; sourceFileRefId: string; sha256: string;
+  materialId: string; workspaceFileRefId: string; evidence: AdapterReceiptEvidence;
 }
 /** 受信来源下载动作；只有这些动作的持久结果才可能成为取得回执。 */
 export const SOURCE_DOWNLOAD_ACTIONS = Object.freeze(['source.kline.read', 'source.api.read', 'source.fetch']);
@@ -44,8 +48,8 @@ function successfulSourceReceipts(action: string, data: WfdRecord): AdapterRecei
         || typeof reference.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(reference.sha256)
         || identities.has(reference.fileRefId)) return null;
       identities.add(reference.fileRefId);
-      const matches = originals.filter(entry => entry.fileRefId === reference.fileRefId && entry.sha256 === reference.sha256);
-      if (matches.length !== 1) return null;
+      const matches = originals.filter(entry => entry.fileRefId === reference.fileRefId);
+      if (matches.length !== 1 || matches[0]!.sha256 !== reference.sha256) return null;
       selected.push(matches[0]!);
     }
     // 这两种执行器一次成功只产生一份响应。旧反馈曾误收前面失败的原件，不能凭旧集合再次升级。
@@ -56,8 +60,21 @@ function successfulSourceReceipts(action: string, data: WfdRecord): AdapterRecei
     if (action !== 'source.fetch' || data.sourceId !== 'official_web' || originals.some(entry => !httpComplete(entry.status))) return null;
   }
   if (selected.some(entry => entry.status !== undefined && entry.status !== null && !httpComplete(entry.status))) return null;
+  for (const projection of [data.projection, data.dailyValidation]) {
+    if (isWfdRecord(projection) && Object.hasOwn(projection, 'rawSha256')
+      && (selected.length !== 1 || projection.rawSha256 !== selected[0]!.sha256)) return null;
+  }
+  if (Array.isArray(data.attempts)) {
+    const used = data.attempts.filter(attempt => isWfdRecord(attempt) && attempt.outcome === 'used');
+    if (used.length !== 1 || selected.length !== 1) return null;
+    const attempt = used[0] as WfdRecord, original = selected[0]!;
+    if (original.connectionId !== undefined && original.connectionId !== attempt.connectionId
+      || data.connectionId !== undefined && data.connectionId !== attempt.connectionId
+      || attempt.fileRefId !== undefined && attempt.fileRefId !== original.fileRefId
+      || attempt.sha256 !== undefined && attempt.sha256 !== original.sha256) return null;
+  }
   return selected.map(entry => ({ url: String(entry.url), sha256: String(entry.sha256), fileRefId: String(entry.fileRefId),
-    contentType: String(entry.contentType ?? '') }));
+    contentType: String(entry.contentType ?? ''), ...(typeof entry.connectionId === 'string' ? { connectionId: entry.connectionId } : {}) }));
 }
 
 /**
@@ -130,8 +147,52 @@ export class EndpointAdapterRegistry {
     this.versionBinding = Object.freeze({ registry: ADAPTER_REGISTRY_VERSION,
       implementation: wfdSha256(Buffer.concat(files)) });
     options.database.migrate('collection_source_adapters', 1, SCHEMA);
+    options.database.migrate('collection_source_handoffs', 1, `CREATE TABLE source_receipt_handoffs (
+      material_id TEXT PRIMARY KEY, workspace_file_ref_id TEXT NOT NULL UNIQUE, sha256 TEXT NOT NULL,
+      source_task_id TEXT NOT NULL, source_file_ref_id TEXT NOT NULL, evidence_json TEXT NOT NULL
+    ) STRICT;`);
   }
   private get db() { return this.options.database.connection; }
+
+  /** 受信宿主已从个人来源任务签发 evidence。只持久登记本次实际保管的一份原件。 */
+  recordTrustedSourceHandoff(input: TrustedSourceHandoff): void {
+    const { materialId, workspaceFileRefId, sourceTaskId, sourceFileRefId, sha256, evidence } = input;
+    const { envelope } = this.options.materials.get(materialId);
+    const entries = evidence.receipts.filter(item => item.fileRefId === sourceFileRefId);
+    if (!sourceTaskId || !sourceFileRefId || !workspaceFileRefId || entries.length !== 1 || entries[0].sha256 !== sha256
+      || envelope.materialId !== materialId || envelope.fileRefId !== workspaceFileRefId || envelope.sha256 !== sha256
+      || this.options.materials.readOriginal(materialId).sha256 !== sha256)
+      fail('ADAPTER_CONTEXT_MATERIAL', '个人成功原件与工作台保管副本的身份或字节摘要不符。');
+    const body = canonicalWfdJson({ ...evidence, receipts: entries });
+    this.options.database.transaction(() => {
+      this.db.prepare('INSERT INTO source_receipt_handoffs VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING')
+        .run(materialId, workspaceFileRefId, sha256, sourceTaskId, sourceFileRefId, body);
+      const stored = this.db.prepare(`SELECT 1 FROM source_receipt_handoffs WHERE material_id=? AND workspace_file_ref_id=?
+        AND sha256=? AND source_task_id=? AND source_file_ref_id=? AND evidence_json=?`)
+        .get(materialId, workspaceFileRefId, sha256, sourceTaskId, sourceFileRefId, body);
+      if (!stored) fail('ADAPTER_HANDOFF_CONFLICT', '工作台原件已有不同的不可变交接记录。');
+    });
+  }
+
+  resolveSourceReceiptForMaterial(taskId: string, materialId: string) {
+    const { envelope } = this.options.materials.get(materialId);
+    const handoff = this.db.prepare('SELECT * FROM source_receipt_handoffs WHERE material_id=?').get(materialId);
+    let receipt: AdapterReceiptEvidence, sourceFileRefId = envelope.fileRefId;
+    if (handoff) {
+      if (handoff.source_task_id !== taskId || envelope.materialId !== materialId || handoff.workspace_file_ref_id !== envelope.fileRefId
+        || handoff.sha256 !== envelope.sha256 || this.options.materials.readOriginal(materialId).sha256 !== handoff.sha256)
+        return fail('ADAPTER_CONTEXT_MATERIAL', '原来源任务、工作台文件身份或当前保管字节与交接记录不符。');
+      receipt = JSON.parse(String(handoff.evidence_json)) as AdapterReceiptEvidence;
+      sourceFileRefId = String(handoff.source_file_ref_id);
+    } else {
+      const resolver = this.options.sourceReceipt;
+      if (!resolver) return fail('ADAPTER_RECEIPT_UNAVAILABLE', '本材料缺少跨库交接，本实例未装配本库来源回执解析。');
+      receipt = resolver(taskId) ?? fail('ADAPTER_RECEIPT_MISSING', '没有该来源任务的取得回执。');
+    }
+    const entries = receipt.receipts.filter(item => item.fileRefId === sourceFileRefId && item.sha256 === envelope.sha256);
+    if (entries.length !== 1) return fail('ADAPTER_CONTEXT_MATERIAL', '成功原件的文件引用或原字节摘要与本材料不符。');
+    return { receipt, entry: entries[0]!, materialSha256: envelope.sha256 };
+  }
 
   catalog(): WfdRecord {
     const rows = this.db.prepare('SELECT * FROM source_adapters ORDER BY adapter_id,CAST(version AS INTEGER)').all() as unknown as AdapterRow[];
@@ -341,15 +402,7 @@ export class EndpointAdapterRegistry {
       fail('ADAPTER_CONTEXT', '同一表源不能同时声明合成上下文与真实取得回执。');
     if (options?.sourceReceiptTaskId !== undefined) {
       const materialId = options.materialId ?? fail('ADAPTER_CONTEXT', '来源回执必须绑定本材料身份。');
-      const material = this.options.materials.get(materialId);
-      const resolver = this.options.sourceReceipt;
-      if (!resolver) throw new TaskError('ADAPTER_RECEIPT_UNAVAILABLE', '本实例未装配来源回执解析，不能核真实取得。');
-      const receipt = resolver(options.sourceReceiptTaskId)
-        ?? fail('ADAPTER_RECEIPT_MISSING', '没有该来源任务的取得回执；未按正文自报或猜测取证。');
-      // 文件引用与原始字节摘要必须同时对上，不能只按 URL 或文件名。
-      const entry = receipt.receipts.find(item => item.sha256 === material.envelope.sha256
-        && (material.envelope.fileRefId === undefined || item.fileRefId === material.envelope.fileRefId))
-        ?? fail('ADAPTER_CONTEXT_MATERIAL', '来源回执中的文件引用或原字节摘要与本材料不符；未按其他取得关联匹配。');
+      const { receipt, entry, materialSha256 } = this.resolveSourceReceiptForMaterial(options.sourceReceiptTaskId, materialId);
       // 只按本材料选中回执的实际 URL 解析字段；任务结果声明与实际 URL 冲突时拒绝，不用声明覆盖实际。
       const query = (() => { try { return new URL(entry.url).searchParams; } catch { return null; } })();
       const fromUrl = (name: 'fields' | 'fields2') => {
@@ -366,7 +419,7 @@ export class EndpointAdapterRegistry {
       };
       const fields = conflict(receipt.requestedFields, fromUrl('fields'), '请求字段');
       const fields2 = conflict(receipt.requestedFields2, fromUrl('fields2'), 'fields2');
-      const context = { kind: 'receipt' as const, url: entry.url, materialSha256: material.envelope.sha256,
+      const context = { kind: 'receipt' as const, url: entry.url, materialSha256,
         observedAt: receipt.observedAt, protocol: `${receipt.operation}|${entry.contentType}`,
         frequency: receipt.operation === 'daily_bars' ? 'day' as const : receipt.operation === 'minute_bars' ? 'minute' as const : 'other' as const,
         ...(receipt.adjustment ? { adjustment: receipt.adjustment } : {}),
@@ -374,7 +427,7 @@ export class EndpointAdapterRegistry {
         ...(fields ? { fields } : {}), ...(fields2 ? { fields2 } : {}),
         basis: `来源任务 ${options.sourceReceiptTaskId} 的实际取得回执（${receipt.operation}）。` };
       // 宿主解析出的回执上下文不经正文读取器（该读取器只接受 synthetic）。
-      match = matchAdapterContext(config, context, material.envelope.sha256);
+      match = matchAdapterContext(config, context, materialSha256);
     } else if (options?.context !== undefined) {
       const materialId = options.materialId ?? fail('ADAPTER_CONTEXT', '来源上下文必须绑定本材料身份。');
       const material = this.options.materials.get(materialId);
