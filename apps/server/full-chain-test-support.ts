@@ -8,6 +8,7 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Backend } from '../../contracts/backend.js';
 import type { HealthResponse } from '../../contracts/contracts.js';
+import type { TaskService } from '../../platform/jobs/tasks.js';
 import type { JsonValue, TaskRecord } from '../../contracts/task-contracts.js';
 import { PersonalCore } from '../../modules/agent/runtime/core.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
@@ -46,9 +47,10 @@ function writeJson(path: string, value: unknown): void {
 /** Caller selects a new, dedicated parent root after checking that it did not exist before this batch. */
 export function createFullChainFixture(input: { name: string; machine?: boolean; bundledTranscription?: boolean;
   privateRoot?: string;
+  parentRoot?: string;
   bundledCodeRoot?: string;
   units?: Record<string, { dimension: string }> }): FullChainFixture {
-  const parent = process.env.XUAN_FULL_CHAIN_ROOT;
+  const parent = input.parentRoot ?? process.env.XUAN_FULL_CHAIN_ROOT;
   assert.ok(parent && isAbsolute(parent) && existsSync(parent) && statSync(parent).isDirectory(),
     'XUAN_FULL_CHAIN_ROOT must name the dedicated, pre-created full-chain test root.');
   assert.match(input.name, /^[a-z0-9_-]{1,48}$/u);
@@ -174,16 +176,7 @@ export async function openFullChainHost(fixture: FullChainFixture, webRoot?: str
     assert.equal(response.status, 202, JSON.stringify(value));
     return value;
   };
-  const settled = async (taskId: string, timeoutMs = 60_000): Promise<TaskRecord> => {
-    const terminal = (task: TaskRecord) => ['succeeded', 'failed', 'cancelled', 'needs_review', 'waiting_approval', 'blocked', 'interrupted'].includes(task.status);
-    const current = services.tasks.get(taskId); if (terminal(current)) return current;
-    return await new Promise<TaskRecord>((resolve, reject) => {
-      const timer = setTimeout(() => { unsubscribe(); reject(new Error('Task did not settle: ' + taskId)); }, timeoutMs);
-      const unsubscribe = services.tasks.subscribe(({ task }) => {
-        if (task.id === taskId && terminal(task)) { clearTimeout(timer); unsubscribe(); resolve(task); }
-      });
-    });
-  };
+  const settled = (taskId: string, timeoutMs?: number) => settleFixtureTask(services.tasks, taskId, timeoutMs);
   let closed = false;
   return { fixture, database, core, services, base, call, upload, settled, async close() {
     // 测试内的 fetch keep-alive 连接会让 server.close 一直等待；显式关闭全部
@@ -227,4 +220,15 @@ export function startDirect(host: FullChainHost, action: string, args: Record<st
     runtimeId: routed.runtimeId, action: routed.action, args: routed.args, requestId,
     versions: host.services.direct.registry.captureVersions(routed.action, routed.args) });
   return task.status === 'ready' ? host.services.tasks.start(task.id, task.version) : task;
+}
+
+export async function settleFixtureTask(tasks: TaskService, taskId: string, timeoutMs = 60_000): Promise<TaskRecord> {
+  const terminal = (task: TaskRecord) => ['succeeded', 'failed', 'cancelled', 'needs_review', 'waiting_approval', 'blocked', 'interrupted'].includes(task.status);
+  const current = tasks.get(taskId); if (terminal(current)) return current;
+  return await new Promise<TaskRecord>((resolve, reject) => {
+    const timer = setTimeout(() => { unsubscribe(); reject(new Error('Task did not settle: ' + taskId)); }, timeoutMs);
+    const unsubscribe = tasks.subscribe(({ task }) => {
+      if (task.id === taskId && terminal(task)) { clearTimeout(timer); unsubscribe(); resolve(task); }
+    });
+  });
 }

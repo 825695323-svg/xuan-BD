@@ -60,7 +60,7 @@ class CapturingBackend implements Backend {
   }
 }
 
-export async function openMediaReviewHost(f: ReturnType<typeof createFullChainFixture>) {
+export async function openMediaReviewHost(f: ReturnType<typeof createFullChainFixture>, listen = true) {
   const resources = new ResourceBindings(f.runtime);
   const companionDatabase = new CoreDatabase(join(f.runtime, 'state/companion.sqlite'));
   const companionCore = new PersonalCore(new CapturingBackend(), { database: companionDatabase });
@@ -82,15 +82,20 @@ export async function openMediaReviewHost(f: ReturnType<typeof createFullChainFi
       capabilities: [{ action: 'read', target: { kind: 'file', path: f.modelPath } },
         ...(['ffmpeg', 'ffprobe', 'whisper_cli'] as const).map(key => ({ action: 'execute' as const, target: { kind: 'file' as const, path: resources.path(key) } }))] });
   }
-  const server = createApp(core, health, services, { serveWeb: false }).listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address(); assert.ok(address && typeof address !== 'string');
-  const base = `http://127.0.0.1:${address.port}`;
+  const server = listen ? createApp(core, health, services, { serveWeb: false }).listen(0, '127.0.0.1') : null;
+  let base = '';
+  if (server) {
+    await once(server, 'listening');
+    const address = server.address(); assert.ok(address && typeof address !== 'string');
+    base = `http://127.0.0.1:${address.port}`;
+  }
   let closed = false;
   return { base, database, companionDatabase, backend, core, services, companion,
     async close() { if (closed) return; closed = true;
-      server.closeAllConnections();
-      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      if (server) {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      }
       services.segments?.close(); services.files.closeTemporaryRetention(); services.options.processRuntime?.closeTemporaryRetention();
       companion.segments?.close(); companion.files.closeTemporaryRetention(); companion.options.processRuntime?.closeTemporaryRetention();
       await services.tasks.dispose(); await core.dispose(); database.close();

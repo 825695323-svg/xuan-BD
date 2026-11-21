@@ -63,7 +63,7 @@ export async function acceptWorkspaceMaterial(services: WorkspaceServices,
       check();
       const label = `手工原件:${requestId}`;
       if (!permissions.listGrants({ includeRevoked: true }).some(g => g.label === label)) permissions.grant({ capabilities: [{ action: 'read', target: { kind: 'file', path } }], label, scope: { kind: 'persistent' } });
-      const task = materials.submit({ fileRefId: reference.id, category, expectedSha256: sha256 }, requestId);
+      const task = materials.submit({ fileRefId: reference.id, category, expectedSha256: sha256, mediaType: videoMediaType(name, bytes) }, requestId);
       db.prepare('UPDATE harness_material_uploads SET task_id=? WHERE request_id=?').run(task.id, requestId);
       return task.id;
     };
@@ -76,4 +76,18 @@ export async function acceptWorkspaceMaterial(services: WorkspaceServices,
 function id(value: unknown): string {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(value)) throw new TaskError('INVALID_REQUEST_ID', '需要稳定的原请求编号。');
   return value;
+}
+
+/** Normal intake has no declared MIME. Only label a video container when suffix and magic agree. */
+function videoMediaType(name: string, bytes: Buffer): string | undefined {
+  const ext = extname(name).toLowerCase();
+  if (bytes.toString('ascii', 4, 8) === 'ftyp') {
+    if (ext === '.mp4') return 'video/mp4';
+    if (ext === '.mov') return 'video/quicktime';
+  }
+  if (bytes.subarray(0, 4).toString('hex') === '1a45dfa3') {
+    if (ext === '.mkv') return 'video/x-matroska';
+    if (ext === '.webm') return 'video/webm';
+  }
+  return undefined;
 }
