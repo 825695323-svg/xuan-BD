@@ -1,3 +1,4 @@
+import { transcriptionProbe } from './probe.js';
 import { createWhisperProgressParser } from './progress.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { extname, join } from 'node:path';
@@ -49,7 +50,7 @@ export interface LocalTranscriptionOptions {
   runTool(context: TaskExecutionContext, workspace: DirectWorkspace, authority: DirectAuthority,
     binary: DirectBinary, args: string[], path: string, timeout?: number,
     onOutput?: (stream: 'stdout' | 'stderr', chunk: Buffer) => void | Promise<void>): Promise<DirectProcessResult>;
-  convert(input: string, extension: string, output: string, format: string): string[];
+  convert(input: string, extension: string, output: string, format: string, alignMediaClock?: boolean): string[];
   validateModel(header: Buffer): void;
   validateProbe(value: string, maxSeconds?: number): void;
 }
@@ -172,18 +173,17 @@ export async function transcribeLocalFile(context: TaskExecutionContext, input: 
     }
     const probe = await options.runTool(context, workspace, authority, 'ffprobe', ['-v', 'error', '-protocol_whitelist', 'file',
       '-format_whitelist', demuxer, '-f', demuxer, ...(demuxer === 'mov' ? ['-enable_drefs', '0', '-use_absolute_path', '0'] : []),
-      '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', staged], binaries.ffprobe, 30_000);
+      '-show_entries', 'format=format_name,start_time,duration:stream=index,codec_type,codec_name,start_time,width,height:stream_disposition=attached_pic', '-of', 'json', staged], binaries.ffprobe, 30_000);
     options.validateProbe(probe.stdout);
-    const duration = Number((JSON.parse(probe.stdout) as { format?: { duration?: unknown } }).format?.duration);
-    if (!Number.isFinite(duration) || duration <= 0 || duration > 3600) throw new DirectError('INVALID_MEDIA_DURATION', '音视频原件的实际时长未知或超过一小时，未开始转录。');
+    const { durationMs, media } = transcriptionProbe(probe.stdout, true);
     const modelRef = options.files.register({ path: options.modelPath, source: 'user-selected', taskId: context.task.id });
     const model = await workspace.copyReference(modelRef, 'whisper-model.bin', 4 * 1024 * 1024 * 1024);
     options.validateModel(await workspace.readPrefix(model, 48));
     const modelFingerprint = await workspace.fingerprint(model, 4 * 1024 * 1024 * 1024);
-    const probePath = await workspace.createText('media-probe.json', JSON.stringify({ schema: 'bd-local-transcription-probe/1',
+    const probePath = await workspace.createText('media-probe.json', JSON.stringify({ schema: media ? 'bd-local-transcription-probe/2' : 'bd-local-transcription-probe/1',
       sourceSha256: sourceFingerprint.sha256, modelSha256: modelFingerprint.sha256, probeOutput: probe.stdout }));
     const wav = join(workspace.path, 'audio.wav');
-    await options.runTool(context, workspace, authority, 'ffmpeg', options.convert(staged, extension, wav, 'wav'), binaries.ffmpeg, 180_000);
+    await options.runTool(context, workspace, authority, 'ffmpeg', options.convert(staged, extension, wav, 'wav', !!media), binaries.ffmpeg, 180_000);
     const wave = await workspace.fingerprint(wav, 512 * 1024 * 1024);
     if (wave.bytes <= 44 || wave.bytes >= 512 * 1024 * 1024) throw new DirectError('INVALID_AUDIO_OUTPUT', '音频标准化没有生成完整、有效的音轨。');
     const prefix = join(workspace.path, 'transcript');
@@ -204,7 +204,7 @@ export async function transcribeLocalFile(context: TaskExecutionContext, input: 
     if (/no tensors loaded|empty model for testing/iu.test(response.stderr)) throw new DirectError('WHISPER_TEST_MODEL', '所选文件没有模型权重，不能用于真实转录。');
     const text = await workspace.readText(prefix + '.txt', MAX_TEXT_BYTES);
     const native = await workspace.readText(prefix + '.json', MAX_TEXT_BYTES);
-    const segments = parseWhisperTranscription(native, text, Math.ceil(duration * 1000));
+    const segments = parseWhisperTranscription(native, text, durationMs);
     authority.assert(); options.files.verify(reference.id); options.files.verify(modelRef.id);
     if ((await workspace.fingerprint(staged, MAX_SOURCE_BYTES)).sha256 !== sourceFingerprint.sha256) throw new DirectError('MATERIAL_SOURCE_MISMATCH', '暂存原件在转录期间已变化。');
     const probeFingerprint = await workspace.fingerprint(probePath, MAX_TEXT_BYTES);
@@ -221,7 +221,7 @@ export async function transcribeLocalFile(context: TaskExecutionContext, input: 
       textReference: { fileRefId: output.id, fileRefVersion: output.version, sha256: textFingerprint.sha256 },
       evidenceReference: { fileRefId: evidence.id, fileRefVersion: evidence.version, sha256: evidenceFingerprint.sha256 },
       probeReference: { fileRefId: publishedProbe.id, fileRefVersion: publishedProbe.version, sha256: probeFingerprint.sha256 },
-      recognition: { backend: 'whisper.cpp-local', modelSha256: modelFingerprint.sha256, durationMs: Math.ceil(duration * 1000) },
+      recognition: { backend: 'whisper.cpp-local', modelSha256: modelFingerprint.sha256, durationMs },
       text, segments, backend: 'whisper.cpp-local' };
   } catch (error) {
     if (!(error instanceof DirectError && error.unknown) && !(error instanceof DirectProcessError && error.disposition === 'unknown')) {

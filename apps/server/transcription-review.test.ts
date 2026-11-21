@@ -49,3 +49,18 @@ test('transcription execution envelope independently binds source and model, ref
   assert.throws(() => parse({ ...recognition(), modelSha256: 'c'.repeat(64) }));
   assert.throws(() => parseTranscriptionReviewEvidence(undefined, JSON.stringify(envelope(JSON.stringify(probe()))), JSON.stringify(native()), text, sourceSha256));
 });
+
+test('video reviews require the actual selected audio stream and the container-relative extraction clock', () => {
+  const raw = { format: { duration: '11.000', start_time: '2.000', format_name: 'matroska,webm' }, streams: [
+    { codec_type: 'video', index: 0, width: 64, height: 64 },
+    { codec_type: 'audio', index: 1, codec_name: 'opus', start_time: '3.000' },
+    { codec_type: 'audio', index: 2, codec_name: 'opus', start_time: '2.000' }] };
+  const replay = (p: unknown, schema = 'bd-local-transcription-probe/2') => parseTranscriptionReviewEvidence(recognition(),
+    JSON.stringify({ ...envelope(JSON.stringify(p)), schema }), JSON.stringify(native()), text, sourceSha256);
+  assert.deepEqual(replay(raw).media, { container: 'matroska,webm', audioCodec: 'opus',
+    audioStreamIndex: 1, audioStartMs: 1000, timeline: 'container_relative_wav' });
+  assert.throws(() => replay(raw, 'bd-local-transcription-probe/1'));
+  assert.throws(() => replay({ ...raw, streams: raw.streams.slice(0, 1) }));
+  assert.throws(() => replay({ ...raw, streams: [raw.streams[0], { ...raw.streams[1], start_time: 'unknown' }, raw.streams[2]] }));
+  assert.throws(() => replay({ ...raw, format: { ...raw.format, duration: '10' } }));
+});

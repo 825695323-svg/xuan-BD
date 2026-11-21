@@ -213,7 +213,8 @@ function toSegment(row: SegmentRow): DocSegment {
     segment_id: row.segment_id, document_id: row.document_id, document_version: row.document_version,
     parser_version: row.parser_version, ordinal: row.ordinal,
     kind: row.kind === 'table' ? 'table' : 'paragraph',
-    page_number: row.page_number, page_label: row.page_label,
+    // The historical NOT NULL columns use zero for an unpaginated native flow.
+    page_number: row.page_number === 0 ? null : row.page_number, page_label: row.page_label,
     section_path: JSON.parse(row.section_path_json) as string[],
     bbox: JSON.parse(row.bbox_json) as DocSegment['bbox'],
     table: row.table_json === null ? null : JSON.parse(row.table_json) as SegmentTable,
@@ -263,7 +264,7 @@ export function putDocumentSegments(db: DatabaseSync, segments: DocSegment[], no
       if (!hasDocument.get(segment.document_id)) state.document_count++;
       state.last_seq++;
       insert.run(segment.segment_id, segment.document_id, segment.document_version, segment.parser_version,
-        segment.ordinal, segment.kind, segment.page_number, segment.page_label, JSON.stringify(segment.section_path),
+        segment.ordinal, segment.kind, segment.page_number ?? 0, segment.page_label, JSON.stringify(segment.section_path),
         JSON.stringify(segment.bbox), segment.table === null ? null : JSON.stringify(segment.table), segment.source_ref,
         segment.text, segment.text_digest, segment.char_start, segment.char_end, JSON.stringify(segment.issues), now, state.last_seq);
       inserted += 1;
@@ -467,7 +468,7 @@ function toDocumentTime(row: DocumentRow): DocumentTimeRecord {
     acquired_at: row.acquired_at,
     event_time: dimensionOf(row.event_time_state, row.event_time, row.event_time_precision),
     disclosed_at: dimensionOf(row.disclosed_at_state, row.disclosed_at, row.disclosed_at_precision),
-    parsed_at: row.parsed_at, page_count: row.page_count, segment_count: row.segment_count,
+    parsed_at: row.parsed_at, page_count: row.page_count === 0 ? null : row.page_count, segment_count: row.segment_count,
     issues: JSON.parse(row.issues_json) as string[] };
 }
 
@@ -501,7 +502,7 @@ export function putDocumentVersion(db: DatabaseSync, record: DocumentTimeRecord)
     record.event_time.state, record.event_time.state === 'known' ? record.event_time.precision : null,
     record.disclosed_at.state === 'known' ? record.disclosed_at.value : null,
     record.disclosed_at.state, record.disclosed_at.state === 'known' ? record.disclosed_at.precision : null,
-    record.parsed_at, record.page_count, record.segment_count, JSON.stringify(record.issues));
+    record.parsed_at, record.page_count ?? 0, record.segment_count, JSON.stringify(record.issues));
   return 'inserted';
 }
 

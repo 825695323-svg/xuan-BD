@@ -77,7 +77,8 @@ export async function assertR1JointEcho(input: { structured: RecordValue; docume
         || !['segment_id', 'document_version', 'parser_version', 'artifact_ref'].every(key => identifier(cite[key]))
         || typeof cite.text_digest !== 'string' || !/^[a-f0-9]{64}$/u.test(cite.text_digest)
         || typeof cite.excerpt !== 'string' || typeof cite.excerpt_truncated !== 'boolean'
-        || !Number.isSafeInteger(cite.page_number) || Number(cite.page_number) < 1
+        || (cite.page_number === null ? !Array.isArray(cite.issues) || !cite.issues.includes('office_pagination_unavailable')
+          : !Number.isSafeInteger(cite.page_number) || Number(cite.page_number) < 1)
         || !Number.isSafeInteger(cite.char_start) || !Number.isSafeInteger(cite.char_end)
         || Number(cite.char_start) < 0 || Number(cite.char_end) < Number(cite.char_start)) fail();
       const span = Number(cite.char_end) - Number(cite.char_start), excerptLength = (cite.excerpt as string).length;
