@@ -193,7 +193,7 @@ function detailMetadata(literal: string): Record<string, JsonValue> | null {
 
 const relatedTitle = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/u;
 const relatedWrapperTitle = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:]*$/u;
-const inlineRelatedHeading = /(?:^|(?<=[\s。！？；.!?【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/gu;
+const inlineRelatedHeading = /(?:^|(?<=[\s。！？；.!?])|(?<=(?:^|[\s。！？；.!?])[【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/gu;
 const mainAttachmentHeading = /^[【[(\s]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)(?:$|[\s】\])：:—\-·•（(])/u;
 const explicitSectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt';
 const sectionHeadings = `${explicitSectionHeadings},[class*="title" i]`;
@@ -324,14 +324,17 @@ function collectInlineSegments(container: Document | Element): InlineSegment[] {
 
 function isStoppingHeading(heading: Element, level: number): boolean {
   if (heading.tagName === 'A' && heading.getAttribute('role') !== 'heading') return false;
+  if (heading.tagName !== 'A' && heading.closest('a')) return false;
   const text = heading.textContent?.trim() ?? '';
   if (relatedTitle.test(text)) return false;
+  const inList = Boolean(heading.closest('ul,ol,li'));
   if (heading.matches(explicitSectionHeadings)) {
+    if (inList) return mainAttachmentHeading.test(text);
     return headingLevel(heading) <= level || mainAttachmentHeading.test(text);
   }
-  return !heading.matches(inlineFlowElements)
-    && !heading.closest('ul,ol,li,a')
-    && mainAttachmentHeading.test(text);
+  if (inList || !mainAttachmentHeading.test(text)) return false;
+  if (!heading.matches(inlineFlowElements)) return true;
+  return Boolean(heading.parentElement && isHarmlessWrapper(heading.parentElement, heading));
 }
 
 function findFirstStoppingHeading(element: Element, level: number): Element | null {
@@ -374,6 +377,21 @@ function hasLinkBeforeStoppingHeading(container: Element, stopHeading: Element):
     }
   });
   return found;
+}
+
+function nextElementSibling(node: Node): Element | null {
+  for (let sib = node.nextSibling; sib; sib = sib.nextSibling) {
+    if (sib.nodeType === 1) return sib as Element;
+  }
+  return null;
+}
+
+function elementHasTrailingLink(el: Element): boolean {
+  if (el.matches('a,iframe,ul,ol')) return true;
+  const stopHeading = findFirstStoppingHeading(el, 2);
+  return stopHeading
+    ? hasLinkBeforeStoppingHeading(el, stopHeading)
+    : Boolean(el.querySelector('a,iframe'));
 }
 
 /** 从阅读小节标题到同级或更高标题之间的内容，限定在同一正文容器内。 */
@@ -423,14 +441,6 @@ function relatedSections(document: Document) {
       let match = inlineRelatedHeading.exec(fullText);
       if (!match) continue;
 
-      const hasTrailingLinkOrList = Boolean(
-        segment.endedAt && (segment.endedAt.matches('a,iframe,ul,ol') || (() => {
-          const stopHeading = findFirstStoppingHeading(segment.endedAt, 2);
-          return stopHeading
-            ? hasLinkBeforeStoppingHeading(segment.endedAt, stopHeading)
-            : Boolean(segment.endedAt.querySelector('a,iframe'));
-        })()),
-      );
       let trimmedEnd = fullText.length;
       while (trimmedEnd > 0 && /\s/u.test(fullText[trimmedEnd - 1]!)) trimmedEnd -= 1;
       const lastFullStop = trimmedEnd > 0 ? fullText.lastIndexOf('。', trimmedEnd - 1) : -1;
@@ -438,6 +448,24 @@ function relatedSections(document: Document) {
       while (lastProseChar >= 0 && /[\s【】[\]()（）：:—\-·•]/u.test(fullText[lastProseChar]!)) lastProseChar -= 1;
       let coreEnd = trimmedEnd - 1;
       while (coreEnd >= 0 && /[\s"'”’）)】\]]/u.test(fullText[coreEnd]!)) coreEnd -= 1;
+      let lastNonPunct = trimmedEnd - 1;
+      while (lastNonPunct >= 0 && /[\s。！？；.!?,，:：—\-·•]/u.test(fullText[lastNonPunct]!)) lastNonPunct -= 1;
+
+      let trailingLinkChecked = false;
+      let cachedTrailingLink = false;
+      const getTrailingLink = (isListOrQuoted: boolean): boolean => {
+        if (trailingLinkChecked) return cachedTrailingLink;
+        trailingLinkChecked = true;
+        if (segment.endedAt) {
+          cachedTrailingLink = elementHasTrailingLink(segment.endedAt);
+        } else if (allowParentSiblings && isListOrQuoted && container.nodeType === 1) {
+          const sib = nextElementSibling(container);
+          cachedTrailingLink = Boolean(sib && elementHasTrailingLink(sib));
+        } else {
+          cachedTrailingLink = false;
+        }
+        return cachedTrailingLink;
+      };
 
       let shouldStopContainer = false;
       let pieceIndex = 0;
@@ -449,17 +477,22 @@ function relatedSections(document: Document) {
         while (nonSpaceIdx < trimmedEnd && /\s/u.test(fullText[nonSpaceIdx]!)) nonSpaceIdx += 1;
 
         let isProse = false;
-        if (!hasTrailingLinkOrList) {
-          isProse = lastProseChar >= matchEnd;
-        } else if (nonSpaceIdx < trimmedEnd && !leadingListItem.test(fullText.slice(nonSpaceIdx, nonSpaceIdx + 16))) {
-          if (lastFullStop >= matchEnd) {
+        if (lastProseChar >= matchEnd) {
+          const openTitleChar = nonSpaceIdx < trimmedEnd ? fullText[nonSpaceIdx] : '';
+          const closeTitleChar = openTitleChar === '《' ? '》' : openTitleChar === '「' ? '」' : openTitleChar === '【' ? '】' : '';
+          const isBareQuotedTitle = Boolean(closeTitleChar && lastNonPunct > nonSpaceIdx && fullText[lastNonPunct] === closeTitleChar);
+          const isListOrQuotedTitle = (nonSpaceIdx < trimmedEnd && leadingListItem.test(fullText.slice(nonSpaceIdx, nonSpaceIdx + 16)))
+            || isBareQuotedTitle;
+          if (!isListOrQuotedTitle && (
+            lastFullStop >= matchEnd
+            || (coreEnd >= nonSpaceIdx && (
+              /[。！？；!?]/u.test(fullText[coreEnd]!)
+              || (fullText[coreEnd]! === '.' && coreEnd > nonSpaceIdx && !/[\d.]/u.test(fullText[coreEnd - 1]!))
+            ))
+          )) {
             isProse = true;
-          } else if (coreEnd >= nonSpaceIdx) {
-            const lastCh = fullText[coreEnd]!;
-            if (/[。！？；!?]/u.test(lastCh)
-              || (lastCh === '.' && coreEnd > nonSpaceIdx && !/[\d.]/u.test(fullText[coreEnd - 1]!))) {
-              isProse = true;
-            }
+          } else {
+            isProse = !getTrailingLink(isListOrQuotedTitle);
           }
         }
         if (isProse) continue;
@@ -498,7 +531,7 @@ function relatedSections(document: Document) {
       // 标题可以独占一层包装（可含 <br> 等空排版标签），链接列表与包装节点同级。
       while (heading.parentElement && isHarmlessWrapper(heading.parentElement, heading)) heading = heading.parentElement;
       if ((isExplicitHeading || !isSectionHeading || !isInlineFlow || heading !== element)
-        && !heading.querySelector('#zwinfo,.report-download')
+        && !heading.querySelector(rootBoundaryContainers)
         && relatedTitle.test(heading.textContent?.trim() ?? '')) {
         excluded.add(heading);
         if (heading.matches('.report-download')) selfRelatedBoxes.add(heading);
@@ -570,6 +603,17 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
       source = source.slice(assignment[0].length).trimStart();
     }
   }
+  const boxRelatedCache = new WeakMap<Element, boolean>();
+  const isRelatedDownloadBox = (box: Element | null): boolean => {
+    if (!box) return false;
+    const cached = boxRelatedCache.get(box);
+    if (cached !== undefined) return cached;
+    const boxHeading = leadingHeading(box);
+    const result = relatedTitle.test(box.textContent?.trim() ?? '')
+      || Boolean(boxHeading && relatedTitle.test(boxHeading.textContent?.trim() ?? ''));
+    boxRelatedCache.set(box, result);
+    return result;
+  };
   const attachment = '#zwinfo a[download][href], #zwinfo > iframe[src], .report-download a[href], a.report-download[href], a[data-encode-url][href], [data-encode-url] a[href]';
   for (const element of document.querySelectorAll(attachment)) {
     const owner = element.closest('[data-encode-url]')?.getAttribute('data-encode-url');
@@ -577,20 +621,15 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
     const expectedInfoCode = element.closest('[data-info-code]')?.getAttribute('data-info-code');
     const downloadBox = element.closest('.report-download') ?? (element.matches('a.report-download[href]') ? element : null);
     const outerBox = outermostDownloadBox(element);
+    if (isRelatedDownloadBox(downloadBox) || isRelatedDownloadBox(outerBox)) continue;
     const boxOwner = downloadBox?.getAttribute('data-encode-url');
     const boxInfoCode = downloadBox?.getAttribute('data-info-code');
-    const boxHeading = downloadBox ? leadingHeading(downloadBox) : null;
-    const outerHeading = outerBox ? leadingHeading(outerBox) : null;
     const attestedMainDownload = Boolean(
       downloadBox
       && boxOwner === request.encodeUrl && owner === request.encodeUrl
       && boxInfoCode && declaredCodes.has(boxInfoCode) && expectedInfoCode === boxInfoCode
       && !element.closest(relatedSelector)
       && !(element.tagName === 'A' && relatedTitle.test(element.textContent?.trim() ?? ''))
-      && !relatedTitle.test(downloadBox.textContent?.trim() ?? '')
-      && !(outerBox && relatedTitle.test(outerBox.textContent?.trim() ?? ''))
-      && !(boxHeading && relatedTitle.test(boxHeading.textContent?.trim() ?? ''))
-      && !(outerHeading && relatedTitle.test(outerHeading.textContent?.trim() ?? ''))
       && !related.hasInternalExclusion(element, downloadBox)
       && !(outerBox && related.hasInternalExclusion(element, outerBox)),
     );
