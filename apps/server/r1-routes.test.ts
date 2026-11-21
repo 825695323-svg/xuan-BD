@@ -11,12 +11,14 @@ import type { Backend } from '../../contracts/backend.js';
 import type { HealthResponse } from '../../contracts/contracts.js';
 import type { R1PrepareInput, R1RequestView, R1TabularMapping, R1ScalarMapping } from '../../contracts/r1-contracts.js';
 import type { TaskRecord } from '../../contracts/task-contracts.js';
+import type { ToolLibraryView } from '../../contracts/tool-library.js';
 import { CoreDatabase } from '../../platform/state/database.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { readConnectionRegistry } from '../../platform/config/connections.js';
 import { isolatedPythonArgs } from '../../platform/resources/native-check.mjs';
 import { LocalDataLifecycle } from '../../platform/runtime/local-data-lifecycle.js';
 import { PersonalCore } from '../../modules/agent/runtime/core.js';
+import { ALGORITHM_REGISTRY } from '../../modules/financial/algorithm-registry.js';
 import { DIMENSION_KEYS } from '../../modules/collection/processing-routing.js';
 import { WfdProductMachineClient, WfdProductMachineError } from '../../adapters/database/wfd-product-machine.js';
 import { parseProductMachineConnectionProfile, resolveProductMachineConnection } from '../../adapters/database/wfd-product-connection.js';
@@ -1643,7 +1645,7 @@ test('retired handoff routes and schemas stay absent while material processing a
 });
 
 
-test('read-only algorithm catalog exposes one entry and retired routes create no tasks', async () => {
+test('read-only algorithm catalog exposes registered methods and retired routes create no tasks', async () => {
   const f = fixture(), h = await host(f, join(f.root, 'web'));
   try {
     const countBefore = h.database.connection.prepare('SELECT count(*) AS count FROM tasks').get()?.count;
@@ -1651,7 +1653,18 @@ test('read-only algorithm catalog exposes one entry and retired routes create no
     const headers = { 'x-local-data-generation': '1' };
     const catalog = await fetch(ui + '/tool-library', { headers });
     assert.equal(catalog.status, 200);
-    assert.deepEqual((await catalog.json()).tools.map((tool: { id: string }) => tool.id), ['macd']);
+    const library = await catalog.json() as ToolLibraryView;
+    const ids = library.tools.map(tool => tool.id);
+    assert.deepEqual(ids, ALGORITHM_REGISTRY.map(tool => tool.id), '只读 HTTP 目录应展示实际登记清单，不固定为旧版单算法。');
+    assert.equal(new Set(ids).size, ids.length, '每个登记方法只展示一次。');
+    for (const id of ['alpha191_014', 'alpha191_031', 'alpha191_116', 'alpha191_168', 'alpha191_189']) {
+      const tool = library.tools.find(item => item.id === id);
+      assert.ok(tool, `${id} 必须可从现有只读目录发现。`);
+      assert.equal(tool.state, 'executable', `${id} 复用已登记固定算法入口。`);
+      assert.ok(tool.definition, `${id} 必须带已有定义层的口径说明。`);
+      assert.ok(tool.requiredInputs?.length, `${id} 必须明确实际输入字段。`);
+    }
+    assert.ok(library.tools.every(tool => tool.status !== 'ready'), '本夹具未装配算法执行器，登记和查看不能授予执行资格。');
     assert.equal((await fetch(ui + '/algorithms', { headers })).status, 404);
     for (const path of ['/tools', '/plugins', '/computation/capabilities', '/processing/polars/capabilities']) {
       assert.equal((await h.call(path, undefined, 404)).code, 'SERVICE_ROUTE_UNAVAILABLE');

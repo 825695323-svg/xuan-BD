@@ -86,7 +86,7 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
       if (action === 'source.fetch' && args.sourceId === 'tdx') {
         implementation.push('tdx', 'process'); dependencies = directResourceVersions(options, ['python3', 'security'], options.tdxaidataPackage ? [options.tdxaidataPackage.path] : [], ['temp']);
       }
-      if (action === 'source.api.read') { implementation.push('process'); dependencies = directResourceVersions(options, ['security']); }
+      if (sources.credentialProgramRequired(action, args)) { implementation.push('process'); dependencies = directResourceVersions(options, ['security']); }
     } else if (capture?.handles(action)) {
       const { rule } = validateCaptureSourceArgs(action, args), script = directFileVersion(fileURLToPath(new URL(`../../plugins/capture-sources/${rule.path}`, import.meta.url)));
       if (script.sha256 !== rule.sha256 || !options.captureSessions?.dependencyVersion) throw new DirectError('DIRECT_VERSION_UNAVAILABLE', '本站脚本或会话缺少可核对的受信依赖版本。');

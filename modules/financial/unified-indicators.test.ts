@@ -51,6 +51,9 @@ function syntheticSeries(closes: number[], volumes?: number[]): AlgorithmData {
 const closes = [100, 120, 90, 90, 110, 85, 125, 100, 130, 120];
 const prices = syntheticSeries(closes);
 const withVolume = syntheticSeries(closes, [1200, 800, 1700, 900, 0, 600, 2000, 300, 1500, 750]);
+const factorCloses = Array.from({ length: 28 }, (_, index) => 30 + index / 2 + (index % 4) * 1.25);
+const factorPrices = syntheticSeries(factorCloses);
+const factorVolume = syntheticSeries(factorCloses, factorCloses.map((_, index) => 20 + (index * 17) % 71));
 
 function syntheticSnapshot(id: string, data: AlgorithmData, needsVolume: boolean): AlgorithmSnapshotRead {
   const fieldMapping = { timestamp: 'timestamp', close: 'close', available_at: 'available_at',
@@ -158,7 +161,7 @@ describe('统一指标真实 Python 执行与独立复核',
     }
 
     function submit(id: string, methodId: AlgorithmMethodId, parameters: JsonValue, data: AlgorithmData) {
-      const snapshot = syntheticSnapshot(id, data, methodId === 'obv');
+      const snapshot = syntheticSnapshot(id, data, ALGORITHM_METHODS[methodId].requiredFields.includes('volume'));
       snapshots.set(snapshot.reference.snapshotId, snapshot);
       return algorithms.submit(id, { methodId, parameters, source: { kind: 'fixed_snapshot', reference: snapshot.reference } });
     }
@@ -192,6 +195,11 @@ describe('统一指标真实 Python 执行与独立复核',
       ['returns-log', 'returns', { period: 2, mode: 'log' }],
       ['drawdown-expanding', 'max_drawdown', {}],
       ['drawdown-rolling', 'max_drawdown', { period: 3 }],
+      ['alpha191-014', 'alpha191_014', {}, factorPrices],
+      ['alpha191-031', 'alpha191_031', {}, factorPrices],
+      ['alpha191-116', 'alpha191_116', {}, factorPrices],
+      ['alpha191-168', 'alpha191_168', {}, factorVolume],
+      ['alpha191-189', 'alpha191_189', {}, factorPrices],
     ] as const satisfies readonly (readonly [string, AlgorithmMethodId, JsonValue, AlgorithmData?])[];
 
     for (const [id, methodId, params, data] of cases) {
@@ -273,6 +281,19 @@ def execute(request):
       for (const [input, error] of [[missingVolume, '第2条缺少所需字段volume'], [missingUnit, '必须声明volume_unit']] as const) {
         assert.deepEqual(await execute('obv', {}, input), { ok: false, error, execution_executed: false });
       }
+    });
+
+    test('复用相对量因子沿同一入口核验 WFD 成交量定义及零量窗口', async () => {
+      const noUnit = syntheticSeries(factorCloses, factorCloses.map(() => 1));
+      delete noUnit.metadata.volume_unit;
+      assert.throws(() => submit('alpha168-no-unit', 'alpha191_168', {}, noUnit), { code: 'ALGORITHM_UNIT_MISMATCH' });
+      const zeroVolume = syntheticSeries(factorCloses, factorCloses.map((_, index) => index < 20 ? 0 : 40));
+      const { result, input } = await computeAndCheck('alpha168-zero-window', 'alpha191_168', {}, zeroVolume);
+      assert.equal(result.rows[19]!.ALPHA191_168, null);
+      assert.equal(result.rows[20]!.ALPHA191_168, -20);
+      assert.ok(result.diagnostics.some(item => isWfdRecord(item) && item.reason === 'undefined_zero_denominator'));
+      result.rows[20]!.ALPHA191_168 = -19;
+      assert.throws(() => checkDerivedForWfd(result, binding, 'alpha168-tampered', input), { code: 'DERIVED_NUMERIC_MISMATCH' });
     });
 
     test('ROC 和收益遇到零分母保留 null 与对应诊断', async () => {
@@ -396,9 +417,10 @@ test('内置代理规则捕获 v20 并验证旧任务冻结的 v18 和 v19', () 
   }
 });
 
-test('因子库包含 bd.algorithms 的全部十个日线指标', () => {
+test('因子库包含 bd.algorithms 的全部可执行日线方法', () => {
   const library = factorLibraryView();
-  const methods = ['macd', 'ma', 'ema', 'rsi', 'boll', 'roc', 'obv', 'returns', 'volatility', 'max_drawdown'];
+  const methods = ['macd', 'ma', 'ema', 'rsi', 'boll', 'roc', 'obv', 'returns', 'volatility', 'max_drawdown',
+    'alpha191_014', 'alpha191_031', 'alpha191_116', 'alpha191_168', 'alpha191_189'];
   assert.deepEqual(ALGORITHM_REGISTRY.filter(item => item.category === 'market').map(({ id }) => id), methods);
   assert.deepEqual(library.items.filter(item => item.category === 'market').map(({ id }) => id), methods);
   assert.equal(library.sharedRegistryWith, 'bd.algorithms');

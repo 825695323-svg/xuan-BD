@@ -4,7 +4,7 @@ import { ALGORITHM_REGISTRY, ALGORITHM_REGISTRY_VERSION } from './algorithm-regi
 import { definitionFor } from './algorithm-definitions.js';
 import { processingSessionContract } from '../collection/production-module-ports.js';
 
-export const BD_SESSION_TOOL_CONTRACT_VERSION = 'bd.session-tools/3';
+export const BD_SESSION_TOOL_CONTRACT_VERSION = 'bd.session-tools/4';
 
 export function algorithmAllowedByRules(methodId: unknown, rulesVersion?: number): boolean {
   return rulesVersion === undefined || rulesVersion >= 20 || methodId === 'macd';
@@ -37,6 +37,8 @@ export function basicAlgorithmToolContract(catalog: AlgorithmCatalogView, select
     });
   return { version: BD_SESSION_TOOL_CONTRACT_VERSION, registryVersion: ALGORITHM_REGISTRY_VERSION,
     owner: 'bd_agents', discoveryAction: 'algorithms.contract', calculateAction: 'algorithms.calculate',
+    screenAction: algorithmAllowedByRules('strategy_screen', rulesVersion) ? 'algorithms.screen' : null,
+    screenContract: algorithmAllowedByRules('strategy_screen', rulesVersion) ? { action: 'algorithms.contract', methodId: 'strategy_screen' } : null,
     publishAction: 'algorithms.publish', statusAction: 'algorithms.status',
     sourcePolicy: 'WFD fixed snapshot only; no managed file, no latest, no hidden acquisition',
     agentTriggered: true, uiExecution: false, agentMaySelfAuthorize: false,
@@ -61,5 +63,8 @@ export function bdSessionToolContract(catalog: AlgorithmCatalogView, rulesVersio
       { id: 'basic_algorithms', title: '受控日线指标',
         tools: ['algorithms.contract', 'algorithms.capabilities', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status'],
         next: '按登记的参数和字段选择指标，以固定 WFD 快照计算。独立核对数值和来源后，沿原 R1 请求发布与固定读回。' },
+      ...(algorithmAllowedByRules('strategy_screen', rulesVersion) ? [{ id: 'strategy_screening', title: '受控截面筛选',
+        tools: ['algorithms.contract', 'algorithms.screen'],
+        next: '先读取 methodId=strategy_screen 的合同，明确固定 WFD 产品、日期与历史视角；完整分页后执行有限筛选规则，候选与证据返回原任务，不自动发布或下单。' }] : []),
     ], algorithms: basicAlgorithmToolContract(catalog, undefined, rulesVersion) };
 }

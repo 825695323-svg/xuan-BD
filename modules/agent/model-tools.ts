@@ -55,7 +55,7 @@ const MODEL_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIO
   'image.ocr', 'audio.transcribe', 'archive.extract', 'spotlight.search', 'web.read_public', 'web.search', 'video.transcribe_url',
   'material.read', 'material.process', 'material.ocr', 'material.transcribe',
   'baidu.drive', 'browser.control',
-  'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status', 'bd.session.capabilities',
+  'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.screen', 'algorithms.publish', 'algorithms.status', 'bd.session.capabilities',
   'data.processing.capabilities', 'data.processing.route', 'data.processing.plan', 'data.processing.execute', 'data.processing.run', 'data.processing.status', 'data.processing.recover',
   'data.modules.parse', 'data.modules.clean', 'data.modules.structure',
   'data.modules.annotate', 'data.modules.check', 'data.modules.calculate',
@@ -80,7 +80,7 @@ const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_A
   'data.r1.capabilities', 'data.r1.prepare', 'data.r1.get', 'data.r1.list', 'data.r1.recover', 'data.r1.check',
   // 只读清单与资格检查不产生外部写入，仍需本机版本和任务引用核验。
   'artifact.manifest', 'artifact.inspect', 'artifact.candidates.inspect',
-  'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.status', 'bd.session.capabilities']);
+  'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.screen', 'algorithms.status', 'bd.session.capabilities']);
 const SHARE_NOTICE = '本次选定资料及动作结果将按当前权限发送给当前模型，大结果按证据分页读取；删除和修改既有内容仍需审核。';
 const SAFE_TASK_FAILURES: Readonly<Record<string, string>> = Object.freeze({
   PROCESSING_AGENT_STAGE_SELECTION: 'AGENTS新加工计划必须显式指定stages；先只选择parse解析，读取实际结果后再按需增加阶段。',

@@ -13,7 +13,8 @@ export interface SourceConnection {
   feedIds?: string[];
 }
 export interface SourcePolicy { scopeId: string; enabled: boolean; mode: 'inherit' | 'override'; primary: string | null; backups: string[] }
-export const SOURCE_OPERATION_IDS = ['minute_bars', 'daily_bars', 'index_constituents'] as const;
+export const SOURCE_OPERATION_IDS = ['minute_bars', 'daily_bars', 'index_constituents', 'financial_statements',
+  'research_reports', 'research_report_detail'] as const;
 export type SourceOperationId = typeof SOURCE_OPERATION_IDS[number];
 export interface SourceOperationPolicy { scopeId: string; operationId: SourceOperationId; primary: string | null; backups: string[] }
 /** 来源操作同时描述可见能力与已登记的真实执行器，禁止页面自行分派。 */
