@@ -196,7 +196,7 @@ const relatedHeadingAtBoundary = /^(?:相关阅读|相关研报|推荐阅读|延
 const relatedAfterAnchor = /^(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s]*[】\])））：:—\-·•]+[\s]*|[\s]*(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/u;
 const relatedBeforeTarget = /(?:^|(?<=[\s。！？；.!?])|(?<=(?:^|[\s。！？；.!?])[【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:—\-·•]*$/u;
 const relatedWrapperTitle = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:]*$/u;
-const relatedBareKeywordPrefix = /^(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:—\-·•]*/u;
+const relatedBareKeywordPrefix = /^[【[(\s（]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])））：:—\-·•]*/u;
 const titleLinkRightBoundary = /^(?:[\s】\])））：:—\-·•《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳])/u;
 const inlineRelatedHeading = /(?:^|(?<=[\s。！？；.!?])|(?<=(?:^|[\s。！？；.!?])[【[(（]))(?:相关阅读|相关研报|推荐阅读|延伸阅读)(?:$|[\s】\])））：:—\-·•]+|(?=[《「【[(（]|\[\d{1,3}\]|[(（]\d{1,3}[)）]|\d{1,3}(?:\.(?!\d)|[、)）])|[①-⑳]))/gu;
 const mainAttachmentHeading = /^[【[(\s]*(?:本?研报附件|本?报告附件|正文附件|原文附件|研报原文|原文下载|下载本?研报|下载原文|附件下载)(?:$|[\s】\])：:—\-·•（(])/u;
@@ -294,7 +294,7 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
       const isIsoSelf = isRel || isBox || isRootSelf || isolatedContainerTags.has(el.tagName) || nonContentTags.has(el.tagName);
       isIsolatedBoundary.set(el, isIsoSelf);
       const selfConsumesOwnText = el.matches(explicitSectionHeadings)
-        || (el.tagName === 'A' && isEastmoneyPdfHref(el.getAttribute('href'), baseUrl));
+        || (el.tagName === 'A' && el.hasAttribute('href'));
       const nextNeedOwnText = selfConsumesOwnText || top.needOwnText;
       top.needOwnText = nextNeedOwnText;
       const isZw = el.id === 'zwinfo';
@@ -335,7 +335,7 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
       || (el.tagName === 'A' && isEastmoneyPdfHref(el.getAttribute('href'), baseUrl))
       || (el.tagName === 'IFRAME' && top.parentIsZwinfo && isEastmoneyPdfHref(el.getAttribute('src'), baseUrl))
     );
-    let hitHeading = isExplicitH;
+    let hitHeading = false;
     let own = '';
     const children: NodeListOf<ChildNode> = el.childNodes;
     for (let i = 0; i < children.length; i += 1) {
@@ -355,7 +355,7 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
       if (ceStopsOuter) childStopsOuter = true;
       if (!canFlattenInline.get(ce)) allFlat = false;
       if (ce.tagName === 'A' || ce.tagName === 'IFRAME' || hasAnchorOrFrame.get(ce)) linkOrFrameChild = true;
-      if (!hitHeading && !isRel && !isRootSelf && !nonContentTags.has(el.tagName)) {
+      if (!isExplicitH && !hitHeading && !isRel && !isRootSelf && !nonContentTags.has(el.tagName)) {
         if (hasCandidateBeforeHeading.get(ce)) candidateBeforeH = true;
         if (ceStopsOuter) hitHeading = true;
       }
@@ -363,9 +363,16 @@ function precomputeDomFlags(document: Document, baseUrl: string): DomFlags {
         own = appendNormalizedOwnText(own, ownText.get(ce) ?? '', 128);
       }
     }
+    let selfStopsLevel2 = false;
+    if (isExplicitH && !isIsoSelf && !rootB && !nestedH) {
+      const hText = own.trim();
+      if (hText.length > 0 && hText.length <= 64 && !/[。！？；]/u.test(hText) && !relatedTitle.test(hText)) {
+        selfStopsLevel2 = headingLevel(el) <= 2 || mainAttachmentHeading.test(hText);
+      }
+    }
     hasRootBoundary.set(el, rootB);
     hasNestedExplicitHeading.set(el, nestedH);
-    stopsOuterRelated.set(el, !isIsoSelf && (isExplicitH || childStopsOuter));
+    stopsOuterRelated.set(el, !isIsoSelf && (selfStopsLevel2 || childStopsOuter));
     hasCandidateBeforeHeading.set(el, candidateBeforeH);
     hasAnchorOrFrame.set(el, linkOrFrameChild);
     if (top.needOwnText) ownText.set(el, own);
@@ -473,6 +480,7 @@ function scanInlineRun(
   onlyRun: boolean,
   followedByCandidate: boolean,
   baseUrl: string,
+  flags: DomFlags,
   cur: Scope,
   attr: AttrScope,
   attachmentMap: WeakSet<Element>,
@@ -483,7 +491,6 @@ function scanInlineRun(
     el: Element;
     start: number;
     targetIndex: number;
-    firstNonSpace: number;
   };
   type RunFrame =
     | { kind: 'node'; node: ChildNode; owner: string | null; infoCode: string | null; isTopChild: boolean }
@@ -499,13 +506,11 @@ function scanInlineRun(
     });
   }
   let runText = '';
-  let plainRunText = '';
   let inAnchorDepth = 0;
-  let lastNonSpaceIdx = -1;
-  const pendingAnchors: CloseAnchorFrame[] = [];
   let hasTitleClass = false;
   const runTargets: RunTarget[] = [];
   const titleLinkTriggers: TitleLinkTrigger[] = [];
+  const topAnchorSpans: Array<{ start: number; end: number }> = [];
   const anchorStarts = new Set<number>();
   const anchorEnds = new Set<number>();
   while (stack.length) {
@@ -514,68 +519,34 @@ function scanInlineRun(
       inAnchorDepth -= 1;
       const end = runText.length;
       anchorEnds.add(end);
-      const first = frame.firstNonSpace;
-      const hasNonSpace = first !== -1 && lastNonSpaceIdx >= first;
+      if (inAnchorDepth === 0) {
+        topAnchorSpans.push({ start: frame.start, end });
+      }
+      const linkText = (flags.ownText.get(frame.el) ?? '').trim();
       if (frame.targetIndex !== -1) {
         const target = runTargets[frame.targetIndex]!;
         target.end = end;
-        if (hasNonSpace) {
-          const headSlice = runText.slice(first, Math.min(lastNonSpaceIdx + 1, first + 32));
-          target.inRelatedSelf = relatedTitle.test(headSlice);
-        }
+        target.inRelatedSelf = linkText.length > 0 && relatedTitle.test(linkText);
       }
-      if (hasNonSpace) {
-        const trimmedLen = lastNonSpaceIdx + 1 - first;
-        if (trimmedLen <= 16) {
-          const linkText = runText.slice(first, lastNonSpaceIdx + 1);
-          if (relatedWrapperTitle.test(linkText)) {
-            titleLinkTriggers.push({
-              start: frame.start,
-              end,
-              endsWithPunct: /[】\])））：:—\-·•]$/u.test(linkText),
-            });
-          }
-        }
+      if (linkText.length > 0 && linkText.length <= 16 && relatedWrapperTitle.test(linkText)) {
+        titleLinkTriggers.push({
+          start: frame.start,
+          end,
+          endsWithPunct: /[】\])））：:—\-·•]$/u.test(linkText),
+        });
       }
       continue;
     }
     const { node } = frame;
     if (node.nodeType === 3) {
       const text = node.textContent ?? '';
-      if (text) {
-        const base = runText.length;
-        let firstLocal = -1;
-        for (let i = 0; i < text.length; i += 1) {
-          if (!/\s/u.test(text[i]!)) {
-            firstLocal = i;
-            break;
-          }
-        }
-        if (firstLocal !== -1) {
-          if (pendingAnchors.length > 0) {
-            const absFirst = base + firstLocal;
-            for (let i = 0; i < pendingAnchors.length; i += 1) {
-              pendingAnchors[i]!.firstNonSpace = absFirst;
-            }
-            pendingAnchors.length = 0;
-          }
-          for (let i = text.length - 1; i >= firstLocal; i -= 1) {
-            if (!/\s/u.test(text[i]!)) {
-              lastNonSpaceIdx = base + i;
-              break;
-            }
-          }
-        }
-        runText += text;
-        plainRunText += inAnchorDepth > 0 ? ' '.repeat(text.length) : text;
-      }
+      if (text) runText += text;
       continue;
     }
     if (node.nodeType !== 1) continue;
     const el = node as Element;
     if (el.tagName === 'BR' || el.tagName === 'HR') {
       runText += '\n';
-      plainRunText += '\n';
       continue;
     }
     if (decorativeInlineTags.has(el.tagName)) continue;
@@ -613,15 +584,12 @@ function scanInlineRun(
         });
       }
       inAnchorDepth += 1;
-      const closeFrame: CloseAnchorFrame = {
+      stack.push({
         kind: 'closeAnchor',
         el,
         start: anchorStart,
         targetIndex,
-        firstNonSpace: -1,
-      };
-      pendingAnchors.push(closeFrame);
-      stack.push(closeFrame);
+      });
       const ac: NodeListOf<ChildNode> = el.childNodes;
       for (let i = ac.length - 1; i >= 0; i -= 1) {
         stack.push({ kind: 'node', node: ac[i]!, owner: nextOwner, infoCode: nextInfoCode, isTopChild: false });
@@ -664,8 +632,27 @@ function scanInlineRun(
   if (runText.length > 0) {
     inlineRelatedHeading.lastIndex = 0;
     let m: RegExpExecArray | null;
+    let scanPos = 0;
+    let lastNonHorizChar = '';
     while ((m = inlineRelatedHeading.exec(runText)) !== null) {
-      triggers.push(m.index + m[0].length);
+      while (scanPos < m.index) {
+        const ch = runText[scanPos]!;
+        if (ch !== ' ' && ch !== '\t') lastNonHorizChar = ch;
+        scanPos += 1;
+      }
+      const matchEnd = m.index + m[0].length;
+      const tail = m[0].slice(4);
+      const isBareSpaceTail = tail.length > 0 && /^[ \t]+$/u.test(tail);
+      const isMidClause = lastNonHorizChar !== '' && !/[\n\r。！？；.!?【[(（]/u.test(lastNonHorizChar);
+      if (isBareSpaceTail && isMidClause) {
+        const nextSlice = runText.slice(matchEnd, matchEnd + 16);
+        const followedByMarker = matchEnd === runText.length
+          || anchorStarts.has(matchEnd)
+          || /^[《「【[(（]/u.test(nextSlice)
+          || leadingListItem.test(nextSlice);
+        if (!followedByMarker) continue;
+      }
+      triggers.push(matchEnd);
     }
     for (const target of runTargets) {
       if (target.start > 0) {
@@ -684,8 +671,8 @@ function scanInlineRun(
         if (afterAnchor) {
           triggers.push(endPos + afterAnchor[0].length);
         } else {
-          const bare = relatedBareKeywordPrefix.exec(runText.slice(endPos, endPos + 16));
-          if (bare && anchorStarts.has(endPos + bare[0].length)) {
+          const bare = relatedBareKeywordPrefix.exec(runText.slice(endPos, endPos + 24));
+          if (bare && (endPos + bare[0].length === runText.length || anchorStarts.has(endPos + bare[0].length))) {
             triggers.push(endPos + bare[0].length);
           }
         }
@@ -721,6 +708,15 @@ function scanInlineRun(
         if (seen[pos]) triggers.push(pos);
       }
     }
+  }
+
+  const anchorTrimmedEnd = new Map<number, number>();
+  for (let i = 0; i < topAnchorSpans.length; i += 1) {
+    let s = topAnchorSpans[i]!.start;
+    let e = topAnchorSpans[i]!.end;
+    while (s < e && /\s/u.test(runText[s]!)) s += 1;
+    while (e > s && /\s/u.test(runText[e - 1]!)) e -= 1;
+    if (s < e) anchorTrimmedEnd.set(s, e);
   }
 
   let targetIdx = 0;
@@ -782,7 +778,7 @@ function scanInlineRun(
       }
       lastProseCueStart = -1;
       if (trimmedEnd > floor) {
-        const gapSlice = plainRunText.slice(floor, trimmedEnd);
+        const gapSlice = runText.slice(floor, trimmedEnd);
         proseBodyCueGlobal.lastIndex = 0;
         let cm: RegExpExecArray | null;
         while ((cm = proseBodyCueGlobal.exec(gapSlice)) !== null) {
@@ -813,8 +809,10 @@ function scanInlineRun(
         closeChar && lastNonPunct > nonSpaceIdx && runText[lastNonPunct] === closeChar
         && prevClose <= nonSpaceIdx,
       );
+      const linkedEnd = anchorTrimmedEnd.get(nonSpaceIdx) ?? -1;
+      const isBareLinkedTitle = linkedEnd !== -1 && (linkedEnd === trimmedEnd || linkedEnd === lastNonPunct + 1);
       const isNumbered = nonSpaceIdx < trimmedEnd && leadingListItem.test(runText.slice(nonSpaceIdx, nonSpaceIdx + 16));
-      if (isNumbered || isBareQuotedTitle) {
+      if (isNumbered || isBareQuotedTitle || isBareLinkedTitle) {
         isProse = false;
       } else if (
         lastFullStop >= triggerEnd
@@ -968,6 +966,7 @@ function analyzeEastmoneySections(document: Document, baseUrl: string) {
         frame.onlyRun,
         frame.followedByCandidate,
         baseUrl,
+        flags,
         cur,
         attr,
         attachmentMap,
