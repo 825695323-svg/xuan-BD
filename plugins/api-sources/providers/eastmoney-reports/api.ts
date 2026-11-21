@@ -203,32 +203,34 @@ function headingLevel(element: Element): number {
   return aria && /^[1-6]$/u.test(aria) ? Number(aria) : 2;
 }
 
+const inlineWrapperElements = 'div,span,header,strong,b,em,i,small,u,mark,p';
+const inlineTextElements = 'span,strong,b,em,i,small,u,mark';
+const inlineNonBlockForbidden = 'a,iframe,ul,ol,li,dl,table,section,article,aside,nav,div,p,h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt,form,blockquote,pre';
+
 function isHarmlessWrapper(parent: Element, heading: Element): boolean {
-  if (!parent.matches('div,span,header,strong,b,em,i,p')) return false;
+  if (!parent.matches(inlineWrapperElements)) return false;
   if (!(parent.textContent?.trim() === heading.textContent?.trim() || relatedWrapperTitle.test(parent.textContent?.trim() ?? ''))) return false;
   for (const child of parent.children) {
     if (child === heading) continue;
     if (['BR', 'HR', 'WBR'].includes(child.tagName)) continue;
-    if (['SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL'].includes(child.tagName)
+    if (child.matches(inlineTextElements)
       && !(child.textContent ?? '').trim() && !child.querySelector('a,iframe')) continue;
     return false;
   }
   return true;
 }
 
-function hasOnlyHarmlessChildren(element: Element): boolean {
-  for (const child of element.children) {
-    if (['BR', 'HR', 'WBR'].includes(child.tagName)) continue;
-    if (['SPAN', 'STRONG', 'B', 'EM', 'I', 'SMALL'].includes(child.tagName)
-      && !(child.textContent ?? '').trim() && !child.querySelector('a,iframe')) continue;
-    return false;
-  }
-  return true;
+function isPureInlineTitleBlock(element: Element): boolean {
+  return element.matches(inlineWrapperElements) && !element.querySelector(inlineNonBlockForbidden);
 }
 
 /** 从阅读小节标题到同级或更高标题之间的内容，限定在同一正文容器内。 */
 function relatedSections(document: Document) {
   const excluded = new WeakSet<Element>();
+  const isExcluded = (element: Element): boolean => {
+    for (let node: Element | null = element; node; node = node.parentElement) if (excluded.has(node)) return true;
+    return false;
+  };
   function markFollowing(title: ChildNode, level: number) {
     for (let node = title.nextSibling; node; node = node.nextSibling) {
       if (node.nodeType !== 1) continue;
@@ -237,12 +239,33 @@ function relatedSections(document: Document) {
       excluded.add(next);
     }
   }
-  for (const element of document.querySelectorAll(sectionHeadings + ',p,strong,b,em,i,span,div,section,article')) {
-    if (excluded.has(element)) continue;
-    // 兼容正文中直接写“相关阅读：”再跟下载链接的片段，但对只含 <br> 等空排版子元素的标题块直接上溯标记后续节点。
-    if (element.childElementCount && !element.matches(sectionHeadings) && !hasOnlyHarmlessChildren(element)) {
-      for (const child of element.childNodes)
-        if (child.nodeType === 3 && relatedTitle.test(child.textContent?.trim() ?? '')) markFollowing(child, 2);
+  for (const element of document.querySelectorAll(sectionHeadings + ',p,strong,b,em,i,small,u,mark,span,div,header,section,article')) {
+    if (isExcluded(element)) continue;
+    // 兼容正文中直接写“相关阅读：”或“<em>相关</em>阅读：”再跟下载链接的片段；纯行内标题块直接作为小节标题上溯标记后续节点。
+    if (!element.matches(sectionHeadings) && !isPureInlineTitleBlock(element)) {
+      let inlinePrefix = '';
+      for (const child of element.childNodes) {
+        if (child.nodeType === 3) {
+          const text = child.textContent ?? '';
+          inlinePrefix += text;
+          if (relatedTitle.test(text.trim()) || relatedTitle.test(inlinePrefix.trim())) {
+            markFollowing(child, 2);
+            inlinePrefix = '';
+          }
+        } else if (child.nodeType === 1) {
+          const el = child as Element;
+          if (el.matches(inlineTextElements) && !el.querySelector(inlineNonBlockForbidden)) {
+            const text = el.textContent ?? '';
+            inlinePrefix += text;
+            if (relatedTitle.test(text.trim()) || relatedTitle.test(inlinePrefix.trim())) {
+              markFollowing(child, 2);
+              inlinePrefix = '';
+            }
+          } else {
+            inlinePrefix = '';
+          }
+        }
+      }
       continue;
     }
     if (!relatedTitle.test(element.textContent?.trim() ?? '')) continue;
@@ -254,8 +277,7 @@ function relatedSections(document: Document) {
   }
   return (element: Element) => {
     if (element.closest(relatedSelector) || element.tagName === 'A' && relatedTitle.test(element.textContent?.trim() ?? '')) return true;
-    for (let node: Element | null = element; node; node = node.parentElement) if (excluded.has(node)) return true;
-    return false;
+    return isExcluded(element);
   };
 }
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CoreDatabase } from '../../platform/state/database.js';
-import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
+import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import type { TaskExecutionContext, TaskRecord } from '../../platform/jobs/tasks.js';
 import { FINANCIAL_PDF_VERSION, type FinancialPdfSelection } from './data-processing/financial-pdf.js';
 import { ProcessingPlanService, type OperatorContext, type ProcessingPlanInput } from './processing-plan.js';
@@ -189,17 +189,19 @@ test('conversation replay checks the current trusted message verifier and branch
 test('financialReadBinding keeps legacy plan replay idempotent and rejects mid-step reader drift before commit', async () => {
   const database = new CoreDatabase(), records = new Map<string, TaskRecord>();
   const bytes = Buffer.from('k,v\nsynthetic,1\n'), sha = wfdSha256(bytes);
-  let readCalls = 0, driftOnPut = false, readBinding = { readSchemaSha256: 'a'.repeat(64), queryImplSha256: 'b'.repeat(64) };
+  let readCalls = 0, putAttempts = 0, driftOnPut = false, readBinding = { readSchemaSha256: 'a'.repeat(64), queryImplSha256: 'b'.repeat(64) };
   database.connection.exec('CREATE TABLE IF NOT EXISTS put_commits(id INTEGER PRIMARY KEY AUTOINCREMENT, digest TEXT NOT NULL);');
+  const unitDef = { dimension: 'money' };
+  const valueUnit = { unit_code: 'cny', definition: unitDef, digest: 'sha256:' + wfdSha256(canonicalWfdJson({ code: 'cny', definition: unitDef })), resolved: true };
   const row = (key: string, val: string) => ({
     product_id: 'p_fin', snapshot_id: 's_fin',
     record_ref: { product_id: 'p_fin', snapshot_id: 's_fin', logical_key: key, revision_id: 'r1' },
     values: { entity: { value_state: 'valid_value', value: 'S' }, accounting_standard: { value_state: 'valid_value', value: 'CAS' },
       currency: { value_state: 'valid_value', value: 'CNY' }, scope: { value_state: 'valid_value', value: 'consolidated' },
-      concept: { value_state: 'valid_value', value: '营业收入' }, period_type: { value_state: 'valid_value', value: 'duration' },
+      concept: { value_state: 'valid_value', value: '其中：营业收入' }, period_type: { value_state: 'valid_value', value: 'duration' },
       start_date: { value_state: 'valid_value', value: '2025-01-01' }, end_date: { value_state: 'valid_value', value: '2025-03-31' },
       report_nature: { value_state: 'valid_value', value: 'formal' }, comparability_basis: { value_state: 'valid_value', value: 'reported' },
-      unit: { value_state: 'valid_value', value: 'yuan' }, value: { value_state: 'valid_value', data_type: 'decimal', unit: 'yuan', value: val } },
+      unit: { value_state: 'valid_value', value: 'cny' }, value: { value_state: 'valid_value', data_type: 'decimal', unit: valueUnit, value: val } },
   });
   const shared = {
     database,
@@ -211,6 +213,7 @@ test('financialReadBinding keeps legacy plan replay idempotent and rejects mid-s
     materials: { get: () => ({ envelope: { filename: 'fin.csv', sha256: sha, byteLength: bytes.length, mediaType: 'text/csv' },
       preview: { format: 'csv', support: 'supported' } }), readOriginal: () => ({ bytes, sha256: sha }) } as never,
     objects: { put: (value: Buffer, media_type: string) => {
+      putAttempts += 1;
       const digest = wfdSha256(value);
       database.connection.prepare('INSERT INTO put_commits(digest) VALUES(?)').run(digest);
       if (driftOnPut) readBinding = { ...readBinding, queryImplSha256: 'd'.repeat(64) };
@@ -262,6 +265,7 @@ test('financialReadBinding keeps legacy plan replay idempotent and rejects mid-s
       generation: 0, signal: new AbortController().signal, emit: async () => {}, consumeBudget: () => ({}) } as unknown as TaskExecutionContext),
       { code: 'FINANCIAL_FIXED' });
     assert.equal(readCalls, 2);
+    assert.equal(putAttempts, 0);
     assert.notEqual(upgradedService.get(plan.planId).steps[0]!.state, 'succeeded');
 
     readBinding = { readSchemaSha256: 'a'.repeat(64), queryImplSha256: 'b'.repeat(64) };
@@ -270,6 +274,7 @@ test('financialReadBinding keeps legacy plan replay idempotent and rejects mid-s
     await assert.rejects(upgradedService.runtime.execute({ task: putDriftTask, runId: putDriftTask.id, attemptId: 'fin-attempt',
       generation: 0, signal: new AbortController().signal, emit: async () => {}, consumeBudget: () => ({}) } as unknown as TaskExecutionContext),
       { code: 'FINANCIAL_FIXED' });
+    assert.equal(putAttempts, 1);
     assert.equal(Number((database.connection.prepare('SELECT COUNT(*) AS n FROM put_commits').get() as { n: number }).n), 0);
     assert.notEqual(upgradedService.get(plan.planId).steps[0]!.state, 'succeeded');
   } finally { database.close(); }

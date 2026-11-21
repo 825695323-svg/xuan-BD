@@ -35,6 +35,10 @@ export class AgentEvidenceService {
     return { evidenceId: id, sha256, totalBytes: body.length, format: 'utf8' };
   }
   source(scope: EvidenceScope, id: string): EvidenceSource { return JSON.parse(this.row(scope, id).source_json) as EvidenceSource; }
+  cursorFor(scope: EvidenceScope, reference: { evidenceId: string; sha256: string }, offset: number): string {
+    const encoded = Buffer.from(JSON.stringify([reference.evidenceId, reference.sha256, scopeText(scope), offset])).toString('base64url');
+    return encoded + '.' + createHmac('sha256', this.secret).update(encoded).digest('base64url');
+  }
   read(scope: EvidenceScope, request: { evidenceId: string; sha256: string; cursor?: string; offset?: number; maxBytes?: number },
     assertAccess: (source: EvidenceSource) => void): EvidencePage {
     const row = this.row(scope, request.evidenceId), source = JSON.parse(row.source_json) as EvidenceSource;
@@ -59,8 +63,7 @@ export class AgentEvidenceService {
     let end = Math.min(body.length, start + limit);
     const page = (): EvidencePage => {
       while (end < body.length && (body[end]! & 0xc0) === 0x80) end -= 1;
-      const encoded = Buffer.from(JSON.stringify([row.id, row.sha256, scopeText(scope), end])).toString('base64url');
-      const cursor = encoded + '.' + createHmac('sha256', this.secret).update(encoded).digest('base64url');
+      const cursor = this.cursorFor(scope, { evidenceId: row.id, sha256: row.sha256 }, end);
       return { evidenceId: row.id, sha256: row.sha256, totalBytes: body.length, format: 'utf8', text: body.subarray(start, end).toString('utf8'),
         startByte: start, endByte: end, nextCursor: end < body.length ? cursor : null, done: end === body.length };
     };

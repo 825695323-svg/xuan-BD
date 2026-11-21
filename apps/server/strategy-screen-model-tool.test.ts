@@ -295,7 +295,8 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     const realTask = services.tasks.get(historicalResult.data.taskId);
     const bridge = services.modelTools as unknown as {
       assertHistoricalAlgorithmPreview(c: unknown, t: unknown, s: unknown, r?: unknown): void;
-      evidence: { retain(s: unknown, src: unknown, text: string): { evidenceId: string; sha256: string; totalBytes: number } };
+      evidence: { retain(s: unknown, src: unknown, text: string): { evidenceId: string; sha256: string; totalBytes: number; format: 'utf8' };
+        read(s: unknown, req: { evidenceId: string; sha256: string; maxBytes?: number }, assertAccess: () => void): Record<string, unknown> };
     };
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.calculate', result: { data: { modelPreview: leaked } } },
       scope), { code: 'MODEL_SHARE_REVOKED' });
@@ -322,22 +323,87 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     const safeText = JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview });
     const safeRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, safeText);
     const safeStatusTask = { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: safeCalcPreview } } };
+    const validSlice = bridge.evidence.read(scope, { ...safeRef, maxBytes: 10 }, () => {});
     const pagedCall = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, complete: false,
-      evidence: { ...safeRef, startByte: 0, endByte: 10, text: Buffer.from(safeText, 'utf8').subarray(0, 10).toString('utf8') } }) };
+      note: '完整结果按固定摘要保管；使用core_evidence_read续取nextCursor，done=true表示已读到末尾。', evidence: validSlice }) };
     assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview(pagedCall, safeStatusTask, scope, safeRef));
-    const pageWrapper = { ...callRow, tool_name: 'core_evidence_read', preview_json: JSON.stringify({
-      ...safeRef, format: 'utf8', startByte: 0, endByte: 10, text: Buffer.from(safeText, 'utf8').subarray(0, 10).toString('utf8'),
-      nextCursor: null, done: false }) };
+    const pageWrapper = { ...callRow, tool_name: 'core_evidence_read', preview_json: JSON.stringify(validSlice) };
     assert.doesNotThrow(() => bridge.assertHistoricalAlgorithmPreview(pageWrapper, safeStatusTask, scope));
+    for (const badSlice of [
+      { ...validSlice, done: true, nextCursor: null },
+      { ...validSlice, format: 'raw' },
+      { ...validSlice, nextCursor: 'tampered.sig' },
+    ]) {
+      assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, tool_name: 'core_evidence_read',
+        preview_json: JSON.stringify(badSlice) }, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
+    }
     const tamperedWrapper = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, complete: false,
-      evidence: { ...safeRef, startByte: 0, endByte: 10, text: 'TAMPERED!!' } }) };
+      evidence: { ...validSlice, text: 'TAMPERED!!' } }) };
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview(tamperedWrapper, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
     const outOfRangeSlice = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, complete: false,
-      evidence: { ...safeRef, startByte: 99999, endByte: 100010, text: '' } }) };
+      evidence: { ...validSlice, startByte: 99999, endByte: 100010, text: '' } }) };
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview(outOfRangeSlice, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
     const dualFieldBypass = { ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview,
-      evidence: { ...safeRef, startByte: 0, endByte: 10, text: 'TAMPERED!!' } }) };
+      evidence: { ...validSlice, text: 'TAMPERED!!' } }) };
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview(dualFieldBypass, safeStatusTask, scope), { code: 'MODEL_SHARE_REVOKED' });
+    const retainedDualText = JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview,
+      evidence: { ...validSlice, text: 'record_id=sample-42' } });
+    const retainedDualRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, retainedDualText);
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview }) },
+      safeStatusTask, scope, retainedDualRef), { code: 'MODEL_SHARE_REVOKED' });
+    for (const forgedField of [
+      { ruleVersion: 'synthetic-rev-42', cutoff: at },
+      { ruleVersion: 'bd.purpose-eligibility/2', cutoff: 'synthetic-rev-42' },
+    ]) {
+      assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
+        code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: JSON.stringify({ ruleVersion: forgedField.ruleVersion, status: 'ineligible',
+          purpose: 'historical_compute', history: { mode: 'market_known_at', cutoff: forgedField.cutoff, perspective: 'market_known_at', historical: true },
+          blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64),
+          action: '该固定快照在所请求的历史视角/截止下未通过用途资格；完整核对明细保留在原任务审计记录。' }) } } } } }, scope), { code: 'MODEL_SHARE_REVOKED' });
+    }
+    assert.throws(() => bridge.assertHistoricalAlgorithmPreview(callRow, { ...realTask, action: 'algorithms.status', result: { data: { modelPreview: { error: {
+      code: 'ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE', message: 'record_id=sample-42 r_secret' } } } } }, scope), { code: 'MODEL_SHARE_REVOKED' });
+    const companionHost = companion as unknown as { algorithms?: { versionBinding: Record<string, string>; catalog(): unknown; submit(...args: unknown[]): unknown; view?(id: string): unknown } };
+    const prevAlg = companionHost.algorithms;
+    let injectedStatusError: { code: string; message: string } | null = null;
+    companionHost.algorithms = {
+      ...(prevAlg as NonNullable<typeof prevAlg>),
+      view: (id: string) => ({ taskId: id, requestId: id, methodId: 'macd', status: 'failed', taskVersion: 1, requiresReview: false,
+        createdAt: 1, updatedAt: 1, error: injectedStatusError, publication: null, guidance: null, result: null }),
+    };
+    try {
+      const originJson = JSON.stringify(services.modelTools.taskOrigin(historicalResult.data.taskId));
+      const invokeStatusWithError = async (reqId: string, error: { code: string; message: string }) => {
+        injectedStatusError = error;
+        const created = companionDb.transaction(() => companion.tasks.createInTransaction({
+          conversationId: historyInput.conversationId, title: reqId, runtimeId: 'bd.algorithms',
+          action: 'algorithms.calculate', args: {}, requestId: reqId }));
+        created.publish();
+        companionDb.connection.prepare("UPDATE tasks SET status='failed' WHERE id=?").run(created.task.id);
+        services.database.connection.prepare('INSERT INTO conversation_algorithm_links VALUES(?,?,?,?,?)')
+          .run(created.task.id, historicalResult.data.taskId, 'algorithms.calculate', originJson, Date.now());
+        return preview(await historyTool.execute(`status-${reqId}`, { action: 'algorithms.status', args: { taskId: created.task.id } }, undefined, undefined, toolContext));
+      };
+      const statusIncomplete = await invokeStatusWithError('req-status-sanitize-1', {
+        code: 'ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE', message: 'record_id=sample-42 r_secret' });
+      assert.doesNotMatch(JSON.stringify(statusIncomplete), /sample-42|r_secret/u);
+      assert.equal(statusIncomplete.data.error.message, '历史版本选择存在待补证据；完整核对明细保留在原任务审计记录。');
+
+      const forgedEligibilityErr = JSON.stringify({ ruleVersion: 'synthetic-rev-42', status: 'ineligible', purpose: 'historical_compute',
+        history: { mode: 'market_known_at', cutoff: 'synthetic-rev-99', perspective: 'market_known_at', historical: true },
+        blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64) });
+      const statusForgedRule = await invokeStatusWithError('req-status-sanitize-2', {
+        code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: forgedEligibilityErr });
+      assert.doesNotMatch(JSON.stringify(statusForgedRule), /synthetic-rev-42|synthetic-rev-99/u);
+
+      const forgedCutoffOnly = JSON.stringify({ ruleVersion: 'bd.purpose-eligibility/2', status: 'ineligible', purpose: 'historical_compute',
+        history: { mode: 'market_known_at', cutoff: 'synthetic-rev-99', perspective: 'market_known_at', historical: true },
+        blockingGapCodes: ['PUBLICATION_AFTER_CUTOFF'], evidenceSha256: 'a'.repeat(64) });
+      const statusForgedCutoff = await invokeStatusWithError('req-status-sanitize-3', {
+        code: 'PURPOSE_ELIGIBILITY_INELIGIBLE', message: forgedCutoffOnly });
+      assert.doesNotMatch(JSON.stringify(statusForgedCutoff), /synthetic-rev-99/u);
+      assert.equal(JSON.parse(statusForgedCutoff.data.error.message).history.cutoff, null);
+    } finally { companionHost.algorithms = prevAlg; }
     const smuggledSummary = JSON.stringify({ ok: true, taskId: callRow.task_id, summary: 'leaked r_future', data: safeCalcPreview });
     const smuggledRef = bridge.evidence.retain(scope, { callId: callRow.id, runId: callRow.parent_run_id, inputId: callRow.input_id, messageId: callRow.message_id }, smuggledSummary);
     assert.throws(() => bridge.assertHistoricalAlgorithmPreview({ ...callRow, preview_json: JSON.stringify({ ok: true, taskId: callRow.task_id, data: safeCalcPreview }) },
@@ -354,6 +420,15 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
       }, historyInput, undefined, model);
       assert.equal(JSON.parse((projectedErr.content[0] as { text: string }).text).message, invalidMsg);
     }
+    const readDetail = `${invalidMsg}具体原因：源码路径须为工程内的相对路径，长度不超过 512。`;
+    assert.equal(JSON.parse((services.modelTools.projectToolResult({
+      role: 'toolResult', toolCallId: 'synthetic-perform-whitelist', toolName: 'perform_action', isError: true, timestamp: Date.now(),
+      content: [{ type: 'text', text: readDetail }],
+    }, historyInput, undefined, model).content[0] as { text: string }).text).message, invalidMsg);
+    assert.equal(JSON.parse((services.modelTools.projectToolResult({
+      role: 'toolResult', toolCallId: 'synthetic-read-whitelist', toolName: 'core_code_read', isError: true, timestamp: Date.now(),
+      content: [{ type: 'text', text: readDetail }],
+    }, historyInput, undefined, model).content[0] as { text: string }).text).message, readDetail);
     const createdFailed = services.database.transaction(() => services.tasks.createInTransaction({
       conversationId: historyInput.conversationId, title: 'failed alg', runtimeId: 'direct',
       action: 'algorithms.screen', args: {}, requestId: 'req-failed-alg' }));
@@ -371,6 +446,38 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
       content: [{ type: 'text', text: 'raw failure' }],
     }, historyInput, undefined, model).content[0] as { text: string }).text).message as string;
     assert.doesNotMatch(algErrMsg, /sample-42|r_secret/u);
+    const createdPubFailed = services.database.transaction(() => services.tasks.createInTransaction({
+      conversationId: historyInput.conversationId, title: 'failed pub', runtimeId: 'direct',
+      action: 'algorithms.publish', args: {}, requestId: 'req-failed-pub' }));
+    createdPubFailed.publish();
+    services.database.connection.prepare("UPDATE tasks SET status='failed', error=? WHERE id=?")
+      .run(JSON.stringify({ code: 'DERIVED_PROOF_CHANGED', message: 'record_id=sample-42' }), createdPubFailed.task.id);
+    services.database.connection.prepare(`INSERT INTO model_tool_calls(id,conversation_id,branch_id,parent_run_id,parent_generation,input_id,message_id,tool_call_id,tool_name,action,args_json,payload_digest,model_json,model_digest,selection_json,task_request_id,task_id,state,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      'failed-pub-call', historyInput.conversationId, historyInput.branchId, historyInput.runId, historyInput.generation,
+      historyInput.inputId, historyInput.messageId, 'tc-failed-pub', 'perform_action', 'algorithms.publish', '{}', 'd',
+      callRow.model_json, callRow.model_digest, '[]', 'req-failed-pub', createdPubFailed.task.id, 'prepared', Date.now(), Date.now());
+    const pubErrMsg = JSON.parse((services.modelTools.projectToolResult({
+      role: 'toolResult', toolCallId: 'tc-failed-pub', toolName: 'perform_action', isError: true, timestamp: Date.now(),
+      content: [{ type: 'text', text: 'raw pub failure' }],
+    }, historyInput, undefined, model).content[0] as { text: string }).text).message as string;
+    assert.doesNotMatch(pubErrMsg, /sample-42/u);
+    const createdRuleFailed = services.database.transaction(() => services.tasks.createInTransaction({
+      conversationId: historyInput.conversationId, title: 'failed alg rule', runtimeId: 'direct',
+      action: 'algorithms.calculate', args: {}, requestId: 'req-failed-alg-rule' }));
+    createdRuleFailed.publish();
+    services.database.connection.prepare("UPDATE tasks SET status='failed', error=? WHERE id=?")
+      .run(JSON.stringify({ code: 'ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES', message: 'record_id=sample-42' }), createdRuleFailed.task.id);
+    services.database.connection.prepare(`INSERT INTO model_tool_calls(id,conversation_id,branch_id,parent_run_id,parent_generation,input_id,message_id,tool_call_id,tool_name,action,args_json,payload_digest,model_json,model_digest,selection_json,task_request_id,task_id,state,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      'failed-alg-rule-call', historyInput.conversationId, historyInput.branchId, historyInput.runId, historyInput.generation,
+      historyInput.inputId, historyInput.messageId, 'tc-failed-alg-rule', 'perform_action', 'algorithms.calculate', '{}', 'd',
+      callRow.model_json, callRow.model_digest, '[]', 'req-failed-alg-rule', createdRuleFailed.task.id, 'prepared', Date.now(), Date.now());
+    const forgedRuleErrMsg = JSON.parse((services.modelTools.projectToolResult({
+      role: 'toolResult', toolCallId: 'tc-failed-alg-rule', toolName: 'perform_action', isError: true, timestamp: Date.now(),
+      content: [{ type: 'text', text: 'raw rule failure' }],
+    }, historyInput, undefined, model).content[0] as { text: string }).text).message as string;
+    assert.doesNotMatch(forgedRuleErrMsg, /sample-42/u);
 
     // 真实超长历史筛选结果分页（core_evidence_read 同输入续页 1..N 全数放行且不含未来修订）。
     const pagedInput = await nextInput(`请按市场可知视角，以 ${at} 为截止筛选历史候选。`, 'synthetic-paged-history');

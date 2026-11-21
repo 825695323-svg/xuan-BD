@@ -44,12 +44,18 @@ function previewSource(source: JsonValue) {
 }
 
 const ELIGIBILITY_FALLBACK = '该固定快照未通过所请求用途的资格核对；完整明细保留在原任务审计记录。';
+const HISTORY_INCOMPLETE_FALLBACK = '历史版本选择存在待补证据；完整核对明细保留在原任务审计记录。';
+const ELIGIBILITY_RULE_VERSION_RE = /^bd\.purpose-eligibility\/\d+$/u;
+const ELIGIBILITY_CUTOFF_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u;
+function isValidEligibilityCutoff(value: unknown): value is string {
+  return typeof value === 'string' && ELIGIBILITY_CUTOFF_INSTANT_RE.test(value) && Number.isFinite(Date.parse(value));
+}
 function isValidEligibilityHistory(value: unknown): value is Record<string, unknown> {
   if (!isWfdRecord(value)) return false;
   if (Object.keys(value).some(key => !['mode', 'cutoff', 'perspective', 'historical'].includes(key))) return false;
   const modeOk = value.mode === null || ['snapshot_contents', 'market_known_at', 'system_held_at'].includes(String(value.mode));
   const perspectiveOk = value.perspective === null || ['snapshot_contents', 'market_known_at', 'system_held_at'].includes(String(value.perspective));
-  return modeOk && perspectiveOk && (value.cutoff === null || typeof value.cutoff === 'string') && typeof value.historical === 'boolean';
+  return modeOk && perspectiveOk && (value.cutoff === null || isValidEligibilityCutoff(value.cutoff)) && typeof value.historical === 'boolean';
 }
 function isStrictCurrentComputeHistory(history: unknown): boolean {
   return isValidEligibilityHistory(history)
@@ -62,12 +68,15 @@ function sanitizeEligibilityMessage(rawMessage: string): string {
   try {
     const detail: unknown = JSON.parse(rawMessage);
     if (isWfdRecord(detail)) {
+      const ruleVersion = typeof detail.ruleVersion === 'string' && ELIGIBILITY_RULE_VERSION_RE.test(detail.ruleVersion) ? detail.ruleVersion : null;
+      const status = detail.status === 'ineligible' || detail.status === 'insufficient_evidence' ? detail.status : null;
+      if (!ruleVersion || !status) return ELIGIBILITY_FALLBACK;
       if (detail.purpose === 'current_compute' && isStrictCurrentComputeHistory(detail.history)) return rawMessage;
       if (detail.purpose === 'historical_compute' || detail.purpose === 'current_compute') {
         const history = isWfdRecord(detail.history) ? {
           mode: detail.history.mode === null || ['snapshot_contents', 'market_known_at', 'system_held_at'].includes(String(detail.history.mode))
             ? detail.history.mode : null,
-          cutoff: detail.history.cutoff === null || typeof detail.history.cutoff === 'string' ? detail.history.cutoff : null,
+          cutoff: isValidEligibilityCutoff(detail.history.cutoff) ? detail.history.cutoff : null,
           perspective: detail.history.perspective === null || ['snapshot_contents', 'market_known_at', 'system_held_at'].includes(String(detail.history.perspective))
             ? detail.history.perspective : null,
           historical: typeof detail.history.historical === 'boolean' ? detail.history.historical : detail.purpose === 'historical_compute',
@@ -78,8 +87,8 @@ function sanitizeEligibilityMessage(rawMessage: string): string {
             ? detail.gaps.map(item => isWfdRecord(item) && typeof item.code === 'string' && /^[A-Z0-9_]+$/u.test(item.code) ? item.code : null).filter((item): item is string => item !== null)
             : [];
         return canonicalWfdJson({
-          ruleVersion: typeof detail.ruleVersion === 'string' ? detail.ruleVersion : null,
-          status: ['ineligible', 'insufficient_evidence'].includes(String(detail.status)) ? detail.status : null,
+          ruleVersion,
+          status,
           purpose: detail.purpose,
           history,
           blockingGapCodes: [...new Set(gapCodes)],
@@ -95,6 +104,9 @@ function sanitizeEligibilityMessage(rawMessage: string): string {
 function previewError(error: { code: string; message: string } | null) {
   if (error?.code === 'PURPOSE_ELIGIBILITY_INELIGIBLE' || error?.code === 'PURPOSE_ELIGIBILITY_INSUFFICIENT') {
     return { code: error.code, message: sanitizeEligibilityMessage(error.message) };
+  }
+  if (error?.code === 'ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE') {
+    return { code: error.code, message: HISTORY_INCOMPLETE_FALLBACK };
   }
   if (error?.code !== 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION') return error;
   // 旧失败回执的正文可能仍含原始诊断，或在任务错误长度上限处被截断。
