@@ -226,6 +226,15 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div id="zwinfo"><p>相关<input type="text" value="指标">阅读统计</p>${mainLink}</div>`,
     `<div id="zwinfo">${attestedScript}<h2>相关阅读</h2><div class="report-download" data-encode-url="fixture" data-info-code="AP202601010001"><script>window.pdf="${pdf}";</script></div></div>`,
     `<div id="zwinfo">${mainLink}<script>const label="window.pdf = 示例";</script></div>`,
+    `<div id="zwinfo">${mainLink}<script>cache[zwinfo.infoCode] = 1; Object.assign(window.theme, { dark: true });</script></div>`,
+    `<div id="zwinfo">${mainLink}<script>if (ok) /window\\.pdf = 1/.test(s);</script></div>`,
+    `<div id="zwinfo"><p>相关阅读<!-- 列标签 -->量统计</p>${mainLink}</div>`,
+    `<div id="zwinfo"><p>相关</p><search>阅读统计</search>${mainLink}</div>`,
+    `<div id="zwinfo"><span>相关</span><iframe src="/preview"></iframe><span>阅读统计</span>${mainLink}</div>`,
+    `<div id="zwinfo"><svg/><iframe src="${pdf}"></iframe></div>`,
+    `<script>// comment\u2028window.pdf="${pdf}";</script>`,
+    `<script>// comment\u2029window.pdf="${pdf}";</script>`,
+    `<script>var zwinfo={"infoCode":"AP202601010001","pdfUrl":"${pdf}","nested":${'['.repeat(64)}1${']'.repeat(64)}};</script>`,
     `<div id="zwinfo"><iframe src="${pdf}" href="${other}"></iframe></div>`,
     `<div id="zwinfo"><div class="report-download" ${Array.from({ length: 512 }, (_, i) => `data-x-${i}="1"`).join(' ')}>${`<a href="${pdf}">下载</a>`.repeat(512)}</div></div>`,
     `<div id="zwinfo">${'<div>'.repeat(512)}${'</span>'.repeat(512)}${mainLink}${'</div>'.repeat(512)}</div>`,
@@ -321,6 +330,22 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div id="zwinfo"><div class="report-download" data-encode-url="other" data-info-code="AP202601010001"><a data-encode-url="fixture" data-info-code="AP202601010002" href="${other}">下载</a></div></div>`,
     `<div id="zwinfo"><script type="text/plain">window.pdf="${other}";</script></div>`,
     `<div id="zwinfo"><script TYPE="application/json">window.pdf="${other}";</script></div>`,
+    `<div id="zwinfo"><script type="module;draft">window.pdf="${other}";</script></div>`,
+    `<div id="zwinfo"><script type="text/javascript;charset=utf-8">window.pdf="${other}";</script></div>`,
+    `<div id="zwinfo"><script language="vbscript">window.pdf="${other}";</script></div>`,
+    `<div id="zwinfo">${attestedScript}<h2>相关阅读</h2><div class="report-download" data-encode-url="fixture" data-info-code="AP202601010001">${mainLink}<div class="report-download">推荐阅读</div></div></div>`,
+    `<div id="zwinfo">${attestedScript}<h2>相关阅读</h2><div class="report-download" data-encode-url="fixture" data-info-code="AP202601010001"><script>window.pdf="${pdf}";</script><div class="report-download">推荐阅读</div></div></div>`,
+    `<div id="zwinfo"><div class="related"><div class="related">相关阅读</div></div>${otherLink}</div>`,
+    `<div id="zwinfo"><p class="report-download">说明<p><a href="${other}">下载</a></div>`,
+    `<div id="zwinfo"><svg class="report-download"/><a href="${other}">下载</a></div>`,
+    `<div id="zwinfo"><p>相&Tab;关阅读</p>${otherLink}</div>`,
+    `<div id="zwinfo"><p>相&#0000000020851;阅读</p>${otherLink}</div>`,
+    `<div id="zwinfo"><a\u00a0download href="${other}">下载</a></div>`,
+    `<div id="zwinfo"><a download href="${other}"`,
+    `<script>window.pdf="${other}";`,
+    `<div id="zwinfo"><plaintext>${otherLink}</div>`,
+    `<div id="zwinfo"><object form="f" data="/preview.txt">${otherLink}<script>window.pdf="${other}";</script></object></div>`,
+    `<div id="zwinfo"><iframe srcdoc="<p>preview</p>" src="${other}"></iframe></div>`,
   ]) {
     assert.throws(() => decodeEastmoneyReportDetail(request, html(relOnly)), noPdf);
   }
@@ -391,4 +416,20 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     invalidDetail('研报详情元数据无法核对。'));
   assert.throws(() => decodeEastmoneyReportDetail(request, html(`<script>var zwinfo={"encodeUrl":"other","encodeUrl":"fixture","pdfUrl":"${other}"};</script>`)),
     invalidDetail('研报详情元数据无法核对。'));
+  assert.throws(() => decodeEastmoneyReportDetail(request, html(`<script>// comment\rzwinfo.infoCode="AP202601010002";</script><div id="zwinfo">${mainLink}</div>`)),
+    invalidDetail('研报详情元数据与附件声明指向不同的 infoCode。'));
+  assert.throws(() => decodeEastmoneyReportDetail(request, html(`<div id="zwinfo">${mainLink}<!-- comment --!><script>zwinfo.infoCode="AP202601010002";</script></div>`)),
+    invalidDetail('研报详情元数据与附件声明指向不同的 infoCode。'));
+  assert.throws(() => decodeEastmoneyReportDetail(request, html(`<script>window.pdf="${pdf}"; pdf="";</script>`)),
+    invalidDetail('详情脚本包含无法静态核对的研报或附件声明。'));
+  assert.throws(() => decodeEastmoneyReportDetail(request, html(`<script>window.pdf="${pdf}"; window.pdf++;</script>`)),
+    invalidDetail('详情脚本包含无法静态核对的研报或附件声明。'));
+  assert.throws(() => decodeEastmoneyReportDetail(request, html(`<script>window.pdf="${pdf}"; const v = stats.return / (window.pdf = "");</script>`)),
+    invalidDetail('详情脚本包含无法静态核对的研报或附件声明。'));
+  assert.throws(() => decodeEastmoneyReportDetail(request, html(`<script>var zwinfo={title:"line1\nline2",pdfUrl:"${pdf}"};</script>`)),
+    invalidDetail('研报详情元数据无法核对。'));
+  const tStart = performance.now();
+  const largeHtml = html(`<div id="zwinfo"><div class="report-download" ${Array.from({ length: 2048 }, (_, i) => `data-x-${i}="1"`).join(' ')}>${`<a href="${pdf}">下载</a>`.repeat(2048)}</div>${'<div>'.repeat(2048)}${'</span>'.repeat(2048)}${'</div>'.repeat(2048)}<script>const a = ${'zwinfo?.'.repeat(2000)}x; const b = ${'c['.repeat(2000)}zwinfo${']'.repeat(2000)}; const u = "\\u{1234"; ${'const k = "\\u{12";'.repeat(500)}</script></div>`);
+  assert.equal(decodeEastmoneyReportDetail(request, largeHtml).pdfUrl, pdf);
+  assert.ok(performance.now() - tStart < 1000, 'linear-time guard on 2048-scale attributes, unmatched tags, and JS expressions');
 });

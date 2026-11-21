@@ -172,9 +172,8 @@ export function buildEastmoneyReportDetailRequest(parameters: Record<string, Jso
 }
 
 const DUPLICATE_JSON_KEY = Symbol('DUPLICATE_JSON_KEY');
-const MAX_JSON_DEPTH = 32;
 
-/** 严格 RFC 8259 JSON 对象解析（拒绝任意层级的重复键，避免 JSON.parse 静默覆盖）。 */
+/** 迭代式严格 RFC 8259 JSON 对象解析（零递归、无任意浅深度截断、拒绝任意层级的重复键）。 */
 function parseStrictJsonObject(literal: string): Record<string, JsonValue> | typeof DUPLICATE_JSON_KEY | null {
   let pos = 0;
   const len = literal.length;
@@ -210,97 +209,135 @@ function parseStrictJsonObject(literal: string): Record<string, JsonValue> | typ
     }
     return null;
   };
-  const parseValue = (depth: number): JsonValue | typeof DUPLICATE_JSON_KEY | undefined => {
-    if (depth > MAX_JSON_DEPTH) return undefined;
+  type ContainerFrame =
+    | { kind: 'object'; value: Record<string, JsonValue>; key: string | null }
+    | { kind: 'array'; value: JsonValue[] };
+  const frames: ContainerFrame[] = [];
+  let root: JsonValue | undefined;
+  const attachValue = (val: JsonValue): boolean => {
+    if (frames.length === 0) {
+      root = val;
+      return true;
+    }
+    const top = frames[frames.length - 1]!;
+    if (top.kind === 'array') {
+      top.value.push(val);
+      return true;
+    }
+    if (top.key === null) return false;
+    top.value[top.key] = val;
+    top.key = null;
+    return true;
+  };
+  const expectValue = (): 'need_value' | 'after_value' | 'error' | typeof DUPLICATE_JSON_KEY => {
     skipWs();
-    if (pos >= len) return undefined;
+    if (pos >= len) return 'error';
     const ch = literal[pos]!;
-    if (ch === '"') return parseString() ?? undefined;
     if (ch === '{') {
       pos += 1;
       const obj: Record<string, JsonValue> = Object.create(null);
+      if (!attachValue(obj)) return 'error';
       skipWs();
       if (literal[pos] === '}') {
         pos += 1;
-        return obj;
+        return 'after_value';
       }
-      while (pos < len) {
-        skipWs();
-        const key = parseString();
-        if (key === null) return undefined;
-        if (Object.hasOwn(obj, key)) return DUPLICATE_JSON_KEY;
-        skipWs();
-        if (literal[pos] !== ':') return undefined;
-        pos += 1;
-        const val = parseValue(depth + 1);
-        if (val === undefined || val === DUPLICATE_JSON_KEY) return val;
-        obj[key] = val;
-        skipWs();
-        if (literal[pos] === ',') {
-          pos += 1;
-          continue;
-        }
-        if (literal[pos] === '}') {
-          pos += 1;
-          return obj;
-        }
-        return undefined;
-      }
-      return undefined;
+      const key = parseString();
+      if (key === null) return 'error';
+      skipWs();
+      if (literal[pos] !== ':') return 'error';
+      pos += 1;
+      frames.push({ kind: 'object', value: obj, key });
+      return 'need_value';
     }
     if (ch === '[') {
       pos += 1;
       const arr: JsonValue[] = [];
+      if (!attachValue(arr)) return 'error';
       skipWs();
       if (literal[pos] === ']') {
         pos += 1;
-        return arr;
+        return 'after_value';
       }
-      while (pos < len) {
-        const val = parseValue(depth + 1);
-        if (val === undefined || val === DUPLICATE_JSON_KEY) return val;
-        arr.push(val);
-        skipWs();
-        if (literal[pos] === ',') {
-          pos += 1;
-          continue;
-        }
-        if (literal[pos] === ']') {
-          pos += 1;
-          return arr;
-        }
-        return undefined;
-      }
-      return undefined;
+      frames.push({ kind: 'array', value: arr });
+      return 'need_value';
     }
-    if (literal.startsWith('true', pos)) { pos += 4; return true; }
-    if (literal.startsWith('false', pos)) { pos += 5; return false; }
-    if (literal.startsWith('null', pos)) { pos += 4; return null; }
+    if (ch === '"') {
+      const str = parseString();
+      if (str === null || !attachValue(str)) return 'error';
+      return 'after_value';
+    }
+    if (literal.startsWith('true', pos)) { pos += 4; return attachValue(true) ? 'after_value' : 'error'; }
+    if (literal.startsWith('false', pos)) { pos += 5; return attachValue(false) ? 'after_value' : 'error'; }
+    if (literal.startsWith('null', pos)) { pos += 4; return attachValue(null) ? 'after_value' : 'error'; }
     const numRe = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
     numRe.lastIndex = pos;
     const numMatch = numRe.exec(literal);
-    if (!numMatch) return undefined;
+    if (!numMatch) return 'error';
     const num = Number(numMatch[0]);
-    if (!Number.isFinite(num)) return undefined;
+    if (!Number.isFinite(num) || !attachValue(num)) return 'error';
     pos += numMatch[0].length;
-    return num;
+    return 'after_value';
   };
+
   skipWs();
   if (literal[pos] !== '{') return null;
-  const root = parseValue(0);
-  if (root === DUPLICATE_JSON_KEY) return DUPLICATE_JSON_KEY;
-  if (root === undefined || !object(root)) return null;
+  let state: 'need_value' | 'after_value' = 'need_value';
+  while (true) {
+    if (state === 'need_value') {
+      const next = expectValue();
+      if (next === DUPLICATE_JSON_KEY) return DUPLICATE_JSON_KEY;
+      if (next === 'error') return null;
+      state = next;
+      continue;
+    }
+    if (frames.length === 0) break;
+    skipWs();
+    const top = frames[frames.length - 1]!;
+    if (top.kind === 'object') {
+      if (literal[pos] === ',') {
+        pos += 1;
+        skipWs();
+        const key = parseString();
+        if (key === null) return null;
+        if (Object.hasOwn(top.value, key)) return DUPLICATE_JSON_KEY;
+        skipWs();
+        if (literal[pos] !== ':') return null;
+        pos += 1;
+        top.key = key;
+        state = 'need_value';
+        continue;
+      }
+      if (literal[pos] === '}') {
+        pos += 1;
+        frames.pop();
+        continue;
+      }
+      return null;
+    }
+    if (literal[pos] === ',') {
+      pos += 1;
+      state = 'need_value';
+      continue;
+    }
+    if (literal[pos] === ']') {
+      pos += 1;
+      frames.pop();
+      continue;
+    }
+    return null;
+  }
   skipWs();
-  return pos === len ? root : null;
+  return pos === len && object(root) ? root : null;
 }
 
-/** 接受严格无重复键 JSON 或仅含静态字符串的旧式 JS 对象字面量；脚本从不执行。 */
+/** 接受严格无重复键 JSON 或仅含单行静态字符串的旧式 JS 对象字面量；脚本从不执行。 */
 function detailMetadata(literal: string): Record<string, JsonValue> | null {
   const strictJson = parseStrictJsonObject(literal);
   if (strictJson === DUPLICATE_JSON_KEY) return null;
   if (strictJson !== null) return strictJson;
   const body = literal.slice(1, -1).trim();
-  const field = /\s*(?:([a-zA-Z_][\w]*)|"([\w]+)"|'([\w]+)')\s*:\s*(?:"([^"\\]*)"|'([^'\\]*)')\s*(?:,|$)/gy;
+  const field = /\s*(?:([a-zA-Z_][\w]*)|"([\w]+)"|'([\w]+)')\s*:\s*(?:"([^"\\\r\n\u2028\u2029]*)"|'([^'\\\r\n\u2028\u2029]*)')\s*(?:,|$)/gy;
   const values: Record<string, string> = Object.create(null);
   while (field.lastIndex < body.length) {
     const match = field.exec(body);
@@ -313,18 +350,78 @@ function detailMetadata(literal: string): Record<string, JsonValue> | null {
 }
 
 const namedHtmlEntities: Readonly<Record<string, string>> = Object.freeze({
+  Tab: '\t',
+  NewLine: '\n',
   amp: '&',
+  AMP: '&',
   lt: '<',
+  LT: '<',
   gt: '>',
+  GT: '>',
   quot: '"',
+  QUOT: '"',
   apos: "'",
   nbsp: '\u00a0',
+  NonBreakingSpace: '\u00a0',
   ensp: '\u2002',
   emsp: '\u2003',
+  emsp13: '\u2004',
+  emsp14: '\u2005',
+  numsp: '\u2007',
+  puncsp: '\u2008',
   thinsp: '\u2009',
+  ThinSpace: '\u2009',
+  hairsp: '\u200a',
+  VeryThinSpace: '\u200a',
+  ZeroWidthSpace: '\u200b',
+  NegativeThinSpace: '\u200b',
+  NegativeMediumSpace: '\u200b',
+  NegativeThickSpace: '\u200b',
+  NegativeVeryThinSpace: '\u200b',
+  MediumSpace: '\u205f',
+  ThickSpace: '\u205f\u200a',
   zwj: '\u200d',
   zwnj: '\u200c',
   shy: '\u00ad',
+  colon: ':',
+  semi: ';',
+  sol: '/',
+  bsol: '\\',
+  lpar: '(',
+  rpar: ')',
+  lsqb: '[',
+  rsqb: ']',
+  lcub: '{',
+  rcub: '}',
+  comma: ',',
+  period: '.',
+  excl: '!',
+  quest: '?',
+  num: '#',
+  percnt: '%',
+  plus: '+',
+  equals: '=',
+  ast: '*',
+  lowbar: '_',
+  hyphen: '-',
+  dash: '\u2010',
+  ndash: '\u2013',
+  mdash: '\u2014',
+  lsquo: '\u2018',
+  rsquo: '\u2019',
+  ldquo: '\u201c',
+  rdquo: '\u201d',
+  laquo: '\u00ab',
+  raquo: '\u00bb',
+  bull: '\u2022',
+  middot: '\u00b7',
+  hellip: '\u2026',
+  copy: '\u00a9',
+  COPY: '\u00a9',
+  reg: '\u00ae',
+  REG: '\u00ae',
+  trade: '\u2122',
+  TRADE: '\u2122',
 });
 
 function decodeHtmlEntities(input: string): string {
@@ -356,9 +453,13 @@ function decodeHtmlEntities(input: string): string {
         j += 1;
       }
       if (j > digitsStart) {
-        const rawNum = input.slice(digitsStart, j);
+        let sigStart = digitsStart;
+        while (sigStart < j && input[sigStart] === '0') sigStart += 1;
+        const significant = input.slice(sigStart, j);
         if (j < len && input[j] === ';') j += 1;
-        const cp = Number.parseInt(rawNum.slice(0, 8), hex ? 16 : 10);
+        const cp = significant.length === 0 ? 0
+          : significant.length > 7 ? 0x110000
+          : Number.parseInt(significant, hex ? 16 : 10);
         if (cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) out += '\ufffd';
         else out += String.fromCodePoint(cp);
         i = j;
@@ -366,16 +467,15 @@ function decodeHtmlEntities(input: string): string {
       }
     } else {
       let j = amp + 1;
-      while (j < len && j - amp <= 12) {
+      while (j < len && j - amp <= 32) {
         const c = input.charCodeAt(j);
-        if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) j += 1;
+        if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57)) j += 1;
         else break;
       }
       if (j > amp + 1 && j < len && input[j] === ';') {
         const name = input.slice(amp + 1, j);
-        const resolved = namedHtmlEntities[name] ?? namedHtmlEntities[name.toLowerCase()];
-        if (resolved !== undefined) {
-          out += resolved;
+        if (Object.hasOwn(namedHtmlEntities, name)) {
+          out += namedHtmlEntities[name]!;
           i = j + 1;
           continue;
         }
@@ -387,12 +487,24 @@ function decodeHtmlEntities(input: string): string {
   return out;
 }
 
+function isAsciiWs(code: number): boolean {
+  return code === 32 || code === 9 || code === 10 || code === 12 || code === 13;
+}
+
+function trimAsciiWs(value: string): string {
+  let s = 0;
+  let e = value.length;
+  while (s < e && isAsciiWs(value.charCodeAt(s))) s += 1;
+  while (e > s && isAsciiWs(value.charCodeAt(e - 1))) e -= 1;
+  return value.slice(s, e);
+}
+
 const voidHtmlTags = new Set([
   'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr',
 ]);
 const rawTextTags = new Set(['script', 'style', 'title', 'textarea', 'xmp', 'iframe', 'noembed', 'noframes']);
 const formControlTags = new Set([
-  'form', 'fieldset', 'select', 'option', 'optgroup', 'textarea', 'button', 'input', 'datalist', 'output', 'meter', 'progress',
+  'form', 'fieldset', 'object', 'select', 'option', 'optgroup', 'textarea', 'button', 'input', 'datalist', 'output', 'meter', 'progress',
 ]);
 const isolatedAuxiliaryTags = new Set(['head', 'details', 'figure', 'dialog', ...formControlTags]);
 const nonContentSubtreeTags = new Set(['meta', 'link', 'title', 'style', 'noscript', 'template', 'xmp', 'noembed', 'noframes']);
@@ -400,8 +512,16 @@ const rootBoundaryTags = new Set(['main', 'body', 'html']);
 const headingTags = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'dt', 'legend']);
 const landmarkRelatedTags = new Set(['aside', 'nav', 'footer']);
 const relatedClassTokens = new Set(['rel-list', 'xgyd', 'xgyb']);
+const pAutoCloseTags = new Set([
+  'address', 'article', 'aside', 'blockquote', 'dd', 'details', 'dialog', 'div', 'dl', 'dt',
+  'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'header', 'hgroup', 'hr', 'li', 'main', 'menu', 'nav', 'ol', 'p', 'pre', 'search', 'section', 'table', 'ul',
+]);
+const buttonScopeBarrierTags = new Set([
+  'applet', 'button', 'caption', 'html', 'marquee', 'math', 'object', 'svg', 'table', 'td', 'template', 'th',
+]);
 const blockBoundaryTags = new Set([
-  'html', 'head', 'body', 'main', 'article', 'section', 'aside', 'nav', 'header', 'footer', 'address',
+  'html', 'head', 'body', 'main', 'article', 'section', 'aside', 'nav', 'header', 'footer', 'address', 'search', 'menu', 'center',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hgroup', 'p', 'div', 'pre', 'blockquote', 'hr',
   'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'figure', 'figcaption', 'details', 'summary', 'dialog',
   'table', 'caption', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'colgroup', 'col',
@@ -413,17 +533,24 @@ const jsMimeEssences = new Set([
   'text/javascript', 'application/javascript', 'application/ecmascript', 'text/ecmascript',
   'application/x-javascript', 'text/x-javascript', 'text/javascript1.0', 'text/javascript1.1',
   'text/javascript1.2', 'text/javascript1.3', 'text/javascript1.4', 'text/javascript1.5',
-  'text/jscript', 'text/livescript', 'text/x-ecmascript', 'application/x-ecmascript', 'module',
+  'text/jscript', 'text/livescript', 'text/x-ecmascript', 'application/x-ecmascript',
 ]);
 const relatedKeywordsWithCountGuard = new Set(['相关阅读', '推荐阅读', '延伸阅读']);
 
-function isExecutableScriptType(typeAttr: string | null): boolean {
-  if (typeAttr === null) return true;
-  const trimmed = typeAttr.trim();
-  if (trimmed === '') return true;
-  const semi = trimmed.indexOf(';');
-  const essence = (semi === -1 ? trimmed : trimmed.slice(0, semi)).trim().toLowerCase();
-  return jsMimeEssences.has(essence);
+/** 严格按 WHATWG HTML §4.12.1.1 判定可执行脚本类型（精确 essence 匹配，不截断分号参数，核对 language 属性）。 */
+function isExecutableScriptType(typeAttr: string | null, languageAttr: string | null): boolean {
+  if (typeAttr !== null) {
+    const trimmed = trimAsciiWs(typeAttr);
+    if (trimmed === '') return true;
+    const lower = trimmed.toLowerCase();
+    return lower === 'module' || jsMimeEssences.has(lower);
+  }
+  if (languageAttr !== null) {
+    const trimmed = trimAsciiWs(languageAttr);
+    if (trimmed === '') return true;
+    return jsMimeEssences.has(`text/${trimmed.toLowerCase()}`);
+  }
+  return true;
 }
 
 function isEastmoneyPdfHref(href: string | null, baseUrl: string): boolean {
@@ -448,8 +575,10 @@ type TagAttrs = {
   href: string | null;
   src: string | null;
   hasSrc: boolean;
+  hasSrcdoc: boolean;
   hasDownload: boolean;
   type: string | null;
+  language: string | null;
   encodeUrl: string | null;
   hasEncodeUrl: boolean;
   hasForeignEncodeUrl: boolean;
@@ -460,7 +589,7 @@ type TagAttrs = {
 
 function hasClassToken(className: string | null, expected: string): boolean {
   if (!className) return false;
-  const tokens = className.split(/\s+/u);
+  const tokens = className.split(/[ \t\n\f\r]+/u);
   for (let i = 0; i < tokens.length; i += 1) {
     if (tokens[i] === expected) return true;
   }
@@ -469,7 +598,7 @@ function hasClassToken(className: string | null, expected: string): boolean {
 
 function isRelatedElement(tag: string, attrs: TagAttrs): boolean {
   if (landmarkRelatedTags.has(tag)) return true;
-  if (attrs.role !== null && attrs.role.trim().toLowerCase() === 'navigation') return true;
+  if (attrs.role !== null && trimAsciiWs(attrs.role).toLowerCase() === 'navigation') return true;
   if (attrs.ariaLabel !== null && (attrs.ariaLabel.includes('相关') || attrs.ariaLabel.includes('推荐') || attrs.ariaLabel.includes('延伸阅读'))) {
     return true;
   }
@@ -480,7 +609,7 @@ function isRelatedElement(tag: string, attrs: TagAttrs): boolean {
   if (attrs.className !== null) {
     const clsLower = attrs.className.toLowerCase();
     if (clsLower.includes('related') || clsLower.includes('recommend')) return true;
-    const tokens = attrs.className.split(/\s+/u);
+    const tokens = attrs.className.split(/[ \t\n\f\r]+/u);
     for (let i = 0; i < tokens.length; i += 1) {
       if (relatedClassTokens.has(tokens[i]!)) return true;
     }
@@ -489,11 +618,11 @@ function isRelatedElement(tag: string, attrs: TagAttrs): boolean {
 }
 
 function isLandmarkRelatedElement(tag: string, attrs: TagAttrs): boolean {
-  return landmarkRelatedTags.has(tag) || (attrs.role !== null && attrs.role.trim().toLowerCase() === 'navigation');
+  return landmarkRelatedTags.has(tag) || (attrs.role !== null && trimAsciiWs(attrs.role).toLowerCase() === 'navigation');
 }
 
 function isHeadingElement(tag: string, attrs: TagAttrs): boolean {
-  return headingTags.has(tag) || (attrs.role !== null && attrs.role.trim().toLowerCase() === 'heading');
+  return headingTags.has(tag) || (attrs.role !== null && trimAsciiWs(attrs.role).toLowerCase() === 'heading');
 }
 
 type KeywordState = {
@@ -606,8 +735,27 @@ function scanKeywordText(state: KeywordState, text: string, onHit: () => void): 
   }
 }
 
-/** 单趟 O(N) 定位 rawtext/script 结束标签，严格遵守 HTML5 script-data-escaped 状态。 */
-function findRawElementClose(html: string, startPos: number, tag: string): { contentEnd: number; nextPos: number } {
+function isTagDelimiter(html: string, idx: number): boolean {
+  if (idx >= html.length) return true;
+  const ch = html[idx]!;
+  return ch === '/' || ch === '>' || isAsciiWs(ch.charCodeAt(0));
+}
+
+function findHtmlCommentEnd(html: string, startPos: number): number {
+  let pos = startPos;
+  const len = html.length;
+  while (pos < len) {
+    const dash = html.indexOf('--', pos);
+    if (dash === -1) return len;
+    if (dash + 2 < len && html[dash + 2] === '>') return dash + 3;
+    if (dash + 3 < len && html[dash + 2] === '!' && html[dash + 3] === '>') return dash + 4;
+    pos = dash + 1;
+  }
+  return len;
+}
+
+/** 单趟 O(N) 定位 rawtext/script 结束标签，严格遵守 HTML5 script-data-escaped 状态与 EOF 闭合要求。 */
+function findRawElementClose(html: string, startPos: number, tag: string): { contentEnd: number; nextPos: number; closed: boolean } {
   const len = html.length;
   const tagLen = tag.length;
   let pos = startPos;
@@ -630,7 +778,7 @@ function findRawElementClose(html: string, startPos: number, tag: string): { con
       if (escaped && !doubleEscaped && html[pos] === '<' && pos + 1 + tagLen <= len
         && html.slice(pos + 1, pos + 1 + tagLen).toLowerCase() === 'script') {
         const after = pos + 1 + tagLen;
-        if (after === len || /[\s/>]/u.test(html[after]!)) {
+        if (isTagDelimiter(html, after)) {
           doubleEscaped = true;
           pos = after;
           continue;
@@ -640,20 +788,22 @@ function findRawElementClose(html: string, startPos: number, tag: string): { con
     if (html[pos] === '<' && pos + 2 + tagLen <= len && html[pos + 1] === '/') {
       if (html.slice(pos + 2, pos + 2 + tagLen).toLowerCase() === tag) {
         const after = pos + 2 + tagLen;
-        if (after === len || /[\s/>]/u.test(html[after]!)) {
+        if (isTagDelimiter(html, after)) {
           if (isScript && doubleEscaped) {
             doubleEscaped = false;
             pos = after;
             continue;
           }
           const gt = html.indexOf('>', after);
-          return { contentEnd: pos, nextPos: gt === -1 ? len : gt + 1 };
+          return gt === -1
+            ? { contentEnd: len, nextPos: len, closed: false }
+            : { contentEnd: pos, nextPos: gt + 1, closed: true };
         }
       }
     }
     pos += 1;
   }
-  return { contentEnd: len, nextPos: len };
+  return { contentEnd: len, nextPos: len, closed: false };
 }
 
 /**
@@ -699,9 +849,12 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     closeRelBox: RelBoxRecord | null;
     enterNonContent: boolean;
     enterForeign: boolean;
+    pushButtonScope: boolean;
+    countedP: boolean;
   };
   const openStack: OpenElemFrame[] = [];
   const openTagCounts = new Map<string, number>();
+  const pCountInButtonScope: number[] = [0];
   let nonContentDepth = 0;
   let foreignDepth = 0;
 
@@ -722,9 +875,9 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     }
   };
 
-  const feedText = (rawText: string): void => {
+  const feedText = (rawText: string, decodeEntities = true): void => {
     if (nonContentDepth > 0 || !rawText) return;
-    const text = decodeHtmlEntities(rawText);
+    const text = decodeEntities ? decodeHtmlEntities(rawText) : rawText;
     const cur = scopeStack[scopeStack.length - 1]!;
     if (cur.activeRelBox !== null && !cur.activeRelBox.sawRelatedKeyword) {
       scanKeywordText(cur.activeRelBox, text, () => {
@@ -741,6 +894,12 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     if (count <= 1) openTagCounts.delete(frame.tag);
     else openTagCounts.set(frame.tag, count - 1);
 
+    if (frame.countedP) {
+      pCountInButtonScope[pCountInButtonScope.length - 1] = Math.max(0, pCountInButtonScope[pCountInButtonScope.length - 1]! - 1);
+    }
+    if (frame.pushButtonScope && pCountInButtonScope.length > 1) {
+      pCountInButtonScope.pop();
+    }
     if (frame.enterNonContent) nonContentDepth -= 1;
     if (frame.enterForeign) foreignDepth -= 1;
 
@@ -768,10 +927,6 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       });
     }
 
-    if (frame.closeBox !== null && frame.closeBox.hasAnyRelated && frame.closeBox.parent !== null) {
-      frame.closeBox.parent.hasAnyRelated = true;
-    }
-
     if (frame.popScope) {
       flushScopePending(activeScope);
       scopeStack.pop();
@@ -781,6 +936,10 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       if (activeScope.activeRelBox !== null) activeScope.activeRelBox.tail = '';
     }
 
+    if (frame.closeBox !== null && frame.closeBox.hasAnyRelated && frame.closeBox.parent !== null) {
+      frame.closeBox.parent.hasAnyRelated = true;
+    }
+
     if (frame.closeRelBox !== null) {
       if (frame.closeRelBox.pendingRelated) {
         frame.closeRelBox.pendingRelated = false;
@@ -788,6 +947,9 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       }
       if (frame.closeRelBox.hasDescendantPdfOrScript && frame.closeRelBox.parent !== null) {
         frame.closeRelBox.parent.hasDescendantPdfOrScript = true;
+      }
+      if (frame.closeRelBox.sawRelatedKeyword && frame.closeRelBox.parent !== null) {
+        frame.closeRelBox.parent.sawRelatedKeyword = true;
       }
       if (!frame.closeRelBox.hasDescendantPdfOrScript && frame.closeRelBox.sawRelatedKeyword) {
         const parentScope = scopeStack[scopeStack.length - 1]!;
@@ -807,8 +969,13 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     }
   };
 
-  const handleOpenTag = (tag: string, attrs: TagAttrs, selfClosing: boolean, rawBody?: string): void => {
-    const isVoid = voidHtmlTags.has(tag) || (foreignDepth > 0 && selfClosing);
+  const handleOpenTag = (tag: string, attrs: TagAttrs, selfClosing: boolean, rawBody?: string, rawClosed = true): void => {
+    if (nonContentDepth === 0 && pAutoCloseTags.has(tag) && pCountInButtonScope[pCountInButtonScope.length - 1]! > 0) {
+      handleCloseTag('p');
+    }
+
+    const enterForeign = tag === 'svg' || tag === 'math';
+    const isVoid = voidHtmlTags.has(tag) || ((foreignDepth > 0 || enterForeign) && selfClosing);
     const cur = scopeStack[scopeStack.length - 1]!;
     const attr = attrStack[attrStack.length - 1]!;
 
@@ -816,6 +983,8 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       if (!isVoid && rawBody === undefined) {
         const enterNonContent = nonContentSubtreeTags.has(tag);
         if (enterNonContent) nonContentDepth += 1;
+        const pushButtonScope = buttonScopeBarrierTags.has(tag);
+        if (pushButtonScope) pCountInButtonScope.push(0);
         openStack.push({
           tag,
           isZwinfoId: false,
@@ -827,6 +996,8 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
           closeRelBox: null,
           enterNonContent,
           enterForeign: false,
+          pushButtonScope,
+          countedP: false,
         });
         openTagCounts.set(tag, (openTagCounts.get(tag) ?? 0) + 1);
       }
@@ -864,11 +1035,14 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
 
     if (tag === 'script') {
       flushScopePending(cur);
+      cur.tail = '';
+      if (cur.activeRelBox !== null) cur.activeRelBox.tail = '';
       if (cur.activeRelBox !== null) cur.activeRelBox.hasDescendantPdfOrScript = true;
       if (
-        !attrs.hasSrc
+        rawClosed
+        && !attrs.hasSrc
         && !attr.inFormControl
-        && isExecutableScriptType(attrs.type)
+        && isExecutableScriptType(attrs.type, attrs.language)
         && !isRelSelector
         && !cur.inRelatedSelector
         && !nextForeignEncode
@@ -894,8 +1068,10 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
 
     if (tag === 'iframe') {
       flushScopePending(cur);
+      cur.tail = '';
+      if (cur.activeRelBox !== null) cur.activeRelBox.tail = '';
       const isDirectZwinfoChild = openStack.length > 0 && openStack[openStack.length - 1]!.isZwinfoId;
-      const validSrc = isEastmoneyPdfHref(attrs.src, baseUrl);
+      const validSrc = !attrs.hasSrcdoc && isEastmoneyPdfHref(attrs.src, baseUrl);
       if (validSrc && cur.activeRelBox !== null) cur.activeRelBox.hasDescendantPdfOrScript = true;
       if (isDirectZwinfoChild && !attr.inFormControl && validSrc && attrs.src !== null) {
         attachments.push({
@@ -1020,7 +1196,6 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       candidateAnchorStack.push(candidate);
     }
 
-    const enterForeign = tag === 'svg' || tag === 'math';
     if (isVoid) {
       if (isPdfAnchor) {
         const fakeFrame: OpenElemFrame = {
@@ -1034,6 +1209,8 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
           closeRelBox: createdRelBox,
           enterNonContent: false,
           enterForeign: false,
+          pushButtonScope: false,
+          countedP: false,
         };
         openTagCounts.set(tag, (openTagCounts.get(tag) ?? 0) + 1);
         leaveElement(fakeFrame);
@@ -1042,12 +1219,19 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
           flushScopePending(scopeStack[scopeStack.length - 1]!);
           scopeStack.pop();
         }
+        if (boxRecord !== null && boxRecord.hasAnyRelated && boxRecord.parent !== null) {
+          boxRecord.parent.hasAnyRelated = true;
+        }
         if (pushAttr) attrStack.pop();
       }
       return;
     }
 
     if (enterForeign) foreignDepth += 1;
+    const pushButtonScope = buttonScopeBarrierTags.has(tag);
+    if (pushButtonScope) pCountInButtonScope.push(0);
+    const countedP = tag === 'p';
+    if (countedP) pCountInButtonScope[pCountInButtonScope.length - 1]! += 1;
     openStack.push({
       tag,
       isZwinfoId,
@@ -1059,6 +1243,8 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       closeRelBox: createdRelBox,
       enterNonContent: false,
       enterForeign,
+      pushButtonScope,
+      countedP,
     });
     openTagCounts.set(tag, (openTagCounts.get(tag) ?? 0) + 1);
   };
@@ -1080,14 +1266,9 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     if (nextCh === '!') {
       flushTextUntil(lt);
       if (html.startsWith('<!--', lt)) {
-        const cur = scopeStack[scopeStack.length - 1]!;
-        if (nonContentDepth === 0) flushScopePending(cur);
         if (html.startsWith('<!-->', lt)) pos = lt + 5;
         else if (html.startsWith('<!--->', lt)) pos = lt + 6;
-        else {
-          const endComment = html.indexOf('-->', lt + 4);
-          pos = endComment === -1 ? len : endComment + 3;
-        }
+        else pos = findHtmlCommentEnd(html, lt + 4);
       } else if (html.startsWith('<![CDATA[', lt)) {
         const endCdata = html.indexOf(']]>', lt + 9);
         pos = endCdata === -1 ? len : endCdata + 3;
@@ -1110,11 +1291,15 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       let j = lt + 2;
       if (j < len && /[A-Za-z]/u.test(html[j]!)) {
         const nameStart = j;
-        while (j < len && !/[\s/>]/u.test(html[j]!)) j += 1;
+        while (j < len && !isTagDelimiter(html, j)) j += 1;
         const closeTag = html.slice(nameStart, j).toLowerCase();
         const gt = html.indexOf('>', j);
-        pos = gt === -1 ? len : gt + 1;
-        handleCloseTag(closeTag);
+        if (gt === -1) {
+          pos = len;
+        } else {
+          pos = gt + 1;
+          handleCloseTag(closeTag);
+        }
       } else {
         const gt = html.indexOf('>', j);
         pos = gt === -1 ? len : gt + 1;
@@ -1125,7 +1310,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     if (/[A-Za-z]/u.test(nextCh)) {
       flushTextUntil(lt);
       let j = lt + 1;
-      while (j < len && !/[\s/>]/u.test(html[j]!)) j += 1;
+      while (j < len && !isTagDelimiter(html, j)) j += 1;
       const tag = html.slice(lt + 1, j).toLowerCase();
       const attrs: TagAttrs = {
         id: null,
@@ -1135,8 +1320,10 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
         href: null,
         src: null,
         hasSrc: false,
+        hasSrcdoc: false,
         hasDownload: false,
         type: null,
+        language: null,
         encodeUrl: null,
         hasEncodeUrl: false,
         hasForeignEncodeUrl: false,
@@ -1145,17 +1332,20 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
         hasInfoCodeConflict: false,
       };
       let selfClosing = false;
+      let tagClosed = false;
       while (j < len) {
-        while (j < len && /[\s]/u.test(html[j]!)) j += 1;
+        while (j < len && isAsciiWs(html.charCodeAt(j))) j += 1;
         if (j >= len) break;
         const c = html[j]!;
         if (c === '>') {
+          tagClosed = true;
           j += 1;
           break;
         }
         if (c === '/') {
           if (j + 1 < len && html[j + 1] === '>') {
             selfClosing = true;
+            tagClosed = true;
             j += 2;
             break;
           }
@@ -1163,13 +1353,17 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
           continue;
         }
         const attrStart = j;
-        while (j < len && !/[\s=/>]/u.test(html[j]!)) j += 1;
+        while (j < len) {
+          const ch = html[j]!;
+          if (ch === '=' || ch === '/' || ch === '>' || isAsciiWs(ch.charCodeAt(0))) break;
+          j += 1;
+        }
         const attrName = html.slice(attrStart, j).toLowerCase();
-        while (j < len && /[\s]/u.test(html[j]!)) j += 1;
+        while (j < len && isAsciiWs(html.charCodeAt(j))) j += 1;
         let attrVal = '';
         if (j < len && html[j] === '=') {
           j += 1;
-          while (j < len && /[\s]/u.test(html[j]!)) j += 1;
+          while (j < len && isAsciiWs(html.charCodeAt(j))) j += 1;
           if (j < len && (html[j] === '"' || html[j] === "'")) {
             const quote = html[j]!;
             j += 1;
@@ -1184,7 +1378,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
             }
           } else {
             const valStart = j;
-            while (j < len && !/[\s>]/u.test(html[j]!)) j += 1;
+            while (j < len && html[j] !== '>' && !isAsciiWs(html.charCodeAt(j))) j += 1;
             attrVal = html.slice(valStart, j);
           }
         }
@@ -1201,10 +1395,14 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
         } else if (attrName === 'src') {
           attrs.hasSrc = true;
           if (attrs.src === null) attrs.src = decodeHtmlEntities(attrVal);
+        } else if (attrName === 'srcdoc') {
+          attrs.hasSrcdoc = true;
         } else if (attrName === 'download') {
           attrs.hasDownload = true;
         } else if (attrName === 'type') {
           if (attrs.type === null) attrs.type = decodeHtmlEntities(attrVal);
+        } else if (attrName === 'language') {
+          if (attrs.language === null) attrs.language = decodeHtmlEntities(attrVal);
         } else if (attrName === 'data-encode-url') {
           const decoded = decodeHtmlEntities(attrVal);
           if (!attrs.hasEncodeUrl) {
@@ -1225,11 +1423,25 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
         }
       }
       pos = j;
+      if (!tagClosed) {
+        textStart = pos;
+        break;
+      }
+      if (tag === 'plaintext') {
+        const curScope = scopeStack[scopeStack.length - 1]!;
+        flushScopePending(curScope);
+        curScope.tail = '';
+        if (curScope.activeRelBox !== null) curScope.activeRelBox.tail = '';
+        if (pos < len) feedText(html.slice(pos), false);
+        pos = len;
+        textStart = len;
+        break;
+      }
       if (rawTextTags.has(tag)) {
         const raw = findRawElementClose(html, pos, tag);
         const body = html.slice(pos, raw.contentEnd);
         pos = raw.nextPos;
-        handleOpenTag(tag, attrs, selfClosing, body);
+        handleOpenTag(tag, attrs, selfClosing, body, raw.closed);
       } else {
         handleOpenTag(tag, attrs, selfClosing);
       }
@@ -1244,9 +1456,17 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
   }
   flushScopePending(scopeStack[0]!);
 
+  for (let i = allBoxes.length - 1; i >= 0; i -= 1) {
+    const box = allBoxes[i]!;
+    if (box.hasAnyRelated && box.parent !== null) box.parent.hasAnyRelated = true;
+  }
   for (let i = 0; i < allBoxes.length; i += 1) {
     const box = allBoxes[i]!;
     if (box.parent?.hasAnyRelated) box.hasAnyRelated = true;
+  }
+  for (let i = allCandidates.length - 1; i >= 0; i -= 1) {
+    const c = allCandidates[i]!;
+    if (c.poisoned && c.parent !== null) c.parent.poisoned = true;
   }
   for (let i = 0; i < allCandidates.length; i += 1) {
     const c = allCandidates[i]!;
@@ -1254,6 +1474,21 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
   }
 
   return { scripts, attachments };
+}
+
+function isJsLineTerminator(code: number): boolean {
+  return code === 10 || code === 13 || code === 0x2028 || code === 0x2029;
+}
+
+function findJsLineEnd(source: string, start: number): number {
+  const len = source.length;
+  for (let i = start; i < len; i += 1) {
+    const c = source.charCodeAt(i);
+    if (isJsLineTerminator(c)) {
+      return c === 13 && i + 1 < len && source.charCodeAt(i + 1) === 10 ? i + 2 : i + 1;
+    }
+  }
+  return len;
 }
 
 function stripLeadingJsTrivia(source: string): string {
@@ -1266,8 +1501,7 @@ function stripLeadingJsTrivia(source: string): string {
       continue;
     }
     if (ch === '/' && pos + 1 < len && source[pos + 1] === '/') {
-      const nl = source.indexOf('\n', pos + 2);
-      pos = nl === -1 ? len : nl + 1;
+      pos = findJsLineEnd(source, pos + 2);
       continue;
     }
     if (ch === '/' && pos + 1 < len && source[pos + 1] === '*') {
@@ -1299,8 +1533,7 @@ function extractBalancedObjectLiteral(source: string, openBracePos: number): num
       continue;
     }
     if (ch === '/' && pos + 1 < len && source[pos + 1] === '/') {
-      const nl = source.indexOf('\n', pos + 2);
-      pos = nl === -1 ? len : nl + 1;
+      pos = findJsLineEnd(source, pos + 2);
       continue;
     }
     if (ch === '/' && pos + 1 < len && source[pos + 1] === '*') {
@@ -1319,21 +1552,34 @@ function extractBalancedObjectLiteral(source: string, openBracePos: number): num
 }
 
 type JsToken = { kind: 'ident' | 'string' | 'punct'; value: string; escaped?: boolean };
-const regexAllowedBefore = new Set([
+const regexPunctAllowedBefore = new Set([
   '(', '[', '{', ',', ';', ':', '=', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '^=', '|=', '&&=', '||=', '??=',
   '!', '&', '|', '&&', '||', '??', '?', '+', '-', '*', '/', '%', '^', '~', '<', '>', '<=', '>=', '==', '===', '!=', '!==', '=>',
+  '${', '}',
+]);
+const regexKeywordAllowedBefore = new Set([
   'return', 'case', 'throw', 'in', 'of', 'typeof', 'void', 'delete', 'new', 'else', 'do', 'yield', 'await',
 ]);
+const conditionParenKeywords = new Set(['if', 'while', 'for', 'with']);
 const jsAssignOps = new Set([
   '=', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '^=', '|=', '&&=', '||=', '??=',
 ]);
+const jsUpdateOps = new Set(['++', '--']);
 const globalReceivers = new Set(['window', 'self', 'globalThis', 'top', 'parent', 'frames', 'this']);
 
 function decodeJsUnicodeEscape(source: string, pos: number): { ch: string; nextPos: number } | null {
+  const len = source.length;
   if (source[pos] !== '\\' || source[pos + 1] !== 'u') return null;
   if (source[pos + 2] === '{') {
-    const end = source.indexOf('}', pos + 3);
-    if (end === -1 || end === pos + 3 || end - (pos + 3) > 6) return null;
+    const limit = Math.min(len, pos + 10);
+    let end = -1;
+    for (let k = pos + 3; k < limit; k += 1) {
+      if (source[k] === '}') {
+        end = k;
+        break;
+      }
+    }
+    if (end === -1 || end === pos + 3) return null;
     const hex = source.slice(pos + 3, end);
     if (!/^[0-9a-fA-F]+$/u.test(hex)) return null;
     const cp = Number.parseInt(hex, 16);
@@ -1350,6 +1596,8 @@ function tokenizeJs(source: string): JsToken[] {
   let pos = 0;
   const len = source.length;
   const templateBraceDepths: number[] = [];
+  const parenIsCondition: boolean[] = [];
+  let lastCloseParenIsCondition = false;
   let braceDepth = 0;
   const pushToken = (kind: JsToken['kind'], value: string, escaped?: boolean) => {
     tokens.push(escaped ? { kind, value, escaped } : { kind, value });
@@ -1357,7 +1605,15 @@ function tokenizeJs(source: string): JsToken[] {
   const canStartRegex = () => {
     if (tokens.length === 0) return true;
     const prev = tokens[tokens.length - 1]!;
-    return regexAllowedBefore.has(prev.value);
+    if (prev.kind === 'punct') {
+      if (prev.value === ')') return lastCloseParenIsCondition;
+      return regexPunctAllowedBefore.has(prev.value);
+    }
+    if (prev.kind === 'ident' && regexKeywordAllowedBefore.has(prev.value)) {
+      const prev2 = tokens.length >= 2 ? tokens[tokens.length - 2]! : null;
+      return !(prev2 && prev2.kind === 'punct' && (prev2.value === '.' || prev2.value === '?.'));
+    }
+    return false;
   };
   const scanTemplateRest = () => {
     let chunk = '';
@@ -1392,8 +1648,7 @@ function tokenizeJs(source: string): JsToken[] {
     const ch = source[pos]!;
     if (/\s/u.test(ch)) { pos += 1; continue; }
     if (ch === '/' && pos + 1 < len && source[pos + 1] === '/') {
-      const nl = source.indexOf('\n', pos + 2);
-      pos = nl === -1 ? len : nl + 1;
+      pos = findJsLineEnd(source, pos + 2);
       continue;
     }
     if (ch === '/' && pos + 1 < len && source[pos + 1] === '*') {
@@ -1414,6 +1669,8 @@ function tokenizeJs(source: string): JsToken[] {
           pos += 2;
         } else if (c === q) {
           pos += 1;
+          break;
+        } else if (isJsLineTerminator(c.charCodeAt(0))) {
           break;
         } else {
           val += c;
@@ -1437,7 +1694,7 @@ function tokenizeJs(source: string): JsToken[] {
         if (c === '[') inClass = true;
         else if (c === ']') inClass = false;
         else if (c === '/' && !inClass) { pos += 1; break; }
-        else if (c === '\n' || c === '\r') break;
+        else if (isJsLineTerminator(c.charCodeAt(0))) break;
         pos += 1;
       }
       while (pos < len && /[a-z]/iu.test(source[pos]!)) pos += 1;
@@ -1471,6 +1728,24 @@ function tokenizeJs(source: string): JsToken[] {
       pushToken('punct', '0');
       continue;
     }
+    if (ch === '(') {
+      const prev = tokens.length > 0 ? tokens[tokens.length - 1]! : null;
+      const prev2 = tokens.length >= 2 ? tokens[tokens.length - 2]! : null;
+      const isCond = Boolean(
+        prev && prev.kind === 'ident' && conditionParenKeywords.has(prev.value)
+        && !(prev2 && prev2.kind === 'punct' && (prev2.value === '.' || prev2.value === '?.')),
+      );
+      parenIsCondition.push(isCond);
+      pushToken('punct', '(');
+      pos += 1;
+      continue;
+    }
+    if (ch === ')') {
+      lastCloseParenIsCondition = parenIsCondition.pop() ?? false;
+      pushToken('punct', ')');
+      pos += 1;
+      continue;
+    }
     if (ch === '{') {
       braceDepth += 1;
       pushToken('punct', '{');
@@ -1502,7 +1777,7 @@ function tokenizeJs(source: string): JsToken[] {
     const two = source.slice(pos, pos + 2);
     if (two === '==' || two === '!=' || two === '<=' || two === '>=' || two === '=>' || two === '+=' || two === '-='
       || two === '*=' || two === '/=' || two === '%=' || two === '&=' || two === '^=' || two === '|='
-      || two === '&&' || two === '||' || two === '??' || two === '?.') {
+      || two === '&&' || two === '||' || two === '??' || two === '?.' || two === '++' || two === '--') {
       pushToken('punct', two);
       pos += 2;
       continue;
@@ -1513,71 +1788,103 @@ function tokenizeJs(source: string): JsToken[] {
   return tokens;
 }
 
-/** 扫描脚本剩余代码令牌（跳过字符串与注释，严格 O(N)），拦截所有对 zwinfo / window.pdf 的动态或未识别修改。 */
+/** 扫描脚本剩余代码令牌（跳过字符串与注释，严格 O(N)），拦截对 zwinfo / window.pdf / 裸 pdf 的动态或未识别修改。 */
 function hasUnverifiedScriptAssignment(source: string): boolean {
   const tokens = tokenizeJs(source);
-  const matchCloseBracket = new Int32Array(tokens.length);
+  const n = tokens.length;
+  const matchCloseBracket = new Int32Array(n);
+  const matchCloseBrace = new Int32Array(n);
   matchCloseBracket.fill(-1);
+  matchCloseBrace.fill(-1);
   const openBrackets: number[] = [];
-  for (let i = 0; i < tokens.length; i += 1) {
+  const openBraces: number[] = [];
+  for (let i = 0; i < n; i += 1) {
     const tk = tokens[i]!;
-    if (tk.kind === 'punct' && tk.value === '[') {
-      openBrackets.push(i);
-    } else if (tk.kind === 'punct' && tk.value === ']' && openBrackets.length > 0) {
-      matchCloseBracket[openBrackets.pop()!] = i;
+    if (tk.kind !== 'punct') continue;
+    if (tk.value === '[') openBrackets.push(i);
+    else if (tk.value === ']' && openBrackets.length > 0) matchCloseBracket[openBrackets.pop()!] = i;
+    else if (tk.value === '{') openBraces.push(i);
+    else if (tk.value === '}' && openBraces.length > 0) matchCloseBrace[openBraces.pop()!] = i;
+  }
+
+  // O(N) 反向预处理：每个位置跳过任意连续 ')' 后的首个索引，以及连续成员链 .x / ?.x / [...] 结束索引。
+  const nextNonParen = new Int32Array(n + 1);
+  nextNonParen[n] = n;
+  const memberChainEnd = new Int32Array(n + 1);
+  memberChainEnd[n] = n;
+  for (let i = n - 1; i >= 0; i -= 1) {
+    const tk = tokens[i]!;
+    nextNonParen[i] = tk.kind === 'punct' && tk.value === ')' ? nextNonParen[i + 1]! : i;
+    if (tk.kind === 'punct' && (tk.value === '.' || tk.value === '?.')) {
+      const nextIdx = i + 1 < n && tokens[i + 1]!.kind === 'ident' ? i + 2 : i + 1;
+      memberChainEnd[i] = memberChainEnd[nextIdx]!;
+    } else if (tk.kind === 'punct' && tk.value === '[') {
+      const close = matchCloseBracket[i]!;
+      memberChainEnd[i] = close === -1 ? n : memberChainEnd[close + 1]!;
+    } else {
+      memberChainEnd[i] = i;
     }
   }
-  const skipMemberChain = (startIdx: number): number => {
-    let idx = startIdx;
-    while (idx < tokens.length) {
-      const tk = tokens[idx]!;
-      if (tk.kind === 'punct' && (tk.value === '.' || tk.value === '?.')) {
-        idx += 1;
-        if (idx < tokens.length && tokens[idx]!.kind === 'ident') idx += 1;
-        continue;
-      }
-      if (tk.kind === 'punct' && tk.value === '[') {
-        const close = matchCloseBracket[idx]!;
-        idx = close === -1 ? tokens.length : close + 1;
-        continue;
-      }
-      break;
-    }
-    return idx;
+
+  const isDirectMutationAt = (idx: number): boolean => {
+    const j = nextNonParen[idx]!;
+    return j < n && tokens[j]!.kind === 'punct' && (jsAssignOps.has(tokens[j]!.value) || jsUpdateOps.has(tokens[j]!.value));
   };
-  const followedByMutation = (idx: number): boolean => {
-    let j = idx;
-    while (j < tokens.length && tokens[j]!.kind === 'punct' && (tokens[j]!.value === ')' || tokens[j]!.value === '}' || tokens[j]!.value === ']')) {
-      j += 1;
-    }
-    return j < tokens.length && tokens[j]!.kind === 'punct' && jsAssignOps.has(tokens[j]!.value);
+
+  let destructTargetDepth = 0;
+  const destructStack: Array<{ closeIdx: number; isTarget: boolean }> = [];
+  const canPrecedeSubscript = (idx: number): boolean => {
+    if (idx <= 0) return false;
+    const prev = tokens[idx - 1]!;
+    if (prev.kind === 'ident') return !regexKeywordAllowedBefore.has(prev.value);
+    if (prev.kind === 'string') return true;
+    return prev.value === ')' || prev.value === ']';
   };
-  for (let i = 0; i < tokens.length; i += 1) {
+
+  for (let i = 0; i < n; i += 1) {
+    while (destructStack.length > 0 && destructStack[destructStack.length - 1]!.closeIdx === i) {
+      if (destructStack.pop()!.isTarget) destructTargetDepth -= 1;
+    }
     const tk = tokens[i]!;
+    if (tk.kind === 'punct' && (tk.value === '{' || tk.value === '[')) {
+      const closeIdx = tk.value === '{' ? matchCloseBrace[i]! : matchCloseBracket[i]!;
+      if (closeIdx !== -1) {
+        const afterClose = nextNonParen[closeIdx + 1]!;
+        const followedByEq = afterClose < n && tokens[afterClose]!.kind === 'punct' && tokens[afterClose]!.value === '=';
+        const isTarget = followedByEq && (tk.value === '{' || !canPrecedeSubscript(i));
+        destructStack.push({ closeIdx, isTarget });
+        if (isTarget) destructTargetDepth += 1;
+      }
+      continue;
+    }
     if (tk.kind !== 'ident') continue;
-    if (tk.value === 'zwinfo') {
-      const prev = i > 0 ? tokens[i - 1]! : null;
-      if (prev && prev.kind === 'punct' && prev.value === '.') continue;
-      if (prev && prev.kind === 'ident' && prev.value === 'delete') return true;
-      const after = skipMemberChain(i + 1);
-      if (followedByMutation(after)) return true;
+
+    const prev = i > 0 ? tokens[i - 1]! : null;
+    const isPropAfterDot = Boolean(prev && prev.kind === 'punct' && (prev.value === '.' || prev.value === '?.'));
+    const hasPrefixMutation = Boolean(prev && ((prev.kind === 'ident' && prev.value === 'delete') || (prev.kind === 'punct' && jsUpdateOps.has(prev.value))));
+
+    if (tk.value === 'zwinfo' || tk.value === 'pdf') {
+      if (isPropAfterDot) continue;
+      const next = i + 1 < n ? tokens[i + 1]! : null;
+      const isObjPropKey = Boolean(next && next.kind === 'punct' && next.value === ':' && prev && prev.kind === 'punct' && (prev.value === '{' || prev.value === ','));
+      if (isObjPropKey) continue;
+      if (hasPrefixMutation || destructTargetDepth > 0) return true;
+      if (isDirectMutationAt(memberChainEnd[i + 1]!)) return true;
       continue;
     }
     if (globalReceivers.has(tk.value)) {
-      const prev = i > 0 ? tokens[i - 1]! : null;
-      if (prev && prev.kind === 'punct' && prev.value === '.') continue;
-      const next = i + 1 < tokens.length ? tokens[i + 1]! : null;
+      if (isPropAfterDot) continue;
+      const next = i + 1 < n ? tokens[i + 1]! : null;
       if (!next || next.kind !== 'punct') continue;
       if (next.value === '.' || next.value === '?.') {
-        const prop = i + 2 < tokens.length ? tokens[i + 2]! : null;
+        const prop = i + 2 < n ? tokens[i + 2]! : null;
         if (prop && prop.kind === 'ident' && (prop.value === 'pdf' || prop.value === 'zwinfo')) {
-          if (prev && prev.kind === 'ident' && prev.value === 'delete') return true;
-          const after = skipMemberChain(i + 3);
-          if (followedByMutation(after)) return true;
+          if (hasPrefixMutation || destructTargetDepth > 0) return true;
+          if (isDirectMutationAt(memberChainEnd[i + 3]!)) return true;
         }
       } else if (next.value === '[') {
         const closeBracket = matchCloseBracket[i + 1]!;
-        const firstCloseIdx = closeBracket === -1 ? tokens.length : closeBracket + 1;
+        const firstCloseIdx = closeBracket === -1 ? n : closeBracket + 1;
         const insideLen = closeBracket === -1 ? 0 : closeBracket - (i + 2);
         const singleSafeLiteral = insideLen === 1
           && tokens[i + 2]!.kind === 'string'
@@ -1585,20 +1892,38 @@ function hasUnverifiedScriptAssignment(source: string): boolean {
           && tokens[i + 2]!.value !== 'pdf'
           && tokens[i + 2]!.value !== 'zwinfo';
         if (!singleSafeLiteral) {
-          if (prev && prev.kind === 'ident' && prev.value === 'delete') return true;
-          const after = skipMemberChain(firstCloseIdx);
-          if (followedByMutation(after)) return true;
+          if (hasPrefixMutation || destructTargetDepth > 0) return true;
+          if (isDirectMutationAt(memberChainEnd[firstCloseIdx]!)) return true;
         }
       }
       continue;
     }
-    if ((tk.value === 'Object' || tk.value === 'Reflect') && i + 4 < tokens.length
+    if ((tk.value === 'Object' || tk.value === 'Reflect') && i + 4 < n
       && tokens[i + 1]!.kind === 'punct' && tokens[i + 1]!.value === '.'
       && tokens[i + 2]!.kind === 'ident' && (tokens[i + 2]!.value === 'assign' || tokens[i + 2]!.value === 'defineProperty' || tokens[i + 2]!.value === 'defineProperties' || tokens[i + 2]!.value === 'set')
       && tokens[i + 3]!.kind === 'punct' && tokens[i + 3]!.value === '(') {
       const target = tokens[i + 4]!;
-      if (target.kind === 'ident' && (target.value === 'zwinfo' || globalReceivers.has(target.value))) {
-        return true;
+      if (target.kind === 'ident') {
+        if (target.value === 'zwinfo') return true;
+        if (globalReceivers.has(target.value)) {
+          const afterTarget = i + 5 < n ? tokens[i + 5]! : null;
+          if (!afterTarget || (afterTarget.kind === 'punct' && afterTarget.value === ',')) {
+            return true;
+          }
+          if (afterTarget.kind === 'punct' && (afterTarget.value === '.' || afterTarget.value === '?.')) {
+            const prop = i + 6 < n ? tokens[i + 6]! : null;
+            if (prop && prop.kind === 'ident' && (prop.value === 'zwinfo' || prop.value === 'pdf')) return true;
+          } else if (afterTarget.kind === 'punct' && afterTarget.value === '[') {
+            const closeBracket = matchCloseBracket[i + 5]!;
+            const insideLen = closeBracket === -1 ? 0 : closeBracket - (i + 6);
+            const singleSafeLiteral = insideLen === 1
+              && tokens[i + 6]!.kind === 'string'
+              && !tokens[i + 6]!.escaped
+              && tokens[i + 6]!.value !== 'pdf'
+              && tokens[i + 6]!.value !== 'zwinfo';
+            if (!singleSafeLiteral) return true;
+          }
+        }
       }
     }
   }
@@ -1623,7 +1948,7 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
     if (script.hasInfoCodeConflict) return invalid('研报详情标识与附件标识不符。');
     let source = stripLeadingJsTrivia(script.content);
     while (source) {
-      const pdf = /^window\.pdf\s*=\s*(["'])(https:\/\/pdf\.dfcfw\.com\/pdf\/H3_AP\d{8,20}_1\.pdf)\1\s*(?:;|$)/u.exec(source);
+      const pdf = /^window\.pdf\s*=\s*(["'])(https:\/\/pdf\.dfcfw\.com\/pdf\/H3_AP\d{8,20}_1\.pdf)\1[^\S\r\n\u2028\u2029]*(?:;|[\r\n\u2028\u2029]+|$)/u.exec(source);
       if (pdf) {
         collect(pdf[2], requiredInfoCode);
         source = stripLeadingJsTrivia(source.slice(pdf[0].length));
@@ -1633,7 +1958,7 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
       if (zwHead && source[zwHead[0].length] === '{') {
         const objEnd = extractBalancedObjectLiteral(source, zwHead[0].length);
         if (objEnd === -1) return invalid('研报详情元数据无法核对。');
-        const tailMatch = /^\s*(?:;|$)/u.exec(source.slice(objEnd));
+        const tailMatch = /^[^\S\r\n\u2028\u2029]*(?:;|[\r\n\u2028\u2029]+|$)/u.exec(source.slice(objEnd));
         if (!tailMatch) return invalid('详情脚本包含无法静态核对的研报或附件声明。');
         const info = detailMetadata(source.slice(zwHead[0].length, objEnd));
         if (!info) return invalid('研报详情元数据无法核对。');
@@ -1647,7 +1972,7 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
         source = stripLeadingJsTrivia(source.slice(objEnd + tailMatch[0].length));
         continue;
       }
-      const code = /^(?:window\s*\.\s*)?zwinfo\s*\.\s*infoCode\s*=\s*(["'])(AP\d{8,20})\1\s*(?:;|$)/u.exec(source);
+      const code = /^(?:window\s*\.\s*)?zwinfo\s*\.\s*infoCode\s*=\s*(["'])(AP\d{8,20})\1[^\S\r\n\u2028\u2029]*(?:;|[\r\n\u2028\u2029]+|$)/u.exec(source);
       if (code) {
         if (requiredInfoCode && code[2] !== requiredInfoCode) return invalid('研报详情标识与附件标识不符。');
         declaredCodes.add(code[2]);
