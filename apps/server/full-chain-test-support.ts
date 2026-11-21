@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import fs, { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +42,21 @@ export async function readModelEvidencePreview(first: Record<string, any>, reade
   }
   assert.equal(createHash('sha256').update(text).digest('hex'), sha256);
   return JSON.parse(text);
+}
+
+/** 对真实实现文件的读回字节做进程内故障注入；不改源码磁盘，finally 恢复原 fs 导出。 */
+export function changedImplementation(suffix: string, check: () => void): void {
+  const read = fs.readFileSync;
+  let matched = 0;
+  fs.readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => {
+    const original = read(...args);
+    if (!String(args[0]).replaceAll('\\', '/').endsWith(suffix)) return original;
+    matched++;
+    return typeof original === 'string' ? original + '\n' : Buffer.concat([original, Buffer.from('\n')]);
+  }) as typeof fs.readFileSync;
+  syncBuiltinESMExports();
+  try { check(); assert.ok(matched > 0, suffix); }
+  finally { fs.readFileSync = read; syncBuiltinESMExports(); }
 }
 
 export interface FullChainFixture {

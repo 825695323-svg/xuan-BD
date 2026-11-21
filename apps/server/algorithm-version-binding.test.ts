@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -11,28 +10,13 @@ import { PersonalCore } from '../../modules/agent/runtime/core.js';
 import { directImplementationVersion } from '../../platform/plugins/direct-versions.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { CoreDatabase } from '../../platform/state/database.js';
-import { createFullChainFixture } from './full-chain-test-support.js';
+import { changedImplementation, createFullChainFixture } from './full-chain-test-support.js';
 import { createApplicationServices } from './services.js';
 
 const codeRoot = fileURLToPath(new URL('../..', import.meta.url));
 const backend: Backend = { id: 'synthetic-version-only', createSession: async () => { throw new Error('No model in version binding regression'); } };
 const health: HealthResponse = { name: 'xuan BD', backend: 'demo', configured: false, provider: null, model: null,
   notice: 'Isolated host version checks; no external WFD, model or algorithm execution.' };
-
-/** 对真实实现文件的读回字节做进程内故障注入；不改源码磁盘，finally 恢复原 fs 导出。 */
-function changedImplementation(suffix: string, check: () => void): void {
-  const read = fs.readFileSync;
-  let matched = 0;
-  fs.readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => {
-    const original = read(...args);
-    if (!String(args[0]).replaceAll('\\', '/').endsWith(suffix)) return original;
-    matched++;
-    return typeof original === 'string' ? original + '\n' : Buffer.concat([original, Buffer.from('\n')]);
-  }) as typeof fs.readFileSync;
-  syncBuiltinESMExports();
-  try { check(); assert.ok(matched > 0, suffix); }
-  finally { fs.readFileSync = read; syncBuiltinESMExports(); }
-}
 
 test('real algorithm host freezes publication separately from fixed reads and binds WFD without a Python algorithm service', {
   skip: !process.env.XUAN_FULL_CHAIN_ROOT && '需要显式 XUAN_FULL_CHAIN_ROOT（隔离宿主版本回归）；不读取真实 WFD。', timeout: 30_000,
@@ -91,7 +75,11 @@ test('real algorithm host freezes publication separately from fixed reads and bi
       changedImplementation('modules/financial/' + name + '.ts', () => {
         for (const task of pure) assert.throws(() => registry.assertTaskVersions(task), { code: 'DIRECT_DEPENDENCY_UNAVAILABLE' });
         registry.assertTaskVersions(discovery); registry.assertTaskVersions(catalog);
-        for (const action of actions) verify(action);
+        for (const action of actions) {
+          if (action === 'algorithms.status' && name === 'pure-operator-runner')
+            assert.throws(() => verify(action), { code: 'DIRECT_DEPENDENCY_UNAVAILABLE' });
+          else verify(action);
+        }
       });
     }
     changedImplementation('modules/financial/derived-wfd-publisher.ts', () => {
@@ -179,6 +167,20 @@ test('real algorithm host freezes publication separately from fixed reads and bi
       } finally { fs.renameSync(readerPath + '.offline', readerPath); }
       registry.assertTaskVersions(task);
     } finally { companion.r1Workspace = workspace; }
+  });
+
+  await t.test('joint_experimental storage disables the five fixed-product operators on the real host', {
+    skip: !f.machine && '需要隔离连接配置',
+  }, () => {
+    const saved = fs.readFileSync(f.configPath);
+    try {
+      fs.writeFileSync(f.configPath, JSON.stringify({ ...JSON.parse(saved.toString()), storage_format: 'joint_experimental' }));
+      assert.equal(realWorkspace!.capabilities().readProductSupported, false);
+      const operators = companion.toolLibrary!.view().tools.slice(-5);
+      assert.ok(operators.every(tool => tool.status === 'unavailable' && tool.reason?.includes('read_product')));
+      verify('algorithms.status');
+    } finally { fs.writeFileSync(f.configPath, saved); }
+    assert.ok(companion.toolLibrary!.view().tools.slice(-5).every(tool => tool.status === 'ready'));
   });
 
   await t.test('Python algorithm service upgrades invalidate calculation and publication only', () => {

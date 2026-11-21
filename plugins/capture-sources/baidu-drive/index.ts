@@ -26,7 +26,7 @@ const LIMIT = 256 * 1024 * 1024;
 const KEYS: Record<Operation, readonly string[]> = {
   whoami: [], ls: ['path', 'offset', 'limit'], search: ['query', 'page', 'limit'],
   download: ['path'], upload: ['path', 'fileRefId'],
-  'transfer-list': ['shareUrl', 'sourceDir', 'passcodeRef', 'page', 'limit'],
+  'transfer-list': ['shareUrl', 'sourceDir', 'path', 'passcodeRef', 'page', 'limit'],
   'transfer-select': ['shareUrl', 'passcodeRef', 'path', 'fileIds'],
 };
 const NETWORK_ORIGINS = ['https://pan.baidu.com', 'https://openapi.baidu.com', 'https://d.pcs.baidu.com'];
@@ -35,7 +35,10 @@ const NETWORK_ORIGINS = ['https://pan.baidu.com', 'https://openapi.baidu.com', '
 export function validateBaiduArgs(args: Args): Operation {
   const operation = args.operation as Operation;
   if (Object.hasOwn(args, 'passcode')) invalid('提取码仅接受已登记的 passcodeRef 引用。');
-  if (operation === 'transfer-list' && args.path !== undefined) invalid('分享子目录请使用 sourceDir。');
+  if (operation === 'transfer-list' && args.path !== undefined) {
+    if (args.sourceDir !== undefined) invalid('分享子目录 path 和 sourceDir 只能提供一个。');
+    remotePath(args.path, false);
+  }
   if (!OPERATIONS.includes(operation) || Object.keys(args).some(key => key !== 'operation' && !KEYS[operation].includes(key))) invalid();
   if (['ls', 'download', 'upload', 'transfer-select'].includes(operation)) remotePath(args.path);
   if (args.sourceDir !== undefined) remotePath(args.sourceDir, false);
@@ -60,15 +63,19 @@ function shareUrl(value: JsonValue | undefined): string {
   }
   return value;
 }
-async function resolvePasscode(configuration: BaiduDriveConfiguration, ref: string, runtime: ProcessRuntime): Promise<string> {
-  const refs = configuration.sharePasscodeRefs;
-  if (refs && Object.hasOwn(refs, ref)) {
+async function resolvePasscode(source: CredentialReference | undefined, runtime: ProcessRuntime,
+  context: TaskExecutionContext, assertAuthorized: () => void, securityPath?: string): Promise<string> {
+  if (source) {
     try {
-      const source = refs[ref]!;
-      const value = source.kind === 'keychain' ? await readKeychainCredential(source.service, source.account, runtime, 'exact')
+      assertAuthorized();
+      const value = source.kind === 'keychain' ? await readKeychainCredential(source.service, source.account, runtime, 'exact',
+        { signal: context.signal, assertAuthorized, binaryPath: securityPath })
         : source.kind === 'dsh-ref' ? await readDshCredential(source.path, source.ref, 'exact') : undefined;
       if (typeof value === 'string' && /^[a-zA-Z0-9]{4,16}$/u.test(value)) return value;
-    } catch { /* 底层凭据异常可能带有原文，不能传播。 */ }
+    } catch {
+      context.signal.throwIfAborted();
+      assertAuthorized(); // 权限已撤销时返回授权失败，凭据异常本身不出站。
+    }
   }
   throw new DirectError('BAIDU_PASSCODE_UNAVAILABLE', '分享提取码引用未登记、无法读取或格式无效。');
 }
@@ -185,9 +192,13 @@ export function createBaiduDriveActions(options: { files: FileReferenceService; 
         ...(['read', 'write', 'delete'] as const).map(action => directoryCapability(action, options.artifactRoot)),
         ...(reference ? [fileCapability('read', reference.invocationPath)] : [])];
       const passcodeRef = args.passcodeRef as string | undefined;
+      const refs = configuration.sharePasscodeRefs;
+      const locator = passcodeRef && refs && Object.hasOwn(refs, passcodeRef) ? refs[passcodeRef] : undefined;
+      const securityPath = locator?.kind === 'keychain' ? options.processRuntime!.path('security') : undefined;
+      if (securityPath) capabilities.push(fileCapability('execute', securityPath));
       if (passcodeRef) capabilities.push({ action: 'secret', target: { kind: 'secret', name: 'baidu-drive.share-passcode.' + passcodeRef } });
       const authority = await acquireAuthority(context, `baidu.drive.${operation}`, args, capabilities);
-      const passcode = passcodeRef ? await resolvePasscode(configuration, passcodeRef, options.processRuntime!) : undefined;
+      const passcode = passcodeRef ? await resolvePasscode(locator, options.processRuntime!, context, authority.assert, securityPath) : undefined;
       authority.assert();
       const workspace = new DirectWorkspace(context, options.files, options.artifactRoot, authority);
       const assertCurrent = () => {
@@ -212,7 +223,7 @@ export function createBaiduDriveActions(options: { files: FileReferenceService; 
         } else if (operation === 'ls') data = await invoke(['ls', String(args.path), '--start', String(args.offset ?? 0), '--limit', String(args.limit ?? 50)]);
         else if (operation === 'search') data = await invoke(['search', String(args.query), '--page', String(args.page ?? 1), '--page-size', String(args.limit ?? 50)]);
         else if (operation === 'transfer-list') data = await invoke(['transfer', 'list', shareUrl(args.shareUrl), '--page', String(args.page ?? 1), '--page-size', String(args.limit ?? 50),
-          ...(args.sourceDir ? ['--source-dir', String(args.sourceDir)] : [])]);
+          ...((args.sourceDir ?? args.path) !== undefined ? ['--source-dir', String(args.sourceDir ?? args.path)] : [])]);
         else if (operation === 'transfer-select') {
           const ids = fileIds(args.fileIds), directory = String(args.path), effectId = randomUUID();
           await context.emit({ type: 'side_effect_started', effectId, description: '提交所选分享条目转存', operation: { operation, remotePath: directory, fileIds: ids } });

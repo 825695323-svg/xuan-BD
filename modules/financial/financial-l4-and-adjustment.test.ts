@@ -26,7 +26,7 @@ import { computeFinancialGrowth, computeFinancialRatios, computeFinancialSingleQ
 import { computeAdjustedMarketSeries } from './market-adjustment-contract.js';
 import { basis, observation, bars, marketInput, fixedSnapshot, revision, cutoff, ratioRow, sourceRows, products, calculation, fields, cell,
   pureFixtureUnits, seedPureOperatorProducts, discoveredPureReference } from './pure-operator-test-support.js';
-import { ToolLibraryService } from './tool-library.js';
+import { fixedWfdBinding, ToolLibraryService } from './tool-library.js';
 
 test('累计转单季及 TTM 按相容期间精确计算并保留源观测', () => {
   const q1 = observation(2025, 'Q1_YTD', '10000000000000000.000000000000000001');
@@ -227,6 +227,7 @@ function fixture() {
         held_scope: query.held_scope, usable_stage: query.usable_stage, business_time_range: null, subject: null, page, complete: !more,
         query_hash: 'sha256:' + 'a'.repeat(64), budget: {}, product: { product_id: id, definition_refs: [fixedDefinition], contract_refs: [contract] },
         diagnostics: structuredClone(state.diagnostics), rows: slice.map(row => ({
+          subject: { kind: 'issuer', namespace: 'synthetic', id: basis.subject },
           record_ref: { logical_key: id + offset, revision_id: 'r_synthetic_visible' }, definition_ref: fixedDefinition, contract_ref: contract,
           values: Object.fromEntries((query.fields as string[]).map(field => [field, cell(row, field)])),
           ...(query.history_mode === 'market_known_at' ? { eligibility: { decision: 'eligible', mode: query.history_mode },
@@ -289,6 +290,19 @@ test('v22 合同按真实端口暴露 20 项，固定快照发现只读且无端
     f.state.rules = 22; f.companion.r1Workspace = undefined;
     assert.equal((await f.invoke('algorithms.capabilities', { snapshotId: fixedSnapshot })).snapshotDiscovery.status, 'unavailable');
     assert.equal((await f.invoke('algorithms.capabilities')).methodDirectory.length, 20);
+  } finally { f.close(); }
+});
+
+test('只读连接 profile 缺失或为 joint_experimental 时，目录给出 read_product 未就绪原因', () => {
+  const f = fixture(), port = f.companion.r1Workspace!;
+  try {
+    const caps = port.capabilities();
+    for (const profile of ['joint_experimental', undefined, 'data_only']) {
+      const selected = { ...port, capabilities: () => ({ ...caps, connection: { ...caps.connection, profile } }) } as typeof port;
+      const tools = new ToolLibraryService({ hasWfdReader: () => !!fixedWfdBinding(selected) }).view().tools.slice(-5);
+      assert.ok(tools.every(tool => profile === 'data_only' ? tool.status === 'ready'
+        : tool.status === 'unavailable' && tool.reason?.includes('read_product')));
+    }
   } finally { f.close(); }
 });
 
@@ -400,6 +414,42 @@ test('拒绝动态引用、定义漂移、残页、非法行值与不相容财�
   } finally { f.close(); }
 });
 
+for (const fault of ['namespace', 'kind', 'scale', 'undeclared_scale', 'dimension'] as const) {
+  test('复权计算与密封输入独立核验均拒绝 ' + fault, async () => {
+    const f = fixture();
+    try {
+      f.rows.actions = [{ ...sourceRows.actions[0], cashPerShare: 50 }];
+      const request = calculation('price_adjustment'), good = await f.run(request);
+      const saved = f.database.connection.prepare('SELECT sealed_input,result_json FROM pure_operator_runs WHERE task_id=?').get(good.taskId)!;
+      const input = JSON.parse(String(saved.sealed_input)).input;
+      const change = (subject: WfdRecord, unit: WfdRecord) => {
+        const definition = unit.definition as WfdRecord;
+        if (fault === 'namespace' || fault === 'kind') subject[fault] = 'another';
+        else if (fault === 'undeclared_scale') delete definition.scale;
+        else definition[fault] = fault === 'scale' ? 0.01 : 'quantity';
+      };
+      change(input.basis.actions[0].subject, input.basis.actions[0].units.cashPerShare);
+      assert.throws(() => verifyPureOperator(input, JSON.parse(String(saved.result_json))), { code: 'PURE_OPERATOR_VERIFICATION_FAILED' });
+      f.state.changePage = (page: any) => {
+        if (page.product_id === 'actions') change(page.rows[0].subject, page.rows[0].values.cashPerShare.unit);
+      };
+      await assert.rejects(f.run(request), { code: 'MARKET_ADJUSTMENT_BASIS' });
+      if (fault === 'undeclared_scale') {
+        const omitScale = (unit: any) => {
+          if (unit.unit_code === 'cny_per_share') { delete unit.definition.scale; unit.definition.multiplier = 1; }
+        };
+        for (const row of [...input.basis.bars, ...input.basis.actions]) Object.values(row.units).forEach(omitScale);
+        assert.throws(() => verifyPureOperator(input, JSON.parse(String(saved.result_json))), { code: 'PURE_OPERATOR_VERIFICATION_FAILED' });
+        f.state.changePage = (page: any) => {
+          for (const row of page.rows) for (const cell of Object.values(row.values)) omitScale((cell as any).unit);
+        };
+        await assert.rejects(f.run(request), { code: 'MARKET_ADJUSTMENT_BASIS' });
+      }
+      assert.equal(f.database.connection.prepare('SELECT count(*) n FROM pure_operator_runs').get()!.n, 1);
+    } finally { f.close(); }
+  });
+}
+
 test('独立核验拒绝五类数值篡改，核对 TTM 两条公式、零基期、百分点、杜邦和空值诊断', () => {
   const q = [1, 2, 3, 4].map(q => observation(2025, ('Q' + q) as FinancialObservation['period'], String(q)));
   const single = [observation(2025, 'Q1_YTD', 0), observation(2025, 'H1', '0.030000000000000001')];
@@ -425,7 +475,10 @@ test('独立核验拒绝五类数值篡改，核对 TTM 两条公式、零基期
   }
   for (const direction of ['forward_qfq', 'backward_hfq'] as const) {
     const market = { ...marketInput, direction, anchorDate: bars[direction === 'forward_qfq' ? 2 : 0].date };
-    const input = { methodId: 'price_adjustment' as const, market }, result = computeAdjustedMarketSeries(market);
+    const rowBasis = (row: WfdRecord) => ({ subject: { kind: 'issuer', namespace: 'synthetic', id: basis.subject },
+      subjectId: basis.subject, currency: basis.currency, units: Object.fromEntries(Object.keys(row).map(k => [k, cell(row, k).unit])) });
+    const input = { methodId: 'price_adjustment' as const, market,
+      basis: { bars: sourceRows.bars.map(rowBasis), actions: sourceRows.actions.map(rowBasis) } }, result = computeAdjustedMarketSeries(market);
     verify(input, result, r => { r.rows[1].adj_factor = '0'; });
     verify(input, result, r => { r.rows[1].adjusted.high = '0'; });
     verify(input, result, r => { r.lineage.appliedActions[0].stepFactor = '0.5'; });

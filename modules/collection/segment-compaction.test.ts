@@ -116,9 +116,9 @@ test('真实旧格式迁移保留所有索引身份、任意选集、中文结�
   assert.equal(segmentStorage(db).membershipRows, 3, '非全量的旧选集继续保存准确成员');
   assert.equal(createCurrentIndexVersion(db).indexVersion, 'old_2', '迁移后复用原全量版本，保留旧ID');
   assert.deepEqual(resolveVisibleVersions(db, { indexVersion: 'old_2', asOf: t0 + 1, mode: 'market_known_at' }).allowed,
-    ['mat_0@v1', 'mat_1@v1']);
+    [['mat_0', 'v1', all[0]!.parser_version], ['mat_1', 'v1', all[0]!.parser_version]]);
   assert.deepEqual(resolveVisibleVersions(db, { indexVersion: 'old_2', asOf: t0 + 9, mode: 'market_known_at' }).allowed,
-    ['mat_0@v2', 'mat_1@v1']);
+    [['mat_0', 'v2', all[0]!.parser_version], ['mat_1', 'v1', all[0]!.parser_version]]);
   db.exec('UPDATE doc_segments SET rowid=rowid+1000');
   verify(db);
   db.exec('VACUUM'); verify(db); db.close();

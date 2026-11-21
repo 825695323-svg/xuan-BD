@@ -128,6 +128,7 @@ export interface R1RequestView {
 export interface R1CapabilitiesView {
   protocol: 'wfd.structured-ingest/1.0'; profile: 'data_only';
   configuration: { state: string; reason: string | null }; connection: R1ConnectionIdentity | null;
+  readProductSupported?: boolean;
   limits: { maxRows: number; maxDocumentBytes: number; maxMaterials: 1; payload: 'scalar_rows';
     supportedPayloads?: readonly ('scalar_rows' | 'tabular_rows' | 'event_records' | 'relation_edges')[] };
   automaticSubmit: false; legacyReplay: false;

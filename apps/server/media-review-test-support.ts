@@ -75,13 +75,13 @@ export function openMediaReviewCompanion(f: ReturnType<typeof createFullChainFix
   } };
 }
 
-export async function openMediaReviewHost(f: ReturnType<typeof createFullChainFixture>, listen = true, localData?: ServiceOptions['localData']) {
+export async function openMediaReviewHost(f: ReturnType<typeof createFullChainFixture>, listen = true, localData?: ServiceOptions['localData'], baiduDrive?: ServiceOptions['baiduDrive']) {
   const serviceHost = openMediaReviewCompanion(f, { localData }), { resources, companionDatabase, companion } = serviceHost;
   const database = new CoreDatabase(join(f.runtime, 'state/personal.sqlite'));
   const backend = new CapturingBackend(), core = new PersonalCore(backend, { database });
   const services = createApplicationServices(core, database, { role: 'personal', health, projectRoot: f.runtime,
     codeRoot, privateRoot: join(f.runtime, 'state/personal-private'), resources,
-    processRuntime: new ProcessRuntime(resources), whisperModelPath: f.modelPath, workspaceServices: companion, localData, modelConfigurationVersion: 'synthetic-receiver-v1' });
+    processRuntime: new ProcessRuntime(resources), whisperModelPath: f.modelPath, workspaceServices: companion, localData, baiduDrive, modelConfigurationVersion: 'synthetic-receiver-v1' });
   services.permissions.grant({ label: 'isolated generated OCR artifacts', scope: { kind: 'persistent' },
     capabilities: ['read', 'write', 'delete'].map(action => ({ action: action as 'read' | 'write' | 'delete', target: { kind: 'directory' as const, path: services.artifactRoot, recursive: true } })) });
   if (binary) services.permissions.grant({ label: 'explicit compiled local OCR helper', scope: { kind: 'persistent' },

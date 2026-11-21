@@ -46,6 +46,19 @@ export function registeredConnection(registry: LocalConnectionRegistry | undefin
   return matches[0];
 }
 
+/** 保护路径只取登记中的定位信息，即使客户端或密钥文件离线也生效。 */
+export function registeredBaiduSharePasscodePaths(registry: LocalConnectionRegistry | undefined): string[] {
+  const paths = new Set<string>();
+  for (const connection of registry?.connections ?? []) {
+    if (!object(connection.share_passcode_refs)) continue;
+    for (const locator of Object.values(connection.share_passcode_refs)) {
+      if (object(locator) && locator.kind === 'dsh-ref' && typeof locator.path === 'string'
+        && isAbsolute(locator.path) && !locator.path.includes('\0')) paths.add(locator.path);
+    }
+  }
+  return [...paths];
+}
+
 /** 账号位置仅沿原生客户端的已有登记；不猜默认用户目录，也不读取账号正文。 */
 export function registeredBaiduDriveConfiguration(registry: LocalConnectionRegistry | undefined, binaryPath: string): BaiduDriveConfiguration | undefined {
   const connection = registeredConnection(registry, 'bdpan-native'), credential = connection?.credential_ref;

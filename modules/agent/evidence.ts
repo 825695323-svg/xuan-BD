@@ -7,6 +7,7 @@ export interface EvidenceSource { callId: string; runId: string; inputId: string
 export interface EvidenceReference { evidenceId: string; sha256: string; totalBytes: number; format: 'utf8' }
 export interface EvidencePage extends EvidenceReference { text: string; startByte: number; endByte: number; nextCursor: string | null; done: boolean }
 interface Row { id: string; scope_json: string; source_json: string; sha256: string; body: Uint8Array; total_bytes: number }
+export const MAX_RETAINED_EVIDENCE_BYTES = 16 * 1024 * 1024;
 export const MAX_EVIDENCE_PAGE_BYTES = 12_000;
 const scopeText = (scope: EvidenceScope) => JSON.stringify([scope.conversationId, scope.branchId, scope.subject, scope.modelDigest]);
 export const evidenceDigest = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
@@ -27,7 +28,7 @@ export class AgentEvidenceService {
     if (typeof text !== 'string') throw invalid();
     const body = Buffer.from(text, 'utf8');
     if (body.toString('utf8') !== text) throw invalid();
-    if (body.length > 16 * 1024 * 1024) throw new CoreError('EVIDENCE_TOO_LARGE', '此证据超出本机有界保管上限，需使用原产物的专用读取入口。', 413);
+    if (body.length > MAX_RETAINED_EVIDENCE_BYTES) throw new CoreError('EVIDENCE_TOO_LARGE', '此证据超出本机有界保管上限，需使用原产物的专用读取入口。', 413);
     const sha256 = evidenceDigest(text), owner = scopeText(scope), origin = JSON.stringify(source);
     const id = 'ev-' + evidenceDigest(JSON.stringify([owner, origin, sha256]));
     this.database.connection.prepare('INSERT OR IGNORE INTO agent_evidence VALUES(?,?,?,?,?,?,?)')

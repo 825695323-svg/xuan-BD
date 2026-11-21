@@ -169,7 +169,7 @@ interface CallRow {
   id: string; conversation_id: string; branch_id: string; parent_run_id: string; parent_generation: number;
   input_id: string; message_id: string; tool_call_id: string; tool_name: string; action: string; args_json: string;
   payload_digest: string; model_json: string; model_digest: string; selection_json: string; task_request_id: string;
-  task_id: string | null; ticket_json: string | null; preview_json: string | null; state: string;
+  task_id: string | null; ticket_json: string | null; preview_json: string | null; state: string; updated_at: number;
 }
 interface ReferenceProof { id: string; version: number; identity: FileReference['identity']; kind: FileReference['kind']; displayName: string; size: number }
 interface ModelBinding extends PiModelInfo { endpointDigest: string; capabilities: PermissionCapability[] }
@@ -364,7 +364,9 @@ export class CoreModelTools {
         this.assertSkillToolCall(call, input, model);
       } else if (call.tool_name === 'list_actions') {
         if (call.action !== CATALOGUE_ACTION || call.task_id !== null || call.ticket_json !== null) throw publicError('MODEL_SHARE_REVOKED');
-        if (JSON.parse(call.preview_json).rulesVersion !== (this.options.core.runConfiguration?.(input.runId)?.internalAgentRules?.version ?? null))
+        const version = this.options.core.runConfiguration?.(input.runId)?.internalAgentRules?.version;
+        const catalogue = JSON.parse(call.preview_json);
+        if (catalogue.rulesVersion !== (version ?? null) || !catalogueFieldsAllowed(catalogue, version))
           throw publicError('MODEL_SHARE_REVOKED');
       } else if (Object.hasOwn(PERSONAL_TOOLS, call.tool_name)) {
         if (call.action !== PERSONAL_TOOLS[call.tool_name] || call.task_id !== null || call.ticket_json !== null) throw publicError('MODEL_SHARE_REVOKED');
@@ -376,11 +378,13 @@ export class CoreModelTools {
       if (call.tool_name === EVIDENCE_TOOL) {
         const evidenceArgs = JSON.parse(call.args_json) as Record<string, JsonValue>;
         this.assertEvidenceOrigin(this.scope(input, model),
-          this.evidence.source(this.scope(input, model), String(evidenceArgs.evidenceId)),
+          this.evidence.source(this.scope(input, model), String(evidenceArgs.evidenceId)), input,
           { evidenceId: String(evidenceArgs.evidenceId), sha256: typeof evidenceArgs.sha256 === 'string' ? evidenceArgs.sha256 : '' });
       }
       // 从核心已提交预览投影，原生历史 content/details 即使被篡改也不能扩大数据范围。
       let text = call.preview_json;
+      if (call.tool_name === 'core_tasks_list') text = JSON.stringify({ ...JSON.parse(text),
+        rejectedCalls: this.rejectedCalls(call.conversation_id, call.branch_id, call.updated_at) });
       if (call.tool_name === 'perform_action' && call.task_id && call.ticket_json) {
         const view = JSON.parse(text) as Record<string, JsonValue>, task = this.options.getTasks().get(call.task_id);
         if (call.action === 'material.process') {
@@ -469,7 +473,7 @@ export class CoreModelTools {
         const limit = params.limit ?? 15;
         if (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 30) throw publicError('MODEL_ARGS_INVALID');
         preview = { ok: true, tasks: tasks.list({ conversationId: input.conversationId, ownerRole: 'personal', limit: Number(limit) }).map(taskView),
-          rejectedCalls: this.rejectedCalls(input.conversationId) };
+          rejectedCalls: this.rejectedCalls(input.conversationId, input.branchId) };
       } else if (name === 'core_code_search') {
         preview = this.searchSource(args);
       } else if (name === 'core_code_read') {
@@ -509,7 +513,9 @@ export class CoreModelTools {
       throw error;
     }
     this.assertParent(input, signal);
-    return { ...toolResult(JSON.parse(call.preview_json!)), details: shareMarker(call) };
+    const saved = JSON.parse(call.preview_json!);
+    if (name === 'core_tasks_list') saved.rejectedCalls = this.rejectedCalls(input.conversationId, input.branchId, call.updated_at);
+    return { ...toolResult(saved), details: shareMarker(call) };
   }
 
   /** 仅给同分支祖先的成功 WeRSS 任务找回材料候选；真正原件核验仍在 material.read。 */
@@ -742,6 +748,7 @@ export class CoreModelTools {
       offset: request.offset as number | undefined, maxBytes: request.maxBytes as number | undefined }, assertSource);
   }
   private assertEvidenceOrigin(scope: EvidenceScope, source: EvidenceSource,
+    input: Pick<BackendInput, 'conversationId' | 'branchId' | 'messageId' | 'inputId' | 'runId' | 'generation'>,
     evidenceRef?: { evidenceId: string; sha256: string }): CallRow {
     const call = this.getCall(source.callId);
     if (call.conversation_id !== scope.conversationId || call.branch_id !== scope.branchId || call.model_digest !== scope.modelDigest
@@ -753,7 +760,7 @@ export class CoreModelTools {
       UNION SELECT m.id,m.parent_id FROM messages m JOIN path p ON m.id=p.parent_id WHERE m.conversation_id=?) SELECT id FROM path WHERE id=?`)
       .get(scope.branchId, scope.conversationId, scope.conversationId, source.messageId);
     const ticket = JSON.parse(call.ticket_json) as ShareTicket, task = this.options.getTasks().get(call.task_id);
-    this.assertRetrievalAccess(task);
+    this.assertRetrievalAccess(task, input);
     this.assertHistoricalAlgorithmPreview(call, task, scope, evidenceRef);
     if (!ancestor || task.ownerRole !== scope.subject || task.status !== 'succeeded' || task.requiresReview || !task.result
       || task.currentRunId !== ticket.runId || task.currentAttemptId !== ticket.attemptId || task.generation !== ticket.generation
@@ -761,17 +768,17 @@ export class CoreModelTools {
     for (const reference of [...ticket.sources, ...ticket.outputs]) this.requireProof(reference, scope.conversationId);
     return call;
   }
-  private pagePreview(call: CallRow, value: Record<string, JsonValue>): JsonValue {
+  private pagePreview(call: CallRow, value: Record<string, JsonValue>, forceEvidence = false): JsonValue {
     const task = this.options.getTasks().get(call.task_id!);
     const localPersistence = this.localPersistence(call, task);
     value = { ...value, taskStatus: task.status, localPersistence, artifactIds: task.result!.artifactIds ?? [],
       summary: value.summary ?? `${this.options.registry.get(call.action).title}已完成。${localPersistence.statement}` };
     const text = JSON.stringify(value);
-    if (Buffer.byteLength(text, 'utf8') <= MAX_RESULT_BYTES) return bounded(value);
+    if (!forceEvidence && Buffer.byteLength(text, 'utf8') <= MAX_RESULT_BYTES) return bounded(value);
     const scope: EvidenceScope = { conversationId: call.conversation_id, branchId: call.branch_id,
       subject: task.ownerRole, modelDigest: call.model_digest };
     const reference = this.evidence.retain(scope, { callId: call.id, runId: call.parent_run_id, inputId: call.input_id, messageId: call.message_id }, text);
-    const firstPage = this.evidence.read(scope, { ...reference }, source => { this.assertCallParent(call); this.assertEvidenceOrigin(scope, source, reference); });
+    const firstPage = this.evidence.read(scope, { ...reference }, source => { this.assertCallParent(call); this.assertEvidenceOrigin(scope, source, retrievalInput(call), reference); });
     return { ok: true, taskId: call.task_id, taskStatus: task.status, complete: false, summary: value.summary!, localPersistence,
       artifactIds: task.result!.artifactIds ?? [], evidence: firstPage as unknown as JsonValue,
       note: '完整结果按固定摘要保管；使用core_evidence_read续取nextCursor，done=true表示已读到末尾。' };
@@ -844,7 +851,7 @@ export class CoreModelTools {
       const rulesVersion = this.options.core.runConfiguration?.(input.runId)?.internalAgentRules?.version;
       const saved = call.preview_json ? JSON.parse(call.preview_json) : null;
       let preview: JsonValue;
-      if (saved && saved.rulesVersion === (rulesVersion ?? null)) preview = saved;
+      if (saved && saved.rulesVersion === (rulesVersion ?? null) && catalogueFieldsAllowed(saved, rulesVersion)) preview = saved;
       else {
         const all = this.options.registry.list().filter((skill) => MODEL_ACTIONS.has(skill.action) && skill.runtimeId === 'direct' && skill.kind === 'direct'
           && actionAllowedByRules(skill.action, rulesVersion)
@@ -853,7 +860,8 @@ export class CoreModelTools {
             const plugin = (this.options.mediaPlugins?.() ?? mediaPluginCatalog()).find(candidate => candidate.id === skill.action);
             const availability = this.options.conversationAlgorithms?.handles(skill.action)
               ? this.options.conversationAlgorithms.availabilityForRules(skill.action, rulesVersion) : skill.availability;
-            return { action: skill.action, title: skill.title, description: skill.description, fields: skill.fields,
+            return { action: skill.action, title: skill.title, description: skill.description,
+              fields: skill.fields.filter(field => actionFieldAllowed(skill.action, field.key, rulesVersion)),
               available: availability.available, reason: availability.reason ?? null, modelCalls: skill.modelCalls, permissionSummary: skill.permissionSummary,
               ...(plugin ? { plugin } : {}) };
           });
@@ -1115,7 +1123,7 @@ export class CoreModelTools {
       if (call.tool_name === EVIDENCE_TOOL) {
         const args = JSON.parse(call.args_json) as { evidenceId: string; sha256: string; cursor?: string; offset?: number; maxBytes?: number };
         const scope: EvidenceScope = { conversationId: call.conversation_id, branchId: call.branch_id, subject: context.task.ownerRole, modelDigest: call.model_digest };
-        const page = this.evidence.read(scope, args, source => { this.assertCallParent(call); this.assertEvidenceOrigin(scope, source, args); });
+        const page = this.evidence.read(scope, args, source => { this.assertCallParent(call); this.assertEvidenceOrigin(scope, source, retrievalInput(call), args); });
         result = { summary: '已按当前授权读取固定证据片段。', data: { page: page as unknown as JsonValue } };
       } else result = { summary: '已核对本次允许分享的会话文件信息。', data: { files: references.map((reference) => metadata(proof(reference))) } };
       this.saveResultProof(context, call, result);
@@ -1176,6 +1184,9 @@ export class CoreModelTools {
       const call = this.callForTask(context.task);
       if (!call) return await runtime.execute(context);
       if (call.tool_name !== 'perform_action') throw publicError('MODEL_ACTION_FAILED');
+      const version = this.options.core.runConfiguration?.(call.parent_run_id)?.internalAgentRules?.version;
+      if (isObject(context.task.args) && Object.keys(context.task.args).some(key => !actionFieldAllowed(call.action, key, version)))
+        throw publicError('MODEL_ACTION_NOT_ALLOWED');
       const controlled = this.controlledContext(context, call);
       const result = this.options.conversationAlgorithms?.handles(context.task.action)
         ? await this.options.conversationAlgorithms.execute(controlled) : await runtime.execute(controlled);
@@ -1196,9 +1207,14 @@ export class CoreModelTools {
         .get(input.runId, input.generation, toolCallId) as unknown as CallRow | undefined;
       if (name === 'perform_action' && isObject(params) && params.action === 'image.ocr'
         && (!factory.runImageOcr || !factory.model.input?.includes('image'))) throw publicError('MODEL_IMAGE_UNSUPPORTED');
-      const routed = this.prepare(name, params, known);
-      if (name === 'perform_action' && !known?.task_id && !actionAllowedByRules(routed.action,
-        this.options.core.runConfiguration?.(input.runId)?.internalAgentRules?.version)) throw publicError('MODEL_ACTION_NOT_ALLOWED');
+      const version = this.options.core.runConfiguration?.(input.runId)?.internalAgentRules?.version;
+      if (name === 'perform_action' && isObject(params) && typeof params.action === 'string') {
+        if (!known?.task_id && !actionAllowedByRules(params.action, version)) throw publicError('MODEL_ACTION_NOT_ALLOWED');
+        const fieldsBlocked = isObject(params.args) && Object.keys(params.args).some(key => !actionFieldAllowed(String(params.action), key, version));
+        if (fieldsBlocked && !(known?.task_id && known.state === 'returned' && this.options.getTasks().get(known.task_id).status === 'succeeded'))
+          throw publicError('MODEL_ACTION_NOT_ALLOWED');
+      }
+      const routed = this.prepare(name, params, known?.state === 'rejected' && !known.task_id ? undefined : known);
       if (routed.action === 'image.ocr' && (!factory.runImageOcr || !factory.model.input?.includes('image'))) throw publicError('MODEL_IMAGE_UNSUPPORTED');
       const channel = this.channel(factory.model);
       const payloadDigest = digestOperationArgs({ name, action: routed.action, args: routed.args, inputId: input.inputId,
@@ -1207,12 +1223,12 @@ export class CoreModelTools {
       if (name === EVIDENCE_TOOL) {
         const evidenceArgs = routed.args as unknown as { evidenceId: string; sha256: string };
         const scope = this.scope(input, factory.model), source = this.evidence.source(scope, String(evidenceArgs.evidenceId));
-        const origin = this.assertEvidenceOrigin(scope, source, evidenceArgs);
+        const origin = this.assertEvidenceOrigin(scope, source, input, evidenceArgs);
         // 同一输入下复用原分享回执；换输入或运行重新核对原证据和当前分享资格。
         if (origin.parent_run_id === input.runId && origin.input_id === input.inputId && Number(origin.parent_generation) === input.generation) {
           this.assertShare(origin, input, factory.model);
           const preview = this.evidence.read(scope, routed.args as unknown as { evidenceId: string; sha256: string },
-            () => { this.assertParent(input, signal); this.assertShare(origin, input, factory.model); this.assertEvidenceOrigin(scope, source, evidenceArgs); });
+            () => { this.assertParent(input, signal); this.assertShare(origin, input, factory.model); this.assertEvidenceOrigin(scope, source, input, evidenceArgs); });
           const ticket = JSON.parse(origin.ticket_json!) as ShareTicket;
           this.options.database.transaction(() => {
             this.assertShare(origin, input, factory.model);
@@ -1377,45 +1393,49 @@ export class CoreModelTools {
   private recordRejectedCall(factory: PiToolFactoryContext, toolCallId: string, name: string, params: unknown, error: unknown): void {
     try {
       const input = factory.getCurrentInput(), channel = this.channel(factory.model);
-      const detail = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-      const reason = safeFailureDetail(detail) ?? '参数或契约校验未通过。';
-      const action = isObject(params) && typeof params.action === 'string' && params.action ? params.action : name;
-      const args = (isObject(params) ? params : { value: String(params).slice(0, 200) }) as JsonValue;
+      const code = error instanceof ModelToolError ? error.code : 'MODEL_ARGS_INVALID';
+      const action = isObject(params) && typeof params.action === 'string' && MODEL_ACTIONS.has(params.action) ? params.action : name;
+      const args = rejectedArguments(params);
       const digest = digestOperationArgs({ name, action, args, inputId: input.inputId, messageId: input.messageId,
         branchId: input.branchId, modelDigest: channel.digest });
       const now = this.now();
       this.db.prepare(`INSERT INTO model_tool_calls(id,conversation_id,branch_id,parent_run_id,parent_generation,input_id,message_id,tool_call_id,tool_name,action,args_json,payload_digest,model_json,model_digest,selection_json,task_request_id,preview_json,state,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(parent_run_id,parent_generation,tool_call_id) DO UPDATE SET state='rejected', args_json=excluded.args_json,
-          payload_digest=excluded.payload_digest, preview_json=excluded.preview_json, updated_at=excluded.updated_at`)
+          payload_digest=excluded.payload_digest, preview_json=excluded.preview_json, updated_at=excluded.updated_at
+          WHERE model_tool_calls.task_id IS NULL AND model_tool_calls.state='rejected'`)
         .run(randomUUID(), input.conversationId, input.branchId, input.runId, input.generation, input.inputId, input.messageId,
           toolCallId, name, action, JSON.stringify(args), digest, JSON.stringify(channel.model), channel.digest, '[]',
           `model-tool-rejected:${randomUUID()}`,
-          JSON.stringify({ ok: false, code: 'MODEL_ARGS_INVALID', message: reason }), 'rejected', now, now);
+          JSON.stringify({ ok: false, code, message: publicError(code).message }), 'rejected', now, now);
     } catch { /* 诊断记录尽力而为，不能掩盖原始错误。 */ }
   }
 
   /** 调用在返回预览前失败时把记录收口成 rejected，避免长期占用 reserved 状态。 */
   private markCallRejected(callId: string, error: unknown): void {
     try {
-      const code = (error as { code?: string } | null)?.code ?? 'MODEL_ACTION_FAILED';
-      const message = safeFailureDetail(error instanceof Error ? error.message : undefined) ?? '本次调用未完成。';
-      this.db.prepare("UPDATE model_tool_calls SET state='rejected', preview_json=?, updated_at=? WHERE id=? AND state='reserved'")
-        .run(JSON.stringify({ ok: false, code, message }), this.now(), callId);
+      const record = this.getCall(callId);
+      const code = error instanceof ModelToolError ? error.code : 'MODEL_ACTION_FAILED';
+      this.db.prepare("UPDATE model_tool_calls SET state='rejected',args_json=?,preview_json=?,updated_at=? WHERE id=? AND state='reserved'")
+        .run(JSON.stringify(rejectedArguments(JSON.parse(record.args_json))), JSON.stringify({ ok: false, code, message: publicError(code).message }),
+          this.now(), callId);
     } catch { /* 收口尽力而为，不掩盖原始错误。 */ }
   }
 
   /** 只读最近被拒调用，供模型核对参数规则，不重放也不创建任务。 */
-  private rejectedCalls(conversationId: string): JsonValue[] {
+  private rejectedCalls(conversationId: string, branchId: string, asOf = this.now()): JsonValue[] {
     try {
       const rows = this.db.prepare(`SELECT tool_name,action,args_json,preview_json,created_at FROM model_tool_calls
-        WHERE conversation_id=? AND state='rejected' ORDER BY created_at DESC LIMIT 5`).all(conversationId) as unknown as Array<{
+        WHERE conversation_id=? AND branch_id=? AND state='rejected' AND created_at<=? ORDER BY created_at DESC,rowid DESC LIMIT 5`).all(conversationId, branchId, asOf) as unknown as Array<{
         tool_name: string; action: string; args_json: string; preview_json: string | null; created_at: number }>;
       return rows.map((row) => {
-        let args: JsonValue = null, reason: string | null = null;
-        try { args = JSON.parse(row.args_json) as JsonValue; } catch { args = null; }
-        try { reason = (JSON.parse(row.preview_json ?? '{}') as { message?: string }).message ?? null; } catch { reason = null; }
-        return { tool: row.tool_name, action: row.action, args, reason, createdAt: row.created_at };
+        let args: JsonValue = null, code = 'MODEL_ARGS_INVALID';
+        try { args = rejectedArguments(JSON.parse(row.args_json)); } catch { /* 旧参数不可解析。 */ }
+        try { const saved = JSON.parse(row.preview_json ?? '{}').code;
+          if (typeof saved === 'string' && /^MODEL_[A-Z_]{1,60}$/u.test(saved)) code = saved;
+        } catch { /* 旧诊断只回传受控原因。 */ }
+        return { tool: row.tool_name, action: MODEL_ACTIONS.has(row.action) ? row.action : row.tool_name,
+          args, code, reason: publicError(code).message, createdAt: row.created_at };
       });
     } catch { return []; }
   }
@@ -1513,7 +1533,7 @@ export class CoreModelTools {
       if (name === EVIDENCE_TOOL) {
         const evidenceArgs = args as unknown as { evidenceId: string; sha256: string };
         const scope = this.scope(input, model, modelDigest), source = this.evidence.source(scope, String(evidenceArgs.evidenceId));
-        const origin = this.assertEvidenceOrigin(scope, source, evidenceArgs), ticket = JSON.parse(origin.ticket_json!) as ShareTicket;
+        const origin = this.assertEvidenceOrigin(scope, source, input, evidenceArgs), ticket = JSON.parse(origin.ticket_json!) as ShareTicket;
         selection = [...(ticket.sources ?? []), ...(ticket.outputs ?? [])].map(reference => this.requireProof(reference, input.conversationId));
       } else if (metadataOnly) selection = [];
       else if (name === 'list_attached_files') {
@@ -1692,7 +1712,7 @@ export class CoreModelTools {
       || call.branch_id !== input.branchId || (capturedModelDigest ?? this.channel(model).digest) !== call.model_digest || !call.task_id || !call.ticket_json) throw publicError('MODEL_SHARE_REVOKED');
     const ticket = JSON.parse(call.ticket_json) as ShareTicket;
     const task = this.options.getTasks().get(call.task_id);
-    this.assertRetrievalAccess(task);
+    this.assertRetrievalAccess(task, input);
     const callScope: EvidenceScope = { conversationId: call.conversation_id, branchId: call.branch_id,
       subject: task.ownerRole, modelDigest: call.model_digest };
     this.assertHistoricalAlgorithmPreview(call, task, callScope);
@@ -1723,10 +1743,10 @@ export class CoreModelTools {
     for (const selected of [...ticket.sources, ...ticket.outputs]) this.requireProof(selected, call.conversation_id);
   }
 
-  private assertRetrievalAccess(task: TaskRecord): void {
+  private assertRetrievalAccess(task: TaskRecord, input: Parameters<ConversationRetrievalBridge['assertResultAccess']>[1]): void {
     if (!RETRIEVAL_ACTIONS.includes(task.action)) return;
     if (!this.options.conversationRetrieval) throw publicError('MODEL_SHARE_REVOKED');
-    this.options.conversationRetrieval.assertResultAccess(task.result?.data);
+    this.options.conversationRetrieval.assertResultAccess(task.result?.data, input);
   }
 
   /** 旧任务原回执继续保管。历史预览或旧证据续页不能重放带原始排除诊断、未核验包络/摘要或伪造分页包装的正文。 */
@@ -1912,10 +1932,13 @@ export class CoreModelTools {
     if (call.action.startsWith('data.processing.') || call.action.startsWith('data.modules.') || call.action.startsWith('data.adapters.') || call.action.startsWith('data.r1.') || call.action.startsWith('data.retrieval.') || call.action === 'data.wfd.query' || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(call.action) || call.action === 'material.read' || call.action === 'material.process' || call.action === 'material.transcribe' || call.action === 'baidu.drive' || call.action === 'browser.control' || call.action === 'web.read_public' || call.action === 'web.search' || this.options.conversationAlgorithms?.handles(call.action)) {
       // The closed host bridge constructs this bounded projection; no arbitrary result body is shared.
       if (!isObject(source.modelPreview)) throw publicError('MODEL_ACTION_FAILED');
-      const { localPersistence: _untrustedPersistence, ...modelPreview } = source.modelPreview as Record<string, JsonValue>;
+      const fullRetrieval = RETRIEVAL_ACTIONS.includes(call.action) && source.modelPreview.previewTruncated === true;
+      const projection = fullRetrieval ? source.modelEvidence : source.modelPreview;
+      if (!isObject(projection)) throw publicError('MODEL_ACTION_FAILED');
+      const { localPersistence: _untrustedPersistence, ...modelPreview } = projection as Record<string, JsonValue>;
       return this.pagePreview(call, { ok: true, taskId: task.id, action: call.action,
         ...(call.action === 'material.process' && typeof source.summary === 'string' ? { summary: source.summary.slice(0, 500) } : {}),
-        data: modelPreview });
+        data: modelPreview }, fullRetrieval);
     }
     for (const key of ['text', 'characters', 'characterCount', 'truncated', 'fileRefId', 'directoryRefId', 'fileCount', 'bytes', 'size', 'sha256', 'modelCalls', 'format', 'sampleRate', 'channels', 'pages', 'title', 'url', 'duration', 'method', 'mime', 'extractor']) {
       const value = source[key];
@@ -2084,12 +2107,32 @@ export function projectTemporaryVideoAudioSource(value: unknown, taskArgs: unkno
 }
 
 export function isModelActionAllowed(action: string): boolean { return MODEL_ACTIONS.has(action); }
+function retrievalInput(call: CallRow) {
+  return { runId: call.parent_run_id, generation: Number(call.parent_generation), branchId: call.branch_id,
+    conversationId: call.conversation_id, messageId: call.message_id, inputId: call.input_id };
+}
+/** A rejected payload is untrusted, including JSON encoded in otherwise ordinary fields. */
+function rejectedArguments(value: unknown): JsonValue {
+  const args = isObject(value) && isObject(value.args) ? value.args : value;
+  if (!isObject(args)) return null;
+  return Object.fromEntries(Object.keys(args).filter(key => /^[a-z][a-z0-9_]{0,63}$/iu.test(key))
+    .slice(0, 64).map(key => [key, '[REDACTED]']));
+}
+function actionFieldAllowed(action: string, field: string, version?: number): boolean {
+  return action !== 'baidu.drive' || (version ?? 0) >= 22 || !['passcodeRef', 'sourceDir'].includes(field);
+}
+function catalogueFieldsAllowed(value: Record<string, unknown>, version?: number): boolean {
+  return Array.isArray(value.actions) && value.actions.every(skill => isObject(skill) && typeof skill.action === 'string'
+    && Array.isArray(skill.fields) && skill.fields.every(field => isObject(field) && typeof field.key === 'string'
+      && actionFieldAllowed(String(skill.action), field.key, version)));
+}
 function actionAllowedByRules(action: string, version?: number): boolean {
   return RETRIEVAL_ACTIONS.includes(action) ? (version ?? 0) >= 22 : algorithmActionAllowed(action, version);
 }
 export function modelActionApprovalMode(action: string, args: Record<string, JsonValue>): NonNullable<OperationScope['approvalMode']> {
   if (AUTOMATIC_ACTIONS.has(action)) return 'automatic';
   if (action === 'browser.control' && ['status', 'extract_url'].includes(String(args.operation))) return 'automatic';
+  if (action === 'baidu.drive' && args.passcodeRef !== undefined) return 'review';
   if (action === 'baidu.drive' && ['whoami', 'ls', 'search', 'transfer-list', 'download'].includes(String(args.operation))) return 'automatic';
   return 'review';
 }

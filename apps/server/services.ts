@@ -31,7 +31,7 @@ import { InputRouter } from '../../modules/agent/input-router.js';
 import { PersonalResourceService } from '../../modules/agent/personal-resources.js';
 import { ToolSettingsService } from '../../platform/config/tool-settings.js';
 import { SourceSettingsService } from '../../platform/config/source-settings.js';
-import { readConnectionRegistry } from '../../platform/config/connections.js';
+import { registeredBaiduSharePasscodePaths, readConnectionRegistry } from '../../platform/config/connections.js';
 import { DirectConversationService } from '../../modules/agent/direct-conversations.js';
 import { BdService } from '../../modules/agent/service.js';
 import { CollectionService } from '../../modules/collection/service.js';
@@ -260,6 +260,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     protectedPaths.push(dirname(connectionsRegistryPath));
     try {
       const registry = readConnectionRegistry(connectionsRegistryPath);
+      protectedPaths.push(...registeredBaiduSharePasscodePaths(registry));
       if (registry?.credentialRegistryPath) protectedPaths.push(dirname(registry.credentialRegistryPath));
     } catch { /* 可选登记不可读时保留其明确父根保护；不猜其他账号位置或阻断无关能力。 */ }
   }
@@ -303,7 +304,8 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const companion = options.workspaceServices;
   const conversationRetrieval = options.role !== 'service' && companion ? new ConversationRetrievalBridge({
     core, companion, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
-    readEvidence: (input, assertCurrent) => readRetrievalEvidence(companion, input, assertCurrent),
+    allowedMaterialIds: (input, attachments) => conversationMaterials!.allowedMaterialIds(input, attachments),
+    readEvidence: (input, assertCurrent, ids) => readRetrievalEvidence(companion, input, assertCurrent, ids),
   }) : undefined;
   const conversationR1 = options.role !== 'service' && options.workspaceServices?.r1Workspace
     ? new ConversationR1Bridge({ database, core, files, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
@@ -360,6 +362,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       const discover = entry.action === 'algorithms.capabilities' && typeof args.snapshotId === 'string' && args.snapshotId.length > 0;
       const execution = (calculate && !pure) || entry.action === 'algorithms.publish';
       const implementation: DirectImplementation[] = ['algorithms'];
+      if (entry.action === 'algorithms.status') implementation.push('algorithmPureStatus');
       if (execution) implementation.push('algorithmPublication', 'r1');
       const readOnly = pure || discover || entry.action === 'algorithms.screen';
       if (readOnly) implementation.push('algorithmRead');
@@ -372,7 +375,10 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   for (const entry of conversationRetrieval?.registrations ?? []) {
     direct.registry.register(entry);
     const joint = entry.action === 'data.retrieval.joint';
-    direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, joint ? ['retrieval', 'algorithmRead'] : ['retrieval'],
+    const implementation: DirectImplementation[] = ['retrieval'];
+    if (joint) implementation.push('algorithmRead');
+    if (entry.action === 'data.retrieval.evidence') implementation.push('retrievalEvidence');
+    direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, implementation,
       { ...conversationRetrieval!.versionBinding, ...(joint ? readVersions(true) : {}) }, {}));
   }
   for (const entry of conversationProcessing?.registrations ?? []) { direct.registry.register(entry); direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'], { ...(options.workspaceServices?.processing?.versionBinding ?? {}) }, {})); }

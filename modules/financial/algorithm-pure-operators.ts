@@ -3,8 +3,8 @@ import type { AlgorithmFormulaLine } from '../../contracts/algorithm-definition.
 import type { PureOperatorId } from './algorithm-types.js';
 import { financialBasisAxes, financialRatioFields } from './financial-l4-operators.js';
 
-export const PURE_OPERATOR_VERSION = 'bd.pure-operators/1';
-export const PURE_VERIFICATION_VERSION = 'bd.pure-operator-verification/1';
+export const PURE_OPERATOR_VERSION = 'bd.pure-operators/2';
+export const PURE_VERIFICATION_VERSION = 'bd.pure-operator-verification/2';
 export const PURE_VERIFICATION_SOURCE = 'modules/financial/pure-operator-verification.ts';
 export const pureMethodVersion = (id: PureOperatorId) => id + '/1';
 export const PURE_PUBLICATION = Object.freeze({ state: 'not_requested', mode: 'explicit_r1_handoff_required' } as const);
@@ -116,7 +116,7 @@ export function pureOperatorInputContract(operator: PureOperatorDefinition) {
     reference: 'source.reference 指向完整固定产品。fieldMapping 可将下列角色映射到发现的字段，fields 可省略未声明的可选列。默认使用同名字段。',
     inputs: [...operator.requiredInputs], fields: { required: [...operator.fields.required], optional: [...operator.fields.optional] },
     ...(operator.id === 'price_adjustment' ? { actionReference: {
-      path: 'source.actionReference', fields: { required: [...actionRoles.required], optional: [...actionRoles.optional] }, scope: '同一快照、实例、主体和币种的独立行动产品。无事件也须完整读取。' } } : {}),
+      path: 'source.actionReference', fields: { required: [...actionRoles.required], optional: [...actionRoles.optional] }, scope: '同一快照、实例、主体三元组和币种的独立行动产品。价格与每股现金须有相同的完整单位定义及明确比例。无事件也须完整读取。' } } : {}),
     history: 'reference.perspective 默认 snapshot_contents。历史计算须给 reference.at 与相符的 usage.purpose=historical_compute、historyMode、cutoff，以及宿主核实的原用户声明。system_held_at 还须 heldScope、usableStage。行动引用沿用同一历史选择。',
     sourcePolicy: 'wfd_fixed_snapshot_only', publication: PURE_PUBLICATION };
 }

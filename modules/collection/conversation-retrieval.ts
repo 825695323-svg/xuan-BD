@@ -1,17 +1,19 @@
 import { canonicalWfdJson, isWfdRecord, type WfdRecord } from '../../adapters/database/wfd-transport.js';
+import type { BackendInput } from '../../contracts/backend.js';
 import type { JsonValue, TaskResult } from '../../contracts/task-contracts.js';
 import type { SkillField } from '../../contracts/skill-contracts.js';
 import { TaskError, type TaskExecutionContext, type TaskService } from '../../platform/jobs/tasks.js';
 import type { SkillRegistration } from '../../platform/plugins/registry.js';
 import { acquireAuthority } from '../../platform/runtime/file-workspace.js';
 import type { LocalDataLifecycle } from '../../platform/runtime/local-data-lifecycle.js';
+import { MAX_RETAINED_EVIDENCE_BYTES } from '../agent/evidence.js';
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
 import type { PersonalCore } from '../agent/runtime/core.js';
 import { SEGMENTER_VERSION, SEGMENT_RETRIEVAL_SCHEMA, SEGMENT_TOKENIZER, type SegmentRetrievalResult, type RetrievalEvidenceResult } from './segments/contracts.js';
 import type { SegmentService } from './segments/service.js';
 import { JOINT_RETRIEVAL_SCHEMA, type StructuredRetrievalService } from './structured-retrieval.js';
 
-export const CONVERSATION_RETRIEVAL_VERSION = 'bd.conversation-retrieval/1';
+export const CONVERSATION_RETRIEVAL_VERSION = 'bd.conversation-retrieval/2';
 const PREFIX = 'data.retrieval.';
 const PAGE_LIMIT = 20;
 const text = (key: string, label: string, maxLength = 200): SkillField => ({ key, label, type: 'text', required: true, maxLength });
@@ -62,27 +64,27 @@ const privatePath = /(?:^|[^a-zA-Z0-9_./-])\/(?!\/)|file:\/\/|[A-Za-z]:[\\/]|\\\
 function containsPath(text: string): boolean { return !safeEndpoints.has(text) && privatePath.test(text); }
 
 /** Share a bounded projection even for long excerpts, arbitrary metric keys and deeply nested WFD values. */
-function modelPreview(value: WfdRecord) {
+function modelProjection(value: WfdRecord, bounded: boolean) {
   let remaining = 56_000, truncated = false, pathsWithheld = false;
   function project(item: unknown, depth: number): JsonValue {
     if (typeof item === 'string') {
       if (containsPath(item)) { pathsWithheld = true; return '[本机路径已隐藏]'; }
-      if (item.length > 2048) truncated = true;
-      return item.slice(0, 2048);
+      if (!bounded || item.length <= 2048) return item;
+      truncated = true; return item.slice(0, 2048);
     }
     if (item === null || typeof item === 'boolean' || typeof item === 'number') return item;
-    if (depth >= 12 || (!Array.isArray(item) && !isWfdRecord(item))) { truncated = true; return null; }
+    if (bounded && depth >= 12 || (!Array.isArray(item) && !isWfdRecord(item))) { truncated = true; return null; }
     const array = Array.isArray(item);
     const out: JsonValue[] | Record<string, JsonValue> = array ? [] : Object.create(null);
-    const entries = array ? Object.entries(item.slice(0, PAGE_LIMIT)) : Object.entries(item).filter(([, v]) => v !== undefined);
+    const entries = array ? Object.entries(bounded ? item.slice(0, PAGE_LIMIT) : item) : Object.entries(item).filter(([, v]) => v !== undefined);
     const count = array ? item.length : entries.length;
-    for (const [key, child] of entries.slice(0, 64)) {
+    for (const [key, child] of bounded ? entries.slice(0, 64) : entries) {
       if (containsPath(key)) { pathsWithheld = true; continue; }
-      if (key.length > 200) { truncated = true; continue; }
+      if (bounded && key.length > 200) { truncated = true; continue; }
       // Charge for the JSON representation of each leaf and each containing key/delimiter.
       const cost = Buffer.byteLength(JSON.stringify(key)) + 4 + (typeof child === 'string'
         ? Buffer.byteLength(JSON.stringify(child.slice(0, 2048))) + 32 : 16);
-      if (cost > remaining) { truncated = true; break; }
+      if (bounded && cost > remaining) { truncated = true; break; }
       remaining -= cost;
       const result = project(child, depth + 1);
       if (Array.isArray(out)) out.push(result); else out[key] = result;
@@ -95,12 +97,18 @@ function modelPreview(value: WfdRecord) {
     return Array.isArray(out) ? out : { ...out };
   }
   const projected = project(value, 0) as Record<string, JsonValue>;
+  if (bounded && truncated && isWfdRecord(value.page)) {
+    const page = isWfdRecord(projected.page) ? projected.page : {};
+    projected.page = { ...page, has_more: true, next_cursor: null, result_exhausted: false, continuation: 'core_evidence_read' };
+  }
   return { ...projected, previewTruncated: truncated, pathsWithheld };
 }
 
-type SegmentPort = Pick<SegmentService, 'capabilities' | 'indexVersions' | 'documents' | 'search'>;
+type SegmentPort = Pick<SegmentService, 'capabilities' | 'readState' | 'indexVersions' | 'documents' | 'search'>;
 type JointPort = Pick<StructuredRetrievalService, 'capabilities' | 'search'>;
 type CoreScope = Pick<PersonalCore, 'isRunActive' | 'selectedAttachmentsForInput'> & { store: Pick<PersonalCore['store'], 'command'> };
+
+type RetrievalInput = Pick<BackendInput, 'conversationId' | 'branchId' | 'messageId' | 'inputId' | 'runId' | 'generation'>;
 
 export class ConversationRetrievalBridge {
   readonly registrations: readonly SkillRegistration[];
@@ -108,8 +116,9 @@ export class ConversationRetrievalBridge {
     core: CoreScope;
     companion: { tasks: Pick<TaskService, 'getControl'>; segments?: SegmentPort; structuredRetrieval?: JointPort; localData?: LocalDataLifecycle };
     origin(taskId: string): ModelTaskOrigin | null;
+    allowedMaterialIds(input: RetrievalInput, attachments: ReturnType<CoreScope['selectedAttachmentsForInput']>): string[];
     /** Host binds readRetrievalEvidence to the same companion and its private access gate. */
-    readEvidence(input: { indexVersion: string; segmentId: string }, assertCurrent: () => void): Promise<RetrievalEvidenceResult>;
+    readEvidence(input: { indexVersion: string; segmentId: string }, assertCurrent: () => void, allowedDocumentIds: readonly string[]): Promise<RetrievalEvidenceResult>;
   }) {
     this.registrations = specifications.map(({ name, title, description, fields }) => ({
       action: PREFIX + name, title, description, fields, kind: 'direct', runtimeId: 'direct', modelCalls: 0,
@@ -125,14 +134,24 @@ export class ConversationRetrievalBridge {
   }
   handles(action: string): boolean { return this.registrations.some(item => item.action === action); }
 
+  private allowedDocuments(input: RetrievalInput): string[] {
+    const { core } = this.options;
+    const attachments = core.selectedAttachmentsForInput({ ...input, text: core.store.command(input.inputId).text });
+    return this.options.allowedMaterialIds(input, attachments);
+  }
+
   /** 缓存预览与保管证据复用原任务的资料代次，撤权后不能通过续页取回旧内容。 */
-  assertResultAccess(data: unknown): void {
+  assertResultAccess(data: unknown, input: RetrievalInput): void {
     const lifecycle = this.options.companion.localData;
     if (!isWfdRecord(data) || data.kind !== 'conversation-retrieval'
       || (lifecycle ? typeof data.accessGeneration !== 'number' : data.accessGeneration !== null)) {
       return fail('MODEL_SHARE_REVOKED', '原检索结果的本地资料资格已变化。');
     }
     if (lifecycle) lifecycle.assertPrivateAccess(Number(data.accessGeneration));
+    const allowed = new Set(this.allowedDocuments(input));
+    if (data.branchId !== input.branchId || !Array.isArray(data.documentScope)
+      || !data.documentScope.every(id => typeof id === 'string' && allowed.has(id)))
+      return fail('MODEL_SHARE_REVOKED', '原检索任务的材料范围无法由当前分支核对。');
   }
 
   async execute(context: TaskExecutionContext, action = context.task.action, args = context.task.args): Promise<TaskResult> {
@@ -156,20 +175,24 @@ export class ConversationRetrievalBridge {
       return fail('RETRIEVAL_CONVERSATION_SCOPE', '需要本分支的活动会话来源。');
     const frozenOrigin = canonicalWfdJson(origin), controlGeneration = companion.tasks.getControl().generation;
     const generation = companion.localData?.assertActive().generation;
+    const inputScope = { conversationId: origin.conversationId, branchId: origin.branchId, messageId: origin.messageId,
+      inputId: origin.inputId, runId: origin.parentRunId, generation: origin.parentGeneration };
     const assertScope = () => {
       context.signal.throwIfAborted();
       const control = companion.tasks.getControl();
       if (control.stopped || control.generation !== controlGeneration) return fail('SERVICE_STOPPED', '伴随服务已停止派发。');
       if (canonicalWfdJson(this.options.origin(context.task.id)) !== frozenOrigin || !core.isRunActive(origin.parentRunId, origin.parentGeneration))
         return fail('RETRIEVAL_CONVERSATION_SCOPE', '原会话来源或运行代次已变化。');
-      core.selectedAttachmentsForInput({ runId: origin.parentRunId, generation: origin.parentGeneration,
-        inputId: origin.inputId, conversationId: origin.conversationId, branchId: origin.branchId,
-        messageId: origin.messageId, text: core.store.command(origin.inputId).text });
       if (generation !== undefined) companion.localData!.assertPrivateAccess(generation);
+      return this.allowedDocuments(inputScope);
     };
-    assertScope();
+    const documentIds = assertScope();
     const authority = await acquireAuthority(context, action, args, []);
-    const assert = () => { authority.assert(); assertScope(); };
+    const assert = () => {
+      authority.assert();
+      const current = new Set(assertScope());
+      if (documentIds.some(id => !current.has(id))) return fail('MODEL_SHARE_REVOKED', '检索期间分支材料授权已变化。');
+    };
     assert();
     const segments = companion.segments;
     if (!segments) return fail('RETRIEVAL_CONVERSATION_UNAVAILABLE', '文档片段服务未装配。');
@@ -177,9 +200,9 @@ export class ConversationRetrievalBridge {
     switch (action.slice(PREFIX.length)) {
       case 'capabilities': case 'documents': {
         const start = integer(args.offset, 0, 0, 1_000_000), count = integer(args.limit, 10, 1, PAGE_LIMIT);
-        result = action.endsWith('.documents') ? page(segments.documents(), start, count)
-          : { segments: segments.capabilities(), structured: companion.structuredRetrieval?.capabilities() ?? null,
-            indexVersions: page(segments.indexVersions(), start, count) };
+        result = action.endsWith('.documents') ? { storageState: segments.readState(), ...page(segments.documents(documentIds), start, count) }
+          : { segments: segments.capabilities(documentIds), structured: companion.structuredRetrieval?.capabilities() ?? null,
+            indexVersions: page(segments.indexVersions(documentIds), start, count) };
         break;
       }
       case 'search': {
@@ -188,7 +211,7 @@ export class ConversationRetrievalBridge {
           || mode !== 'market_known_at' && mode !== 'system_held_at') return invalid();
         const excludedOffset = integer(args.excludedOffset, 0, 0, 1_000_000);
         result = searchPreview(segments.search({ method, mode, query, indexVersion: fixedId(args.indexVersion),
-          asOf: isoCutoff(args.asOf), limit: integer(args.limit, 10, 1, PAGE_LIMIT) }), excludedOffset);
+          asOf: isoCutoff(args.asOf), limit: integer(args.limit, 10, 1, PAGE_LIMIT) }, documentIds), excludedOffset);
         break;
       }
       case 'joint': {
@@ -196,9 +219,12 @@ export class ConversationRetrievalBridge {
         if (typeof args.jointJson !== 'string' || args.jointJson.length > 32_768) return invalid();
         let input: unknown;
         try { input = JSON.parse(args.jointJson); } catch { return invalid(); }
-        if (!isWfdRecord(input) || !isWfdRecord(input.documents)) return invalid();
+        if (!isWfdRecord(input) || !isWfdRecord(input.structured) || !isWfdRecord(input.documents)) return invalid();
         fixedId(input.documents.indexVersion);
-        const joined = await companion.structuredRetrieval.search(input, context.signal);
+        const cap = (value: unknown) => Math.min(PAGE_LIMIT, integer(value, PAGE_LIMIT, 1, Number.MAX_SAFE_INTEGER));
+        const boundedQuery = { ...input, structured: { ...input.structured, page_size: cap(input.structured.page_size) },
+          documents: { ...input.documents, limit: cap(input.documents.limit) } };
+        const joined = await companion.structuredRetrieval.search(boundedQuery, context.signal, { allowedDocumentIds: documentIds, assertCurrent: assert });
         assert();
         const structured = isWfdRecord(joined.structured) ? joined.structured : {};
         result = { schema: joined.schema, status: joined.status, qualification: joined.qualification, gaps: joined.gaps,
@@ -208,7 +234,7 @@ export class ConversationRetrievalBridge {
         break;
       }
       case 'evidence': {
-        const evidence = await this.options.readEvidence({ indexVersion: fixedId(args.indexVersion), segmentId: fixedId(args.segmentId) }, assert);
+        const evidence = await this.options.readEvidence({ indexVersion: fixedId(args.indexVersion), segmentId: fixedId(args.segmentId) }, assert, documentIds);
         result = { schema: evidence.schema, cache: evidence.cache, artifact: evidence.artifact, original: evidence.original,
           factVerification: evidence.factVerification, historicalQualification: evidence.historicalQualification,
           limitations: evidence.limitations, citation: evidence.citation };
@@ -217,7 +243,14 @@ export class ConversationRetrievalBridge {
       default: return invalid();
     }
     assert();
+    const view = { versionBinding: this.versionBinding, ...result };
+    const modelPreview = modelProjection(view, true);
+    const modelEvidence = modelPreview.previewTruncated ? modelProjection(view, false) : null;
+    // Reserve room for the existing task/evidence envelope (summary, IDs and persistence facts).
+    if (modelEvidence && Buffer.byteLength(JSON.stringify(modelEvidence)) > MAX_RETAINED_EVIDENCE_BYTES - 56_000)
+      return fail('RETRIEVAL_EVIDENCE_BUDGET', '单页完整证据超出保管预算，请缩小查询或页长。');
     return { summary: registration.title, data: { kind: 'conversation-retrieval', accessGeneration: generation ?? null,
-      modelPreview: modelPreview({ versionBinding: this.versionBinding, ...result }) } };
+      branchId: origin.branchId, documentScope: documentIds, modelPreview,
+      ...(modelEvidence ? { modelEvidence } : {}) } };
   }
 }

@@ -67,7 +67,7 @@ export function cell(row: WfdRecord, field: string) {
   const price = ['open', 'high', 'low', 'close', 'cashPerShare'].includes(field);
   const unit = type !== 'decimal' ? type : price ? 'cny_per_share' : field === 'periodDays' ? 'day'
     : ['sharesPerShare', 'splitRatio'].includes(field) ? 'ratio' : row.unit as string;
-  return { data_type: type, unit: { unit_code: unit, resolved: true },
+  return { data_type: type, unit: { unit_code: unit, resolved: true, definition: { ...pureFixtureUnits[unit as keyof typeof pureFixtureUnits] } },
     value: value != null && ['decimal', 'integer'].includes(type) ? String(value) : value,
     value_state: value == null ? 'not_reported' : 'valid_value' };
 }
@@ -76,7 +76,7 @@ const wfdField = (name: string) => 'l4_' + name.replace(/[A-Z]/gu, c => '_' + c.
 
 export const pureFixtureUnits = {
   text: { dimension: 'text' }, integer: { dimension: 'quantity' }, boolean: { dimension: 'boolean' }, cny: { dimension: 'money' },
-  cny_per_share: { dimension: 'money_per_share' }, day: { dimension: 'quantity' }, ratio: { dimension: 'ratio' },
+  cny_per_share: { dimension: 'money_per_share', scale: 1 }, day: { dimension: 'quantity' }, ratio: { dimension: 'ratio', scale: 1 },
 };
 
 export async function seedPureOperatorProducts(runtime: R1Runtime) {

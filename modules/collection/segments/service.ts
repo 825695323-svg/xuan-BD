@@ -34,7 +34,7 @@ import { discoverArtifacts, findArtifactByRef, ensureArtifactLedger, recordArtif
 import {
   rebuildSegmentFts, FTS_REBUILD_LIMITS, createCurrentIndexVersion, documentsWithoutTextLayer, ensureSegmentSchema, listDocumentVersions,
   listIndexVersions, listSegments, putDocumentSegments, putDocumentVersion, readDocumentVersion, readSegment,
-  readIndexedSegment, resolveIndexVersion, resolveVisibleVersions, searchSegments, searchSegmentsExact, segmentStorage, upperOf,
+  readIndexedSegment, openReadOnlySegmentDb, resolveIndexVersion, resolveVisibleVersions, searchSegments, searchSegmentsExact, segmentStorage, upperOf,
 } from './store.js';
 
 export const SEGMENT_RUNTIME = 'bd.doc-segment-runtime';
@@ -167,6 +167,20 @@ export class SegmentService {
     return db;
   }
 
+  private withReader<T>(read: (db: DatabaseSync | null) => T): T {
+    if (this.options.databasePath === ':memory:') return read(this.db);
+    const reader = openReadOnlySegmentDb(this.options.databasePath);
+    if (!reader) return read(null);
+    try {
+      reader.db.exec('BEGIN'); // Pin one read snapshot across eligibility, membership and citations.
+      const result = read(reader.db);
+      reader.assertCurrent();
+      return result;
+    } finally { reader.db.close(); }
+  }
+
+  readState(): 'ready' | 'uninitialized' { return this.withReader(db => db ? 'ready' : 'uninitialized'); }
+
   /** 请求表与处理策略表只迁移一次；迁移自身会开事务，不能在别的核心事务里触发。 */
   private get core(): DatabaseSync {
     if (!this.coreMigrated) {
@@ -238,9 +252,9 @@ export class SegmentService {
     }
   }
 
-  capabilities(): JsonValue {
+  capabilities(documentIds?: readonly string[]): JsonValue {
     const ocrReviewReaderWired = !!this.ocrReader;
-    return { schema: SEGMENT_RETRIEVAL_SCHEMA, tokenizer: SEGMENT_TOKENIZER, ocrReviewReaderWired,
+    return { schema: SEGMENT_RETRIEVAL_SCHEMA, storageState: this.readState(), tokenizer: SEGMENT_TOKENIZER, ocrReviewReaderWired,
       // 出站只报文件名：本机绝对路径不随能力描述外发（4.3 §四）。
       databaseFile: this.options.databasePath.split('/').pop() ?? 'segments.sqlite',
       segmentableArtifactTypes: [...SEGMENTABLE_ARTIFACT_TYPES],
@@ -254,7 +268,8 @@ export class SegmentService {
       structuredSide: { wired: this.jointEntry !== null, entry: this.jointEntry,
         reason: this.jointEntry ? '联合入口按已核对的WFD记录/版本关联材料；独立文档结果保持bd.doc-retrieval/2。'
           : '当前实例未装配联合入口。' },
-      permissionScope: { wired: false, reason: '本地材料没有逐文档权限模型；4.3 §8.5 的“权限收紧”状态本轮不可产生。' },
+      permissionScope: documentIds !== undefined ? { wired: true, basis: 'conversation_branch_materials' }
+        : { wired: false, reason: '本地材料没有逐文档权限模型；4.3 §8.5 的“权限收紧”状态本轮不可产生。' },
       ocr: { wired: true, packetSchema: OCR_PACKET_SCHEMA, reviewReaderWired: ocrReviewReaderWired,
         runnerAvailable: this.ocrRunner?.().available ?? null, automaticRecognition: false,
         reason: '已支持核对包片段入库。运行器可用性由宿主报告，未报告时为 null。' } } as unknown as JsonValue;
@@ -263,7 +278,9 @@ export class SegmentService {
   // ── 处理策略 ──────────────────────────────────────────────────────────
 
   settings(): SegmentSettings {
-    const rows = this.core.prepare('SELECT key, value FROM segment_settings').all() as unknown as { key: string; value: string }[];
+    const db = this.options.database.connection;
+    if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='segment_settings'").get()) return { ...DEFAULT_SETTINGS };
+    const rows = db.prepare('SELECT key, value FROM segment_settings').all() as unknown as { key: string; value: string }[];
     const stored = new Map(rows.map(row => [row.key, row.value]));
     const read = (key: keyof SegmentSettings): 'enabled' | 'disabled' =>
       stored.get(key) === 'disabled' ? 'disabled' : 'enabled';
@@ -458,11 +475,17 @@ export class SegmentService {
     finally { db.close(); }
   }
 
-  indexVersions(): ReturnType<typeof listIndexVersions> { return listIndexVersions(this.connection); }
+  indexVersions(documentIds?: readonly string[]): ReturnType<typeof listIndexVersions> {
+    return this.withReader(db => db ? listIndexVersions(db, documentIds) : []);
+  }
 
   // ── 检索 ─────────────────────────────────────────────────────────────
 
-  search(input: SearchRequestInput): SegmentRetrievalResult {
+  search(input: SearchRequestInput, allowedDocumentIds?: readonly string[]): SegmentRetrievalResult {
+    return this.withReader(db => this.searchIndex(db, input, allowedDocumentIds));
+  }
+
+  private searchIndex(db: DatabaseSync | null, input: SearchRequestInput, allowedDocumentIds?: readonly string[]): SegmentRetrievalResult {
     const method: 'keyword' | 'exact' = input.method === 'exact' ? 'exact' : 'keyword';
     const query = typeof input.query === 'string' ? input.query : '';
     if (!query.trim()) throw new TaskError('SEGMENT_QUERY_REQUIRED', '检索需要非空查询文本。');
@@ -472,66 +495,79 @@ export class SegmentService {
       || input.documentIds.some(id => typeof id !== 'string' || !id || id.length > 128))) {
       throw new TaskError('SEGMENT_DOCUMENT_SCOPE_INVALID', '文档范围必须是最多500个已关联材料身份。');
     }
-    const gaps: string[] = [...(this.jointEntry ? [] : ['structured_query_not_wired']), 'permission_scope_not_implemented'];
-    const versions = this.indexVersions();
-    // 严格系统持有按 built_at 钉住版本；市场公开历史用当前索引，并标为事后重建。
-    const resolved = input.indexVersion
-      ? versions.find(version => version.index_version === input.indexVersion) ?? null
-      : (() => { const pointer = resolveIndexVersion(this.connection, mode === 'market_known_at' ? null : asOfMs);
-        return pointer === null ? null : versions.find(version => version.index_version === pointer.index_version) ?? null; })();
-    if (!resolved) {
+    let documentIds = input.documentIds ?? allowedDocumentIds;
+    if (allowedDocumentIds && input.documentIds) {
+      const allowed = new Set(allowedDocumentIds);
+      documentIds = input.documentIds.filter(id => allowed.has(id));
+    }
+    const gaps: string[] = this.jointEntry ? [] : ['structured_query_not_wired'];
+    if (documentIds === undefined) gaps.push('permission_scope_not_implemented');
+    const cutoff = mode === 'system_held_at' ? asOfMs : null;
+    const selected = input.indexVersion ?? (db && resolveIndexVersion(db, cutoff, documentIds)?.index_version);
+    const resolved = db && selected ? listIndexVersions(db, documentIds, selected)[0] : null;
+    const tooLate = resolved && cutoff !== null && resolved.built_at > cutoff;
+    if (!db || !resolved || tooLate) {
+      if (!db) gaps.push('segment_store_uninitialized');
+      const reason = tooLate ? 'index_built_after_as_of' : input.indexVersion ? 'index_version_not_found' : 'no_index_at_as_of';
       return { schema: SEGMENT_RETRIEVAL_SCHEMA, structured: null, status: 'index_missing',
         query: { method, text: query, as_of: input.asOf ?? null },
         qualification: qualificationOf(mode, asOfMs, null), citations: [],
         coverage: { index_version: null, index_built_at: null, indexed_segments: 0, indexed_documents: 0,
-          documents_without_text_layer: documentsWithoutTextLayer(this.connection), as_of: asOfMs, excluded: [] },
-        gaps: [...gaps, input.indexVersion ? 'index_version_not_found' : 'no_index_at_as_of'] };
+          documents_without_text_layer: db ? documentsWithoutTextLayer(db, documentIds) : 0, as_of: asOfMs, excluded: [] },
+        gaps: [...gaps, reason] };
     }
     const indexVersion = resolved.index_version;
     // 时间门与版本收敛在 store 里一次算清：历史时点只答“当时可见的最后版本”。
     const view = asOfMs === null ? null
-      : resolveVisibleVersions(this.connection, { indexVersion, asOf: asOfMs, mode });
-    const hits = (method === 'exact' ? searchSegmentsExact : searchSegments)(this.connection,
-      { indexVersion, query, limit: input.limit, visibleVersions: view?.allowed ?? null, documentIds: input.documentIds });
-    const excluded: RetrievalExclusion[] = (view?.excluded ?? []).filter(item => input.documentIds === undefined || input.documentIds.includes(item.document_id));
+      : resolveVisibleVersions(db, { indexVersion, asOf: asOfMs, mode, documentIds });
+    const hits = (method === 'exact' ? searchSegmentsExact : searchSegments)(db,
+      { indexVersion, query, limit: input.limit, visibleVersions: view?.allowed ?? null, documentIds });
+    const excluded: RetrievalExclusion[] = view?.excluded ?? [];
     const coverage: RetrievalCoverage = { index_version: indexVersion, index_built_at: resolved.built_at,
       indexed_segments: resolved.segment_count, indexed_documents: resolved.document_count,
-      documents_without_text_layer: documentsWithoutTextLayer(this.connection), as_of: asOfMs, excluded };
+      documents_without_text_layer: documentsWithoutTextLayer(db, documentIds), as_of: asOfMs, excluded };
     if (coverage.documents_without_text_layer > 0) gaps.push('documents_without_text_layer');
     const status: SegmentRetrievalStatus = hits.length ? 'matched'
       : (asOfMs !== null && excluded.length ? 'history_unavailable' : 'no_match');
     return { schema: SEGMENT_RETRIEVAL_SCHEMA, structured: null, status,
       query: { method, text: query, as_of: input.asOf ?? null },
       qualification: qualificationOf(mode, asOfMs, resolved.built_at),
-      citations: hits.map(hit => this.citationWithDocumentIssues(hit.segment, indexVersion)), coverage, gaps };
+      citations: hits.map(hit => this.citationWithDocumentIssues(db, hit.segment, indexVersion)), coverage, gaps };
   }
 
   /** Persisted document gaps are separate from this exact segment's extraction issues.
    * Missing legacy metadata is unknown, not complete; no artifact or source re-read here. */
-  private citationWithDocumentIssues(segment: DocSegment, indexVersion: string | null): RetrievalCitation {
-    const document = readDocumentVersion(this.connection, segment.document_id, segment.document_version, segment.parser_version);
+  private citationWithDocumentIssues(db: DatabaseSync, segment: DocSegment, indexVersion: string | null): RetrievalCitation {
+    const document = readDocumentVersion(db, segment.document_id, segment.document_version, segment.parser_version);
     return { ...citation(segment, indexVersion), document_issues: document?.issues ?? null };
   }
 
   /** Frozen local evidence binding, not historical qualification or source truth. */
-  evidenceBinding(indexVersion: string, segmentId: string) {
-    const segment = readIndexedSegment(this.connection, indexVersion, segmentId);
-    if (!segment) throw new TaskError('SEGMENT_INDEX_MEMBERSHIP', '片段不属于指定固定索引，未回退。');
-    const document = readDocumentVersion(this.connection, segment.document_id, segment.document_version, segment.parser_version);
-    const artifact = findArtifactByRef(this.options.database, segment.document_id, segment.document_version, segment.source_ref);
-    return { segment, citation: this.citationWithDocumentIssues(segment, indexVersion), document, artifact };
+  evidenceBinding(indexVersion: string, segmentId: string, documentIds?: readonly string[]) {
+    return this.withReader(db => {
+      const segment = db && readIndexedSegment(db, indexVersion, segmentId, documentIds);
+      if (!db || !segment) throw new TaskError('SEGMENT_INDEX_MEMBERSHIP', '获准的固定索引范围内没有该片段。');
+      const document = readDocumentVersion(db, segment.document_id, segment.document_version, segment.parser_version);
+      const artifact = findArtifactByRef(this.options.database, segment.document_id, segment.document_version, segment.source_ref);
+      return { segment, citation: { ...citation(segment, indexVersion), document_issues: document?.issues ?? null }, document, artifact };
+    });
   }
 
   segment(segmentId: string): RetrievalCitation {
-    const found = readSegment(this.connection, segmentId);
-    if (!found) throw new TaskError('SEGMENT_NOT_FOUND', '没有该片段。');
-    return this.citationWithDocumentIssues(found, null);
+    return this.withReader(db => {
+      const found = db && readSegment(db, segmentId);
+      if (!db || !found) throw new TaskError('SEGMENT_NOT_FOUND', '没有该片段。');
+      return this.citationWithDocumentIssues(db, found, null);
+    });
   }
 
-  documents(): ReturnType<typeof listDocumentVersions> { return listDocumentVersions(this.connection); }
+  documents(documentIds?: readonly string[]): ReturnType<typeof listDocumentVersions> {
+    return this.withReader(db => db ? listDocumentVersions(db, documentIds) : []);
+  }
 
   segments(documentId: string, documentVersion?: string): RetrievalCitation[] {
-    return listSegments(this.connection, documentId, documentVersion).map(segment => this.citationWithDocumentIssues(segment, null));
+    return this.withReader(db => db ? listSegments(db, documentId, documentVersion)
+      .map(segment => this.citationWithDocumentIssues(db, segment, null)) : []);
   }
 
   /** 产物发现：按“可进索引”优先列出该材料已登记的转换产物。 */
@@ -544,16 +580,16 @@ export class SegmentService {
   storage(): JsonValue {
     // Do not use the lazy writable connection: inspecting capacity must not create or migrate a store.
     const sizes = fileSizes(this.options.databasePath);
-    let db: DatabaseSync | null = null;
     let report: ReturnType<typeof segmentStorage>;
     try {
-      db = this.options.databasePath === ':memory:' ? this.db : new DatabaseSync(this.options.databasePath, { readOnly: true });
-      if (!db) throw new TaskError('RETRIEVAL_STORAGE_UNAVAILABLE', '检索库尚未建立；未把未知容量显示为零。');
-      report = segmentStorage(db, true);
+      report = this.withReader(db => {
+        if (!db) throw new TaskError('RETRIEVAL_STORAGE_UNAVAILABLE', '检索库尚未建立，无法读取容量。');
+        return segmentStorage(db, true);
+      });
     } catch (error) {
       if (error instanceof TaskError) throw error;
-      throw new TaskError('RETRIEVAL_STORAGE_UNAVAILABLE', '检索容量暂不可读取；未创建、迁移或清理数据库。');
-    } finally { if (db && db !== this.db) db.close(); }
+      throw new TaskError('RETRIEVAL_STORAGE_UNAVAILABLE', '检索容量暂不可读取。');
+    }
     return { schema: 'bd.retrieval-storage/1', basis: 'sqlite_file_lengths_and_logical_contents', database: { file: this.options.databasePath.split('/').pop() ?? 'segments.sqlite', bytes: sizes.total, walBytes: sizes.wal,
         segments: report.segments, documents: report.documents, indexVersions: report.indexVersions,
         textBytes: report.textBytes, ftsTokenBytes: report.tokenBytes, ftsIndexBytes: report.ftsIndexBytes,
@@ -663,7 +699,7 @@ function timeIssue(dimension: TimeDimension, kind: 'event' | 'disclosure'): stri
 }
 
 function qualificationOf(mode: RetrievalHistoryMode, asOfMs: number | null, indexBuiltAt: number | null): RetrievalQualification {
-  return { mode, applied: asOfMs !== null,
+  return { mode, applied: asOfMs !== null && indexBuiltAt !== null,
     reconstruction: mode === 'market_known_at' && asOfMs !== null && indexBuiltAt !== null && indexBuiltAt > asOfMs
       ? 'post_hoc' : 'none',
     index_built_at: indexBuiltAt };

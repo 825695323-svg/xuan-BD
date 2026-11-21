@@ -96,6 +96,27 @@ export class ConversationMaterialBridge {
     ];
   }
   handles(action: string): boolean { return ACTIONS.has(action); }
+  allowedMaterialIds(input: Pick<BackendInput, 'conversationId' | 'branchId' | 'messageId'>,
+    selection: ReturnType<PersonalCore['selectedAttachmentsForInput']>): string[] {
+    const approved = selection.filter(ref => {
+      try { this.selectedGeneratedMaterial(this.options.files.getRef(ref.fileRefId), input, true); return true; }
+      catch { return false; }
+    });
+    const rows = this.options.database.connection.prepare(`WITH RECURSIVE ancestors(id,parent_id) AS (
+      SELECT id,parent_id FROM messages WHERE id=? AND conversation_id=?
+      UNION SELECT m.id,m.parent_id FROM messages m JOIN ancestors a ON m.id=a.parent_id WHERE m.conversation_id=?)
+      SELECT l.material_id FROM conversation_material_links l
+      WHERE (l.file_ref_id,l.file_ref_version) IN
+        (SELECT json_extract(value,'$.fileRefId'),json_extract(value,'$.version') FROM json_each(?))
+      OR EXISTS (SELECT 1 FROM conversation_material_calls c JOIN tasks t ON t.id=c.local_task_id
+        JOIN model_tool_calls m ON m.task_id=t.id
+        WHERE c.material_id=l.material_id AND c.service_task_id=l.service_task_id AND c.operation='material.read'
+          AND t.status='succeeded' AND t.requires_review=0 AND m.tool_name='perform_action' AND m.action=c.operation
+          AND m.conversation_id=? AND m.branch_id=? AND m.message_id IN (SELECT id FROM ancestors))
+      ORDER BY l.material_id`).all(input.messageId, input.conversationId, input.conversationId, JSON.stringify(approved),
+        input.conversationId, input.branchId);
+    return rows.map(row => String(row.material_id));
+  }
   /** 只为 material.read/process 的明确引用补充候选；完整原件核验和读取权限仍在 execute。 */
   canSelectGeneratedMaterial(fileRefId: string, input: Pick<BackendInput, 'conversationId' | 'branchId' | 'messageId'>): boolean {
     try { return !!this.generatedMaterial(fileRefId, input); }
@@ -123,12 +144,8 @@ export class ConversationMaterialBridge {
     const selection = this.options.core.selectedAttachmentsForInput(input);
     let bound = selection.find(item => item.fileRefId === args.fileRefId);
     const requested = this.options.files.getRef(String(args.fileRefId));
-    const producers = requested.source === 'generated' ? requested.relations.filter(item => item.kind === 'task')
-      .map(item => ({ taskId: item.id, action: String(this.options.database.connection.prepare('SELECT action FROM tasks WHERE id=?').get(item.id)?.action) })) : [];
-    const governedProducer = producers.some(item => ['web.read_public', 'source.werss.read', 'source.wechat.extract', 'baidu.drive'].includes(item.action));
-    const generated = !bound || governedProducer ? this.generatedMaterial(requested.id, origin) : undefined;
-    if (governedProducer && !generated?.web && !generated?.werss && !generated?.wechat && !generated?.baidu)
-      throw new TaskError('MATERIAL_NOT_SELECTED', '来源文件缺少当前会话分支祖先任务的有效签发回执。');
+    const producers = this.producers(requested);
+    const generated = this.selectedGeneratedMaterial(requested, origin, !!bound, producers);
     // 明确选件的读取权限来自本次选择，来源身份仍只取个人库中生成该文件的成功任务。
     let sourceOriginal = generated?.sourceOriginal;
     if (bound && action === 'material.read' && this.options.companion.endpointAdapters?.recordTrustedSourceHandoff) {
@@ -352,6 +369,18 @@ export class ConversationMaterialBridge {
         serviceTaskId: serviceTask.id, semanticTaskId: serviceTask.id, semanticTaskStatus: completed.status,
         localProposal: { status: 'saved', readback: 'verified', proposalId: record.envelope.proposalId },
         status: record.result.status, applied: record.result.applied, formalIngest: record.result.formalIngest } }) };
+  }
+  private producers(reference: FileReference) {
+    return reference.source === 'generated' ? reference.relations.filter(item => item.kind === 'task')
+      .map(item => ({ taskId: item.id, action: String(this.options.database.connection.prepare('SELECT action FROM tasks WHERE id=?').get(item.id)?.action) })) : [];
+  }
+  private selectedGeneratedMaterial(reference: FileReference, origin: Pick<ModelTaskOrigin, 'conversationId' | 'branchId' | 'messageId'>,
+    attached: boolean, producers = this.producers(reference)) {
+    const governed = producers.some(item => ['web.read_public', 'source.werss.read', 'source.wechat.extract', 'baidu.drive'].includes(item.action));
+    const generated = !attached || governed ? this.generatedMaterial(reference.id, origin) : undefined;
+    if (governed && !generated?.web && !generated?.werss && !generated?.wechat && !generated?.baidu)
+      throw new TaskError('MATERIAL_NOT_SELECTED', '来源文件缺少当前会话分支祖先任务的有效签发回执。');
+    return generated;
   }
   private generatedMaterial(fileRefId: string, origin: Pick<ModelTaskOrigin, 'conversationId' | 'branchId' | 'messageId'>) {
     const reference = this.options.files.getRef(fileRefId);

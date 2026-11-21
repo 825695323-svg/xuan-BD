@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+import fs, { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -16,8 +17,8 @@ import { zipOfficeParts } from '../../platform/capabilities/conversion/office-te
 import { readConnectionRegistry, registeredBaiduDriveConfiguration } from '../../platform/config/connections.js';
 import { LocalDataLifecycle } from '../../platform/runtime/local-data-lifecycle.js';
 import { CoreDatabase } from '../../platform/state/database.js';
-import { createFullChainFixture, readModelEvidencePreview, settleFixtureTask } from './full-chain-test-support.js';
-import { model, openMediaReviewCompanion, openMediaReviewHost, prepareTranscriptionParse, unusedPiContext } from './media-review-test-support.js';
+import { changedImplementation, createFullChainFixture, readModelEvidencePreview, settleFixtureTask } from './full-chain-test-support.js';
+import { invokeMediaAction, model, openMediaReviewCompanion, openMediaReviewHost, prepareTranscriptionParse, unusedPiContext } from './media-review-test-support.js';
 
 type Host = Awaited<ReturnType<typeof openMediaReviewHost>>;
 type ToolResult = Awaited<ReturnType<ToolDefinition['execute']>>;
@@ -59,7 +60,7 @@ async function startFrozenV21(host: Host) {
   return input;
 }
 
-async function indexDocument(host: Host) {
+async function indexDocument(host: Host, root: string) {
   const service = host.companion, segments = service.segments!;
   const paragraphs = Array.from({ length: 20 }, (_, i) =>
     '<w:p><w:r><w:t>受控检索 ' + i + ' ' + '合成段落'.repeat(110) + '</w:t></w:r></w:p>');
@@ -67,9 +68,14 @@ async function indexDocument(host: Host) {
     '[Content_Types].xml': '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
     'word/document.xml': '<w:document xmlns:w="urn:word"><w:body>' + paragraphs.join('') + '</w:body></w:document>',
   });
-  const id = await acceptWorkspaceMaterial(service, { name: 'synthetic.docx', bytes, category: 'data', requestId: 'stage2-doc' });
-  assert.equal((await settleFixtureTask(service.tasks, id)).status, 'succeeded');
-  const material = service.materials!.getByTask(id)!.envelope;
+  const path = join(root, 'synthetic.docx'), conversationId = host.core.defaultConversationId;
+  writeFileSync(path, bytes);
+  const ref = host.services.files.register({ path, source: 'user-attached', conversationId });
+  const sent = host.core.sendMessage(conversationId, '核对固定快照的财务派生、复权和附件的文档证据。', 'stage2-current',
+    { attachmentRefs: [{ fileRefId: ref.id, version: ref.version, category: 'data' }] });
+  const input = await host.backend.waitForInput(sent.commandId);
+  const custody = await invokeMediaAction(host, input, 'material.read', { fileRefId: ref.id }, 'stage2-material-read');
+  const material = service.materials!.get(String((custody.result!.data as any).materialId)).envelope;
   service.permissions.grant({ label: 'synthetic conversion artifacts', scope: { kind: 'persistent' },
     capabilities: (['read', 'write', 'delete'] as const).map(action => ({ action, target: { kind: 'directory', path: service.artifactRoot, recursive: true } })) });
   const action = 'conversion.document', args = { fileRefId: material.fileRefId };
@@ -84,7 +90,7 @@ async function indexDocument(host: Host) {
     disclosedAt: { state: 'known', value: '2026-01-01T00:00:00Z' }, eventTime: { state: 'not_applicable' } }, 'stage2-index');
   const indexed = await settleFixtureTask(service.tasks, registration.id);
   assert.equal(indexed.status, 'succeeded', JSON.stringify(indexed.error));
-  return { materialId: material.materialId, indexVersion: (indexed.result!.data as { indexVersion: string }).indexVersion };
+  return { input, materialId: material.materialId, indexVersion: (indexed.result!.data as { indexVersion: string }).indexVersion };
 }
 
 test('same host restores v21 and executes v22 calculations and all five fixed retrieval actions through the model gateway', {
@@ -103,10 +109,9 @@ test('same host restores v21 and executes v22 calculations and all five fixed re
     ocr: { reviewReaderWired: true, runnerAvailable: h.services.direct.localOcr.availability().available } });
   assert.deepEqual(companion.toolLibrary!.view().tools.filter(item => item.status === 'ready').map(item => item.id).sort(), [...PURE_OPERATOR_IDS].sort());
   const snapshotId = await seedPureOperatorProducts(companion.r1Runtime);
-  const { indexVersion, materialId } = await indexDocument(h);
+  const { indexVersion, materialId, input } = await indexDocument(h, f.root);
   const oldInput = await startFrozenV21(h), old = toolsFor(h, oldInput);
-  const sent = core.sendMessage(core.defaultConversationId, '核对固定快照的财务派生、复权和文档证据。', 'stage2-current');
-  const input = await h.backend.waitForInput(sent.commandId), current = toolsFor(h, input);
+  const current = toolsFor(h, input);
   assert.equal(core.runConfiguration(input.runId)?.internalAgentRules?.version, 22);
   const list = (tool: typeof current, id: string, query: string) => tool.invoke('list_actions', id, { query, limit: 20 }).then(preview);
   assert.equal((await list(old, 'old-calc', 'algorithms.calculate')).actions[0].available, false);
@@ -151,7 +156,7 @@ test('same host restores v21 and executes v22 calculations and all five fixed re
   assert.equal(found.data.accessGeneration, undefined); assert.equal(found.data.kind, undefined);
   assert.deepEqual(current.history('search', search).evidence, first.evidence);
   const early = preview(await current.perform('before-acquisition', 'data.retrieval.search', { ...query, asOf: '2000-01-01' }));
-  assert.equal(early.data.citationCount, 0); assert.ok(early.data.coverage.excluded[0].reason);
+  assert.equal(early.data.citationCount, 0); assert.equal(early.data.status, 'index_missing'); assert.ok(early.data.gaps.includes('index_built_after_as_of'));
   const evidence = preview(await current.perform('evidence', 'data.retrieval.evidence', { indexVersion, segmentId: found.data.citations[0].segment_id }));
   for (const key of ['cache', 'artifact', 'original']) assert.equal(evidence.data[key].status, 'verified');
   const subject = { kind: 'entity', namespace: 'full.chain.test', id: basis.subject };
@@ -182,6 +187,29 @@ test('same host restores v21 and executes v22 calculations and all five fixed re
     assert.deepEqual(status.data, savedResult);
   } finally { companion.r1Workspace = workspace; }
 
+  // Exercise a nonconforming upstream last page too. Even if it ignores the cap, the retained evidence is complete.
+  const fixed = companion.r1Workspace!;
+  const large = t.mock.method(fixed, 'filterObjects', async (plan: any) => {
+    assert.equal(plan.page_size, 20);
+    return { status: 'matched', dataset_id: 'synthetic', snapshot_id: snapshotId, coverage: { data_complete: true },
+      page: { total_objects: 25, next_cursor: null, has_more: false, result_exhausted: true },
+      objects: Array.from({ length: 25 }, (_, i) => ({ subject: { ...subject, id: 'synthetic-' + i },
+        values: { text: '完整证据'.repeat(550), hidden: '/private/synthetic-location' }, record_refs: {} })) };
+  });
+  try {
+    const args = { jointJson: JSON.stringify({ structured: { ...structured, page_size: 25 },
+      documents: { indexVersion, method: 'exact', query: '指标', asOf: null, mode: null } }) };
+    const oversized = await current.perform('oversized-page', 'data.retrieval.joint', args);
+    assert.equal(preview(oversized).complete, false); assert.ok(preview(oversized).evidence.nextCursor);
+    const assembled = await current.readAll('oversized-page', oversized);
+    assert.equal(assembled.data.objects.length, 25); assert.equal(assembled.data.objects[24].subject.id, 'synthetic-24');
+    assert.equal(assembled.data.objects[24].values.text, '完整证据'.repeat(550));
+    assert.ok(!JSON.stringify(assembled).includes('synthetic-location'));
+    const stored = h.services.tasks.get(assembled.taskId).result!.data as any;
+    assert.equal(stored.modelPreview.page.has_more, true); assert.equal(stored.modelPreview.page.result_exhausted, false);
+    assert.deepEqual(stored.modelEvidence.objects, assembled.data.objects);
+  } finally { large.mock.restore(); }
+
   // 已返回的内容、模型历史和证据续页均须重新核对原资料代次。
   const controlDb = new CoreDatabase(controlDatabasePath);
   try { controlDb.connection.prepare('UPDATE local_data_lifecycle SET generation=generation+1 WHERE data_id=?').run(dataId); }
@@ -190,6 +218,122 @@ test('same host restores v21 and executes v22 calculations and all five fixed re
   await assert.rejects(current.perform('search', 'data.retrieval.search', query));
   await assert.rejects(current.invoke('core_evidence_read', 'revoked-page', { evidenceId: first.evidence.evidenceId,
     sha256: first.evidence.sha256, cursor: first.evidence.nextCursor }));
+
+  // The same verified structured row may have local evidence from a private branch.
+  const rowRead = companion.r1Workspace!.beginJointEvidenceRead.bind(companion.r1Workspace);
+  t.mock.method(companion.r1Workspace!, 'beginJointEvidenceRead', (...args: Parameters<typeof rowRead>) => ({
+    ...rowRead(...args), recordMaterials: () => ({ requestId: 'private-request', snapshotId,
+      materialIds: [materialId], originalIds: ['private-original'] }) }));
+  const jointArgs = { jointJson: JSON.stringify({ structured, documents: { indexVersion, query: query.query, method: 'exact', mode: null, asOf: null } }) };
+  const ownJoint = await current.readAll('own-joint', await current.perform('own-joint', 'data.retrieval.joint', jointArgs));
+  assert.equal(ownJoint.data.objects[0].documents.citations[0].document_id, materialId);
+  await core.abort(input.runId, input.conversationId);
+  const alternate = core.editMessage(input.conversationId, input.messageId, '读取本分支的材料。', 'without-private-attachment',
+    core.getState(input.conversationId).treeRevision, undefined, []);
+  const sibling = await h.backend.waitForInput(alternate.commandId), other = toolsFor(h, sibling);
+  assert.notEqual(input.branchId, sibling.branchId);
+  const docList = preview(await other.perform('other-docs', 'data.retrieval.documents')).data;
+  assert.deepEqual(docList.items, []); assert.equal(docList.total, 0);
+  const otherSearch = preview(await other.perform('other-search', 'data.retrieval.search', query)).data;
+  assert.deepEqual(otherSearch.citations, []); assert.deepEqual(otherSearch.coverage.excluded, []);
+  await assert.rejects(other.perform('other-proof', 'data.retrieval.evidence', { indexVersion, segmentId: found.data.citations[0].segment_id }));
+  const otherJoint = preview(await other.perform('other-joint', 'data.retrieval.joint', jointArgs)).data;
+  assert.equal(otherJoint.objects[0].documents, null); assert.deepEqual(otherJoint.objects[0].associations, []);
+  for (const key of [materialId, found.data.citations[0].segment_id, '合成段落', 'private-original', 'private-request'])
+    assert.ok(!JSON.stringify([docList, otherSearch, otherJoint]).includes(key));
+
+});
+
+test('evidence binding detects changes to OCR, Office and linkedom bytes independently of document listing', async t => {
+  const f = createFullChainFixture({ name: 'evidence-versions', parentRoot: process.env.XUAN_TEST_ROOT ?? tmpdir() });
+  const host = await openMediaReviewHost(f, false); t.after(() => host.close());
+  const registry = host.services.direct.registry;
+  const capture = (action: string) => ({ runtimeId: 'direct', action, args: {}, versions: registry.captureVersions(action, {}) } as TaskRecord);
+  const evidence = capture('data.retrieval.evidence'), listing = capture('data.retrieval.documents');
+  const verifyChanged = () => {
+    assert.throws(() => registry.assertTaskVersions(evidence), { code: 'DIRECT_DEPENDENCY_UNAVAILABLE' });
+    registry.assertTaskVersions(listing);
+  };
+  for (const path of ['apps/server/ocr-review.ts', 'apps/server/media-review-source.ts',
+    'platform/capabilities/conversion/office.ts', 'platform/capabilities/conversion/formats.ts'])
+    changedImplementation(path, verifyChanged);
+
+  // Redirect only the bound package file's stat and descriptor to a changed private fixture.
+  const entry = createRequire(import.meta.url).resolve('linkedom'), replacement = join(f.root, 'changed-package.js');
+  writeFileSync(replacement, Buffer.concat([readFileSync(entry), Buffer.from('\n')]));
+  const stat = fs.lstatSync, open = fs.openSync;
+  const changedStat = t.mock.method(fs, 'lstatSync', (path: fs.PathLike, options: fs.StatOptions) =>
+    stat(String(path) === entry ? replacement : path, options));
+  const changedOpen = t.mock.method(fs, 'openSync', (path: fs.PathLike, ...args: [string | number, fs.Mode?]) =>
+    open(String(path) === entry ? replacement : path, ...args));
+  syncBuiltinESMExports();
+  try { verifyChanged(); }
+  finally { changedOpen.mock.restore(); changedStat.mock.restore(); syncBuiltinESMExports(); }
+  registry.assertTaskVersions(evidence);
+});
+
+test('frozen Baidu fields, per-reference approval and branch-local redaction through real model tools', async t => {
+  const f = createFullChainFixture({ name: 'wave1-baidu-model', parentRoot: process.env.XUAN_TEST_ROOT ?? tmpdir() });
+  const binaryPath = join(f.root, 'offline-bdpan'), configPath = join(f.root, 'client.json'), refPath = join(f.root, 'fixture-refs');
+  const bindingsFile = join(f.runtime, 'config/machine.bindings.json'), dispatched = join(f.root, 'dispatch-count');
+  const bindings = JSON.parse(readFileSync(bindingsFile, 'utf8'));
+  writeFileSync(binaryPath, `#!${process.execPath}
+const fs = require('node:fs'), args = process.argv.slice(2);
+if (args[args.indexOf('--source-dir') + 1] !== '/synthetic') process.exit(2);
+fs.appendFileSync(${JSON.stringify(dispatched)}, '1');
+console.log(JSON.stringify({ items: [] }));`, { mode: 0o700 });
+  bindings.resources.bdpan = { kind: 'program', path: binaryPath, sha256: wfdSha256(readFileSync(binaryPath)) };
+  writeFileSync(bindingsFile, JSON.stringify(bindings)); writeFileSync(configPath, '{}');
+  const secret = randomUUID().slice(0, 8), ref = 'synthetic';
+  writeFileSync(refPath, JSON.stringify({ refs: { FIXTURE_SHARE: secret } }), { mode: 0o600 });
+  const host = await openMediaReviewHost(f, false, undefined, { binaryPath, configPath,
+    sharePasscodeRefs: { [ref]: { kind: 'dsh-ref', path: refPath, ref: 'FIXTURE_SHARE' } } });
+  t.after(() => host.close());
+  const old = toolsFor(host, await startFrozenV21(host));
+  const { core, services, database } = host, conversation = core.defaultConversationId;
+  const sent = core.sendMessage(conversation, '核对合成网盘清单。', 'offline-baidu-query');
+  const input = await host.backend.waitForInput(sent.commandId), current = toolsFor(host, input);
+  const fields = async (tool: typeof current) => preview(await tool.invoke('list_actions', 'list-baidu', { query: 'baidu.drive' }))
+    .actions[0].fields.map((field: any) => field.key);
+  const legacy = await fields(old), latest = await fields(current);
+  for (const key of ['passcodeRef', 'sourceDir']) {
+    assert.ok(!legacy.includes(key)); assert.ok(latest.includes(key));
+  }
+  const share = { operation: 'transfer-list', shareUrl: 'https://pan.baidu.com/s/synthetic' };
+  for (const [key, value] of [['sourceDir', '/synthetic'], ['passcodeRef', ref]]) {
+    await assert.rejects(old.perform('old-deny-' + key, 'baidu.drive', { ...share, [key]: value }), { code: 'MODEL_ACTION_NOT_ALLOWED' });
+  }
+  assert.equal(preview(await old.perform('old-path', 'baidu.drive', { ...share, path: '/synthetic' })).data.complete, true);
+  const privateList = current.perform('private-list', 'baidu.drive', { ...share, sourceDir: '/synthetic', passcodeRef: ref });
+  const task = services.tasks.list().find(item => item.conversationId === conversation && item.action === 'baidu.drive');
+  assert.ok(task);
+  const waiting = await settleFixtureTask(services.tasks, task.id);
+  assert.equal(waiting.status, 'waiting_approval'); assert.equal(readFileSync(dispatched, 'utf8'), '1');
+  const approval = services.permissions.getRecordedApproval(waiting.approvalId!);
+  assert.ok(approval.operation.targets.some(target => target.kind === 'secret' && target.name === 'baidu-drive.share-passcode.' + ref));
+  services.tasks.approve(waiting.approvalId!);
+  assert.equal(preview(await privateList).data.complete, true); assert.equal(readFileSync(dispatched, 'utf8'), '11');
+
+  const invalid = [{ ...share, passcode: secret }, { ...share, shareUrl: share.shareUrl + '?pwd=' + secret },
+    { ...share, shareUrl: share.shareUrl + '#code=' + secret }];
+  for (const [i, args] of invalid.entries()) await assert.rejects(current.perform('bad-' + i, 'baidu.drive', args));
+  const rejected = () => database.connection.prepare("SELECT * FROM model_tool_calls WHERE conversation_id=? AND state='rejected'").all(conversation);
+  assert.equal(rejected().length, 3);
+  assert.ok(!JSON.stringify(rejected()).includes(secret));
+  // Exercise both read paths against a row and a cached list from before write-side redaction.
+  database.connection.prepare("UPDATE model_tool_calls SET args_json=?,preview_json=? WHERE tool_call_id='bad-0'")
+    .run(JSON.stringify({ args: { apiKey: secret, shareUrl: invalid[1].shareUrl } }), JSON.stringify({ message: secret }));
+  const own = preview(await current.invoke('core_tasks_list', 'own-rejections', {}));
+  assert.equal(own.rejectedCalls.length, 3); assert.ok(!JSON.stringify(own).includes(secret));
+  database.connection.prepare("UPDATE model_tool_calls SET preview_json=? WHERE tool_call_id='own-rejections'")
+    .run(JSON.stringify({ ...own, rejectedCalls: invalid }));
+  assert.ok(!JSON.stringify(preview(await current.invoke('core_tasks_list', 'own-rejections', {}))).includes(secret));
+  await core.abort(input.runId, conversation);
+  core.createBranch(conversation, core.getState(conversation).treeRevision);
+  const next = core.sendMessage(conversation, '核对本分支任务。', 'offline-other-branch');
+  const other = toolsFor(host, await host.backend.waitForInput(next.commandId));
+  const otherView = preview(await other.invoke('core_tasks_list', 'other-rejections', {}));
+  assert.deepEqual(otherView.rejectedCalls, []); assert.ok(!JSON.stringify(otherView).includes(secret));
 });
 
 test('registered Baidu locators protect files and freeze only the selected credential dependency', async t => {
@@ -236,6 +380,27 @@ test('registered Baidu locators protect files and freeze only the selected crede
   writeFileSync(security, 'changed synthetic executable identity');
   assert.throws(() => direct.registry.assertTaskVersions(keyTask), { code: 'DIRECT_VERSION_CONFLICT' });
   direct.registry.assertTaskVersions(plain);
+});
+
+test('ordinary file.read protects registered DSH files even without bdpan or native account files', async t => {
+  const f = createFullChainFixture({ name: 'wave1-offline-registry', parentRoot: process.env.XUAN_TEST_ROOT ?? tmpdir() });
+  const bindingsFile = join(f.runtime, 'config/machine.bindings.json');
+  const bindings = JSON.parse(readFileSync(bindingsFile, 'utf8'));
+  bindings.resources.connections_registry = { path: f.registryPath, kind: 'file' };
+  writeFileSync(bindingsFile, JSON.stringify(bindings));
+  const path = join(f.root, 'offline-refs.yaml');
+  writeFileSync(path, 'refs: {}');
+  writeFileSync(f.registryPath, JSON.stringify({ connections: [{ id: 'bdpan-native', kind: 'native-cli',
+    executable: join(f.root, 'missing-bdpan'), credential_ref: { kind: 'native-client-managed', config_path: join(f.root, 'missing-config') },
+    share_passcode_refs: { slot: { kind: 'dsh-ref', path, ref: 'FIXTURE_SLOT' } } }] }));
+  assert.equal(registeredBaiduDriveConfiguration(readConnectionRegistry(f.registryPath), join(f.root, 'missing-bdpan')), undefined);
+  const host = openMediaReviewCompanion(f); t.after(() => host.close());
+  const { direct, files, tasks, core } = host.companion;
+  const args = { fileRefId: files.register({ path, source: 'user-attached', conversationId: core.defaultConversationId }).id };
+  const task = tasks.create({ runtimeId: 'direct', action: 'file.read', args, ownerRole: 'service',
+    requestId: 'registered-offline', title: '读取合成引用', versions: direct.registry.captureVersions('file.read', args) });
+  tasks.start(task.id);
+  assert.equal((await settleFixtureTask(tasks, task.id)).error?.code, 'PROTECTED_RESOURCE');
 });
 
 test('processing plans admit four controlled video formats for transcription and block non-media originals', async t => {

@@ -3,14 +3,14 @@ import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../
 import { TaskError } from '../../platform/jobs/tasks.js';
 import { add, compare, divide, formatExactDecimal, multiply, negative, readExactDecimal, type Fraction } from '../collection/numeric-precision.js';
 import { financialBasisAxes, knownFinancialLabel, type FinancialGrowthOptions, type FinancialObservation, type FinancialRatioSnapshot } from './financial-l4-operators.js';
-import type { MarketAdjustmentInput, MarketCorporateAction } from './market-adjustment-contract.js';
+import { declaredMarketUnitScale, type MarketAdjustmentBasis, type MarketAdjustmentInput, type MarketCorporateAction } from './market-adjustment-contract.js';
 import { PURE_VERIFICATION_VERSION } from './algorithm-pure-operators.js';
 
 export type PureOperatorInput =
   | { methodId: 'financial_single_quarter' | 'financial_ttm'; observations: FinancialObservation[] }
   | { methodId: 'financial_growth'; current: FinancialObservation; prior: FinancialObservation; options: FinancialGrowthOptions }
   | { methodId: 'financial_ratios'; snapshot: FinancialRatioSnapshot }
-  | { methodId: 'price_adjustment'; market: MarketAdjustmentInput };
+  | { methodId: 'price_adjustment'; market: MarketAdjustmentInput; basis: MarketAdjustmentBasis };
 
 const zero = { n: 0n, d: 1n }, one = { n: 1n, d: 1n };
 const ytd = ['Q1_YTD', 'H1', 'Q3_YTD', 'FY'], quarters = ['Q1', 'Q2', 'Q3', 'Q4'];
@@ -148,6 +148,39 @@ function ratios(snapshot: FinancialRatioSnapshot, result: WfdRecord) {
   return ['exact_ratios', 'dupont_identity', 'cash_cycle', 'null_diagnostics'];
 }
 
+/** Reconstruct the comparable sets from every sealed row without using the runner's basis decision. */
+function verifyMarketBasis(market: MarketAdjustmentInput, basis: MarketAdjustmentBasis) {
+  check(basis && Array.isArray(basis.bars) && basis.bars.length > 0 && basis.bars.length === market.bars.length
+    && Array.isArray(basis.actions) && basis.actions.length === market.actions.length, 'market_basis_rows');
+  const subjects = new Set<string>(), currencies = new Set<string>(), definitions = new Map<string, string>();
+  for (const row of [...basis.bars, ...basis.actions]) {
+    const subject = record(row.subject);
+    check(['kind', 'namespace', 'id'].every(key => knownFinancialLabel(subject[key])) && subject.id === row.subjectId, 'market_subject');
+    check(knownFinancialLabel(row.currency) && isWfdRecord(row.units), 'market_currency_units');
+    subjects.add(canonicalWfdJson(subject)); currencies.add(row.currency);
+    for (const unit of Object.values(row.units)) {
+      check(isWfdRecord(unit) && knownFinancialLabel(unit.unit_code), 'declared_unit');
+      const signature = canonicalWfdJson(unit), prior = definitions.get(unit.unit_code);
+      check(prior === undefined || prior === signature, 'unit_definition');
+      definitions.set(unit.unit_code, signature);
+    }
+  }
+  check(subjects.size === 1 && currencies.size === 1, 'comparable_market_rows');
+  const prices = basis.bars.flatMap(row => ['open', 'high', 'low', 'close'].map(key => row.units[key]));
+  const ratios: WfdRecord[] = [];
+  for (const [i, action] of market.actions.entries()) {
+    const units = basis.actions[i].units;
+    if (action.kind === 'cash_dividend') prices.push(units.cashPerShare);
+    else ratios.push(action.kind === 'split' ? units.splitRatio : units.sharesPerShare);
+  }
+  check(prices.every(unit => declaredMarketUnitScale(unit) !== null)
+    && new Set(prices.map(unit => canonicalWfdJson(unit))).size === 1, 'same_price_and_cash_unit');
+  check(ratios.every(unit => {
+    const scale = declaredMarketUnitScale(unit);
+    return scale !== null && scale.n === scale.d && ['ratio', 'shares_per_share'].includes(String(unit.unit_code));
+  }) && new Set(ratios.map(unit => canonicalWfdJson(unit))).size <= 1, 'unscaled_share_ratio');
+}
+
 function adjustment(input: MarketAdjustmentInput, result: WfdRecord) {
   check(input.adjustment === 'none' && input.frequency === '1d', 'raw_daily');
   const bars = [...input.bars].sort((a, b) => a.date.localeCompare(b.date));
@@ -212,7 +245,9 @@ export function verifyPureOperator(input: PureOperatorInput, result: unknown) {
     case 'financial_ttm': checks = ttm(input.observations, record(result)); break;
     case 'financial_growth': checks = growth(input, record(result)); break;
     case 'financial_ratios': checks = ratios(input.snapshot, record(result)); break;
-    case 'price_adjustment': checks = adjustment(input.market, record(result)); break;
+    case 'price_adjustment':
+      verifyMarketBasis(input.market, input.basis);
+      checks = ['fixed_subject_and_units', ...adjustment(input.market, record(result))]; break;
   }
   return { status: 'verified' as const, methodId: input.methodId, version: PURE_VERIFICATION_VERSION, checks,
     inputSha256: wfdSha256(canonicalWfdJson(input)), resultSha256: wfdSha256(canonicalWfdJson(result)) };

@@ -9,7 +9,7 @@ import { actionRoles, pureMethodVersion, PURE_OPERATOR_VERSION, PURE_PUBLICATION
 import type { PureOperatorId } from './algorithm-types.js';
 import { computeFinancialGrowth, computeFinancialRatios, computeFinancialSingleQuarter, computeFinancialTtm,
   financialBasisAxes, financialRatioFields, knownFinancialLabel, type FinancialGrowthOptions, type FinancialRatioSnapshot, type FinancialObservation } from './financial-l4-operators.js';
-import { computeAdjustedMarketSeries, type MarketCorporateAction, type UnadjustedDailyBar } from './market-adjustment-contract.js';
+import { computeAdjustedMarketSeries, validMarketBasis, type MarketRowBasis, type MarketCorporateAction, type UnadjustedDailyBar } from './market-adjustment-contract.js';
 import { fixedProductIdentifier, readCompleteFixedProduct, STRATEGY_SCREEN_READ_LIMITS,
   type FixedProductReader, type FixedProductRow, type HistoricalPurposeContext } from './strategy-screen-wfd.js';
 import { historicalExclusionSummary } from './historical-exclusions.js';
@@ -77,11 +77,11 @@ function requestFor(methodId: PureOperatorId, raw: WfdRecord) {
 }
 
 type ProductReference = ReturnType<typeof reference>;
-type ProjectedRow = { values: WfdRecord; units: Record<string, string> };
+type ProjectedRow = { values: WfdRecord; subject: unknown; units: Record<string, WfdRecord> };
 const numericRoles = new Set<string>(['value', ...financialRatioFields, 'open', 'high', 'low', 'close', 'cashPerShare', 'sharesPerShare', 'splitRatio']);
 const nullableRoles = new Set<string>(['value', ...financialRatioFields, 'cashPerShare', 'sharesPerShare', 'splitRatio']);
 function project(row: FixedProductRow, ref: ProductReference, metadata: Map<string, string>): ProjectedRow {
-  const values: WfdRecord = {}, units: Record<string, string> = {};
+  const values: WfdRecord = {}, units: Record<string, WfdRecord> = {};
   for (const { role, field } of ref.projection) {
     const cell = row.values[field];
     if (!isWfdRecord(cell) || !isWfdRecord(cell.unit) || !knownFinancialLabel(cell.unit.unit_code) || cell.unit.resolved === false)
@@ -91,7 +91,7 @@ function project(row: FixedProductRow, ref: ProductReference, metadata: Map<stri
     if (metadata.has(role) && metadata.get(role) !== signature || metadata.has(unitKey) && metadata.get(unitKey) !== unitDefinition)
       fail('FINANCIAL_BASIS_MISMATCH', '字段类型或同名单位定义不一致 ' + role);
     metadata.set(role, signature); metadata.set(unitKey, unitDefinition);
-    units[role] = cell.unit.unit_code;
+    units[role] = cell.unit;
     if (numericRoles.has(role) ? !['decimal', 'integer'].includes(String(cell.data_type))
       : cell.data_type !== (role === 'additive' ? 'boolean' : role === 'fiscalYear' ? 'integer' : 'text'))
       fail('PURE_OPERATOR_CELL', '固定字段的数据类型与角色不符 ' + role);
@@ -118,7 +118,7 @@ function project(row: FixedProductRow, ref: ProductReference, metadata: Map<stri
   }
   if (isWfdRecord(row.subject) && typeof row.subject.id === 'string' && row.subject.id !== values.subject)
     fail('FINANCIAL_BASIS_MISMATCH', '行主体与输入主体字段不符。');
-  return { values, units };
+  return { values, units, subject: row.subject };
 }
 
 async function readInput(ref: ProductReference, history: ReturnType<typeof requestFor>['history'], read: FixedProductReader,
@@ -151,32 +151,26 @@ function inputFor(methodId: PureOperatorId, rows: ProjectedRow[], actions: Proje
   if (!rows.length) fail('PURE_OPERATOR_MISSING_INPUT', '固定产品在所选视角没有合格输入。');
   const first = rows[0].values;
   if (methodId === 'price_adjustment') {
-    const unit = rows[0].units.close;
-    for (const { values, units } of rows) {
-      if (values.adjustment !== 'none' || values.frequency !== '1d')
-        fail('MARKET_ADJUSTMENT_RAW_DAILY_REQUIRED', '固定产品须逐行声明未复权日线。');
-      if (values.subject !== first.subject || values.currency !== first.currency
-        || ['open', 'high', 'low', 'close'].some(key => units[key] !== unit))
-        fail('MARKET_ADJUSTMENT_BASIS', '原价的主体、币种或 OHLC 单位不一致。');
-    }
-    for (const { values, units } of actions) {
-      if (values.subject !== first.subject || values.currency !== first.currency
-        || values.kind === 'cash_dividend' && units.cashPerShare !== unit
-        || (values.kind === 'stock_dividend' || values.kind === 'capitalization') && !['ratio', 'shares_per_share'].includes(units.sharesPerShare)
-        || values.kind === 'split' && !['ratio', 'shares_per_share'].includes(units.splitRatio))
-        fail('MARKET_ADJUSTMENT_BASIS', '行动主体、币种或每股现金单位与原价不符。');
-      if (values.claimStatus !== 'confirmed' || values.effectiveStatus !== 'effective')
-        fail('MARKET_ADJUSTMENT_ACTION_NOT_EFFECTIVE', '公司行动须已确认且生效。');
-    }
+    if (rows.some(({ values }) => values.adjustment !== 'none' || values.frequency !== '1d'))
+      fail('MARKET_ADJUSTMENT_RAW_DAILY_REQUIRED', '固定产品须逐行声明未复权日线。');
+    if (actions.some(({ values }) => values.claimStatus !== 'confirmed' || values.effectiveStatus !== 'effective'))
+      fail('MARKET_ADJUSTMENT_ACTION_NOT_EFFECTIVE', '公司行动须已确认且生效。');
     const bars = rows.map(({ values: { date, open, high, low, close } }) => ({ date, open, high, low, close })) as UnadjustedDailyBar[];
-    return { methodId, market: { adjustment: 'none', frequency: '1d', direction: params.direction as 'forward_qfq' | 'backward_hfq',
-      anchorDate: params.anchorDate as string, bars, actions: actions.map(row => row.values) as MarketCorporateAction[] } };
+    const basisOf = ({ subject, units, values }: ProjectedRow): MarketRowBasis =>
+      ({ subject, units, subjectId: values.subject, currency: values.currency });
+    const input: Extract<PureOperatorInput, { methodId: 'price_adjustment' }> = { methodId,
+      basis: { bars: rows.map(basisOf), actions: actions.map(basisOf) },
+      market: { adjustment: 'none', frequency: '1d', direction: params.direction as 'forward_qfq' | 'backward_hfq',
+        anchorDate: params.anchorDate as string, bars, actions: actions.map(row => row.values) as MarketCorporateAction[] } };
+    if (!validMarketBasis(input.market, input.basis))
+      fail('MARKET_ADJUSTMENT_BASIS', '原价与公司行动须具有相同的完整主体、币种及明确一致的单位定义和比例。');
+    return input;
   }
   for (const { values, units } of rows) {
     for (const axis of [...financialBasisAxes, 'fiscalCalendar'] as const)
       if (!knownFinancialLabel(values[axis]) || values[axis] !== first[axis]) fail('FINANCIAL_BASIS_MISMATCH', '固定财务口径不一致 ' + axis);
     for (const field of Object.keys(units).filter(key => numericRoles.has(key))) {
-      if (field === 'periodDays' ? !['day', 'days'].includes(units[field]) : units[field] !== values.unit)
+      if (field === 'periodDays' ? !['day', 'days'].includes(String(units[field].unit_code)) : units[field].unit_code !== values.unit)
         fail('FINANCIAL_BASIS_MISMATCH', '金额或天数字段的 WFD 单位与口径不符 ' + field);
     }
   }

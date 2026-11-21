@@ -12,19 +12,20 @@ const mismatch = (reason: string): RetrievalIntegrityCheck => ({ status: 'mismat
 const verified = (reason: string): RetrievalIntegrityCheck => ({ status: 'verified', reason });
 const code = (error: unknown) => error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
 /** Explicit current byte verification; it neither grants fact/history qualification nor modifies cached hits. */
-export async function readRetrievalEvidence(services: ApplicationServices, input: unknown, assertReadAccess: () => void = () => {}): Promise<RetrievalEvidenceResult> {
+export async function readRetrievalEvidence(services: ApplicationServices, input: unknown, assertReadAccess: () => void = () => {},
+  allowedDocumentIds?: readonly string[]): Promise<RetrievalEvidenceResult> {
   if (!isWfdRecord(input) || Object.keys(input).sort().join(',') !== 'indexVersion,segmentId'
     || [input.indexVersion, input.segmentId].some(value => typeof value !== 'string' || !/^[\w.:-]{1,200}$/u.test(value)))
     throw new TaskError('RETRIEVAL_EVIDENCE_INPUT', '需要固定索引和片段身份，不接受路径或最新索引。');
   assertReadAccess();
   const segments = services.segments!, materials = services.materials!;
   const generation = services.localData?.assertActive().generation;
-  const binding = segments.evidenceBinding(String(input.indexVersion), String(input.segmentId));
+  const binding = segments.evidenceBinding(String(input.indexVersion), String(input.segmentId), allowedDocumentIds);
   const frozen = canonicalWfdJson(binding);
   const assertCurrent = () => {
     assertReadAccess();
     if (generation !== undefined) services.localData!.assertPrivateAccess(generation);
-    if (canonicalWfdJson(segments.evidenceBinding(String(input.indexVersion), String(input.segmentId))) !== frozen)
+    if (canonicalWfdJson(segments.evidenceBinding(String(input.indexVersion), String(input.segmentId), allowedDocumentIds)) !== frozen)
       throw new TaskError('RETRIEVAL_EVIDENCE_CHANGED', '等待期间固定证据绑定变化，未返回结果。');
   };
   const { segment, document, artifact } = binding;

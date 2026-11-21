@@ -1,3 +1,7 @@
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { SegmentService, type SegmentServiceOptions } from './segments/service.js';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
@@ -171,7 +175,7 @@ test('R09 边界一：历史公开只取当时已发布的版本，后来才发�
 
   // 2024 年时点：只有 v1 公开过，v2 不能出现
   const view = resolveVisibleVersions(db, { indexVersion: 'idx_rev', asOf: t0 + 30 * day, mode: 'market_known_at' });
-  assert.deepEqual(view.allowed, ['mat_corrected@v1']);
+  assert.deepEqual(view.allowed, [['mat_corrected', 'v1', original.segments[0]!.parser_version]]);
   assert.equal(view.excluded.some(entry => entry.reason === 'superseded_by_revision'), false,
     '当时 v1 就是当前版本，不能被后来的版本状态回写成“已被取代”');
   assert.deepEqual(view.excluded, [{ document_id: 'mat_corrected', document_version: 'v2',
@@ -181,7 +185,7 @@ test('R09 边界一：历史公开只取当时已发布的版本，后来才发�
 
   // 更正发布之后：取 v2，v1 标为被取代，不再混入
   const later = resolveVisibleVersions(db, { indexVersion: 'idx_rev', asOf: t0 + 500 * day, mode: 'market_known_at' });
-  assert.deepEqual(later.allowed, ['mat_corrected@v2']);
+  assert.deepEqual(later.allowed, [['mat_corrected', 'v2', original.segments[0]!.parser_version]]);
   assert.deepEqual(later.excluded, [{ document_id: 'mat_corrected', document_version: 'v1',
     reason: 'superseded_by_revision' }]);
   assert.deepEqual([...new Set(exact(db, 'idx_rev', '普通正文',
@@ -192,7 +196,7 @@ test('R09 边界一：历史公开只取当时已发布的版本，后来才发�
 
   // 严格系统持有同样收敛，不因严格而同时返回两版
   assert.deepEqual(resolveVisibleVersions(db, { indexVersion: 'idx_rev', asOf: t0 + 500 * day }).allowed,
-    ['mat_corrected@v2']);
+    [['mat_corrected', 'v2', original.segments[0]!.parser_version]]);
 });
 
 test('R09 边界一之二：多版本无法按披露时间排序时整份排除，不猜当时版本', () => {
@@ -243,6 +247,37 @@ test('R09 边界二：低精度时间按区间末端比较，不提前放行', (
   // 年精度同理：2024 年内不算公开，2025 年起才算
   assert.equal(known(Date.parse('2024-01-01T00:00:00Z'), 'year').upper, Date.parse('2025-01-01T00:00:00Z'));
   assert.equal(known(Date.parse('2024-01-01T00:00:00Z'), 'quarter').upper, Date.parse('2024-04-01T00:00:00Z'));
+});
+
+test('3 日系统持有拒绝 5 日固定索引，资格和两种 SQL 只匹配 2 日的完整解析身份', () => {
+  const path = join(mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'parser-cutoff-')), 'segments.sqlite');
+  const db = new DatabaseSync(path);
+  const service = new SegmentService({ databasePath: path } as SegmentServiceOptions);
+  try {
+    for (const [i, pages] of [syntheticPages(), twoRowPages()].entries()) {
+      const parser = 'parser-' + i, parsed = t0 + (i === 0 ? 1 : 3) * day;
+      const built = buildDocumentSegments({ documentId: 'same@id', documentVersion: 'v1', parserVersion: parser,
+        sourceRef: 'artifact-' + i, pages });
+      putDocumentSegments(db, built.segments, parsed);
+      putDocumentVersion(db, record({ document_id: 'same@id', document_version: 'v1', parser_version: parser,
+        acquired_at: t0, parsed_at: parsed, disclosed_at: known(t0), event_time: NOT_APPLICABLE_TIME }));
+    }
+    const indexVersion = 'jan-5', asOf = t0 + 2 * day;
+    createIndexVersion(db, { indexVersion, segmentIds: indexableSegmentIds(db) }, t0 + 4 * day);
+    for (const fixed of [indexVersion, undefined]) {
+      const blocked = service.search({ indexVersion: fixed, method: 'exact', query: '普通正文', asOf: new Date(asOf).toISOString(), mode: 'system_held_at' });
+      assert.equal(blocked.status, 'index_missing'); assert.deepEqual(blocked.citations, []); assert.equal(blocked.qualification.applied, false);
+      assert.ok(blocked.gaps.includes(fixed ? 'index_built_after_as_of' : 'no_index_at_as_of'));
+    }
+    const visibleVersions = resolveVisibleVersions(db, { indexVersion, asOf, mode: 'system_held_at' }).allowed;
+    assert.deepEqual(visibleVersions, [['same@id', 'v1', 'parser-0']]);
+    for (const search of [searchSegments, searchSegmentsExact]) {
+      assert.deepEqual(search(db, { indexVersion, visibleVersions, query: '普通正文' }), []);
+      assert.ok(search(db, { indexVersion, visibleVersions, query: '半导体' }).length > 0);
+    }
+    const later = service.search({ indexVersion, method: 'exact', query: '普通正文', asOf: new Date(t0 + 5 * day).toISOString() });
+    assert.equal(later.citations[0]?.parser_version, 'parser-1');
+  } finally { service.close(); db.close(); }
 });
 
 test('索引版本按 built_at 钉住：重建不改变旧时点解析到的版本', () => {

@@ -58,20 +58,27 @@ export async function readDshCredential(file: string, reference: string, format:
 }
 
 /** 固定系统入口按 service/account 精确读取；底层错误和输出不进入异常链。 */
-export async function readKeychainCredential(service: string, account: string, runtime?: ProcessRuntime, format: 'trimmed' | 'exact' = 'trimmed'): Promise<string> {
+export async function readKeychainCredential(service: string, account: string, runtime?: ProcessRuntime, format: 'trimmed' | 'exact' = 'trimmed',
+  task?: { signal?: AbortSignal; assertAuthorized?(): void; binaryPath?: string }): Promise<string> {
   if (!keychainAttribute(service) || !keychainAttribute(account)) throw new ConfigError('钥匙串引用需要明确的服务名称和账户名称。');
   if (process.platform !== 'darwin') throw new ConfigError('系统钥匙串凭据引用仅支持 macOS。');
   try {
     if (!runtime) throw new Error('unbound runtime');
-    const response = await runDirectProcess({ runtime, binary: 'security', args: ['find-generic-password', '-s', service, '-a', account, '-w'],
-      cwd: '/', signal: new AbortController().signal, timeoutMs: 15_000, maxOutputBytes: 8192,
-      assertAuthorized: () => { runtime.path('security'); } });
+    const response = await runDirectProcess({ runtime, binary: 'security', binaryPath: task?.binaryPath, args: ['find-generic-password', '-s', service, '-a', account, '-w'],
+      cwd: '/', signal: task?.signal ?? new AbortController().signal, timeoutMs: 15_000, maxOutputBytes: 8192,
+      onHeartbeat: task?.assertAuthorized,
+      assertAuthorized: () => { runtime.path('security'); task?.assertAuthorized?.(); } });
+    task?.signal?.throwIfAborted();
+    task?.assertAuthorized?.();
     // security -w 在值后写入一个 LF。严格格式的调用方需要核对值自身的所有字符。
     const key = format === 'exact' ? response.stdout.replace(/\n$/u, '') : response.stdout.trim();
     if (!key || key.length > 4096 || /[\u0000-\u001f\u007f\ufffd]/u.test(key)) throw new Error('invalid key');
     return key;
-  } catch { throw new ConfigError('无法读取指定的钥匙串凭据，请检查登记程序、所选项目和访问权限。'); }
-
+  } catch {
+    task?.signal?.throwIfAborted();
+    task?.assertAuthorized?.();
+    throw new ConfigError('无法读取指定的钥匙串凭据，请检查登记程序、所选项目和访问权限。');
+  }
 }
 
 export function parseCredentialReference(reference: unknown): CredentialReference {

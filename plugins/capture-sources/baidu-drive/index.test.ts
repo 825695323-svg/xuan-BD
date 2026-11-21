@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -11,7 +12,7 @@ import { FileReferenceService } from '../../../platform/resources/files.js';
 import { directoryCapability, fileCapability } from '../../../platform/runtime/file-workspace.js';
 import { DirectProcessError } from '../../../platform/runtime/process.js';
 import { ProcessRuntime } from '../../../platform/runtime/programs.js';
-import { PermissionService } from '../../../platform/security/permissions.js';
+import { digestOperationArgs, PermissionService, type PermissionCapability } from '../../../platform/security/permissions.js';
 import { CoreDatabase } from '../../../platform/state/database.js';
 import { createBaiduDriveActions, parseBaiduOutput, runBaiduSkillCommand, validateBaiduArgs } from './index.js';
 import { BAIDU_DRIVE_SKILL } from './skill-snapshot.js';
@@ -38,7 +39,8 @@ test('share action fields reject plaintext, ambiguous URLs, unsafe subdirectorie
       assert.throws(() => validateBaiduArgs({ ...action, shareUrl: shareUrl + suffix }));
     assert.throws(() => validateBaiduArgs({ ...action, passcode: randomBytes(5).toString('hex') }), { code: 'BAIDU_ARGS_INVALID' });
   }
-  const invalidActions: Record<string, JsonValue>[] = [{ ...select, sourceDir }, { ...list, path: sourceDir }, { operation: 'ls', path: destination, passcodeRef }];
+  assert.equal(validateBaiduArgs({ ...list, path: sourceDir }), 'transfer-list');
+  const invalidActions: Record<string, JsonValue>[] = [{ ...select, sourceDir }, { ...list, path: sourceDir, sourceDir }, { operation: 'ls', path: destination, passcodeRef }];
   for (const args of invalidActions)
     assert.throws(() => validateBaiduArgs(args));
 });
@@ -70,6 +72,11 @@ if(command==='transfer'){
 else if(command==='download'&&index<0){fs.writeFileSync(args[1],c.body,{flag:'wx'});console.log(JSON.stringify({status:'completed'}));}
 else throw Error('unregistered command');
 `, { mode: 0o700 });
+  const securityPath = join(root, 'fixture-security'), started = join(root, 'keychain-read-started');
+  writeFileSync(securityPath, `#!${process.execPath}
+require('node:fs').writeFileSync(${JSON.stringify(started)}, 'started');
+setTimeout(() => process.exit(2), 15000);`, { mode: 0o700 });
+  resources.security = { kind: 'program', path: securityPath };
   writeFileSync(join(root, '.xuan-runtime.json'), JSON.stringify({ version: 1, application: 'xuan-bd', identity: 'offline' }));
   writeFileSync(join(root, 'config/machine.bindings.json'), JSON.stringify({ version: 1, revision: 1, runtimeIdentity: 'offline', resources }));
   const runtime = new ProcessRuntime(new ResourceBindings(root));
@@ -90,7 +97,7 @@ else throw Error('unregistered command');
   runtimes.register({ id: 'direct', execute: context => actions.execute(context, context.task.args as Record<string, JsonValue>) });
   const credential = (value: string) => writeFileSync(credentialPath, JSON.stringify({ refs: { FIXTURE_SHARE: value } }), { mode: 0o600 });
   credential(secret);
-  return { actions, files, secret, configuration, runtime, root, credential, tasks,
+  return { actions, files, secret, configuration, runtime, root, credential, tasks, securityPath, started,
     async run(args: Record<string, JsonValue>, config: Record<string, unknown> = {}) {
       writeFileSync(configPath, JSON.stringify({ hash: hash(secret), protected: !!args.passcodeRef, sourceDir: args.sourceDir ?? null,
         transfer: '{}', list: '[]', ...config }), { mode: 0o600 });
@@ -133,6 +140,52 @@ test('private share list authorizes its exact reference, passes source-dir and r
       assert.ok(!f.tasks.events(unset.id).some(ev => ev.type === 'SIDE_EFFECT_STARTED'));
     }
     assert.equal((await f.run({ ...list, passcodeRef: 'missing' })).error?.code, 'BAIDU_PASSCODE_UNAVAILABLE');
+  } finally { await f.close(); }
+});
+
+test('automatic permission policy requires the exact share secret even when another reference is granted', () => {
+  const database = new CoreDatabase();
+  try {
+    const permissions = new PermissionService({ database, isRunActive: () => true });
+    const secret = (ref: string): PermissionCapability => ({ action: 'secret', target: { kind: 'secret', name: 'baidu-drive.share-passcode.' + ref } });
+    const requested = secret('selected');
+    const operation = { approvalMode: 'automatic' as const, operationId: 'model.baidu.drive.transfer-list', operationVersion: 1,
+      runId: 'synthetic-run', attemptId: 'synthetic-attempt', generation: 1, argsDigest: digestOperationArgs({ passcodeRef: 'selected' }),
+      targets: [requested.target] };
+    permissions.grant({ capabilities: [secret('different')] });
+    assert.throws(() => permissions.assertAuthorized(operation, [requested]), { code: 'APPROVAL_REQUIRED' });
+    const grant = permissions.grant({ capabilities: [requested] });
+    assert.deepEqual(permissions.assertAuthorized(operation, [requested]).grantIds, [grant.id]);
+  } finally { database.close(); }
+});
+
+test('keychain share lookup requires execute on the selected security binary and cancels the running lookup', {
+  skip: process.platform !== 'darwin' && '系统钥匙串执行链仅在 macOS 可用', timeout: 10_000,
+}, async () => {
+  const f = fixture();
+  try {
+    const ref = 'keychain-slot';
+    const actions = createBaiduDriveActions({ files: f.files, artifactRoot: join(f.root, 'artifacts'), processRuntime: f.runtime,
+      configuration: { ...f.configuration, sharePasscodeRefs: { [ref]: { kind: 'keychain', service: 'fixture', account: 'fixture' } } }, assertPath() {} });
+    // Fixture program only, no system keychain access. The selected client configuration must exist.
+    writeFileSync(f.configuration.configPath, '{}');
+    const stop = new AbortController(), args = { ...list, passcodeRef: ref };
+    let checks = 0, deny = true;
+    const context = { signal: stop.signal, assertAuthorized(_operation: unknown, capabilities: PermissionCapability[]) {
+      checks++;
+      assert.ok(capabilities.some(c => c.action === 'execute' && c.target.kind === 'file' && c.target.path === f.securityPath));
+      assert.ok(capabilities.some(c => c.action === 'secret' && c.target.kind === 'secret' && c.target.name === 'baidu-drive.share-passcode.' + ref));
+      if (deny) throw new TaskError('POLICY_DENIED', '合成执行授权拒绝。');
+    } } as unknown as Parameters<typeof actions.execute>[0];
+    await assert.rejects(actions.execute(context, args), { code: 'POLICY_DENIED' });
+    assert.equal(existsSync(f.started), false);
+    deny = false; checks = 0;
+    const pending = actions.execute(context, args);
+    try {
+      for (let i = 0; i < 200 && !existsSync(f.started); i++) await delay(10);
+      assert.ok(existsSync(f.started)); assert.ok(checks >= 4, '派发前和程序启动时均须复核任务授权');
+    } finally { stop.abort(); }
+    await assert.rejects(pending, { name: 'AbortError' });
   } finally { await f.close(); }
 });
 
