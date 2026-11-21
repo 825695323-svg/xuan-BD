@@ -8,7 +8,7 @@ import { acceptWorkspaceMaterial } from '../../modules/collection/accept-materia
 import { mediaPacketDigest } from '../../modules/collection/data-processing/ocr-claim.js';
 import { segmentsFromConversionArtifact } from '../../modules/collection/segments/from-conversion.js';
 import { zipOfficeParts } from '../../platform/capabilities/conversion/office-test-support.js';
-import { openMediaReviewHost } from './media-review-test-support.js';
+import { openMediaReviewCompanion } from './media-review-test-support.js';
 import { createFullChainFixture, settleFixtureTask as settled } from './full-chain-test-support.js';
 import { readRetrievalEvidence } from './retrieval-evidence.js';
 
@@ -40,7 +40,7 @@ function pptx() {
 }
 async function host() {
   const f = createFullChainFixture({ name: 'native-segments', parentRoot: process.env.XUAN_TEST_ROOT ?? tmpdir() });
-  const h = await openMediaReviewHost(f, false), services = h.companion;
+  const h = openMediaReviewCompanion(f), services = h.companion;
   services.permissions.grant({ label: 'isolated conversion artifacts', scope: { kind: 'persistent' },
     capabilities: (['read', 'write', 'delete'] as const).map(action => ({ action, target: { kind: 'directory', path: services.artifactRoot, recursive: true } })) });
   return { root: f.root, services, segments: services.segments!, close: () => h.close(), async intake(bytes: Buffer, name: string) {

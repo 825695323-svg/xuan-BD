@@ -74,6 +74,21 @@ export async function readKeychainCredential(service: string, account: string, r
 
 }
 
+export function parseCredentialReference(reference: unknown): CredentialReference {
+  if (record(reference)) {
+    if (reference.kind === 'dsh-ref' && onlyKeys(reference, ['kind', 'path', 'ref'])
+      && typeof reference.path === 'string' && reference.path.trim()
+      && typeof reference.ref === 'string' && /^[A-Z][A-Z0-9_]{0,127}$/u.test(reference.ref)) {
+      return { kind: 'dsh-ref', path: reference.path, ref: reference.ref };
+    }
+    if (reference.kind === 'keychain' && onlyKeys(reference, ['kind', 'service', 'account'])
+      && keychainAttribute(reference.service) && keychainAttribute(reference.account)) {
+      return { kind: 'keychain', service: reference.service, account: reference.account };
+    }
+  }
+  throw new ConfigError('凭据配置须为指定 DSH 引用或明确的系统钥匙串服务与账户，不接受明文密钥。');
+}
+
 export function parseModelConfiguration(value: unknown): ModelConfiguration {
   if (!record(value) || !onlyKeys(value, ['provider', 'model', 'customModel', 'credential', 'defaultThinkingLevel'])
     || typeof value.provider !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(value.provider)
@@ -97,16 +112,7 @@ export function parseModelConfiguration(value: unknown): ModelConfiguration {
     || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
     throw new ConfigError('模型服务地址须使用 HTTPS，或明确的 127.0.0.1 HTTP 端口，且不能包含凭据、查询参数或片段。');
   }
-  const reference = value.credential;
-  let credential: CredentialReference;
-  if (reference.kind === 'dsh-ref' && onlyKeys(reference, ['kind', 'path', 'ref'])
-    && typeof reference.path === 'string' && reference.path.trim()
-    && typeof reference.ref === 'string' && /^[A-Z][A-Z0-9_]{0,127}$/.test(reference.ref)) {
-    credential = { kind: 'dsh-ref', path: reference.path, ref: reference.ref };
-  } else if (reference.kind === 'keychain' && onlyKeys(reference, ['kind', 'service', 'account'])
-    && keychainAttribute(reference.service) && keychainAttribute(reference.account)) {
-    credential = { kind: 'keychain', service: reference.service, account: reference.account };
-  } else throw new ConfigError('凭据配置须为指定 DSH 引用或明确的系统钥匙串服务与账户，不接受明文密钥。');
+  const credential = parseCredentialReference(value.credential);
   const defaultThinkingLevel = value.defaultThinkingLevel ?? 'off';
   if (!['off', 'low', 'high', 'max'].includes(String(defaultThinkingLevel))) throw new ConfigError('默认思考档位无效，请选择关闭、低、高或最高。');
   const parsed: ModelConfiguration = {

@@ -1,6 +1,10 @@
 import { DirectError } from '../../../platform/runtime/file-workspace.js';
 
 export const CLOUD_ROOT = '/apps/bdpan';
+export function isBaiduPasscodeRefName(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/u.test(value)
+    && value !== 'prototype' && !Object.hasOwn(Object.prototype, value);
+}
 export function isBaiduPath(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith('/') && value.length <= 2048 && !/[\u0000-\u001f\u007f\\]/u.test(value)
     && !value.split('/').some(part => part === '..' || part === '.' || part === '~');

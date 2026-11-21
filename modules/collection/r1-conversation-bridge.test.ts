@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readModelEvidencePreview } from '../../apps/server/full-chain-test-support.js';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -198,11 +199,11 @@ function callTask(h: Host, input: BackendInput, toolCallId: string): TaskRecord 
 }
 async function invoke(h: Host, input: BackendInput, action: string, args: Record<string, unknown> = {},
   toolCallId = 'r1-call-' + (++traceSequence)) {
-  const { perform } = toolsFor(h, input);
+  const { tools, perform } = toolsFor(h, input);
   const tracePath = join(h.root, `tool-${String(++traceSequence).padStart(4, '0')}-${toolCallId}.json`);
   try {
     const raw = await perform.execute(toolCallId, { action, args }, undefined, undefined, unusedPiContext);
-    const preview = resultValue(raw);
+    const preview = await readModelEvidencePreview(resultValue(raw), tools.find(tool => tool.name === 'core_evidence_read')!, toolCallId);
     json(tracePath, { toolCallId, action, args, preview, details: raw.details });
     return { preview, raw, toolCallId };
   } catch (error) {

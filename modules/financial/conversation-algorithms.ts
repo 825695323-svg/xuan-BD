@@ -27,6 +27,15 @@ const text = (key: string, label: string, maxLength = 160, required = true): Ski
   ({ key, label, type: 'text', required, maxLength });
 const view = (value: unknown): Record<string, JsonValue> => ({ kind: 'conversation-algorithm', modelPreview: json(value) });
 
+/** 执行与 Direct 版本捕获从同一份封闭请求确定方法。 */
+export function parseConversationCalculation(value: unknown) {
+  let calculation: unknown;
+  try { calculation = JSON.parse(String(value)); }
+  catch { throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求不是有效JSON。'); }
+  if (!isWfdRecord(calculation)) throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求必须是对象。');
+  return calculation;
+}
+
 function previewSource(source: JsonValue) {
   if (!isWfdRecord(source) || !isWfdRecord(source.resolution)) return source;
   const resolution = source.resolution, history = isWfdRecord(resolution.historicalRead) ? resolution.historicalRead : {};
@@ -207,21 +216,7 @@ export class ConversationAlgorithmBridge {
       permissionSummary: ['只读取固定算法目录及真实 WFD 快照能力；工具本身不能授予程序执行器权限',
         '执行按冻结规则和实际执行器核验',
         '纯 TS 算子独立核验后保留本地回执，正式发布需要显式 R1 交接'],
-      available: () => {
-        const hasAlgorithms = !!options.companion.algorithms;
-        const publishAvailable = hasAlgorithms && !!options.companion.derivedPublisher;
-        const enabled = options.companion.productionModuleSwitches?.calculate !== false;
-        const canCalculate = () => (frozenAlgorithmCapabilities(INTERNAL_AGENT_RULES.version).pureOperators && !!fixedWfdBinding(options.companion.r1Workspace))
-          || publishAvailable && options.companion.algorithms?.catalog?.().status === 'available';
-        const available = action === 'algorithms.screen' ? enabled && !!fixedWfdBinding(options.companion.r1Workspace)
-          : action === 'data.modules.calculate' || action === 'algorithms.calculate' ? enabled && canCalculate()
-            : action === 'algorithms.publish' ? publishAvailable : true;
-        return { available, ...(!available
-          ? { reason: action === 'algorithms.screen' ? !enabled ? '计算模块已停用。' : '受信 WFD 固定读取未装配。'
-            : !enabled && (action === 'data.modules.calculate' || action === 'algorithms.calculate') ? '计算模块已停用。'
-            : action === 'bd.session.capabilities'
-            ? '清洗和计算工具均未装配。' : '计算服务或 WFD 固定输入/发布端口未就绪；只读目录或历史状态仍可单独查询。' } : {}) };
-      },
+      available: () => this.availabilityForRules(action, INTERNAL_AGENT_RULES.version),
     });
     this.registrations = [
       registration('bd.session.capabilities', '查看 BD AGENTS 统一会话工具契约',
@@ -253,6 +248,24 @@ export class ConversationAlgorithmBridge {
         ]),
     ];
   }
+  availabilityForRules(action: string, rulesVersion?: number) {
+    const { companion } = this.options;
+    const publishes = !!companion.algorithms && !!companion.derivedPublisher;
+    const enabled = companion.productionModuleSwitches?.calculate !== false;
+    if (action === 'algorithms.publish') return publishes ? { available: true }
+      : { available: false, reason: '计算服务或 WFD 发布端口未就绪。' };
+    if (action === 'algorithms.screen' || action === 'algorithms.calculate' || action === 'data.modules.calculate') {
+      if (!enabled) return { available: false, reason: '计算模块已停用。' };
+      const rules = frozenAlgorithmCapabilities(rulesVersion);
+      const fixed = !!fixedWfdBinding(companion.r1Workspace);
+      if (action === 'algorithms.screen') return rules.screen && fixed ? { available: true }
+        : { available: false, reason: '当前规则或 WFD 固定读取未就绪。' };
+      if (!(rules.pureOperators && fixed) && !(rules.methods.length && publishes && companion.algorithms?.catalog?.().status === 'available'))
+        return { available: false, reason: '当前规则可用的计算服务或 WFD 端口未就绪。' };
+    }
+    return { available: true };
+  }
+
   handles(action: string): boolean { return ACTIONS.has(action); }
   async execute(context: TaskExecutionContext): Promise<TaskResult> {
     const action = context.task.action, args = context.task.args as Record<string, JsonValue>;
@@ -356,10 +369,7 @@ export class ConversationAlgorithmBridge {
           historicalExclusions: json(historicalExclusions), ...(purposeContext ? { purposeContext: json(purposeContext) } : {}) } };
     }
     if (action === 'algorithms.calculate' || action === 'data.modules.calculate') {
-      let calculation: unknown;
-      try { calculation = JSON.parse(String(args.calculationJson)); }
-      catch { throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求不是有效JSON。'); }
-      if (!isWfdRecord(calculation)) throw new TaskError('ALGORITHM_CALCULATION_JSON', '算法计算请求必须是对象。');
+      const calculation = parseConversationCalculation(args.calculationJson);
       if (frozenAlgorithmCapabilities(rulesVersion).allFactorDefinitions && !isAlgorithmMethodId(calculation.methodId) && !isPureOperatorId(calculation.methodId))
         throw new TaskError('INVALID_ALGORITHM_METHOD', '计算仅接受已登记的方法。');
       this.assertMethodAllowed(calculation.methodId, rulesVersion);

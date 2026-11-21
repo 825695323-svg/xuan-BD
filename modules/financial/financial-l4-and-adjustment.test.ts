@@ -13,29 +13,20 @@ import type { ModelTaskOrigin } from '../agent/model-tools.js';
 import { R1ProductReader } from '../collection/r1-product-reader.js';
 import { createR1HandoffRuntime, type R1Runtime } from '../collection/r1-runtime.js';
 import { createFullChainFixture } from '../../apps/server/full-chain-test-support.js';
-import { buildStructuredIngestDocument } from '../collection/r1-structured-handoff.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { ConversationAlgorithmBridge } from './conversation-algorithms.js';
 import { verifyPureOperator, type PureOperatorInput } from './pure-operator-verification.js';
-import { pureOperatorDefinition, actionRoles } from './algorithm-pure-operators.js';
 import { factorLibraryView } from '../collection/production-module-ports.js';
 import { ALGORITHM_DEFINITIONS } from './algorithm-definitions.js';
 import { ALGORITHM_REGISTRY } from './algorithm-registry.js';
-import { ALGORITHM_METHOD_IDS, PURE_OPERATOR_IDS, type PureOperatorId, type AlgorithmCatalogView } from './algorithm-types.js';
+import { ALGORITHM_METHOD_IDS, PURE_OPERATOR_IDS, type AlgorithmCatalogView } from './algorithm-types.js';
 import { algorithmAllowedByRules, basicAlgorithmToolContract, frozenAlgorithmCapabilities } from './basic-algorithm-tool-contract.js';
 import { computeFinancialGrowth, computeFinancialRatios, computeFinancialSingleQuarter, computeFinancialTtm,
   type FinancialObservation } from './financial-l4-operators.js';
-import { computeAdjustedMarketSeries, type MarketAdjustmentInput } from './market-adjustment-contract.js';
+import { computeAdjustedMarketSeries } from './market-adjustment-contract.js';
+import { basis, observation, bars, marketInput, fixedSnapshot, revision, cutoff, ratioRow, sourceRows, products, calculation, fields, cell,
+  pureFixtureUnits, seedPureOperatorProducts, discoveredPureReference } from './pure-operator-test-support.js';
 import { ToolLibraryService } from './tool-library.js';
-
-// All financial amounts, OHLC and action terms below are synthetic test inputs.
-const basis = { subject: 'synthetic_issuer', accounting_standard: 'CAS', currency: 'CNY', scope: 'consolidated',
-  comparability_basis: 'synthetic_reviewed_revision', unit: 'cny', fiscalCalendar: 'synthetic_calendar' };
-
-function observation(fiscalYear: number, period: FinancialObservation['period'], value: FinancialObservation['value']): FinancialObservation {
-  return { ...basis, concept: 'revenue', fiscalYear, period, periodType: 'duration', additive: true, value,
-    sourceRef: `synthetic/${fiscalYear}/${period}` };
-}
 
 test('累计转单季及 TTM 按相容期间精确计算并保留源观测', () => {
   const q1 = observation(2025, 'Q1_YTD', '10000000000000000.000000000000000001');
@@ -120,22 +111,6 @@ test('比率、杜邦和 CCC 保留分项，缺项和零分母各有诊断', () 
   assert.ok(partial.diagnostics.some(item => item.output === 'freeCashFlow' && item.fields.includes('capex')));
 });
 
-const bars = [
-  { date: '2026-03-02', open: 100, high: 120, low: 80, close: '100.00' },
-  { date: '2026-03-03', open: 40, high: 48, low: 32, close: 40 },
-  { date: '2026-03-04', open: 20, high: 24, low: 16, close: 20 },
-];
-const confirmed = { claimStatus: 'confirmed', effectiveStatus: 'effective', effectiveDate: bars[1].date };
-const marketInput: MarketAdjustmentInput = {
-  direction: 'forward_qfq', anchorDate: bars[2].date, adjustment: 'none', frequency: '1d', bars,
-  actions: [
-    { ...confirmed, id: 'cash', kind: 'cash_dividend', cashPerShare: 20 },
-    { ...confirmed, id: 'stock', kind: 'stock_dividend', sharesPerShare: '0.25' },
-    { ...confirmed, id: 'capital', kind: 'capitalization', sharesPerShare: '0.75' },
-    { ...confirmed, effectiveDate: bars[2].date, id: 'split', kind: 'split', splitRatio: 2 },
-  ],
-};
-
 test('前后复权按各自锚点归一，四种行动因子可核对且原价完整保留', () => {
   const forward = computeAdjustedMarketSeries({ ...marketInput, bars: [...bars].reverse() });
   const backward = computeAdjustedMarketSeries({ ...marketInput, direction: 'backward_hfq', anchorDate: bars[0].date });
@@ -216,46 +191,6 @@ test('统一登记表、定义和两个目录包含新增五个因子，纯算�
   const detached = new ToolLibraryService().view().tools;
   assert.ok(detached.every(item => item.status === 'unavailable'));
 });
-
-const fixedSnapshot = 's_synthetic_l4', revision = 'v1', cutoff = '2026-05-02T00:00:00Z';
-const ratioRow = { ...basis, periodRef: 'synthetic/2026/FY', revenue: '7', costOfRevenue: '2', netProfit: '5',
-  averageAssets: '13', averageEquity: '3', currentAssets: '8', currentLiabilities: '3', averageReceivables: '2',
-  averageInventory: '1', averagePayables: '1', periodDays: '365', cfo: '6', capex: '1' };
-const sourceRows: Record<string, WfdRecord[]> = {
-  single: [observation(2025, 'H1', '9.900000000000000008'), observation(2025, 'Q1_YTD', '2.900000000000000001')].map(r => ({ ...r })),
-  ttm: [observation(2025, 'FY', '8'), observation(2026, 'H1', '6'), observation(2025, 'H1', '5')].map(r => ({ ...r })),
-  growth: [observation(2025, 'Q1', '2'), observation(2026, 'Q1', '3')].map(r => ({ ...r })),
-  ratios: [ratioRow], bars: bars.map(r => ({ ...r, subject: basis.subject, currency: basis.currency, adjustment: 'none', frequency: '1d' })),
-  actions: marketInput.actions.map(r => ({ ...r, subject: basis.subject, currency: basis.currency })),
-};
-const products: Record<PureOperatorId, string> = { financial_single_quarter: 'single', financial_ttm: 'ttm',
-  financial_growth: 'growth', financial_ratios: 'ratios', price_adjustment: 'bars' };
-function calculation(id: PureOperatorId, history: WfdRecord = {}) {
-  const ref = (productId: string) => ({ snapshotId: fixedSnapshot, definitionRevision: revision, productId });
-  return { methodId: id, parameters: id === 'financial_growth' ? { comparison: 'yoy' } : id === 'price_adjustment'
-    ? { direction: 'forward_qfq', anchorDate: bars[2].date } : {},
-    source: { kind: 'fixed_snapshot', reference: { ...ref(products[id]), ...history },
-      ...(id === 'price_adjustment' ? { actionReference: ref('actions') } : {}) },
-    ...(history.perspective ? { usage: { purpose: 'historical_compute', historyMode: history.perspective, cutoff: history.at } } : {}) };
-}
-
-const fields = (product: string) => {
-  const id = PURE_OPERATOR_IDS.find(method => products[method] === product);
-  const roles = id ? pureOperatorDefinition(id).fields : actionRoles;
-  return [...roles.required, ...roles.optional];
-};
-function cell(row: WfdRecord, field: string) {
-  const value = row[field] ?? null;
-  const type = field === 'additive' ? 'boolean' : field === 'fiscalYear' ? 'integer'
-    : ['value', 'open', 'high', 'low', 'close', 'cashPerShare', 'sharesPerShare', 'splitRatio',
-      ...pureOperatorDefinition('financial_ratios').fields.optional].includes(field) ? 'decimal' : 'text';
-  const price = ['open', 'high', 'low', 'close', 'cashPerShare'].includes(field);
-  const unit = type !== 'decimal' ? type : price ? 'cny_per_share' : field === 'periodDays' ? 'day'
-    : ['sharesPerShare', 'splitRatio'].includes(field) ? 'ratio' : row.unit as string;
-  return { data_type: type, unit: { unit_code: unit, resolved: true },
-    value: value != null && ['decimal', 'integer'].includes(type) ? String(value) : value,
-    value_state: value == null ? 'not_reported' : 'valid_value' };
-}
 
 function fixture() {
   const root = mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'synthetic-pure-'));
@@ -501,45 +436,16 @@ test('隔离 WFD 正式存储的六个合成产品经 discoverProducts/readProdu
   skip: !(process.env.WFD_PYTHON && process.env.XUAN_FULL_CHAIN_ROOT) && '需要显式 WFD 解释器和隔离测试根', timeout: 120_000,
 }, async () => {
   const host = createFullChainFixture({ name: 'pure-fixed-products', machine: true,
-    units: { text: { dimension: 'text' }, integer: { dimension: 'quantity' }, boolean: { dimension: 'boolean' }, cny: { dimension: 'money' },
-      cny_per_share: { dimension: 'money_per_share' }, day: { dimension: 'quantity' }, ratio: { dimension: 'ratio' } } });
+    units: pureFixtureUnits });
   const f = fixture(), db = new CoreDatabase();
   try {
     const runtime = createR1HandoffRuntime({ database: db, resources: new ResourceBindings(host.runtime), connectionId: 'full-chain-test' });
     const reader = new R1ProductReader({ runtime: () => runtime, control: () => ({ stopped: false, generation: 1 }) });
     f.companion.r1Workspace = { capabilities: () => ({ connection: runtime.currentIdentity() }), readBinding: () => runtime.currentReadBinding(),
       readProduct: reader.readProduct.bind(reader), discoverProducts: reader.discoverProducts.bind(reader) } as unknown as typeof f.companion.r1Workspace;
-    const day = { status: 'known', precision: 'day', source_timezone: 'UTC', earliest_utc: '2026-05-01T00:00:00Z', latest_exclusive_utc: cutoff };
-    const namespace = 'full.chain.test', subject = { kind: 'entity', namespace, id: basis.subject };
-    const wfdField = (name: string) => 'l4_' + name.replace(/[A-Z]/gu, c => '_' + c.toLowerCase());
-    let snapshotId: string | null = null;
-    for (const [key, source] of Object.entries(sourceRows)) {
-      const roles = fields(key);
-      const rows = source.map((row, i) => ({ business_key: key + '-' + i, subject, observation_time: day, public_time: day,
-        values: Object.fromEntries(roles.map(field => { const { unit: _u, ...wire } = cell(row, field); return [wfdField(field), wire]; })) }));
-      const seed = buildStructuredIngestDocument({ requestId: 'synthetic-pure-' + key, datasetId: 'synthetic_pure_' + key, namespace,
-        producerNamespace: namespace, submissionDigest: 'sha256:' + wfdSha256(canonicalWfdJson(rows)), expectedParentSnapshotId: snapshotId,
-        outputKey: key, subject, inputMode: 'partial_observation', definitionPublicTime: day,
-        definition: { semantic_code: 'synthetic.pure.' + key, measurement_nature: 'mixed_observation', unit_code: 'per_field',
-          definition_authority: namespace, time_role: 'observation', semantic_context: { version: 'wfd.semantic-context/1.0',
-            content_nature: 'observed_fact', time: { period_type: 'natural', interval: 'half_open', timezone: 'UTC' } },
-          field_definitions: roles.map(field => { const c = cell(source[0], field);
-            return { field_code: wfdField(field), data_type: c.data_type, unit_code: c.unit.unit_code,
-              measurement_nature: c.data_type === 'decimal' ? 'stock' : 'relation', time_role: 'observation' }; }) },
-        coverage: { scope: { synthetic: true }, basis: 'observed_partial', completeness: 'partial', absence_means: 'unknown' },
-        payload: { kind: 'tabular_rows', rows } });
-      const { result } = await runtime.client.submit(seed);
-      assert.equal(result.state, 'published_formal', JSON.stringify({ key, outputs: result.output_results, errors: result.errors }));
-      snapshotId = String(result.snapshot_id);
-    }
-    assert.ok(snapshotId);
+    const snapshotId = await seedPureOperatorProducts(runtime);
     const directory = (await f.invoke('algorithms.capabilities', { snapshotId })).snapshotDiscovery;
-    const actualRef = (key: string) => {
-      const entry = directory.products.find((product: any) => product.datasetId === 'synthetic_pure_' + key);
-      assert.ok(entry); assert.ok(entry.fields.some((field: any) => field.fieldCode === 'l4_subject'));
-      return { snapshotId, productId: entry.productId, definitionRevision: entry.definitionRef.version,
-        fieldMapping: Object.fromEntries(fields(key).map(name => [name, wfdField(name)])) };
-    };
+    const actualRef = (key: string) => discoveredPureReference(directory, snapshotId, key);
     for (const id of PURE_OPERATOR_IDS) {
       const request = calculation(id);
       const status = await f.run({ ...request, source: { kind: 'fixed_snapshot', reference: actualRef(products[id]),

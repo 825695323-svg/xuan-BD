@@ -125,6 +125,16 @@ export class ConversationRetrievalBridge {
   }
   handles(action: string): boolean { return this.registrations.some(item => item.action === action); }
 
+  /** 缓存预览与保管证据复用原任务的资料代次，撤权后不能通过续页取回旧内容。 */
+  assertResultAccess(data: unknown): void {
+    const lifecycle = this.options.companion.localData;
+    if (!isWfdRecord(data) || data.kind !== 'conversation-retrieval'
+      || (lifecycle ? typeof data.accessGeneration !== 'number' : data.accessGeneration !== null)) {
+      return fail('MODEL_SHARE_REVOKED', '原检索结果的本地资料资格已变化。');
+    }
+    if (lifecycle) lifecycle.assertPrivateAccess(Number(data.accessGeneration));
+  }
+
   async execute(context: TaskExecutionContext, action = context.task.action, args = context.task.args): Promise<TaskResult> {
     try { return await this.read(context, action, args); }
     catch (error) {
@@ -207,7 +217,7 @@ export class ConversationRetrievalBridge {
       default: return invalid();
     }
     assert();
-    return { summary: registration.title, data: { kind: 'conversation-retrieval',
+    return { summary: registration.title, data: { kind: 'conversation-retrieval', accessGeneration: generation ?? null,
       modelPreview: modelPreview({ versionBinding: this.versionBinding, ...result }) } };
   }
 }

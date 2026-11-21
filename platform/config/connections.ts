@@ -2,6 +2,8 @@ import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { ConfigError } from '../runtime/errors.js';
 import type { BaiduDriveConfiguration } from '../../plugins/capture-sources/baidu-drive/index.js';
+import { isBaiduPasscodeRefName } from '../../plugins/capture-sources/baidu-drive/contract.js';
+import { parseCredentialReference } from './model.js';
 
 export interface LocalConnectionRegistry {
   path: string;
@@ -52,5 +54,17 @@ export function registeredBaiduDriveConfiguration(registry: LocalConnectionRegis
     || !isAbsolute(credential.config_path) || !existsSync(credential.config_path)) return undefined;
   const tokenKeyPath = typeof credential.key_path === 'string' && isAbsolute(credential.key_path) ? credential.key_path : undefined;
   if (credential.key_path !== undefined && (!tokenKeyPath || !existsSync(tokenKeyPath))) return undefined;
-  return { binaryPath, configPath: credential.config_path, ...(tokenKeyPath && existsSync(tokenKeyPath) ? { tokenKeyPath } : {}) };
+  const configuration: BaiduDriveConfiguration = { binaryPath, configPath: credential.config_path, ...(tokenKeyPath ? { tokenKeyPath } : {}) };
+  const refs = connection.share_passcode_refs;
+  if (refs === undefined) return configuration;
+  if (!object(refs)) throw new ConfigError('网盘分享凭据登记须为引用名与安全定位的映射。');
+  const sharePasscodeRefs = Object.fromEntries(Object.entries(refs).map(([name, value]) => {
+    if (!isBaiduPasscodeRefName(name)) throw new ConfigError('网盘分享凭据引用名无效。');
+    const locator = parseCredentialReference(value);
+    if (locator.kind === 'dsh-ref' && (!isAbsolute(locator.path) || /[\u0000-\u001f\u007f]/u.test(locator.path))) {
+      throw new ConfigError('网盘分享凭据须登记有效的绝对路径。');
+    }
+    return [name, locator] as const;
+  }));
+  return { ...configuration, sharePasscodeRefs };
 }

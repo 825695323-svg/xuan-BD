@@ -239,7 +239,8 @@ export class SegmentService {
   }
 
   capabilities(): JsonValue {
-    return { schema: SEGMENT_RETRIEVAL_SCHEMA, tokenizer: SEGMENT_TOKENIZER,
+    const ocrReviewReaderWired = !!this.ocrReader;
+    return { schema: SEGMENT_RETRIEVAL_SCHEMA, tokenizer: SEGMENT_TOKENIZER, ocrReviewReaderWired,
       // 出站只报文件名：本机绝对路径不随能力描述外发（4.3 §四）。
       databaseFile: this.options.databasePath.split('/').pop() ?? 'segments.sqlite',
       segmentableArtifactTypes: [...SEGMENTABLE_ARTIFACT_TYPES],
@@ -254,7 +255,7 @@ export class SegmentService {
         reason: this.jointEntry ? '联合入口按已核对的WFD记录/版本关联材料；独立文档结果保持bd.doc-retrieval/2。'
           : '当前实例未装配联合入口。' },
       permissionScope: { wired: false, reason: '本地材料没有逐文档权限模型；4.3 §8.5 的“权限收紧”状态本轮不可产生。' },
-      ocr: { wired: true, packetSchema: OCR_PACKET_SCHEMA, reviewReaderWired: !!this.ocrReader,
+      ocr: { wired: true, packetSchema: OCR_PACKET_SCHEMA, reviewReaderWired: ocrReviewReaderWired,
         runnerAvailable: this.ocrRunner?.().available ?? null, automaticRecognition: false,
         reason: '已支持核对包片段入库。运行器可用性由宿主报告，未报告时为 null。' } } as unknown as JsonValue;
   }

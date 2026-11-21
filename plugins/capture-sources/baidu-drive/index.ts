@@ -10,7 +10,7 @@ import type { JsonValue, TaskResult } from '../../../contracts/task-contracts.js
 import { acquireAuthority, DirectError, DirectWorkspace, directoryCapability, fileCapability, prepareDestination } from '../../../platform/runtime/file-workspace.js';
 import { DirectProcessError, runDirectProcess } from '../../../platform/runtime/process.js';
 import { readDshCredential, readKeychainCredential, type CredentialReference } from '../../../platform/config/model.js';
-import { baiduReturnMarkdown, baiduReturnUrl, CLOUD_ROOT, isBaiduPath, redactBaiduText } from './contract.js';
+import { baiduReturnMarkdown, baiduReturnUrl, CLOUD_ROOT, isBaiduPasscodeRefName, isBaiduPath, redactBaiduText } from './contract.js';
 export { redactBaiduText } from './contract.js';
 
 /** 受信宿主绑定；参数不能选择程序、账号、脚本或任意命令。 */
@@ -39,7 +39,7 @@ export function validateBaiduArgs(args: Args): Operation {
   if (!OPERATIONS.includes(operation) || Object.keys(args).some(key => key !== 'operation' && !KEYS[operation].includes(key))) invalid();
   if (['ls', 'download', 'upload', 'transfer-select'].includes(operation)) remotePath(args.path);
   if (args.sourceDir !== undefined) remotePath(args.sourceDir, false);
-  if (args.passcodeRef !== undefined && (typeof args.passcodeRef !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/u.test(args.passcodeRef))) invalid();
+  if (args.passcodeRef !== undefined && !isBaiduPasscodeRefName(args.passcodeRef)) invalid();
   if (operation === 'upload' && (typeof args.fileRefId !== 'string' || !args.fileRefId || /[\s/\\]/u.test(args.fileRefId))) invalid();
   if (operation === 'search' && (typeof args.query !== 'string' || !args.query.trim() || args.query.startsWith('-') || args.query.length > 1000)) invalid();
   if (operation.startsWith('transfer-')) shareUrl(args.shareUrl);

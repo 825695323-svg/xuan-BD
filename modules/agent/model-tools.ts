@@ -27,6 +27,7 @@ import { piTaskRequestId } from './runtime/pi-task-runtime.js';
 import type { BdService } from './service.js';
 import { mediaPluginCatalog, type MaterialMediaPluginDescriptor } from '../collection/materials/plugins.js';
 import { ALGORITHM_RULES_FALLBACK, SAFE_ALGORITHM_RULES_ERROR, isValidEligibilityCutoff, type ConversationAlgorithmBridge } from '../financial/conversation-algorithms.js';
+import type { ConversationRetrievalBridge } from '../collection/conversation-retrieval.js';
 import { algorithmActionAllowed } from '../financial/basic-algorithm-tool-contract.js';
 import { HISTORICAL_EXCLUSION_REASONS } from '../financial/historical-exclusions.js';
 import { BusinessGoalError, type BusinessGoalService } from '../../platform/jobs/business-goals.js';
@@ -53,7 +54,8 @@ const PERSONAL_TOOLS: Readonly<Record<string, string>> = Object.freeze({
 });
 const SKILL_OUTPUT_SCHEMA = Type.Object({ ok: Type.Literal(true), kind: Type.Union([Type.Literal('skill-catalogue'), Type.Literal('skill-text')]),
   data: Type.Object({}, { additionalProperties: true }), truncated: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
-const MODEL_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIONS, ...SOURCE_ACTIONS, 'source.register', 'file.read', 'file.glob', 'file.grep', 'file.write', 'file.edit', 'file.copy', 'file.move', 'media.convert', 'pdf.extract',
+const RETRIEVAL_ACTIONS = ['data.retrieval.capabilities', 'data.retrieval.documents', 'data.retrieval.search', 'data.retrieval.joint', 'data.retrieval.evidence'];
+const MODEL_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIONS, ...SOURCE_ACTIONS, ...RETRIEVAL_ACTIONS, 'source.register', 'file.read', 'file.glob', 'file.grep', 'file.write', 'file.edit', 'file.copy', 'file.move', 'media.convert', 'pdf.extract',
   'image.ocr', 'audio.transcribe', 'archive.extract', 'spotlight.search', 'web.read_public', 'web.search', 'video.transcribe_url',
   'material.read', 'material.process', 'material.ocr', 'material.transcribe',
   'baidu.drive', 'browser.control',
@@ -69,7 +71,7 @@ const MODEL_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIO
 ]);
 // 固定实现只读原件或生成新产物；其中的程序、暂存清理及观测回执仍属于同一受控动作。
 // 这里只分类已存在的工具，不改变其登记、启用、参数校验或版本资格。
-const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIONS, ...SOURCE_ACTIONS, 'source.register',
+const AUTOMATIC_ACTIONS = new Set([...CONVERSION_ACTION_IDS, ...CAPTURE_SOURCE_ACTIONS, ...SOURCE_ACTIONS, ...RETRIEVAL_ACTIONS, 'source.register',
   METADATA_ACTION, EVIDENCE_ACTION, 'file.read', 'file.glob', 'file.grep', 'file.write', 'file.copy', 'file.compare',
   'media.convert', 'pdf.extract', 'image.ocr', 'audio.transcribe', 'archive.extract', 'spotlight.search',
   'web.read_public', 'web.search', 'video.transcribe_url', 'material.read', 'material.process', 'material.ocr', 'material.transcribe',
@@ -202,6 +204,7 @@ export interface CoreModelToolOptions {
   budgetTaskForInput?: (input: Readonly<BackendInput>) => TaskRecord | null;
   service?: BdService;
   conversationAlgorithms?: ConversationAlgorithmBridge;
+  conversationRetrieval?: ConversationRetrievalBridge;
   businessGoals?: BusinessGoalService;
   now?: () => number;
   selectedAttachmentsForInput?: (input: Readonly<BackendInput>) => readonly { fileRefId: string; version: number }[];
@@ -750,6 +753,7 @@ export class CoreModelTools {
       UNION SELECT m.id,m.parent_id FROM messages m JOIN path p ON m.id=p.parent_id WHERE m.conversation_id=?) SELECT id FROM path WHERE id=?`)
       .get(scope.branchId, scope.conversationId, scope.conversationId, source.messageId);
     const ticket = JSON.parse(call.ticket_json) as ShareTicket, task = this.options.getTasks().get(call.task_id);
+    this.assertRetrievalAccess(task);
     this.assertHistoricalAlgorithmPreview(call, task, scope, evidenceRef);
     if (!ancestor || task.ownerRole !== scope.subject || task.status !== 'succeeded' || task.requiresReview || !task.result
       || task.currentRunId !== ticket.runId || task.currentAttemptId !== ticket.attemptId || task.generation !== ticket.generation
@@ -843,12 +847,14 @@ export class CoreModelTools {
       if (saved && saved.rulesVersion === (rulesVersion ?? null)) preview = saved;
       else {
         const all = this.options.registry.list().filter((skill) => MODEL_ACTIONS.has(skill.action) && skill.runtimeId === 'direct' && skill.kind === 'direct'
-          && algorithmActionAllowed(skill.action, rulesVersion)
+          && actionAllowedByRules(skill.action, rulesVersion)
           && (!args.query || `${skill.action} ${skill.title} ${skill.description}`.toLocaleLowerCase().includes(args.query)))
           .map((skill) => {
             const plugin = (this.options.mediaPlugins?.() ?? mediaPluginCatalog()).find(candidate => candidate.id === skill.action);
+            const availability = this.options.conversationAlgorithms?.handles(skill.action)
+              ? this.options.conversationAlgorithms.availabilityForRules(skill.action, rulesVersion) : skill.availability;
             return { action: skill.action, title: skill.title, description: skill.description, fields: skill.fields,
-              available: skill.availability.available, reason: skill.availability.reason ?? null, modelCalls: skill.modelCalls, permissionSummary: skill.permissionSummary,
+              available: availability.available, reason: availability.reason ?? null, modelCalls: skill.modelCalls, permissionSummary: skill.permissionSummary,
               ...(plugin ? { plugin } : {}) };
           });
         const scope = 'query先去首尾空白，再按不区分大小写的整段子串匹配动作名、标题或说明，不按空格拆词；回执query为规范化值。total和done只指当前query的匹配集合。0项请改短关键字或精确action，或以空query沿nextOffset分页查看全部。';
@@ -1172,7 +1178,7 @@ export class CoreModelTools {
       if (call.tool_name !== 'perform_action') throw publicError('MODEL_ACTION_FAILED');
       const controlled = this.controlledContext(context, call);
       const result = this.options.conversationAlgorithms?.handles(context.task.action)
-            ? await this.options.conversationAlgorithms.execute(controlled) : await runtime.execute(controlled);
+        ? await this.options.conversationAlgorithms.execute(controlled) : await runtime.execute(controlled);
       this.saveResultProof(context, call, result);
       return result;
     }, recover: async context => {
@@ -1191,7 +1197,7 @@ export class CoreModelTools {
       if (name === 'perform_action' && isObject(params) && params.action === 'image.ocr'
         && (!factory.runImageOcr || !factory.model.input?.includes('image'))) throw publicError('MODEL_IMAGE_UNSUPPORTED');
       const routed = this.prepare(name, params, known);
-      if (name === 'perform_action' && !known?.task_id && !algorithmActionAllowed(routed.action,
+      if (name === 'perform_action' && !known?.task_id && !actionAllowedByRules(routed.action,
         this.options.core.runConfiguration?.(input.runId)?.internalAgentRules?.version)) throw publicError('MODEL_ACTION_NOT_ALLOWED');
       if (routed.action === 'image.ocr' && (!factory.runImageOcr || !factory.model.input?.includes('image'))) throw publicError('MODEL_IMAGE_UNSUPPORTED');
       const channel = this.channel(factory.model);
@@ -1686,6 +1692,7 @@ export class CoreModelTools {
       || call.branch_id !== input.branchId || (capturedModelDigest ?? this.channel(model).digest) !== call.model_digest || !call.task_id || !call.ticket_json) throw publicError('MODEL_SHARE_REVOKED');
     const ticket = JSON.parse(call.ticket_json) as ShareTicket;
     const task = this.options.getTasks().get(call.task_id);
+    this.assertRetrievalAccess(task);
     const callScope: EvidenceScope = { conversationId: call.conversation_id, branchId: call.branch_id,
       subject: task.ownerRole, modelDigest: call.model_digest };
     this.assertHistoricalAlgorithmPreview(call, task, callScope);
@@ -1714,6 +1721,12 @@ export class CoreModelTools {
         generation: input.generation, operationId: 'model.result.share' }, ticket.capabilities);
     }
     for (const selected of [...ticket.sources, ...ticket.outputs]) this.requireProof(selected, call.conversation_id);
+  }
+
+  private assertRetrievalAccess(task: TaskRecord): void {
+    if (!RETRIEVAL_ACTIONS.includes(task.action)) return;
+    if (!this.options.conversationRetrieval) throw publicError('MODEL_SHARE_REVOKED');
+    this.options.conversationRetrieval.assertResultAccess(task.result?.data);
   }
 
   /** 旧任务原回执继续保管。历史预览或旧证据续页不能重放带原始排除诊断、未核验包络/摘要或伪造分页包装的正文。 */
@@ -1896,7 +1909,7 @@ export class CoreModelTools {
         : source.status === 'partial' ? '原件转换部分完成，须核对未确认项。' : '原件转换失败，已保留来源和失败原因。';
       return this.pagePreview(call, { ok: true, taskId: task.id, action: call.action, summary, data, artifactIds: task.result.artifactIds ?? [] });
     }
-    if (call.action.startsWith('data.processing.') || call.action.startsWith('data.modules.') || call.action.startsWith('data.adapters.') || call.action.startsWith('data.r1.') || call.action === 'data.wfd.query' || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(call.action) || call.action === 'material.read' || call.action === 'material.process' || call.action === 'material.transcribe' || call.action === 'baidu.drive' || call.action === 'browser.control' || call.action === 'web.read_public' || call.action === 'web.search' || this.options.conversationAlgorithms?.handles(call.action)) {
+    if (call.action.startsWith('data.processing.') || call.action.startsWith('data.modules.') || call.action.startsWith('data.adapters.') || call.action.startsWith('data.r1.') || call.action.startsWith('data.retrieval.') || call.action === 'data.wfd.query' || SOURCE_ACTIONS.includes(call.action as typeof SOURCE_ACTIONS[number]) || CAPTURE_SOURCE_ACTIONS.includes(call.action) || call.action === 'material.read' || call.action === 'material.process' || call.action === 'material.transcribe' || call.action === 'baidu.drive' || call.action === 'browser.control' || call.action === 'web.read_public' || call.action === 'web.search' || this.options.conversationAlgorithms?.handles(call.action)) {
       // The closed host bridge constructs this bounded projection; no arbitrary result body is shared.
       if (!isObject(source.modelPreview)) throw publicError('MODEL_ACTION_FAILED');
       const { localPersistence: _untrustedPersistence, ...modelPreview } = source.modelPreview as Record<string, JsonValue>;
@@ -2071,6 +2084,9 @@ export function projectTemporaryVideoAudioSource(value: unknown, taskArgs: unkno
 }
 
 export function isModelActionAllowed(action: string): boolean { return MODEL_ACTIONS.has(action); }
+function actionAllowedByRules(action: string, version?: number): boolean {
+  return RETRIEVAL_ACTIONS.includes(action) ? (version ?? 0) >= 22 : algorithmActionAllowed(action, version);
+}
 export function modelActionApprovalMode(action: string, args: Record<string, JsonValue>): NonNullable<OperationScope['approvalMode']> {
   if (AUTOMATIC_ACTIONS.has(action)) return 'automatic';
   if (action === 'browser.control' && ['status', 'extract_url'].includes(String(args.operation))) return 'automatic';

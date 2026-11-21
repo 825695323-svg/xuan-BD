@@ -16,7 +16,7 @@ import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { ProcessRuntime } from '../../platform/runtime/programs.js';
 import { digestOperationArgs } from '../../platform/security/permissions.js';
 import { CoreDatabase } from '../../platform/state/database.js';
-import { createFullChainFixture } from './full-chain-test-support.js';
+import { createFullChainFixture, readModelEvidencePreview } from './full-chain-test-support.js';
 import { localAlgorithmConfiguration } from './financial-configuration.js';
 import { createApplicationServices } from './services.js';
 
@@ -116,11 +116,11 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
         { action: 'execute', target: { kind: 'file', path: processRuntime.path('python3') } },
       ] });
       const toolsInLibrary = workspace.toolLibrary!.view().tools;
-      assert.deepEqual(toolsInLibrary.filter(tool => tool.status === 'ready').map(tool => tool.id), ALGORITHM_METHOD_IDS);
+      assert.deepEqual(toolsInLibrary.filter(tool => tool.category === 'market' && tool.status === 'ready').map(tool => tool.id), ALGORITHM_METHOD_IDS);
       const pureTools = toolsInLibrary.filter(tool => tool.executor === 'typescript');
       assert.deepEqual(pureTools.map(tool => tool.id),
         ['financial_single_quarter', 'financial_ttm', 'financial_growth', 'financial_ratios', 'price_adjustment']);
-      assert.ok(pureTools.every(tool => tool.state === 'executable' && tool.status === 'unavailable' && tool.reason?.includes('algorithms.calculate')));
+      assert.ok(pureTools.every(tool => tool.state === 'executable' && tool.status === 'ready' && tool.reason === null));
       assert.equal(runtime.currentIdentity().mode, 'user_test');
       const submitted = (await runtime.client.submit(sourceDocument(suppliedCloses))).result;
       assert.equal(submitted.state, 'published_formal', JSON.stringify({ errors: submitted.errors, state: submitted.state }));
@@ -165,17 +165,7 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
         JSON.parse(output.content.filter(part => part.type === 'text').map(part => part.text).join(''));
       async function invoke(action: string, args: Record<string, unknown>, callId: string) {
         const result = parse(await perform.execute(callId, { action, args }, undefined, undefined, context));
-        if (result.complete !== false) return result;
-        const { evidenceId, sha256 } = result.evidence;
-        let page = result.evidence, text = page.text;
-        for (let index = 0; !page.done; index++) {
-          assert.ok(page.nextCursor);
-          page = parse(await evidenceRead.execute(`${callId}-evidence-${index}`,
-            { evidenceId, sha256, cursor: page.nextCursor }, undefined, undefined, context));
-          text += page.text;
-        }
-        assert.equal(wfdSha256(text), sha256);
-        return JSON.parse(text);
+        return readModelEvidencePreview(result, evidenceRead, callId);
       }
       for (const methodId of ['unregistered_indicator', 'ttm', 'macro_yoy']) {
         await assert.rejects(invoke('algorithms.calculate', { calculationJson: JSON.stringify({ ...request, methodId }) },

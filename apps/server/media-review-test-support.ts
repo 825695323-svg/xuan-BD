@@ -12,8 +12,9 @@ import { PersonalCore } from '../../modules/agent/runtime/core.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { ProcessRuntime } from '../../platform/runtime/programs.js';
 import { CoreDatabase } from '../../platform/state/database.js';
-import { createApplicationServices } from './services.js';
-import type { createFullChainFixture } from './full-chain-test-support.js';
+import { createApplicationServices, type ServiceOptions } from './services.js';
+import { settleFixtureTask, type createFullChainFixture } from './full-chain-test-support.js';
+import type { TranscriptionClaimSelection } from '../../modules/collection/data-processing/ocr-claim.js';
 const binary = process.env.XUAN_TEST_VISION_OCR;
 const codeRoot = fileURLToPath(new URL('../..', import.meta.url));
 export const model = { provider: 'synthetic-receiver', model: 'no-network-model', baseUrl: 'https://model.invalid.test/v1' };
@@ -60,18 +61,27 @@ class CapturingBackend implements Backend {
   }
 }
 
-export async function openMediaReviewHost(f: ReturnType<typeof createFullChainFixture>, listen = true) {
+export function openMediaReviewCompanion(f: ReturnType<typeof createFullChainFixture>, options: Pick<ServiceOptions, 'baiduDrive' | 'localData'> = {}) {
   const resources = new ResourceBindings(f.runtime);
   const companionDatabase = new CoreDatabase(join(f.runtime, 'state/companion.sqlite'));
   const companionCore = new PersonalCore(new CapturingBackend(), { database: companionDatabase });
   const companion = createApplicationServices(companionCore, companionDatabase, { role: 'service', health,
     projectRoot: f.runtime, codeRoot, privateRoot: join(f.runtime, 'state/companion-private'), resources,
-    materials: { environment: 'synthetic-test' }, whisperModelPath: f.modelPath });
+    materials: { environment: 'synthetic-test' }, whisperModelPath: f.modelPath, r1ConnectionId: f.machine ? 'full-chain-test' : undefined,
+    processRuntime: options.baiduDrive ? new ProcessRuntime(resources) : undefined, ...options });
+  return { resources, companionDatabase, companion, async close() {
+    companion.segments?.close(); companion.files.closeTemporaryRetention(); companion.options.processRuntime?.closeTemporaryRetention();
+    await companion.tasks.dispose(); await companionCore.dispose(); companionDatabase.close();
+  } };
+}
+
+export async function openMediaReviewHost(f: ReturnType<typeof createFullChainFixture>, listen = true, localData?: ServiceOptions['localData']) {
+  const serviceHost = openMediaReviewCompanion(f, { localData }), { resources, companionDatabase, companion } = serviceHost;
   const database = new CoreDatabase(join(f.runtime, 'state/personal.sqlite'));
   const backend = new CapturingBackend(), core = new PersonalCore(backend, { database });
   const services = createApplicationServices(core, database, { role: 'personal', health, projectRoot: f.runtime,
     codeRoot, privateRoot: join(f.runtime, 'state/personal-private'), resources,
-    processRuntime: new ProcessRuntime(resources), whisperModelPath: f.modelPath, workspaceServices: companion, modelConfigurationVersion: 'synthetic-receiver-v1' });
+    processRuntime: new ProcessRuntime(resources), whisperModelPath: f.modelPath, workspaceServices: companion, localData, modelConfigurationVersion: 'synthetic-receiver-v1' });
   services.permissions.grant({ label: 'isolated generated OCR artifacts', scope: { kind: 'persistent' },
     capabilities: ['read', 'write', 'delete'].map(action => ({ action: action as 'read' | 'write' | 'delete', target: { kind: 'directory' as const, path: services.artifactRoot, recursive: true } })) });
   if (binary) services.permissions.grant({ label: 'explicit compiled local OCR helper', scope: { kind: 'persistent' },
@@ -97,11 +107,25 @@ export async function openMediaReviewHost(f: ReturnType<typeof createFullChainFi
         await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       }
       services.segments?.close(); services.files.closeTemporaryRetention(); services.options.processRuntime?.closeTemporaryRetention();
-      companion.segments?.close(); companion.files.closeTemporaryRetention(); companion.options.processRuntime?.closeTemporaryRetention();
       await services.tasks.dispose(); await core.dispose(); database.close();
-      await companion.tasks.dispose(); await companionCore.dispose(); companionDatabase.close();
+      await serviceHost.close();
     } };
 }
+export async function prepareTranscriptionParse(services: ReturnType<typeof createApplicationServices>, materialId: string,
+  selection: TranscriptionClaimSelection) {
+  const processing = services.processing!;
+  const operator = { operatorId: 'synthetic', requestId: 'plan-' + materialId, method: 'POST', path: '/processing/plans',
+    remoteAddress: null, observedAt: Date.now() };
+  const task = processing.preparePlan({ routing: { materials: [{ materialId, intendedAction: 'inspect' }] },
+    outputs: [{ outputId: 'claim', materialIds: [materialId], intendedAction: 'inspect', stages: ['parse'],
+      tables: [{ materialId, format: 'transcription-review', transcriptionClaimSelection: selection }] }] }, operator);
+  const prepared = await settleFixtureTask(services.tasks, task.id);
+  assert.equal(prepared.status, 'succeeded', JSON.stringify(prepared.error));
+  const plan = processing.getByTask(task.id)!.plan!, step = plan.steps.find(item => item.kind === 'parse');
+  assert.ok(step);
+  return { plan, step, operator };
+}
+
 type Host = Awaited<ReturnType<typeof openMediaReviewHost>>;
 export async function invokeMediaAction(h: Host, input: BackendInput, action: string, args: Record<string, unknown>, toolCallId: string) {
   const perform = h.services.modelTools.toolFactory({ model, getCurrentInput: () => input }).find(tool => tool.name === 'perform_action');

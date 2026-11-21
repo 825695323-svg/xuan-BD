@@ -6,6 +6,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import type { Server } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { Backend } from '../../contracts/backend.js';
 import type { HealthResponse } from '../../contracts/contracts.js';
 import type { TaskService } from '../../platform/jobs/tasks.js';
@@ -26,6 +27,21 @@ const productRoot = join(codeRoot, 'wfd/product');
 const health: HealthResponse = { name: 'xuan BD', backend: 'demo', configured: false, model: null, provider: null,
   notice: 'isolated full-chain test; model disabled' };
 const backend: Backend = { id: 'isolated-no-model', createSession: async () => { throw new Error('Model calls are disabled in full-chain tests'); } };
+
+export async function readModelEvidencePreview(first: Record<string, any>, reader: ToolDefinition, callId: string) {
+  if (first.complete !== false || !first.evidence) return first;
+  const { evidenceId, sha256 } = first.evidence;
+  let page = first.evidence, text = page.text;
+  for (let count = 1; !page.done; count++) {
+    assert.ok(page.nextCursor && count < 128);
+    const result = await reader.execute(callId + '-page-' + count, { evidenceId, sha256, cursor: page.nextCursor },
+      undefined, undefined, {} as Parameters<ToolDefinition['execute']>[4]);
+    page = JSON.parse(result.content.map(part => part.type === 'text' ? part.text : '').join(''));
+    assert.equal(page.startByte, Buffer.byteLength(text)); text += page.text;
+  }
+  assert.equal(createHash('sha256').update(text).digest('hex'), sha256);
+  return JSON.parse(text);
+}
 
 export interface FullChainFixture {
   root: string;

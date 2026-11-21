@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
@@ -444,11 +444,11 @@ def execute(request):
     });
   });
 
-test('内置代理规则捕获 v21，旧任务仅凭各自冻结的 v18、v19、v20 正文与摘要恢复', () => {
+test('内置代理规则捕获 v22，旧任务仅凭各自冻结的 v18 至 v21 正文与摘要恢复', () => {
   const current: FrozenRunConfiguration = { modelId: null, provider: null, thinkingLevel: 'off', preferenceRevision: null,
     modelConfigurationVersion: null, personaSelectionRevision: 0, agentDisplayName: null, personaRecords: [], personaText: '',
     ...captureInternalAgentRules() };
-  assert.equal(current.internalAgentRules?.version, 21);
+  assert.equal(current.internalAgentRules?.version, 22);
   assertInternalAgentRules(current);
   assert.ok(current.internalAgentRulesText);
 
@@ -463,6 +463,8 @@ test('内置代理规则捕获 v21，旧任务仅凭各自冻结的 v18、v19、
     [18, 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c', v18],
     [19, '38342f494b3a83fc5f0512c1fd42515a49877ea61f70e62c6ce3089b257ff45c', v19],
     [20, 'd6c8ecfc20feabf9d1512654d4123e54a803d6029ade74fdd70205a51e1ba49c', v20],
+    [21, 'c6dc990bfd99628b50ef08a3bc37bb9869cbaf36c3cd34c88160f886e4c48cb7',
+      readFileSync(new URL('../../apps/server/fixtures/internal-agent-v21.md', import.meta.url), 'utf8')],
   ] as const) {
     assertInternalAgentRules({ ...current, internalAgentRulesText: text,
       internalAgentRules: { id: 'xuan-bd-internal-agent', version, digest } });

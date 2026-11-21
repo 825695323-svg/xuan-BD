@@ -74,6 +74,45 @@ test('real algorithm host freezes publication separately from fixed reads and bi
   const verify = (action: string) => registry.assertTaskVersions(frozen.get(action)!);
   const publication = actions.slice(0, 3);
 
+  await t.test('pure calculations bind the exact request, TS implementation and fixed reader independently of publication and Python', () => {
+    const capture = (action: string, args: TaskRecord['args']) =>
+      ({ runtimeId: 'direct', action, args, versions: registry.captureVersions(action, args) } as TaskRecord);
+    const methodId = 'financial_ttm', pure = ['algorithms.calculate', 'data.modules.calculate'].map(action => {
+      const task = capture(action, { calculationJson: JSON.stringify({ methodId }) });
+      assert.deepEqual(task.versions, registry.captureVersions(action, { methodId }));
+      assert.equal(task.versions.directImplementation, directImplementationVersion(['algorithms', 'algorithmRead', 'algorithmPure']));
+      return task;
+    });
+    const discovery = capture('algorithms.capabilities', { snapshotId: 's_fixed' });
+    const catalog = capture('algorithms.capabilities', {});
+    assert.deepEqual(catalog.versions, registry.captureVersions('algorithms.capabilities', { snapshotId: '' }));
+    assert.equal(discovery.versions.directImplementation, directImplementationVersion(['algorithms', 'algorithmRead']));
+    for (const name of ['pure-operator-runner', 'pure-operator-verification']) {
+      changedImplementation('modules/financial/' + name + '.ts', () => {
+        for (const task of pure) assert.throws(() => registry.assertTaskVersions(task), { code: 'DIRECT_DEPENDENCY_UNAVAILABLE' });
+        registry.assertTaskVersions(discovery); registry.assertTaskVersions(catalog);
+        for (const action of actions) verify(action);
+      });
+    }
+    changedImplementation('modules/financial/derived-wfd-publisher.ts', () => {
+      assert.throws(() => verify('algorithms.publish'), { code: 'DIRECT_DEPENDENCY_UNAVAILABLE' });
+      for (const task of [...pure, discovery]) registry.assertTaskVersions(task);
+    });
+    companion.algorithms = { versionBinding: { python: 'changed' } } as NonNullable<typeof companion.algorithms>;
+    try { for (const task of [...pure, discovery, catalog]) registry.assertTaskVersions(task); }
+    finally { companion.algorithms = undefined; }
+    for (const changed of [{ ...workspace, readBinding: () => ({ readSchemaSha256: 'e'.repeat(64), queryImplSha256: 'c'.repeat(64) }) },
+      { ...workspace, readBinding: () => null }, undefined]) {
+      companion.r1Workspace = changed as typeof companion.r1Workspace;
+      try {
+        for (const task of [...pure, discovery]) assert.throws(() => registry.assertTaskVersions(task),
+          { code: changed?.readBinding() ? 'DIRECT_VERSION_CONFLICT' : 'DIRECT_DEPENDENCY_UNAVAILABLE' });
+        registry.assertTaskVersions(catalog); verify('algorithms.status');
+      } finally { companion.r1Workspace = workspace; }
+    }
+    for (const task of [...pure, discovery]) registry.assertTaskVersions(task);
+  });
+
   await t.test('publication and G5 changes reject the original versions; screen and status retain their read-only dependency scope', () => {
     const r1Baseline = directImplementationVersion(['r1']);
     for (const path of ['modules/financial/derived-wfd-publisher.ts', 'modules/financial/derived-wfd-check.ts',

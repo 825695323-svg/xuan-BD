@@ -6,6 +6,7 @@ import { BackendRegistry } from '../../platform/runtime/backends.js';
 import type { HealthResponse } from '../../contracts/contracts.js';
 import { loadAppConfiguration } from '../../platform/config/model.js';
 import { readConnectionRegistry, registeredBaiduDriveConfiguration } from '../../platform/config/connections.js';
+import type { BaiduDriveConfiguration } from '../../plugins/capture-sources/baidu-drive/index.js';
 import { startLocalServer } from './boot.js';
 import { createApplicationServices, type ApplicationServices, type ServiceOptions } from './services.js';
 import { localAlgorithmConfiguration } from './financial-configuration.js';
@@ -214,7 +215,7 @@ export async function startConfiguredApplication(options: ConfiguredApplicationO
   let browserUnavailableReason = options.sharedBrowserUnavailableReason ?? assets.browserUnavailableReason;
   let running: Awaited<ReturnType<typeof startLocalServer>>;
   const customSources = new CustomSourceRegistry(join(resources.path('config'), 'custom-sources.json'));
-  let baiduDrive: { binaryPath: string; configPath: string; tokenKeyPath?: string } | undefined;
+  let baiduDrive: BaiduDriveConfiguration | undefined;
   try {
     const binaryPath = processRuntime.path('bdpan');
     baiduDrive = registeredBaiduDriveConfiguration(readConnectionRegistry(resources.document.resources.connections_registry ? resources.path('connections_registry') : undefined), binaryPath);

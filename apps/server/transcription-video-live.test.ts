@@ -7,7 +7,7 @@ import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { conversionArguments } from '../../platform/capabilities/local-actions.js';
 import { createFullChainFixture, settleFixtureTask } from './full-chain-test-support.js';
-import { openMediaReviewHost, invokeMediaAction } from './media-review-test-support.js';
+import { openMediaReviewHost, invokeMediaAction, prepareTranscriptionParse } from './media-review-test-support.js';
 import { readTranscriptionReviewPacket, readTranscriptionSourceClaim } from './transcription-review.js';
 
 const bundle = process.env.XUAN_TEST_TRANSCRIPTION_BUNDLE, audio = process.env.XUAN_TEST_TRANSCRIPTION_AUDIO;
@@ -71,8 +71,14 @@ test('four local video containers retain the original, first audio stream, model
         }
         assert.equal(packet.reviewStatus, 'not_recorded'); assert.equal(packet.eventEligibility, 'not_established');
         const segmentIndex = packet.segments.findIndex(s => s.location.endMs <= packet.recognizer.durationMs); assert.ok(segmentIndex >= 0);
-        const claim = await readTranscriptionSourceClaim(host.services, materialId, { taskId: task.id, packetSha256: packet.packetSha256,
-          sourceSha256: packet.source.sha256, segmentIndex, eventId: 'synthetic', eventType: 'test' });
+        const selection = { taskId: task.id, packetSha256: packet.packetSha256, sourceSha256: packet.source.sha256,
+          segmentIndex, eventId: 'synthetic', eventType: 'test' };
+        const { plan, step, operator } = await prepareTranscriptionParse(host.companion, materialId, selection);
+        assert.equal(step.applicability, 'applicable', JSON.stringify(step.gaps));
+        const parsed = await settleFixtureTask(host.companion.tasks, host.companion.processing!.executeStep(plan.planId, step.stepId,
+          { ...operator, requestId: 'parse-' + materialId }).id);
+        assert.equal(parsed.status, 'succeeded', JSON.stringify(parsed.error));
+        const claim = await readTranscriptionSourceClaim(host.services, materialId, selection);
         const [row] = JSON.parse(claim.jsonBytes.toString());
         assert.match(packet.text, /ask not/iu); assert.equal(row.statement, packet.segments[segmentIndex]!.text);
         assert.equal(row.assertion_kind, 'source_claim'); assert.equal(row.fact_verification, 'unknown');

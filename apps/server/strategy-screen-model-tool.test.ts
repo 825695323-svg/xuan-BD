@@ -147,6 +147,7 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
   const companion = createApplicationServices(companionCore, companionDb, { role: 'service', health, projectRoot: f.runtime,
     codeRoot, privateRoot: join(f.runtime, 'state/companion-private'), resources, productionModuleSwitches: switches });
   companion.r1Workspace = { readProduct: synthetic.reader.readProduct.bind(synthetic.reader),
+    versionBinding: { r1Workspace: 'synthetic-fixed-read/1' },
     readBinding: () => ({ readSchemaSha256: 'b'.repeat(64), queryImplSha256: 'c'.repeat(64) }),
     capabilities: () => ({ connection: synthetic.identity }) } as unknown as NonNullable<typeof companion.r1Workspace>;
   const database = new CoreDatabase(join(f.runtime, 'state/personal.sqlite')), core = new PersonalCore(backend, { database });
@@ -287,7 +288,7 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
       .actions.find((item: WfdRecord) => item.action === 'algorithms.calculate');
     const contractWithoutPub = preview(await perform.execute('contract-calc-no-pub', { action: 'algorithms.contract', args: { methodId: 'macd' } },
       undefined, undefined, toolContext));
-    assert.equal(withoutPub.available, false);
+    assert.equal(withoutPub.available, true, 'v22 保留独立的纯 TS 计算入口');
     assert.equal(contractWithoutPub.data.methods[0].executable, false);
 
     const leaked = { taskId: 'legacy-calc', status: 'succeeded', result: { source: { kind: 'wfd_fixed_snapshot', perspective: 'market_known_at',

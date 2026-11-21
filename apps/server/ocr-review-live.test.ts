@@ -54,7 +54,7 @@ test('real conversation material read and Vision OCR produce a read-only, unrevi
       assert.equal(packet.reviewStatus, 'not_recorded'); assert.equal(packet.eventEligibility, 'not_established');
       assert.equal(packet.textBasis, 'ocr_recognition');
       const segments = host.companion.segments!;
-      segments.bindOcrReviewReader((material, task) => readOcrReviewPacket(host.services, material, task));
+      assert.partialDeepStrictEqual(segments.capabilities(), { ocrReviewReaderWired: true, ocr: { runnerAvailable: true } });
       const registration = segments.requestOcrReview({ materialId, taskId: ocrTask.id, packetSha256: packet.packetSha256 }, 'verified-vision-segments');
       const indexed = await settleFixtureTask(host.companion.tasks, registration.id);
       assert.equal(indexed.status, 'succeeded', JSON.stringify(indexed.error));

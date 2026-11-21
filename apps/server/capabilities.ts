@@ -98,8 +98,14 @@ export function createDirectRuntime(options: DirectRuntimeOptions): DirectRuntim
     } else if (custom?.handles(action)) {
       implementation.push('local', 'assembly'); configuration = { path: options.customSources!.path };
     } else if (baidu?.handles(action)) {
-      implementation.push('baidu', 'process'); configuration = options.baiduDrive!;
-      dependencies = directResourceVersions(options, ['bdpan'], [options.baiduDrive!.configPath, ...(options.baiduDrive!.tokenKeyPath ? [options.baiduDrive!.tokenKeyPath] : [])], options.baiduDrive!.homePath ? ['baidu_home'] : []);
+      const { sharePasscodeRefs: refs, ...drive } = options.baiduDrive!;
+      const locator = refs && typeof args.passcodeRef === 'string' && Object.hasOwn(refs, args.passcodeRef) ? refs[args.passcodeRef] : undefined;
+      implementation.push('baidu', 'process');
+      configuration = locator ? { ...drive, passcodeRef: args.passcodeRef, locator } : drive;
+      const files = [drive.configPath];
+      if (drive.tokenKeyPath) files.push(drive.tokenKeyPath);
+      if (locator?.kind === 'dsh-ref') files.push(locator.path);
+      dependencies = directResourceVersions(options, locator?.kind === 'keychain' ? ['bdpan', 'security'] : ['bdpan'], files, drive.homePath ? ['baidu_home'] : []);
     } else if (browser.handles(action)) {
       implementation.push('browser', 'web'); configuration = { daemonConfigPath: options.browser?.daemonConfigPath ?? null, operation: args.operation };
       dependencies = directResourceVersions(options, [], options.browser ? [options.browser.daemonConfigPath] : []);

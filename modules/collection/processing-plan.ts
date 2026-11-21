@@ -1112,14 +1112,18 @@ export class ProcessingPlanService {
       if (table.sourceAdapter.configDigest.length !== 64) gaps.push(`tables[${index}] ${table.materialId}: 适配配置摘要无效。`);
       return gaps;
     }
-    const expected = table.format === 'transcription-review' ? 'audio' : table.format === 'ocr-review' ? 'image' : table.format === 'financial-fixed' ? fact.format : table.format === 'csv' ? 'csv' : table.format === 'xlsx' ? 'excel' : table.format === 'pdf' ? 'pdf'
+    const expected = table.format === 'ocr-review' ? 'image' : table.format === 'financial-fixed' ? fact.format : table.format === 'csv' ? 'csv' : table.format === 'xlsx' ? 'excel' : table.format === 'pdf' ? 'pdf'
       : table.format === 'xbrl' || table.format === 'text' ? 'text' : 'json-table';
     const gaps: string[] = [];
     const byteBudget = table.format === 'xlsx' ? MAX_SOURCE : table.selection ? CANDIDATE_LIMITS.maxObjectBytes : CANDIDATE_LIMITS.maxStructuredBytes;
     if (fact.byteLength > byteBudget) {
       gaps.push(`tables[${index}] ${table.materialId}: 完整原件 ${fact.byteLength} 字节超过本次 ${byteBudget} 字节解析预算；未用截断预览提交。`);
     }
-    if ((table.eventTextSelection?.sourceView?.kind === 'html_static_text' ? !/\.html?$/iu.test(fact.filename) : table.format === 'xbrl' ? !/\.(?:xbrl|xml|xhtml)$/iu.test(fact.filename) : fact.format !== expected)
+    const matchesFormat = table.format === 'transcription-review'
+      ? fact.format === 'audio' || (fact.format === 'video' && /\.(?:mp4|mov|mkv|webm)$/iu.test(fact.filename))
+      : table.eventTextSelection?.sourceView?.kind === 'html_static_text' ? /\.html?$/iu.test(fact.filename)
+      : table.format === 'xbrl' ? /\.(?:xbrl|xml|xhtml)$/iu.test(fact.filename) : fact.format === expected;
+    if (!matchesFormat
       || table.format === 'xlsx' && (!table.xlsxSelection || !/\.xlsx$/iu.test(fact.filename))) {
       gaps.push(`tables[${index}] ${table.materialId}: 材料实际格式=${fact.format}，声明格式=${table.format}；缺对应解析器，预览只作线索。`);
     }

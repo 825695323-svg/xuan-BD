@@ -8,13 +8,10 @@ import { tmpdir } from 'node:os';
 import express, { type ErrorRequestHandler } from 'express';
 import { WFD_BUNDLE_OPERATIONS, WfdProductMachineClient, type WfdBundleReceipt } from '../../adapters/database/wfd-product-machine.js';
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
-import { createR1HandoffRuntime } from '../../modules/collection/r1-runtime.js';
-import { R1BundleService } from '../../modules/collection/r1-bundle.js';
-import { ResourceBindings } from '../../platform/resources/bindings.js';
-import { CoreDatabase } from '../../platform/state/database.js';
 import { CoreError } from '../../platform/runtime/errors.js';
 import { createFullChainFixture } from './full-chain-test-support.js';
-import { createR1BundleRouter } from './r1-bundle-routes.js';
+import { createWorkspaceRouter } from './workspace-routes.js';
+import { openMediaReviewCompanion } from './media-review-test-support.js';
 
 const python = process.env.WFD_PYTHON;
 const dataset = 'bundle_synthetic', namespace = 'full.chain.test';
@@ -42,7 +39,7 @@ function httpPort(app: express.Express) {
   return (path: string, body?: object, authorized = true) => new Promise<{ status: number; data: any }>((resolve, reject) => {
     const [client, peer] = duplexPair();
     server.emit('connection', peer);
-    const req = request({ createConnection: () => client, path: '/r1/bundles/' + path,
+    const req = request({ createConnection: () => client, path: path.startsWith('/') ? path : '/r1/bundles/' + path,
       method: body ? 'POST' : 'GET', headers: { 'content-type': 'application/json', authorization: authorized ? 'synthetic-operator' : '' } }, res => {
       const chunks: Buffer[] = [];
       res.on('data', chunk => chunks.push(chunk));
@@ -64,8 +61,6 @@ test('HTTP full, delta and reference bundles use a real isolated WFD process and
       t.after(() => { delete process.env.XUAN_FULL_CHAIN_ROOT; });
     }
     const f = createFullChainFixture({ name: 'r1-bundle', machine: true });
-    const db = new CoreDatabase(join(f.runtime, 'state/core.sqlite'));
-    t.after(() => db.close());
     const packages = join(f.root, 'packages'), target = join(f.root, 'delivered');
     mkdirSync(packages, { mode: 0o700 });
     const plain = JSON.parse(readFileSync(f.configPath, 'utf8'));
@@ -74,16 +69,23 @@ test('HTTP full, delta and reference bundles use a real isolated WFD process and
         package_root: packages, target_store: target },
       sources: { synthetic: { may_read: true, may_export: true, usage_scope: 'synthetic', export_scope: 'selected_dataset' } } };
     const save = (data: object) => writeFileSync(f.configPath, JSON.stringify(data), { mode: 0o600 });
+    save({ ...plain, profile: 'legacy' });
+    const legacy = openMediaReviewCompanion(f);
+    try { assert.equal(legacy.companion.r1Bundles, undefined); assert.ok(legacy.companion.bd); }
+    finally { await legacy.close(); }
     save(config);
-    const runtime = createR1HandoffRuntime({ database: db, resources: new ResourceBindings(f.runtime), connectionId: plain.connection_id });
-    const options = { runtime, database: db, control: () => ({ stopped: false, generation: 1 }) };
+    const host = openMediaReviewCompanion(f);
+    t.after(() => host.close());
+    const runtime = host.companion.r1Runtime;
+    assert.ok(runtime && host.companion.r1Bundles);
     const app = express();
-    app.use(express.json(), createR1BundleRouter(new R1BundleService(options), async req => {
+    app.use(express.json(), createWorkspaceRouter(host.companion, req => {
       if (req.get('authorization') !== 'synthetic-operator') throw new CoreError('ACCESS_DENIED', 'fixture admission', 403);
     }));
     const errors: ErrorRequestHandler = (error, _req, res, _next) =>
       res.status(error.status ?? 500).json({ code: error.code, error: error.message });
     app.use(errors);
+    app.use((_req, res) => res.status(404).json({ code: 'UNREGISTERED_TEST_ROUTE' }));
     const call = httpPort(app);
     async function ok(path: string, body?: object) {
       const { status, data } = await call(path, body);
@@ -91,6 +93,11 @@ test('HTTP full, delta and reference bundles use a real isolated WFD process and
       return data;
     }
     assert.equal((await call('capabilities?roles=publish')).data.code, 'R1_BUNDLE_INPUT');
+    assert.equal((await call('capabilities', undefined, false)).status, 403);
+    for (const name of ['packages', 'export', 'redistribute']) {
+      assert.equal((await call('/r1/' + name, {})).status, 404);
+      assert.equal((await call(name, {})).status, 404);
+    }
     const caps = await ok('capabilities');
     assert.deepEqual(Object.keys(caps.operations).sort(), Object.keys(WFD_BUNDLE_OPERATIONS).sort());
     assert.ok(Object.values(caps.operations).every((v: any) => v.supported));
