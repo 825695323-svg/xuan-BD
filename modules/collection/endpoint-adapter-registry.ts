@@ -61,8 +61,8 @@ function successfulSourceReceipts(action: string, data: WfdRecord): AdapterRecei
   }
   if (selected.some(entry => entry.status !== undefined && entry.status !== null && !httpComplete(entry.status))) return null;
   for (const projection of [data.projection, data.dailyValidation]) {
-    if (isWfdRecord(projection) && (typeof projection.rawSha256 !== 'string' || !/^[0-9a-f]{64}$/u.test(projection.rawSha256)
-      || selected.length !== 1 || projection.rawSha256 !== selected[0]!.sha256)) return null;
+    if (projection !== undefined && (!isWfdRecord(projection) || typeof projection.rawSha256 !== 'string'
+      || !/^[0-9a-f]{64}$/u.test(projection.rawSha256) || selected.length !== 1 || projection.rawSha256 !== selected[0]!.sha256)) return null;
   }
   if (Array.isArray(data.attempts)) {
     const used = data.attempts.filter(attempt => isWfdRecord(attempt) && attempt.outcome === 'used');

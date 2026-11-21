@@ -143,6 +143,7 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
   const companion = createApplicationServices(companionCore, companionDb, { role: 'service', health, projectRoot: f.runtime,
     codeRoot, privateRoot: join(f.runtime, 'state/companion-private'), resources, productionModuleSwitches: switches });
   companion.r1Workspace = { readProduct: synthetic.reader.readProduct.bind(synthetic.reader),
+    readBinding: () => ({ readSchemaSha256: 'b'.repeat(64), queryImplSha256: 'c'.repeat(64) }),
     capabilities: () => ({ connection: synthetic.identity }) } as unknown as NonNullable<typeof companion.r1Workspace>;
   const database = new CoreDatabase(join(f.runtime, 'state/personal.sqlite')), core = new PersonalCore(backend, { database });
   const services = createApplicationServices(core, database, { role: 'personal', health, projectRoot: f.runtime, codeRoot,
@@ -254,6 +255,23 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
     assert.equal(calls.length, 1);
     assert.partialDeepStrictEqual(calls[0]![2], { authority: 'user-message', quote: declaration, messageId: calcInput.messageId,
       conversationId: calcInput.conversationId, branchId: calcInput.branchId, parentRunId: calcInput.runId });
+
+    // 旧版未脱敏的 historical calculate/status 缓存 preview_json 或证据续页均不得重放，缺失 derivedPublisher 时可用性一致为 false。
+    companion.derivedPublisher = undefined;
+    const withoutPub = preview(await list.execute('list-calc-no-pub', { query: 'algorithms.calculate' }, undefined, undefined, toolContext))
+      .actions.find((item: WfdRecord) => item.action === 'algorithms.calculate');
+    assert.equal(withoutPub.available, false);
+    const leaked = { taskId: 'legacy-calc', status: 'succeeded', result: { source: { kind: 'wfd_fixed_snapshot', perspective: 'market_known_at',
+      resolution: { historicalRead: { actualPerspective: 'market_known_at', diagnostics: [{ revision_id: 'r_future' }] } } } } };
+    const callRow = services.database.connection.prepare('SELECT id FROM model_tool_calls WHERE task_id=?').get(historicalResult.data.taskId) as { id: string } | undefined;
+    assert.ok(callRow);
+    assert.throws(() => (services.modelTools as unknown as { assertHistoricalAlgorithmPreview(t: unknown, p?: string): void })
+      .assertHistoricalAlgorithmPreview({ action: 'algorithms.calculate', result: { data: { modelPreview: leaked } } }, JSON.stringify({ data: leaked })),
+      { code: 'MODEL_SHARE_REVOKED' });
+    assert.throws(() => (services.modelTools as unknown as { assertHistoricalAlgorithmPreview(t: unknown, p?: string): void })
+      .assertHistoricalAlgorithmPreview({ action: 'algorithms.status', result: { data: { modelPreview: { error: {
+        code: 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', message: JSON.stringify({ diagnostics: [{ revision_id: 'r_future' }] }) } } } } }),
+      { code: 'MODEL_SHARE_REVOKED' });
   } finally {
     finish();
     await services.tasks.dispose(); await core.dispose(); services.segments?.close(); services.files.closeTemporaryRetention(); database.close();

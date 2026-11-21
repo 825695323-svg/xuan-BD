@@ -223,7 +223,7 @@ export class ProcessingPlanService {
   }
 
   constructor(private readonly options: { database: CoreDatabase; tasks(): TaskService; materials: MaterialService;
-    objects: PlanObjectStore; financialReader?: FinancialReader; financialReaderIdentity?(): unknown;
+    objects: PlanObjectStore; financialReader?: FinancialReader; financialReaderIdentity?(): unknown; financialReadBinding?(): unknown;
     financialCoaRegistry?: ChartOfAccountsRegistry;
     /** 端点适配登记：只提供已采用版本的冻结配置与漂移记录。 */
     adapters?: EndpointAdapterRegistry;
@@ -821,6 +821,11 @@ export class ProcessingPlanService {
         const binding = this.options.financialReaderIdentity();
         if (!binding) fail('FINANCIAL_FIXED', '财务固定读取连接尚未选定。');
         table.financialReaderBinding = wfdSha256(canonicalWfdJson(binding));
+        if (this.options.financialReadBinding) {
+          const readBinding = this.options.financialReadBinding();
+          if (!readBinding) fail('FINANCIAL_FIXED', '财务固定读取实现绑定缺失，不能冻结外部查询版本。');
+          table.financialReadBindingDigest = wfdSha256(canonicalWfdJson(readBinding));
+        }
       }
       const target = readTarget(record.target);
       if (tables.some(table => table.ocrClaimSelection || table.transcriptionClaimSelection)) {
@@ -1156,7 +1161,8 @@ export class ProcessingPlanService {
           ...(table.pdfSelection ? { pdfSelection: table.pdfSelection } : {}),
           ...(table.ocrClaimSelection ? { ocrClaimSelection: table.ocrClaimSelection } : {}),
           ...(table.transcriptionClaimSelection ? { transcriptionClaimSelection: table.transcriptionClaimSelection } : {}),
-          ...(table.financialCalculation ? { financialCalculation: table.financialCalculation, financialReaderBinding: table.financialReaderBinding } : {}),
+          ...(table.financialCalculation ? { financialCalculation: table.financialCalculation, financialReaderBinding: table.financialReaderBinding,
+            ...(table.financialReadBindingDigest ? { financialReadBindingDigest: table.financialReadBindingDigest } : {}) } : {}),
           ...(table.sourceProjection ? { sourceProjection: table.sourceProjection } : {}) },
         completion: { kind: 'parsed_table', source_sha256: fact.sha256, row_count_gt: 0, unique_nonempty_fields: true, original_cells_preserved: true,
           ...(table.sourceAdapter ? { adapter_id: table.sourceAdapter.adapterId, adapter_version: table.sourceAdapter.version,
@@ -1387,7 +1393,10 @@ export class ProcessingPlanService {
       const original = this.options.materials.readOriginal(params.materialId);
       if (original.sha256 !== material.sha256) fail('PROCESSING_MATERIAL_CHANGED', '解析前材料摘要与计划冻结值不符。');
       if (params.financialCalculation && (!this.options.financialReader || !this.options.financialReaderIdentity
-        || wfdSha256(canonicalWfdJson(this.options.financialReaderIdentity())) !== params.financialReaderBinding)) fail('FINANCIAL_FIXED', '固定计划的财务读取连接身份已变化；未改绑或读取其他实例。');
+        || wfdSha256(canonicalWfdJson(this.options.financialReaderIdentity())) !== params.financialReaderBinding
+        || params.financialReadBindingDigest !== undefined && (!this.options.financialReadBinding
+          || wfdSha256(canonicalWfdJson(this.options.financialReadBinding() ?? null)) !== params.financialReadBindingDigest)))
+        fail('FINANCIAL_FIXED', '固定计划的财务读取连接或外置查询实现已变化；未改绑或读取其他实例。');
       const mediaProjection = ['ocr-review', 'transcription-review'].includes(params.format) ? await this.projectMediaClaim(original.bytes, params) : null;
       this.assertActive(context);
       const projection = mediaProjection ?? (params.format === 'pdf' ? await projectFinancialPdf(original.bytes, params.pdfSelection!, context.signal)
@@ -1877,7 +1886,8 @@ function digestParameters(spec: Pick<StepSpec, 'kind' | 'parameters'>): WfdRecor
     ...(spec.parameters.ocrClaimSelection ? { ocrClaimSelection: spec.parameters.ocrClaimSelection } : {}),
     ...(spec.parameters.transcriptionClaimSelection ? { transcriptionClaimSelection: spec.parameters.transcriptionClaimSelection } : {}),
     ...(spec.parameters.financialCalculation ? { financialCalculation: spec.parameters.financialCalculation,
-      financialReaderBinding: spec.parameters.financialReaderBinding } : {}) } : spec.parameters;
+      financialReaderBinding: spec.parameters.financialReaderBinding,
+      ...(spec.parameters.financialReadBindingDigest ? { financialReadBindingDigest: spec.parameters.financialReadBindingDigest } : {}) } : {}) } : spec.parameters;
 }
 function stepDigest(spec: Omit<StepSpec, 'specDigest'>, ...dependencies: StepSpec[]): string {
   const parameters = digestParameters(spec);

@@ -336,10 +336,15 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       : entry.action === 'algorithms.screen' ? ['algorithms', 'algorithmRead'] : ['algorithms'];
     direct.registry.bindVersions(entry.action, () => {
       const workspace = options.workspaceServices?.r1Workspace;
+      const r1ReadBinding = readsWfd ? (workspace?.readBinding?.() ?? null) : null;
+      const r1Caps = readsWfd ? workspace?.capabilities?.() : null;
+      if (readsWfd && r1Caps?.connection && (r1Caps.configuration === undefined || r1Caps.configuration.state === 'configured') && !r1ReadBinding) {
+        throw new TaskError('DIRECT_DEPENDENCY_UNAVAILABLE', 'WFD 固定读取绑定缺失，不能冻结外置查询实现。');
+      }
       return directDependencyVersions(entry.action, implementation,
         { ...conversationAlgorithms!.versionBinding, ...(publishes ? { execution: options.workspaceServices?.algorithms?.versionBinding ?? null } : {}),
-          ...(readsWfd ? { r1: workspace?.versionBinding ?? null, r1Connection: workspace?.capabilities?.().connection ?? null,
-            r1ReadBinding: workspace?.readBinding?.() ?? null } : {}) }, {});
+          ...(readsWfd ? { r1: workspace?.versionBinding ?? null, r1Connection: r1Caps?.connection ?? null,
+            r1ReadBinding } : {}) }, {});
     });
   }
   for (const entry of conversationProcessing?.registrations ?? []) { direct.registry.register(entry); direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'], { ...(options.workspaceServices?.processing?.versionBinding ?? {}) }, {})); }
@@ -424,6 +429,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       return r1Workspace.readProduct(value, signal);
     },
     financialReaderIdentity: (): unknown => r1Workspace?.capabilities().connection,
+    financialReadBinding: (): unknown => r1Workspace?.readBinding?.() ?? null,
     objects: { put: (bytes, mediaType) => candidates.saveObject(bytes, mediaType), get: ref => candidates.objectBytes(ref),
       verify: ref => candidates.verifyObject(ref) } }) : undefined;
   let r1Runtime: R1Runtime | undefined;

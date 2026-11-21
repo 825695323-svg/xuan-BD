@@ -81,7 +81,8 @@ function fixture() {
   const reader = new R1ProductReader({ runtime: () => ({ client: client as unknown as R1Runtime['client'], currentIdentity: () => state.identity }),
     control: () => ({ stopped: state.stopped, generation: state.generation }) });
   const switches = { calculate: true };
-  const companion = { r1Workspace: { readProduct: reader.readProduct.bind(reader), capabilities: () => ({ connection: identity }) },
+  const companion = { r1Workspace: { readProduct: reader.readProduct.bind(reader), capabilities: () => ({ connection: identity }),
+    readBinding: () => ({ readSchemaSha256: '4'.repeat(64), queryImplSha256: '5'.repeat(64) }) },
     productionModuleSwitches: switches, bd: { assertDispatch: () => { state.dispatchChecked += 1; } } } as unknown as WorkspaceServices;
   const bridge = new ConversationAlgorithmBridge({ database, companion, origin: () => state.origin, rulesVersion: () => state.rulesVersion,
     submissionContext: () => state.historicalPurpose ? { authority: 'operator-http', requestId: 'isolated-operator',
@@ -279,9 +280,19 @@ test('普通产品及兼容顶层返回均固定定义和合同，仅相同版�
     assert.deepEqual(((await f.execute()).fixedRead as WfdRecord).definitionRef, definition);
     f.state.changeResult = value => {
       value.product = { definition_refs: [definition] };
-      delete (value.rows as WfdRecord[])[0].contract_ref;
     };
     assert.deepEqual(((await f.execute()).fixedRead as WfdRecord).contractRef, syntheticContract);
+    assert.deepEqual(((await f.execute()).fixedRead as WfdRecord).definitionRef, definition);
+    f.state.changeResult = value => {
+      value.product = { definition_refs: [definition] };
+      for (const raw of value.rows as WfdRecord[]) delete raw.contract_ref;
+    };
+    await assert.rejects(f.execute(), hasCode('STRATEGY_SCREEN_DEFINITION_MIXED'));
+    f.state.changeResult = value => {
+      value.product = { definition_refs: [definition] };
+      delete (value.rows as WfdRecord[])[0].contract_ref;
+    };
+    await assert.rejects(f.execute(), hasCode('STRATEGY_SCREEN_DEFINITION_MIXED'));
     f.state.changeResult = value => {
       value.contract_versions = [{ version: 'v1' }];
       for (const raw of value.rows as WfdRecord[]) delete raw.contract_ref;

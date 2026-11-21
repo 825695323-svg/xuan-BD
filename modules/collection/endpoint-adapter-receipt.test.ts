@@ -123,7 +123,7 @@ test('投影、成功尝试与候选反馈必须指向同一原件', () => {
   const good = receipts[1]!, bad = receipts[0]!;
   for (const field of ['projection', 'dailyValidation']) {
     assert.deepEqual(issue({ ...data(), [field]: { rawSha256: good.sha256 } })?.receipts, [project(good)]);
-    for (const invalid of [{}, { rawSha256: null }, { rawSha256: bad.sha256 }])
+    for (const invalid of [null, [], 'raw', 123, {}, { rawSha256: null }, { rawSha256: bad.sha256 }])
       assert.equal(issue({ ...data(), [field]: invalid }), null);
     for (const sha256 of ['x', 'A'.repeat(64), '0'.repeat(63)]) {
       assert.equal(issue({ operation: 'daily_bars', observedAt: data().observedAt, sourceId: data().sourceId, sourceReceipts: [{ ...good, sha256 }],

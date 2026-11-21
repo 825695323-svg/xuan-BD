@@ -9,6 +9,9 @@ const mismatch = (message: string): never => { throw new TaskError('DERIVED_NUME
 const same = (actual: unknown, expected: number | null) => expected === null ? actual === null
   : typeof actual === 'number' && Number.isFinite(actual) && Number.isFinite(expected)
     && Math.abs(actual - expected) <= 1e-10 * Math.max(1, Math.abs(expected));
+const sameRelative = (actual: unknown, expected: number | null) => expected === null ? actual === null
+  : typeof actual === 'number' && Number.isFinite(actual) && Number.isFinite(expected)
+    && (expected === 0 ? actual === 0 : Math.abs(actual - expected) <= 1e-12 * Math.abs(expected));
 
 type NumericResult = Pick<AlgorithmComputedResult, 'metadata' | 'methodId' | 'parameters' | 'rows' | 'diagnostics'>;
 
@@ -27,7 +30,9 @@ export function verifyAlgorithmNumbers(result: NumericResult, input: AlgorithmDa
     return row.close;
   });
   const { methodId, parameters } = result;
-  const declared = indexAlgorithmDiagnostics(result.diagnostics, 'DERIVED_NULL_REASON_MISSING');
+  const declared = methodId === 'macd' && result.diagnostics === undefined
+    ? new Map<string, AlgorithmDiagnosticReason>()
+    : indexAlgorithmDiagnostics(result.diagnostics, 'DERIVED_NULL_REASON_MISSING');
   if (methodId === 'macd') {
     if (declared.size) throw new TaskError('DERIVED_DIAGNOSTIC_UNEXPECTED', 'MACD 全部输出为数值，不能带有空值诊断。');
     verifyMacdNumbers(result, close);
@@ -48,7 +53,8 @@ export function verifyAlgorithmNumbers(result: NumericResult, input: AlgorithmDa
         declared.delete(key);
         verified.set(key, value);
       }
-      if (!same(rows[index]?.[field], typeof value === 'string' ? null : value)) mismatch(`第 ${index + 1} 行 ${field} 的独立数值核对不一致。`);
+      const matches = methodId === 'alpha191_116' ? sameRelative : same;
+      if (!matches(rows[index]?.[field], typeof value === 'string' ? null : value)) mismatch(`第 ${index + 1} 行 ${field} 的独立数值核对不一致。`);
     }
   }
   if (declared.size)

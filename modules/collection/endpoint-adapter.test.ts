@@ -382,7 +382,7 @@ test('真实取得回执：生产 issuer 核成功状态/受信 producer/动作�
     const sourceTask = { action: 'source.kline.read', runtimeId: 'direct', status: 'succeeded', requiresReview: false,
       versions: { directConfiguration: 'cfg-1' },
       result: { data: { operation: 'daily_bars', scopeId: 'CN/A_STOCK', observedAt: '2026-11-06T01:00:00Z',
-        requested: { adjustment: 'none', fields2: ['f51', 'f52', 'f53'] }, dailyValidation: { adjustment: 'none' },
+        requested: { adjustment: 'none', fields2: ['f51', 'f52', 'f53'] }, dailyValidation: { adjustment: 'none', rawSha256: materialSha },
         sourceReceipts: [{ url: 'https://push2his.example.test/api/qt/stock/kline/get?fields2=f51,f52,f53&secid=1.600519',
           sha256: materialSha, fileRefId: 'file-1', contentType: 'application/json', status: 200 }] } } };
     const receipt = readSourceReceiptFromTask(sourceTask, ['direct'])!;

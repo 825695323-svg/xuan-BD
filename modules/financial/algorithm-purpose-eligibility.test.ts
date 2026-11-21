@@ -229,6 +229,13 @@ test('历史计算及 status 仅向模型返回原因计数，完整未来修订
       } else {
         assert.equal(status.error?.code, 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION');
         assert.doesNotMatch(host.tasks.get(calculated.taskId).error!.message, /r_future|future-key|future-subject/u);
+        const callAudit = host.database.connection.prepare('SELECT state,raw_result_json,raw_result_digest FROM algorithm_calls WHERE task_id=?').get(calculated.taskId) as
+          { state: string; raw_result_json: string | null; raw_result_digest: string | null };
+        assert.equal(callAudit.state, 'failed');
+        assert.ok(callAudit.raw_result_json && callAudit.raw_result_digest);
+        const parsedAudit = JSON.parse(callAudit.raw_result_json);
+        assert.equal(parsedAudit.kind, 'historical_no_eligible_version');
+        assert.deepEqual(parsedAudit.diagnostics, diagnostics);
         const legacy = JSON.stringify({ diagnostics: diagnostics.slice(0, 64) });
         for (const message of [legacy, legacy.slice(0, 180)]) {
           host.database.connection.prepare('UPDATE tasks SET error=? WHERE id=?').run(

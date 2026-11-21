@@ -1,4 +1,5 @@
 """Registered indicators over supplied daily observations."""
+from fractions import Fraction
 import math
 import sys
 
@@ -190,14 +191,9 @@ def alpha191_116(close, params, rows):
         if window is None:
             values.append(WARMUP)
             continue
-        # Opposite observation weights cancel equal endpoints before combining smaller differences.
-        differences = [window[19 - k] - window[k] for k in range(10)]
-        # The ten positive weights sum to 50. Scale first only when their numerator can overflow.
-        if max(map(abs, differences)) >= sys.float_info.max / 50:
-            slope = math.fsum(((9.5 - k) / 665) * delta for k, delta in enumerate(differences))
-        else:
-            slope = math.fsum((9.5 - k) * delta for k, delta in enumerate(differences)) / 665
-        values.append(slope)
+        # Exact IEEE-754 rational linear combination prevents cancellation on large baseline offsets.
+        total = sum((2 * k - 19) * Fraction(price) for k, price in enumerate(window))
+        values.append(float(total / 1330))
     return {"ALPHA191_116": values}
 
 

@@ -105,7 +105,7 @@ function productVersions(result: WfdRecord) {
   const definitionRef = fixedRef(definitionRefs?.[0], version?.definition_ref);
   const contractRef = fixedRef(contractRefs?.[0], version?.contract_ref);
   return { definitionRefs, contractVersions, contractRefs, definitionRef, contractRef,
-    hasVersion: !!(definitionRef || contractRef || versionIdentity(version)) };
+    hasContract: !!(contractRef || versionIdentity(version)) };
 }
 
 function versionIdentity(ref: unknown): ref is WfdRecord {
@@ -288,7 +288,7 @@ export async function screenFixedWfdStrategy(value: unknown, read: Reader, signa
         if (request.readMode === 'indexed') fail('STRATEGY_SCREEN_WFD_RESPONSE', '索引返回明确标的集合之外的行。');
         continue;
       }
-      if (!versions.hasVersion && raw.contract_ref == null) mixedDefinition();
+      if (!versions.hasContract && raw.contract_ref == null) mixedDefinition();
       rowContract = checkRowVersion(raw.contract_ref, versions.contractRef, rowContract);
       rowDefinition = checkRowVersion(raw.definition_ref, versions.definitionRef, rowDefinition);
       if (selectedKeys.has(keyCell.value)) fail('STRATEGY_SCREEN_CROSS_SECTION_UNKNOWN', '同一截面标的有多行或多个版本，必须先明确数据口径。');
@@ -323,7 +323,7 @@ export async function screenFixedWfdStrategy(value: unknown, read: Reader, signa
       fail('STRATEGY_SCREEN_WFD_BUDGET', '分页预算已耗尽，未把部分截面作为完整输入。');
     cursor = page.next_cursor; cursors.add(cursor);
   } while (cursor);
-  if (!versions.hasVersion && !rowContract) mixedDefinition();
+  if (!versions.hasContract && !rowContract) mixedDefinition();
   if (request.selection.keys?.some(item => !selectedKeys.has(item)))
     fail('STRATEGY_SCREEN_WFD_INCOMPLETE', '固定数据没有覆盖明确要求的全部标的；未以缺项为零继续排名。');
   active();

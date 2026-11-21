@@ -712,7 +712,7 @@ export class CoreModelTools {
       UNION SELECT m.id,m.parent_id FROM messages m JOIN path p ON m.id=p.parent_id WHERE m.conversation_id=?) SELECT id FROM path WHERE id=?`)
       .get(scope.branchId, scope.conversationId, scope.conversationId, source.messageId);
     const ticket = JSON.parse(call.ticket_json) as ShareTicket, task = this.options.getTasks().get(call.task_id);
-    this.assertHistoricalScreenPreview(task);
+    this.assertHistoricalAlgorithmPreview(task, call.preview_json);
     if (!ancestor || task.ownerRole !== scope.subject || task.status !== 'succeeded' || task.requiresReview || !task.result
       || task.currentRunId !== ticket.runId || task.currentAttemptId !== ticket.attemptId || task.generation !== ticket.generation
       || ticket.resultDigest !== digestOperationArgs(task.result) || !ticket.sources || !ticket.outputs) throw publicError('MODEL_SHARE_REVOKED');
@@ -1646,7 +1646,7 @@ export class CoreModelTools {
       || call.branch_id !== input.branchId || (capturedModelDigest ?? this.channel(model).digest) !== call.model_digest || !call.task_id || !call.ticket_json) throw publicError('MODEL_SHARE_REVOKED');
     const ticket = JSON.parse(call.ticket_json) as ShareTicket;
     const task = this.options.getTasks().get(call.task_id);
-    this.assertHistoricalScreenPreview(task);
+    this.assertHistoricalAlgorithmPreview(task, call.preview_json);
     const attempt = this.options.getTasks().getAttempts(ticket.runId).find((candidate) => candidate.id === ticket.attemptId);
     const events = this.options.getTasks().events(task.id).filter((event) => event.attemptId === ticket.attemptId);
     const terminal = events.at(-1);
@@ -1675,13 +1675,33 @@ export class CoreModelTools {
   }
 
   /** 旧任务原回执继续保管。历史预览或旧证据续页不能重放带原始排除诊断的正文。 */
-  private assertHistoricalScreenPreview(task: TaskRecord): void {
-    if (task.action !== 'algorithms.screen') return;
-    const data = task.result?.data, preview = isObject(data) ? data.modelPreview : null;
-    const fixed = isObject(preview) ? preview.fixedRead : null;
-    if (!isObject(fixed) || !isObject(fixed.historicalExclusions)
-      || fixed.historyMode !== 'snapshot_contents' && 'diagnostics' in fixed.historicalExclusions)
-      throw publicError('MODEL_SHARE_REVOKED');
+  private assertHistoricalAlgorithmPreview(task: TaskRecord, cachedPreviewJson?: string | null): void {
+    const isScreen = task.action === 'algorithms.screen';
+    const isCalculateOrStatus = ['algorithms.calculate', 'data.modules.calculate', 'algorithms.status'].includes(task.action);
+    if (!isScreen && !isCalculateOrStatus) return;
+    const candidates: unknown[] = [];
+    const data = task.result?.data, taskPreview = isObject(data) ? data.modelPreview : null;
+    if (taskPreview !== null) candidates.push(taskPreview);
+    if (typeof cachedPreviewJson === 'string') {
+      let parsed: unknown;
+      try { parsed = JSON.parse(cachedPreviewJson); } catch { throw publicError('MODEL_SHARE_REVOKED'); }
+      if (isObject(parsed) && parsed.data !== undefined) candidates.push(parsed.data);
+    }
+    if (!candidates.length) {
+      if (isScreen) throw publicError('MODEL_SHARE_REVOKED');
+      return;
+    }
+    for (const preview of candidates) {
+      if (!isObject(preview)) throw publicError('MODEL_SHARE_REVOKED');
+      if (isScreen) {
+        const fixed = isObject(preview.fixedRead) ? preview.fixedRead : null;
+        if (!fixed || !isObject(fixed.historicalExclusions)
+          || fixed.historyMode !== 'snapshot_contents' && 'diagnostics' in fixed.historicalExclusions)
+          throw publicError('MODEL_SHARE_REVOKED');
+        continue;
+      }
+      if (!isSafeHistoricalAlgorithmPreview(preview)) throw publicError('MODEL_SHARE_REVOKED');
+    }
   }
 
   private preview(call: CallRow, task: TaskRecord): JsonValue {
@@ -1945,6 +1965,37 @@ function skillMetadata(skill: AgentSkillRecord): Record<string, JsonValue> {
     requiresTools: skill.requiresTools ?? [], missingTools: skill.missingTools, readable: skill.readable, toolsAvailable: skill.available };
 }
 function isObject(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
+function isSafeHistoricalSummary(value: unknown): boolean {
+  if (!isObject(value) || 'diagnostics' in value) return false;
+  const keys = Object.keys(value);
+  if (keys.some(k => !['source', 'scope', 'excludedCount', 'byReason'].includes(k))) return false;
+  if (value.source !== 'WFD' || value.scope !== 'fixed_product_not_date_filtered') return false;
+  if (typeof value.excludedCount !== 'number' || !Number.isSafeInteger(value.excludedCount) || value.excludedCount < 0) return false;
+  if (!isObject(value.byReason)) return false;
+  return Object.values(value.byReason).every(v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0);
+}
+function isSafeHistoricalAlgorithmPreview(preview: Record<string, unknown>): boolean {
+  if (isObject(preview.error) && preview.error.code === 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION') {
+    const message = preview.error.message;
+    if (message !== '该固定快照在所请求的历史截止没有合格版本。') {
+      if (typeof message !== 'string') return false;
+      try { if (!isSafeHistoricalSummary(JSON.parse(message))) return false; } catch { return false; }
+    }
+  }
+  const result = isObject(preview.result) ? preview.result : null;
+  const source = result && isObject(result.source) ? result.source : null;
+  const res = source && isObject(source.resolution) ? source.resolution : null;
+  if (!res) return true;
+  const hr = isObject(res.historicalRead) ? res.historicalRead : null;
+  const hasPopulatedDiagnostics = (obj: Record<string, unknown>) =>
+    Array.isArray(obj.diagnostics) ? obj.diagnostics.length > 0 : 'diagnostics' in obj && obj.diagnostics !== undefined;
+  const historical = ['market_known_at', 'system_held_at'].includes(String(source!.perspective))
+    || hr !== null && ['market_known_at', 'system_held_at'].some(mode => hr.actualPerspective === mode || hr.requestedPerspective === mode)
+    || hasPopulatedDiagnostics(res) || hr !== null && hasPopulatedDiagnostics(hr);
+  if (!historical) return true;
+  if ('diagnostics' in res || 'envelope' in res || !hr || 'diagnostics' in hr) return false;
+  return hr.historicalExclusions === null || isSafeHistoricalSummary(hr.historicalExclusions);
+}
 function validId(value: string): void {
   if (typeof value !== 'string' || !value.trim() || value.length > 300 || /[\u0000-\u001f]/u.test(value)) throw publicError('MODEL_ARGS_INVALID');
 }

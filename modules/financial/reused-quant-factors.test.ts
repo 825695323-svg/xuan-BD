@@ -342,6 +342,19 @@ describe('合成固定快照经原任务、派生核验与 WFD 协议', { skip: 
     result.rows[19].ALPHA191_116 = 0;
     assert.throws(() => verifyAlgorithmNumbers(result, input), { code: 'DERIVED_NUMERIC_MISMATCH' });
     assert.throws(() => checkDerivedForWfd(result, binding, id, input), { code: 'DERIVED_NUMERIC_MISMATCH' });
+
+    const cancelPrices = [1.000000001, 190000001, ...Array<number>(17).fill(1), 170000001];
+    const cancelDone = await submit('slope-tiny-offset-diff', 'alpha191_116', syntheticInput(cancelPrices));
+    assert.equal(cancelDone.status, 'succeeded', JSON.stringify(cancelDone.error));
+    const cancelResult = algorithms.view(cancelDone.id).result!, cancelInput = algorithms.verifiedInput(cancelDone.id);
+    const cancelActual = cancelResult.rows[19].ALPHA191_116;
+    assert.ok(typeof cancelActual === 'number' && Math.abs(cancelActual - -1.4285715467719585e-11) < 1e-24, String(cancelActual));
+    verifyAlgorithmNumbers(cancelResult, cancelInput);
+    const cancelChecked = checkDerivedForWfd(cancelResult, binding, 'slope-tiny-offset-diff', cancelInput);
+    assert.notEqual(((cancelChecked.structured.payload.rows as { values: WfdRecord }[])[19].values.ALPHA191_116 as WfdRecord).value, '0');
+    cancelResult.rows[19].ALPHA191_116 = 0;
+    assert.throws(() => verifyAlgorithmNumbers(cancelResult, cancelInput), { code: 'DERIVED_NUMERIC_MISMATCH' });
+    assert.throws(() => checkDerivedForWfd(cancelResult, binding, 'slope-tiny-offset-diff', cancelInput), { code: 'DERIVED_NUMERIC_MISMATCH' });
   });
 
   test('零分母、非正对数和全平 RSI 的真实诊断都生成 not_applicable', async () => {

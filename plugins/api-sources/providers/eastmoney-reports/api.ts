@@ -192,6 +192,7 @@ function detailMetadata(literal: string): Record<string, JsonValue> | null {
 }
 
 const relatedTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)/u;
+const relatedWrapperTitle = /^[【[(\s]*(?:相关阅读|相关研报|推荐阅读|延伸阅读)[\s】\])：:]*$/u;
 const sectionHeadings = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend,dt,[class*="title" i]';
 const relatedSelector = 'aside,nav,footer,[role="navigation"],[aria-label*="相关"],[aria-label*="推荐"],[aria-label*="延伸阅读"],'
   + '[class*="related" i],[id*="related" i],[class*="recommend" i],[id*="recommend" i],.rel-list,.xgyd,.xgyb';
@@ -224,8 +225,9 @@ function relatedSections(document: Document) {
     if (!relatedTitle.test(element.textContent?.trim() ?? '')) continue;
     let heading = element;
     // 标题可以独占一层包装，链接列表与包装节点同级。
-    while (heading.parentElement?.matches('div,span,header,strong,b') && heading.parentElement.childElementCount === 1
-      && heading.parentElement.textContent?.trim() === heading.textContent?.trim()) heading = heading.parentElement;
+    while (heading.parentElement?.matches('div,span,header,strong,b,p') && heading.parentElement.childElementCount === 1
+      && (heading.parentElement.textContent?.trim() === heading.textContent?.trim()
+        || relatedWrapperTitle.test(heading.parentElement.textContent?.trim() ?? ''))) heading = heading.parentElement;
     excluded.add(heading);
     markFollowing(heading, headingLevel(element));
   }

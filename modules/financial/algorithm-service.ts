@@ -10,7 +10,7 @@ import type { ProcessRuntime } from '../../platform/runtime/programs.js';
 import type { JsonValue, TaskEffectRecord, TaskRecoveryResult } from '../../contracts/task-contracts.js';
 import { canonical, captureAssets, executeFinancialAssets, financialDigest, verifyAssets, type FinancialAssetBundle } from '../../plugins/financial/local-compute/assets.js';
 import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/database/wfd-transport.js';
-import { MACD_SNAPSHOT_SEMANTIC_CONTRACT, matchesVolumeDefinition } from './product-machine-snapshot.js';
+import { MACD_SNAPSHOT_SEMANTIC_CONTRACT, matchesVolumeDefinition, readHistoricalRejectionAudit } from './product-machine-snapshot.js';
 import {
   ALGORITHM_CALL_ACTION, ALGORITHM_CONTRACT_VERSION, ALGORITHM_METHODS, ALGORITHM_METHOD_IDS, ALGORITHM_RUNTIME,
   ALGORITHM_INPUT_ADAPTER_VERSION, ALGORITHM_NULL_STATES, invalidAlgorithmParameter, isAlgorithmMethodId,
@@ -344,9 +344,10 @@ export class LocalAlgorithmService {
       });
       return { summary: `${method.title}计算完成；结果为本地候选，尚未发布。`, data: json(result) };
     } catch (error) {
+      const failedAudit = raw !== undefined ? raw : readHistoricalRejectionAudit(error);
       try {
         this.db.prepare(`UPDATE algorithm_calls SET raw_result_json=COALESCE(?,raw_result_json),raw_result_digest=COALESCE(?,raw_result_digest),state='failed',updated_at=? WHERE task_id=?`)
-          .run(raw === undefined ? null : canonical(raw), raw === undefined ? null : financialDigest(raw), this.now(), context.task.id);
+          .run(failedAudit === undefined ? null : canonical(failedAudit), failedAudit === undefined ? null : financialDigest(failedAudit), this.now(), context.task.id);
       } catch { /* 原错误优先；状态更新失败不能在主错误之外制造第二事实。 */ }
       throw error;
     }

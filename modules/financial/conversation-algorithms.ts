@@ -96,8 +96,9 @@ function hasScreenReader(port: WorkspaceServices['r1Workspace']): boolean {
   if (!port.capabilities) return true;
   try {
     const caps = port.capabilities();
-    return !!caps?.connection && typeof caps.connection.connectionId === 'string' && !!caps.connection.connectionId.trim()
+    const configured = !!caps?.connection && typeof caps.connection.connectionId === 'string' && !!caps.connection.connectionId.trim()
       && (caps.configuration === undefined || caps.configuration?.state === 'configured');
+    return configured && typeof port.readBinding === 'function' && !!port.readBinding();
   } catch { return false; }
 }
 
@@ -127,16 +128,23 @@ export class ConversationAlgorithmBridge {
         '固定算法无逐次业务审批；宿主执行器许可与方法版本仍需核实',
         '结构化计算结果由独立核对器检查，直接复用 R1 与 WFD 固定读回，不回到原报五步'],
       available: () => {
-        const calculationAvailable = !!options.companion.algorithms;
+        const hasAlgorithms = !!options.companion.algorithms;
+        const calculationAvailable = hasAlgorithms && !!options.companion.derivedPublisher
+          && typeof options.companion.algorithms!.catalog === 'function'
+          && options.companion.algorithms!.catalog().status === 'available';
         const enabled = options.companion.productionModuleSwitches?.calculate !== false;
         const discovery = ['algorithms.capabilities', 'algorithms.contract', 'bd.session.capabilities'].includes(action);
         const available = action === 'algorithms.screen' ? enabled && hasScreenReader(options.companion.r1Workspace)
           : action === 'data.modules.calculate' || action === 'algorithms.calculate' ? calculationAvailable && enabled
-            : calculationAvailable || discovery && !!options.companion.r1Workspace?.readProduct || action === 'bd.session.capabilities' && !!options.companion.processing;
+            : action === 'algorithms.publish' ? calculationAvailable
+              : action === 'algorithms.status' ? hasAlgorithms
+                : discovery && (hasAlgorithms || !!options.companion.r1Workspace?.readProduct
+                  || action === 'bd.session.capabilities' && !!options.companion.processing);
         return { available, ...(!available
           ? { reason: action === 'algorithms.screen' ? !enabled ? '计算模块已停用。' : '受信 WFD 固定读取未装配。'
+            : !enabled && (action === 'data.modules.calculate' || action === 'algorithms.calculate') ? '计算模块已停用。'
             : action === 'bd.session.capabilities'
-            ? '清洗和计算工具均未装配。' : '计算服务未装配；只读清洗能力仍可单独使用。' } : {}) };
+            ? '清洗和计算工具均未装配。' : '计算服务或 WFD 固定输入/发布端口未就绪；只读目录或历史状态仍可单独查询。' } : {}) };
       },
     });
     this.registrations = [

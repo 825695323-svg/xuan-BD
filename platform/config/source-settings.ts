@@ -300,13 +300,18 @@ export class SourceSettingsService {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       }
-      const node = lstatSync(guardPath, { bigint: true });
-      if (!node.isFile() || node.nlink !== 1n || (node.mode & 0o7777n) !== 0o600n) return false;
+      const node = lstatSync(guardPath, { bigint: true }), win32 = process.platform === 'win32';
+      if (!node.isFile() || node.nlink !== 1n || (!win32 && (node.mode & 0o7777n) !== 0o600n)) return false;
+      const guardCheck = openSync(guardPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const openedGuard = fstatSync(guardCheck, { bigint: true });
+        if (!openedGuard.isFile() || openedGuard.dev !== node.dev || openedGuard.ino !== node.ino || openedGuard.nlink !== 1n) return false;
+      } finally { closeSync(guardCheck); }
       guard = new DatabaseSync(guardPath);
       guard.exec('PRAGMA busy_timeout = 5000');
       guard.exec('BEGIN IMMEDIATE');
       const locked = lstatSync(guardPath, { bigint: true });
-      if (locked.dev !== node.dev || locked.ino !== node.ino || locked.nlink !== 1n || locked.mode !== node.mode) return false;
+      if (locked.dev !== node.dev || locked.ino !== node.ino || locked.nlink !== 1n || (!win32 && locked.mode !== node.mode)) return false;
       const before = lstatSync(lockPath, { bigint: true });
       if (!before.isFile() || before.nlink !== 1n || before.size > 1024n) return false;
       fd = openSync(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);

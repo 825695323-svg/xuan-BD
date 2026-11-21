@@ -245,11 +245,20 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
       }
       if (rawRows.length === 0) {
         if (fixed.perspective !== undefined && fixed.perspective !== 'snapshot_contents') {
-          throw new TaskError('ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', JSON.stringify({
+          const error = new TaskError('ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', JSON.stringify({
             product_id: fixed.productId, snapshot_id: fixed.snapshotId,
             perspective: fixed.perspective, at: fixed.at ?? null, historicalExclusions: historicalExclusionSummary(diagnostics),
             action: '该固定快照没有在所请求历史视角/截止下合格的具体版本；不退回当前版本或快照内容。',
           }));
+          historicalRejectionAudits.set(error, canonicalRecord({
+            kind: 'historical_no_eligible_version',
+            product_id: fixed.productId,
+            snapshot_id: fixed.snapshotId,
+            perspective: fixed.perspective,
+            at: fixed.at ?? null,
+            diagnostics,
+          }) as unknown as JsonValue);
+          throw error;
         }
         throw new TaskError('ALGORITHM_SNAPSHOT_EMPTY', '固定快照产品没有行；算法入口不接受空输入。');
       }
@@ -839,6 +848,12 @@ function assertReference(reference: AlgorithmSnapshotReference): void {
     || reference.fields.some(field => typeof field !== 'string' || !field)) {
     throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '固定快照引用需要实例、产品、具体 snapshot、定义修订和明确字段。');
   }
+}
+
+const historicalRejectionAudits = new WeakMap<object, JsonValue>();
+
+export function readHistoricalRejectionAudit(error: unknown): JsonValue | undefined {
+  return error && typeof error === 'object' ? historicalRejectionAudits.get(error) : undefined;
 }
 
 function canonicalRecord(value: unknown): WfdRecord {

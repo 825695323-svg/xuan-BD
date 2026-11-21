@@ -55,6 +55,7 @@ test('real algorithm host freezes publication separately from fixed reads and bi
   let version = { r1Workspace: 'synthetic-read/1', protocol: 'wfd.structured-ingest/1.0', profile: 'data_only' };
   let connection = { connectionId: 'synthetic-fixed-read', profile: 'data_only', configSha256: 'a'.repeat(64) };
   const workspace = { get versionBinding() { return version; }, capabilities: () => ({ connection }),
+    readBinding: () => ({ readSchemaSha256: 'b'.repeat(64), queryImplSha256: 'c'.repeat(64) }),
     readProduct: async () => { throw new Error('Version checks must not read WFD'); } } as unknown as NonNullable<typeof companion.r1Workspace>;
   companion.r1Workspace = workspace;
   const database = new CoreDatabase(join(f.runtime, 'state/personal.sqlite'));
