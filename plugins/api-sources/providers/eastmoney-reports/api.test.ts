@@ -190,8 +190,18 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
   const attestedBox = `<div class="report-download" data-encode-url="fixture" data-info-code="AP202601010001"><a href="${pdf}">下载原文</a></div>`;
   const attestedScript = `<script>var zwinfo=${JSON.stringify({ encodeUrl: 'fixture', infoCode: 'AP202601010001' })};</script>`;
   for (const body of [
+    `<div id="zwinfo">${mainLink}<p><strong>相关阅读：</strong>1. 《行业展望》。${otherLink}</p></div>`,
+    `<div id="zwinfo"><p>相关阅读：详见正文。下载地址见${mainLink}</p></div>`,
+    `<div id="zwinfo"><figure><figcaption>相关阅读</figcaption>${otherLink}</figure>${mainLink}</div>`,
+    `<div id="zwinfo">${mainLink}<p><strong>${' '.repeat(40)}相关阅读</strong>1. 某行业研报 ${otherLink}</p></div>`,
+    `<div id="zwinfo"><p><strong>相关阅读</strong>量统计见${mainLink}。</p></div>`,
+    `<div id="zwinfo">${mainLink}<a role="heading" aria-level="2">相关阅读</a>${otherLink}</div>`,
+    `<div id="zwinfo">相关阅读：1. 某行业研报<div><p>下载说明</p><h2>本研报附件</h2>${mainLink}</div></div>`,
+    `<div id="zwinfo"><h2>相关阅读</h2>${otherLink}<div>${otherLink}<h2>本研报附件</h2>${mainLink}</div></div>`,
     `<div id="zwinfo">${attestedScript}${mainLink}<p><strong>相关阅读</strong></p><div class="report-download" data-encode-url="fixture" data-info-code="AP202601010001"><p>下载提示</p><h3>推荐阅读</h3><a href="${other}">推荐PDF</a></div></div>`,
+    `<div id="zwinfo">${attestedScript}${mainLink}<p><strong>相关阅读</strong></p><div class="report-download" data-encode-url="fixture" data-info-code="AP202601010001"><p>下载提示</p><h3>推荐阅读</h3><a class="report-download" data-encode-url="fixture" data-info-code="AP202601010001" href="${other}">推荐PDF</a></div></div>`,
     `<div id="zwinfo">${attestedScript}<cite class="related">相关阅读：${otherLink}</cite><a data-encode-url="fixture" data-info-code="AP202601010001" href="${pdf}">下载原文</a></div>`,
+    `<div id="zwinfo"><p>${'<span>相关阅读：参见说明。</span>'.repeat(2000)}${mainLink}</p></div>`,
   ]) {
     assert.equal(decodeEastmoneyReportDetail(request, html(body)).pdfUrl, pdf);
   }
@@ -219,13 +229,18 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
     `<div id="zwinfo"><span role="heading" aria-level="2">相关阅读</span>1. 某行业研报 ${otherLink}</div>`,
     `<div id="zwinfo"><p><strong>相关阅读：</strong>1. 需求见底？三季度行业展望 ${otherLink}</p></div>`,
     `<div id="zwinfo"><p><strong>相关阅读：</strong>1. 需求见底。三季度行业展望 ${otherLink}</p></div>`,
+    `<div id="zwinfo"><p><strong>相关阅读：</strong>1. 《行业展望》。${otherLink}</p></div>`,
     `<div id="zwinfo"><p><strong>相关阅读：</strong>1. 需求见底了吗？ ${otherLink}</p></div>`,
     `<div id="zwinfo"><p><strong>相关阅读</strong>1. 某行业研报 ${otherLink}</p></div>`,
+    `<div id="zwinfo"><p><strong>${' '.repeat(40)}相关阅读</strong>1. 某行业研报 ${otherLink}</p></div>`,
     `<div id="zwinfo"><span class="title">相关阅读</span>1. 某行业研报 ${otherLink}</div>`,
+    `<div id="zwinfo"><a role="heading" aria-level="2">相关阅读</a>${otherLink}</div>`,
+    `<span id="zwinfo"><strong>相关阅读</strong>${otherLink}</span>`,
     `<article id="zwinfo"><p><strong>相关阅读</strong></p>1. 某行业研报 ${otherLink}</article>`,
     `<div id="zwinfo"><p><strong>相关阅读：</strong><span><br>某行业研报 </span>${otherLink}</p></div>`,
     `<div id="zwinfo"><details><summary>附录</summary><span>相关阅读：${otherLink}</span></details></div>`,
     `<div id="zwinfo"><figure><figcaption>附录</figcaption><span>相关阅读：${otherLink}</span></figure></div>`,
+    `<div id="zwinfo"><figure><figcaption>相关阅读</figcaption>${otherLink}</figure></div>`,
     `<ul id="zwinfo"><li>相关阅读：1. 某行业研报<div>${otherLink}</div></li></ul>`,
   ]) {
     assert.throws(() => decodeEastmoneyReportDetail(request, html(relOnly)), noPdf);
@@ -269,6 +284,7 @@ test('Eastmoney only binds the report detail attachment from its own metadata or
   for (const rootWrapper of [
     `<div class="report-download"><a href="${other}">下载</a></div><div id="zwinfo"><h2>相关阅读</h2></div>${attestedScript}`,
     `<div class="report-download"><a href="${other}">下载</a></div><div id="zwinfo"><strong>相关阅读</strong></div>${attestedScript}`,
+    `<div class="report-download"><a href="${other}">下载</a></div><span id="zwinfo"><strong>相关阅读</strong></span>${attestedScript}`,
   ]) {
     assert.throws(() => decodeEastmoneyReportDetail(request, html(rootWrapper)),
       invalidDetail('研报详情元数据与附件声明指向不同的 infoCode。'));
