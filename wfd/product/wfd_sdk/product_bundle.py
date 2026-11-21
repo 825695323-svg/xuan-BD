@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import shutil
+import stat
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -3357,7 +3359,7 @@ _STRUCTURED_PID = re.compile(r"^p_[a-zA-Z0-9_.:-]{1,120}$")
 def _structured_safe_rel(rel, *, prefixes=None, allow_empty=False):
     if not isinstance(rel, str) or (not rel and not allow_empty):
         raise ValueError("STRUCTURED_PATH_INVALID:" + repr(rel))
-    if "\\" in rel or rel.startswith("/") or re.match(r"^[A-Za-z]:", rel):
+    if "\\" in rel or rel.startswith("/") or re.search(r"(?:^|/)[A-Za-z]:|[\x00-\x1f\x7f-\x9f]", rel):
         raise ValueError("STRUCTURED_PATH_INVALID:" + rel)
     parts = rel.split("/")
     if any(part in {"", ".", ".."} for part in parts):
@@ -3368,8 +3370,19 @@ def _structured_safe_rel(rel, *, prefixes=None, allow_empty=False):
     return rel
 
 
+def _is_bundle_link(path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    return (stat.S_ISLNK(info.st_mode) or
+            bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT))
+
+
 def _structured_safe_target(root, rel, *, prefixes=None):
     _structured_safe_rel(rel, prefixes=prefixes)
+    if _is_bundle_link(Path(root)):
+        raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + rel)
     root = Path(root).resolve()
     target = (root / rel).resolve()
     if target != root and root not in target.parents:
@@ -3377,9 +3390,44 @@ def _structured_safe_target(root, rel, *, prefixes=None):
     cursor = root
     for part in PurePosixPath(rel).parts:
         cursor = cursor / part
-        if cursor.is_symlink():
+        if _is_bundle_link(cursor):
             raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + rel)
     return target
+
+
+def _read_structured_record(bundle, record):
+    """Return the exact catalog bytes checked against the pinned descriptor."""
+    digest = record["sha256"]
+    member = "objects/" + digest
+    path = _structured_safe_target(bundle, member)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        linked = path.lstat()
+        if not stat.S_ISREG(linked.st_mode):
+            raise ValueError("STRUCTURED_RECORD_TYPE_INVALID:" + member)
+        with ExitStack() as handles:
+            if os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW"):
+                dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                bundle_fd = os.open(bundle, dir_flags)
+                handles.callback(os.close, bundle_fd)
+                objects_fd = os.open("objects", dir_flags, dir_fd=bundle_fd)
+                handles.callback(os.close, objects_fd)
+                fd = os.open(digest, flags, dir_fd=objects_fd)
+            else:
+                fd = os.open(path, flags)
+            stream = handles.enter_context(os.fdopen(fd, "rb"))
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(opened, linked):
+                raise ValueError("STRUCTURED_RECORD_CHANGED:" + member)
+            raw = stream.read()
+            if (_structured_safe_target(bundle, member) != path
+                    or not os.path.samestat(opened, path.lstat())):
+                raise ValueError("STRUCTURED_RECORD_CHANGED:" + member)
+    except OSError as exc:
+        raise ValueError("STRUCTURED_RECORD_MISSING:" + member) from exc
+    if sha(raw) != digest:
+        raise ValueError("STRUCTURED_RECORD_DIGEST_MISMATCH:" + record["relative_path"])
+    return raw
 
 
 def _structured_record_allowed(rel):
@@ -3632,7 +3680,7 @@ def _structured_descriptor(bundle, expected_sha256=None):
 def _verify_structured_bundle(bundle, expected_sha256=None):
     bundle = Path(bundle)
     for path in bundle.rglob("*"):
-        if path.is_symlink():
+        if _is_bundle_link(path):
             raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + path.relative_to(bundle).as_posix())
     descriptor = _structured_descriptor(bundle, expected_sha256)
     if (descriptor.get("format_version") != STRUCTURED_BUNDLE_FORMAT
@@ -3758,10 +3806,7 @@ def _verify_structured_bundle(bundle, expected_sha256=None):
         rel = _structured_safe_rel(record["relative_path"])
         if not _structured_record_allowed(rel) or rel in catalog:
             raise ValueError("STRUCTURED_RECORD_PATH_NOT_ALLOWED:" + rel)
-        obj = _structured_safe_target(bundle, "objects/" + str(record["sha256"]))
-        if not obj.is_file() or obj.is_symlink() or sha_file(obj) != record["sha256"]:
-            raise ValueError("STRUCTURED_RECORD_MISSING:" + rel)
-        raw = obj.read_bytes()
+        raw = _read_structured_record(bundle, record)
         _structured_scan_bytes(rel, raw)
         catalog[rel] = raw
     expected_map, product_map, scope = _structured_verified(
@@ -4145,13 +4190,13 @@ def import_structured_bundle(bundle, destination, *, runtime_root,
                 # A package exported from another target must not overwrite this
                 # target's own instance identity, import markers or holdings.
                 continue
-            target = destination / record["relative_path"]
-            raw = (bundle / "objects" / record["sha256"]).read_bytes()
+            target = _structured_safe_target(destination, record["relative_path"])
             if target.is_file():
                 if sha_file(target) != record["sha256"]:
                     raise ValueError("STRUCTURED_TARGET_RECORD_CONFLICT:"
                                      + record["relative_path"])
                 continue
+            raw = _read_structured_record(bundle, record)
             engine._write_immutable(record["relative_path"], raw)
         groups = _structured_snapshot_holding_groups(snapshot)
         acquired_at = _now()
@@ -5027,7 +5072,7 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
 def _verify_structured_delta_bundle(bundle, expected_sha256=None, *, baseline_store=None):
     bundle = Path(bundle)
     for path in bundle.rglob("*"):
-        if path.is_symlink():
+        if _is_bundle_link(path):
             raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + path.relative_to(bundle).as_posix())
     descriptor = _structured_descriptor(bundle, expected_sha256)
     if (descriptor.get("format_version") != STRUCTURED_BUNDLE_FORMAT
@@ -5387,25 +5432,6 @@ def _structured_reference_rows(service, product, fields, subject, business_range
     return bindings, normalized, selected_rows
 
 
-def _structured_reference_path(root, rel):
-    if not isinstance(rel, str) or not rel or "\\" in rel or rel.startswith("/") \
-            or re.match(r"^[A-Za-z]:", rel):
-        raise ValueError("STRUCTURED_PATH_INVALID:" + repr(rel))
-    parts = rel.split("/")
-    if any(part in {"", ".", ".."} for part in parts):
-        raise ValueError("STRUCTURED_PATH_INVALID:" + rel)
-    root = Path(root).resolve()
-    target = (root / rel).resolve()
-    if target != root and root not in target.parents:
-        raise ValueError("STRUCTURED_PATH_ESCAPE:" + rel)
-    cursor = root
-    for part in parts:
-        cursor = cursor / part
-        if cursor.is_symlink():
-            raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + rel)
-    return target
-
-
 def export_structured_reference_bundle(service, product_ids, destination, *, snapshot_id,
                                        selection=None, perspective="snapshot_contents"):
     """Export metadata-only reference to fixed external WFD structured product(s)."""
@@ -5686,7 +5712,7 @@ def _structured_validate_reference_external(obj, descriptor):
 def _verify_structured_reference_bundle(bundle, expected_sha256=None):
     bundle = Path(bundle)
     for path in bundle.rglob("*"):
-        if path.is_symlink():
+        if _is_bundle_link(path):
             raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + path.relative_to(bundle).as_posix())
     descriptor = _structured_descriptor(bundle, expected_sha256)
     if (descriptor.get("format_version") != STRUCTURED_BUNDLE_FORMAT
@@ -5762,7 +5788,7 @@ def _verify_structured_reference_bundle(bundle, expected_sha256=None):
     listed = set()
     for item in inventory:
         rel = item["path"]
-        path = _structured_reference_path(bundle, rel)
+        path = _structured_safe_target(bundle, rel)
         if not path.is_file() or path.is_symlink() or path.stat().st_size != item["size"] \
                 or sha_file(path) != item["sha256"] or rel in listed:
             raise ValueError("BUNDLE_INTEGRITY_FAILED:" + rel)
@@ -5930,7 +5956,7 @@ def register_structured_reference_bundle(bundle, target_store, *, resolvers,
             "write_authority_granted": False,
         }
         rel = f"catalog/bundles/{descriptor['reference_id']}.json"
-        target_path = _structured_reference_path(target_store, rel)
+        target_path = _structured_safe_target(target_store, rel)
         body = canonical(record)
         already = False
         if target_path.exists():

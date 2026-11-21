@@ -456,8 +456,13 @@ class HoldingLedger:
             if any(value is not None for value in (acquired_at, custodied_at, readable_at)):
                 raise HoldingError("HOLDING_STAGE_TIME_AUTHORITY")
             records = _normalize_stage_records(records)
-            receipt = _json_document(self.root / "catalog/product_service/data_only_formal_publications"
-                                     / f"{request_key}.json", "HOLDING_STAGE_PROOF_MISSING")
+            from .product_data_service import FormalReceiptError, WFDDataOnlyService
+            status = _json_document(self.root / WFDDataOnlyService._status_path(request_key),
+                                    "HOLDING_STAGE_PROOF_MISSING")
+            try:
+                receipt, _ = WFDDataOnlyService.read_formal_receipt(self.root, request_key, status)
+            except FormalReceiptError as exc:
+                raise HoldingError("HOLDING_STAGE_PROOF_MISMATCH", str(exc)) from exc
             identity = receipt.get("request_identity") or {}
             holding = receipt.get("holding") or {}
             expected_key = _sha([identity.get("dataset_id"), identity.get("trusted_actor_namespace"),

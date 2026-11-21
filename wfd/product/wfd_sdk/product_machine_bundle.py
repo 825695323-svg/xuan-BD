@@ -1,25 +1,17 @@
 """Local data_only bundle actions. All authority and both roots belong to the host."""
 import errno
+import os
 import re
 import tempfile
 from pathlib import Path
 
 from . import product_bundle as sdk
-from .product_machine import BUNDLE_ROLES, BUNDLE_WRITES, REQUEST_ID, _exact
+from .product_machine import BUNDLE_ROLES, BUNDLE_WRITES, REQUEST_ID, _canonical_bundle_path as _canonical_path, _exact
 
 SNAPSHOT = re.compile(r"s_[0-9a-f]{24}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}")
 MAX_PRODUCTS = 64
-
-
-def _canonical_path(value):
-    if not isinstance(value, str) or not value or "\0" in value or "\\" in value:
-        raise ValueError("BUNDLE_PATH_INVALID")
-    path = Path(value)
-    if not path.is_absolute() or str(path) != value or path.resolve() != path or path.is_symlink():
-        raise ValueError("BUNDLE_PATH_INVALID")
-    return path
 
 
 def load_access(value, store, runtime, project, protocol):
@@ -34,9 +26,9 @@ def load_access(value, store, runtime, project, protocol):
             raise ValueError("CONFIG_INVALID:bundle_access." + key)
     if not isinstance(value["dataset_id"], str) or not REQUEST_ID.fullmatch(value["dataset_id"]):
         raise ValueError("CONFIG_INVALID:bundle_access.dataset_id")
-    roots = [_canonical_path(raw) for raw in (store, runtime, project, protocol)]
+    roots = [_canonical_path(os.fspath(root)) for root in (store, runtime, project, protocol)]
     package = _canonical_path(value["package_root"])
-    if not package.is_dir() or package.stat().st_mode & 0o022:
+    if not package.is_dir() or (os.name == "posix" and package.stat().st_mode & 0o022):
         raise ValueError("CONFIG_UNSAFE:bundle package_root")
     controlled = [package]
     if "target_store" in value:
@@ -50,7 +42,8 @@ def load_access(value, store, runtime, project, protocol):
         if any(path.is_relative_to(other) or other.is_relative_to(path) for other in roots):
             raise ValueError("CONFIG_UNSAFE:overlapping bundle roots")
         roots.append(path)
-    return value
+    return {**value, "package_root": str(package),
+            **({"target_store": str(target)} if "target_store" in value else {})}
 
 
 def _denial(config, operation):
@@ -90,7 +83,7 @@ def _check_tree(root):
     if root.exists() and not root.is_dir():
         raise ValueError("BUNDLE_PATH_INVALID")
     for path in root.rglob("*"):
-        if path.is_symlink() or not (path.is_dir() or path.is_file()):
+        if sdk._is_bundle_link(path) or not (path.is_dir() or path.is_file()):
             raise ValueError("BUNDLE_PATH_INVALID:non-regular bundle member")
 
 

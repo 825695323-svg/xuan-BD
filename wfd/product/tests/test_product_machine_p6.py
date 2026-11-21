@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 import stat
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -55,6 +55,43 @@ def _config(tmp_path, **overrides):
     path.write_text(json.dumps(config), "utf-8")
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     return path
+
+
+def test_bundle_host_drive_paths_and_portable_members_have_separate_rules():
+    from wfd_sdk.product_bundle import _structured_safe_rel
+    expected = PureWindowsPath(r"C:\WFD\packages")
+    for spelling in (r"C:\WFD\packages", "C:/WFD/packages"):
+        assert machine._parse_bundle_host_path(spelling, PureWindowsPath) == expected
+    for spelling in ("relative", r"C:relative", r"\WFD\packages", r"\\server\share\dir",
+                     "//server/share/dir", r"\\?\C:\dir", "C:/base/../elsewhere", "C:/tab\t", "C:/nul\0"):
+        with pytest.raises(ValueError, match="BUNDLE_PATH_INVALID"):
+            machine._parse_bundle_host_path(spelling, PureWindowsPath)
+    assert _structured_safe_rel("objects/one") == "objects/one"
+    for member in (r"objects\one", r"C:\one", "C:/one", "/one", "a/D:/two", "objects/../one", "one\0"):
+        with pytest.raises(ValueError, match="STRUCTURED_PATH_INVALID"):
+            _structured_safe_rel(member)
+
+
+def test_machine_bundle_roots_reject_overlap_and_linked_ancestors(tmp_path):
+    package = tmp_path / "packages"
+    package.mkdir(mode=0o700)
+    target = tmp_path / "detached"
+    access = {"operations": ["bundle_import_full"], "source_ids": ["synthetic"], "dataset_id": "synthetic",
+              "package_root": str(package), "target_store": str(target)}
+    def load(**roots):
+        return machine._load_config(_config(tmp_path, profile="data_only", sources={},
+            caller={"caller_id": "test", "trusted_actor_namespace": "test", "roles": ["read"]},
+            bundle_access={**access, **roots}))
+    assert load()["bundle_access"]["target_store"] == str(target)
+    with pytest.raises(ValueError, match="CONFIG_UNSAFE:overlapping"):
+        load(target_store=str(package / "nested"))
+    with pytest.raises(ValueError, match="BUNDLE_PATH_INVALID"):
+        load(target_store=str(package / ".." / "detached"))
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(ValueError, match="BUNDLE_PATH_INVALID"):
+        load(target_store=str(alias / "detached"))
+    assert not target.exists()
 
 
 def _daily_config(tmp_path, *, roles=None):
