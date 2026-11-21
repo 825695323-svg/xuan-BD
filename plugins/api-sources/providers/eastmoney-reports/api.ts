@@ -243,7 +243,7 @@ function parseStrictJsonObject(literal: string): Record<string, JsonValue> | typ
         return 'after_value';
       }
       const key = parseString();
-      if (key === null) return 'error';
+      if (key === null || key === '__proto__') return 'error';
       skipWs();
       if (literal[pos] !== ':') return 'error';
       pos += 1;
@@ -299,7 +299,7 @@ function parseStrictJsonObject(literal: string): Record<string, JsonValue> | typ
         pos += 1;
         skipWs();
         const key = parseString();
-        if (key === null) return null;
+        if (key === null || key === '__proto__') return null;
         if (Object.hasOwn(top.value, key)) return DUPLICATE_JSON_KEY;
         skipWs();
         if (literal[pos] !== ':') return null;
@@ -343,7 +343,7 @@ function detailMetadata(literal: string): Record<string, JsonValue> | null {
     const match = field.exec(body);
     if (!match) return null;
     const key = match[1] ?? match[2] ?? match[3];
-    if (Object.hasOwn(values, key)) return null;
+    if (key === '__proto__' || Object.hasOwn(values, key)) return null;
     values[key] = match[4] ?? match[5];
   }
   return values;
@@ -403,7 +403,7 @@ const namedHtmlEntities: Readonly<Record<string, string>> = Object.freeze({
   equals: '=',
   ast: '*',
   lowbar: '_',
-  hyphen: '-',
+  hyphen: '\u2010',
   dash: '\u2010',
   ndash: '\u2013',
   mdash: '\u2014',
@@ -424,7 +424,23 @@ const namedHtmlEntities: Readonly<Record<string, string>> = Object.freeze({
   TRADE: '\u2122',
 });
 
-function decodeHtmlEntities(input: string): string {
+const legacyNoSemiEntities: Readonly<Record<string, string>> = Object.freeze({
+  amp: '&',
+  AMP: '&',
+  lt: '<',
+  LT: '<',
+  gt: '>',
+  GT: '>',
+  quot: '"',
+  QUOT: '"',
+  nbsp: '\u00a0',
+  copy: '\u00a9',
+  COPY: '\u00a9',
+  reg: '\u00ae',
+  REG: '\u00ae',
+});
+
+function decodeHtmlEntities(input: string, isAttributeValue = false): string {
   if (!input.includes('&')) return input;
   let out = '';
   let i = 0;
@@ -479,6 +495,13 @@ function decodeHtmlEntities(input: string): string {
           i = j + 1;
           continue;
         }
+      } else if (!isAttributeValue && j > amp + 1) {
+        const name = input.slice(amp + 1, j);
+        if (Object.hasOwn(legacyNoSemiEntities, name)) {
+          out += legacyNoSemiEntities[name]!;
+          i = j;
+          continue;
+        }
       }
     }
     out += '&';
@@ -520,6 +543,10 @@ const pAutoCloseTags = new Set([
 const buttonScopeBarrierTags = new Set([
   'applet', 'button', 'caption', 'html', 'marquee', 'math', 'object', 'svg', 'table', 'td', 'template', 'th',
 ]);
+const listScopeBarrierTags = new Set([
+  'applet', 'caption', 'html', 'marquee', 'math', 'object', 'ol', 'svg', 'table', 'td', 'template', 'th', 'ul',
+]);
+const tableSectionTags = new Set(['thead', 'tbody', 'tfoot']);
 const blockBoundaryTags = new Set([
   'html', 'head', 'body', 'main', 'article', 'section', 'aside', 'nav', 'header', 'footer', 'address', 'search', 'menu', 'center',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hgroup', 'p', 'div', 'pre', 'blockquote', 'hr',
@@ -537,18 +564,19 @@ const jsMimeEssences = new Set([
 ]);
 const relatedKeywordsWithCountGuard = new Set(['相关阅读', '推荐阅读', '延伸阅读']);
 
-/** 严格按 WHATWG HTML §4.12.1.1 判定可执行脚本类型（精确 essence 匹配，不截断分号参数，核对 language 属性）。 */
-function isExecutableScriptType(typeAttr: string | null, languageAttr: string | null): boolean {
+/** 严格按 WHATWG HTML §4.12.1.1 判定可执行脚本类型（拒绝 nomodule、空格 type/language/module 与带参 MIME）。 */
+function isExecutableScriptType(typeAttr: string | null, languageAttr: string | null, hasNomodule: boolean): boolean {
+  if (hasNomodule) return false;
   if (typeAttr !== null) {
+    if (typeAttr === '') return true;
+    if (typeAttr.toLowerCase() === 'module') return true;
     const trimmed = trimAsciiWs(typeAttr);
-    if (trimmed === '') return true;
-    const lower = trimmed.toLowerCase();
-    return lower === 'module' || jsMimeEssences.has(lower);
+    if (trimmed === '') return false;
+    return jsMimeEssences.has(trimmed.toLowerCase());
   }
   if (languageAttr !== null) {
-    const trimmed = trimAsciiWs(languageAttr);
-    if (trimmed === '') return true;
-    return jsMimeEssences.has(`text/${trimmed.toLowerCase()}`);
+    if (languageAttr === '') return true;
+    return jsMimeEssences.has(`text/${languageAttr.toLowerCase()}`);
   }
   return true;
 }
@@ -577,6 +605,7 @@ type TagAttrs = {
   hasSrc: boolean;
   hasSrcdoc: boolean;
   hasDownload: boolean;
+  hasNomodule: boolean;
   type: string | null;
   language: string | null;
   encodeUrl: string | null;
@@ -754,7 +783,43 @@ function findHtmlCommentEnd(html: string, startPos: number): number {
   return len;
 }
 
-/** 单趟 O(N) 定位 rawtext/script 结束标签，严格遵守 HTML5 script-data-escaped 状态与 EOF 闭合要求。 */
+/** 跳过结束标签内带引号的属性直至非引号 '>'，避免引号内 '>' 截断标签或泄露伪造标签。 */
+function scanTagClose(html: string, startPos: number): { nextPos: number; closed: boolean } {
+  let j = startPos;
+  const len = html.length;
+  while (j < len) {
+    while (j < len && isAsciiWs(html.charCodeAt(j))) j += 1;
+    if (j >= len) return { nextPos: len, closed: false };
+    const c = html[j]!;
+    if (c === '>') return { nextPos: j + 1, closed: true };
+    if (c === '/') {
+      if (j + 1 < len && html[j + 1] === '>') return { nextPos: j + 2, closed: true };
+      j += 1;
+      continue;
+    }
+    while (j < len) {
+      const ch = html[j]!;
+      if (ch === '=' || ch === '/' || ch === '>' || isAsciiWs(ch.charCodeAt(0))) break;
+      j += 1;
+    }
+    while (j < len && isAsciiWs(html.charCodeAt(j))) j += 1;
+    if (j < len && html[j] === '=') {
+      j += 1;
+      while (j < len && isAsciiWs(html.charCodeAt(j))) j += 1;
+      if (j < len && (html[j] === '"' || html[j] === "'")) {
+        const quote = html[j]!;
+        const endQuote = html.indexOf(quote, j + 1);
+        if (endQuote === -1) return { nextPos: len, closed: false };
+        j = endQuote + 1;
+      } else {
+        while (j < len && html[j] !== '>' && !isAsciiWs(html.charCodeAt(j))) j += 1;
+      }
+    }
+  }
+  return { nextPos: len, closed: false };
+}
+
+/** 单趟 O(N) 定位 rawtext/script 结束标签，严格遵守 HTML5 script-data-escaped 状态、引号扫描与 EOF 闭合要求。 */
 function findRawElementClose(html: string, startPos: number, tag: string): { contentEnd: number; nextPos: number; closed: boolean } {
   const len = html.length;
   const tagLen = tag.length;
@@ -794,10 +859,10 @@ function findRawElementClose(html: string, startPos: number, tag: string): { con
             pos = after;
             continue;
           }
-          const gt = html.indexOf('>', after);
-          return gt === -1
-            ? { contentEnd: len, nextPos: len, closed: false }
-            : { contentEnd: pos, nextPos: gt + 1, closed: true };
+          const closeRes = scanTagClose(html, after);
+          return closeRes.closed
+            ? { contentEnd: pos, nextPos: closeRes.nextPos, closed: true }
+            : { contentEnd: len, nextPos: len, closed: false };
         }
       }
     }
@@ -816,6 +881,8 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
   const attachments: AttachmentEntry[] = [];
   const allBoxes: BoxRecord[] = [];
   const allCandidates: CandidateAnchor[] = [];
+  let docBaseUrl = baseUrl;
+  let hasBaseHref = false;
 
   const scopeStack: Scope[] = [{
     inRelatedSelector: false,
@@ -850,11 +917,21 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     enterNonContent: boolean;
     enterForeign: boolean;
     pushButtonScope: boolean;
+    pushListScope: boolean;
+    pushTableScope: boolean;
     countedP: boolean;
+    countedLi: boolean;
+    countedDtDd: boolean;
+    countedCell: boolean;
+    countedTr: boolean;
   };
   const openStack: OpenElemFrame[] = [];
   const openTagCounts = new Map<string, number>();
   const pCountInButtonScope: number[] = [0];
+  const liCountInScope: number[] = [0];
+  const dtDdCountInScope: number[] = [0];
+  const cellCountInTable: number[] = [0];
+  const trCountInTable: number[] = [0];
   let nonContentDepth = 0;
   let foreignDepth = 0;
 
@@ -877,7 +954,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
 
   const feedText = (rawText: string, decodeEntities = true): void => {
     if (nonContentDepth > 0 || !rawText) return;
-    const text = decodeEntities ? decodeHtmlEntities(rawText) : rawText;
+    const text = decodeEntities ? decodeHtmlEntities(rawText, false) : rawText;
     const cur = scopeStack[scopeStack.length - 1]!;
     if (cur.activeRelBox !== null && !cur.activeRelBox.sawRelatedKeyword) {
       scanKeywordText(cur.activeRelBox, text, () => {
@@ -894,11 +971,19 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     if (count <= 1) openTagCounts.delete(frame.tag);
     else openTagCounts.set(frame.tag, count - 1);
 
-    if (frame.countedP) {
-      pCountInButtonScope[pCountInButtonScope.length - 1] = Math.max(0, pCountInButtonScope[pCountInButtonScope.length - 1]! - 1);
+    if (frame.countedP) pCountInButtonScope[pCountInButtonScope.length - 1] = Math.max(0, pCountInButtonScope[pCountInButtonScope.length - 1]! - 1);
+    if (frame.countedLi) liCountInScope[liCountInScope.length - 1] = Math.max(0, liCountInScope[liCountInScope.length - 1]! - 1);
+    if (frame.countedDtDd) dtDdCountInScope[dtDdCountInScope.length - 1] = Math.max(0, dtDdCountInScope[dtDdCountInScope.length - 1]! - 1);
+    if (frame.countedCell) cellCountInTable[cellCountInTable.length - 1] = Math.max(0, cellCountInTable[cellCountInTable.length - 1]! - 1);
+    if (frame.countedTr) trCountInTable[trCountInTable.length - 1] = Math.max(0, trCountInTable[trCountInTable.length - 1]! - 1);
+    if (frame.pushButtonScope && pCountInButtonScope.length > 1) pCountInButtonScope.pop();
+    if (frame.pushListScope && liCountInScope.length > 1) {
+      liCountInScope.pop();
+      dtDdCountInScope.pop();
     }
-    if (frame.pushButtonScope && pCountInButtonScope.length > 1) {
-      pCountInButtonScope.pop();
+    if (frame.pushTableScope && cellCountInTable.length > 1) {
+      cellCountInTable.pop();
+      trCountInTable.pop();
     }
     if (frame.enterNonContent) nonContentDepth -= 1;
     if (frame.enterForeign) foreignDepth -= 1;
@@ -969,15 +1054,73 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     }
   };
 
+  const closeTopOptionalIn = (targets: Set<string>): void => {
+    while (openStack.length > 0) {
+      const frame = openStack.pop()!;
+      leaveElement(frame);
+      if (targets.has(frame.tag)) break;
+    }
+  };
+  const dtDdSet = new Set(['dt', 'dd']);
+  const cellSet = new Set(['td', 'th']);
+
   const handleOpenTag = (tag: string, attrs: TagAttrs, selfClosing: boolean, rawBody?: string, rawClosed = true): void => {
-    if (nonContentDepth === 0 && pAutoCloseTags.has(tag) && pCountInButtonScope[pCountInButtonScope.length - 1]! > 0) {
-      handleCloseTag('p');
+    if (nonContentDepth === 0 && foreignDepth === 0) {
+      if (pAutoCloseTags.has(tag) && pCountInButtonScope[pCountInButtonScope.length - 1]! > 0) {
+        handleCloseTag('p');
+      }
+      if (tag === 'li' && liCountInScope[liCountInScope.length - 1]! > 0) {
+        handleCloseTag('li');
+      } else if ((tag === 'dt' || tag === 'dd') && dtDdCountInScope[dtDdCountInScope.length - 1]! > 0) {
+        closeTopOptionalIn(dtDdSet);
+      } else if ((tag === 'td' || tag === 'th') && cellCountInTable[cellCountInTable.length - 1]! > 0) {
+        closeTopOptionalIn(cellSet);
+      } else if (tag === 'tr' || tableSectionTags.has(tag)) {
+        if (cellCountInTable[cellCountInTable.length - 1]! > 0) closeTopOptionalIn(cellSet);
+        if (trCountInTable[trCountInTable.length - 1]! > 0) handleCloseTag('tr');
+      }
     }
 
-    const enterForeign = tag === 'svg' || tag === 'math';
-    const isVoid = voidHtmlTags.has(tag) || ((foreignDepth > 0 || enterForeign) && selfClosing);
+    const enterForeign = foreignDepth === 0 && (tag === 'svg' || tag === 'math');
+    const isVoid = (foreignDepth > 0 || enterForeign) ? selfClosing : voidHtmlTags.has(tag);
     const cur = scopeStack[scopeStack.length - 1]!;
     const attr = attrStack[attrStack.length - 1]!;
+
+    if (foreignDepth > 0 || enterForeign) {
+      if (enterForeign) {
+        flushScopePending(cur);
+        cur.tail = '';
+        if (cur.activeRelBox !== null) cur.activeRelBox.tail = '';
+      }
+      if (!isVoid) {
+        if (enterForeign) {
+          foreignDepth += 1;
+          nonContentDepth += 1;
+        }
+        openStack.push({
+          tag,
+          isZwinfoId: false,
+          popScope: false,
+          popAttr: false,
+          resetParentTail: false,
+          closeCandidate: false,
+          closeBox: null,
+          closeRelBox: null,
+          enterNonContent: enterForeign,
+          enterForeign,
+          pushButtonScope: false,
+          pushListScope: false,
+          pushTableScope: false,
+          countedP: false,
+          countedLi: false,
+          countedDtDd: false,
+          countedCell: false,
+          countedTr: false,
+        });
+        openTagCounts.set(tag, (openTagCounts.get(tag) ?? 0) + 1);
+      }
+      return;
+    }
 
     if (nonContentDepth > 0 || nonContentSubtreeTags.has(tag)) {
       if (!isVoid && rawBody === undefined) {
@@ -997,9 +1140,25 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
           enterNonContent,
           enterForeign: false,
           pushButtonScope,
+          pushListScope: false,
+          pushTableScope: false,
           countedP: false,
+          countedLi: false,
+          countedDtDd: false,
+          countedCell: false,
+          countedTr: false,
         });
         openTagCounts.set(tag, (openTagCounts.get(tag) ?? 0) + 1);
+      }
+      return;
+    }
+
+    if (tag === 'base') {
+      if (!hasBaseHref && attrs.href !== null) {
+        hasBaseHref = true;
+        try {
+          docBaseUrl = new URL(attrs.href, baseUrl).href;
+        } catch { /* 保留默认基准 URL */ }
       }
       return;
     }
@@ -1009,8 +1168,9 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     const isZwinfoId = attrs.id === 'zwinfo';
     const isRootBoundary = isZwinfoId || rootBoundaryTags.has(tag);
     const isFormControl = formControlTags.has(tag);
+    const isInlineNestedRel = isRelSelector && !isLandmarkRelatedElement(tag, attrs) && !blockBoundaryTags.has(tag) && cur.activeRelBox !== null;
     const isIsolated = isRelSelector || isDownloadBox || isRootBoundary || isolatedAuxiliaryTags.has(tag);
-    const isBlockBoundary = isIsolated || blockBoundaryTags.has(tag);
+    const isBlockBoundary = (!isInlineNestedRel && isIsolated) || blockBoundaryTags.has(tag);
 
     if (isRelSelector) {
       if (candidateAnchorStack.length > 0) {
@@ -1037,22 +1197,20 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       flushScopePending(cur);
       cur.tail = '';
       if (cur.activeRelBox !== null) cur.activeRelBox.tail = '';
-      if (cur.activeRelBox !== null) cur.activeRelBox.hasDescendantPdfOrScript = true;
-      if (
-        rawClosed
+      const executable = rawClosed
         && !attrs.hasSrc
         && !attr.inFormControl
-        && isExecutableScriptType(attrs.type, attrs.language)
-        && !isRelSelector
-        && !cur.inRelatedSelector
-        && !nextForeignEncode
-        && rawBody !== undefined
-      ) {
+        && isExecutableScriptType(attrs.type, attrs.language, attrs.hasNomodule)
+        && rawBody !== undefined;
+      if (executable && cur.activeRelBox !== null) {
+        cur.activeRelBox.hasDescendantPdfOrScript = true;
+      }
+      if (executable && !isRelSelector && !cur.inRelatedSelector && !nextForeignEncode) {
         const effOuterRelated = cur.outerRelated || (!cur.isDownloadBox && cur.relatedSeen);
         const effBoxLocal = cur.isDownloadBox && cur.relatedSeen;
         if (!effBoxLocal) {
           scripts.push({
-            content: rawBody,
+            content: rawBody!,
             inRelatedSelector: false,
             outerRelated: effOuterRelated,
             hasForeignEncodeUrl: nextForeignEncode,
@@ -1071,7 +1229,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       cur.tail = '';
       if (cur.activeRelBox !== null) cur.activeRelBox.tail = '';
       const isDirectZwinfoChild = openStack.length > 0 && openStack[openStack.length - 1]!.isZwinfoId;
-      const validSrc = !attrs.hasSrcdoc && isEastmoneyPdfHref(attrs.src, baseUrl);
+      const validSrc = !attrs.hasSrcdoc && isEastmoneyPdfHref(attrs.src, docBaseUrl);
       if (validSrc && cur.activeRelBox !== null) cur.activeRelBox.hasDescendantPdfOrScript = true;
       if (isDirectZwinfoChild && !attr.inFormControl && validSrc && attrs.src !== null) {
         attachments.push({
@@ -1095,7 +1253,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       if (cur.activeRelBox !== null) cur.activeRelBox.tail = '';
       if (rawBody && candidateAnchorStack.length > 0) {
         const probe: KeywordState = { tail: '', pendingRelated: false };
-        scanKeywordText(probe, decodeHtmlEntities(rawBody), () => {
+        scanKeywordText(probe, decodeHtmlEntities(rawBody, false), () => {
           candidateAnchorStack[candidateAnchorStack.length - 1]!.poisoned = true;
         });
         if (probe.pendingRelated) {
@@ -1113,7 +1271,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       flushScopePending(cur);
     }
 
-    const validPdfHref = tag === 'a' && isEastmoneyPdfHref(attrs.href, baseUrl);
+    const validPdfHref = tag === 'a' && isEastmoneyPdfHref(attrs.href, docBaseUrl);
     if (validPdfHref && cur.activeRelBox !== null) cur.activeRelBox.hasDescendantPdfOrScript = true;
 
     const isPdfAnchor = validPdfHref
@@ -1137,7 +1295,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     const nextNearestBox = boxRecord ?? cur.nearestBox;
 
     let createdRelBox: RelBoxRecord | null = null;
-    if (isRelSelector && !isLandmarkRelatedElement(tag, attrs)) {
+    if (isRelSelector && !isLandmarkRelatedElement(tag, attrs) && !isInlineNestedRel) {
       createdRelBox = {
         sawRelatedKeyword: false,
         hasDescendantPdfOrScript: false,
@@ -1148,7 +1306,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     }
 
     let popScope = false;
-    if (isIsolated) {
+    if (isIsolated && !isInlineNestedRel) {
       popScope = true;
       const inheritedOuter = cur.outerRelated || (!cur.isDownloadBox && cur.relatedSeen);
       if (cur.isDownloadBox && cur.relatedSeen && cur.nearestBox !== null) {
@@ -1210,7 +1368,13 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
           enterNonContent: false,
           enterForeign: false,
           pushButtonScope: false,
+          pushListScope: false,
+          pushTableScope: false,
           countedP: false,
+          countedLi: false,
+          countedDtDd: false,
+          countedCell: false,
+          countedTr: false,
         };
         openTagCounts.set(tag, (openTagCounts.get(tag) ?? 0) + 1);
         leaveElement(fakeFrame);
@@ -1227,11 +1391,28 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       return;
     }
 
-    if (enterForeign) foreignDepth += 1;
     const pushButtonScope = buttonScopeBarrierTags.has(tag);
     if (pushButtonScope) pCountInButtonScope.push(0);
+    const pushListScope = listScopeBarrierTags.has(tag) || tag === 'dl';
+    if (pushListScope) {
+      liCountInScope.push(0);
+      dtDdCountInScope.push(0);
+    }
+    const pushTableScope = tag === 'table';
+    if (pushTableScope) {
+      cellCountInTable.push(0);
+      trCountInTable.push(0);
+    }
     const countedP = tag === 'p';
+    const countedLi = tag === 'li';
+    const countedDtDd = tag === 'dt' || tag === 'dd';
+    const countedCell = tag === 'td' || tag === 'th';
+    const countedTr = tag === 'tr';
     if (countedP) pCountInButtonScope[pCountInButtonScope.length - 1]! += 1;
+    if (countedLi) liCountInScope[liCountInScope.length - 1]! += 1;
+    if (countedDtDd) dtDdCountInScope[dtDdCountInScope.length - 1]! += 1;
+    if (countedCell) cellCountInTable[cellCountInTable.length - 1]! += 1;
+    if (countedTr) trCountInTable[trCountInTable.length - 1]! += 1;
     openStack.push({
       tag,
       isZwinfoId,
@@ -1242,9 +1423,15 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
       closeBox: boxRecord,
       closeRelBox: createdRelBox,
       enterNonContent: false,
-      enterForeign,
+      enterForeign: false,
       pushButtonScope,
+      pushListScope,
+      pushTableScope,
       countedP,
+      countedLi,
+      countedDtDd,
+      countedCell,
+      countedTr,
     });
     openTagCounts.set(tag, (openTagCounts.get(tag) ?? 0) + 1);
   };
@@ -1260,6 +1447,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     const lt = html.indexOf('<', pos);
     if (lt === -1) {
       flushTextUntil(len);
+      textStart = len;
       break;
     }
     const nextCh = lt + 1 < len ? html[lt + 1]! : '';
@@ -1269,7 +1457,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
         if (html.startsWith('<!-->', lt)) pos = lt + 5;
         else if (html.startsWith('<!--->', lt)) pos = lt + 6;
         else pos = findHtmlCommentEnd(html, lt + 4);
-      } else if (html.startsWith('<![CDATA[', lt)) {
+      } else if (foreignDepth > 0 && html.startsWith('<![CDATA[', lt)) {
         const endCdata = html.indexOf(']]>', lt + 9);
         pos = endCdata === -1 ? len : endCdata + 3;
       } else {
@@ -1293,13 +1481,9 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
         const nameStart = j;
         while (j < len && !isTagDelimiter(html, j)) j += 1;
         const closeTag = html.slice(nameStart, j).toLowerCase();
-        const gt = html.indexOf('>', j);
-        if (gt === -1) {
-          pos = len;
-        } else {
-          pos = gt + 1;
-          handleCloseTag(closeTag);
-        }
+        const closeRes = scanTagClose(html, j);
+        pos = closeRes.nextPos;
+        if (closeRes.closed) handleCloseTag(closeTag);
       } else {
         const gt = html.indexOf('>', j);
         pos = gt === -1 ? len : gt + 1;
@@ -1322,6 +1506,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
         hasSrc: false,
         hasSrcdoc: false,
         hasDownload: false,
+        hasNomodule: false,
         type: null,
         language: null,
         encodeUrl: null,
@@ -1383,28 +1568,30 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
           }
         }
         if (attrName === 'id') {
-          if (attrs.id === null) attrs.id = decodeHtmlEntities(attrVal);
+          if (attrs.id === null) attrs.id = decodeHtmlEntities(attrVal, true);
         } else if (attrName === 'class') {
-          if (attrs.className === null) attrs.className = decodeHtmlEntities(attrVal);
+          if (attrs.className === null) attrs.className = decodeHtmlEntities(attrVal, true);
         } else if (attrName === 'role') {
-          if (attrs.role === null) attrs.role = decodeHtmlEntities(attrVal);
+          if (attrs.role === null) attrs.role = decodeHtmlEntities(attrVal, true);
         } else if (attrName === 'aria-label') {
-          if (attrs.ariaLabel === null) attrs.ariaLabel = decodeHtmlEntities(attrVal);
+          if (attrs.ariaLabel === null) attrs.ariaLabel = decodeHtmlEntities(attrVal, true);
         } else if (attrName === 'href') {
-          if (attrs.href === null) attrs.href = decodeHtmlEntities(attrVal);
+          if (attrs.href === null) attrs.href = decodeHtmlEntities(attrVal, true);
         } else if (attrName === 'src') {
           attrs.hasSrc = true;
-          if (attrs.src === null) attrs.src = decodeHtmlEntities(attrVal);
+          if (attrs.src === null) attrs.src = decodeHtmlEntities(attrVal, true);
         } else if (attrName === 'srcdoc') {
           attrs.hasSrcdoc = true;
         } else if (attrName === 'download') {
           attrs.hasDownload = true;
+        } else if (attrName === 'nomodule') {
+          attrs.hasNomodule = true;
         } else if (attrName === 'type') {
-          if (attrs.type === null) attrs.type = decodeHtmlEntities(attrVal);
+          if (attrs.type === null) attrs.type = decodeHtmlEntities(attrVal, true);
         } else if (attrName === 'language') {
-          if (attrs.language === null) attrs.language = decodeHtmlEntities(attrVal);
+          if (attrs.language === null) attrs.language = decodeHtmlEntities(attrVal, true);
         } else if (attrName === 'data-encode-url') {
-          const decoded = decodeHtmlEntities(attrVal);
+          const decoded = decodeHtmlEntities(attrVal, true);
           if (!attrs.hasEncodeUrl) {
             attrs.hasEncodeUrl = true;
             attrs.encodeUrl = decoded;
@@ -1413,7 +1600,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
           }
           if (decoded !== expectedEncodeUrl) attrs.hasForeignEncodeUrl = true;
         } else if (attrName === 'data-info-code') {
-          const decoded = decodeHtmlEntities(attrVal);
+          const decoded = decodeHtmlEntities(attrVal, true);
           if (!attrs.hasInfoCode) {
             attrs.hasInfoCode = true;
             attrs.infoCode = decoded;
@@ -1427,7 +1614,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
         textStart = pos;
         break;
       }
-      if (tag === 'plaintext') {
+      if (foreignDepth === 0 && tag === 'plaintext') {
         const curScope = scopeStack[scopeStack.length - 1]!;
         flushScopePending(curScope);
         curScope.tail = '';
@@ -1437,7 +1624,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
         textStart = len;
         break;
       }
-      if (rawTextTags.has(tag)) {
+      if (foreignDepth === 0 && rawTextTags.has(tag)) {
         const raw = findRawElementClose(html, pos, tag);
         const body = html.slice(pos, raw.contentEnd);
         pos = raw.nextPos;
@@ -1450,6 +1637,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     }
     pos = lt + 1;
   }
+  if (textStart < len) flushTextUntil(len);
 
   while (openStack.length > 0) {
     leaveElement(openStack.pop()!);
@@ -1473,7 +1661,7 @@ function analyzeEastmoneySections(html: string, baseUrl: string, expectedEncodeU
     if (c.parent?.poisoned) c.poisoned = true;
   }
 
-  return { scripts, attachments };
+  return { scripts, attachments, docBaseUrl };
 }
 
 function isJsLineTerminator(code: number): boolean {
@@ -1507,6 +1695,14 @@ function stripLeadingJsTrivia(source: string): string {
     if (ch === '/' && pos + 1 < len && source[pos + 1] === '*') {
       const end = source.indexOf('*/', pos + 2);
       pos = end === -1 ? len : end + 2;
+      continue;
+    }
+    if (source.startsWith('<!--', pos)) {
+      pos = findJsLineEnd(source, pos + 4);
+      continue;
+    }
+    if (source.startsWith('-->', pos)) {
+      pos = findJsLineEnd(source, pos + 3);
       continue;
     }
     break;
@@ -1551,383 +1747,41 @@ function extractBalancedObjectLiteral(source: string, openBracePos: number): num
   return -1;
 }
 
-type JsToken = { kind: 'ident' | 'string' | 'punct'; value: string; escaped?: boolean };
-const regexPunctAllowedBefore = new Set([
-  '(', '[', '{', ',', ';', ':', '=', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '^=', '|=', '&&=', '||=', '??=',
-  '!', '&', '|', '&&', '||', '??', '?', '+', '-', '*', '/', '%', '^', '~', '<', '>', '<=', '>=', '==', '===', '!=', '!==', '=>',
-  '${', '}',
-]);
-const regexKeywordAllowedBefore = new Set([
-  'return', 'case', 'throw', 'in', 'of', 'typeof', 'void', 'delete', 'new', 'else', 'do', 'yield', 'await',
-]);
-const conditionParenKeywords = new Set(['if', 'while', 'for', 'with']);
-const jsAssignOps = new Set([
-  '=', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '^=', '|=', '&&=', '||=', '??=',
-]);
-const jsUpdateOps = new Set(['++', '--']);
-const globalReceivers = new Set(['window', 'self', 'globalThis', 'top', 'parent', 'frames', 'this']);
-
-function decodeJsUnicodeEscape(source: string, pos: number): { ch: string; nextPos: number } | null {
-  const len = source.length;
-  if (source[pos] !== '\\' || source[pos + 1] !== 'u') return null;
-  if (source[pos + 2] === '{') {
-    const limit = Math.min(len, pos + 10);
-    let end = -1;
-    for (let k = pos + 3; k < limit; k += 1) {
-      if (source[k] === '}') {
-        end = k;
-        break;
-      }
-    }
-    if (end === -1 || end === pos + 3) return null;
-    const hex = source.slice(pos + 3, end);
-    if (!/^[0-9a-fA-F]+$/u.test(hex)) return null;
-    const cp = Number.parseInt(hex, 16);
-    if (cp > 0x10ffff) return null;
-    return { ch: String.fromCodePoint(cp), nextPos: end + 1 };
+/** 非纯静态元数据脚本的 fail-closed 审查：不做任意 JS 执行推演，只要触及 zwinfo、裸 pdf 写入或全局对象动态属性即拒收。 */
+function hasUnverifiedScriptReference(source: string): boolean {
+  if (/\bzwinfo\b/u.test(source)) return true;
+  if (/(?:^|[^\w./-])pdf\s*(?:[+\-*/%&|^]?=|\+\+|--)/u.test(source)) return true;
+  if (/(?:\+\+|--)\s*pdf\b/u.test(source)) return true;
+  if (/\b(?:window|self|globalThis|top|parent|frames|this)\b/u.test(source)) {
+    if (/\bpdf\b/u.test(source) || /\\(?:u|x)|\[/u.test(source)) return true;
   }
-  const hex = source.slice(pos + 2, pos + 6);
-  if (!/^[0-9a-fA-F]{4}$/u.test(hex)) return null;
-  return { ch: String.fromCharCode(Number.parseInt(hex, 16)), nextPos: pos + 6 };
-}
-
-function tokenizeJs(source: string): JsToken[] {
-  const tokens: JsToken[] = [];
-  let pos = 0;
-  const len = source.length;
-  const templateBraceDepths: number[] = [];
-  const parenIsCondition: boolean[] = [];
-  let lastCloseParenIsCondition = false;
-  let braceDepth = 0;
-  const pushToken = (kind: JsToken['kind'], value: string, escaped?: boolean) => {
-    tokens.push(escaped ? { kind, value, escaped } : { kind, value });
-  };
-  const canStartRegex = () => {
-    if (tokens.length === 0) return true;
-    const prev = tokens[tokens.length - 1]!;
-    if (prev.kind === 'punct') {
-      if (prev.value === ')') return lastCloseParenIsCondition;
-      return regexPunctAllowedBefore.has(prev.value);
-    }
-    if (prev.kind === 'ident' && regexKeywordAllowedBefore.has(prev.value)) {
-      const prev2 = tokens.length >= 2 ? tokens[tokens.length - 2]! : null;
-      return !(prev2 && prev2.kind === 'punct' && (prev2.value === '.' || prev2.value === '?.'));
-    }
-    return false;
-  };
-  const scanTemplateRest = () => {
-    let chunk = '';
-    let escaped = false;
-    while (pos < len) {
-      const ch = source[pos]!;
-      if (ch === '\\') {
-        escaped = true;
-        if (pos + 1 < len) chunk += source[pos + 1]!;
-        pos += 2;
-        continue;
-      }
-      if (ch === '`') {
-        pos += 1;
-        pushToken('string', chunk, escaped);
-        return;
-      }
-      if (ch === '$' && pos + 1 < len && source[pos + 1] === '{') {
-        pushToken('string', chunk, escaped);
-        pushToken('punct', '${');
-        pos += 2;
-        braceDepth += 1;
-        templateBraceDepths.push(braceDepth);
-        return;
-      }
-      chunk += ch;
-      pos += 1;
-    }
-    pushToken('string', chunk, escaped);
-  };
-  while (pos < len) {
-    const ch = source[pos]!;
-    if (/\s/u.test(ch)) { pos += 1; continue; }
-    if (ch === '/' && pos + 1 < len && source[pos + 1] === '/') {
-      pos = findJsLineEnd(source, pos + 2);
-      continue;
-    }
-    if (ch === '/' && pos + 1 < len && source[pos + 1] === '*') {
-      const end = source.indexOf('*/', pos + 2);
-      pos = end === -1 ? len : end + 2;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      const q = ch;
-      pos += 1;
-      let val = '';
-      let escaped = false;
-      while (pos < len) {
-        const c = source[pos]!;
-        if (c === '\\') {
-          escaped = true;
-          if (pos + 1 < len) val += source[pos + 1]!;
-          pos += 2;
-        } else if (c === q) {
-          pos += 1;
-          break;
-        } else if (isJsLineTerminator(c.charCodeAt(0))) {
-          break;
-        } else {
-          val += c;
-          pos += 1;
-        }
-      }
-      pushToken('string', val, escaped);
-      continue;
-    }
-    if (ch === '`') {
-      pos += 1;
-      scanTemplateRest();
-      continue;
-    }
-    if (ch === '/' && canStartRegex()) {
-      pos += 1;
-      let inClass = false;
-      while (pos < len) {
-        const c = source[pos]!;
-        if (c === '\\') { pos += 2; continue; }
-        if (c === '[') inClass = true;
-        else if (c === ']') inClass = false;
-        else if (c === '/' && !inClass) { pos += 1; break; }
-        else if (isJsLineTerminator(c.charCodeAt(0))) break;
-        pos += 1;
-      }
-      while (pos < len && /[a-z]/iu.test(source[pos]!)) pos += 1;
-      pushToken('string', '');
-      continue;
-    }
-    if (/[A-Za-z_$]/u.test(ch) || (ch === '\\' && source[pos + 1] === 'u')) {
-      let ident = '';
-      while (pos < len) {
-        const c = source[pos]!;
-        if (/[\w$]/u.test(c)) {
-          ident += c;
-          pos += 1;
-        } else if (c === '\\') {
-          const decoded = decodeJsUnicodeEscape(source, pos);
-          if (!decoded) break;
-          ident += decoded.ch;
-          pos = decoded.nextPos;
-        } else {
-          break;
-        }
-      }
-      if (ident.length > 0) {
-        pushToken('ident', ident);
-        continue;
-      }
-    }
-    if (/[0-9]/u.test(ch)) {
-      pos += 1;
-      while (pos < len && /[\w.]/u.test(source[pos]!)) pos += 1;
-      pushToken('punct', '0');
-      continue;
-    }
-    if (ch === '(') {
-      const prev = tokens.length > 0 ? tokens[tokens.length - 1]! : null;
-      const prev2 = tokens.length >= 2 ? tokens[tokens.length - 2]! : null;
-      const isCond = Boolean(
-        prev && prev.kind === 'ident' && conditionParenKeywords.has(prev.value)
-        && !(prev2 && prev2.kind === 'punct' && (prev2.value === '.' || prev2.value === '?.')),
-      );
-      parenIsCondition.push(isCond);
-      pushToken('punct', '(');
-      pos += 1;
-      continue;
-    }
-    if (ch === ')') {
-      lastCloseParenIsCondition = parenIsCondition.pop() ?? false;
-      pushToken('punct', ')');
-      pos += 1;
-      continue;
-    }
-    if (ch === '{') {
-      braceDepth += 1;
-      pushToken('punct', '{');
-      pos += 1;
-      continue;
-    }
-    if (ch === '}') {
-      if (templateBraceDepths.length > 0 && templateBraceDepths[templateBraceDepths.length - 1] === braceDepth) {
-        templateBraceDepths.pop();
-        braceDepth -= 1;
-        pushToken('punct', '}');
-        pos += 1;
-        scanTemplateRest();
-        continue;
-      }
-      if (braceDepth > 0) braceDepth -= 1;
-      pushToken('punct', '}');
-      pos += 1;
-      continue;
-    }
-    const four = source.slice(pos, pos + 4);
-    if (four === '>>>=') { pushToken('punct', four); pos += 4; continue; }
-    const three = source.slice(pos, pos + 3);
-    if (three === '===' || three === '!==' || three === '**=' || three === '<<=' || three === '>>=' || three === '&&=' || three === '||=' || three === '??=') {
-      pushToken('punct', three);
-      pos += 3;
-      continue;
-    }
-    const two = source.slice(pos, pos + 2);
-    if (two === '==' || two === '!=' || two === '<=' || two === '>=' || two === '=>' || two === '+=' || two === '-='
-      || two === '*=' || two === '/=' || two === '%=' || two === '&=' || two === '^=' || two === '|='
-      || two === '&&' || two === '||' || two === '??' || two === '?.' || two === '++' || two === '--') {
-      pushToken('punct', two);
-      pos += 2;
-      continue;
-    }
-    pushToken('punct', ch);
-    pos += 1;
-  }
-  return tokens;
-}
-
-/** 扫描脚本剩余代码令牌（跳过字符串与注释，严格 O(N)），拦截对 zwinfo / window.pdf / 裸 pdf 的动态或未识别修改。 */
-function hasUnverifiedScriptAssignment(source: string): boolean {
-  const tokens = tokenizeJs(source);
-  const n = tokens.length;
-  const matchCloseBracket = new Int32Array(n);
-  const matchCloseBrace = new Int32Array(n);
-  matchCloseBracket.fill(-1);
-  matchCloseBrace.fill(-1);
-  const openBrackets: number[] = [];
-  const openBraces: number[] = [];
-  for (let i = 0; i < n; i += 1) {
-    const tk = tokens[i]!;
-    if (tk.kind !== 'punct') continue;
-    if (tk.value === '[') openBrackets.push(i);
-    else if (tk.value === ']' && openBrackets.length > 0) matchCloseBracket[openBrackets.pop()!] = i;
-    else if (tk.value === '{') openBraces.push(i);
-    else if (tk.value === '}' && openBraces.length > 0) matchCloseBrace[openBraces.pop()!] = i;
-  }
-
-  // O(N) 反向预处理：每个位置跳过任意连续 ')' 后的首个索引，以及连续成员链 .x / ?.x / [...] 结束索引。
-  const nextNonParen = new Int32Array(n + 1);
-  nextNonParen[n] = n;
-  const memberChainEnd = new Int32Array(n + 1);
-  memberChainEnd[n] = n;
-  for (let i = n - 1; i >= 0; i -= 1) {
-    const tk = tokens[i]!;
-    nextNonParen[i] = tk.kind === 'punct' && tk.value === ')' ? nextNonParen[i + 1]! : i;
-    if (tk.kind === 'punct' && (tk.value === '.' || tk.value === '?.')) {
-      const nextIdx = i + 1 < n && tokens[i + 1]!.kind === 'ident' ? i + 2 : i + 1;
-      memberChainEnd[i] = memberChainEnd[nextIdx]!;
-    } else if (tk.kind === 'punct' && tk.value === '[') {
-      const close = matchCloseBracket[i]!;
-      memberChainEnd[i] = close === -1 ? n : memberChainEnd[close + 1]!;
-    } else {
-      memberChainEnd[i] = i;
-    }
-  }
-
-  const isDirectMutationAt = (idx: number): boolean => {
-    const j = nextNonParen[idx]!;
-    return j < n && tokens[j]!.kind === 'punct' && (jsAssignOps.has(tokens[j]!.value) || jsUpdateOps.has(tokens[j]!.value));
-  };
-
-  let destructTargetDepth = 0;
-  const destructStack: Array<{ closeIdx: number; isTarget: boolean }> = [];
-  const canPrecedeSubscript = (idx: number): boolean => {
-    if (idx <= 0) return false;
-    const prev = tokens[idx - 1]!;
-    if (prev.kind === 'ident') return !regexKeywordAllowedBefore.has(prev.value);
-    if (prev.kind === 'string') return true;
-    return prev.value === ')' || prev.value === ']';
-  };
-
-  for (let i = 0; i < n; i += 1) {
-    while (destructStack.length > 0 && destructStack[destructStack.length - 1]!.closeIdx === i) {
-      if (destructStack.pop()!.isTarget) destructTargetDepth -= 1;
-    }
-    const tk = tokens[i]!;
-    if (tk.kind === 'punct' && (tk.value === '{' || tk.value === '[')) {
-      const closeIdx = tk.value === '{' ? matchCloseBrace[i]! : matchCloseBracket[i]!;
-      if (closeIdx !== -1) {
-        const afterClose = nextNonParen[closeIdx + 1]!;
-        const followedByEq = afterClose < n && tokens[afterClose]!.kind === 'punct' && tokens[afterClose]!.value === '=';
-        const isTarget = followedByEq && (tk.value === '{' || !canPrecedeSubscript(i));
-        destructStack.push({ closeIdx, isTarget });
-        if (isTarget) destructTargetDepth += 1;
-      }
-      continue;
-    }
-    if (tk.kind !== 'ident') continue;
-
-    const prev = i > 0 ? tokens[i - 1]! : null;
-    const isPropAfterDot = Boolean(prev && prev.kind === 'punct' && (prev.value === '.' || prev.value === '?.'));
-    const hasPrefixMutation = Boolean(prev && ((prev.kind === 'ident' && prev.value === 'delete') || (prev.kind === 'punct' && jsUpdateOps.has(prev.value))));
-
-    if (tk.value === 'zwinfo' || tk.value === 'pdf') {
-      if (isPropAfterDot) continue;
-      const next = i + 1 < n ? tokens[i + 1]! : null;
-      const isObjPropKey = Boolean(next && next.kind === 'punct' && next.value === ':' && prev && prev.kind === 'punct' && (prev.value === '{' || prev.value === ','));
-      if (isObjPropKey) continue;
-      if (hasPrefixMutation || destructTargetDepth > 0) return true;
-      if (isDirectMutationAt(memberChainEnd[i + 1]!)) return true;
-      continue;
-    }
-    if (globalReceivers.has(tk.value)) {
-      if (isPropAfterDot) continue;
-      const next = i + 1 < n ? tokens[i + 1]! : null;
-      if (!next || next.kind !== 'punct') continue;
-      if (next.value === '.' || next.value === '?.') {
-        const prop = i + 2 < n ? tokens[i + 2]! : null;
-        if (prop && prop.kind === 'ident' && (prop.value === 'pdf' || prop.value === 'zwinfo')) {
-          if (hasPrefixMutation || destructTargetDepth > 0) return true;
-          if (isDirectMutationAt(memberChainEnd[i + 3]!)) return true;
-        }
-      } else if (next.value === '[') {
-        const closeBracket = matchCloseBracket[i + 1]!;
-        const firstCloseIdx = closeBracket === -1 ? n : closeBracket + 1;
-        const insideLen = closeBracket === -1 ? 0 : closeBracket - (i + 2);
-        const singleSafeLiteral = insideLen === 1
-          && tokens[i + 2]!.kind === 'string'
-          && !tokens[i + 2]!.escaped
-          && tokens[i + 2]!.value !== 'pdf'
-          && tokens[i + 2]!.value !== 'zwinfo';
-        if (!singleSafeLiteral) {
-          if (hasPrefixMutation || destructTargetDepth > 0) return true;
-          if (isDirectMutationAt(memberChainEnd[firstCloseIdx]!)) return true;
-        }
-      }
-      continue;
-    }
-    if ((tk.value === 'Object' || tk.value === 'Reflect') && i + 4 < n
-      && tokens[i + 1]!.kind === 'punct' && tokens[i + 1]!.value === '.'
-      && tokens[i + 2]!.kind === 'ident' && (tokens[i + 2]!.value === 'assign' || tokens[i + 2]!.value === 'defineProperty' || tokens[i + 2]!.value === 'defineProperties' || tokens[i + 2]!.value === 'set')
-      && tokens[i + 3]!.kind === 'punct' && tokens[i + 3]!.value === '(') {
-      const target = tokens[i + 4]!;
-      if (target.kind === 'ident') {
-        if (target.value === 'zwinfo') return true;
-        if (globalReceivers.has(target.value)) {
-          const afterTarget = i + 5 < n ? tokens[i + 5]! : null;
-          if (!afterTarget || (afterTarget.kind === 'punct' && afterTarget.value === ',')) {
-            return true;
-          }
-          if (afterTarget.kind === 'punct' && (afterTarget.value === '.' || afterTarget.value === '?.')) {
-            const prop = i + 6 < n ? tokens[i + 6]! : null;
-            if (prop && prop.kind === 'ident' && (prop.value === 'zwinfo' || prop.value === 'pdf')) return true;
-          } else if (afterTarget.kind === 'punct' && afterTarget.value === '[') {
-            const closeBracket = matchCloseBracket[i + 5]!;
-            const insideLen = closeBracket === -1 ? 0 : closeBracket - (i + 6);
-            const singleSafeLiteral = insideLen === 1
-              && tokens[i + 6]!.kind === 'string'
-              && !tokens[i + 6]!.escaped
-              && tokens[i + 6]!.value !== 'pdf'
-              && tokens[i + 6]!.value !== 'zwinfo';
-            if (!singleSafeLiteral) return true;
-          }
-        }
-      }
-    }
-  }
+  if (/\b(?:delete|Object|Reflect)\b/u.test(source) && /\b(?:pdf|zwinfo)\b/u.test(source)) return true;
   return false;
+}
+
+/** 消费一条静态语句末尾：要求显式 ';' 或去除后续空白与注释后已达脚本末尾（拒绝无分号换行续行如 .slice()）。 */
+function consumeStaticStatementEnd(rest: string): string | null {
+  let pos = 0;
+  const len = rest.length;
+  while (pos < len) {
+    const ch = rest[pos]!;
+    if (ch === ' ' || ch === '\t' || ch === '\f' || ch === '\v' || ch === '\u00a0') {
+      pos += 1;
+      continue;
+    }
+    if (ch === '/' && pos + 1 < len && rest[pos + 1] === '*') {
+      const end = rest.indexOf('*/', pos + 2);
+      if (end === -1) return null;
+      pos = end + 2;
+      continue;
+    }
+    break;
+  }
+  if (pos < len && rest[pos] === ';') {
+    return stripLeadingJsTrivia(rest.slice(pos + 1));
+  }
+  const remaining = stripLeadingJsTrivia(rest.slice(pos));
+  return remaining === '' ? '' : null;
 }
 
 /** 零递归严格 fail-closed 解析详情页；仅返回同源固定格式 PDF 定位，不下载、不执行脚本。 */
@@ -1936,9 +1790,10 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
   const rawHtml = decodeUtf8(rawBytes);
   const candidates = new Map<string, string>(), declaredCodes = new Set<string>();
   const sections = analyzeEastmoneySections(rawHtml, bound.url.href, request.encodeUrl);
+  let zwinfoObjectCount = 0;
   const collect = (candidate: string, expectedInfoCode?: string | null) => {
     let url: URL;
-    try { url = new URL(candidate, bound.url); } catch { return; }
+    try { url = new URL(candidate, sections.docBaseUrl); } catch { return; }
     if (url.protocol !== 'https:' || url.hostname !== 'pdf.dfcfw.com' || url.port || url.username || url.password) return;
     const match = /^\/pdf\/H3_(AP\d{8,20})_1\.pdf$/u.exec(url.pathname);
     if (match && expectedInfoCode && match[1] !== expectedInfoCode) return invalid('研报详情标识与附件标识不符。');
@@ -1947,19 +1802,25 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
   const processScript = (script: ScriptEntry, requiredInfoCode: string | null) => {
     if (script.hasInfoCodeConflict) return invalid('研报详情标识与附件标识不符。');
     let source = stripLeadingJsTrivia(script.content);
+    let consumedStatic = false;
     while (source) {
-      const pdf = /^window\.pdf\s*=\s*(["'])(https:\/\/pdf\.dfcfw\.com\/pdf\/H3_AP\d{8,20}_1\.pdf)\1[^\S\r\n\u2028\u2029]*(?:;|[\r\n\u2028\u2029]+|$)/u.exec(source);
+      const pdf = /^window\.pdf\s*=\s*(["'])(https:\/\/pdf\.dfcfw\.com\/pdf\/H3_AP\d{8,20}_1\.pdf)\1/u.exec(source);
       if (pdf) {
+        const nextSource = consumeStaticStatementEnd(source.slice(pdf[0].length));
+        if (nextSource === null) return invalid('详情脚本包含无法静态核对的研报或附件声明。');
         collect(pdf[2], requiredInfoCode);
-        source = stripLeadingJsTrivia(source.slice(pdf[0].length));
+        consumedStatic = true;
+        source = nextSource;
         continue;
       }
       const zwHead = /^(?:(?:var|let|const)\s+|window\.)?zwinfo\s*=\s*/u.exec(source);
       if (zwHead && source[zwHead[0].length] === '{') {
         const objEnd = extractBalancedObjectLiteral(source, zwHead[0].length);
         if (objEnd === -1) return invalid('研报详情元数据无法核对。');
-        const tailMatch = /^[^\S\r\n\u2028\u2029]*(?:;|[\r\n\u2028\u2029]+|$)/u.exec(source.slice(objEnd));
-        if (!tailMatch) return invalid('详情脚本包含无法静态核对的研报或附件声明。');
+        const nextSource = consumeStaticStatementEnd(source.slice(objEnd));
+        if (nextSource === null) return invalid('详情脚本包含无法静态核对的研报或附件声明。');
+        zwinfoObjectCount += 1;
+        if (zwinfoObjectCount > 1) return invalid('详情脚本包含无法静态核对的研报或附件声明。');
         const info = detailMetadata(source.slice(zwHead[0].length, objEnd));
         if (!info) return invalid('研报详情元数据无法核对。');
         if (info.encodeUrl !== undefined && info.encodeUrl !== request.encodeUrl) return invalid('研报详情标识与请求不符。');
@@ -1969,17 +1830,21 @@ export function decodeEastmoneyReportDetail(request: EastmoneyReportDetailReques
         const effCode = infoCode ?? requiredInfoCode;
         for (const key of ['pdfUrl', 'pdf_url', 'attachUrl', 'attach_url'])
           if (typeof info[key] === 'string') collect(info[key], effCode);
-        source = stripLeadingJsTrivia(source.slice(objEnd + tailMatch[0].length));
+        consumedStatic = true;
+        source = nextSource;
         continue;
       }
-      const code = /^(?:window\s*\.\s*)?zwinfo\s*\.\s*infoCode\s*=\s*(["'])(AP\d{8,20})\1[^\S\r\n\u2028\u2029]*(?:;|[\r\n\u2028\u2029]+|$)/u.exec(source);
+      const code = /^(?:window\s*\.\s*)?zwinfo\s*\.\s*infoCode\s*=\s*(["'])(AP\d{8,20})\1/u.exec(source);
       if (code) {
+        const nextSource = consumeStaticStatementEnd(source.slice(code[0].length));
+        if (nextSource === null) return invalid('详情脚本包含无法静态核对的研报或附件声明。');
         if (requiredInfoCode && code[2] !== requiredInfoCode) return invalid('研报详情标识与附件标识不符。');
         declaredCodes.add(code[2]);
-        source = stripLeadingJsTrivia(source.slice(code[0].length));
+        consumedStatic = true;
+        source = nextSource;
         continue;
       }
-      if (hasUnverifiedScriptAssignment(source))
+      if (consumedStatic || hasUnverifiedScriptReference(source))
         return invalid('详情脚本包含无法静态核对的研报或附件声明。');
       break;
     }
