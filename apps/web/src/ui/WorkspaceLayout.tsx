@@ -1,3 +1,4 @@
+import { WorkbenchCard } from './WorkbenchCard';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Search } from 'lucide-react';
 import type { TaskRecord } from '../../../../contracts/task-contracts';
@@ -101,10 +102,10 @@ function SubDirectoryPanel({ title, open, width, onToggle }: { title: string; op
   </aside>;
 }
 
-export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children, tasks = [], taskFeed, showDirectory = true, showAgent = true, onAskObject, canAskObject = false }: {
+export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children, tasks = [], taskFeed, showDirectory = true, showAgent = true, onAskObject, canAskObject = false, showWorkbenchCards = false }: {
   title: string; pageKey: string; contextLabel: string; agent: ReactNode; children: ReactNode;
   onAskObject?(object: WorkspaceObjectRef): void; canAskObject?: boolean;
-  tasks?: readonly TaskRecord[]; taskFeed?: ConversationTaskFeed; showDirectory?: boolean; showAgent?: boolean;
+  tasks?: readonly TaskRecord[]; taskFeed?: ConversationTaskFeed; showDirectory?: boolean; showAgent?: boolean; showWorkbenchCards?: boolean;
 }) {
   const words = useWords();
   const object = useWorkspaceObject(pageKey);
@@ -134,7 +135,8 @@ export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children,
   const activeTasks = conversationTasks.filter((task) => taskCenterGroup(task.status) === 'active');
   const contextText = [contextLabel, object?.detail, object?.label].filter(Boolean).join(' · ');
 
-  return <div className="workspace" data-agent-open={showAgent && agentOpen}>
+  const AgentFrame = showWorkbenchCards ? WorkbenchCard : 'aside';
+  return <div className="workspace" data-catalog-workbench={showWorkbenchCards || undefined} data-agent-open={showAgent && agentOpen}>
     {showDirectory && <SubDirectoryPanel title={title} open={layout.subnavOpen} width={layout.subnavWidth} onToggle={() => update({ subnavOpen: !layout.subnavOpen })} />}
     <div className="workspace-content">{children}</div>
     {showAgent && agentOpen && <Splitter axis="x" label={words('调整 Agent 工作台宽度', 'Resize agent workspace')}
@@ -144,7 +146,7 @@ export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children,
         <ChevronLeft size={15} aria-hidden="true" /><span>Agent</span>
       </button>
     </aside>}
-    {showAgent && <aside className="workspace-agent" data-open={agentOpen} style={{ width: agentOpen ? layout.agentWidth : undefined }} aria-hidden={!agentOpen}>
+    {showAgent && <AgentFrame {...(showWorkbenchCards ? { variant: 'inspector' as const, role: 'complementary', 'aria-label': words('Agent 工作台', 'Agent workspace') } : {})} className="workspace-agent" data-open={agentOpen} style={{ width: agentOpen ? layout.agentWidth : undefined }} aria-hidden={!agentOpen}>
       <header className="workspace-panel-head">
         <span className="workspace-panel-title">{words('Agent 工作台', 'Agent workspace')}</span>
         <IconButton label={words('收起 Agent 工作台', 'Hide agent workspace')} onClick={() => setAgentOpen(false)}><ChevronRight size={15} /></IconButton>
@@ -165,7 +167,7 @@ export function WorkspaceLayout({ title, pageKey, contextLabel, agent, children,
           {!layout.taskCollapsed && <TaskCenter key={taskFeed?.scope} tasks={conversationTasks} feed={taskFeed} />}
         </section>
       </div>
-    </aside>}
+    </AgentFrame>}
     {showAgent && agentOpen && <button type="button" className="workspace-scrim" aria-label={words('关闭 Agent 工作台', 'Close agent workspace')} onClick={() => setAgentOpen(false)} />}
 
   </div>;

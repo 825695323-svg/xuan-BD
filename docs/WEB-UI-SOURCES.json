@@ -1,0 +1,243 @@
+{
+  "shadcnAdmin": {
+    "repository": "https://github.com/satnaing/shadcn-admin",
+    "commit": "e16c87f213a5ba5e45964e9b67c792105ec74d26",
+    "usage": "Actual pinned upstream SidebarProvider, Sidebar, SidebarInset, Header and Main plus supporting UI. The research workspace uses original peer Sidebar/Inset and Card components; other BD directory pages retain their static directory variant. Existing routes and authority are unmodified.",
+    "license": "MIT",
+    "licensePath": "apps/web/public/licenses/shadcn-admin-MIT.txt",
+    "licenseSha256": "d28c723c33a18dfed6af67b1a0ac368724f79bcb80750d3e080dbcf8dedb9e4b",
+    "files": [
+      {
+        "upstreamPath": "src/components/layout/header.tsx",
+        "localPath": "apps/web/src/ui/admin/header.tsx",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/components/layout/header.tsx",
+        "originalSha256": "f19060d14bdcb6efa98f1eee05452ecdc22d39a8a358af0d6e319e7ec9563777",
+        "localSha256": "5b534962fc83f514f64f9830e37200ea0699772961d61d748b8b258c70603c47",
+        "changes": [
+          "Resolve source imports inside BD\u2019s vendored Admin directory.",
+          "Omit the trigger where BD has no active in-card directory; localize its accessible label."
+        ]
+      },
+      {
+        "upstreamPath": "src/components/layout/main.tsx",
+        "localPath": "apps/web/src/ui/admin/main.tsx",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/components/layout/main.tsx",
+        "originalSha256": "e200dbc0e1b8cf383fdf6b7f7588ac1c9419de65f2658692e7941324bd09c572",
+        "localSha256": "935c2b91ea5dced1599b8025fa1550ed278dc1a72d8b87978b3eb8bca005f491",
+        "changes": [
+          "Resolve source imports inside BD\u2019s vendored Admin directory."
+        ]
+      },
+      {
+        "upstreamPath": "src/components/ui/sidebar.tsx",
+        "localPath": "apps/web/src/ui/admin/sidebar.tsx",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/components/ui/sidebar.tsx",
+        "originalSha256": "40f021f27b3043b2af4c247b99f665b323edd142a4317a7b84ac4e3017070e9c",
+        "localSha256": "e70b23936cef6914e532c8e82e674a58938a2f2b93ccdec63742a17840d967e7",
+        "changes": [
+          "Resolve source imports inside BD\u2019s vendored Admin directory.",
+          "Use Slot via BD\u2019s existing radix-ui package.",
+          "Keep static Sidebar usable on standalone BD fixtures and scope keyboard shortcut to mounted desktop directory pages. Directory visibility is transient; do not add a new cookie or BD preference.",
+          "Allow BD research to restore focus to its own external Header trigger when the original mobile Sidebar Sheet closes."
+        ]
+      },
+      {
+        "upstreamPath": "src/components/ui/button.tsx",
+        "localPath": "apps/web/src/ui/admin/button.tsx",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/components/ui/button.tsx",
+        "originalSha256": "97ed8ef5651a6e264ded042b024b5be39673ba2ff222017fbcf845cf3ed37226",
+        "localSha256": "5c14f27933c4c9b1e4e3f9bbe806d4b81cbd59b53a1e61a04b7918ca308a2931",
+        "changes": [
+          "Resolve source imports inside BD\u2019s vendored Admin directory.",
+          "Use Slot via BD\u2019s existing radix-ui package."
+        ]
+      },
+      {
+        "upstreamPath": "src/components/ui/card.tsx",
+        "localPath": "apps/web/src/ui/admin/card.tsx",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/components/ui/card.tsx",
+        "originalSha256": "72728c3734479c247347759fc11bb01c3acac38f8e87da6aeb03d69c39e0f9cc",
+        "localSha256": "f39c786584ab345cfd9d48169046682d3aadc0cd23303a5c50896af5f126785d",
+        "changes": [
+          "Resolve source imports inside BD\u2019s vendored Admin directory."
+        ]
+      },
+      {
+        "upstreamPath": "src/components/ui/input.tsx",
+        "localPath": "apps/web/src/ui/admin/input.tsx",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/components/ui/input.tsx",
+        "originalSha256": "4f7d443722b4aeacb1179b863b98f773f7950514ceb1d897b66c967521f08072",
+        "localSha256": "d96ad19ff8792bef43ea7fd722bbb6a9a139815e77cfbdecc77fc50682481a48",
+        "changes": [
+          "Resolve source imports inside BD\u2019s vendored Admin directory."
+        ]
+      },
+      {
+        "upstreamPath": "src/components/ui/separator.tsx",
+        "localPath": "apps/web/src/ui/admin/separator.tsx",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/components/ui/separator.tsx",
+        "originalSha256": "aa5cc28cdebe9264228c622e48363b9e8a2684436e47c255bb1a0a905610aaef",
+        "localSha256": "2cb13106ddcd0abe65d48173ff3347a1ced0583efdfdf1fa1b70d2bef07ec049",
+        "changes": [
+          "Resolve source imports inside BD\u2019s vendored Admin directory.",
+          "Use the equivalent namespace from BD\u2019s existing radix-ui dependency."
+        ]
+      },
+      {
+        "upstreamPath": "src/components/ui/sheet.tsx",
+        "localPath": "apps/web/src/ui/admin/sheet.tsx",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/components/ui/sheet.tsx",
+        "originalSha256": "2423f0e67f594198df542acabd32547896925e35786c6bb085f8a4eeed4273c4",
+        "localSha256": "dd7360950589809440c1585201a70e388c6c4822ef9999e92af7037235865967",
+        "changes": [
+          "Resolve source imports inside BD\u2019s vendored Admin directory.",
+          "Use the equivalent namespace from BD\u2019s existing radix-ui dependency."
+        ]
+      },
+      {
+        "upstreamPath": "src/components/ui/skeleton.tsx",
+        "localPath": "apps/web/src/ui/admin/skeleton.tsx",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/components/ui/skeleton.tsx",
+        "originalSha256": "7617060c9ea8a25dafadf224a8567c91daebd4a43149d0e72143bba807fab457",
+        "localSha256": "5712820c74327a125089c6ce3e5a33c04f041266be58bd67fd295c3d4a366985",
+        "changes": [
+          "Resolve source imports inside BD\u2019s vendored Admin directory."
+        ]
+      },
+      {
+        "upstreamPath": "src/components/ui/tooltip.tsx",
+        "localPath": "apps/web/src/ui/admin/tooltip.tsx",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/components/ui/tooltip.tsx",
+        "originalSha256": "adb364c0798a914d6a37f2dc0f22a75b0537be568149ee9b90794b2352c03315",
+        "localSha256": "55c2ba1c366043892facf4cb693255d41a5068b0d3699d3fb7c0ecf7b717b6cf",
+        "changes": [
+          "Resolve source imports inside BD\u2019s vendored Admin directory.",
+          "Use the equivalent namespace from BD\u2019s existing radix-ui dependency."
+        ]
+      },
+      {
+        "upstreamPath": "src/hooks/use-mobile.tsx",
+        "localPath": "apps/web/src/ui/admin/use-mobile.tsx",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/hooks/use-mobile.tsx",
+        "originalSha256": "cef2003db553ef127ba219e8f4303a733cc76b85f83f17b1622131c0ecfd3b3c",
+        "localSha256": "ccf30888ac51ef50dcb5452d1917ae75ca309e84b4f39b41dbd90a913096ce59",
+        "changes": []
+      },
+      {
+        "upstreamPath": "src/lib/utils.ts",
+        "localPath": "apps/web/src/ui/admin/utils.ts",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/lib/utils.ts",
+        "originalSha256": "cc244af40baa5fe88abff3f80b424a7aa654b3137a7db612a8fe94861b61e04e",
+        "localSha256": "50124b3bacea4ad66f729802d944a339cb4cb704d3c1e5996eb749535d7cd332",
+        "changes": [
+          "Retain original cn function; omit unrelated utility exports."
+        ]
+      },
+      {
+        "upstreamPath": "src/styles/theme.css",
+        "localPath": "apps/web/src/ui/admin/theme.css",
+        "sourceUrl": "https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/styles/theme.css",
+        "originalSha256": "faee559c9a21b2084bf7bae193e70f0ab18b18a393a06fec1408669652c266a1",
+        "localSha256": "65be4cbcf7f7b7d3925566d2f2a8bba0594a337e54988b7aa641f7f30bc3ad9d",
+        "changes": [
+          "Honor BD\u2019s authoritative existing theme attribute.",
+          "Namespace upstream muted/accent variables so existing BD text and interaction colors are not overwritten."
+        ]
+      }
+    ]
+  },
+  "font": {
+    "family": "Inter",
+    "release": "Google Fonts CDN inter/v20",
+    "referenceCommit": "e16c87f213a5ba5e45964e9b67c792105ec74d26",
+    "stylesheetUrl": "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Manrope:wght@200..800&display=swap",
+    "stylesheetSha256": "6fdeb224475a0b4418f221757f3f61c4ef15ec8c5df9d3f36bf3eb94ffb906f7",
+    "license": "OFL-1.1",
+    "licensePath": "apps/web/public/licenses/inter-OFL.txt",
+    "licenseSourceUrl": "https://github.com/google/fonts/blob/main/ofl/inter/OFL.txt",
+    "licenseBlobGitSha1": "21f6aff961064c2e429f570995e446bcdd555422",
+    "licenseSha256": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57",
+    "files": [
+      {
+        "localPath": "apps/web/src/assets/fonts/inter-latin-normal.woff2",
+        "url": "https://fonts.gstatic.com/s/inter/v20/UcCo3FwrK3iLTcviYwY.woff2",
+        "style": "normal",
+        "subset": "latin",
+        "bytes": 72920,
+        "sha256": "2c295d99e26dcf357d4d01bcf270fd6924b600c9a13dd8c363ef114f4c6976fa"
+      },
+      {
+        "localPath": "apps/web/src/assets/fonts/inter-latin-italic.woff2",
+        "url": "https://fonts.gstatic.com/s/inter/v20/UcCm3FwrK3iLTcvnUwQT9g.woff2",
+        "style": "italic",
+        "subset": "latin",
+        "bytes": 79716,
+        "sha256": "c58f9d530baa7e96355f444502eca739d5eefa0f328f3d635b73648373214629"
+      }
+    ]
+  },
+  "harnessRailAdaptation": {
+    "origin": "Xuan Harness WorkspaceShortcuts independent rail, adapted to BD with authorization to publish this adaptation.",
+    "components": [
+      "apps/web/src/ui/WorkspaceShortcuts.tsx"
+    ],
+    "changes": [
+      "Render BD\u2019s existing routes/controls with accessible IconButton instead of Harness route links.",
+      "Retain the rail beside, outside the complete Admin provider at every width."
+    ],
+    "distribution": "Publication covers this BD rail adaptation only. No other Harness source, application state, data, or runtime is included.",
+    "sources": [
+      {
+        "reuse": "Independent workspace navigation component boundary, adapted to BD-owned route and action handlers.",
+        "localPath": "apps/web/src/ui/WorkspaceShortcuts.tsx",
+        "localSha256": "08095eefd7499d7df0f20dbb4de943e875bc318b5e1e733f1cce5ac2a564e2ce"
+      },
+      {
+        "localPath": "apps/web/src/styles.css",
+        "reuse": "56px independent outside rail, shared surface, centered icons and single 1px divider; keep BD\u2019s rail visible at a compact 52px on narrow screens because it is the sole global navigation."
+      }
+    ]
+  },
+  "adminRuntimeNotices": [
+    {
+      "package": "class-variance-authority",
+      "version": "0.7.1",
+      "spdx": "Apache-2.0",
+      "packageLicenseFile": "LICENSE",
+      "localPath": "apps/web/public/licenses/class-variance-authority-LICENSE.txt",
+      "sha256": "0ccbf956cffc8dcf515809433cb5242ee67c94513d46e48c261d68d0880de406"
+    },
+    {
+      "package": "clsx",
+      "version": "2.1.1",
+      "spdx": "MIT",
+      "packageLicenseFile": "license",
+      "localPath": "apps/web/public/licenses/clsx-LICENSE.txt",
+      "sha256": "9a9edad7baae52622bddf3c15b2ef8a33d2c89f2d25408ad13e8a7481c6b0c97"
+    },
+    {
+      "package": "tailwind-merge",
+      "version": "3.7.1",
+      "spdx": "MIT",
+      "packageLicenseFile": "LICENSE.md",
+      "localPath": "apps/web/public/licenses/tailwind-merge-LICENSE.txt",
+      "sha256": "d4c70c7ce38cea8778f0aed3fc0bef0a9dbd27f13bd8b6773cbd6d37941971e5"
+    },
+    {
+      "package": "tailwindcss",
+      "version": "4.3.5",
+      "spdx": "MIT",
+      "packageLicenseFile": "LICENSE",
+      "localPath": "apps/web/public/licenses/tailwindcss-LICENSE.txt",
+      "sha256": "60e0b68c0f35c078eef3a5d29419d0b03ff84ec1df9c3f9d6e39a519a5ae7985"
+    },
+    {
+      "package": "tw-animate-css",
+      "version": "1.4.0",
+      "spdx": "MIT",
+      "packageLicenseFile": "LICENSE",
+      "localPath": "apps/web/public/licenses/tw-animate-css-LICENSE.txt",
+      "sha256": "039184dfa0a822397b3f45a435b5b1e538721587fbade96b9fa80f86cb354109"
+    }
+  ]
+}

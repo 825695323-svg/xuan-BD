@@ -512,3 +512,45 @@
 .agent-task-details dl { margin: var(--ui-space-2) 0; }
 .agent-task-details dt { color: var(--muted); }
 .agent-task-details dd { margin: 0 0 var(--ui-space-2); }
+
+/* Workbench pages share the research canvas / inspector surfaces, not its data. */
+.workspace[data-catalog-workbench="true"] {
+  padding: var(--ui-space-4);
+}
+.workspace[data-catalog-workbench="true"] > .workspace-splitter--x {
+  flex-basis: var(--ui-space-4);
+  width: var(--ui-space-4);
+  margin-inline-start: 0;
+}
+.workspace[data-catalog-workbench="true"] > .workspace-splitter--x::before {
+  left: 50%;
+}
+.workspace[data-catalog-workbench="true"] > .workspace-agent > .workspace-panel-head {
+  flex-basis: 52px;
+  border-bottom: 1px solid var(--border);
+}
+.workspace[data-catalog-workbench="true"] > .workspace-agent > .workspace-panel-head .workspace-panel-title {
+  color: var(--card-foreground);
+  font-size: 1rem;
+  font-weight: 600;
+}
+.workspace[data-catalog-workbench="true"] > .workspace-agent > .agent-context {
+  padding-block-start: var(--ui-space-2);
+}
+.workspace[data-catalog-workbench="true"] > .workspace-rail--agent {
+  margin-inline-start: var(--ui-space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+@media (min-width: 1181px) {
+  .workspace[data-catalog-workbench="true"] > .workspace-agent { max-width: 55%; }
+}
+@media (max-width: 1180px) {
+  .workspace[data-catalog-workbench="true"] > .workspace-agent {
+    box-shadow: var(--float-shadow);
+  }
+}
+@media (max-width: 620px) {
+  .workspace[data-catalog-workbench="true"] { padding: var(--ui-space-2); }
+}

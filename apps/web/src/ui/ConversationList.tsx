@@ -1,3 +1,4 @@
+import { BusinessSidebar } from './BusinessSidebar';
 import { useRef, useState } from 'react';
 import { Archive, Folder, FolderMinus, GitBranchPlus, List, MoreHorizontal, Pencil, Pin, PinOff, Plus, Trash2, Undo2, X } from 'lucide-react';
 import { DropdownMenu } from 'radix-ui';
@@ -107,7 +108,7 @@ export default function ConversationList({ chat }: { chat: Chat }) {
   const groupNames = [...namedGroups.keys()].sort((a, b) => a.localeCompare(b));
   const archived = chat.conversationView === 'archived';
   const visibleGroups = groupFilter ? [{ key: `filter:${groupFilter}`, title: groupFilter, items: namedGroups.get(groupFilter) ?? [] }] : groups;
-  return <aside className="conversation-sidebar" aria-label={words('会话列表', 'Conversation list')}>
+  return <BusinessSidebar className="conversation-sidebar" aria-label={words('会话列表', 'Conversation list')}>
     <div className="sidebar-search-slot">
       <div className="data-search data-nav-search">
         <MorphIcon name="search" size={15} />
@@ -132,5 +133,5 @@ export default function ConversationList({ chat }: { chat: Chat }) {
       {!!chat.conversations.length && groupFilter && !(namedGroups.get(groupFilter)?.length) && <p className="list-empty" role="status">{words('该分组暂无会话', 'No conversations in this group')}</p>}
     </div>
     {management && <ManagementDialog key={`${management.kind}:${management.item.conversationId}`} request={management} chat={chat} onClose={() => { const id = management.item.conversationId; setManagement(null); requestAnimationFrame(() => focusConversation(id)); }} />}
-  </aside>;
+  </BusinessSidebar>;
 }

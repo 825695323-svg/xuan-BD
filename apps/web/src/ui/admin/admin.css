@@ -1,0 +1,94 @@
+/* The actual Admin utility layer, without preflight overriding existing BD surfaces. */
+@layer theme, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "tw-animate-css";
+@import "./theme.css";
+@source "./";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+.bd-admin-original { min-width: 0; min-height: 0; }
+.bd-admin-provider { --spacing: 4px; height: 100%; min-width: 0; min-height: 0; }
+.bd-admin-inset { min-width: 0; min-height: 0; }
+/* The upstream peer Sidebar owns the workbench directory and its collapsed
+   width; the rounded surface belongs only to its sibling Inset. */
+.bd-workspace-provider {
+  background: var(--sidebar);
+}
+.bd-workspace-provider > .bd-workspace-inset {
+  width: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--sidebar-border) 55%, transparent);
+  background: var(--background);
+}
+.bd-workspace-inset > .bd-admin-header {
+  background: transparent;
+}
+.bd-workspace-inset > .bd-workspace-main {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+}
+@media (max-width: 767px) {
+  .bd-workspace-provider > .bd-workspace-inset {
+    border: 0;
+  }
+}
+
+.bd-admin-header [data-slot="separator"] { inline-size: 1px; background: var(--border); }
+.bd-admin-header [data-slot="sidebar-trigger"] { border-color: var(--border); -webkit-app-region: no-drag; }
+@media (min-width: 768px) {
+  .bd-admin-inset[data-bd-directory-open="false"] .bd-business-sidebar { display: none; }
+}
+@media (max-width: 767px) {
+  .bd-admin-header { height: 48px; }
+  .bd-admin-header > div { padding-inline: var(--ui-space-3); }
+}
+
+/* Put the pinned Header on the same surface as the detail columns. The
+   existing directory/content nodes retain their own state and scroll areas. */
+.bd-directory-header { border-bottom: 1px solid var(--border); }
+.bd-admin-inset .database-page > .bd-directory-header,
+.bd-admin-inset .page-panes > .bd-directory-header { flex: 0 0 auto; }
+
+@container (width > 810px) {
+  .bd-admin-inset .page-panes:has(> .bd-directory-header) {
+    display: grid;
+    --bd-directory-width: 180px;
+    --bd-entry-width: 260px;
+    grid-template-columns: var(--bd-directory-width) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  .bd-admin-inset .page-panes:has(> .bd-directory-header):has(> .page-cards) {
+    grid-template-columns: var(--bd-directory-width) var(--bd-entry-width) minmax(0, 1fr);
+  }
+  .bd-admin-inset[data-bd-directory-open="false"] .page-panes:has(> .bd-directory-header) {
+    --bd-directory-width: 0px;
+  }
+  .bd-admin-inset .page-panes:has(> .bd-directory-header) > .data-nav {
+    grid-area: 1 / 1 / -1 / 2;
+    width: 100%;
+  }
+  .bd-admin-inset .page-panes > .bd-directory-header { grid-area: 1 / 2 / 2 / -1; }
+  .bd-admin-inset .page-panes:has(> .bd-directory-header) > .page-cards { grid-area: 2 / 2 / 3 / 3; width: 100%; }
+  .bd-admin-inset .page-panes:has(> .bd-directory-header) > .object-detail,
+  .bd-admin-inset .page-panes:has(> .bd-directory-header) > .data-panel { grid-area: 2 / 2 / 3 / -1; min-width: 0; }
+  .bd-admin-inset .page-panes:has(> .bd-directory-header) > .page-cards + :is(.object-detail, .data-panel) { grid-column-start: 3; }
+  .bd-admin-inset .page-panes:has(> .bd-directory-header) > .data-drag-hint { grid-area: 3 / 2 / 4 / -1; }
+}
+@media (max-width: 1440px) {
+  .bd-admin-inset .page-panes:has(> .bd-directory-header) { --bd-entry-width: 240px; }
+}
+
+@media (width > 760px) {
+  .bd-admin-inset .database-page:has(> .bd-directory-header) {
+    display: grid;
+    --bd-directory-width: 250px;
+    grid-template-columns: var(--bd-directory-width) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .bd-admin-inset[data-bd-directory-open="false"] .database-page:has(> .bd-directory-header) { --bd-directory-width: 0px; }
+  .bd-admin-inset .database-page > .bd-directory-header { grid-area: 1 / 2 / 2 / 3; }
+  .bd-admin-inset .database-page:has(> .bd-directory-header) > .data-nav { grid-area: 1 / 1 / -1 / 2; width: 100%; }
+  .bd-admin-inset .database-page:has(> .bd-directory-header) > .data-panel { grid-area: 2 / 2 / 3 / 3; min-width: 0; }
+}

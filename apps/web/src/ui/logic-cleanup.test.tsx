@@ -3,6 +3,7 @@ import { registerHooks } from 'node:module';
 import { test } from 'node:test';
 import { act } from 'react';
 import { parseHTML } from 'linkedom';
+import { ToolLibraryService } from '../../../../modules/financial/tool-library.js';
 import { resolveObjectSelection, useObjectSelection } from './useStoredSelection.js';
 
 function browser() {
@@ -40,24 +41,25 @@ async function loadPageComponents() {
   } finally { hooks.deregister(); }
 }
 
-test('算法目录读取失败后保留原选择，重试后定位到唯一已登记算法', async () => {
+test('算法目录完整展示实际登记；坏响应和短暂错误保留原选择', async () => {
   const { PreferencesProvider, ToolsPage } = await loadPageComponents();
   const env = browser(), previousFetch = globalThis.fetch;
   const { createRoot } = await import('react-dom/client');
   const root = createRoot(env.document.getElementById('root')!);
   const key = 'xuan.tools.object';
   env.storage.set(key, 'removed');
-  let catalogAvailable = false;
+  const catalog = new ToolLibraryService().view();
+  assert.ok(catalog.tools.length > 1);
+  let catalogMode: 'failure' | 'malformed' | 'ready' = 'failure';
   const requests: string[] = [];
   globalThis.fetch = async input => {
     const url = String(input);
     requests.push(url);
     if (url === '/api/ui/preferences') return reply(preferences);
     if (url !== '/api/ui/tool-library') throw new Error(`Unexpected request ${url}`);
-    if (!catalogAvailable) return new Response(JSON.stringify({ error: '暂时无法读取' }), { status: 503 });
-    return reply({ status: 'unavailable', reason: '受控实现未装配', tools: [{ id: 'macd', title: 'MACD · 固定 12/26/9',
-      description: '本页显示后端登记的 MACD 方法。', status: 'blocked', reason: '受控实现未装配',
-      parameters: [], outputFields: [], limitations: [] }] });
+    if (catalogMode === 'failure') return new Response(JSON.stringify({ error: '暂时无法读取' }), { status: 503 });
+    if (catalogMode === 'malformed') return reply({ ...catalog, tools: [catalog.tools[0], { ...catalog.tools[1], parameters: [null] }] });
+    return reply(catalog);
   };
   try {
     await act(() => root.render(<PreferencesProvider><ToolsPage /></PreferencesProvider>));
@@ -66,13 +68,20 @@ test('算法目录读取失败后保留原选择，重试后定位到唯一已�
     assert.equal(env.document.querySelector('.object-card'), null);
     const refresh = env.document.querySelector<HTMLButtonElement>('.object-detail-head button');
     assert.ok(refresh);
-    catalogAvailable = true;
+    catalogMode = 'malformed';
     await act(() => refresh.click());
-    assert.equal(env.document.querySelectorAll('.object-card').length, 1);
-    assert.match(env.document.querySelector('.object-card[aria-current="true"]')?.textContent ?? '', /MACD.*受阻/u);
-    assert.match(env.document.querySelector('.object-detail-content')?.textContent ?? '', /受控实现未装配/u);
-    assert.equal(env.storage.get(key), 'macd');
-    assert.deepEqual(requests.filter(url => url !== '/api/ui/preferences'), ['/api/ui/tool-library', '/api/ui/tool-library']);
+    assert.match(env.document.querySelector('[role="alert"]')?.textContent ?? '', /算法目录读取失败/u);
+    assert.equal(env.storage.get(key), 'removed');
+    assert.equal(env.document.querySelector('.object-card'), null);
+    catalogMode = 'ready';
+    await act(() => refresh.click());
+    const renderedIds = Array.from(env.document.querySelectorAll('.catalog-navigation .object-card-meta'), item => item.textContent);
+    assert.deepEqual(renderedIds.sort(), catalog.tools.map(tool => tool.id).sort());
+    assert.equal(env.document.querySelector('.page-cards'), null);
+    assert.match(env.document.querySelector('.object-card[aria-current="true"]')?.textContent ?? '', /MACD.*不可用/u);
+    assert.match(env.document.querySelector('.object-detail-content')?.textContent ?? '', /尚未|未装配/u);
+    assert.equal(env.storage.get(key), catalog.tools[0]!.id);
+    assert.deepEqual(requests.filter(url => url !== '/api/ui/preferences'), Array(3).fill('/api/ui/tool-library'));
   } finally { await act(() => root.unmount()); globalThis.fetch = previousFetch; env.cleanup(); }
 });
 

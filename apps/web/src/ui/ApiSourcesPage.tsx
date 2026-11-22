@@ -1,3 +1,5 @@
+import { CatalogCategory, CatalogChildren, CatalogRow, CatalogSidebar } from './CatalogSidebar';
+import { WorkbenchCard } from './WorkbenchCard';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiReferenceEvidence } from '../object-reference-evidence';
 import { setWorkspaceObject } from './workspace-context';
@@ -13,7 +15,6 @@ import {
 } from './sourceSettingsClient';
 import { ErrorNote, Modal, SelectMenu, errorDetail, useWords } from './Controls';
 import { DetailDiagnostics, DetailFacts, DetailHeader, ObjectDetailPanel } from './ObjectDetailPanel';
-import { MorphIcon } from './MorphIcon';
 import { RunReceipt, SourceCheckError, SourceCheckLine, useSourceCheck, type SourceRunTask } from './SourceActions';
 import {
   ASSET_SCOPE_IDS, ASSET_SCOPE_LABELS, ASSET_SCOPES, DATA_CAPABILITY_IDS, DATA_CAPABILITY_LABELS, DATA_CAPS,
@@ -167,42 +168,6 @@ export function ApiSourcesPage() {
     onDragStart: () => setDragging({ id, from }),
     onDragEnd: () => setDragging(null),
   });
-  const leaf = (item: MarketLeaf, from: 'root' | 'other' | 'fixed', depth = 1) => <button type="button" key={item.id}
-    className={`data-nav-item${depth > 1 ? ' is-child' : ''}`} aria-current={selected === item.id ? 'true' : undefined}
-    onClick={() => pick(item.id)} {...(from === 'fixed' ? {} : dragProps(item.id, from))}>
-    <span>{item.label}</span><span className="data-nav-dot" aria-hidden="true" />
-  </button>;
-
-  const searching = marketQuery.trim().length > 0;
-  const matchesMarket = (label: string) => !searching || label.toLocaleLowerCase().includes(marketQuery.trim().toLocaleLowerCase());
-  const nav = <aside className="data-nav" aria-label={words('接口源分类', 'API source categories')}>
-    <div className="sidebar-search-slot">
-      <PageSearch compact label={words('搜索接口源分类', 'Search API source categories')}
-        placeholder={words('搜索接口源…', 'Search API sources…')} value={marketQuery} onChange={setMarketQuery} />
-    </div>
-    <div onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); moveTo('root'); }}>
-      <button type="button" className="data-nav-item is-group" aria-expanded={open.has('region')} onClick={() => toggle('region')}>
-        <span>{words('地区市场', 'Markets')}</span><MorphIcon name={open.has('region') ? 'chevron-up' : 'chevron-down'} size={16} />
-      </button>
-      {(open.has('region') || searching) && <div className="data-nav-children">
-        {layoutOf(layout.root).filter((item) => matchesMarket(item.label)).map((item) => leaf(item, 'root'))}
-        <button type="button" className={`data-nav-item is-group is-child${open.has('other') ? ' is-open' : ''}`} aria-expanded={open.has('other')}
-          onClick={() => toggle('other')} onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); moveTo('other'); }}>
-          <span>{words('其他地区', 'Other regions')}</span><MorphIcon name={open.has('other') ? 'chevron-up' : 'chevron-down'} size={14} />
-        </button>
-        {(open.has('other') || searching) && <div className="data-nav-children is-nested" onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); moveTo('other'); }}>
-          {layoutOf(layout.other).filter((item) => matchesMarket(item.label)).map((item) => leaf(item, 'other', 2))}
-          {!layout.other.length && !searching && <p className="data-nav-hint">{words('把市场拖到这里收进其他地区', 'Drag a market here')}</p>}
-        </div>}
-      </div>}
-    </div>
-
-    <button type="button" className="data-nav-item is-group" aria-expanded={open.has('global')} onClick={() => toggle('global')}>
-      <span>{words('全球类型', 'Global types')}</span><MorphIcon name={open.has('global') ? 'chevron-up' : 'chevron-down'} size={16} />
-    </button>
-    {(open.has('global') || searching) && <div className="data-nav-children">{GLOBAL_MARKET_LEAVES.filter((item) => matchesMarket(item.label)).map((item) => leaf(item, 'fixed'))}</div>}
-  </aside>;
-
   const market = marketOf(selected);
   const scopeId = MARKET_SCOPES[selected];
   const scopePolicy = scopeId ? sourceSettings?.policies.find((item) => item.scopeId === scopeId) : undefined;
@@ -525,31 +490,55 @@ export function ApiSourcesPage() {
         </>}
     </ObjectDetailPanel>;
 
-  return <div className="data-page page-panes page-panes--api" data-settings-revision={sourceSettings?.revision ?? 'unknown'}>
-    {nav}
-    <div className="page-cards" aria-label={words('来源', 'Sources')}>
-      <div className="object-list">
-        <button type="button" className="object-card" aria-current={!selectedConnection && !selection.pending ? 'true' : undefined} onClick={() => selection.select('__market__')}>
-          <span className="object-card-main">
-            <span className="object-card-title">{words('当前市场总览', 'Market overview')}</span>
-            <span className="object-card-meta">{marketLabelOf(selected)}</span>
-          </span>
-          <span className="object-card-state">{words(`${typeCards.length} 个接口类型`, `${typeCards.length} types`)}</span>
-        </button>
-        {scopeConnections.map((connection) => {
-          return <button type="button" key={connection.id} className="object-card"
-            aria-current={selectedConnectionId === connection.id ? 'true' : undefined} onClick={() => selection.select(connection.id)}>
-            <span className="object-card-main">
-              <span className="object-card-title">{sourceLabel(connection)}</span>
-              <span className="object-card-meta">{connection.alias} · {connection.scopes.join(' / ')}</span>
-            </span>
-            <span className="object-card-state" data-ok={connection.enabled}>{connection.enabled ? words('已启用', 'Enabled') : words('已停用', 'Disabled')}</span>
-          </button>;
-        })}
-        {!scopeConnections.length && <p className="data-empty">{words('当前范围没有已配置来源连接。', 'No source connection is configured for this scope.')}</p>}
-      </div>
-    </div>
-    {detailPanel}
+  // Only the selected market owns a supplier branch; no duplicate list or
+  // implicit supplier selection when changing markets.
+  const supplierRows = <CatalogChildren aria-label={words('来源', 'Sources')}>
+    <CatalogRow label={words('当前市场总览', 'Market overview')} meta={marketLabelOf(selected)}
+      badge={words(`${typeCards.length} 个接口类型`, `${typeCards.length} types`)}
+      selected={!selectedConnection && !selection.pending} onSelect={() => selection.select('__market__')} />
+    {scopeConnections.map(connection => <CatalogRow key={connection.id} label={sourceLabel(connection)}
+      meta={`${connection.alias} · ${connection.scopes.join(' / ')}`}
+      badge={connection.enabled ? words('已启用', 'Enabled') : words('已停用', 'Disabled')}
+      ready={connection.enabled} selected={selectedConnectionId === connection.id} onSelect={() => selection.select(connection.id)} />)}
+    {!scopeConnections.length && !selection.pending && <li><p className="data-empty">{words('当前范围没有已配置来源连接。', 'No source connection is configured for this scope.')}</p></li>}
+  </CatalogChildren>;
+  const leaf = (item: MarketLeaf, from: 'root' | 'other' | 'fixed') =>
+    <CatalogCategory key={item.id} label={item.label} active={selected === item.id} onClick={() => pick(item.id)}
+      {...(from === 'fixed' ? {} : dragProps(item.id, from))}>
+      {selected === item.id && supplierRows}
+    </CatalogCategory>;
+  const zone = (target: 'root' | 'other') => ({
+    onDragOver: (event: DragEvent) => { event.preventDefault(); event.stopPropagation(); },
+    onDrop: (event: DragEvent) => { event.preventDefault(); event.stopPropagation(); moveTo(target); },
+  });
+  const searching = marketQuery.trim().length > 0;
+  const matchesMarket = (label: string) => !searching || label.toLocaleLowerCase().includes(marketQuery.trim().toLocaleLowerCase());
+
+  return <div className="catalog-page page-panes--api" data-settings-revision={sourceSettings?.revision ?? 'unknown'}>
+    <CatalogSidebar label={words('接口源分类', 'API source categories')} search={
+      <PageSearch compact label={words('搜索接口源分类', 'Search API source categories')}
+        placeholder={words('搜索接口源…', 'Search API sources…')} value={marketQuery} onChange={setMarketQuery} />}>
+      <CatalogCategory label={words('地区市场', 'Markets')} expanded={open.has('region') || searching} className="is-group"
+        onClick={() => toggle('region')} {...zone('root')}>
+        {(open.has('region') || searching) && <CatalogChildren {...zone('root')}>
+          {layoutOf(layout.root).filter(item => matchesMarket(item.label)).map(item => leaf(item, 'root'))}
+          <CatalogCategory label={words('其他地区', 'Other regions')} expanded={open.has('other') || searching}
+            className="is-group" onClick={() => toggle('other')} {...zone('other')}>
+            {(open.has('other') || searching) && <CatalogChildren {...zone('other')}>
+              {layoutOf(layout.other).filter(item => matchesMarket(item.label)).map(item => leaf(item, 'other'))}
+              {!layout.other.length && !searching && <li><p className="data-nav-hint">{words('把市场拖到这里收进其他地区', 'Drag a market here')}</p></li>}
+            </CatalogChildren>}
+          </CatalogCategory>
+        </CatalogChildren>}
+      </CatalogCategory>
+      <CatalogCategory label={words('全球类型', 'Global types')} expanded={open.has('global') || searching}
+        className="is-group" onClick={() => toggle('global')}>
+        {(open.has('global') || searching) && <CatalogChildren>
+          {GLOBAL_MARKET_LEAVES.filter(item => matchesMarket(item.label)).map(item => leaf(item, 'fixed'))}
+        </CatalogChildren>}
+      </CatalogCategory>
+    </CatalogSidebar>
+    <WorkbenchCard className="catalog-detail-card">{detailPanel}</WorkbenchCard>
     {dragging && <p className="data-drag-hint" role="status">{words('拖到“其他地区”收进去，拖到地区列表放出来', 'Drop on 其他地区 to group it, or on the region list to pull it out')}</p>}
     {runSource && sourceSettings && <ApiRunDialog connection={runSource} plugin={sourceSettings.apiPlugins.find(item => item.id === runSource.pluginId) ?? null}
       scopes={sourceSettings.scopes} onClose={() => { setRunSource(null); setRunReceipt(null); setRunError(null); }}
