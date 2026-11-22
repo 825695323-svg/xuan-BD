@@ -52,14 +52,13 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
     processing: options.processing, candidates: options.candidates, verifyFixedDerived: options.verifyFixedDerived,
     requireG5Admission: options.requireG5Admission ?? connection.profile.mode === 'production' });
   const client = new WfdStructuredIngestClient(connection.client, connection.schemaPath);
-  const initialConfig = JSON.parse(readFileSync(connection.configPath, 'utf8')) as Record<string, unknown>;
+  const initialConfig = connection.config;
   const currentConnection = () => {
     if ((options.connectionId ?? registeredSelection()) !== selectedConnectionId) {
       throw new TaskError('R1_CONNECTION_RELOAD_REQUIRED', '手动投喂的受控连接选择已变化；须核对后重新装配，原请求不改绑。');
     }
     const actual = resolveProductMachineConnection(options.resources, connection.connectionId, connectionOptions);
-    const raw = readFileSync(actual.configPath);
-    const config = JSON.parse(raw.toString('utf8')) as Record<string, unknown>;
+    const raw = actual.configRaw, config = actual.config;
     if (canonicalWfdJson(actual.profile) !== canonicalWfdJson(connection.profile)
       || actual.schemaPath !== connection.schemaPath || config.project_root !== initialConfig.project_root) {
       throw new TaskError('R1_CONNECTION_RELOAD_REQUIRED', '连接登记或内部进程入口已变化；现有客户端不能展示新连接却调用旧入口，须核对后重新装配。');

@@ -31,6 +31,8 @@ export type ProductMachineConnectionProfile = ProductMachineConnectionProfileBas
 export interface ResolvedProductMachineConnection {
   connectionId: string;
   configPath: string;
+  configRaw: Buffer;
+  config: Record<string, unknown>;
   store: string;
   runtime: string;
   callerId: string;
@@ -122,9 +124,12 @@ export function resolveProductMachineConnection(resources: ResourceBindings,
   }
   const configStat = lstatSync(profile.config_path);
   if (process.platform !== 'win32' && (configStat.mode & 0o022) !== 0) return fail('产品机器配置不得组/其他可写。');
+  let configRaw: Buffer;
   let config: Record<string, unknown>;
-  try { config = JSON.parse(readFileSync(profile.config_path, 'utf8')) as Record<string, unknown>; }
-  catch { return fail('产品机器配置无法解析。'); }
+  try {
+    configRaw = readFileSync(profile.config_path);
+    config = JSON.parse(configRaw.toString('utf8')) as Record<string, unknown>;
+  } catch { return fail('产品机器配置无法解析。'); }
   if (!record(config) || config.protocol_version !== 'wfd.product-machine-config/0.1'
     || config.connection_id !== profile.id || !matchesRegisteredPath(config.store, profile.store)
     || !matchesRegisteredPath(config.runtime, profile.runtime)) {
@@ -144,10 +149,13 @@ export function resolveProductMachineConnection(resources: ResourceBindings,
     entryPath: profile.entry_path,
     configPath: profile.config_path,
     projectRoot,
+    configSha256: wfdSha256(configRaw),
   });
   return {
     connectionId: profile.id,
     configPath: profile.config_path,
+    configRaw,
+    config,
     store: profile.store,
     runtime: profile.runtime,
     callerId: caller.caller_id,

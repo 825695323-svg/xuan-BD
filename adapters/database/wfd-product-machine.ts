@@ -141,6 +141,8 @@ export interface WfdProductMachineConfiguration {
   maxResponseBytes?: number;
   /** stdin 请求上限；默认 1 MiB。 */
   maxRequestBytes?: number;
+  /** 可选：调用方同一次读取已计算的受控配置 SHA-256，避免构造期间二次读盘。 */
+  configSha256?: string;
 }
 
 export interface WfdProductMachineTransport {
@@ -329,7 +331,9 @@ export class WfdProductMachineClient {
       });
     }
     this.config = config;
-    this.bundleConfigDigest = 'sha256:' + wfdSha256(readFileSync(config.configPath));
+    const pinnedSha = typeof configuration.configSha256 === 'string' && /^[a-f0-9]{64}$/u.test(configuration.configSha256)
+      ? configuration.configSha256 : wfdSha256(readFileSync(config.configPath));
+    this.bundleConfigDigest = 'sha256:' + pinnedSha;
   }
 
   capabilities(signal?: AbortSignal): Promise<WfdProductMachineReply> {
