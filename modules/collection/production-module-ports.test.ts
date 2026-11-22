@@ -67,18 +67,26 @@ test('calculation directory reflects all registered methods and executor readine
 test('factor library reuses existing registry and definitions without granting execution or publication', () => {
   const library = factorLibraryView();
   assert.equal(library.sharedRegistryWith, 'bd.algorithms');
-  assert.equal(library.total, 15);
+  assert.equal(library.total, ALGORITHM_REGISTRY.length);
   assert.equal(library.definitions.counts.definitions, ALGORITHM_DEFINITIONS.length);
   assert.deepEqual(library.items.map(item => item.id), ALGORITHM_REGISTRY.map(item => item.id));
   assert.deepEqual(library.items.map(item => item.definition), ALGORITHM_DEFINITIONS);
-  const found = factorLibraryView('macd');
-  assert.equal(found.kind, 'read_only_factor_library');
-  assert.equal(found.total, 15);
-  assert.equal(found.items.length, 1);
-  assert.equal(found.items[0]?.id, 'macd');
-  assert.equal(found.items[0]?.publication, 'not_granted_by_library');
-  assert.equal(found.items[0]?.execution, 'not_granted_by_library');
-  assert.ok(found.definitions.counts.definitions >= 1);
+  assert.ok(library.items.every(item => item.publication === 'not_granted_by_library'
+    && item.execution === 'not_granted_by_library'));
+  for (const id of ['macd', 'alpha191_014', 'alpha191_031', 'alpha191_116', 'alpha191_168', 'alpha191_189'] as const) {
+    assert.ok(ALGORITHM_METHOD_IDS.includes(id), `${id} must be a registered calculation method`);
+    const found = factorLibraryView(id);
+    assert.equal(found.kind, 'read_only_factor_library');
+    assert.equal(found.total, ALGORITHM_REGISTRY.length);
+    assert.equal(found.selected, 1);
+    assert.equal(found.items.length, 1);
+    assert.equal(found.items[0]?.id, id);
+    assert.equal(found.items[0]?.definition?.registryId, id);
+    assert.equal(found.items[0]?.state, 'executable');
+    assert.equal(found.items[0]?.status, 'ready');
+    assert.equal(found.items[0]?.publication, 'not_granted_by_library');
+    assert.equal(found.items[0]?.execution, 'not_granted_by_library');
+  }
   assert.throws(() => factorLibraryView('../etc'), code('PRODUCTION_FACTOR_ID'));
   assert.throws(() => factorLibraryView('not_registered_abc'), code('PRODUCTION_FACTOR_NOT_FOUND'));
 });

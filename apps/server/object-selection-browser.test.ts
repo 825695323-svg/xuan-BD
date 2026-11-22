@@ -284,11 +284,34 @@ test('actual three-page selections preserve shared conversation and survive real
       await openCatalog(browser);
       const expectedRegistry = host.workspaceServices.toolLibrary!.view();
       await browser.until(`document.querySelectorAll('.catalog-navigation .object-card').length===${expectedRegistry.tools.length}`, 'The full real tools catalogue must load');
+      assert.deepEqual(await browser.evaluate<string[]>("Array.from(document.querySelectorAll('.catalog-navigation .object-card-meta'), item => item.textContent).sort()"),
+        expectedRegistry.tools.map(tool => tool.id).sort(), 'The real catalogue must display each registered ID exactly once');
       const toolTitle = expectedRegistry.tools.find(tool => /MACD/u.test(tool.title))!.title;
       await card(browser, toolTitle); const toolId = await browser.evaluate<string>("sessionStorage.getItem('xuan.tools.object')"); assert.ok(toolId);
       await verifyCompactDetails(browser, 'tools');
       await capture(browser, visuals, 'compact-tools-zh-light', 390, 'light');
-      await fill(browser, '.catalog-navigation input[type=search]', 'unmatched-synthetic-algorithm');
+
+      const alpha = expectedRegistry.tools.find(tool => tool.id === 'alpha191_168');
+      assert.ok(alpha, 'The new Alpha191 method must be present in the real catalogue');
+      const search = '.catalog-navigation input[type=search]';
+      await openCatalog(browser);
+      await browser.evaluate(`document.querySelector(${q(search)}).focus()`);
+      await browser.page('Input.insertText', { text: alpha.id });
+      await browser.until(`document.querySelectorAll('.catalog-navigation .object-card').length===1
+        && document.querySelector('.catalog-navigation .object-card-meta')?.textContent===${q(alpha.id)}`,
+      'Searching the actual catalogue by method ID must narrow to Alpha191 168');
+      await card(browser, alpha.title);
+      assert.equal(await browser.evaluate("sessionStorage.getItem('xuan.tools.object')"), alpha.id);
+      await browser.until(`document.querySelector('.object-detail-title')?.textContent===${q(alpha.title)}
+        && document.querySelector('.object-detail-status')?.textContent==='不可用'
+        && [...document.querySelectorAll('.object-detail-summary dd')].some(item=>item.textContent==='timestamp、close、volume')`,
+      'The selected Alpha191 view must expose registered inputs without granting execution');
+      await openCatalog(browser);
+      await browser.evaluate(`(()=>{const input=document.querySelector(${q(search)});input.focus();input.select();})()`);
+      await browser.page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
+      await browser.page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
+      await card(browser, toolTitle);
+      await fill(browser, search, 'unmatched-synthetic-algorithm');
       assert.equal(await browser.evaluate("sessionStorage.getItem('xuan.tools.object')"), toolId);
       await nav(browser, '接口源');
       await openCatalog(browser);

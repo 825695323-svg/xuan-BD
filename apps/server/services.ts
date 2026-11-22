@@ -80,7 +80,7 @@ import type { BrowserConfiguration } from '../../platform/capabilities/browser/i
 import type { CaptureSessionService } from '../../plugins/capture-sources/session.js';
 import { BusinessGoalService } from '../../platform/jobs/business-goals.js';
 import { ConversationTaskCompletions } from '../../modules/agent/task-completions.js';
-import { directDependencyVersions, directoryVersion } from '../../platform/plugins/direct-versions.js';
+import { directDependencyVersions, directoryVersion, type DirectImplementation } from '../../platform/plugins/direct-versions.js';
 import { ToolLibraryService } from '../../modules/financial/tool-library.js';
 import type { ProductionModuleId } from '../../modules/collection/production-module-ports.js';
 import { PolarsSourceCleaner } from '../../modules/collection/data-processing/polars-cleaning.js';
@@ -329,8 +329,16 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   if (!conversationMaterials) for (const registration of mediaPluginRegistrations) direct.registry.register(registration);
   for (const entry of conversationAlgorithms?.registrations ?? []) {
     direct.registry.register(entry);
-    direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['algorithms'],
-      { ...conversationAlgorithms!.versionBinding, execution: options.workspaceServices?.algorithms?.versionBinding ?? null }, {}));
+    const publishes = ['algorithms.calculate', 'data.modules.calculate', 'algorithms.publish'].includes(entry.action);
+    const readsWfd = publishes || entry.action === 'algorithms.screen';
+    const implementation: DirectImplementation[] = publishes ? ['algorithms', 'algorithmPublication', 'r1']
+      : entry.action === 'algorithms.screen' ? ['algorithms', 'algorithmRead'] : ['algorithms'];
+    direct.registry.bindVersions(entry.action, () => {
+      const workspace = options.workspaceServices?.r1Workspace;
+      return directDependencyVersions(entry.action, implementation,
+        { ...conversationAlgorithms!.versionBinding, execution: options.workspaceServices?.algorithms?.versionBinding ?? null,
+          ...(readsWfd ? { r1: workspace?.versionBinding ?? null, r1Connection: workspace?.capabilities?.().connection ?? null } : {}) }, {});
+    });
   }
   for (const entry of conversationProcessing?.registrations ?? []) { direct.registry.register(entry); direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'], { ...(options.workspaceServices?.processing?.versionBinding ?? {}) }, {})); }
   for (const entry of conversationR1?.registrations ?? []) {

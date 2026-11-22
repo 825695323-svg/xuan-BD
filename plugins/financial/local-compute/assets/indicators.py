@@ -157,8 +157,65 @@ def max_drawdown(close, params, rows):
     return {"MAX_DRAWDOWN": drawdowns, "PEAK_CLOSE": peaks}
 
 
+def alpha191_014(close, params, rows):
+    return {"ALPHA191_014": [WARMUP] * min(5, len(close))
+            + [current - previous for previous, current in zip(close, close[5:])]}
+
+
+def nonnegative_mean(values):
+    scale = max(values)
+    return (math.fsum(value / scale for value in values) / len(values)) * scale if scale else 0.0
+
+
+def alpha191_031(close, params, rows):
+    values = []
+    for window in rolling_windows(close, 12):
+        if window is None:
+            values.append(WARMUP)
+            continue
+        center = nonnegative_mean(window)
+        values.append(100 * ((window[-1] - center) / center) if center else ZERO_DENOMINATOR)
+    return {"ALPHA191_031": values}
+
+
+def alpha191_116(close, params, rows):
+    values = []
+    for window in rolling_windows(close, 20):
+        if window is None:
+            values.append(WARMUP)
+            continue
+        # Center the price as well as the observation number to avoid subtracting large sums.
+        values.append(math.fsum(((index - 9.5) / 665) * (value - window[0])
+                                for index, value in enumerate(window)))
+    return {"ALPHA191_116": values}
+
+
+def alpha191_168(close, params, rows):
+    values = []
+    for window in rolling_windows([row["volume"] for row in rows], 20):
+        if window is None:
+            values.append(WARMUP)
+            continue
+        # Scaling cancels in the ratio, preserving tiny positive volume without overflowing its sum.
+        scale = max(window)
+        values.append(-(window[-1] / scale) / (math.fsum(value / scale for value in window) / 20)
+                      if scale else ZERO_DENOMINATOR)
+    return {"ALPHA191_168": values}
+
+
+def alpha191_189(close, params, rows):
+    deviations = [None if window is None else abs(window[-1] - nonnegative_mean(window))
+                  for window in rolling_windows(close, 6)]
+    return {"ALPHA191_189": [WARMUP if window is None or any(value is None for value in window)
+                            else nonnegative_mean(window)
+                            for window in rolling_windows(deviations, 6)]}
+
+
 IMPLEMENTATIONS = {"MA": ma, "EMA": ema, "RSI": rsi, "BOLL": boll, "ROC": roc, "OBV": obv,
-                   "RETURNS": returns, "VOLATILITY": volatility, "MAX_DRAWDOWN": max_drawdown}
+                   "RETURNS": returns, "VOLATILITY": volatility, "MAX_DRAWDOWN": max_drawdown,
+                   "ALPHA191_014": alpha191_014, "ALPHA191_031": alpha191_031,
+                   "ALPHA191_116": alpha191_116, "ALPHA191_168": alpha191_168,
+                   "ALPHA191_189": alpha191_189}
 
 
 def run(request):
@@ -166,7 +223,7 @@ def run(request):
     if operation == "MACD":
         return macd(request)
     require(operation in IMPLEMENTATIONS, "unsupported indicator")
-    required = ("close", "volume") if operation == "OBV" else ("close",)
+    required = ("close", "volume") if operation in ("OBV", "ALPHA191_168") else ("close",)
     _, bars = validate_bars(request["data"], required=required,
                             allow_nonpositive_close=operation in ("ROC", "RETURNS", "VOLATILITY"))
     outputs = IMPLEMENTATIONS[operation]([bar["close"] for bar in bars], params, bars)

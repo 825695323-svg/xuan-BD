@@ -69,12 +69,12 @@ export function checkDerivedForWfd(result: AlgorithmComputedResult, binding: Der
   if (!priceUnit)
     fail('DERIVED_UNIT_UNKNOWN', 'WFD 原字段没有正式单位定义，不能推定派生数值单位。');
   const volumeUnit = result.metadata.volume_unit;
-  if (result.methodId === 'obv') {
+  if (method.requiredFields.includes('volume')) {
     const semantics = isWfdRecord(verifiedSrc.semantics) ? verifiedSrc.semantics : {};
     const volumeField = definitions.find(item => item.field_code === mapped.volume);
     if (typeof mapped.volume !== 'string' || !mapped.volume || typeof volumeUnit !== 'string' || !volumeUnit.trim()
       || volumeUnit !== semantics.volumeUnit || volumeUnit !== volumeField?.unit_code) {
-      fail('DERIVED_UNIT_UNKNOWN', 'OBV 须使用固定成交量字段定义中核对过的已声明单位。');
+      fail('DERIVED_UNIT_UNKNOWN', `${method.operation} 须使用固定成交量字段定义中核对过的已声明单位。`);
     }
   }
   if (result.metadata.frequency !== '1d' || !result.metadata.timezone)

@@ -12,8 +12,10 @@ import { algorithmAllowedByRules, basicAlgorithmToolContract, bdSessionToolContr
   BD_SESSION_TOOL_CONTRACT_VERSION } from './basic-algorithm-tool-contract.js';
 import { ALGORITHM_REGISTRY_VERSION } from './algorithm-registry.js';
 import { productionModuleDirectory, processingSessionContract } from '../collection/production-module-ports.js';
+import { screenFixedWfdStrategy, strategyScreenContract, STRATEGY_SCREEN_WFD_VERSION } from './strategy-screen-wfd.js';
+import { STRATEGY_SCREEN_VERSION } from './strategy-screen.js';
 
-const ACTIONS = new Set(['bd.session.capabilities', 'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.publish', 'algorithms.status', 'data.modules.calculate']);
+const ACTIONS = new Set(['bd.session.capabilities', 'algorithms.capabilities', 'algorithms.contract', 'algorithms.calculate', 'algorithms.screen', 'algorithms.publish', 'algorithms.status', 'data.modules.calculate']);
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
 const text = (key: string, label: string, maxLength = 160, required = true): SkillField =>
   ({ key, label, type: 'text', required, maxLength });
@@ -24,10 +26,12 @@ const view = (value: unknown): Record<string, JsonValue> => ({ kind: 'conversati
  *
  * - capabilities 只读目录、历史采用诊断和真实数据库能力，不能启用或授予 Python 执行权限。
  * - calculate 调用注册固定算法；没有逐次业务审批，任务身份与错误仍由 TaskService 持有。
+ * - screen 只对完整固定截面运行受限规则，返回研究候选；不执行 Python、不自动发布。
  * - publish 仅恢复原 WFD 写入身份；status 只读本分支原任务。
  */
 export class ConversationAlgorithmBridge {
-  readonly versionBinding = { algorithmRegistry: ALGORITHM_REGISTRY_VERSION, sessionTools: BD_SESSION_TOOL_CONTRACT_VERSION };
+  readonly versionBinding = { algorithmRegistry: ALGORITHM_REGISTRY_VERSION, sessionTools: BD_SESSION_TOOL_CONTRACT_VERSION,
+    strategyScreen: STRATEGY_SCREEN_VERSION, strategyScreenInput: STRATEGY_SCREEN_WFD_VERSION };
   readonly registrations: readonly SkillRegistration[];
   constructor(private readonly options: { database: CoreDatabase; companion: WorkspaceServices;
     origin(taskId: string): ModelTaskOrigin | null;
@@ -44,11 +48,14 @@ export class ConversationAlgorithmBridge {
       available: () => {
         const calculationAvailable = !!options.companion.algorithms;
         const enabled = options.companion.productionModuleSwitches?.calculate !== false;
-        const available = action === 'data.modules.calculate' || action === 'algorithms.calculate'
-          ? calculationAvailable && enabled
-          : calculationAvailable || action === 'bd.session.capabilities' && !!options.companion.processing;
+        const screenAvailable = !!options.companion.r1Workspace?.readProduct;
+        const discovery = ['algorithms.capabilities', 'algorithms.contract', 'bd.session.capabilities'].includes(action);
+        const available = action === 'algorithms.screen' ? screenAvailable && enabled
+          : action === 'data.modules.calculate' || action === 'algorithms.calculate' ? calculationAvailable && enabled
+            : calculationAvailable || discovery && screenAvailable || action === 'bd.session.capabilities' && !!options.companion.processing;
         return { available, ...(!available
-          ? { reason: action === 'bd.session.capabilities'
+          ? { reason: action === 'algorithms.screen' ? !enabled ? '计算模块已停用。' : '受信 WFD 固定读取未装配。'
+            : action === 'bd.session.capabilities'
             ? '清洗和计算工具均未装配。' : '计算服务未装配；只读清洗能力仍可单独使用。' } : {}) };
       },
     });
@@ -67,6 +74,12 @@ export class ConversationAlgorithmBridge {
       registration('data.modules.calculate', '受控指标计算模块',
         '该入口是已有 algorithms.calculate 的受信别名，只接受登记公式和真实 WFD 固定引用，不允许用户指定执行器。结果保留原任务与 R1/WFD 发布身份。',
         [text('calculationJson', '算法计算请求，按固定WFD与方法契约组成', 100_000)]),
+      { ...registration('algorithms.screen', '在固定 WFD 截面执行声明式策略筛选',
+        'screenJson 固定 snapshotId/productId/historyMode、selection.dateField/date/dateFormat、factorNames/keyField/filter/orderBy/topN；历史视角须明确 at 等。完整有界读取后执行有限规则，返回候选与真实固定证据。缺少分页、日期或资格证据时拒绝；不接受自填行、不写回 WFD、不自动下单。先用 algorithms.contract methodId=strategy_screen 读取详细合同。',
+        [text('screenJson', '固定 WFD 截面与声明式规则 JSON', 100_000)]),
+        permissionSummary: ['只使用现有 WFD 固定读取，日期、历史视角与实际读取结果逐项核对',
+          '完整截面上运行封闭规则，候选和排除原因返回原任务；不依赖 Python',
+          '计算模块停用即拒绝；不自动发布、不改变参数或持仓、不下单'] },
       registration('algorithms.publish', '按原算法任务恢复 WFD 派生结果发布',
         '不重新计算、不接受自填数据行。按本会话已成功的原算法任务，核独立派生校验并沿原 R1 请求恢复提交与固定读回。',
         [text('taskId', '已完成算法任务编号')]),
@@ -83,7 +96,9 @@ export class ConversationAlgorithmBridge {
     const origin = this.options.origin(context.task.id);
     if (!origin) throw new TaskError('ALGORITHM_CONVERSATION_REQUIRED', '算法会话动作必须由本次真实会话代理调用。');
     const service = this.options.companion.algorithms;
+    const screenReader = !!this.options.companion.r1Workspace?.readProduct;
     if (!service
+      && !(screenReader && ['algorithms.screen', 'algorithms.capabilities', 'algorithms.contract', 'bd.session.capabilities'].includes(action))
       && (action !== 'bd.session.capabilities' || !this.options.companion.processing))
       throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '计算模块未装配；不能伪造可执行算法。');
     // 直接模型动作必须先取得当前模型分享回执；否则 saveResultProof 会拒绝返回。
@@ -113,6 +128,7 @@ export class ConversationAlgorithmBridge {
             discovery: 'algorithms.contract', execute: 'algorithms.calculate',
             publish: 'algorithms.publish', engine: service ? contract.algorithms : null,
             source: 'WFD fixed snapshot; not original cleaning candidates' },
+          screening: this.screenCapability(rulesVersion),
           sharedVerification: 'production-verifier (行、类型、结果摘要) + 领域专属方法核验',
           sharedPublication: 'existing R1/WFD readback only',
           automaticCrossTrigger: false,
@@ -122,18 +138,26 @@ export class ConversationAlgorithmBridge {
       const methodId = typeof args.methodId === 'string' && args.methodId.trim() ? args.methodId.trim() : undefined;
       const rulesVersion = this.options.rulesVersion(origin.parentRunId);
       if (methodId !== undefined) this.assertMethodAllowed(methodId, rulesVersion);
+      if (methodId === 'strategy_screen') {
+        authority.assert();
+        return { summary: '已读取固定截面筛选合同；未读取数据或执行规则。', data: view(this.screenCapability(rulesVersion)) };
+      }
       const contract = basicAlgorithmToolContract(this.modelCatalog(service, rulesVersion), methodId, rulesVersion);
       authority.assert();
-      return { summary: '已读取基础算法独立接口及真实可用状态；未采用或执行任何方法。', data: view(contract) };
+      return { summary: '已读取基础算法独立接口及真实可用状态；未采用或执行任何方法。',
+        data: view({ ...contract, screening: this.screenCapability(rulesVersion) }) };
     }
     if (action === 'algorithms.capabilities') {
       const rulesVersion = this.options.rulesVersion(origin.parentRunId);
       const catalog = this.modelCatalog(service, rulesVersion);
+      const screening = this.screenCapability(rulesVersion);
       authority.assert();
       return { summary: catalog.enabled
         ? '已读取基础算法目录、固定代码版本与 WFD 快照能力；本动作只读，不创建计算。'
-        : `算法运行条件尚未就绪（${catalog.reason ?? '执行器或 WFD 快照端口不可用'}）；本次仅返回目录。`,
+        : screening.available ? '固定截面筛选可用；受控指标执行器未装配。本次只读返回各工具合同。'
+          : `算法运行条件尚未就绪（${catalog.reason ?? '执行器或 WFD 快照端口不可用'}）；本次仅返回目录。`,
         data: view({ algorithms: catalog, methodDirectory: basicAlgorithmToolContract(catalog, undefined, rulesVersion).methods,
+          screening,
           database: json(catalog.inputs.fixedSnapshots), guidance: {
           humanInput: '用户说明 WFD 数据和目标算法，由模型读取真实快照与方法契约形成调用，无需人工逐次计算确认。',
           adoption: '人工采用仅为历史诊断，不决定当前计算资格；执行器或固定快照不可用时不得改走旧入口。',
@@ -141,6 +165,30 @@ export class ConversationAlgorithmBridge {
           calculation: '已登记固定实现由 AGENTS 调用计算；没有逐次业务审核，但必须保留原任务、方法版本及 WFD 快照证据。',
           handoff: '独立核对后由专用 WFD 发布者复用 R1 正式写入和固定读回；无派生五步加工。',
         } }) };
+    }
+    if (action === 'algorithms.screen') {
+      this.assertMethodAllowed('strategy_screen', this.options.rulesVersion(origin.parentRunId));
+      const port = this.options.companion.r1Workspace;
+      if (!port?.readProduct) throw new TaskError('PRODUCTION_CALCULATION_UNAVAILABLE', '截面筛选需要实际 WFD 固定读取端口。');
+      let request: unknown;
+      if (Object.keys(args).some(name => name !== 'screenJson') || typeof args.screenJson !== 'string' || args.screenJson.length > 100_000)
+        throw new TaskError('STRATEGY_SCREEN_WFD_INPUT', '筛选动作仅接受有界 screenJson。');
+      try { request = JSON.parse(args.screenJson); }
+      catch { throw new TaskError('STRATEGY_SCREEN_WFD_INPUT', 'screenJson 不是有效 JSON。'); }
+      const assertCurrent = () => {
+        authority.assert(); this.options.companion.bd?.assertDispatch();
+        if (this.options.companion.productionModuleSwitches?.calculate === false)
+          throw new TaskError('PRODUCTION_CALCULATION_DISABLED', '计算模块已停用，未继续读取或返回筛选结果。');
+        const currentOrigin = this.options.origin(context.task.id);
+        if (!currentOrigin || currentOrigin.conversationId !== origin.conversationId || currentOrigin.branchId !== origin.branchId
+          || currentOrigin.parentRunId !== origin.parentRunId)
+          throw new TaskError('ALGORITHM_CONVERSATION_REQUIRED', '本次筛选的会话身份发生变化。');
+      };
+      assertCurrent();
+      const result = await screenFixedWfdStrategy(request, (input, signal) => port.readProduct!(input, signal), context.signal, assertCurrent);
+      assertCurrent();
+      return { summary: `已从完整固定截面 ${result.counts.input} 行中返回 ${result.counts.selected} 个研究候选；未发布或下单。`,
+        data: view({ ...result, taskId: context.task.id }) };
     }
     if (action === 'algorithms.calculate' || action === 'data.modules.calculate') {
       let calculation: unknown;
@@ -190,6 +238,14 @@ export class ConversationAlgorithmBridge {
       return { summary: '已沿本会话原算法任务读取实际状态与持久结果；没有重算。publication 字段只是计算时状态，正式交接结果由原 R1（结构化交接）请求另行核对。', data: view(this.statusPayload(taskId)) };
     }
     throw new TaskError('ALGORITHM_ACTION', '未登记的算法会话动作。');
+  }
+
+  private screenCapability(rulesVersion?: number) {
+    const allowed = algorithmAllowedByRules('strategy_screen', rulesVersion);
+    const enabled = this.options.companion.productionModuleSwitches?.calculate !== false;
+    const reader = !!this.options.companion.r1Workspace?.readProduct;
+    return { ...strategyScreenContract(), available: allowed && enabled && reader,
+      reason: !allowed ? '本会话冻结规则只允许 MACD。' : !enabled ? '计算模块已停用。' : !reader ? '受信 WFD 固定读取未装配。' : null };
   }
 
   /** 代理只读取真实 WFD 固定快照目录；受管原件不再提供计算资格。 */

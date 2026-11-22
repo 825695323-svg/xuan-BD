@@ -149,34 +149,48 @@ test('复权拒绝来源主张、未知生效状态、隐式锚点或方向、�
     { code: 'MARKET_ADJUSTMENT_ACTION_BAR_MISSING' });
 });
 
-test('统一登记表、定义和两个目录显示同一组 15 项，Python 契约保留十个方法', () => {
+test('统一登记表、定义和两个目录包含新增五个因子，财务算子仍未接入执行入口', () => {
   const pureIds = ['financial_single_quarter', 'financial_ttm', 'financial_growth', 'financial_ratios', 'price_adjustment'];
-  assert.equal(ALGORITHM_METHOD_IDS.length, 10);
+  const fixedDailyIds = ['macd', 'ma', 'ema', 'rsi', 'boll', 'roc', 'obv', 'returns', 'volatility', 'max_drawdown'] as const;
+  const reusedFactorIds = ['alpha191_014', 'alpha191_031', 'alpha191_116', 'alpha191_168', 'alpha191_189'] as const;
+  for (const id of [...fixedDailyIds, ...reusedFactorIds])
+    assert.ok(ALGORITHM_METHOD_IDS.includes(id), `${id} must remain discoverable as a calculation method`);
   const ids = [...ALGORITHM_METHOD_IDS, ...pureIds];
+  assert.equal(new Set(ids).size, ids.length, '共用登记目录不得重复登记方法或财务算子');
   const catalog = { methods: ALGORITHM_METHOD_IDS.map(id => ({ id, status: 'ready' })) } as AlgorithmCatalogView;
   const toolLibrary = new ToolLibraryService({ algorithms: { catalog: () => catalog } }).view();
   const factors = factorLibraryView();
-  assert.equal(factors.total, 15);
+  assert.equal(factors.total, ids.length);
   assert.deepEqual(ALGORITHM_REGISTRY.map(item => item.id), ids);
   assert.deepEqual(ALGORITHM_DEFINITIONS.map(item => item.registryId), ids);
   assert.deepEqual(factors.items.map(item => item.id), ids);
   assert.deepEqual(toolLibrary.tools.map(item => item.id), ids);
   assert.deepEqual(factors.items.map(item => item.definition), ALGORITHM_DEFINITIONS);
   assert.deepEqual(toolLibrary.tools.map(item => item.definition), ALGORITHM_DEFINITIONS);
-  assert.deepEqual(toolLibrary.tools.filter(item => item.status === 'ready' && item.state === 'executable').map(item => item.id),
-    ALGORITHM_METHOD_IDS);
   for (const directory of [toolLibrary.tools, factors.items]) {
+    assert.deepEqual(directory.filter(item => item.status === 'ready' && item.state === 'executable').map(item => item.id),
+      ALGORITHM_METHOD_IDS);
     assert.deepEqual(directory.filter(item => item.state === 'assets_only').map(item => item.id), pureIds);
     for (const item of directory.filter(item => pureIds.includes(item.id))) {
       assert.equal(item.status, 'unavailable');
       assert.equal(item.reason, '纯 TS 受控算子已登记，尚未接入 `algorithms.calculate` 通用任务执行入口');
     }
   }
-  assert.deepEqual(toolLibrary.registry?.counts, { executable: 10, assets_only: 5, not_implemented: 0, needs_data: 0 });
+  assert.deepEqual(toolLibrary.registry?.counts, {
+    executable: ALGORITHM_METHOD_IDS.length, assets_only: pureIds.length, not_implemented: 0, needs_data: 0,
+  });
   assert.deepEqual(factors.counts, toolLibrary.registry?.counts);
+  assert.ok(factors.items.every(item => item.execution === 'not_granted_by_library'
+    && item.publication === 'not_granted_by_library'));
   assert.deepEqual(toolLibrary.tools.slice(-5).map(item => item.category), ['financial', 'financial', 'financial', 'financial', 'adjustment']);
   assert.deepEqual(basicAlgorithmToolContract(catalog).methods.map(item => item.methodId), ALGORITHM_METHOD_IDS);
-  assert.equal(basicAlgorithmToolContract(catalog, 'price_adjustment').unknownMethod, true);
+  for (const id of reusedFactorIds) {
+    const selected = basicAlgorithmToolContract(catalog, id);
+    assert.equal(selected.unknownMethod, false);
+    assert.deepEqual(selected.methods.map(item => item.methodId), [id]);
+  }
+  for (const id of pureIds)
+    assert.equal(basicAlgorithmToolContract(catalog, id).unknownMethod, true);
   const detached = new ToolLibraryService().view().tools;
   assert.ok(detached.every(item => item.status === 'unavailable'));
 });

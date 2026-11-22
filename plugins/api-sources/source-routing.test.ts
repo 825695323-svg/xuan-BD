@@ -93,9 +93,12 @@ test('来源操作目录同时确定可见功能与执行器', () => {
   assert.equal(sourceOperations('tdx').find(item => item.id === 'minute_bars')?.run.action, 'source.fetch');
   assert.deepEqual(sourceOperations('tdx').find(item => item.id === 'minute_bars')?.run,
     { action: 'source.fetch', sourceId: 'tdx' });
-  for (const id of ['eastmoney', 'sina', 'tencent']) {
-    for (const operation of sourceOperations(id)) assert.equal(operation.run.action, 'source.kline.read');
+  for (const id of ['eastmoney', 'sina', 'tencent', 'tickflow']) {
+    for (const operation of sourceOperations(id).filter(item => item.id === 'daily_bars' || item.id === 'minute_bars'))
+      assert.equal(operation.run.action, 'source.kline.read');
   }
+  assert.equal(sourceOperations('eastmoney').find(item => item.id === 'research_reports')?.run.action, 'source.api.read');
+  assert.equal(sourceOperations('ths').find(item => item.id === 'financial_statements')?.run.action, 'source.api.read');
 });
 
 test('公开行情检查只核对登记状态，不会使用同花顺凭据或发出真实请求', async () => {
@@ -125,7 +128,8 @@ test('来源设置视图操作清单与唯一目录一致，不遗漏同花顺�
       assert.deepEqual(plugin.operations, sourceOperations(plugin.id), `来源 ${plugin.id} 的页面目录必须与运行目录相同`);
     }
     assert.ok(view.apiPlugins.find(plugin => plugin.id === 'ths')?.operations.some(operation => operation.id === 'index_constituents'));
-    assert.deepEqual(view.supportedApiOperations.map(operation => operation.id), sourceOperations('ths').map(operation => operation.id));
+    assert.deepEqual(view.supportedApiOperations.map(operation => operation.id),
+      ['daily_bars', 'index_constituents', 'financial_statements', 'research_reports', 'research_report_detail']);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

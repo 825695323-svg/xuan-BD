@@ -98,12 +98,28 @@ export async function resolvePublic(hostname: string, signal: AbortSignal): Prom
 }
 
 export async function pinnedGet(parameters: PublicWebRequest): Promise<PublicWebResponse> {
+  return pinnedRequest({ ...parameters, method: 'GET' });
+}
+
+/** 来源协议使用的有界 JSON POST 与原 GET 共用已核地址、权限和资源收束。 */
+export async function pinnedRequest(parameters: PublicWebRequest & { method: 'GET' | 'POST'; body?: string }): Promise<PublicWebResponse> {
+  if (!['GET', 'POST'].includes(parameters.method)
+    || parameters.method === 'GET' && parameters.body !== undefined
+    || parameters.method === 'POST' && (typeof parameters.body !== 'string' || Buffer.byteLength(parameters.body) > 16_000)) {
+    throw new DirectError('WEB_REQUEST_INVALID', '来源请求只接受 GET 或有界 JSON POST。');
+  }
+  if (parameters.method === 'POST') {
+    try { JSON.parse(parameters.body!); } catch { throw new DirectError('WEB_REQUEST_INVALID', '来源 POST 正文必须是完整 JSON。'); }
+  }
   const dispatcher = new Agent({ connect: { lookup: createPublicWebLookup(parameters.url.hostname, parameters.address, parameters.assertAuthorized), timeout: 10_000 },
     connections: 1, pipelining: 1, maxHeaderSize: 16_384, allowH2: false });
   try {
     parameters.assertAuthorized(); parameters.signal.throwIfAborted();
-    const response = await request(parameters.url, { dispatcher, method: 'GET', signal: parameters.signal, headersTimeout: TIMEOUT_MS, bodyTimeout: TIMEOUT_MS,
-      headers: { accept: 'text/plain,text/markdown,application/json,text/html;q=0.9', 'accept-encoding': 'identity', 'user-agent': 'MashiroAgent/0.1 (public-text-reader)', ...parameters.headers } });
+    const response = await request(parameters.url, { dispatcher, method: parameters.method, body: parameters.body,
+      signal: parameters.signal, headersTimeout: TIMEOUT_MS, bodyTimeout: TIMEOUT_MS,
+      headers: { accept: 'text/plain,text/markdown,application/json,text/html;q=0.9', 'accept-encoding': 'identity',
+        'user-agent': 'MashiroAgent/0.1 (public-text-reader)',
+        ...(parameters.method === 'POST' ? { 'content-type': 'application/json' } : {}), ...parameters.headers } });
     response.body.on('error', () => {});
     let closed = false;
     return { status: response.statusCode, headers: response.headers, body: response.body,

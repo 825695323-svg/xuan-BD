@@ -15,6 +15,11 @@ const require = createRequire(import.meta.url);
 const common = ['platform/plugins/direct-versions.ts', 'platform/plugins/registry.ts', 'platform/plugins/router.ts',
   'platform/resources/files.ts', 'platform/resources/pinned-read.ts', 'platform/security/permissions.ts',
   'platform/security/path-protection.ts', 'platform/config/source-settings.ts', 'platform/runtime/file-workspace.ts', 'platform/jobs/tasks.ts'];
+/** 固定产品读取与索引核验可单独绑定；只读筛选不借用 R1 写入和 G5 准入实现。 */
+const r1ReadImplementation = ['modules/collection/r1-product-reader.ts', 'modules/collection/r1-indexed-query.ts',
+  'modules/collection/purpose-eligibility.ts', 'contracts/r1-contracts.ts', 'contracts/financial-value.ts',
+  'adapters/database/wfd-product-machine.ts', 'adapters/database/wfd-transport.ts', 'adapters/database/wfd-error.ts',
+  'wfd/product/protocol/schemas/wfd-read-product.schema.json', 'wfd/product/protocol/schemas/wfd-common.schema.json'] as const;
 /** 显式列出动作使用的实现；不从 local-actions 的全部静态 import 递归到其它能力。 */
 const groups = {
   local: ['platform/capabilities/local-actions.ts'],
@@ -31,7 +36,11 @@ const groups = {
   browser: ['platform/capabilities/browser/index.ts', 'platform/capabilities/browser/owned-page.ts', 'platform/capabilities/browser/sites.ts'],
   capture: ['plugins/capture-sources/index.ts', 'plugins/capture-sources/contracts.ts', 'plugins/capture-sources/sites.ts',
     'plugins/capture-sources/owned-capture.ts', 'plugins/capture-sources/session.ts', 'platform/capabilities/browser/host.ts'],
-  source: ['plugins/api-sources/runtime.ts', 'plugins/api-sources/public-kline.ts', 'plugins/api-sources/providers/ths/api.ts', 'plugins/api-sources/providers/werss/cache.ts', 'plugins/api-sources/providers/wechat/script.ts', 'plugins/api-sources/manager.ts',
+  source: ['plugins/api-sources/runtime.ts', 'plugins/api-sources/public-kline.ts', 'plugins/api-sources/api-read.ts',
+    'plugins/api-sources/operations.ts', 'plugins/api-sources/source-acquisition.ts',
+    'plugins/api-sources/providers/ths/api.ts', 'plugins/api-sources/providers/ths/requests.ts',
+    'plugins/api-sources/providers/tickflow/api.ts', 'plugins/api-sources/providers/eastmoney-reports/api.ts',
+    'plugins/api-sources/providers/werss/cache.ts', 'plugins/api-sources/providers/wechat/script.ts', 'plugins/api-sources/manager.ts',
     'plugins/capture-sources/eastmoney/minute.ts', 'platform/config/source-settings.ts', 'platform/config/connections.ts', 'contracts/source-settings.ts', 'platform/config/model.ts'],
   tdx: ['plugins/api-sources/providers/tdx/api.ts', 'plugins/api-sources/providers/tdx/runtime.ts'],
   conversion: ['platform/capabilities/conversion/index.ts', 'platform/capabilities/conversion/formats.ts', 'platform/capabilities/conversion/worker.ts', 'platform/capabilities/conversion/storage.ts'],
@@ -47,13 +56,21 @@ const groups = {
     'modules/collection/r1-structured-handoff.ts'],
   model: ['modules/agent/model-tools.ts'], ocr: ['modules/agent/ocr.ts', 'adapters/llm/pi.ts'],
   algorithms: ['modules/financial/conversation-algorithms.ts', 'modules/financial/basic-algorithm-tool-contract.ts',
-    'modules/financial/algorithm-registry.ts', 'modules/financial/algorithm-definitions.ts', 'modules/collection/production-module-ports.ts'],
+    'modules/financial/algorithm-registry.ts', 'modules/financial/algorithm-definitions.ts', 'modules/financial/strategy-screen.ts',
+    'modules/financial/strategy-screen-wfd.ts', 'modules/collection/production-module-ports.ts'],
+  algorithmRead: r1ReadImplementation,
+  // 仅实际派生发布动作与 r1 组共同绑定；普通目录、状态和筛选不依赖发布代码。
+  algorithmPublication: ['modules/financial/derived-wfd-publisher.ts', 'modules/financial/derived-wfd-check.ts',
+    'modules/financial/algorithm-reference.ts', 'modules/financial/algorithm-types.ts', 'modules/financial/algorithm-service.ts',
+    'modules/collection/wfd-publish-restriction.ts', 'modules/collection/r1-source.ts', 'modules/collection/r1-evidence.ts',
+    'modules/collection/source-field-profile.ts', 'wfd/product/protocol/schemas/wfd-structured-ingest.schema.json'],
   material: ['modules/collection/conversation-materials.ts', 'modules/collection/accept-material.ts', 'modules/collection/materials/plugins.ts',
     'plugins/api-sources/providers/werss/cache.ts', 'plugins/api-sources/providers/wechat/script.ts', 'platform/capabilities/browser/html-extraction.ts'],
   materialRead: ['modules/collection/materials/service.ts', 'modules/collection/data-processing/material-inspector/index.ts'],
   materialProcess: ['modules/collection/materials/semantic.ts', 'modules/collection/materials/semantic-contracts.ts', 'modules/collection/data-processing/table-cleaner/index.ts'],
   materialTranscription: ['modules/collection/materials/media-adapter.ts'],
-  r1: ['modules/collection/conversation-r1.ts', 'modules/collection/r1-workspace.ts', 'modules/collection/r1-record-evidence.ts', 'modules/collection/r1-output-dependencies.ts', 'modules/collection/r1-publication-set-evidence.ts', 'modules/collection/r1-fixed-row-consumption.ts', 'modules/collection/structured-retrieval.ts', 'modules/collection/r1-runtime.ts',
+  r1: [...r1ReadImplementation, 'modules/collection/g5-admission-receipt.ts', 'modules/collection/r1-g5-admission.ts',
+    'modules/collection/conversation-r1.ts', 'modules/collection/r1-workspace.ts', 'modules/collection/r1-record-evidence.ts', 'modules/collection/r1-output-dependencies.ts', 'modules/collection/r1-publication-set-evidence.ts', 'modules/collection/r1-fixed-row-consumption.ts', 'modules/collection/structured-retrieval.ts', 'modules/collection/r1-runtime.ts',
     'modules/collection/r1-structured-handoff.ts', 'modules/collection/conversation-processing.ts', 'modules/collection/processing-plan.ts', 'modules/collection/data-processing/ocr-claim.ts', 'apps/server/ocr-review.ts', 'apps/server/transcription-review.ts', 'platform/capabilities/transcription/local.ts', 'apps/server/media-review-source.ts', 'platform/capabilities/ocr/evidence.ts',
     'contracts/workspace-services.ts', 'contracts/r1-contracts.ts', 'adapters/database/wfd-product-machine.ts', 'adapters/database/wfd-transport.ts',
     'adapters/database/wfd-product-connection.ts', 'platform/config/connections.ts', 'platform/resources/bindings.ts',
@@ -63,6 +80,7 @@ const groups = {
 export type DirectImplementation = keyof typeof groups;
 const packageGroups: Partial<Record<DirectImplementation | 'common', readonly string[]>> = {
   common: ['@openclaw/fs-safe'], compare: ['diff'], web: ['ipaddr.js', 'undici', 'linkedom', '@mozilla/readability'],
+  algorithmPublication: ['typebox'],
   material: ['linkedom'],
   conversion: ['linkedom', 'iconv-lite'], pdf: ['pdfjs-dist', '@napi-rs/canvas'], media: ['@napi-rs/canvas'],
   html: ['linkedom', '@mozilla/readability'],

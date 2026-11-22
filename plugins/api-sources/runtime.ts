@@ -11,13 +11,14 @@ import type { FileReferenceService } from '../../platform/resources/files.js';
 import type { SkillRegistration } from '../../platform/plugins/registry.js';
 import type { TaskExecutionContext } from '../../platform/jobs/tasks.js';
 import { acquireAuthority, DirectError, DirectWorkspace, directoryCapability, prepareDestination, type DirectAuthority } from '../../platform/runtime/file-workspace.js';
-import { pinnedGet, resolvePublic, validatePublicWebUrl, assertPublicWebAddress } from '../../platform/capabilities/browser/public-web.js';
+import { pinnedRequest, resolvePublic, validatePublicWebUrl, assertPublicWebAddress } from '../../platform/capabilities/browser/public-web.js';
 import { eastmoneyMinuteRequest } from '../capture-sources/eastmoney/minute.js';
 import { readTdxMinutes, tdxAvailability, tdxVersions, type TdxPackageBinding } from './providers/tdx/runtime.js';
-import { decodePublicDailyBars, normalizePublicDailyRequest, publicKlineProvider, publicKlineProviders, type PublicDailyProviderId, type PublicKlineOperationId } from './public-kline.js';
+import { decodePublicDailyBars, normalizePublicDailyRequest, publicKlineProvider, publicKlineProviders, type SupportedDailyProviderId, type PublicKlineOperationId } from './public-kline.js';
 import { cacheUrl, parseWerssFeed, readWerssCache, WERSS_CACHE_LIMIT, WERSS_PROJECTION_VERSION } from './providers/werss/cache.js';
 import { runWechatScript, wechatArticleUrl } from './providers/wechat/script.js';
 import { sourceCandidateFeedback, sourceOperationsForAction } from './operations.js';
+import { buildApiReadRequest, validateApiReadRequest } from './api-read.js';
 
 const MAX = 2 * 1024 * 1024;
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
@@ -28,7 +29,10 @@ const accountLanes = new Map<string, Promise<void>>();
 const accountLastCall = new Map<string, number>();
 export const SOURCE_ACTIONS = ['source.fetch', 'source.api.read', 'source.kline.read', 'source.werss.read', 'source.wechat.extract'] as const;
 
-export interface SourceRuntimeOptions { settings: SourceSettingsService; files: FileReferenceService; artifactRoot: string; processRuntime?: ProcessRuntime; tdxaidataPackage?: TdxPackageBinding }
+interface SourceNetwork { resolve?: typeof resolvePublic; transport?: typeof pinnedRequest }
+export interface SourceRuntimeOptions { settings: SourceSettingsService; files: FileReferenceService; artifactRoot: string; processRuntime?: ProcessRuntime; tdxaidataPackage?: TdxPackageBinding;
+  /** 受信宿主注入，仅供隔离传输验证；请求正文不能选择网络执行器。 */
+  network?: SourceNetwork }
 export function sourceParameters(args: Record<string, JsonValue>): Record<string, JsonValue> {
   let value: unknown; try { value = JSON.parse(String(args.parameters ?? '{}')); } catch { throw new DirectError('SOURCE_PARAMETERS_INVALID', '来源参数需要明确JSON对象。'); }
   if (!object(value)) throw new DirectError('SOURCE_PARAMETERS_INVALID', '来源参数需要明确JSON对象。');
@@ -167,13 +171,13 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
       permissionSummary: [...downloadBoundary, '只读明确来源，保存本任务原件和回执', '使用原账号、权限与任务停止机制', '不隐式建立订阅，不使用配置之外的账号'],
       available: () => ({ available: true }), validate: args => validateFetchArgs(args) },
     { action: 'source.api.read', runtimeId: 'direct', kind: 'direct', modelCalls: 0, title: '读取已配置接口源',
-      description: '按已配置组合下载同花顺公开GET端点的原始响应。',
+      description: '按已配置组合读取同花顺行情、成分与财报，以及东方财富研报列表和详情。保留原件、字段投影与回执。',
       fields: [{ key: 'scopeId', label: '国家市场范围', type: 'text', required: true, maxLength: 100 },
         { key: 'operation', label: '公开接口动作', type: 'select', required: true, options: sourceOperationsForAction('source.api.read').map(item => ({ value: item.id, label: item.label })) },
         { key: 'parameters', label: '明确接口参数JSON', type: 'text', required: true, maxLength: 16_000 }],
       permissionSummary: [...downloadBoundary, '只解析原连接的安全凭据引用', '按已配置顺序选择，未配置账号不调用', '同一账号串行读取，额度与时效未知保持未知'],
-      available: () => ({ available: settings.get().plugins.some(item => item.id === 'ths' && item.enabled), reason: '接口源插件已停用。' }),
-      validate: args => { thsUrl('https://fuyao.aicubes.cn', String(args.operation), sourceParameters(args)); } },
+      available: () => ({ available: settings.get().plugins.some(item => ['ths', 'eastmoney'].includes(item.id) && item.enabled), reason: '接口源插件已停用。' }),
+      validate: args => { validateApiReadRequest(String(args.operation), sourceParameters(args)); } },
     { action: 'source.kline.read', runtimeId: 'direct', kind: 'direct', modelCalls: 0, title: '读取公开K线',
       description: '按当前接口类型的来源编排，从公开行情接口读取分钟或日线原始响应。',
       fields: [{ key: 'scopeId', label: '国家市场范围', type: 'text', required: true, maxLength: 100 },
@@ -239,11 +243,16 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
         feedId: args.feedId, limit: args.limit, offset: args.offset, cacheRoute: 'feed/{id}.json?ctype=html&is_update=false' };
       if (action === 'source.kline.read') return settings.connectionVersion(String(args.scopeId), undefined,
         { operationId: String(args.operation) as SourceOperationId });
-      if (action === 'source.api.read') return settings.connectionVersion(String(args.scopeId), 'ths', { operationId: String(args.operation) as SourceOperationId });
+      if (action === 'source.api.read') return settings.connectionVersion(String(args.scopeId), undefined, { operationId: String(args.operation) as SourceOperationId });
       if (args.sourceId === 'eastmoney') settings.assertCaptureEnabled('eastmoney');
       if (args.sourceId === 'tdx') return { sourceId: 'tdx', scopeId: args.scopeId, combination: settings.connectionVersion(String(args.scopeId), 'tdx', { operationId: 'minute_bars' }),
         sdk: settings.operationCandidates(String(args.scopeId), 'minute_bars').filter(connection => connection.pluginId === 'tdx').map(connection => tdxVersions(connection, options.tdxaidataPackage)) };
       return { sourceId: args.sourceId, scopeId: args.scopeId, adapter: args.sourceId === 'eastmoney' ? 'eastmoney-download/1' : 'official-download/1' };
+    },
+    credentialProgramRequired(action: string, args: Record<string, JsonValue>): boolean {
+      if (action !== 'source.api.read' || ['research_reports', 'research_report_detail'].includes(String(args.operation))) return false;
+      return settings.operationCandidates(String(args.scopeId), String(args.operation) as SourceOperationId)
+        .some(connection => connection.pluginId === 'ths' && connection.enabled && connection.credential?.kind === 'keychain');
     },
     async check(connectionId: string): Promise<SourceCheck> {
       const current = settings.get(), connection = current.connections.find(item => item.id === connectionId), configurationDigest = settings.checkIdentity(connectionId);
@@ -298,13 +307,14 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
         id, ...identity, checkedAt: new Date().toISOString(), status: success ? 'passed' : 'blocked',
         reachable: success ? true : null, authorized: success ? true : null, capabilityAvailable: success, freshness: 'unknown', reason,
       });
-      const artifacts: string[] = [], receipts: Array<{ url: string; sha256: string; fileRefId: string; contentType: string; status: number | null; transport: 'https' | 'native-tcp' }> = [];
+      const artifacts: string[] = [], receipts: Array<{ url: string; sha256: string; fileRefId: string; contentType: string; status: number | null; transport: 'https' | 'native-tcp'; method?: 'GET' | 'POST'; requestBodySha256?: string }> = [];
       const publish = async (name: string, bytes: Buffer | string) => {
         const staged = typeof bytes === 'string' ? await workspace.createText(name, bytes) : await workspace.createBytes(name, bytes);
         const reference = await workspace.publishFile(staged, prepareDestination(join(options.artifactRoot, `${prefix}-${name}`)), action, { scopeId }, MAX);
         artifacts.push(reference.id); return reference;
       };
-      const fetchRetain = async (url: URL, assertCurrent = assert, headers?: Record<string, string>, accountScope = sourceId) => {
+      const fetchRetain = async (url: URL, assertCurrent = assert, headers?: Record<string, string>, accountScope = sourceId,
+        request: { method?: 'GET' | 'POST'; body?: string } = {}) => {
         const key = JSON.stringify([url.origin, accountScope]);
         let networkAuthority = networkAuthorities.get(key);
         if (!networkAuthority) {
@@ -312,9 +322,11 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
           networkAuthorities.set(key, networkAuthority);
         }
         networkAuthority.assert(); assertCurrent();
-        const result = await readBytes(url, assertCurrent, context, headers, networkAuthority);
+        const result = await readBytes(url, assertCurrent, context, headers, networkAuthority, request, options.network);
         const name = `${receipts.length + 1}-raw.${result.contentType.includes('pdf') ? 'pdf' : result.contentType.includes('html') ? 'html' : 'json'}`;
-        const reference = await publish(name, result.bytes); receipts.push({ url: result.url, sha256: hash(result.bytes), fileRefId: reference.id, contentType: result.contentType, status: result.status, transport: 'https' });
+        const reference = await publish(name, result.bytes); receipts.push({ url: result.url, sha256: hash(result.bytes), fileRefId: reference.id,
+          contentType: result.contentType, status: result.status, transport: 'https', method: request.method ?? 'GET',
+          ...(request.body === undefined ? {} : { requestBodySha256: hash(request.body) }) });
         await context.emit({ type: 'checkpoint', checkpoint: { sourceReceipts: receipts as unknown as JsonValue, artifactIds: artifacts, complete: false } });
         if (result.status === 429) throw new DirectError('SOURCE_RATE_LIMITED', '来源触发HTTP 429限流；原响应已保留，本任务停止，不立即重试或切换同账号别名。');
         if (result.status < 200 || result.status >= 300) throw new DirectError('SOURCE_HTTP_ERROR', `来源返回HTTP ${result.status}；原响应已保留，未假报成功。`);
@@ -325,7 +337,7 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
         if (action === 'source.kline.read') {
           const operation = String(args.operation) as PublicKlineOperationId;
           if (operation !== 'minute_bars' && operation !== 'daily_bars') throw new DirectError('SOURCE_PARAMETERS_INVALID', 'K线类型必须是分钟或日线。');
-          const dailyRequest = p.adjustment === undefined ? null : normalizePublicDailyRequest(p);
+          const dailyRequest = p.adjustment === undefined ? null : normalizePublicDailyRequest(p, true);
           if (dailyRequest && scopeId !== 'CN/A_STOCK') throw new DirectError('SOURCE_SCOPE_UNSUPPORTED', '受控不复权日线目前只登记中国A股范围。');
           const attempts: Array<{ connectionId: string; outcome: string; reason?: string }> = [];
           // 只解析并遍历明确配置的主源与备用源；未入选连接不自动补入。
@@ -336,11 +348,13 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
               const assertConnection = () => {
                 context.signal.throwIfAborted();
                 settings.assertOperationConnectionEnabled(candidate.id, scopeId, operation);
+                if (settings.checkIdentity(candidate.id) !== downloadIdentity.configurationDigest)
+                  throw new DirectError('SOURCE_CONFIGURATION_CHANGED', '读取中来源配置已改变；本请求不沿用旧身份。');
               };
               // 停用先于能力与参数判断；停用连接不会因为其他实现不可用而被绕过。
               assertConnection();
               if (!provider || !provider.operations.some(item => item.id === operation)) throw new DirectError('SOURCE_KIND_UNSUPPORTED', '此连接不支持所选K线类型，已跳过。');
-              if (dailyRequest && (!['tencent', 'eastmoney'].includes(provider.id) || candidate.baseUrl !== provider.baseUrl)) {
+              if (dailyRequest && (!['tencent', 'eastmoney', 'tickflow'].includes(provider.id) || candidate.baseUrl !== provider.baseUrl)) {
                 throw new DirectError('SOURCE_KIND_UNSUPPORTED', '此连接没有匹配的受控不复权日线实现与服务地址，未扩大来源范围。');
               }
               const requestURL = provider.buildUrl(operation, p);
@@ -350,10 +364,13 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
               networkAuthorities.set(JSON.stringify([requestURL.origin, settings.accountId(candidate)]), sourceAuthority);
               sourceAuthority.assert(); assertConnection();
               const result = await serial(candidate, async () => { sourceAuthority.assert(); assertConnection(); return fetchRetain(requestURL, () => { sourceAuthority.assert(); assertConnection(); }, provider.headers, settings.accountId(candidate)); });
-              const decoded = dailyRequest ? decodePublicDailyBars(provider.id as PublicDailyProviderId, dailyRequest, result.bytes) : null;
+              const decoded = dailyRequest ? decodePublicDailyBars(provider.id as SupportedDailyProviderId, dailyRequest, result.bytes) : null;
+              const projection = decoded ? await publish('daily-projection.json', JSON.stringify(decoded) + '\n') : null;
               const dailyValidation = decoded ? { decoderVersion: decoded.decoderVersion, symbol: decoded.symbol, adjustment: decoded.adjustment,
                 requestedStart: decoded.requestedStart, requestedEnd: decoded.requestedEnd, actualStart: decoded.actualStart, actualEnd: decoded.actualEnd,
-                recordCount: decoded.recordCount, rawSha256: decoded.rawSha256, database: 'not_submitted', historicalAvailability: 'not_established' } : undefined;
+                recordCount: decoded.recordCount, rawSha256: decoded.rawSha256, projectionRef: projection!.id, projectionRefVersion: projection!.version,
+                volumeUnit: decoded.volumeUnit, amountUnit: decoded.amountUnit,
+                database: 'not_submitted', historicalAvailability: 'not_established' } : undefined;
               attempts.push({ connectionId: candidate.id, outcome: 'used' });
               const candidateFeedback = sourceCandidateFeedback({
                 scopeId, operationId: operation, providerId: candidate.pluginId, connectionId: candidate.id,
@@ -362,7 +379,7 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
                   adjustment: dailyRequest.adjustment } : {}),
                 ...(decoded ? { rowCount: decoded.recordCount, actualStart: decoded.actualStart,
                   actualEnd: decoded.actualEnd } : {}),
-                originals: receipts.map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })),
+                originals: receipts.slice(-1).map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })),
               });
               const receipt = { status: 'downloaded', sourceId: candidate.pluginId, connectionId: candidate.id, scopeId, operation, requested: p, observedAt: result.observedAt,
                 actualSource: candidate.id, attempts, sourceReceipts: receipts, sourceConfigurationDigest: context.task.versions.directConfiguration,
@@ -387,39 +404,51 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
         if (action === 'source.api.read') {
           const attempts: Array<{ connectionId: string; outcome: string; reason?: string }> = [];
           const operation = String(args.operation) as SourceOperationId;
+          validateApiReadRequest(operation, p);
+          if (scopeId !== 'CN/A_STOCK') throw new DirectError('SOURCE_SCOPE_UNSUPPORTED', '当前接口读取协议仅登记中国A股范围。');
+          const attemptedAccounts = new Set<string>();
           for (const candidate of settings.operationCandidates(scopeId, operation)) {
             const downloadIdentity = { configurationDigest: settings.checkIdentity(candidate.id), configurationRevision: settings.get().revision };
             try {
-              if (candidate.pluginId !== 'ths') throw new DirectError('SOURCE_KIND_UNSUPPORTED', '此连接不支持所选同花顺公开接口动作，已跳过；不会向其他供应商发送同花顺协议。');
-              const assertConnection = () => { context.signal.throwIfAborted(); settings.assertOperationConnectionEnabled(candidate.id, scopeId, operation); };
+              const assertConnection = () => { context.signal.throwIfAborted(); settings.assertOperationConnectionEnabled(candidate.id, scopeId, operation);
+                if (settings.checkIdentity(candidate.id) !== downloadIdentity.configurationDigest)
+                  throw new DirectError('SOURCE_CONFIGURATION_CHANGED', '读取中来源配置已改变；本请求不沿用旧身份。'); };
               assertConnection();
-              const requestURL = thsUrl(candidate.baseUrl, String(args.operation), p), accountScope = settings.accountId(candidate);
+              const request = buildApiReadRequest(candidate.pluginId, candidate.baseUrl, operation, p);
+              const requestURL = request.url, accountScope = settings.accountId(candidate);
+              if (!claimSourceAccountAttempt(attemptedAccounts, accountScope))
+                throw new DirectError('SOURCE_ACCOUNT_ALREADY_ATTEMPTED', '同一账号已经尝试，不通过别名重复调用。');
               const sourceAuthority = await acquireAuthority(context, `${action}.source`, { connectionId: candidate.id, origin: requestURL.origin }, [
-                { action: 'secret', target: { kind: 'secret', name: `api-source.${candidate.id}` } },
+                ...(request.requiresCredential ? [{ action: 'secret' as const, target: { kind: 'secret' as const, name: `api-source.${candidate.id}` } }] : []),
                 { action: 'network', target: { kind: 'network', origin: requestURL.origin } },
               ]);
               networkAuthorities.set(JSON.stringify([requestURL.origin, accountScope]), sourceAuthority);
               sourceAuthority.assert(); assertConnection();
-              const key = await credential(candidate, options.processRuntime);
-              const result = await serial(candidate, async () => { sourceAuthority.assert(); assertConnection(); return fetchRetain(requestURL, () => { sourceAuthority.assert(); assertConnection(); }, { 'X-api-key': key }, accountScope); });
-              const value = json(result);
-              if (value.code === 4001) throw new DirectError('SOURCE_RATE_LIMITED', '来源触发code 4001限流；本任务停止，不立即重试或切换同账号别名。');
-              if (value.code !== 0) throw new DirectError('SOURCE_BUSINESS_ERROR', `来源业务状态code ${String(value.code ?? 'unknown')}，未将响应当作成功数据。`);
+              const headers = { ...request.headers, ...(request.requiresCredential ? { 'X-api-key': await credential(candidate, options.processRuntime) } : {}) };
+              const result = await serial(candidate, async () => { sourceAuthority.assert(); assertConnection();
+                return fetchRetain(requestURL, () => { sourceAuthority.assert(); assertConnection(); }, headers, accountScope, request); });
+              const decoded = request.decode(result.bytes);
+              const projection = decoded.projection === null ? null : await publish('field-projection.json', JSON.stringify(decoded.projection) + '\n');
+              const projectionEvidence = projection ? { projectionRef: projection.id, projectionRefVersion: projection.version,
+                rawSha256: hash(result.bytes), historicalAvailability: 'not_established', database: 'not_submitted' } : null;
               attempts.push({ connectionId: candidate.id, outcome: 'used' });
               const candidateFeedback = sourceCandidateFeedback({
                 scopeId, operationId: operation, providerId: candidate.pluginId, connectionId: candidate.id,
-                acquiredAtUtc: result.observedAt, ...(typeof p.symbol === 'string' ? { subjectId: p.symbol } : {}),
-                originals: receipts.map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })),
+                acquiredAtUtc: result.observedAt, subjectId: decoded.subjectId,
+                start: decoded.start, end: decoded.end, rowCount: decoded.recordCount,
+                originals: receipts.slice(-1).map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })),
               });
               const receipt = { status: 'downloaded', sourceId: candidate.pluginId, connectionId: candidate.id, scopeId, operation: args.operation, requested: p, observedAt: result.observedAt,
                 actualSource: candidate.id, attempts, sourceReceipts: receipts, sourceConfigurationDigest: context.task.versions.directConfiguration,
-                candidateFeedback };
+                candidateFeedback, ...(projectionEvidence ? { projection: projectionEvidence } : {}),
+                ...(decoded.pagination ? { pagination: decoded.pagination } : {}) };
               await publish('receipt.json', JSON.stringify(receipt, null, 2)); await workspace.cleanup();
               saveDownload(candidate.id, true, `已下载${String(args.operation)}原始响应。`, downloadIdentity);
               return { summary: '接口原始响应下载完成。', artifactIds: artifacts,
                 data: { ...receipt, modelPreview: { status: 'downloaded', sourceId: candidate.pluginId, connectionId: candidate.id, operation: args.operation,
                   observedAt: result.observedAt, sourceReceipts: receipts, artifactIds: artifacts,
-                  candidateFeedback } } as unknown as JsonValue };
+                  candidateFeedback, ...(projectionEvidence ? { projection: projectionEvidence } : {}),
+                  ...(decoded.pagination ? { pagination: decoded.pagination } : {}) } } as unknown as JsonValue };
             } catch (error) {
               if (context.signal.aborted || error instanceof DirectError && (error.unknown || error.code === 'SOURCE_RATE_LIMITED')) throw error;
               saveDownload(candidate.id, false, safeFailure(error), downloadIdentity);
@@ -505,7 +534,7 @@ function validateKlineArgs(args: Record<string, JsonValue>): void {
   const parameters = sourceParameters(args);
   if (parameters.adjustment !== undefined) {
     if (operation !== 'daily_bars' || args.scopeId !== 'CN/A_STOCK') throw new DirectError('SOURCE_PARAMETERS_INVALID', '受控不复权请求只支持中国A股日线。');
-    normalizePublicDailyRequest(parameters);
+    normalizePublicDailyRequest(parameters, true);
     return;
   }
   let accepted = false, first: unknown;
@@ -515,19 +544,6 @@ function validateKlineArgs(args: Record<string, JsonValue>): void {
     catch (error) { if (first === undefined) first = error; }
   }
   if (!accepted) throw first instanceof Error ? first : new DirectError('SOURCE_PARAMETERS_INVALID', 'K线参数不符合任何公开行情接口的要求。');
-}
-function thsUrl(base: string, operation: string, p: Record<string, JsonValue>): URL {
-  const allowed = operation === 'index_constituents' ? ['thscode'] : operation === 'daily_bars' ? ['thscode', 'start', 'end'] : [];
-  if (!allowed.length || Object.keys(p).some(key => !allowed.includes(key))) throw new DirectError('SOURCE_PARAMETERS_INVALID', '接口参数包含当前动作未定义的字段；凭据只能通过共享连接安全引用提供。');
-  const symbol = p.thscode;
-  if (typeof symbol !== 'string' || !/^[A-Z0-9]{4,12}\.(?:SH|SZ|TI)$/u.test(symbol)) throw new DirectError('SOURCE_PARAMETERS_INVALID', '请明确所选接口的完整证券或指数代码。');
-  const url = new URL(operation === 'index_constituents' ? '/api/a-share-index/constituents/ths-stock-list' : '/api/a-share/prices/historical', base);
-  url.searchParams.set('thscode', symbol);
-  if (operation === 'daily_bars') {
-    if (!Number.isSafeInteger(p.start) || !Number.isSafeInteger(p.end) || Number(p.start) <= 0 || Number(p.end) < Number(p.start)) throw new DirectError('SOURCE_PARAMETERS_INVALID', '日线需要明确的起止毫秒时间戳。');
-    for (const [key, value] of Object.entries({ interval: '1d', start: String(p.start), end: String(p.end), adjust: 'none' })) url.searchParams.set(key, value);
-  }
-  return url;
 }
 async function credential(connection: SourceConnection, runtime?: ProcessRuntime): Promise<string> {
   const ref = connection.credential;
@@ -548,19 +564,27 @@ function decode(source: SourceBytes): string {
   if (!iconv.encodingExists(charset)) throw new DirectError('SOURCE_ENCODING_UNSUPPORTED', '来源声明了未支持的编码；未猜测字符集。');
   return iconv.decode(source.bytes, charset);
 }
-async function readBytes(url: URL, assertCurrent: () => void, context?: TaskExecutionContext, headers?: Record<string, string>, existingAuthority?: DirectAuthority): Promise<SourceBytes> {
+async function readBytes(url: URL, assertCurrent: () => void, context?: TaskExecutionContext, headers?: Record<string, string>, existingAuthority?: DirectAuthority,
+  request: { method?: 'GET' | 'POST'; body?: string } = {}, network: SourceNetwork = {}): Promise<SourceBytes> {
   validatePublicWebUrl(url.href);
   const signal = context ? AbortSignal.any([context.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
   const authority = existingAuthority ?? (context ? await acquireAuthority(context, `source.read.${hash(url.origin).slice(0, 16)}`, { origin: url.origin }, [{ action: 'network', target: { kind: 'network', origin: url.origin } }]) : undefined);
   const assert = () => { signal.throwIfAborted(); authority?.assert(); assertCurrent(); };
   assert();
-  const addresses = await resolvePublic(url.hostname, signal); addresses.forEach(assertPublicWebAddress);
+  const addresses = await (network.resolve ?? resolvePublic)(url.hostname, signal); addresses.forEach(assertPublicWebAddress);
   if (!addresses.length) throw new DirectError('SOURCE_NETWORK_UNAVAILABLE', '来源域名没有可用公开地址。');
   const effectId = randomUUID();
-  if (context) await context.emit({ type: 'side_effect_started', effectId, description: '读取明确来源的公开或已授权对象', operation: { url: url.href, method: 'GET', credentials: headers ? 'reference' : 'none' } });
-  let response: Awaited<ReturnType<typeof pinnedGet>> | undefined, completed = false;
+  if (context) await context.emit({ type: 'side_effect_started', effectId, description: '读取明确来源的公开或已授权对象',
+    operation: { url: url.href, method: request.method ?? 'GET', credentials: headers?.['X-api-key'] ? 'reference' : 'none',
+      ...(request.body === undefined ? {} : { requestBodySha256: hash(request.body) }) } });
+  let response: Awaited<ReturnType<typeof pinnedRequest>> | undefined, completed = false;
   try {
-    assert(); response = await pinnedGet({ url, address: addresses[0]!, signal, headers, assertAuthorized: assert });
+    assert(); response = await (network.transport ?? pinnedRequest)({ url, address: addresses[0]!, signal, headers, assertAuthorized: assert,
+      method: request.method ?? 'GET', ...(request.body === undefined ? {} : { body: request.body }) });
+    if (response.headers['content-encoding'] && String(response.headers['content-encoding']).toLowerCase() !== 'identity')
+      throw new DirectError('SOURCE_ENCODING_UNSUPPORTED', '来源忽略了不压缩请求；未把未解码字节当完整原文。');
+    if (response.status === 206 || response.headers['content-range'])
+      throw new DirectError('SOURCE_RESPONSE_INCOMPLETE', '来源返回部分响应，未作为完整原件接收。');
     const chunks: Buffer[] = []; let count = 0;
     for await (const chunk of response.body) { assert(); count += chunk.byteLength; if (count > MAX) throw new DirectError('SOURCE_SIZE_LIMIT', '来源原件超过单份2MiB上限；未把截断内容当完整结果。'); chunks.push(Buffer.from(chunk)); }
     const contentType = String(response.headers['content-type'] ?? 'application/octet-stream');

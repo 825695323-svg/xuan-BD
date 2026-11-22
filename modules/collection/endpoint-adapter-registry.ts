@@ -23,6 +23,43 @@ export interface AdapterReceiptEvidence {
 }
 /** 受信来源下载动作；只有这些动作的持久结果才可能成为取得回执。 */
 export const SOURCE_DOWNLOAD_ACTIONS = Object.freeze(['source.kline.read', 'source.api.read', 'source.fetch']);
+
+/** 尝试审计中的原件不等于成功数据；只有成功分支明确绑定的原件才可供适配匹配。 */
+function successfulSourceReceipts(action: string, data: WfdRecord): AdapterReceiptEvidence['receipts'] | null {
+  if (!Array.isArray(data.sourceReceipts) || !data.sourceReceipts.length
+    || data.sourceReceipts.some(entry => !isWfdRecord(entry) || typeof entry.url !== 'string'
+      || typeof entry.sha256 !== 'string' || typeof entry.fileRefId !== 'string')) return null;
+  const originals = data.sourceReceipts as WfdRecord[];
+  const httpComplete = (status: unknown) => Number.isInteger(status) && Number(status) >= 200 && Number(status) < 300 && status !== 206;
+  let selected = originals;
+  if (Object.hasOwn(data, 'candidateFeedback')) {
+    const feedback = data.candidateFeedback;
+    if (!isWfdRecord(feedback) || feedback.contract !== 'bd.source-candidate-feedback/1'
+      || !isWfdRecord(feedback.evidence) || !Array.isArray(feedback.evidence.originalRefs)
+      || !feedback.evidence.originalRefs.length) return null;
+    const identities = new Set<string>();
+    selected = [];
+    for (const reference of feedback.evidence.originalRefs) {
+      if (!isWfdRecord(reference) || typeof reference.fileRefId !== 'string' || !reference.fileRefId
+        || typeof reference.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(reference.sha256)
+        || identities.has(reference.fileRefId)) return null;
+      identities.add(reference.fileRefId);
+      const matches = originals.filter(entry => entry.fileRefId === reference.fileRefId && entry.sha256 === reference.sha256);
+      if (matches.length !== 1) return null;
+      selected.push(matches[0]!);
+    }
+    // 这两种执行器一次成功只产生一份响应。旧反馈曾误收前面失败的原件，不能凭旧集合再次升级。
+    if ((action === 'source.kline.read' || action === 'source.api.read') && selected.length !== 1) return null;
+  } else if (originals.length !== 1) {
+    // 官方页面及附件无主备混合，执行器只在所有明确对象读取成功后返回；保留已有完整回执的多原件语义。
+    // 其余历史多原件无法分辨业务失败的 HTTP 200，不按最后一份或 HTTP 状态猜成功归属。
+    if (action !== 'source.fetch' || data.sourceId !== 'official_web' || originals.some(entry => !httpComplete(entry.status))) return null;
+  }
+  if (selected.some(entry => entry.status !== undefined && entry.status !== null && !httpComplete(entry.status))) return null;
+  return selected.map(entry => ({ url: String(entry.url), sha256: String(entry.sha256), fileRefId: String(entry.fileRefId),
+    contentType: String(entry.contentType ?? '') }));
+}
+
 /**
  * 生产 issuer：从已有任务记录解析取得回执。
  * 只接受成功、无需复核、由受信 producer 运行且动作属于来源下载的任务；
@@ -33,19 +70,16 @@ export function readSourceReceiptFromTask(task: { action: string; runtimeId: str
   trustedRuntimes: readonly string[]): AdapterReceiptEvidence | null {
   if (!task || task.status !== 'succeeded' || task.requiresReview === true) return null;
   if (!trustedRuntimes.includes(task.runtimeId) || !SOURCE_DOWNLOAD_ACTIONS.includes(task.action)) return null;
-  const data = task.result?.data as Record<string, unknown> | undefined;
-  if (!data || !Array.isArray(data.sourceReceipts) || typeof data.operation !== 'string') return null;
+  const data = task.result?.data;
+  if (!isWfdRecord(data) || typeof data.operation !== 'string') return null;
+  const receipts = successfulSourceReceipts(task.action, data);
+  if (!receipts) return null;
   const requested = data.requested as Record<string, unknown> | undefined;
   const daily = data.dailyValidation as Record<string, unknown> | undefined;
   const adjustment = (daily?.adjustment ?? requested?.adjustment) as string | undefined;
   const scopeId = typeof data.scopeId === 'string' ? data.scopeId : undefined;
   const list = (value: unknown): string[] | undefined => Array.isArray(value) && value.length && value.every(item => typeof item === 'string')
     ? [...value as string[]] : undefined;
-  const receipts = (data.sourceReceipts as Record<string, unknown>[]).flatMap(entry => {
-    if (typeof entry.url !== 'string' || typeof entry.sha256 !== 'string' || typeof entry.fileRefId !== 'string') return [];
-    return [{ url: entry.url, sha256: entry.sha256, fileRefId: entry.fileRefId, contentType: String(entry.contentType ?? '') }];
-  });
-  if (!receipts.length) return null;
   // 请求字段只作为声明携带；实际字段与顺序在选中本材料对应回执后按该回执 URL 解析。
   const requestedFields = list(requested?.fields), requestedFields2 = list(requested?.fields2);
   return { operation: data.operation, observedAt: String(data.observedAt ?? ''), ...(adjustment ? { adjustment: adjustment as 'none' | 'qfq' | 'hfq' | 'unknown' } : {}),

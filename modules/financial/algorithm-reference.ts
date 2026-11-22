@@ -135,6 +135,46 @@ function referenceColumns(request: IndicatorRequest, close: number[], source: Al
       }
       return { MAX_DRAWDOWN: drawdown, PEAK_CLOSE: peaks };
     }
+    case 'alpha191_014':
+      return { ALPHA191_014: close.map((value, index) => index < 5 ? null : value - close[index - 5]!) };
+    case 'alpha191_031':
+      return { ALPHA191_031: close.map((value, index) => {
+        if (index < 11) return null;
+        const center = nonnegativeMean(close.slice(index - 11, index + 1));
+        return center === 0 ? null : 100 * ((value - center) / center);
+      }) };
+    case 'alpha191_116':
+      return { ALPHA191_116: close.map((_, index) => {
+        if (index < 19) return null;
+        const window = close.slice(index - 19, index + 1);
+        // Pairwise covariance identity independently checks the Python centered-weight formula.
+        let slope = 0;
+        for (let i = 0; i < 20; i++) for (let j = i + 1; j < 20; j++) {
+          slope += ((j - i) / 13300) * (window[j]! - window[i]!);
+        }
+        return slope;
+      }) };
+    case 'alpha191_168': {
+      const volume = source.map((row, index) => {
+        if (typeof row.volume !== 'number' || !Number.isFinite(row.volume) || row.volume < 0)
+          return mismatch(`第 ${index + 1} 行缺少已核实的非负成交量。`);
+        return row.volume;
+      });
+      return { ALPHA191_168: volume.map((value, index) => {
+        if (index < 19) return null;
+        const window = volume.slice(index - 19, index + 1), scale = Math.max(...window);
+        return scale === 0 ? null : -(value / scale) / mean(window.map(item => item / scale));
+      }) };
+    }
+    case 'alpha191_189':
+      return { ALPHA191_189: close.map((_, index) => {
+        if (index < 10) return null;
+        const deviations = Array.from({ length: 6 }, (_, offset) => {
+          const end = index - offset;
+          return Math.abs(close[end]! - nonnegativeMean(close.slice(end - 5, end + 1)));
+        });
+        return nonnegativeMean(deviations);
+      }) };
   }
 }
 
@@ -146,6 +186,11 @@ function mean(values: number[]): number {
     sum = next;
   }
   return sum;
+}
+
+function nonnegativeMean(values: number[]): number {
+  const scale = Math.max(...values);
+  return scale === 0 ? 0 : mean(values.map(value => value / scale)) * scale;
 }
 
 function deviation(values: number[], center: number, denominator: number): number {

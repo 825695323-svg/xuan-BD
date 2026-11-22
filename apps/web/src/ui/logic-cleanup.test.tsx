@@ -41,7 +41,7 @@ async function loadPageComponents() {
   } finally { hooks.deregister(); }
 }
 
-test('算法目录接受实际15项；坏响应和短暂错误保留原选择', async () => {
+test('算法目录完整展示实际登记；坏响应和短暂错误保留原选择', async () => {
   const { PreferencesProvider, ToolsPage } = await loadPageComponents();
   const env = browser(), previousFetch = globalThis.fetch;
   const { createRoot } = await import('react-dom/client');
@@ -49,7 +49,7 @@ test('算法目录接受实际15项；坏响应和短暂错误保留原选择', 
   const key = 'xuan.tools.object';
   env.storage.set(key, 'removed');
   const catalog = new ToolLibraryService().view();
-  assert.equal(catalog.tools.length, 15);
+  assert.ok(catalog.tools.length > 1);
   let catalogMode: 'failure' | 'malformed' | 'ready' = 'failure';
   const requests: string[] = [];
   globalThis.fetch = async input => {
@@ -75,7 +75,8 @@ test('算法目录接受实际15项；坏响应和短暂错误保留原选择', 
     assert.equal(env.document.querySelector('.object-card'), null);
     catalogMode = 'ready';
     await act(() => refresh.click());
-    assert.equal(env.document.querySelectorAll('.catalog-navigation .object-card').length, 15);
+    const renderedIds = Array.from(env.document.querySelectorAll('.catalog-navigation .object-card-meta'), item => item.textContent);
+    assert.deepEqual(renderedIds.sort(), catalog.tools.map(tool => tool.id).sort());
     assert.equal(env.document.querySelector('.page-cards'), null);
     assert.match(env.document.querySelector('.object-card[aria-current="true"]')?.textContent ?? '', /MACD.*不可用/u);
     assert.match(env.document.querySelector('.object-detail-content')?.textContent ?? '', /尚未|未装配/u);

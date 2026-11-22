@@ -1,11 +1,16 @@
 # 接口源供应商
 
-供应商适配器统一放在 `providers/`，每家一个子目录，保存自己的 API（接口）定义、申请地址、使用约定和对应实现。主源、备用源是连接在全局或市场范围策略中的角色，不再用目录区分；`backup/` 占位目录已删除。当前有 `providers/tdx/`、`providers/ths/`、`providers/werss/` 和 `providers/wechat/`，公开行情统一由 `public-kline.ts`（公开行情来源登记）列举；新增供应商时在同一目录下继续添加，不预建或混用其凭据。
+供应商适配器统一放在 `providers/`，每家一个子目录，保存自己的 API（接口）定义、申请地址、使用约定和对应实现。主源、备用源是连接在全局或市场范围策略中的角色，不再用目录区分；`backup/` 占位目录已删除。当前有 `providers/tdx/`、`providers/ths/`、`providers/tickflow/`、`providers/eastmoney-reports/`、`providers/werss/` 和 `providers/wechat/`；公开行情统一由 `public-kline.ts`（公开行情来源登记）列举。东方财富研报复用现有 `eastmoney` 来源身份，扶摇财报复用现有 `ths` 来源身份。
 
 整体按两个逻辑层组织：外部来源层按供应商管理适配器，主源与备用源是范围策略中的使用角色；内部调用层统一管理来源选择和受控调用，供当前应用中的明确来源请求复用。现有接口源与页面采集的实际实现边界保留。行情、财务、基金、期货、资讯等数据类型用于能力目录检索和后续分类，不作为横切供应商的顶层代码目录。相同供应商若另有独立地址、账号或契约的产品，实际接入时再在其目录内区分，不提前拆空目录。
 
 - `providers/ths/api.ts`：同花顺金融数据服务的来源身份、接口地址、申请入口、鉴权及错误码约定。
+- `providers/ths/requests.ts`：现有扶摇地址上的行情、指数成分与三类财报请求，以及业务响应核对。
 - `providers/ths/README.md`：该供应商的申请与本机配置说明。
+- `providers/tickflow/api.ts`：无密钥历史日线的请求与原值投影；新连接初始禁用，明确启用并加入日线主备编排后使用。
+- `providers/eastmoney-reports/api.ts`：五类研报列表、显式分页与策略／宏观详情的 PDF 定位；个股列表使用固定端点的 JSON POST。
+- `api-read.ts`：按已登记供应商和操作分派请求及解码，网络、凭据和原件保管仍由 `runtime.ts` 持有。
+- `operations.ts`：来源设置页面、工具选项与实际执行共同使用的操作目录。
 - `manager.ts`：共用的本机凭据就绪检查及申请提醒，不保存密钥、不扫描系统凭据库。
 - `index.ts`：受信宿主显式列举主备角色与来源，并生成各来源的新机器设置提醒；复制一个目录不会自动启用接口。
 
@@ -14,3 +19,5 @@
 新机器准备入口 `scripts/prepare-runtime.ts` 会在准备结果的 `apiSources` 中列出申请／提供密钥提醒。旧机器引用或旧已配置状态与当前应用身份不符时，管理器拒绝沿用；宿主精确核验本机指定引用可读后才报告 `ready`（本机凭据就绪）。本机可读不代表供应商已批准权限、额度可用或网络接口已经验通。检查由宿主显式触发，不在后台反复索要密钥。
 
 当前来源设置、连接与范围策略由 [source-settings.ts](../../platform/config/source-settings.ts)（来源配置服务）管理，业务读取由 [runtime.ts](runtime.ts)（受控来源运行时）显式装配 `source.fetch`（指定来源读取）、`source.api.read`（接口来源读取）、`source.kline.read`（公开行情读取）、`source.werss.read`（WeRSS 本地缓存读取）与 `source.wechat.extract`（微信公众号正文提取）。已实现的操作和参数以该登记为准；共同边界见[来源配置与授权边界](../../docs/REBUILD.md#6-wfd模型与来源连接)。调用复用原任务、网络与秘密权限、预算、版本和产物通路；申请信息、文档或凭据就绪不直接授予取数、批量下载或正式入库权限，配置与实际来源可用性分别核对。
+
+新增来源、五个固定因子和截面筛选的实际调用参数与验证边界见[量化资源集成记录](../../docs/quant-resource-integration.md)。
