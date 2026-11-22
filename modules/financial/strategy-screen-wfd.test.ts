@@ -81,7 +81,7 @@ function fixture() {
   const reader = new R1ProductReader({ runtime: () => ({ client: client as unknown as R1Runtime['client'], currentIdentity: () => state.identity }),
     control: () => ({ stopped: state.stopped, generation: state.generation }) });
   const switches = { calculate: true };
-  const companion = { r1Workspace: { readProduct: reader.readProduct.bind(reader), capabilities: () => ({ connection: identity }),
+  const companion = { r1Workspace: { readProduct: reader.readProduct.bind(reader), capabilities: () => ({ connection: identity, readProductSupported: true }),
     readBinding: () => ({ readSchemaSha256: '4'.repeat(64), queryImplSha256: '5'.repeat(64) }) },
     productionModuleSwitches: switches, bd: { assertDispatch: () => { state.dispatchChecked += 1; } } } as unknown as WorkspaceServices;
   const bridge = new ConversationAlgorithmBridge({ database, companion, origin: () => state.origin, rulesVersion: () => state.rulesVersion,
@@ -475,14 +475,14 @@ test('固定读配置、连接身份和模块开关共同决定工具可用性�
       [undefined, identity, true], ['configured', identity, true], ['unavailable', identity, false],
       ['not_configured', identity, false], ['ready', identity, false], ['configured', null, false], [undefined, null, false],
     ] as const) {
-      port.capabilities = () => ({ configuration: configuration && { state: configuration }, connection }) as ReturnType<typeof port.capabilities>;
+      port.capabilities = () => ({ configuration: configuration && { state: configuration }, connection, readProductSupported: true }) as ReturnType<typeof port.capabilities>;
       assert.equal(registration.available().available, available);
       assert.equal((await f.execute(undefined, 'algorithms.contract', { methodId: 'strategy_screen' })).available, available);
       assert.equal(((await f.execute(undefined, 'algorithms.capabilities', {})).screening as WfdRecord).available, available);
       if (!available) await assert.rejects(f.execute(), hasCode('PRODUCTION_CALCULATION_UNAVAILABLE'));
     }
     assert.equal(f.state.readCalls.length, 0);
-    port.capabilities = () => ({ connection: identity }) as ReturnType<typeof port.capabilities>;
+    port.capabilities = () => ({ connection: identity, readProductSupported: true }) as ReturnType<typeof port.capabilities>;
     f.state.afterRead = () => { port.capabilities = () => ({ connection: null }) as ReturnType<typeof port.capabilities>; };
     await assert.rejects(f.execute(), hasCode('PRODUCTION_CALCULATION_UNAVAILABLE'));
     assert.equal(f.state.readCalls.length, 1);

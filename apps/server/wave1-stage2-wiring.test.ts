@@ -255,8 +255,12 @@ test('evidence binding detects changes to OCR, Office and linkedom bytes indepen
     registry.assertTaskVersions(listing);
   };
   for (const path of ['apps/server/ocr-review.ts', 'apps/server/media-review-source.ts',
+    'modules/collection/data-processing/ocr-claim.ts', 'apps/server/platform-routes.ts',
     'platform/capabilities/conversion/office.ts', 'platform/capabilities/conversion/formats.ts'])
     changedImplementation(path, verifyChanged);
+  changedImplementation('modules/collection/segments/tokenize.ts', () => {
+    for (const task of [listing, evidence]) assert.throws(() => registry.assertTaskVersions(task), { code: 'DIRECT_DEPENDENCY_UNAVAILABLE' });
+  });
 
   // Redirect only the bound package file's stat and descriptor to a changed private fixture.
   const entry = createRequire(import.meta.url).resolve('linkedom'), replacement = join(f.root, 'changed-package.js');
@@ -314,17 +318,22 @@ console.log(JSON.stringify({ items: [] }));`, { mode: 0o700 });
   services.tasks.approve(waiting.approvalId!);
   assert.equal(preview(await privateList).data.complete, true); assert.equal(readFileSync(dispatched, 'utf8'), '11');
 
+  const unregisteredKey = 'slot' + randomUUID().replaceAll('-', '');
   const invalid = [{ ...share, passcode: secret }, { ...share, shareUrl: share.shareUrl + '?pwd=' + secret },
-    { ...share, shareUrl: share.shareUrl + '#code=' + secret }];
+    { ...share, shareUrl: share.shareUrl + '#code=' + secret }, { ...share, [unregisteredKey]: 'synthetic' }];
   for (const [i, args] of invalid.entries()) await assert.rejects(current.perform('bad-' + i, 'baidu.drive', args));
   const rejected = () => database.connection.prepare("SELECT * FROM model_tool_calls WHERE conversation_id=? AND state='rejected'").all(conversation);
-  assert.equal(rejected().length, 3);
+  assert.equal(rejected().length, invalid.length);
+  assert.ok(rejected().every(row => !String(row.args_json).includes(unregisteredKey)));
+  assert.deepEqual(JSON.parse(String(rejected().find(row => row.tool_call_id === 'bad-3')!.args_json)),
+    { operation: '[REDACTED]', shareUrl: '[REDACTED]' });
   assert.ok(!JSON.stringify(rejected()).includes(secret));
   // Exercise both read paths against a row and a cached list from before write-side redaction.
   database.connection.prepare("UPDATE model_tool_calls SET args_json=?,preview_json=? WHERE tool_call_id='bad-0'")
-    .run(JSON.stringify({ args: { apiKey: secret, shareUrl: invalid[1].shareUrl } }), JSON.stringify({ message: secret }));
+    .run(JSON.stringify({ args: { [unregisteredKey]: secret, shareUrl: invalid[1].shareUrl } }), JSON.stringify({ message: secret }));
   const own = preview(await current.invoke('core_tasks_list', 'own-rejections', {}));
-  assert.equal(own.rejectedCalls.length, 3); assert.ok(!JSON.stringify(own).includes(secret));
+  assert.equal(own.rejectedCalls.length, invalid.length); assert.ok(!JSON.stringify(own).includes(secret));
+  assert.ok(!JSON.stringify(own.rejectedCalls).includes(unregisteredKey));
   database.connection.prepare("UPDATE model_tool_calls SET preview_json=? WHERE tool_call_id='own-rejections'")
     .run(JSON.stringify({ ...own, rejectedCalls: invalid }));
   assert.ok(!JSON.stringify(preview(await current.invoke('core_tasks_list', 'own-rejections', {}))).includes(secret));
@@ -382,20 +391,28 @@ test('registered Baidu locators protect files and freeze only the selected crede
   direct.registry.assertTaskVersions(plain);
 });
 
-test('ordinary file.read protects registered DSH files even without bdpan or native account files', async t => {
+for (const missingSelection of [false, true]) test('offline DSH file.read protection with removed manual selection = ' + missingSelection, async t => {
   const f = createFullChainFixture({ name: 'wave1-offline-registry', parentRoot: process.env.XUAN_TEST_ROOT ?? tmpdir() });
   const bindingsFile = join(f.runtime, 'config/machine.bindings.json');
   const bindings = JSON.parse(readFileSync(bindingsFile, 'utf8'));
   bindings.resources.connections_registry = { path: f.registryPath, kind: 'file' };
   writeFileSync(bindingsFile, JSON.stringify(bindings));
   const path = join(f.root, 'offline-refs.yaml');
+  const credentialDir = join(f.root, 'external-credentials');
+  fs.mkdirSync(credentialDir);
+  const sibling = join(credentialDir, 'other.json');
+  writeFileSync(sibling, '{}');
   writeFileSync(path, 'refs: {}');
-  writeFileSync(f.registryPath, JSON.stringify({ connections: [{ id: 'bdpan-native', kind: 'native-cli',
+  writeFileSync(f.registryPath, JSON.stringify({ ...(missingSelection ? { manual_ingest_connection_id: 'removed' } : {}),
+    credential_registry: join(credentialDir, 'registry.json'),
+    connections: [{ id: 'bdpan-native', kind: 'native-cli',
     executable: join(f.root, 'missing-bdpan'), credential_ref: { kind: 'native-client-managed', config_path: join(f.root, 'missing-config') },
     share_passcode_refs: { slot: { kind: 'dsh-ref', path, ref: 'FIXTURE_SLOT' } } }] }));
-  assert.equal(registeredBaiduDriveConfiguration(readConnectionRegistry(f.registryPath), join(f.root, 'missing-bdpan')), undefined);
+  if (missingSelection) assert.throws(() => readConnectionRegistry(f.registryPath), /须唯一且已经登记/u);
+  else assert.equal(registeredBaiduDriveConfiguration(readConnectionRegistry(f.registryPath), join(f.root, 'missing-bdpan')), undefined);
   const host = openMediaReviewCompanion(f); t.after(() => host.close());
   const { direct, files, tasks, core } = host.companion;
+  assert.throws(() => direct.assertPublicPath(sibling), { code: 'PROTECTED_RESOURCE' });
   const args = { fileRefId: files.register({ path, source: 'user-attached', conversationId: core.defaultConversationId }).id };
   const task = tasks.create({ runtimeId: 'direct', action: 'file.read', args, ownerRole: 'service',
     requestId: 'registered-offline', title: '读取合成引用', versions: direct.registry.captureVersions('file.read', args) });

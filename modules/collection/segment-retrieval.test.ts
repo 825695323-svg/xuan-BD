@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SegmentService, type SegmentServiceOptions } from './segments/service.js';
@@ -9,7 +9,7 @@ import { NOT_APPLICABLE_TIME, UNKNOWN_TIME, type DocumentTimeRecord, type Retrie
   type TimeDimension } from './segments/contracts.js';
 import { buildDocumentSegments } from './segments/segmenter.js';
 import { syntheticPages, twoRowPages } from './segments/fixture.js';
-import { createIndexVersion, documentsWithoutTextLayer, ensureSegmentSchema, indexableSegmentIds,
+import { createIndexVersion, documentsWithoutTextLayer, ensureSegmentSchema, indexableSegmentIds, openReadOnlySegmentDb,
   putDocumentSegments, putDocumentVersion, resolveIndexVersion, resolveVisibleVersions, searchSegments,
   searchSegmentsExact, segmentStorage, timeExclusions, upperOf } from './segments/store.js';
 
@@ -61,6 +61,46 @@ function seeded() {
   createIndexVersion(db, { indexVersion, segmentIds: indexableSegmentIds(db) }, t0 + 4 * day);
   return { db, indexVersion, docA, docB, recordA, recordB };
 }
+
+test('只读查询保持已提交主库字节与目录项，遇到活跃 WAL 或任一伴随文件立即拒绝', () => {
+  const dir = mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'segment-journals-'));
+  const path = join(dir, 'segments.sqlite'), db = new DatabaseSync(path);
+  const built = buildDocumentSegments({ documentId: 'mat_a', documentVersion: '1', sourceRef: 'synthetic', pages: syntheticPages() });
+  try {
+    ensureSegmentSchema(db);
+    putDocumentSegments(db, built.segments, t0);
+    putDocumentVersion(db, record({ document_id: 'mat_a', parser_version: built.segments[0]!.parser_version }));
+  } finally { db.close(); }
+  const service = new SegmentService({ databasePath: path } as SegmentServiceOptions);
+  const snapshot = () => readdirSync(dir).sort().map(name => [name, readFileSync(join(dir, name))]);
+  try {
+    const index = service.buildIndex();
+    const before = snapshot();
+    assert.deepEqual(readdirSync(dir), ['segments.sqlite']);
+    assert.equal(service.indexVersions()[0].index_version, index.indexVersion);
+    assert.deepEqual(snapshot(), before);
+  } finally { service.close(); }
+
+  const writer = new DatabaseSync(path);
+  try {
+    writer.exec("PRAGMA journal_mode=WAL; UPDATE doc_index_versions SET note='synthetic WAL'");
+    const before = snapshot();
+    assert.deepEqual(readdirSync(dir).sort(), ['segments.sqlite', 'segments.sqlite-shm', 'segments.sqlite-wal']);
+    assert.throws(() => openReadOnlySegmentDb(path), { code: 'RETRIEVAL_STORAGE_CHANGED' });
+    assert.deepEqual(snapshot(), before);
+  } finally { writer.close(); }
+
+  for (const suffix of ['-wal', '-shm', '-journal']) {
+    const reader = openReadOnlySegmentDb(path)!;
+    try {
+      writeFileSync(path + suffix, 'synthetic pending journal');
+      const before = snapshot();
+      assert.throws(() => reader.assertCurrent(), { code: 'RETRIEVAL_STORAGE_CHANGED' });
+      assert.throws(() => openReadOnlySegmentDb(path), { code: 'RETRIEVAL_STORAGE_CHANGED' });
+      assert.deepEqual(snapshot(), before);
+    } finally { reader.db.close(); unlinkSync(path + suffix); }
+  }
+});
 
 test('当前视图不施加时间门：两份文档都进结果', () => {
   const { db, indexVersion } = seeded();

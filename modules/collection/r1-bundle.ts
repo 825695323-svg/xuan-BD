@@ -47,10 +47,15 @@ type Reply = { requestId: string; operation: WfdBundleOperation; version: string
 export class R1BundleService {
   readonly versionBinding = { r1Bundle: R1_BUNDLE_VERSION, protocol: WFD_BUNDLE_FORMAT } as const;
   private readonly binding: string;
+  private readonly legacyBinding: string;
   private readonly pending = new Map<string, Promise<Reply>>();
 
   constructor(private readonly options: Options) {
-    this.binding = this.currentBinding();
+    const identity = options.runtime.currentBundleIdentity();
+    this.binding = this.currentBinding(identity);
+    // 81734d0 pinned the same config (including bundle_access), before the two Python modules joined the binding.
+    const { bundleImplSha256: _implementation, ...legacyIdentity } = identity;
+    this.legacyBinding = wfdSha256(canonicalWfdJson([this.versionBinding, legacyIdentity]));
     options.database.migrate('r1-bundle', 1, `CREATE TABLE r1_bundle_requests (
       request_id TEXT PRIMARY KEY, operation TEXT NOT NULL, binding TEXT NOT NULL, fingerprint TEXT NOT NULL,
       state TEXT NOT NULL, receipt_json TEXT, error_code TEXT)`);
@@ -88,10 +93,15 @@ export class R1BundleService {
     return this.options.database.connection.prepare('SELECT * FROM r1_bundle_requests WHERE request_id=?').get(requestId);
   }
 
+  private matchesBinding(binding: unknown) {
+    return binding === this.binding || binding === this.legacyBinding;
+  }
+
   requestStatus(requestId: string) {
     this.check();
     const row = this.row(token(requestId, id));
-    if (!row || row.binding !== this.binding) throw new CoreError('R1_BUNDLE_REQUEST_NOT_FOUND', '当前连接没有该分包请求。', 404);
+    if (!row || !this.matchesBinding(row.binding))
+      throw new CoreError('R1_BUNDLE_REQUEST_NOT_FOUND', '当前连接没有该分包请求。', 404);
     return { requestId, operation: row.operation, state: row.state, errorCode: row.error_code, version: R1_BUNDLE_VERSION,
       receipt: row.receipt_json ? JSON.parse(String(row.receipt_json)) as WfdBundleReceipt : null };
   }
@@ -105,9 +115,13 @@ export class R1BundleService {
     let previouslyUnconfirmed = false;
     const cached = this.options.database.transaction(() => {
       const row = this.row(requestId);
-      if (row && (row.binding !== this.binding || row.fingerprint !== fingerprint))
+      if (row && (!this.matchesBinding(row.binding) || row.fingerprint !== fingerprint))
         throw new CoreError('R1_BUNDLE_REQUEST_CONFLICT', '原分包请求编号已绑定其他内容或连接。');
-      if (row?.receipt_json) return JSON.parse(String(row.receipt_json)) as WfdBundleReceipt;
+      if (row?.state === 'succeeded' && row.receipt_json) return JSON.parse(String(row.receipt_json)) as WfdBundleReceipt;
+      if (row?.binding === this.legacyBinding)
+        throw new WfdProductMachineError('R1_BUNDLE_LEGACY_OUTCOME_UNCONFIRMED', '升级前的分包请求缺少实现绑定和已确认回执，请沿原请求编号核对分包目录或目标库。', {
+          operation, requestId, mayHaveBeenAccepted: true,
+        });
       previouslyUnconfirmed = row?.state === 'outcome_unknown' || row?.state === 'dispatching';
       db.prepare(`INSERT INTO r1_bundle_requests(request_id,operation,binding,fingerprint,state)
         VALUES(?,?,?,?,'dispatching') ON CONFLICT(request_id) DO UPDATE SET state='dispatching',error_code=NULL

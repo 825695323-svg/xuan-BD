@@ -14,12 +14,10 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import re
 import shutil
-import stat
 import tempfile
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -35,7 +33,8 @@ from .product_holdings import (
 from .product_query import ProductQuery, ProductQueryError
 from .product_service import WFDProductService
 from .product_data_service import WFDDataOnlyService
-from .transfer import export_package, import_package, object_manifest, verify_package
+from .transfer import (export_package, import_package, is_bundle_link as _is_bundle_link,
+                       object_manifest, verified_object_bytes, verify_package)
 from .writerlock import writer_lock
 from .row_version_objects import reject_unsupported
 
@@ -3370,15 +3369,6 @@ def _structured_safe_rel(rel, *, prefixes=None, allow_empty=False):
     return rel
 
 
-def _is_bundle_link(path):
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return False
-    return (stat.S_ISLNK(info.st_mode) or
-            bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT))
-
-
 def _structured_safe_target(root, rel, *, prefixes=None):
     _structured_safe_rel(rel, prefixes=prefixes)
     if _is_bundle_link(Path(root)):
@@ -3396,38 +3386,7 @@ def _structured_safe_target(root, rel, *, prefixes=None):
 
 
 def _read_structured_record(bundle, record):
-    """Return the exact catalog bytes checked against the pinned descriptor."""
-    digest = record["sha256"]
-    member = "objects/" + digest
-    path = _structured_safe_target(bundle, member)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
-    try:
-        linked = path.lstat()
-        if not stat.S_ISREG(linked.st_mode):
-            raise ValueError("STRUCTURED_RECORD_TYPE_INVALID:" + member)
-        with ExitStack() as handles:
-            if os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW"):
-                dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-                bundle_fd = os.open(bundle, dir_flags)
-                handles.callback(os.close, bundle_fd)
-                objects_fd = os.open("objects", dir_flags, dir_fd=bundle_fd)
-                handles.callback(os.close, objects_fd)
-                fd = os.open(digest, flags, dir_fd=objects_fd)
-            else:
-                fd = os.open(path, flags)
-            stream = handles.enter_context(os.fdopen(fd, "rb"))
-            opened = os.fstat(stream.fileno())
-            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(opened, linked):
-                raise ValueError("STRUCTURED_RECORD_CHANGED:" + member)
-            raw = stream.read()
-            if (_structured_safe_target(bundle, member) != path
-                    or not os.path.samestat(opened, path.lstat())):
-                raise ValueError("STRUCTURED_RECORD_CHANGED:" + member)
-    except OSError as exc:
-        raise ValueError("STRUCTURED_RECORD_MISSING:" + member) from exc
-    if sha(raw) != digest:
-        raise ValueError("STRUCTURED_RECORD_DIGEST_MISMATCH:" + record["relative_path"])
-    return raw
+    return verified_object_bytes(bundle, record["sha256"])
 
 
 def _structured_record_allowed(rel):

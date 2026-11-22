@@ -3,7 +3,7 @@ import { canonicalWfdJson, isWfdRecord, wfdSha256, type WfdRecord } from '../../
 import { TaskError } from '../../platform/jobs/tasks.js';
 import { add, compare, divide, formatExactDecimal, multiply, negative, readExactDecimal, type Fraction } from '../collection/numeric-precision.js';
 import { financialBasisAxes, knownFinancialLabel, type FinancialGrowthOptions, type FinancialObservation, type FinancialRatioSnapshot } from './financial-l4-operators.js';
-import { declaredMarketUnitScale, type MarketAdjustmentBasis, type MarketAdjustmentInput, type MarketCorporateAction } from './market-adjustment-contract.js';
+import { declaredMarketUnitScale, validMarketUnitDimension, type MarketAdjustmentBasis, type MarketAdjustmentInput, type MarketCorporateAction } from './market-adjustment-contract.js';
 import { PURE_VERIFICATION_VERSION } from './algorithm-pure-operators.js';
 
 export type PureOperatorInput =
@@ -158,14 +158,16 @@ function verifyMarketBasis(market: MarketAdjustmentInput, basis: MarketAdjustmen
     check(['kind', 'namespace', 'id'].every(key => knownFinancialLabel(subject[key])) && subject.id === row.subjectId, 'market_subject');
     check(knownFinancialLabel(row.currency) && isWfdRecord(row.units), 'market_currency_units');
     subjects.add(canonicalWfdJson(subject)); currencies.add(row.currency);
-    for (const unit of Object.values(row.units)) {
-      check(isWfdRecord(unit) && knownFinancialLabel(unit.unit_code), 'declared_unit');
+    for (const [field, unit] of Object.entries(row.units)) {
+      check(isWfdRecord(unit) && knownFinancialLabel(unit.unit_code) && validMarketUnitDimension(field, unit), 'declared_unit');
       const signature = canonicalWfdJson(unit), prior = definitions.get(unit.unit_code);
       check(prior === undefined || prior === signature, 'unit_definition');
       definitions.set(unit.unit_code, signature);
     }
   }
   check(subjects.size === 1 && currencies.size === 1, 'comparable_market_rows');
+  check(Array.isArray(basis.actionProductSubjects) && basis.actionProductSubjects.every(subject =>
+    subjects.has(canonicalWfdJson(subject))), 'action_product_subject');
   const prices = basis.bars.flatMap(row => ['open', 'high', 'low', 'close'].map(key => row.units[key]));
   const ratios: WfdRecord[] = [];
   for (const [i, action] of market.actions.entries()) {

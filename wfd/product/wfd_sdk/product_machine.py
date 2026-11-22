@@ -312,6 +312,14 @@ def _require_absolute_file(path, label):
     return real
 
 
+def _optional_bundle_module():
+    try:
+        from wfd_sdk import product_machine_bundle
+    except (ImportError, OSError):
+        return None
+    return product_machine_bundle
+
+
 def _load_config(path, expected_sha256=None):
     config_path = _require_absolute_file(path, "config")
     mode = config_path.stat().st_mode
@@ -452,9 +460,10 @@ def _load_config(path, expected_sha256=None):
     if config.get("bundle_access") is not None:
         if not scoped_bundle or volume or storage_format:
             raise ValueError("CONFIG_INVALID:bundle_access requires local data_only")
-        from wfd_sdk.product_machine_bundle import load_access
         from wfd_sdk.product_governance import normalize_source_policies
-        bundle_access = load_access(config["bundle_access"], store, runtime, project_root, protocol_root)
+        bundle_module = _optional_bundle_module()
+        if bundle_module is not None:
+            bundle_access = bundle_module.load_access(config["bundle_access"], store, runtime, project_root, protocol_root)
         sources = normalize_source_policies(sources)
     from wfd_sdk.definition_replacement_registry import access
     replacement_access = access(config.get("definition_replacement_access"))
@@ -1440,8 +1449,10 @@ def _handle(service, config, request):
     if operation in BUNDLE_OPERATIONS:
         if config.get("profile") != "data_only" or config.get("volume"):
             raise _Unsupported(operation, request_id, identity, service_identity)
-        from wfd_sdk.product_machine_bundle import dispatch
-        result = dispatch(service, config, operation, arguments)
+        bundle_module = _optional_bundle_module()
+        if bundle_module is None:
+            raise _Unsupported(operation, request_id, identity, service_identity)
+        result = bundle_module.dispatch(service, config, operation, arguments)
     elif operation == "capabilities":
         _exact(arguments, set(), set())
         result = _capabilities(service, config, identity, service_identity)
@@ -1865,9 +1876,9 @@ def _capabilities(service, config, identity, service_identity):
             + [{"operation": name, "reason": reason}
                for name, reason in sorted(UNSUPPORTED.items())]
         )
-    if data_only and not config.get("volume"):
-        from wfd_sdk.product_machine_bundle import capabilities as bundle_capabilities
-        for name, info in bundle_capabilities(config)["operations"].items():
+    bundle_module = _optional_bundle_module() if data_only and not config.get("volume") else None
+    if bundle_module is not None:
+        for name, info in bundle_module.capabilities(config)["operations"].items():
             operations[name].update(info)
     else:
         for name in BUNDLE_OPERATIONS:

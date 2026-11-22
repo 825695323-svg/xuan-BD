@@ -38,7 +38,7 @@ test('real algorithm host freezes publication separately from fixed reads and bi
   const realWorkspace = companion.r1Workspace;
   let version = { r1Workspace: 'synthetic-read/1', protocol: 'wfd.structured-ingest/1.0', profile: 'data_only' };
   let connection = { connectionId: 'synthetic-fixed-read', profile: 'data_only', configSha256: 'a'.repeat(64) };
-  const workspace = { get versionBinding() { return version; }, capabilities: () => ({ connection }),
+  const workspace = { get versionBinding() { return version; }, capabilities: () => ({ connection, readProductSupported: true }),
     readBinding: () => ({ readSchemaSha256: 'b'.repeat(64), queryImplSha256: 'c'.repeat(64) }),
     readProduct: async () => { throw new Error('Version checks must not read WFD'); } } as unknown as NonNullable<typeof companion.r1Workspace>;
   companion.r1Workspace = workspace;
@@ -66,6 +66,9 @@ test('real algorithm host freezes publication separately from fixed reads and bi
       assert.deepEqual(task.versions, registry.captureVersions(action, { methodId }));
       assert.equal(task.versions.directImplementation, directImplementationVersion(['algorithms', 'algorithmRead', 'algorithmPure']));
       return task;
+    });
+    changedImplementation('adapters/database/wfd-transport.ts', () => {
+      assert.throws(() => verify('algorithms.status'), { code: 'DIRECT_DEPENDENCY_UNAVAILABLE' });
     });
     const discovery = capture('algorithms.capabilities', { snapshotId: 's_fixed' });
     const catalog = capture('algorithms.capabilities', {});

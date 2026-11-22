@@ -43,8 +43,18 @@ export interface MarketRowBasis {
   currency: unknown;
   units: Record<string, WfdRecord>;
 }
-export interface MarketAdjustmentBasis { bars: MarketRowBasis[]; actions: MarketRowBasis[] }
+export interface MarketAdjustmentBasis { bars: MarketRowBasis[]; actions: MarketRowBasis[]; actionProductSubjects: unknown[] }
 
+const priceDimensions = new Set(['price', 'money_per_share', 'currency_per_share', 'money', 'currency', 'monetary']);
+const ratioDimensions = new Set(['ratio', 'dimensionless', 'shares_per_share']);
+export function validMarketUnitDimension(field: string, unit: WfdRecord): boolean {
+  const dimension = isWfdRecord(unit.definition) ? unit.definition.dimension : null;
+  if (['open', 'high', 'low', 'close', 'cashPerShare'].includes(field))
+    return typeof dimension === 'string' && priceDimensions.has(dimension);
+  if (field === 'splitRatio' || field === 'sharesPerShare')
+    return typeof dimension === 'string' && ratioDimensions.has(dimension);
+  return true;
+}
 export function declaredMarketUnitScale(unit: WfdRecord | undefined): Fraction | null {
   if (!unit || unit.resolved !== true || !knownFinancialLabel(unit.unit_code)
     || !isWfdRecord(unit.definition) || !knownFinancialLabel(unit.definition.dimension)) return null;
@@ -62,12 +72,13 @@ export function validMarketBasis(input: MarketAdjustmentInput, basis: MarketAdju
     || basis.bars.length !== input.bars.length || basis.actions.length !== input.actions.length) return false;
   const first = basis.bars[0], subject = first.subject, price = first.units.close;
   if (!isWfdRecord(subject) || !['kind', 'namespace', 'id'].every(key => knownFinancialLabel(subject[key]))
+    || !Array.isArray(basis.actionProductSubjects) || !basis.actionProductSubjects.every(item => isDeepStrictEqual(subject, item))
     || !knownFinancialLabel(first.currency) || !declaredMarketUnitScale(price)) return false;
   const definitions = new Map<string, WfdRecord>();
   for (const row of [...basis.bars, ...basis.actions]) {
     if (!isDeepStrictEqual(row.subject, subject) || row.subjectId !== subject.id || row.currency !== first.currency) return false;
-    for (const unit of Object.values(row.units)) {
-      if (!isWfdRecord(unit) || !knownFinancialLabel(unit.unit_code)) return false;
+    for (const [field, unit] of Object.entries(row.units)) {
+      if (!isWfdRecord(unit) || !knownFinancialLabel(unit.unit_code) || !validMarketUnitDimension(field, unit)) return false;
       const previous = definitions.get(unit.unit_code);
       if (previous && !isDeepStrictEqual(unit, previous)) return false;
       definitions.set(unit.unit_code, unit);

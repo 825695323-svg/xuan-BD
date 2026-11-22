@@ -17,7 +17,7 @@ export function fixedWfdBinding(port: WorkspaceServices['r1Workspace']) {
   if (typeof port?.readProduct !== 'function' || typeof port.capabilities !== 'function' || typeof port.readBinding !== 'function') return null;
   try {
     const caps = port.capabilities(), binding = port.readBinding();
-    return caps?.connection?.connectionId?.trim() && caps.connection.profile === 'data_only' && caps.readProductSupported !== false
+    return caps?.connection?.connectionId?.trim() && caps.connection.profile === 'data_only' && caps.readProductSupported === true
       && (caps.configuration === undefined || caps.configuration?.state === 'configured') && isValidR1ReadBinding(binding)
       ? { connection: caps.connection, binding } : null;
   } catch { return null; }
@@ -25,7 +25,7 @@ export function fixedWfdBinding(port: WorkspaceServices['r1Workspace']) {
 
 export function pureOperatorAvailability(checks: AlgorithmRuntimeChecks) {
   const reason = checks.calculateEnabled?.() === false ? '计算模块已停用。'
-    : !checks.hasWfdReader?.() ? 'algorithms.calculate 需要已绑定且支持 read_product（固定产品读取）的 WFD 连接。' : null;
+    : !checks.hasWfdReader?.() ? 'algorithms.calculate 缺少已绑定 WFD 连接的 read_product（固定产品读取）能力证明。' : null;
   return { status: reason ? 'unavailable' as const : 'ready' as const, reason };
 }
 

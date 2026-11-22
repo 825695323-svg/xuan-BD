@@ -128,6 +128,7 @@ export interface R1RequestView {
 export interface R1CapabilitiesView {
   protocol: 'wfd.structured-ingest/1.0'; profile: 'data_only';
   configuration: { state: string; reason: string | null }; connection: R1ConnectionIdentity | null;
+  /** 只有显式 true 证明固定产品读取可用。兼容宿主省略此字段时能力未证实。 */
   readProductSupported?: boolean;
   limits: { maxRows: number; maxDocumentBytes: number; maxMaterials: 1; payload: 'scalar_rows';
     supportedPayloads?: readonly ('scalar_rows' | 'tabular_rows' | 'event_records' | 'relation_edges')[] };
@@ -160,6 +161,8 @@ export interface R1ProductDiscovery {
 }
 export interface R1ProductRead {
   snapshotId: string; productId: string; historyMode: EligibilityHistoryMode; connection: R1ReadConnection;
+  /** 固定快照发现登记中的产品主体，独立于读取页的产品包络。 */
+  productSubject?: Record<string, unknown>;
   result: Record<string, unknown>; limits: R1ReadLimits;
 }
 export interface R1ProductReadInput {

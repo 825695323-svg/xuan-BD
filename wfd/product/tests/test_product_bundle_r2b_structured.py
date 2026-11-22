@@ -231,6 +231,37 @@ def test_import_rechecks_catalog_object_at_immutable_write(tmp_path, monkeypatch
     assert (target / record["relative_path"]).read_bytes() == original
 
 
+@pytest.mark.parametrize("kind", ["objects", "metadata"])
+@pytest.mark.parametrize("change", ["different_bytes", "symlink"])
+def test_transfer_import_checks_the_bytes_it_installs(tmp_path, monkeypatch, kind, change):
+    from wfd_sdk import transfer
+    descriptor, _, _ = _valid_bundle(tmp_path)
+    package = tmp_path / "bundle" / descriptor["storage_packages"][0]["directory"]
+    verify = transfer.verify_package
+    item = verify(package)["inventory"][kind][0]
+    target = tmp_path / "recipient"
+    destination = target / (item["rel_paths"][0] if kind == "objects" else item["rel_path"])
+
+    def checked_then_changed(path):
+        checked = verify(path)
+        assert checked["ok"]
+        member = path / "objects" / item["sha256"]
+        replacement = tmp_path / "synthetic-member"
+        if change == "symlink":
+            member.rename(replacement)
+            member.symlink_to(replacement)
+        else:
+            replacement.write_bytes(member.read_bytes() + b" ")
+            replacement.replace(member)
+        return checked
+
+    monkeypatch.setattr(transfer, "verify_package", checked_then_changed)
+    result = transfer.import_package(package, target)
+    assert (result["status"], result["code"]) == ("rejected", "TRANSFER_INTEGRITY_FAILED")
+    assert not destination.exists()
+    assert not (target / "catalog/state.json").exists()
+
+
 def test_structured_subject_selection_cannot_return_another_subject(tmp_path):
     source, service, snapshot_id, product_id = _make_daily_slice(tmp_path)
     with pytest.raises(ValueError, match="STRUCTURED_SUBJECT_NOT_IN_PRODUCT_SCOPE"):

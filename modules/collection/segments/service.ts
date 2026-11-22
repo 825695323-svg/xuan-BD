@@ -160,7 +160,7 @@ export class SegmentService {
     const db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
     if (path !== ':memory:') chmodSync(path, 0o600);
     try {
-      db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
+      db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;');
       ensureSegmentSchema(db);
     } catch (error) { db.close(); throw error; }
     this.db = db;
@@ -173,10 +173,11 @@ export class SegmentService {
     if (!reader) return read(null);
     try {
       reader.db.exec('BEGIN'); // Pin one read snapshot across eligibility, membership and citations.
-      const result = read(reader.db);
+      return read(reader.db);
+    } finally {
+      reader.db.close();
       reader.assertCurrent();
-      return result;
-    } finally { reader.db.close(); }
+    }
   }
 
   readState(): 'ready' | 'uninitialized' { return this.withReader(db => db ? 'ready' : 'uninitialized'); }

@@ -122,10 +122,21 @@ function project(row: FixedProductRow, ref: ProductReference, metadata: Map<stri
 }
 
 async function readInput(ref: ProductReference, history: ReturnType<typeof requestFor>['history'], read: FixedProductReader,
-  wait: AbortSignal, active: () => void, connectionId: string, purpose?: HistoricalPurposeContext) {
+  wait: AbortSignal, active: () => void, connectionId: string, purpose?: HistoricalPurposeContext,
+  actionProductSubjects?: Map<string, unknown>) {
   const records: FixedProductRow[] = [], rows: ProjectedRow[] = [], metadata = new Map<string, string>();
   const readPage: FixedProductReader = async (query, signal) => {
-    try { return await read(query, signal); }
+    try {
+      const response = await read(query, signal);
+      if (actionProductSubjects && isWfdRecord(response?.result)) {
+        const { product, metadata, subject } = response.result;
+        for (const declared of [response.productSubject, subject, isWfdRecord(product) ? product.subject : null,
+          isWfdRecord(metadata) ? metadata.subject : null]) {
+          if (declared != null) actionProductSubjects.set(canonicalWfdJson(declared), structuredClone(declared));
+        }
+      }
+      return response;
+    }
     catch (error) {
       signal?.throwIfAborted();
       if (history.historyMode === 'snapshot_contents') throw error;
@@ -147,7 +158,8 @@ async function readInput(ref: ProductReference, history: ReturnType<typeof reque
     historicalExclusionSummary: historicalExclusionSummary(historicalExclusions.diagnostics) } };
 }
 
-function inputFor(methodId: PureOperatorId, rows: ProjectedRow[], actions: ProjectedRow[], params: WfdRecord): PureOperatorInput {
+function inputFor(methodId: PureOperatorId, rows: ProjectedRow[], actions: ProjectedRow[], params: WfdRecord,
+  actionProductSubjects: unknown[]): PureOperatorInput {
   if (!rows.length) fail('PURE_OPERATOR_MISSING_INPUT', '固定产品在所选视角没有合格输入。');
   const first = rows[0].values;
   if (methodId === 'price_adjustment') {
@@ -159,7 +171,7 @@ function inputFor(methodId: PureOperatorId, rows: ProjectedRow[], actions: Proje
     const basisOf = ({ subject, units, values }: ProjectedRow): MarketRowBasis =>
       ({ subject, units, subjectId: values.subject, currency: values.currency });
     const input: Extract<PureOperatorInput, { methodId: 'price_adjustment' }> = { methodId,
-      basis: { bars: rows.map(basisOf), actions: actions.map(basisOf) },
+      basis: { bars: rows.map(basisOf), actions: actions.map(basisOf), actionProductSubjects },
       market: { adjustment: 'none', frequency: '1d', direction: params.direction as 'forward_qfq' | 'backward_hfq',
         anchorDate: params.anchorDate as string, bars, actions: actions.map(row => row.values) as MarketCorporateAction[] } };
     if (!validMarketBasis(input.market, input.basis))
@@ -234,12 +246,13 @@ export class PureOperatorRunner {
     const existing = this.status(host.taskId, requestSha);
     if (existing) { host.link(); return existing; }
     const primary = await readInput(request.ref, request.history, host.read, wait, active, host.connectionId, host.purpose);
-    const actions = request.actions ? await readInput(request.actions, request.history, host.read, wait, active, host.connectionId, host.purpose) : null;
+    const actionSubjects = new Map<string, unknown>();
+    const actions = request.actions ? await readInput(request.actions, request.history, host.read, wait, active, host.connectionId, host.purpose, actionSubjects) : null;
     if (actions && (canonicalWfdJson(primary.proof.connection) !== canonicalWfdJson(actions.proof.connection)
       || primary.proof.connectionSha256 !== actions.proof.connectionSha256)) fail('PURE_OPERATOR_FIXED_REFERENCE', '两个固定产品的实际连接不一致。');
     active();
     const fixedReads = [primary.proof, ...(actions ? [actions.proof] : [])];
-    const input = inputFor(methodId, primary.rows, actions?.rows ?? [], request.parameters);
+    const input = inputFor(methodId, primary.rows, actions?.rows ?? [], request.parameters, [...actionSubjects.values()]);
     const sealed = canonicalWfdJson({ calculation, purpose: host.purpose ?? null, input, fixedReads,
       records: primary.records, ...(actions ? { actionRecords: actions.records } : {}) });
     // 主计算用独立副本，核验从密封 JSON 重新打开原输入。

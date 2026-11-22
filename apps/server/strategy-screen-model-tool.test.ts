@@ -149,7 +149,7 @@ test('AGENTS discovers and executes strategy screen through real perform_action 
   companion.r1Workspace = { readProduct: synthetic.reader.readProduct.bind(synthetic.reader),
     versionBinding: { r1Workspace: 'synthetic-fixed-read/1' },
     readBinding: () => ({ readSchemaSha256: 'b'.repeat(64), queryImplSha256: 'c'.repeat(64) }),
-    capabilities: () => ({ connection: synthetic.identity }) } as unknown as NonNullable<typeof companion.r1Workspace>;
+    capabilities: () => ({ connection: synthetic.identity, readProductSupported: true }) } as unknown as NonNullable<typeof companion.r1Workspace>;
   const database = new CoreDatabase(join(f.runtime, 'state/personal.sqlite')), core = new PersonalCore(backend, { database });
   const services = createApplicationServices(core, database, { role: 'personal', health, projectRoot: f.runtime, codeRoot,
     privateRoot: join(f.runtime, 'state/personal-private'), resources, workspaceServices: companion });

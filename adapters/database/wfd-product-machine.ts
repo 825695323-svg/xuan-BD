@@ -770,14 +770,21 @@ export class WfdProductMachineClient {
           const message = typeof error.message === 'string' ? error.message : '薄入口返回失败但没有可读原因。';
           const action = typeof error.action === 'string' ? error.action : null;
           const errorDetails = isWfdRecord(error.details) ? error.details : {};
-          const writeContext = isWfdRecord(errorDetails.write_context) ? errorDetails.write_context : {};
+          const context = errorDetails.write_context;
+          const explicitlyUnwritten = isWfdRecord(context) && context.operation === operation
+            && context.may_have_written === false && (context.request_id === undefined || context.request_id === requestId)
+            && (context.descriptor_sha256 == null || digest(context.descriptor_sha256))
+            && (context.do_not_resubmit_with_new_identity === undefined || typeof context.do_not_resubmit_with_new_identity === 'boolean')
+            && remoteCode !== 'PROCESS_OUTPUT_FAILED'
+            && [errorDetails, context, errorDetails.cause_details].filter(isWfdRecord).every(item =>
+              ['write_may_have_happened', 'may_have_written', 'operation_completed', 'operation_result_known']
+                .every(key => !Object.hasOwn(item, key) || item[key] === false));
           return finish(new WfdProductMachineError(remoteCode, `${message}${action ? ' 下一步：' + action : ''}`, {
             operation, requestId, remoteCode, action,
             identity: isWfdRecord(error.identity) ? error.identity : identity,
             service: isWfdRecord(error.service) ? error.service : service,
             cause: typeof error.cause === 'string' ? error.cause : undefined,
-            mayHaveBeenAccepted: hasSideEffect && dispatched && (errorDetails.write_may_have_happened === true
-              || writeContext.may_have_written === true || remoteCode === 'PROCESS_OUTPUT_FAILED'),
+            mayHaveBeenAccepted: hasSideEffect && dispatched && !explicitlyUnwritten,
           }));
         }
         if (!isWfdRecord(response.result)) {

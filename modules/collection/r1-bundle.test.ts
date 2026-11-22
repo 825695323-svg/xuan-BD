@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WFD_BUNDLE_OPERATIONS, WfdProductMachineClient, WfdProductMachineError } from '../../adapters/database/wfd-product-machine.js';
+import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { CoreDatabase } from '../../platform/state/database.js';
 import { R1_BUNDLE_VERSION, R1BundleService } from './r1-bundle.js';
@@ -58,6 +59,15 @@ process.stdin.on('end', () => {
       Buffer.from([0xff]), Buffer.from('"}')]));
   }
   if (packageName === 'bad-denial') Object.assign(response, { ok: false, error: { code: 'REQUEST_INVALID', message: 'invalid' } });
+  if (packageName.startsWith('error-')) {
+    const details = {
+      'error-missing': {}, 'error-type': { write_context: 'invalid' }, 'error-flag': { write_context: { operation: req.operation, may_have_written: 'false' } },
+      'error-other': { write_context: { operation: 'other', may_have_written: false } },
+      'error-positive': { write_context: { operation: req.operation, may_have_written: false }, write_may_have_happened: true },
+      'error-confirmed': { write_context: { operation: req.operation, may_have_written: false } },
+    }[packageName];
+    Object.assign(response, { ok: false, result: null, error: { code: 'INTERNAL_ERROR', message: 'synthetic error receipt', details } });
+  }
   if (packageName === 'delayed') return setTimeout(() => process.stdout.write(JSON.stringify(response)), 5000);
   process.stdout.write(JSON.stringify(response));
 });`);
@@ -153,6 +163,54 @@ test('registered external WFD bytes bind fixed reads and bundle dispatch, status
       assert.equal(f.service.requestStatus(selection.requestId).state, 'succeeded');
     }
     assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
+  } finally { f.database.close(); }
+});
+
+test('dispatched errors need affirmative matching no-write evidence to mark any bundle request failed', async () => {
+  const f = setup();
+  try {
+    for (const op of Object.keys(WFD_BUNDLE_OPERATIONS) as Array<keyof typeof WFD_BUNDLE_OPERATIONS>) {
+      const args = WFD_BUNDLE_OPERATIONS[op].writesDatabase ? { descriptorSha256 } :
+        { ...selection, ...(op === 'bundle_export_delta' ? { baselineSnapshotId: snapshotId } : {}) };
+      for (const kind of ['missing', 'type', 'flag', 'other', 'positive', 'confirmed']) {
+        const requestId = op + '-' + kind, unknown = kind !== 'confirmed';
+        await assert.rejects(f.service.dispatch(op, { ...args, requestId, packageName: 'error-' + kind }),
+          { code: 'INTERNAL_ERROR', mayHaveBeenAccepted: unknown });
+        assert.equal(f.service.requestStatus(requestId).state, unknown ? 'outcome_unknown' : 'failed');
+      }
+    }
+  } finally { f.database.close(); }
+});
+
+test('81734d0 request bindings keep confirmed receipts and unconfirmed requests accessible across upgrade', async () => {
+  const f = setup(), op = 'bundle_export_full';
+  try {
+    const confirmed = await f.service.dispatch(op, selection);
+    const oldBinding = wfdSha256(canonicalWfdJson([f.service.versionBinding, f.options.runtime.currentIdentity()]));
+    for (const state of ['succeeded', 'outcome_unknown']) {
+      const input = { ...selection, requestId: 'old-' + state, kind: 'export' };
+      const fingerprint = wfdSha256(canonicalWfdJson([op, input]));
+      f.database.connection.prepare('INSERT INTO r1_bundle_requests VALUES(?,?,?,?,?,?,?)')
+        .run(input.requestId, op, oldBinding, fingerprint, state, state === 'succeeded' ? JSON.stringify(confirmed.receipt) : null, null);
+    }
+    f.database.close();
+    const database = new CoreDatabase(f.dbPath);
+    try {
+      const service = new R1BundleService({ ...f.options, database });
+      assert.equal(service.requestStatus('old-succeeded').state, 'succeeded');
+      assert.deepEqual((await service.dispatch(op, { ...selection, requestId: 'old-succeeded' })).receipt, confirmed.receipt);
+      assert.equal(service.requestStatus('old-outcome_unknown').state, 'outcome_unknown');
+      assert.throws(() => service.dispatch(op, { ...selection, requestId: 'old-outcome_unknown' }),
+        { code: 'R1_BUNDLE_LEGACY_OUTCOME_UNCONFIRMED', mayHaveBeenAccepted: true });
+      assert.throws(() => service.dispatch(op, { ...selection, requestId: 'old-succeeded', packageName: 'changed' }),
+        { code: 'R1_BUNDLE_REQUEST_CONFLICT' });
+      assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
+      appendFileSync(join(f.sdk, 'product_bundle.py'), '\n');
+      assert.throws(() => service.requestStatus(selection.requestId), { code: 'R1_CONNECTION_BINDING_CHANGED' });
+      appendFileSync(f.configPath, '\n');
+      const other = new R1BundleService({ ...f.options, database });
+      assert.throws(() => other.requestStatus('old-succeeded'), { code: 'R1_BUNDLE_REQUEST_NOT_FOUND' });
+    } finally { database.close(); }
   } finally { f.database.close(); }
 });
 

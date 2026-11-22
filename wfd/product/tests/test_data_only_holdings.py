@@ -149,6 +149,49 @@ def test_legacy_formal_receipt_requires_complete_request_and_output_identity(tmp
         service.submit(doc)
 
 
+@pytest.mark.parametrize("authority", ["ledger", "partial_ledger", "status", "missing"])
+def test_legacy_holding_time_requires_an_independent_observation(tmp_path, authority):
+    service = make_data_service(tmp_path)
+    doc, result = published(service, outputs=[scalar_output("a", "holding.a", "1"), scalar_output("b", "holding.b", "2")])
+    key = result["request_key"]
+    status_path = service.root / service._status_path(key)
+    status = json.loads(status_path.read_bytes())
+    del status["formal_receipt_sha256"]
+    # Simulate a database predating the independent publication clock.
+    (service.root / service._publication_clock_path(key)).unlink()
+    receipt_path = service.root / result["formal_publication_ref"]
+    formal = json.loads(receipt_path.read_bytes())
+    holding = formal["holding"]
+    stamp = holding["published_readable_at"]
+    ledger = HoldingLedger(service.root, holding["instance_id"])
+    if authority == "partial_ledger":
+        assert len(ledger.facts()) == 2
+        next(ledger.dir.glob("*.json")).unlink()
+    elif authority != "ledger":
+        for path in ledger.dir.glob("*.json"):
+            path.unlink()
+    if authority == "status":
+        status["published_readable_at"] = stamp
+    status_path.write_text(json.dumps(status))
+    facts = ledger.facts()
+    original = service.request_status(doc["request_identity"])
+    assert original["formal_publication_verified"] is (authority != "missing")
+    if authority == "missing":
+        with pytest.raises(ValueError, match="FORMAL_RECEIPT_HOLDING_CONFLICT"):
+            service.submit(doc)
+    holding["published_readable_at"] = (datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+                                        - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    receipt_path.write_text(json.dumps(formal))
+    conflict = service.request_status(doc["request_identity"])
+    assert conflict["state"] == "recovery_conflict"
+    assert conflict["errors"][0]["code"] == "FORMAL_RECEIPT_HOLDING_CONFLICT"
+    with pytest.raises(ValueError, match="FORMAL_RECEIPT_HOLDING_CONFLICT"):
+        service.submit(doc)
+    with pytest.raises(HoldingError, match="FORMAL_RECEIPT_HOLDING_CONFLICT"):
+        ledger.record_batch(**proof_args(result))
+    assert ledger.facts() == facts
+
+
 def test_receipt_scopes_product_records_and_forbids_caller_times(tmp_path):
     service = make_data_service(tmp_path)
     a, b = scalar_output("a", "holding.a", "1"), scalar_output("b", "holding.b", "2")

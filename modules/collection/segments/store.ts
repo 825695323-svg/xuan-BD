@@ -5,7 +5,7 @@
 import { TaskError } from '../../../platform/jobs/tasks.js';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { existsSync, statSync } from 'node:fs';
+import { lstatSync, statSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import type { DocSegment, DocumentTimeRecord, RetrievalExclusion, RetrievalHistoryMode, SearchHit, SegmentTable,
   TimeDimension, TimeDimensionState, TimePrecision } from './contracts.js';
@@ -132,20 +132,20 @@ function assertReadableSegmentSchema(db: DatabaseSync): void {
 export function openReadOnlySegmentDb(path: string) {
   const file = statSync(path, { bigint: true, throwIfNoEntry: false });
   if (!file) return null;
-  const wal = () => existsSync(path + '-wal');
-  const inWal = wal();
-  const changed = () => new TaskError('RETRIEVAL_STORAGE_CHANGED', '片段库正在切换日志或文件，须重新读取。');
-  // A normal read-only open of a checkpointed WAL database can still create -wal and -shm.
-  // Use SQLite locking for a live WAL. Without a WAL, verify the immutable read saw one stable file.
-  if (existsSync(path + '-journal') || inWal && !existsSync(path + '-shm')) throw changed();
-  const db = new DatabaseSync(inWal ? path : pathToFileURL(path).href + '?immutable=1', { readOnly: true });
   const assertCurrent = () => {
     const current = statSync(path, { bigint: true, throwIfNoEntry: false });
-    if (!current || current.dev !== file.dev || current.ino !== file.ino || inWal !== wal()
-      || !inWal && (current.ctimeNs !== file.ctimeNs || existsSync(path + '-journal'))) throw changed();
+    if (!current || current.dev !== file.dev || current.ino !== file.ino || current.size !== file.size
+      || current.ctimeNs !== file.ctimeNs || ['-wal', '-shm', '-journal'].some(suffix => lstatSync(path + suffix, { throwIfNoEntry: false })))
+      throw new TaskError('RETRIEVAL_STORAGE_CHANGED', '片段库文件已变化或存在事务日志，须重新读取。');
   };
-  try { assertReadableSegmentSchema(db); assertCurrent(); return { db, assertCurrent }; }
-  catch (error) { db.close(); throw error; }
+  assertCurrent();
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(pathToFileURL(path).href + '?immutable=1', { readOnly: true });
+    assertReadableSegmentSchema(db);
+    assertCurrent();
+    return { db, assertCurrent };
+  } catch (error) { db?.close(); assertCurrent(); throw error; }
 }
 
 /**

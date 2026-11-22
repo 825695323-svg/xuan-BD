@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, readFileSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
+import { dirname, isAbsolute } from 'node:path';
 import { ConfigError } from '../runtime/errors.js';
 import type { BaiduDriveConfiguration } from '../../plugins/capture-sources/baidu-drive/index.js';
 import { isBaiduPasscodeRefName } from '../../plugins/capture-sources/baidu-drive/contract.js';
@@ -14,16 +14,35 @@ export interface LocalConnectionRegistry {
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const CONNECTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 
+function registryDocument(path: string): Record<string, unknown> {
+  if (!isAbsolute(path) || path.includes('\0')) throw new ConfigError('连接登记需要明确的绝对路径。');
+  const stat = lstatSync(path, { bigint: true });
+  if (!stat.isFile() || stat.nlink !== 1n || stat.size > 1_048_576n) throw new ConfigError('连接登记必须是有界普通文件。');
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    if (opened.dev !== stat.dev || opened.ino !== stat.ino || opened.ctimeNs !== stat.ctimeNs) throw new ConfigError();
+    const bytes = Buffer.alloc(Number(stat.size));
+    let count = 0;
+    while (count < bytes.length) {
+      const n = readSync(fd, bytes, count, bytes.length - count, null);
+      if (!n) throw new ConfigError();
+      count += n;
+    }
+    const current = lstatSync(path, { bigint: true });
+    if (current.dev !== stat.dev || current.ino !== stat.ino || current.ctimeNs !== stat.ctimeNs) throw new ConfigError();
+    const value: unknown = JSON.parse(bytes.toString('utf8'));
+    if (object(value)) return value;
+  } catch { /* 读取期间变化或无法解析的登记不可采用。 */ }
+  finally { closeSync(fd); }
+  throw new ConfigError('连接登记当前无法解析。');
+}
+
 /** 只读取已绑定登记的元数据和安全引用，不打开所引用的凭据文件。 */
 export function readConnectionRegistry(path?: string): LocalConnectionRegistry | undefined {
   if (path === undefined) return undefined;
-  if (!isAbsolute(path) || path.includes('\0')) throw new ConfigError('连接登记需要明确的绝对路径。');
-  const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 1_048_576) throw new ConfigError('连接登记必须是有界普通文件。');
-  let value: unknown;
-  try { value = JSON.parse(readFileSync(path, 'utf8')); }
-  catch { throw new ConfigError('连接登记当前无法解析。'); }
-  if (!object(value) || !Array.isArray(value.connections)
+  const value = registryDocument(path);
+  if (!Array.isArray(value.connections)
     || value.credential_registry !== undefined && (typeof value.credential_registry !== 'string' || !isAbsolute(value.credential_registry) || value.credential_registry.includes('\0'))) {
     throw new ConfigError('连接登记缺少明确清单或有效凭据登记引用。');
   }
@@ -46,17 +65,28 @@ export function registeredConnection(registry: LocalConnectionRegistry | undefin
   return matches[0];
 }
 
+const validLocatorPath = (value: unknown): value is string =>
+  typeof value === 'string' && isAbsolute(value) && !/[\u0000-\u001f\u007f]/u.test(value);
+
 /** 保护路径只取登记中的定位信息，即使客户端或密钥文件离线也生效。 */
 export function registeredBaiduSharePasscodePaths(registry: LocalConnectionRegistry | undefined): string[] {
   const paths = new Set<string>();
   for (const connection of registry?.connections ?? []) {
     if (!object(connection.share_passcode_refs)) continue;
     for (const locator of Object.values(connection.share_passcode_refs)) {
-      if (object(locator) && locator.kind === 'dsh-ref' && typeof locator.path === 'string'
-        && isAbsolute(locator.path) && !locator.path.includes('\0')) paths.add(locator.path);
+      if (object(locator) && locator.kind === 'dsh-ref' && validLocatorPath(locator.path)) paths.add(locator.path);
     }
   }
   return [...paths];
+}
+
+export function extractConnectionRegistryProtectedPaths(path: string): string[] {
+  let registry: Record<string, unknown>;
+  try { registry = registryDocument(path); } catch { return []; }
+  const connections = Array.isArray(registry.connections) ? registry.connections.filter(object) : [];
+  const paths = registeredBaiduSharePasscodePaths({ path, connections });
+  if (validLocatorPath(registry.credential_registry)) paths.push(dirname(registry.credential_registry));
+  return paths;
 }
 
 /** 账号位置仅沿原生客户端的已有登记；不猜默认用户目录，也不读取账号正文。 */

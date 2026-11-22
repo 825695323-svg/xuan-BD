@@ -1395,7 +1395,7 @@ export class CoreModelTools {
       const input = factory.getCurrentInput(), channel = this.channel(factory.model);
       const code = error instanceof ModelToolError ? error.code : 'MODEL_ARGS_INVALID';
       const action = isObject(params) && typeof params.action === 'string' && MODEL_ACTIONS.has(params.action) ? params.action : name;
-      const args = rejectedArguments(params);
+      const args = this.rejectedArguments(action, params);
       const digest = digestOperationArgs({ name, action, args, inputId: input.inputId, messageId: input.messageId,
         branchId: input.branchId, modelDigest: channel.digest });
       const now = this.now();
@@ -1417,7 +1417,7 @@ export class CoreModelTools {
       const record = this.getCall(callId);
       const code = error instanceof ModelToolError ? error.code : 'MODEL_ACTION_FAILED';
       this.db.prepare("UPDATE model_tool_calls SET state='rejected',args_json=?,preview_json=?,updated_at=? WHERE id=? AND state='reserved'")
-        .run(JSON.stringify(rejectedArguments(JSON.parse(record.args_json))), JSON.stringify({ ok: false, code, message: publicError(code).message }),
+        .run(JSON.stringify(this.rejectedArguments(record.action, JSON.parse(record.args_json))), JSON.stringify({ ok: false, code, message: publicError(code).message }),
           this.now(), callId);
     } catch { /* 收口尽力而为，不掩盖原始错误。 */ }
   }
@@ -1430,7 +1430,7 @@ export class CoreModelTools {
         tool_name: string; action: string; args_json: string; preview_json: string | null; created_at: number }>;
       return rows.map((row) => {
         let args: JsonValue = null, code = 'MODEL_ARGS_INVALID';
-        try { args = rejectedArguments(JSON.parse(row.args_json)); } catch { /* 旧参数不可解析。 */ }
+        try { args = this.rejectedArguments(row.action, JSON.parse(row.args_json)); } catch { /* 旧参数不可解析。 */ }
         try { const saved = JSON.parse(row.preview_json ?? '{}').code;
           if (typeof saved === 'string' && /^MODEL_[A-Z_]{1,60}$/u.test(saved)) code = saved;
         } catch { /* 旧诊断只回传受控原因。 */ }
@@ -1438,6 +1438,15 @@ export class CoreModelTools {
           args, code, reason: publicError(code).message, createdAt: row.created_at };
       });
     } catch { return []; }
+  }
+
+  private rejectedArguments(action: string, value: unknown): JsonValue {
+    const args = isObject(value) && isObject(value.args) ? value.args : value;
+    if (!isObject(args) || !MODEL_ACTIONS.has(action)) return null;
+    try {
+      const { fields } = this.options.registry.get(action);
+      return Object.fromEntries(fields.filter(field => Object.hasOwn(args, field.key)).map(field => [field.key, '[REDACTED]']));
+    } catch { return null; } // 历史动作可能已撤下登记。
   }
 
   private prepare(name: string, params: unknown, known?: CallRow): { action: string; args: JsonValue } {
@@ -2110,13 +2119,6 @@ export function isModelActionAllowed(action: string): boolean { return MODEL_ACT
 function retrievalInput(call: CallRow) {
   return { runId: call.parent_run_id, generation: Number(call.parent_generation), branchId: call.branch_id,
     conversationId: call.conversation_id, messageId: call.message_id, inputId: call.input_id };
-}
-/** A rejected payload is untrusted, including JSON encoded in otherwise ordinary fields. */
-function rejectedArguments(value: unknown): JsonValue {
-  const args = isObject(value) && isObject(value.args) ? value.args : value;
-  if (!isObject(args)) return null;
-  return Object.fromEntries(Object.keys(args).filter(key => /^[a-z][a-z0-9_]{0,63}$/iu.test(key))
-    .slice(0, 64).map(key => [key, '[REDACTED]']));
 }
 function actionFieldAllowed(action: string, field: string, version?: number): boolean {
   return action !== 'baidu.drive' || (version ?? 0) >= 22 || !['passcodeRef', 'sourceDir'].includes(field);

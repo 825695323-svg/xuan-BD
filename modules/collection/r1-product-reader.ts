@@ -228,7 +228,7 @@ export class R1ProductReader {
       const result = resolved ? { ...page, membership: { ...resolved.proof, digest: resolved.digest } } : page;
       boundedResult(result);
       return { snapshotId, productId, historyMode: history.mode, connection: connection(identity),
-        connectionSha256: wfdSha256(canonicalWfdJson(identity)), result, limits };
+        connectionSha256: wfdSha256(canonicalWfdJson(identity)), productSubject: target.product.subject, result, limits };
     }, signal, limits.timeoutMs);
   }
 

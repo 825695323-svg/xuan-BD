@@ -54,6 +54,32 @@ function httpPort(app: express.Express) {
   });
 }
 
+test('missing optional bundle module preserves companion startup, actual R1 reads and tool availability',
+  { skip: !python && '需要显式 WFD_PYTHON' }, async t => {
+    const f = createFullChainFixture({ name: 'optional-bundle', machine: true });
+    const config = JSON.parse(readFileSync(f.configPath, 'utf8'));
+    const project = join(f.root, 'external-wfd'), packages = join(f.root, 'packages');
+    mkdirSync(packages, { mode: 0o700 });
+    cpSync(join(config.project_root, 'wfd_sdk'), join(project, 'wfd_sdk'), {
+      recursive: true, filter: path => !path.endsWith('product_machine_bundle.py') && !path.endsWith('__pycache__'),
+    });
+    const protocol = join(project, 'protocol');
+    cpSync(config.protocol_root, protocol, { recursive: true });
+    const registry = JSON.parse(readFileSync(f.registryPath, 'utf8'));
+    registry.connections[0].entry_path = join(project, 'wfd_sdk', 'product_machine.py');
+    writeFileSync(f.registryPath, JSON.stringify(registry));
+    writeFileSync(f.configPath, JSON.stringify({ ...config, project_root: project, protocol_root: protocol, bundle_access: {
+      dataset_id: dataset, source_ids: ['synthetic'], operations: ['bundle_export_full'], package_root: packages,
+    } }));
+    const host = openMediaReviewCompanion(f);
+    t.after(() => host.close());
+    const { r1Bundles, r1Workspace, toolLibrary } = host.companion;
+    assert.equal(r1Bundles, undefined);
+    assert.equal(r1Workspace!.capabilities().readProductSupported, true);
+    assert.equal((await r1Workspace!.snapshotStatus()).empty, true);
+    assert.ok(toolLibrary!.view().tools.slice(-5).every(tool => tool.status === 'ready'));
+  });
+
 test('HTTP full, delta and reference bundles use a real isolated WFD process and pinned target reads',
   { skip: python ? false : 'Requires explicitly selected WFD_PYTHON.', timeout: 180_000 }, async t => {
     if (!process.env.XUAN_FULL_CHAIN_ROOT) {

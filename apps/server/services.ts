@@ -18,7 +18,7 @@ import { AgentQuestionService } from '../../modules/agent/questions.js';
 import { type CustomSourceRegistry } from '../../plugins/capture-sources/custom-register.js';
 import { retireFormerBuiltinAgentSkills } from '../../modules/agent/skills/builtin.js';
 import { registerSourceCardTemplateSkill } from '../../modules/agent/skills/source-card-template.js';
-import { CoreError } from '../../platform/runtime/errors.js';
+import { ConfigError, CoreError } from '../../platform/runtime/errors.js';
 import { SemanticProductRegistryStore, SourceFieldProfileStore } from '../../modules/collection/source-field-profile.js';
 import { type BackendInput } from '../../contracts/backend.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
@@ -31,7 +31,7 @@ import { InputRouter } from '../../modules/agent/input-router.js';
 import { PersonalResourceService } from '../../modules/agent/personal-resources.js';
 import { ToolSettingsService } from '../../platform/config/tool-settings.js';
 import { SourceSettingsService } from '../../platform/config/source-settings.js';
-import { registeredBaiduSharePasscodePaths, readConnectionRegistry } from '../../platform/config/connections.js';
+import { extractConnectionRegistryProtectedPaths } from '../../platform/config/connections.js';
 import { DirectConversationService } from '../../modules/agent/direct-conversations.js';
 import { BdService } from '../../modules/agent/service.js';
 import { CollectionService } from '../../modules/collection/service.js';
@@ -257,12 +257,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   if (options.browser?.daemonConfigPath) protectedPaths.push(options.browser.daemonConfigPath);
   if (options.shortcutConfigPath) protectedPaths.push(options.shortcutConfigPath);
   if (connectionsRegistryPath) {
-    protectedPaths.push(dirname(connectionsRegistryPath));
-    try {
-      const registry = readConnectionRegistry(connectionsRegistryPath);
-      protectedPaths.push(...registeredBaiduSharePasscodePaths(registry));
-      if (registry?.credentialRegistryPath) protectedPaths.push(dirname(registry.credentialRegistryPath));
-    } catch { /* 可选登记不可读时保留其明确父根保护；不猜其他账号位置或阻断无关能力。 */ }
+    protectedPaths.push(dirname(connectionsRegistryPath), ...extractConnectionRegistryProtectedPaths(connectionsRegistryPath));
   }
   sourceSettings.get();
   protectedPaths.push(...sourceSettings.credentialPaths());
@@ -505,12 +500,12 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   let r1Bundles: R1BundleService | undefined;
   if (options.role === 'service' && r1Runtime) {
     try {
-      if (r1Runtime.currentIdentity().profile === 'data_only') {
-        r1Bundles = new R1BundleService({ runtime: r1Runtime, database, control: () => currentTasks().getControl() });
-      }
+      r1Bundles = new R1BundleService({ runtime: r1Runtime, database, control: () => currentTasks().getControl() });
     } catch (error) {
-      // 旧连接的 currentIdentity 本身会拒绝非 data_only profile。
-      if (!(error instanceof TaskError && error.code === 'R1_PROFILE_REQUIRED')) throw error;
+      // 可选分包绑定离线时，其余服务继续装配。账本迁移错误须向上传递。
+      const code = error instanceof Error && 'code' in error ? String(error.code) : '';
+      if (!(error instanceof ConfigError) && !['R1_PROFILE_REQUIRED', 'R1_CONNECTION_RELOAD_REQUIRED',
+        'EACCES', 'EPERM', 'ENOENT', 'ENOTDIR', 'ELOOP', 'EIO'].includes(code)) throw error;
     }
   }
   if (algorithms && r1Runtime && r1Workspace && r1) {

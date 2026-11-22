@@ -242,7 +242,7 @@ function fixture() {
     control: () => ({ stopped: false, generation: 1 }) });
   const port = { readProduct: reader.readProduct.bind(reader), discoverProducts(input: WfdRecord, signal: AbortSignal) {
     state.discovered.push(input); return reader.discoverProducts(input, signal);
-  }, capabilities: () => ({ connection: identity }), readBinding: () => ({ readSchemaSha256: 'e'.repeat(64), queryImplSha256: 'f'.repeat(64) }) };
+  }, capabilities: () => ({ connection: identity, readProductSupported: true }), readBinding: () => ({ readSchemaSha256: 'e'.repeat(64), queryImplSha256: 'f'.repeat(64) }) };
   const companion = { r1Workspace: port, productionModuleSwitches: state.switches } as unknown as WorkspaceServices;
   const open = () => new ConversationAlgorithmBridge({ database, companion, origin: () => origin, rulesVersion: () => state.rules,
     submissionContext: () => state.quote ? { authority: 'user-message', messageId: origin.messageId, quote: state.quote,
@@ -303,6 +303,18 @@ test('只读连接 profile 缺失或为 joint_experimental 时，目录给出 re
       assert.ok(tools.every(tool => profile === 'data_only' ? tool.status === 'ready'
         : tool.status === 'unavailable' && tool.reason?.includes('read_product')));
     }
+  } finally { f.close(); }
+});
+
+test('兼容端口省略 read_product 能力证明时五项纯 TS 算子均不可用', () => {
+  const f = fixture(), port = f.companion.r1Workspace!;
+  try {
+    const { readProductSupported: _omitted, ...caps } = port.capabilities();
+    const compatible = { ...port, capabilities: () => caps };
+    const tools = new ToolLibraryService({ hasWfdReader: () => !!fixedWfdBinding(compatible) }).view().tools
+      .filter(tool => PURE_OPERATOR_IDS.some(id => id === tool.id));
+    assert.equal(tools.length, 5);
+    assert.ok(tools.every(tool => tool.status === 'unavailable' && tool.reason?.includes('read_product')));
   } finally { f.close(); }
 });
 
@@ -450,6 +462,43 @@ for (const fault of ['namespace', 'kind', 'scale', 'undeclared_scale', 'dimensio
   });
 }
 
+test('复权拒绝价格及现金共同声明数量量纲，也拒绝以货币计量的送转拆股比率', async () => {
+  const f = fixture();
+  try {
+    const request = calculation('price_adjustment'), good = await f.run(request);
+    const saved = f.database.connection.prepare('SELECT sealed_input,result_json FROM pure_operator_runs WHERE task_id=?').get(good.taskId)!;
+    for (const [unitCode, dimension] of [['cny_per_share', 'quantity'], ['ratio', 'currency']]) {
+      const change = (unit: any) => { if (unit.unit_code === unitCode) unit.definition.dimension = dimension; };
+      const { input } = JSON.parse(String(saved.sealed_input));
+      for (const row of [...input.basis.bars, ...input.basis.actions]) Object.values(row.units).forEach(change);
+      assert.throws(() => verifyPureOperator(input, JSON.parse(String(saved.result_json))), { code: 'PURE_OPERATOR_VERIFICATION_FAILED' });
+      f.state.changePage = (page: any) => {
+        for (const row of page.rows) for (const cell of Object.values(row.values)) change((cell as any).unit);
+      };
+      await assert.rejects(f.run(request), { code: 'MARKET_ADJUSTMENT_BASIS' });
+    }
+    assert.equal(f.database.connection.prepare('SELECT count(*) n FROM pure_operator_runs').get()!.n, 1);
+  } finally { f.close(); }
+});
+
+test('空行动产品核对固定产品包络主体并在密封输入中复核', async () => {
+  const f = fixture();
+  try {
+    f.rows.actions = [];
+    const subject = { kind: 'issuer', namespace: 'synthetic', id: basis.subject };
+    f.state.changePage = (page: any) => { if (page.product_id === 'actions') page.product.subject = { ...subject }; };
+    const request = calculation('price_adjustment'), good = await f.run(request);
+    const saved = f.database.connection.prepare('SELECT sealed_input,result_json FROM pure_operator_runs WHERE task_id=?').get(good.taskId)!;
+    const { input } = JSON.parse(String(saved.sealed_input));
+    assert.deepEqual(input.basis.actionProductSubjects, [subject]);
+    subject.namespace = 'other';
+    input.basis.actionProductSubjects[0] = subject;
+    assert.throws(() => verifyPureOperator(input, JSON.parse(String(saved.result_json))), { code: 'PURE_OPERATOR_VERIFICATION_FAILED' });
+    await assert.rejects(f.run(request), { code: 'MARKET_ADJUSTMENT_BASIS' });
+    assert.equal(f.database.connection.prepare('SELECT count(*) n FROM pure_operator_runs').get()!.n, 1);
+  } finally { f.close(); }
+});
+
 test('独立核验拒绝五类数值篡改，核对 TTM 两条公式、零基期、百分点、杜邦和空值诊断', () => {
   const q = [1, 2, 3, 4].map(q => observation(2025, ('Q' + q) as FinancialObservation['period'], String(q)));
   const single = [observation(2025, 'Q1_YTD', 0), observation(2025, 'H1', '0.030000000000000001')];
@@ -478,7 +527,7 @@ test('独立核验拒绝五类数值篡改，核对 TTM 两条公式、零基期
     const rowBasis = (row: WfdRecord) => ({ subject: { kind: 'issuer', namespace: 'synthetic', id: basis.subject },
       subjectId: basis.subject, currency: basis.currency, units: Object.fromEntries(Object.keys(row).map(k => [k, cell(row, k).unit])) });
     const input = { methodId: 'price_adjustment' as const, market,
-      basis: { bars: sourceRows.bars.map(rowBasis), actions: sourceRows.actions.map(rowBasis) } }, result = computeAdjustedMarketSeries(market);
+      basis: { bars: sourceRows.bars.map(rowBasis), actions: sourceRows.actions.map(rowBasis), actionProductSubjects: [] } }, result = computeAdjustedMarketSeries(market);
     verify(input, result, r => { r.rows[1].adj_factor = '0'; });
     verify(input, result, r => { r.rows[1].adjusted.high = '0'; });
     verify(input, result, r => { r.lineage.appliedActions[0].stepFactor = '0.5'; });
@@ -494,7 +543,7 @@ test('隔离 WFD 正式存储的六个合成产品经 discoverProducts/readProdu
   try {
     const runtime = createR1HandoffRuntime({ database: db, resources: new ResourceBindings(host.runtime), connectionId: 'full-chain-test' });
     const reader = new R1ProductReader({ runtime: () => runtime, control: () => ({ stopped: false, generation: 1 }) });
-    f.companion.r1Workspace = { capabilities: () => ({ connection: runtime.currentIdentity() }), readBinding: () => runtime.currentReadBinding(),
+    f.companion.r1Workspace = { capabilities: () => ({ connection: runtime.currentIdentity(), readProductSupported: true }), readBinding: () => runtime.currentReadBinding(),
       readProduct: reader.readProduct.bind(reader), discoverProducts: reader.discoverProducts.bind(reader) } as unknown as typeof f.companion.r1Workspace;
     const snapshotId = await seedPureOperatorProducts(runtime);
     const directory = (await f.invoke('algorithms.capabilities', { snapshotId })).snapshotDiscovery;

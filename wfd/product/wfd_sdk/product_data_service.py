@@ -707,6 +707,28 @@ class WFDDataOnlyService(WFDProductService):
     def _formal_path(key):
         return f"catalog/product_service/data_only_formal_publications/{key}.json"
 
+    @staticmethod
+    def _publication_clock_path(key):
+        return f"catalog/product_service/data_only_publication_clocks/{key}.json"
+
+    @classmethod
+    def _publication_clock(cls, root, record, instance_id):
+        """Recover the local observation even if the final status or holdings write was interrupted."""
+        from .product_holdings import _parse_stamp, HoldingError
+        path = root / cls._publication_clock_path(record["request_key"])
+        if path.is_symlink():
+            raise FormalReceiptError("FORMAL_RECEIPT_HOLDING_CONFLICT")
+        if not path.exists():
+            return None
+        try:
+            clock = json.loads(path.read_bytes())
+            if (clock["instance_id"] == instance_id and all(clock[key] == record[key] for key in
+                    ("request_key", "snapshot_id", "input_fingerprint"))):
+                return _parse_stamp(clock["published_readable_at"], "HOLDING_STAGE_INVALID")
+        except (KeyError, TypeError, ValueError, OSError, HoldingError) as exc:
+            raise FormalReceiptError("FORMAL_RECEIPT_HOLDING_CONFLICT") from exc
+        raise FormalReceiptError("FORMAL_RECEIPT_HOLDING_CONFLICT")
+
     def _intent_path(self, key):
         return f"catalog/product_service/data_only_intents/{key}.json"
 
@@ -2043,6 +2065,23 @@ class WFDDataOnlyService(WFDProductService):
                 if (not cls._formal_outputs_match(formal, results) or formal.get("unpublished_outputs", []) != unpublished
                         or ("formal_publication_checks" in status and formal.get("checks") != status["formal_publication_checks"])):
                     raise FormalReceiptError("FORMAL_RECEIPT_OUTPUT_CONFLICT")
+                if formal.get("holding") is not None:
+                    from .product_holdings import HoldingError, _parse_stamp, resolve_target_instance
+                    holding = formal["holding"]
+                    try:
+                        instance = resolve_target_instance(root)["instance_id"]
+                        if (not isinstance(holding, dict) or set(holding) != {"format_version", "instance_id", "published_readable_at"}
+                                or holding.get("instance_id") != instance
+                                or holding.get("format_version") != "wfd.data-only-readable-proof/1.0"):
+                            raise FormalReceiptError("FORMAL_RECEIPT_HOLDING_CONFLICT")
+                        stamp = _parse_stamp(holding["published_readable_at"], "HOLDING_STAGE_INVALID")
+                        times = [cls._publication_clock(root, formal, instance),
+                                 cls._ledger_readable_time(root, formal, instance, require_complete=False),
+                                 status.get("published_readable_at")]
+                    except (HoldingError, OSError) as exc:
+                        raise FormalReceiptError("FORMAL_RECEIPT_HOLDING_CONFLICT") from exc
+                    if {value for value in times if value is not None} != {stamp}:
+                        raise FormalReceiptError("FORMAL_RECEIPT_HOLDING_CONFLICT")
         except (KeyError, TypeError, AttributeError, UnicodeError, json.JSONDecodeError) as exc:
             raise FormalReceiptError("FORMAL_RECEIPT_INVALID") from exc
         return formal, digest
@@ -2073,11 +2112,12 @@ class WFDDataOnlyService(WFDProductService):
             # write failure is recoverable, not a failed publication to resend.
             pass
 
-    def _ledger_readable_time(self, record, instance_id):
+    @staticmethod
+    def _ledger_readable_time(root, record, instance_id, *, require_complete=True):
         from .product_holdings import HoldingLedger, HoldingError
         proof = {"kind": "data_only_publish", "request_key": record["request_key"],
                  "snapshot_id": record["snapshot_id"]}
-        facts = [fact for fact in HoldingLedger(self.root, instance_id).facts()
+        facts = [fact for fact in HoldingLedger(root, instance_id).facts()
                  if fact["snapshot_id"] == record["snapshot_id"] and fact.get("proof") == proof]
         if not facts:
             return None
@@ -2090,7 +2130,7 @@ class WFDDataOnlyService(WFDProductService):
                     raise HoldingError("HOLDING_STAGE_INVALID")
                 found.add((fact["product_id"], row["record_id"], row["record_version"]))
                 times.add(row["stages"]["published_readable"])
-        if expected != found or len(times) != 1:
+        if not found.issubset(expected) or (require_complete and found != expected) or len(times) != 1:
             raise HoldingError("HOLDING_RECEIPT_FACT_MISMATCH")
         return times.pop()
 
@@ -2100,7 +2140,7 @@ class WFDDataOnlyService(WFDProductService):
             return {"state": "not_recorded", "reason": "no_ordinary_readable_proof"}
         from .product_holdings import HoldingError
         try:
-            if self._ledger_readable_time(record, holding["instance_id"]) != holding["published_readable_at"]:
+            if self._ledger_readable_time(self.root, record, holding["instance_id"]) != holding["published_readable_at"]:
                 return {"state": "pending", "reason": "same_request_submit_can_recover"}
             return {"state": "recorded", "instance_id": holding["instance_id"],
                     "published_readable_at": holding["published_readable_at"]}
@@ -2200,8 +2240,10 @@ class WFDDataOnlyService(WFDProductService):
             expected = {"request_key": request_key, "snapshot_id": sid, "request_identity": identity,
                         "input_fingerprint": fingerprint, "formal_publication_ref": formal_path,
                         "output_results": results}
-            if prior and "formal_receipt_sha256" in prior:
-                expected["formal_receipt_sha256"] = prior["formal_receipt_sha256"]
+            if prior:
+                for field in ("formal_receipt_sha256", "published_readable_at"):
+                    if field in prior:
+                        expected[field] = prior[field]
             try:
                 existing, digest = self.read_formal_receipt(self.root, request_key, expected, unpublished=unpublished)
             except FormalReceiptError as exc:
@@ -2264,8 +2306,17 @@ class WFDDataOnlyService(WFDProductService):
                 if exc.code != "HOLDING_INSTANCE_UNBOUND":
                     raise
             else:
-                stamp = (_now() if record_holdings else
-                         self._ledger_readable_time(record, instance["instance_id"]))
+                instance_id = instance["instance_id"]
+                if record_holdings:
+                    stamp = self._publication_clock(self.root, record, instance_id)
+                    if stamp is None:
+                        stamp = _now()
+                        clock = {"request_key": request_key, "snapshot_id": sid, "input_fingerprint": fingerprint,
+                                 "instance_id": instance_id, "published_readable_at": stamp}
+                        self.engine._write_immutable(self._publication_clock_path(request_key), canonical(clock))
+                else:
+                    # Recreating a lost receipt still requires its original ledger facts.
+                    stamp = self._ledger_readable_time(self.root, record, instance_id)
                 if stamp is not None:
                     record["holding"] = {"format_version": "wfd.data-only-readable-proof/1.0",
                                          "instance_id": instance["instance_id"],
