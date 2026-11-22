@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SegmentService, type SegmentServiceOptions } from './segments/service.js';
@@ -88,6 +88,9 @@ test('只读查询保持已提交主库字节与目录项，遇到活跃 WAL 或
     assert.deepEqual(readdirSync(dir).sort(), ['segments.sqlite', 'segments.sqlite-shm', 'segments.sqlite-wal']);
     assert.throws(() => openReadOnlySegmentDb(path), { code: 'RETRIEVAL_STORAGE_CHANGED' });
     assert.deepEqual(snapshot(), before);
+    const alias = join(dir, 'alias.sqlite');
+    symlinkSync(path, alias, 'file');
+    assert.throws(() => openReadOnlySegmentDb(alias), { code: 'RETRIEVAL_STORAGE_CHANGED' });
   } finally { writer.close(); }
 
   for (const suffix of ['-wal', '-shm', '-journal']) {
@@ -100,6 +103,21 @@ test('只读查询保持已提交主库字节与目录项，遇到活跃 WAL 或
       assert.deepEqual(snapshot(), before);
     } finally { reader.db.close(); unlinkSync(path + suffix); }
   }
+});
+
+test('主库缺失时，孤立的 WAL、SHM 或回滚日志均阻止返回未初始化', () => {
+  const dir = mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'segment-orphans-'));
+  const path = join(dir, 'segments.sqlite'), service = new SegmentService({ databasePath: path } as SegmentServiceOptions);
+  try {
+    assert.equal(service.readState(), 'uninitialized');
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      writeFileSync(path + suffix, 'synthetic orphan');
+      assert.throws(() => service.readState(), { code: 'RETRIEVAL_STORAGE_CHANGED' });
+      assert.deepEqual(readdirSync(dir), ['segments.sqlite' + suffix]);
+      unlinkSync(path + suffix);
+    }
+    assert.equal(service.readState(), 'uninitialized');
+  } finally { service.close(); }
 });
 
 test('当前视图不施加时间门：两份文档都进结果', () => {

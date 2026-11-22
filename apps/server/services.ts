@@ -18,7 +18,7 @@ import { AgentQuestionService } from '../../modules/agent/questions.js';
 import { type CustomSourceRegistry } from '../../plugins/capture-sources/custom-register.js';
 import { retireFormerBuiltinAgentSkills } from '../../modules/agent/skills/builtin.js';
 import { registerSourceCardTemplateSkill } from '../../modules/agent/skills/source-card-template.js';
-import { ConfigError, CoreError } from '../../platform/runtime/errors.js';
+import { CoreError } from '../../platform/runtime/errors.js';
 import { SemanticProductRegistryStore, SourceFieldProfileStore } from '../../modules/collection/source-field-profile.js';
 import { type BackendInput } from '../../contracts/backend.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
@@ -501,12 +501,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   if (options.role === 'service' && r1Runtime) {
     try {
       r1Bundles = new R1BundleService({ runtime: r1Runtime, database, control: () => currentTasks().getControl() });
-    } catch (error) {
-      // 可选分包绑定离线时，其余服务继续装配。账本迁移错误须向上传递。
-      const code = error instanceof Error && 'code' in error ? String(error.code) : '';
-      if (!(error instanceof ConfigError) && !['R1_PROFILE_REQUIRED', 'R1_CONNECTION_RELOAD_REQUIRED',
-        'EACCES', 'EPERM', 'ENOENT', 'ENOTDIR', 'ELOOP', 'EIO'].includes(code)) throw error;
-    }
+    } catch { /* 可选分包初始化失败时，其余服务继续装配。 */ }
   }
   if (algorithms && r1Runtime && r1Workspace && r1) {
     derivedPublisher = new DerivedWfdPublisher({

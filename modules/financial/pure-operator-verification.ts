@@ -166,8 +166,8 @@ function verifyMarketBasis(market: MarketAdjustmentInput, basis: MarketAdjustmen
     }
   }
   check(subjects.size === 1 && currencies.size === 1, 'comparable_market_rows');
-  check(Array.isArray(basis.actionProductSubjects) && basis.actionProductSubjects.every(subject =>
-    subjects.has(canonicalWfdJson(subject))), 'action_product_subject');
+  check(Array.isArray(basis.actionProductSubjects) && (market.actions.length > 0 || basis.actionProductSubjects.length > 0)
+    && basis.actionProductSubjects.every(subject => subjects.has(canonicalWfdJson(subject))), 'action_product_subject');
   const prices = basis.bars.flatMap(row => ['open', 'high', 'low', 'close'].map(key => row.units[key]));
   const ratios: WfdRecord[] = [];
   for (const [i, action] of market.actions.entries()) {

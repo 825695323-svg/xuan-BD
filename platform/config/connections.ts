@@ -13,9 +13,11 @@ export interface LocalConnectionRegistry {
 }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const CONNECTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const validLocatorPath = (value: unknown): value is string =>
+  typeof value === 'string' && isAbsolute(value) && !value.includes('\0');
 
 function registryDocument(path: string): Record<string, unknown> {
-  if (!isAbsolute(path) || path.includes('\0')) throw new ConfigError('连接登记需要明确的绝对路径。');
+  if (!validLocatorPath(path)) throw new ConfigError('连接登记需要明确的绝对路径。');
   const stat = lstatSync(path, { bigint: true });
   if (!stat.isFile() || stat.nlink !== 1n || stat.size > 1_048_576n) throw new ConfigError('连接登记必须是有界普通文件。');
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -43,7 +45,7 @@ export function readConnectionRegistry(path?: string): LocalConnectionRegistry |
   if (path === undefined) return undefined;
   const value = registryDocument(path);
   if (!Array.isArray(value.connections)
-    || value.credential_registry !== undefined && (typeof value.credential_registry !== 'string' || !isAbsolute(value.credential_registry) || value.credential_registry.includes('\0'))) {
+    || value.credential_registry !== undefined && !validLocatorPath(value.credential_registry)) {
     throw new ConfigError('连接登记缺少明确清单或有效凭据登记引用。');
   }
   const connections = value.connections.filter(object);
@@ -64,9 +66,6 @@ export function registeredConnection(registry: LocalConnectionRegistry | undefin
   if (matches.length > 1) throw new ConfigError('所选连接的登记身份重复。');
   return matches[0];
 }
-
-const validLocatorPath = (value: unknown): value is string =>
-  typeof value === 'string' && isAbsolute(value) && !/[\u0000-\u001f\u007f]/u.test(value);
 
 /** 保护路径只取登记中的定位信息，即使客户端或密钥文件离线也生效。 */
 export function registeredBaiduSharePasscodePaths(registry: LocalConnectionRegistry | undefined): string[] {
@@ -104,7 +103,7 @@ export function registeredBaiduDriveConfiguration(registry: LocalConnectionRegis
   const sharePasscodeRefs = Object.fromEntries(Object.entries(refs).map(([name, value]) => {
     if (!isBaiduPasscodeRefName(name)) throw new ConfigError('网盘分享凭据引用名无效。');
     const locator = parseCredentialReference(value);
-    if (locator.kind === 'dsh-ref' && (!isAbsolute(locator.path) || /[\u0000-\u001f\u007f]/u.test(locator.path))) {
+    if (locator.kind === 'dsh-ref' && !validLocatorPath(locator.path)) {
       throw new ConfigError('网盘分享凭据须登记有效的绝对路径。');
     }
     return [name, locator] as const;

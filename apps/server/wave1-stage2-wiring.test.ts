@@ -14,7 +14,7 @@ import { acceptWorkspaceMaterial } from '../../modules/collection/accept-materia
 import { PURE_OPERATOR_IDS } from '../../modules/financial/algorithm-types.js';
 import { basis, calculation, discoveredPureReference, products, pureFixtureUnits, seedPureOperatorProducts } from '../../modules/financial/pure-operator-test-support.js';
 import { zipOfficeParts } from '../../platform/capabilities/conversion/office-test-support.js';
-import { readConnectionRegistry, registeredBaiduDriveConfiguration } from '../../platform/config/connections.js';
+import { extractConnectionRegistryProtectedPaths, readConnectionRegistry, registeredBaiduDriveConfiguration } from '../../platform/config/connections.js';
 import { LocalDataLifecycle } from '../../platform/runtime/local-data-lifecycle.js';
 import { CoreDatabase } from '../../platform/state/database.js';
 import { changedImplementation, createFullChainFixture, readModelEvidencePreview, settleFixtureTask } from './full-chain-test-support.js';
@@ -258,7 +258,7 @@ test('evidence binding detects changes to OCR, Office and linkedom bytes indepen
     'modules/collection/data-processing/ocr-claim.ts', 'apps/server/platform-routes.ts',
     'platform/capabilities/conversion/office.ts', 'platform/capabilities/conversion/formats.ts'])
     changedImplementation(path, verifyChanged);
-  changedImplementation('modules/collection/segments/tokenize.ts', () => {
+  for (const path of ['modules/collection/segments/tokenize.ts', 'adapters/database/wfd-transport.ts']) changedImplementation(path, () => {
     for (const task of [listing, evidence]) assert.throws(() => registry.assertTaskVersions(task), { code: 'DIRECT_DEPENDENCY_UNAVAILABLE' });
   });
 
@@ -274,6 +274,25 @@ test('evidence binding detects changes to OCR, Office and linkedom bytes indepen
   try { verifyChanged(); }
   finally { changedOpen.mock.restore(); changedStat.mock.restore(); syncBuiltinESMExports(); }
   registry.assertTaskVersions(evidence);
+});
+
+test('同一调用号的两次拒绝在审计账本与模型读回中采用最后的动作和参数摘要', async t => {
+  const f = createFullChainFixture({ name: 'rejected-actions', parentRoot: process.env.XUAN_TEST_ROOT ?? tmpdir() });
+  const host = await openMediaReviewHost(f, false); t.after(() => host.close());
+  const sent = host.core.sendMessage(host.core.defaultConversationId, '核对合成拒绝记录。', 'audit-rejections');
+  const input = await host.backend.waitForInput(sent.commandId), current = toolsFor(host, input);
+  const audit = () => host.database.connection.prepare("SELECT action,args_json,payload_digest FROM model_tool_calls WHERE parent_run_id=? AND tool_call_id=? AND state='rejected'")
+    .get(input.runId, 'same-id')!;
+  await assert.rejects(current.perform('same-id', 'file.read', { fileRefId: 'synthetic', extra: true }));
+  const first = audit();
+  assert.equal(first.action, 'file.read');
+  await assert.rejects(current.perform('same-id', 'web.search', { query: 'synthetic', extra: true }));
+  const last = audit();
+  assert.equal(last.action, 'web.search'); assert.deepEqual(JSON.parse(String(last.args_json)), { query: '[REDACTED]' });
+  assert.notEqual(first.payload_digest, last.payload_digest);
+  const { rejectedCalls } = preview(await current.invoke('core_tasks_list', 'read-rejections', {}));
+  assert.equal(rejectedCalls.length, 1);
+  assert.partialDeepStrictEqual(rejectedCalls[0], { tool: 'perform_action', action: 'web.search', args: { query: '[REDACTED]' } });
 });
 
 test('frozen Baidu fields, per-reference approval and branch-local redaction through real model tools', async t => {
@@ -366,6 +385,9 @@ test('registered Baidu locators protect files and freeze only the selected crede
     { slot: { ...dsh, ref: '' } }, { slot: { ...keychain, account: '' } }, { slot: { ...keychain, extra: true } }]) {
     assert.throws(() => read(invalid));
   }
+  const tabbed = { ...dsh, path: join(f.root, 'offline\trefs.yaml') };
+  assert.deepEqual(read({ slot: tabbed })?.sharePasscodeRefs?.slot, tabbed);
+  assert.deepEqual(extractConnectionRegistryProtectedPaths(f.registryPath), [tabbed.path]);
   const drive = read({ slot: dsh, system: keychain });
   assert.deepEqual(drive?.sharePasscodeRefs, { slot: dsh, system: keychain }, '登记时引用文件仍不存在');
   writeFileSync(path, 'refs: {}');
@@ -399,17 +421,22 @@ for (const missingSelection of [false, true]) test('offline DSH file.read protec
   writeFileSync(bindingsFile, JSON.stringify(bindings));
   const path = join(f.root, 'offline-refs.yaml');
   const credentialDir = join(f.root, 'external-credentials');
+  const credentialPath = join(credentialDir, 'registry\tfixture.json');
   fs.mkdirSync(credentialDir);
   const sibling = join(credentialDir, 'other.json');
   writeFileSync(sibling, '{}');
   writeFileSync(path, 'refs: {}');
   writeFileSync(f.registryPath, JSON.stringify({ ...(missingSelection ? { manual_ingest_connection_id: 'removed' } : {}),
-    credential_registry: join(credentialDir, 'registry.json'),
+    credential_registry: credentialPath,
     connections: [{ id: 'bdpan-native', kind: 'native-cli',
     executable: join(f.root, 'missing-bdpan'), credential_ref: { kind: 'native-client-managed', config_path: join(f.root, 'missing-config') },
     share_passcode_refs: { slot: { kind: 'dsh-ref', path, ref: 'FIXTURE_SLOT' } } }] }));
   if (missingSelection) assert.throws(() => readConnectionRegistry(f.registryPath), /须唯一且已经登记/u);
-  else assert.equal(registeredBaiduDriveConfiguration(readConnectionRegistry(f.registryPath), join(f.root, 'missing-bdpan')), undefined);
+  else {
+    const registry = readConnectionRegistry(f.registryPath);
+    assert.equal(registry?.credentialRegistryPath, credentialPath);
+    assert.equal(registeredBaiduDriveConfiguration(registry, join(f.root, 'missing-bdpan')), undefined);
+  }
   const host = openMediaReviewCompanion(f); t.after(() => host.close());
   const { direct, files, tasks, core } = host.companion;
   assert.throws(() => direct.assertPublicPath(sibling), { code: 'PROTECTED_RESOURCE' });

@@ -485,6 +485,14 @@ test('空行动产品核对固定产品包络主体并在密封输入中复核',
   const f = fixture();
   try {
     f.rows.actions = [];
+    const port = f.companion.r1Workspace!;
+    assert.ok(port.readProduct);
+    const read = port.readProduct.bind(port);
+    port.readProduct = async (...args) => {
+      const response = await read(...args);
+      if (response.productId === 'actions') delete response.productSubject;
+      return response;
+    };
     const subject = { kind: 'issuer', namespace: 'synthetic', id: basis.subject };
     f.state.changePage = (page: any) => { if (page.product_id === 'actions') page.product.subject = { ...subject }; };
     const request = calculation('price_adjustment'), good = await f.run(request);
@@ -493,6 +501,10 @@ test('空行动产品核对固定产品包络主体并在密封输入中复核',
     assert.deepEqual(input.basis.actionProductSubjects, [subject]);
     subject.namespace = 'other';
     input.basis.actionProductSubjects[0] = subject;
+    assert.throws(() => verifyPureOperator(input, JSON.parse(String(saved.result_json))), { code: 'PURE_OPERATOR_VERIFICATION_FAILED' });
+    await assert.rejects(f.run(request), { code: 'MARKET_ADJUSTMENT_BASIS' });
+    input.basis.actionProductSubjects = [];
+    f.state.changePage = () => {};
     assert.throws(() => verifyPureOperator(input, JSON.parse(String(saved.result_json))), { code: 'PURE_OPERATOR_VERIFICATION_FAILED' });
     await assert.rejects(f.run(request), { code: 'MARKET_ADJUSTMENT_BASIS' });
     assert.equal(f.database.connection.prepare('SELECT count(*) n FROM pure_operator_runs').get()!.n, 1);

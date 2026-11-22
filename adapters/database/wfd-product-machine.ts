@@ -646,6 +646,7 @@ export class WfdProductMachineClient {
       }));
     }
     const serializeStarted = Date.now();
+    const requestedDescriptor = args.descriptor_sha256;
     const body = JSON.stringify({ protocol_version: WFD_PRODUCT_MACHINE_PROTOCOL, request_id: requestId, operation, arguments: args });
     const serializeMs = Date.now() - serializeStarted;
     if (Buffer.byteLength(body) > this.config.maxRequestBytes) {
@@ -773,7 +774,9 @@ export class WfdProductMachineClient {
           const context = errorDetails.write_context;
           const explicitlyUnwritten = isWfdRecord(context) && context.operation === operation
             && context.may_have_written === false && (context.request_id === undefined || context.request_id === requestId)
-            && (context.descriptor_sha256 == null || digest(context.descriptor_sha256))
+            && (bundleSpec?.writesDatabase
+              ? digest(requestedDescriptor) && context.descriptor_sha256 === requestedDescriptor
+              : context.descriptor_sha256 == null || digest(context.descriptor_sha256))
             && (context.do_not_resubmit_with_new_identity === undefined || typeof context.do_not_resubmit_with_new_identity === 'boolean')
             && remoteCode !== 'PROCESS_OUTPUT_FAILED'
             && [errorDetails, context, errorDetails.cause_details].filter(isWfdRecord).every(item =>

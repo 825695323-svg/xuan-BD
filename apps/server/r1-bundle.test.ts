@@ -2,13 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer, request } from 'node:http';
 import { duplexPair } from 'node:stream';
-import { join } from 'node:path';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
+import fs, { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import express, { type ErrorRequestHandler } from 'express';
 import { WFD_BUNDLE_OPERATIONS, WfdProductMachineClient, type WfdBundleReceipt } from '../../adapters/database/wfd-product-machine.js';
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { CoreError } from '../../platform/runtime/errors.js';
+import { CoreDatabase } from '../../platform/state/database.js';
 import { createFullChainFixture } from './full-chain-test-support.js';
 import { createWorkspaceRouter } from './workspace-routes.js';
 import { openMediaReviewCompanion } from './media-review-test-support.js';
@@ -54,27 +56,55 @@ function httpPort(app: express.Express) {
   });
 }
 
-test('missing optional bundle module preserves companion startup, actual R1 reads and tool availability',
+for (const [fault, configured] of [
+  ['product_machine_bundle.py', true], ['product_bundle.py', true], ['transfer.py', true], ['transfer.py', false],
+  ['EBUSY', true], ['ESTALE', true], ['ledger-init', true],
+] as const) test(`optional bundle failure ${fault} with access configured=${configured} preserves companion reads and tools`,
   { skip: !python && '需要显式 WFD_PYTHON' }, async t => {
     const f = createFullChainFixture({ name: 'optional-bundle', machine: true });
     const config = JSON.parse(readFileSync(f.configPath, 'utf8'));
     const project = join(f.root, 'external-wfd'), packages = join(f.root, 'packages');
     mkdirSync(packages, { mode: 0o700 });
     cpSync(join(config.project_root, 'wfd_sdk'), join(project, 'wfd_sdk'), {
-      recursive: true, filter: path => !path.endsWith('product_machine_bundle.py') && !path.endsWith('__pycache__'),
+      recursive: true, filter: path => basename(path) !== fault && basename(path) !== '__pycache__',
     });
     const protocol = join(project, 'protocol');
     cpSync(config.protocol_root, protocol, { recursive: true });
     const registry = JSON.parse(readFileSync(f.registryPath, 'utf8'));
     registry.connections[0].entry_path = join(project, 'wfd_sdk', 'product_machine.py');
     writeFileSync(f.registryPath, JSON.stringify(registry));
-    writeFileSync(f.configPath, JSON.stringify({ ...config, project_root: project, protocol_root: protocol, bundle_access: {
+    writeFileSync(f.configPath, JSON.stringify({ ...config, project_root: project, protocol_root: protocol, bundle_access: configured ? {
       dataset_id: dataset, source_ids: ['synthetic'], operations: ['bundle_export_full'], package_root: packages,
-    } }));
+    } : undefined }));
+    const readFault = fault === 'EBUSY' || fault === 'ESTALE';
+    let injectedFailures = 0;
+    if (fault === 'ledger-init') {
+      const migrate = CoreDatabase.prototype.migrate;
+      t.mock.method(CoreDatabase.prototype, 'migrate', function (this: CoreDatabase, ...args: Parameters<typeof migrate>) {
+        if (args[0] === 'r1-bundle') {
+          injectedFailures++;
+          throw new Error('synthetic ledger initialization failure');
+        }
+        return migrate.apply(this, args);
+      });
+    }
+    if (readFault) {
+      const read = fs.readFileSync, transfer = join(project, 'wfd_sdk', 'transfer.py');
+      const mock = t.mock.method(fs, 'readFileSync', (...args: Parameters<typeof read>) => {
+        if (args[0] === transfer) {
+          injectedFailures++;
+          throw Object.assign(new Error(fault), { code: fault });
+        }
+        return read(...args);
+      });
+      syncBuiltinESMExports();
+      t.after(() => { mock.mock.restore(); syncBuiltinESMExports(); });
+    }
     const host = openMediaReviewCompanion(f);
     t.after(() => host.close());
     const { r1Bundles, r1Workspace, toolLibrary } = host.companion;
     assert.equal(r1Bundles, undefined);
+    if (readFault || fault === 'ledger-init') assert.equal(injectedFailures, 1);
     assert.equal(r1Workspace!.capabilities().readProductSupported, true);
     assert.equal((await r1Workspace!.snapshotStatus()).empty, true);
     assert.ok(toolLibrary!.view().tools.slice(-5).every(tool => tool.status === 'ready'));

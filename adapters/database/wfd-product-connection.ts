@@ -156,7 +156,7 @@ export function resolveProductMachineConnection(resources: ResourceBindings,
       readSchemaSha256: digestFiles(resolve(protocolRoot, 'schemas'), ['wfd-read-product.schema.json', 'wfd-common.schema.json']),
       queryImplSha256: digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_query.py', 'indexed_tabular_query.py', 'filter_plan.py']),
     }),
-    bundleImplSha256: () => digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_machine_bundle.py', 'product_bundle.py']),
+    bundleImplSha256: () => digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_machine_bundle.py', 'product_bundle.py', 'transfer.py']),
     client,
     profile,
   };

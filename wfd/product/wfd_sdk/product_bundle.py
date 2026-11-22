@@ -3678,6 +3678,7 @@ def _verify_structured_bundle(bundle, expected_sha256=None):
     if not checked["ok"] or checked["transfer"]["target_snapshot_id"] != target_sid:
         raise ValueError("BUNDLE_STORAGE_INTEGRITY_FAILED")
     seen_objects, seen_meta, seen_rels = set(), set(), set()
+    files = {}
     lineage_raw = None
     for obj in checked["inventory"]["objects"]:
         if not _STRUCTURED_HEX.match(str(obj.get("sha256"))) or obj["sha256"] in seen_objects:
@@ -3692,6 +3693,7 @@ def _verify_structured_bundle(bundle, expected_sha256=None):
             if rel in seen_rels:
                 raise ValueError("STRUCTURED_DUPLICATE_ALIAS:" + rel)
             seen_rels.add(rel)
+            files[rel] = raw
             if not rel.endswith(".parquet"):
                 raise ValueError("STRUCTURED_OBJECT_ROLE_UNKNOWN:" + rel)
             roles.add("parquet")
@@ -3711,11 +3713,11 @@ def _verify_structured_bundle(bundle, expected_sha256=None):
         raw = (directory / "objects" / meta["sha256"]).read_bytes()
         if sha(raw) != meta["sha256"]:
             raise ValueError("STRUCTURED_METADATA_HASH_MISMATCH")
+        files[rel] = raw
         if rel == f"catalog/lineage/{target_sid}.json":
             lineage_raw = raw
         _structured_scan_bytes(rel, raw)
     snap_rel = f"catalog/snapshots/{target_sid}.json"
-    _, files = _package_files(directory)
     snap = _json_bytes(files[snap_rel])
     if snap.get("snapshot_id") != target_sid or snap.get("parent_snapshot_id") is not None:
         raise ValueError("STRUCTURED_TARGET_SNAPSHOT_INVALID")
@@ -3773,6 +3775,7 @@ def _verify_structured_bundle(bundle, expected_sha256=None):
     descriptor["_verified_record_map"] = expected_map
     descriptor["_verified_product_map"] = product_map
     descriptor["_verified_bd_scope"] = scope
+    descriptor["_verified_package"] = checked
     _structured_scan_store(directory)
     if any(rel.startswith("evidence/") for rel in files):
         raise ValueError("BUNDLE_EXTERNAL_METADATA_FORBIDDEN:evidence/")
@@ -4127,6 +4130,7 @@ def import_structured_bundle(bundle, destination, *, runtime_root,
         else:
             package = descriptor["storage_packages"][0]
             result = import_package(_path(bundle, package["directory"]), destination,
+                                    verified_inventory=descriptor["_verified_package"],
                                     interrupt_after=interrupt_after)
             if result["status"] == "interrupted":
                 return {

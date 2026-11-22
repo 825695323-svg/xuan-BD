@@ -257,17 +257,18 @@ def verify_package(pkg_dir: Path) -> dict:
 
 # ---------------------------------------------------------------- 导入（增量）
 @guarded_store_arg(1)
-def import_package(pkg_dir: Path, store: Path, *, interrupt_after: int | None = None) -> dict:
-    """把包导入目标库。只拷缺失对象；已有对象必须哈希一致才复用。"""
+def import_package(pkg_dir: Path, store: Path, *, interrupt_after: int | None = None,
+                   verified_inventory: dict | None = None) -> dict:
+    """只拷缺失对象。外层已核验时沿用其 verify_package 结果中的 inventory 和 transfer。"""
     from .joint_state import reject_unsupported as reject_joint_operation
     reject_joint_operation(store, "transfer")
     pkg_dir, store = Path(pkg_dir), Path(store)
-    v = verify_package(pkg_dir)
-    if not v["ok"]:
+    checked = verify_package(pkg_dir) if verified_inventory is None else verified_inventory
+    if not checked["ok"]:
         return {"status": "rejected", "code": "TRANSFER_INTEGRITY_FAILED",
-                "hash_mismatch": v["hash_mismatch"][:5], "missing": v["missing"][:5]}
+                "hash_mismatch": checked["hash_mismatch"][:5], "missing": checked["missing"][:5]}
     try:
-        return _import_verified_package(pkg_dir, store, v, interrupt_after)
+        return _import_verified_package(pkg_dir, store, checked, interrupt_after)
     except TransferIntegrityError as exc:
         return {"status": "rejected", "code": "TRANSFER_INTEGRITY_FAILED", "detail": str(exc)}
 

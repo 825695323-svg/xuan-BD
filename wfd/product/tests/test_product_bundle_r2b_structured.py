@@ -231,6 +231,28 @@ def test_import_rechecks_catalog_object_at_immutable_write(tmp_path, monkeypatch
     assert (target / record["relative_path"]).read_bytes() == original
 
 
+def test_full_import_uses_the_inventory_approved_by_the_outer_verifier(tmp_path, monkeypatch):
+    from wfd_sdk import product_bundle
+    _valid_bundle(tmp_path)
+    bundle, target = tmp_path / "bundle", tmp_path / "target"
+    import_package = product_bundle.import_package
+    extra_data, extra_meta = "observations/unlisted.parquet", "catalog/unlisted.json"
+
+    def replace_disk_inventory(package, store, **kwargs):
+        path = package / "inventory.json"
+        replacement = json.loads(path.read_bytes())
+        replacement["objects"][0]["rel_paths"].append(extra_data)
+        replacement["metadata"].append({**replacement["metadata"][0], "rel_path": extra_meta})
+        path.write_bytes(canonical(replacement))
+        return import_package(package, store, **kwargs)
+
+    monkeypatch.setattr(product_bundle, "import_package", replace_disk_inventory)
+    _, report = import_structured_bundle(bundle, target, runtime_root=tmp_path / "rt")
+    assert report["status"] == "imported_structured_readable"
+    assert not (target / extra_data).exists()
+    assert not (target / extra_meta).exists()
+
+
 @pytest.mark.parametrize("kind", ["objects", "metadata"])
 @pytest.mark.parametrize("change", ["different_bytes", "symlink"])
 def test_transfer_import_checks_the_bytes_it_installs(tmp_path, monkeypatch, kind, change):

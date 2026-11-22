@@ -79,8 +79,9 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
   return { connection, service, client, currentIdentity,
     currentBundleIdentity: () => {
       const current = currentConnection();
-      // A data_only connection without package access can still serve ordinary R1 requests.
-      return { ...identityOf(current), bundleImplSha256: current.config.bundle_access == null ? null : current.actual.bundleImplSha256() };
+      const bundleImplSha256 = current.actual.bundleImplSha256();
+      // 装配时核对实现可读，未配置分包权限的连接仍沿用历史账本的空摘要。
+      return { ...identityOf(current), bundleImplSha256: current.config.bundle_access == null ? null : bundleImplSha256 };
     },
     currentReadBinding: () => currentConnection().actual.readBinding() };
 }

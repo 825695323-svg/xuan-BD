@@ -5,7 +5,7 @@
 import { TaskError } from '../../../platform/jobs/tasks.js';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { lstatSync, statSync } from 'node:fs';
+import { lstatSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import type { DocSegment, DocumentTimeRecord, RetrievalExclusion, RetrievalHistoryMode, SearchHit, SegmentTable,
   TimeDimension, TimeDimensionState, TimePrecision } from './contracts.js';
@@ -130,13 +130,18 @@ function assertReadableSegmentSchema(db: DatabaseSync): void {
 }
 
 export function openReadOnlySegmentDb(path: string) {
-  const file = statSync(path, { bigint: true, throwIfNoEntry: false });
-  if (!file) return null;
+  const file = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  const hasJournal = () => ['-wal', '-shm', '-journal'].some(suffix => lstatSync(path + suffix, { throwIfNoEntry: false }));
+  const changed = () => new TaskError('RETRIEVAL_STORAGE_CHANGED', '片段库文件已变化或存在事务日志，须重新读取。');
+  if (!file) {
+    if (hasJournal()) throw changed();
+    return null;
+  }
+  if (!file.isFile()) throw changed();
   const assertCurrent = () => {
-    const current = statSync(path, { bigint: true, throwIfNoEntry: false });
-    if (!current || current.dev !== file.dev || current.ino !== file.ino || current.size !== file.size
-      || current.ctimeNs !== file.ctimeNs || ['-wal', '-shm', '-journal'].some(suffix => lstatSync(path + suffix, { throwIfNoEntry: false })))
-      throw new TaskError('RETRIEVAL_STORAGE_CHANGED', '片段库文件已变化或存在事务日志，须重新读取。');
+    const current = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    if (!current?.isFile() || current.dev !== file.dev || current.ino !== file.ino || current.size !== file.size
+      || current.ctimeNs !== file.ctimeNs || hasJournal()) throw changed();
   };
   assertCurrent();
   let db: DatabaseSync | undefined;

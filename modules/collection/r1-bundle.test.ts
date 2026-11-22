@@ -22,7 +22,7 @@ function setup() {
   const sdk = join(root, 'external-wfd', 'wfd_sdk'), product = fileURLToPath(new URL('../../wfd/product/', import.meta.url));
   const store = join(root, 'store'), wfdRuntime = join(root, 'wfd-runtime');
   for (const dir of [packages, store, wfdRuntime, sdk, join(root, 'config')]) mkdirSync(dir, { recursive: true });
-  for (const name of ['product_query.py', 'indexed_tabular_query.py', 'filter_plan.py', 'product_machine_bundle.py', 'product_bundle.py'])
+  for (const name of ['product_query.py', 'indexed_tabular_query.py', 'filter_plan.py', 'product_machine_bundle.py', 'product_bundle.py', 'transfer.py'])
     copyFileSync(join(product, 'wfd_sdk', name), join(sdk, name));
   const registry = join(root, 'config', 'connections.json');
   writeFileSync(join(root, '.xuan-runtime.json'), JSON.stringify({ application: 'xuan-bd', version: 1, identity: 'bundle-test' }));
@@ -60,11 +60,14 @@ process.stdin.on('end', () => {
   }
   if (packageName === 'bad-denial') Object.assign(response, { ok: false, error: { code: 'REQUEST_INVALID', message: 'invalid' } });
   if (packageName.startsWith('error-')) {
+    const unwritten = { operation: req.operation, may_have_written: false, descriptor_sha256: args.descriptor_sha256 };
     const details = {
       'error-missing': {}, 'error-type': { write_context: 'invalid' }, 'error-flag': { write_context: { operation: req.operation, may_have_written: 'false' } },
       'error-other': { write_context: { operation: 'other', may_have_written: false } },
-      'error-positive': { write_context: { operation: req.operation, may_have_written: false }, write_may_have_happened: true },
-      'error-confirmed': { write_context: { operation: req.operation, may_have_written: false } },
+      'error-positive': { write_context: unwritten, write_may_have_happened: true },
+      'error-descriptor-missing': { write_context: { operation: req.operation, may_have_written: false } },
+      'error-descriptor-mismatch': { write_context: { ...unwritten, descriptor_sha256: 'sha256:' + 'b'.repeat(64) } },
+      'error-confirmed': { write_context: unwritten },
     }[packageName];
     Object.assign(response, { ok: false, result: null, error: { code: 'INTERNAL_ERROR', message: 'synthetic error receipt', details } });
   }
@@ -150,7 +153,7 @@ test('registered external WFD bytes bind fixed reads and bundle dispatch, status
     appendFileSync(join(f.sdk, 'filter_plan.py'), '\n');
     assert.notEqual(runtime.currentReadBinding().queryImplSha256, read.queryImplSha256);
     assert.deepEqual(runtime.currentBundleIdentity(), initial);
-    for (const file of ['product_machine_bundle.py', 'product_bundle.py']) {
+    for (const file of ['product_machine_bundle.py', 'product_bundle.py', 'transfer.py']) {
       const path = join(f.sdk, file), original = readFileSync(path);
       appendFileSync(path, '\n');
       assert.notEqual(runtime.currentBundleIdentity().bundleImplSha256, initial.bundleImplSha256);
@@ -172,7 +175,9 @@ test('dispatched errors need affirmative matching no-write evidence to mark any 
     for (const op of Object.keys(WFD_BUNDLE_OPERATIONS) as Array<keyof typeof WFD_BUNDLE_OPERATIONS>) {
       const args = WFD_BUNDLE_OPERATIONS[op].writesDatabase ? { descriptorSha256 } :
         { ...selection, ...(op === 'bundle_export_delta' ? { baselineSnapshotId: snapshotId } : {}) };
-      for (const kind of ['missing', 'type', 'flag', 'other', 'positive', 'confirmed']) {
+      const kinds = ['missing', 'type', 'flag', 'other', 'positive', 'confirmed'];
+      if (WFD_BUNDLE_OPERATIONS[op].writesDatabase) kinds.push('descriptor-missing', 'descriptor-mismatch');
+      for (const kind of kinds) {
         const requestId = op + '-' + kind, unknown = kind !== 'confirmed';
         await assert.rejects(f.service.dispatch(op, { ...args, requestId, packageName: 'error-' + kind }),
           { code: 'INTERNAL_ERROR', mayHaveBeenAccepted: unknown });

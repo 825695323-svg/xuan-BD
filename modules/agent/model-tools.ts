@@ -1401,7 +1401,8 @@ export class CoreModelTools {
       const now = this.now();
       this.db.prepare(`INSERT INTO model_tool_calls(id,conversation_id,branch_id,parent_run_id,parent_generation,input_id,message_id,tool_call_id,tool_name,action,args_json,payload_digest,model_json,model_digest,selection_json,task_request_id,preview_json,state,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(parent_run_id,parent_generation,tool_call_id) DO UPDATE SET state='rejected', args_json=excluded.args_json,
+        ON CONFLICT(parent_run_id,parent_generation,tool_call_id) DO UPDATE SET state='rejected',
+          tool_name=excluded.tool_name, action=excluded.action, args_json=excluded.args_json,
           payload_digest=excluded.payload_digest, preview_json=excluded.preview_json, updated_at=excluded.updated_at
           WHERE model_tool_calls.task_id IS NULL AND model_tool_calls.state='rejected'`)
         .run(randomUUID(), input.conversationId, input.branchId, input.runId, input.generation, input.inputId, input.messageId,

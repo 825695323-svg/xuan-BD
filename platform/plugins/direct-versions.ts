@@ -83,7 +83,7 @@ const groups = {
     'modules/collection/segments/service.ts', 'modules/collection/segments/store.ts', 'modules/collection/segments/contracts.ts',
     'modules/collection/segments/artifacts.ts', 'modules/collection/segments/from-conversion.ts', 'modules/collection/segments/from-ocr.ts',
     'modules/collection/segments/from-office.ts', 'modules/collection/segments/native-segment.ts', 'modules/collection/segments/segmenter.ts',
-    'modules/collection/segments/tokenize.ts', 'platform/capabilities/ocr/evidence.ts'],
+    'modules/collection/segments/tokenize.ts', 'platform/capabilities/ocr/evidence.ts', 'adapters/database/wfd-transport.ts'],
   retrievalEvidence: ['apps/server/ocr-review.ts', 'apps/server/media-review-source.ts',
     'modules/collection/data-processing/ocr-claim.ts', 'apps/server/platform-routes.ts',
     'platform/capabilities/conversion/office.ts', 'platform/capabilities/conversion/formats.ts'],

@@ -72,7 +72,8 @@ export function validMarketBasis(input: MarketAdjustmentInput, basis: MarketAdju
     || basis.bars.length !== input.bars.length || basis.actions.length !== input.actions.length) return false;
   const first = basis.bars[0], subject = first.subject, price = first.units.close;
   if (!isWfdRecord(subject) || !['kind', 'namespace', 'id'].every(key => knownFinancialLabel(subject[key]))
-    || !Array.isArray(basis.actionProductSubjects) || !basis.actionProductSubjects.every(item => isDeepStrictEqual(subject, item))
+    || !Array.isArray(basis.actionProductSubjects) || (input.actions.length === 0 && basis.actionProductSubjects.length === 0)
+    || !basis.actionProductSubjects.every(item => isDeepStrictEqual(subject, item))
     || !knownFinancialLabel(first.currency) || !declaredMarketUnitScale(price)) return false;
   const definitions = new Map<string, WfdRecord>();
   for (const row of [...basis.bars, ...basis.actions]) {
