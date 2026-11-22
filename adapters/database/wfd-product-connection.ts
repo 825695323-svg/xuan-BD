@@ -38,7 +38,7 @@ export interface ResolvedProductMachineConnection {
   schemaPath: string;
   readBinding(): R1ReadBinding;
   bundleImplSha256(): string;
-  legacyBundleImplSha256s?(): readonly string[];
+  bundleImplDigests?(): { current: string; legacy: readonly string[] };
   client: WfdProductMachineClient;
   profile: ProductMachineConnectionProfile;
 }
@@ -158,7 +158,15 @@ export function resolveProductMachineConnection(resources: ResourceBindings,
       queryImplSha256: digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_query.py', 'indexed_tabular_query.py', 'filter_plan.py']),
     }),
     bundleImplSha256: () => digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_machine_bundle.py', 'product_bundle.py', 'transfer.py']),
-    legacyBundleImplSha256s: () => [digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_machine_bundle.py', 'product_bundle.py'])],
+    bundleImplDigests: () => {
+      const sdk = resolve(projectRoot, 'wfd_sdk');
+      const entries = ['product_machine_bundle.py', 'product_bundle.py', 'transfer.py'].map(name =>
+        [name, wfdSha256(readFileSync(absoluteFile(resolve(sdk, name), name)))] as const);
+      return {
+        current: wfdSha256(canonicalWfdJson(entries)),
+        legacy: [wfdSha256(canonicalWfdJson(entries.slice(0, 2)))],
+      };
+    },
     client,
     profile,
   };

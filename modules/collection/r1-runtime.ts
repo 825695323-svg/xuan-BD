@@ -34,7 +34,10 @@ export interface R1Runtime {
   /** Re-resolve the registered identity and hash its actual files before every dispatch/recovery. */
   currentIdentity(): R1ConnectionIdentity;
   currentBundleIdentity(): R1ConnectionIdentity & { bundleImplSha256: string | null };
-  legacyBundleIdentities?(): readonly (R1ConnectionIdentity & { bundleImplSha256?: string | null })[];
+  currentBundleSnapshot?(): {
+    identity: R1ConnectionIdentity & { bundleImplSha256: string | null };
+    legacyIdentities: readonly (R1ConnectionIdentity & { bundleImplSha256?: string | null })[];
+  };
   currentReadBinding(): R1ReadBinding;
 }
 export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
@@ -84,11 +87,18 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
       // 装配时核对实现可读，未配置分包权限的连接仍沿用历史账本的空摘要。
       return { ...identityOf(current), bundleImplSha256: current.config.bundle_access == null ? null : bundleImplSha256 };
     },
-    legacyBundleIdentities: () => {
+    currentBundleSnapshot: () => {
       const current = currentConnection(), base = identityOf(current);
-      const prior = current.config.bundle_access == null ? []
-        : (current.actual.legacyBundleImplSha256s?.() ?? []).map(bundleImplSha256 => ({ ...base, bundleImplSha256 }));
-      return [base, ...prior];
+      const digests = current.actual.bundleImplDigests
+        ? current.actual.bundleImplDigests()
+        : { current: current.actual.bundleImplSha256(), legacy: [] };
+      const hasAccess = current.config.bundle_access != null;
+      return {
+        identity: { ...base, bundleImplSha256: hasAccess ? digests.current : null },
+        legacyIdentities: hasAccess
+          ? [base, ...digests.legacy.map(bundleImplSha256 => ({ ...base, bundleImplSha256 }))]
+          : [base],
+      };
     },
     currentReadBinding: () => currentConnection().actual.readBinding() };
 }

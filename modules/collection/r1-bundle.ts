@@ -12,7 +12,7 @@ const id = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const snapshot = /^s_[a-f0-9]{24}$/u;
 const sha = /^sha256:[a-f0-9]{64}$/u;
 const packageName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/u;
-type BundleRuntime = Pick<R1Runtime, 'currentBundleIdentity' | 'legacyBundleIdentities'> & {
+type BundleRuntime = Pick<R1Runtime, 'currentBundleIdentity' | 'currentBundleSnapshot'> & {
   connection: Pick<R1Runtime['connection'], 'client' | 'configPath' | 'connectionId' | 'callerId' | 'trustedActorNamespace'>;
 };
 interface Options {
@@ -51,12 +51,16 @@ export class R1BundleService {
   private readonly pending = new Map<string, Promise<Reply>>();
 
   constructor(private readonly options: Options) {
-    const identity = options.runtime.currentBundleIdentity();
-    this.binding = this.currentBinding(identity);
-    // Preserve readback for 81734d0 (no bundle impl digest) and 9e40cf65 (two-module digest before transfer.py).
-    const { bundleImplSha256: _implementation, ...legacyIdentity } = identity;
-    const legacy = [legacyIdentity, ...(options.runtime.legacyBundleIdentities?.() ?? [])];
-    this.legacyBindings = new Set(legacy
+    // Derive current and legacy bindings from one single read of the config and SDK files.
+    const snapshot = options.runtime.currentBundleSnapshot
+      ? options.runtime.currentBundleSnapshot()
+      : (() => {
+          const identity = options.runtime.currentBundleIdentity();
+          const { bundleImplSha256: _implementation, ...legacyIdentity } = identity;
+          return { identity, legacyIdentities: [legacyIdentity] };
+        })();
+    this.binding = this.currentBinding(snapshot.identity);
+    this.legacyBindings = new Set(snapshot.legacyIdentities
       .map(item => wfdSha256(canonicalWfdJson([this.versionBinding, item])))
       .filter(hash => hash !== this.binding));
     options.database.migrate('r1-bundle', 1, `CREATE TABLE r1_bundle_requests (
