@@ -187,31 +187,45 @@ test('dispatched errors need affirmative matching no-write evidence to mark any 
   } finally { f.database.close(); }
 });
 
-test('81734d0 request bindings keep confirmed receipts and unconfirmed requests accessible across upgrade', async () => {
+test('81734d0 and 9e40cf65 request bindings keep confirmed receipts and unconfirmed requests accessible across upgrade', async () => {
   const f = setup(), op = 'bundle_export_full';
   try {
     const confirmed = await f.service.dispatch(op, selection);
-    const oldBinding = wfdSha256(canonicalWfdJson([f.service.versionBinding, f.options.runtime.currentIdentity()]));
-    for (const state of ['succeeded', 'outcome_unknown']) {
-      const input = { ...selection, requestId: 'old-' + state, kind: 'export' };
-      const fingerprint = wfdSha256(canonicalWfdJson([op, input]));
-      f.database.connection.prepare('INSERT INTO r1_bundle_requests VALUES(?,?,?,?,?,?,?)')
-        .run(input.requestId, op, oldBinding, fingerprint, state, state === 'succeeded' ? JSON.stringify(confirmed.receipt) : null, null);
+    const baseIdentity = f.options.runtime.currentIdentity();
+    const twoFileSha = wfdSha256(canonicalWfdJson([
+      ['product_machine_bundle.py', wfdSha256(readFileSync(join(f.sdk, 'product_machine_bundle.py')))],
+      ['product_bundle.py', wfdSha256(readFileSync(join(f.sdk, 'product_bundle.py')))],
+    ]));
+    const legacyRows = [
+      ['old', wfdSha256(canonicalWfdJson([f.service.versionBinding, baseIdentity]))],
+      ['prev', wfdSha256(canonicalWfdJson([f.service.versionBinding, { ...baseIdentity, bundleImplSha256: twoFileSha }]))],
+    ] as const;
+    for (const [prefix, binding] of legacyRows) {
+      for (const state of ['succeeded', 'outcome_unknown']) {
+        const input = { ...selection, requestId: `${prefix}-${state}`, kind: 'export' };
+        const fingerprint = wfdSha256(canonicalWfdJson([op, input]));
+        f.database.connection.prepare('INSERT INTO r1_bundle_requests VALUES(?,?,?,?,?,?,?)')
+          .run(input.requestId, op, binding, fingerprint, state, state === 'succeeded' ? JSON.stringify(confirmed.receipt) : null, null);
+      }
     }
     f.database.close();
     const database = new CoreDatabase(f.dbPath);
     try {
       const service = new R1BundleService({ ...f.options, database });
-      assert.equal(service.requestStatus('old-succeeded').state, 'succeeded');
-      assert.deepEqual((await service.dispatch(op, { ...selection, requestId: 'old-succeeded' })).receipt, confirmed.receipt);
-      assert.equal(service.requestStatus('old-outcome_unknown').state, 'outcome_unknown');
-      assert.throws(() => service.dispatch(op, { ...selection, requestId: 'old-outcome_unknown' }),
-        { code: 'R1_BUNDLE_LEGACY_OUTCOME_UNCONFIRMED', mayHaveBeenAccepted: true });
-      assert.throws(() => service.dispatch(op, { ...selection, requestId: 'old-succeeded', packageName: 'changed' }),
-        { code: 'R1_BUNDLE_REQUEST_CONFLICT' });
+      for (const [prefix] of legacyRows) {
+        assert.equal(service.requestStatus(`${prefix}-succeeded`).state, 'succeeded');
+        assert.deepEqual((await service.dispatch(op, { ...selection, requestId: `${prefix}-succeeded` })).receipt, confirmed.receipt);
+        assert.equal(service.requestStatus(`${prefix}-outcome_unknown`).state, 'outcome_unknown');
+        assert.throws(() => service.dispatch(op, { ...selection, requestId: `${prefix}-outcome_unknown` }),
+          { code: 'R1_BUNDLE_LEGACY_OUTCOME_UNCONFIRMED', mayHaveBeenAccepted: true });
+        assert.throws(() => service.dispatch(op, { ...selection, requestId: `${prefix}-succeeded`, packageName: 'changed' }),
+          { code: 'R1_BUNDLE_REQUEST_CONFLICT' });
+      }
       assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
       appendFileSync(join(f.sdk, 'product_bundle.py'), '\n');
       assert.throws(() => service.requestStatus(selection.requestId), { code: 'R1_CONNECTION_BINDING_CHANGED' });
+      const mutated = new R1BundleService({ ...f.options, database });
+      assert.throws(() => mutated.requestStatus('prev-succeeded'), { code: 'R1_BUNDLE_REQUEST_NOT_FOUND' });
       appendFileSync(f.configPath, '\n');
       const other = new R1BundleService({ ...f.options, database });
       assert.throws(() => other.requestStatus('old-succeeded'), { code: 'R1_BUNDLE_REQUEST_NOT_FOUND' });

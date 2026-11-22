@@ -12,7 +12,7 @@ const id = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const snapshot = /^s_[a-f0-9]{24}$/u;
 const sha = /^sha256:[a-f0-9]{64}$/u;
 const packageName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/u;
-type BundleRuntime = Pick<R1Runtime, 'currentBundleIdentity'> & {
+type BundleRuntime = Pick<R1Runtime, 'currentBundleIdentity' | 'legacyBundleIdentities'> & {
   connection: Pick<R1Runtime['connection'], 'client' | 'configPath' | 'connectionId' | 'callerId' | 'trustedActorNamespace'>;
 };
 interface Options {
@@ -47,15 +47,18 @@ type Reply = { requestId: string; operation: WfdBundleOperation; version: string
 export class R1BundleService {
   readonly versionBinding = { r1Bundle: R1_BUNDLE_VERSION, protocol: WFD_BUNDLE_FORMAT } as const;
   private readonly binding: string;
-  private readonly legacyBinding: string;
+  private readonly legacyBindings: Set<string>;
   private readonly pending = new Map<string, Promise<Reply>>();
 
   constructor(private readonly options: Options) {
     const identity = options.runtime.currentBundleIdentity();
     this.binding = this.currentBinding(identity);
-    // 81734d0 pinned the same config (including bundle_access), before the two Python modules joined the binding.
+    // Preserve readback for 81734d0 (no bundle impl digest) and 9e40cf65 (two-module digest before transfer.py).
     const { bundleImplSha256: _implementation, ...legacyIdentity } = identity;
-    this.legacyBinding = wfdSha256(canonicalWfdJson([this.versionBinding, legacyIdentity]));
+    const legacy = [legacyIdentity, ...(options.runtime.legacyBundleIdentities?.() ?? [])];
+    this.legacyBindings = new Set(legacy
+      .map(item => wfdSha256(canonicalWfdJson([this.versionBinding, item])))
+      .filter(hash => hash !== this.binding));
     options.database.migrate('r1-bundle', 1, `CREATE TABLE r1_bundle_requests (
       request_id TEXT PRIMARY KEY, operation TEXT NOT NULL, binding TEXT NOT NULL, fingerprint TEXT NOT NULL,
       state TEXT NOT NULL, receipt_json TEXT, error_code TEXT)`);
@@ -94,7 +97,7 @@ export class R1BundleService {
   }
 
   private matchesBinding(binding: unknown) {
-    return binding === this.binding || binding === this.legacyBinding;
+    return typeof binding === 'string' && (binding === this.binding || this.legacyBindings.has(binding));
   }
 
   requestStatus(requestId: string) {
@@ -118,7 +121,7 @@ export class R1BundleService {
       if (row && (!this.matchesBinding(row.binding) || row.fingerprint !== fingerprint))
         throw new CoreError('R1_BUNDLE_REQUEST_CONFLICT', '原分包请求编号已绑定其他内容或连接。');
       if (row?.state === 'succeeded' && row.receipt_json) return JSON.parse(String(row.receipt_json)) as WfdBundleReceipt;
-      if (row?.binding === this.legacyBinding)
+      if (row && this.legacyBindings.has(String(row.binding)))
         throw new WfdProductMachineError('R1_BUNDLE_LEGACY_OUTCOME_UNCONFIRMED', '升级前的分包请求缺少实现绑定和已确认回执，请沿原请求编号核对分包目录或目标库。', {
           operation, requestId, mayHaveBeenAccepted: true,
         });
