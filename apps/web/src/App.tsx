@@ -7,7 +7,7 @@ import { useConversation } from './useConversation';
 import { useConversationTasks } from './useConversationTasks';
 import { PreferencesProvider, usePreferences } from './ui/Preferences';
 import { CanvasContext } from './ui/canvas';
-import { Shell, type Page } from './ui/Shell';
+import { Shell, isCatalogWorkbench, type Page } from './ui/Shell';
 import { WorkspaceLayout } from './ui/WorkspaceLayout';
 import ConversationView from './ui/ConversationView';
 import SettingsPage from './ui/SettingsPage';
@@ -15,6 +15,7 @@ import CaptureSourcesPage from './ui/CaptureSourcesPage';
 import ApiSourcesPage from './ui/ApiSourcesPage';
 import DatabasePage from './ui/DatabasePage';
 import ToolsPage from './ui/ToolsPage';
+import { ResearchWorkbench } from './ui/ResearchWorkbench';
 import { Modal, ErrorNote, errorDetail, useWords } from './ui/Controls';
 import { currentLocalData, type LocalDataRecord } from './local-data-api';
 import { forgetLocalDataSession, localDataGeneration, localDataRevision, setLocalDataSession, subscribeLocalDataRevoked } from './local-data-context';
@@ -26,9 +27,9 @@ import { objectReferenceText, sameObjectReferenceTarget, type ObjectReferenceTar
 type ObjectAskIntent = { text: string; target: ObjectReferenceTarget };
 type ReferenceIntent = { text: string; attachments: ConversationAttachmentRef[]; targetId: string | null; targetBranch: string | null; requireNew: boolean; ready: boolean; resolve(): void; reject(error: Error): void };
 
-const PAGES: readonly Page[] = ['conversations', 'capture', 'api-sources', 'database', 'tools', 'settings'];
+const PAGES: readonly Page[] = ['conversations', 'capture', 'api-sources', 'database', 'tools', 'settings', 'research'];
 const PAGE_TITLE_KEYS: Record<Page, string> = { conversations: 'nav.conversations', capture: 'nav.capture',
-  'api-sources': 'nav.apiSources', database: 'nav.database', tools: 'nav.tools', settings: 'nav.settings' };
+  'api-sources': 'nav.apiSources', database: 'nav.database', tools: 'nav.tools', settings: 'nav.settings', research: 'nav.research' };
 /** 只从地址栏 hash 恢复页面标识；未知值回到会话页，不据此发起任何请求或写入。 */
 function pageFromHash(): Page {
   const raw = window.location.hash.slice(1);
@@ -141,16 +142,16 @@ function Application() {
     }).catch((failure) => intent.reject(failure instanceof Error ? failure : new Error(errorDetail(failure))))
       .finally(() => { referenceWorking.current = false; referenceLock.current = false; setReferenceIntent(null); });
   }, [referenceIntent, chat.newPending, chat.selectedId, chat.draft, chat.connection, words]);
-  return <Shell page={page} onNavigate={navigate}
+  return <Shell page={page} pageTitle={pageTitle} onNavigate={navigate}
     hasActiveTasks={chat.isRunning || !!runtime?.control.activeCount || !!runtime?.activeRuns.length} globallyStopped={runtime?.control.stopped ?? false} stoppingAll={controlBusy} onStopAll={() => void control('stop')} onResume={() => void control('resume')} onRefresh={refreshRuntime}
     onRejectedDrop={(kind) => setDropNotice(kind === 'url' ? words('网址不会自动下载，请在会话中说明访问范围。', 'URLs are not downloaded on drop. Describe the intended access in a conversation.') : words('请把文件拖入会话输入框。', 'Drop files into the conversation composer.'))}>
     {dropNotice && <div className="page-notice" role="status">{dropNotice}<button type="button" className="text-button" onClick={() => setDropNotice(null)}>{words('关闭', 'Dismiss')}</button></div>}
     {objectAskError && !objectAsk && <ErrorNote>{objectAskError}</ErrorNote>}
     {objectAskNotice && <div className="page-notice" role="status">{words('引用已附加到草稿，尚未发送；保存状态请以输入框为准。', 'Reference added to the draft, not sent. Check the composer for save status.')}<PageButton onClick={() => setObjectAskNotice(false)}>{words('关闭', 'Dismiss')}</PageButton></div>}
-    <WorkspaceLayout onAskObject={['capture', 'api-sources', 'tools'].includes(page) ? askObject : undefined} canAskObject={mayAddObject(chat) && !objectAsk}
+    <WorkspaceLayout showWorkbenchCards={isCatalogWorkbench(page)} onAskObject={['capture', 'api-sources', 'tools'].includes(page) ? askObject : undefined} canAskObject={mayAddObject(chat) && !objectAsk}
       title={pageTitle} pageKey={page} contextLabel={pageTitle} tasks={tasks} taskFeed={taskFeed}
-      showDirectory={!['capture', 'api-sources', 'tools', 'conversations', 'database'].includes(page)}
-      showAgent={page !== 'conversations' && page !== 'database'}
+      showDirectory={!['capture', 'api-sources', 'tools', 'conversations', 'database', 'research'].includes(page)}
+      showAgent={page !== 'conversations' && page !== 'database' && page !== 'research'}
       agent={<ConversationView chat={chat} hidden={false} dispatchBlocked={runtime?.control.stopped ?? false} controlUnconfirmed={!runtime || !!runtimeError} compact tasks={tasks} />}>
     {page === 'conversations' && <ConversationView chat={chat} hidden={false} dispatchBlocked={runtime?.control.stopped ?? false} controlUnconfirmed={!runtime || !!runtimeError} tasks={tasks} taskFeed={taskFeed} />}
     {page === 'capture' && <CaptureSourcesPage />}
@@ -158,6 +159,7 @@ function Application() {
     {page === 'database' && <DatabasePage onBringToConversation={bringToConversation} />}
     {page === 'tools' && <ToolsPage />}
     {page === 'settings' && <SettingsPage />}
+    {page === 'research' && <ResearchWorkbench ready={localDataGeneration() !== null} />}
     </WorkspaceLayout>
     {objectAsk && <Modal title={words('对象引用预览', 'Object reference preview')} onClose={cancelObjectAsk}>
       <p>{words('仅把以下显示身份加入当前会话草稿，保留已有内容；不发送消息、不创建会话或任务，也不授予执行权限。', 'Add only this display reference to the current conversation draft, preserving existing text. No message, conversation or task is created, and no execution authority is granted.')}</p>

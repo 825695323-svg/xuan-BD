@@ -52,13 +52,39 @@ async function nav(browser: Browser, name: string) {
   await browser.until(`!!document.querySelector('button[aria-label='+${q(JSON.stringify(name))}+']')`, 'Navigation unavailable ' + name);
   await browser.evaluate(`document.querySelector('button[aria-label='+${q(JSON.stringify(name))}+']').click()`);
 }
+const catalog = '.catalog-navigation';
+async function openCatalog(browser: Browser) {
+  await browser.until("!!document.querySelector('.catalog-detail-card[data-workbench-card=canvas]')", 'Expected the actual page detail card');
+  if (await browser.evaluate<boolean>("matchMedia('(max-width: 767px)').matches")) {
+    await browser.until("!!document.querySelector('.bd-admin-header [data-slot=sidebar-trigger]')", 'Mobile directory trigger unavailable');
+    await browser.evaluate("document.querySelector('.bd-admin-header [data-slot=sidebar-trigger][aria-expanded=false]')?.click()");
+  }
+  await browser.until(`!!document.querySelector(${q(catalog)})?.getClientRects().length`, 'The actual catalog must be visible');
+  assert.equal(await browser.evaluate("!!document.querySelector('.catalog-page .page-cards')"), false, 'No duplicate object column');
+}
+async function closeCatalog(browser: Browser) {
+  if (!await browser.evaluate<boolean>(`matchMedia('(max-width: 767px)').matches&&!!document.querySelector(${q(catalog)})`)) return;
+  await browser.page('Page.bringToFront');
+  await browser.page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await browser.page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await browser.until(`!document.querySelector(${q(catalog)})`, 'Original mobile sidebar must close');
+}
+async function restoredCard(browser: Browser, condition: string, description: string) {
+  await openCatalog(browser);
+  await browser.until(condition, description);
+  await closeCatalog(browser);
+}
 async function card(browser: Browser, label: string) {
-  const selector = `[...document.querySelectorAll('.object-card')].find(e=>e.querySelector('.object-card-title')?.textContent===${q(label)})`;
+  await openCatalog(browser);
+  const selector = `[...document.querySelectorAll('.catalog-navigation .object-card')].find(e=>e.querySelector('.object-card-title')?.textContent===${q(label)})`;
   await browser.until(`!!(${selector})`, 'Missing real catalogue card ' + label);
   await browser.evaluate(`(${selector}).click()`);
-  await browser.until(`(${selector})?.getAttribute('aria-current')==='true'`, 'Selection did not settle');
+  if (await browser.evaluate<boolean>("matchMedia('(max-width: 767px)').matches"))
+    await browser.until(`!document.querySelector(${q(catalog)}) && document.activeElement?.getAttribute('data-slot') === 'sidebar-trigger'`, 'Selecting a leaf must close the mobile catalog and return focus');
+  else await browser.until(`(${selector})?.getAttribute('aria-current')==='true'`, 'Selection did not settle');
 }
 async function fill(browser: Browser, selector: string, value: string) {
+  if (selector.startsWith(catalog)) await openCatalog(browser);
   await browser.until(`!!document.querySelector(${q(selector)})`, 'Input unavailable');
   await browser.evaluate(`(()=>{const e=document.querySelector(${q(selector)});const p=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(p,'value').set.call(e,${q(value)});e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));e.blur();})()`);
 }
@@ -66,10 +92,18 @@ const stored = (browser: Browser) => browser.evaluate<string | null>("sessionSto
 async function capture(browser: Browser, root: string, name: string, width: number, scheme: string, diagnostics = false) {
   await browser.page('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
   await browser.page('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }] });
+  if (width <= 767) {
+    await browser.until(`(() => {
+      const trigger = document.querySelector('.bd-admin-header [data-slot="sidebar-trigger"]');
+      const control = trigger?.getAttribute('aria-expanded') === 'true'
+        ? document.querySelector('.catalog-navigation input[type=search]') : trigger;
+      return matchMedia('(max-width: 767px)').matches && !!control?.getClientRects().length;
+    })()`, 'Mobile catalog must expose its search or its closed drawer trigger');
+  }
   const geometry = await browser.evaluate<Array<{ label: string; left: number; right: number; top: number; bottom: number;
     visibleLeft: number; visibleRight: number; visibleTop: number; visibleBottom: number }>>(`(async()=>{
     const results=[];
-    const controls=[...document.querySelectorAll('.data-nav input[type=search],.object-detail button,.object-detail input,.object-detail select,.object-detail summary')]
+    const controls=[...document.querySelectorAll('.catalog-navigation input[type=search],.bd-admin-header [data-slot="sidebar-trigger"][aria-expanded="false"],.object-detail button,.object-detail input,.object-detail select,.object-detail summary')]
       .filter(e=>e.getClientRects().length>0);
     for(const e of controls){
       e.scrollIntoView({block:'center',inline:'nearest'});
@@ -203,10 +237,10 @@ test('actual three-page selections preserve shared conversation and survive real
       await dialogAction(browser, '取消');
       assert.equal(host.core.getDraft(initial.conversationId, 'main', '', initial.branchId).text, draftText);
       await hideAgent(browser);
-      await fill(browser, '.data-nav input[type=search]', 'no-such-synthetic-source');
+      await fill(browser, '.catalog-navigation input[type=search]', 'no-such-synthetic-source');
       assert.equal(await stored(browser), 'synthetic-selection-a');
       assert.match(await browser.evaluate<string>("document.querySelector('.object-detail')?.textContent ?? document.body.textContent"), /Synthetic selection A/u);
-      await fill(browser, '.data-nav input[type=search]', '');
+      await fill(browser, '.catalog-navigation input[type=search]', '');
       // Only the custom catalogue transport is fault-injected. All other HTTP endpoints,
       // source records, settings, tasks and shared conversation use the actual server.
       await browser.evaluate(`(()=>{const original=window.fetch.bind(window);window.__selectionFetch=original;window.__catalogMode='fail';window.__catalogFailures=0;window.fetch=async(...args)=>{const url=String(args[0]);if(!url.includes('/api/ui/custom-sources'))return original(...args);if(window.__catalogMode==='fail'){window.__catalogFailures++;return new Response(JSON.stringify({error:'synthetic 503 catalogue interruption'}),{status:503,headers:{'Content-Type':'application/json'}});}const response=await original(...args);if(window.__catalogMode==='hold'){window.__catalogWaiting=true;await new Promise(resolve=>window.__catalogRelease=resolve);window.__catalogReleased=true;}return response;};})()`);
@@ -221,7 +255,7 @@ test('actual three-page selections preserve shared conversation and survive real
       assert.equal(await browser.evaluate("[...document.querySelectorAll('.agent-context button')].find(e=>e.textContent==='问一问')?.disabled"), true, 'Pending catalogue cannot grant an object reference');
       await hideAgent(browser);
       await browser.evaluate("window.__catalogMode='normal'"); await nav(browser, '算法'); await nav(browser, '采集源');
-      await browser.until("[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.textContent.includes('Synthetic selection A'))", 'Recovery lost stored selection');
+      await restoredCard(browser, "[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.textContent.includes('Synthetic selection A'))", 'Recovery lost stored selection');
       await verifyCompactDetails(browser, 'capture');
       await browser.evaluate("document.querySelector('.object-detail-diagnostics > summary').click()");
       await browser.until("document.querySelector('.object-detail-diagnostics').open===true", 'Diagnostics must open before object switch');
@@ -247,36 +281,45 @@ test('actual three-page selections preserve shared conversation and survive real
       await browser.until("sessionStorage.getItem('xuan.capture.object')===null", 'Successful complete catalogue must clear actually missing object');
       await card(browser, 'Synthetic selection A');
       await nav(browser, '算法');
-      await browser.until("document.querySelectorAll('.object-card').length>0", 'Real tools catalogue unavailable');
-      const toolTitle = await browser.evaluate<string>("[...document.querySelectorAll('.object-card-title')].at(-1).textContent");
+      await openCatalog(browser);
+      const expectedRegistry = host.workspaceServices.toolLibrary!.view();
+      await browser.until(`document.querySelectorAll('.catalog-navigation .object-card').length===${expectedRegistry.tools.length}`, 'The full real tools catalogue must load');
+      const toolTitle = expectedRegistry.tools.find(tool => /MACD/u.test(tool.title))!.title;
       await card(browser, toolTitle); const toolId = await browser.evaluate<string>("sessionStorage.getItem('xuan.tools.object')"); assert.ok(toolId);
       await verifyCompactDetails(browser, 'tools');
       await capture(browser, visuals, 'compact-tools-zh-light', 390, 'light');
-      await fill(browser, '.data-nav input[type=search]', 'unmatched-synthetic-algorithm');
+      await fill(browser, '.catalog-navigation input[type=search]', 'unmatched-synthetic-algorithm');
       assert.equal(await browser.evaluate("sessionStorage.getItem('xuan.tools.object')"), toolId);
       await nav(browser, '接口源');
+      await openCatalog(browser);
       await browser.until("document.querySelectorAll('.object-card').length>1", 'Actual API source catalogue unavailable');
       const apiTitle = await browser.evaluate<string>("[...document.querySelectorAll('.object-card-title')].at(-1).textContent"); await card(browser, apiTitle);
       await verifyCompactDetails(browser, 'api');
       await capture(browser, visuals, 'compact-api-zh-light', 390, 'light');
       const apiSelections = await browser.evaluate<Record<string, string>>("Object.fromEntries(Object.keys(sessionStorage).filter(k=>k.startsWith('xuan.api-sources.object:')).map(k=>[k,sessionStorage.getItem(k)]))");
       assert.ok(Object.keys(apiSelections).length);
-      await fill(browser, '.data-nav input[type=search]', 'unmatched-synthetic-market');
+      await fill(browser, '.catalog-navigation input[type=search]', 'unmatched-synthetic-market');
       assert.match(await browser.evaluate<string>("document.body.textContent"), new RegExp(apiTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-      await fill(browser, '.data-nav input[type=search]', '');
-      const currentMarket = await browser.evaluate<string>("document.querySelector('.data-nav .data-nav-item[aria-current=true]').textContent");
-      const otherMarket = await browser.evaluate<string>("[...document.querySelectorAll('.data-nav .data-nav-item:not(.is-group)')].find(e=>e.getAttribute('aria-current')!=='true').textContent");
-      await browser.evaluate(`([...document.querySelectorAll('.data-nav .data-nav-item')].find(e=>e.textContent===${q(otherMarket)})).click()`);
+      await fill(browser, '.catalog-navigation input[type=search]', '');
+      const currentMarket = await browser.evaluate<string>("document.querySelector('.catalog-navigation .data-nav-item[aria-current=true]').textContent");
+      const otherMarket = await browser.evaluate<string>("[...document.querySelectorAll('.catalog-navigation .data-nav-item:not(.is-group)')].find(e=>e.getAttribute('aria-current')!=='true').textContent");
+      await browser.evaluate(`([...document.querySelectorAll('.catalog-navigation .data-nav-item')].find(e=>e.textContent===${q(otherMarket)})).click()`);
       await card(browser, '当前市场总览');
-      await browser.evaluate(`([...document.querySelectorAll('.data-nav .data-nav-item')].find(e=>e.textContent===${q(currentMarket)})).click()`);
-      await browser.until(`[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.querySelector('.object-card-title')?.textContent===${q(apiTitle)})`, 'Market switch lost per-market source selection');
+      await openCatalog(browser);
+      await browser.evaluate(`([...document.querySelectorAll('.catalog-navigation .data-nav-item')].find(e=>e.textContent===${q(currentMarket)})).click()`);
+      await restoredCard(browser, `[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.querySelector('.object-card-title')?.textContent===${q(apiTitle)})`, 'Market switch lost per-market source selection');
       await nav(browser, '采集源'); assert.equal(await stored(browser), 'synthetic-selection-a');
       await nav(browser, '算法'); assert.equal(await browser.evaluate("sessionStorage.getItem('xuan.tools.object')"), toolId);
       await nav(browser, '接口源');
       for (const [key, value] of Object.entries(apiSelections)) assert.equal(await browser.evaluate(`sessionStorage.getItem(${q(key)})`), value);
+      // A remembered ID can exist while the route's async supplier catalogue is
+      // still loading. Capture the restored supplier, not that pending frame.
+      await browser.until(`document.querySelector('.object-detail-title')?.textContent === ${q(apiTitle)}
+        && !!document.querySelector('.object-detail-diagnostics > summary')?.getClientRects().length`,
+        'Returning to API sources must visibly restore the selected supplier detail');
       await capture(browser, visuals, 'selection-api-dark-narrow', 390, 'dark');
       await browser.page('Page.reload'); await nav(browser, '采集源');
-      await browser.until("[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.textContent.includes('Synthetic selection A'))", 'Refresh did not restore selected source');
+      await restoredCard(browser, "[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.textContent.includes('Synthetic selection A'))", 'Refresh did not restore selected source');
       await nav(browser, '会话');
       await browser.until(`document.querySelector('textarea.composer-input')?.value===${q(draftText)}`, 'Shared conversation draft was not restored in the actual UI');
       const current = host.core.getState(); assert.equal(current.conversationId, initial.conversationId); assert.equal(current.branchId, initial.branchId);
@@ -290,16 +333,16 @@ test('actual three-page selections preserve shared conversation and survive real
         draft: draftText, historyCount: current.messages.length, taskCount: tasks.length, scope: 'Real isolated registry and host; 503/delay transport faults; external fixture-only deletion; no credentials or model calls.' }, null, 2));
       await browser.evaluate(`(async()=>{const session=JSON.parse(sessionStorage.getItem('mashiro.local-data-generation'));if(!Number.isSafeInteger(session?.generation))throw Error('Missing actual local session');const headers={'x-local-data-generation':String(session.generation),'x-mashiro-client':'web','Content-Type':'application/json'};const p=await (await fetch('/api/ui/preferences',{headers})).json();const r=await fetch('/api/ui/preferences',{method:'PUT',headers,body:JSON.stringify({revision:p.revision,language:'en'})});if(!r.ok)throw Error('Preference update failed');})()`);
       await browser.page('Page.reload'); await nav(browser, 'Capture sources');
-      await browser.until("[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.textContent.includes('Synthetic selection A'))", 'English refresh lost selection');
+      await restoredCard(browser, "[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.textContent.includes('Synthetic selection A'))", 'English refresh lost selection');
       await verifyCompactDetails(browser, 'capture', true);
       await capture(browser, visuals, 'selection-capture-en', 1440, 'light');
       await capture(browser, visuals, 'compact-capture-en-light', 390, 'light');
       await nav(browser, 'Algorithms');
-      await browser.until("!!document.querySelector('.object-card[aria-current=true]')", 'Selected algorithm not restored');
+      await restoredCard(browser, "!!document.querySelector('.object-card[aria-current=true]')", 'Selected algorithm not restored');
       await verifyCompactDetails(browser, 'tools', true);
       await capture(browser, visuals, 'compact-tools-en-dark', 390, 'dark');
       await nav(browser, 'API sources');
-      await browser.until("!!document.querySelector('.object-card[aria-current=true]')", 'Selected API source not restored');
+      await restoredCard(browser, "!!document.querySelector('.object-card[aria-current=true]')", 'Selected API source not restored');
       await verifyCompactDetails(browser, 'api', true);
       await capture(browser, visuals, 'compact-api-en-dark', 390, 'dark');
       assert.equal(host.core.getState().conversationId, initial.conversationId);
@@ -309,7 +352,7 @@ test('actual three-page selections preserve shared conversation and survive real
       let expectedDraft = draftText;
       for (const [pageLabel, page] of [['Capture sources', 'capture'], ['Algorithms', 'tools'], ['API sources', 'api-sources']] as const) {
         await nav(browser, pageLabel);
-        await browser.until("!!document.querySelector('.object-card[aria-current=true]')", 'Object selection not restored for reference');
+        await restoredCard(browser, "!!document.querySelector('.object-card[aria-current=true]')", 'Object selection not restored for reference');
         const preview = await previewObject(browser, true);
         assert.equal(preview.reference.page, page);
         if (page === 'api-sources') {

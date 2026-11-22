@@ -1,8 +1,9 @@
+import { CatalogCategory, CatalogChildren, CatalogRow, CatalogSidebar } from './CatalogSidebar';
+import { WorkbenchCard } from './WorkbenchCard';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { PageSearch, PageActions, PageButton, PageEmpty } from './PageUI';
 import { request } from '../api';
 import { ErrorNote, Modal, errorDetail, useWords } from './Controls';
-import { MorphIcon } from './MorphIcon';
 import { RunReceipt, SourceCheckError, SourceCheckLine, useSourceCheck, type SourceRunTask } from './SourceActions';
 import { DetailDiagnostics, DetailFacts, DetailHeader, DetailSection, ObjectDetailPanel } from './ObjectDetailPanel';
 import { useObjectSelection } from './useStoredSelection';
@@ -138,32 +139,38 @@ export function CaptureSourcesPage() {
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
-  const navItem = (id: string, label: string, active: boolean, onClick: () => void) => <button type="button" key={id}
-    className="data-nav-item is-child" aria-current={active ? 'true' : undefined} onClick={onClick}>
-    <span>{label}</span><span className="data-nav-dot" aria-hidden="true" />
-  </button>;
-
-  const nav = <aside className="data-nav" aria-label={words('采集源分类', 'Capture source categories')}>
-    <div className="sidebar-search-slot">
-      <PageSearch compact value={query} onChange={setQuery}
-        label={words('搜索采集源', 'Search sources')} />
-    </div>
-    <button type="button" className="data-nav-item" aria-current={topic === '全部' ? 'true' : undefined} onClick={() => setTopic('全部')}>
-      <span>{words('全部来源', 'All sources')}</span><span className="data-nav-dot" aria-hidden="true" />
-    </button>
-    <button type="button" className="data-nav-item is-group" aria-expanded={open.has('topics')} onClick={() => toggle('topics')}>
-      <span>{words('主题分类', 'Topics')}</span><MorphIcon name={open.has('topics') ? 'chevron-up' : 'chevron-down'} size={16} />
-    </button>
-    {open.has('topics') && <div className="data-nav-children">
-      {TOPICS.map((item) => navItem(item, item, topic === item, () => setTopic(item)))}
-    </div>}
-    <button type="button" className="data-nav-item is-group" aria-expanded={open.has('views')} onClick={() => toggle('views')}>
-      <span>{words('快捷视图', 'Views')}</span><MorphIcon name={open.has('views') ? 'chevron-up' : 'chevron-down'} size={16} />
-    </button>
-    {open.has('views') && <div className="data-nav-children">
-      {navItem('opinion', words('舆论观察', 'Public opinion'), shortcut === 'opinion', () => setShortcut((current) => current === 'opinion' ? 'none' : 'opinion'))}
-    </div>}
-  </aside>;
+  const sourceRows = <CatalogChildren aria-label={words('采集源', 'Capture sources')}>
+    {!error && !sources && <li><PageEmpty state="loading">{words('读取中…', 'Loading…')}</PageEmpty></li>}
+    {visibleSources.map(source => {
+      const meta = metaOf(source);
+      return <CatalogRow key={source.sourceId} label={source.label}
+        meta={[meta.topics[0] ?? words('未分类', 'Unclassified'), meta.channel].filter(Boolean).join(' · ')}
+        badge={source.available ? words('可用', 'Available') : words('不可用', 'Unavailable')}
+        ready={source.available} selected={selectedId === source.sourceId} onSelect={() => selection.select(source.sourceId)} />;
+    })}
+    {!!sources?.length && !visibleSources.length && <li><PageEmpty>{words('没有匹配的采集源', 'No matching sources')}</PageEmpty></li>}
+  </CatalogChildren>;
+  const search = query.trim().length > 0;
+  const grouped = shortcut === 'opinion' && (open.has('views') || search);
+  const atAll = shortcut === 'none' && topic === '全部';
+  const nav = <CatalogSidebar label={words('采集源分类', 'Capture source categories')} search={
+    <PageSearch compact value={query} onChange={setQuery} label={words('搜索采集源', 'Search sources')} />}>
+    <CatalogCategory label={words('全部来源', 'All sources')} active={atAll} onClick={() => setTopic('全部')}>
+      {atAll && sourceRows}
+    </CatalogCategory>
+    <CatalogCategory label={words('主题分类', 'Topics')} expanded={open.has('topics') || search} className="is-group" onClick={() => toggle('topics')}>
+      {(open.has('topics') || search) && <CatalogChildren>{TOPICS.map(item =>
+        <CatalogCategory key={item} label={item} active={topic === item} onClick={() => setTopic(item)}>
+          {topic === item && shortcut === 'none' && sourceRows}
+        </CatalogCategory>)}</CatalogChildren>}
+    </CatalogCategory>
+    <CatalogCategory label={words('快捷视图', 'Views')} expanded={open.has('views') || search} className="is-group" onClick={() => toggle('views')}>
+      {(open.has('views') || search) && <CatalogChildren><CatalogCategory label={words('舆论观察', 'Public opinion')}
+        active={shortcut === 'opinion'} onClick={() => setShortcut(current => current === 'opinion' ? 'none' : 'opinion')}>
+        {grouped && sourceRows}
+      </CatalogCategory></CatalogChildren>}
+    </CatalogCategory>
+  </CatalogSidebar>;
 
   const selectedSource = allSources.find((source) => source.sourceId === selectedId) ?? null;
   const selectedMeta = selectedSource ? metaOf(selectedSource) : null;
@@ -178,23 +185,9 @@ export function CaptureSourcesPage() {
     : state === 'public' ? words('公开可读', 'Public') : state === 'expired' ? words('已过期', 'Expired')
       : state ? words('未登录', 'Not signed in') : words('未读取', 'Not read');
 
-  return <div className="data-page page-panes">
+  return <div className="catalog-page">
     {nav}
-    <section className="page-cards" aria-label={words('采集源', 'Capture sources')}>
-      {!error && !sources && <PageEmpty state="loading">{words('读取中…', 'Loading…')}</PageEmpty>}
-      {!!sources?.length && <div className="object-list">{visibleSources.map((source) => {
-        const meta = metaOf(source);
-        return <button type="button" key={source.sourceId} className="object-card"
-          aria-current={selectedId === source.sourceId ? 'true' : undefined} onClick={() => selection.select(source.sourceId)}>
-          <span className="object-card-main">
-            <span className="object-card-title">{source.label}</span>
-            <span className="object-card-meta">{[meta.topics[0] ?? words('未分类', 'Unclassified'), meta.channel].filter(Boolean).join(' · ')}</span>
-          </span>
-          <span className="object-card-state" data-ok={source.available}>{source.available ? words('可用', 'Available') : words('不可用', 'Unavailable')}</span>
-        </button>;
-      })}</div>}
-      {!!sources?.length && !visibleSources.length && <PageEmpty>{words('没有匹配的采集源', 'No matching sources')}</PageEmpty>}
-    </section>
+    <WorkbenchCard className="catalog-detail-card">
     <ObjectDetailPanel
       label={words('来源详情', 'Source detail')}
       notices={<>{(loginError || sourceCheck.error || error || catalogError) && <p className="object-detail-note">{words('页面读取与操作反馈，不表示当前所选来源的运行结果。', 'Page read/action feedback, not the execution result of the currently selected source.')}</p>}      {loginError && <ErrorNote detail={loginError}>{words('登录操作未完成。', 'The login action did not complete.')}</ErrorNote>}
@@ -220,7 +213,7 @@ export function CaptureSourcesPage() {
       </DetailDiagnostics> : undefined}>
       {selection.pending ? <p className="object-detail-note">{words('来源列表尚未读回，暂不显示详情，也不回落到其他来源。',
         'The source list has not loaded yet; no detail is shown and no other source is substituted.')}</p>
-        : !selectedSource ? <p className="object-detail-note">{words('从第二栏选择一个来源，这里显示它的登录态、覆盖范围与最近检查。',
+        : !selectedSource ? <p className="object-detail-note">{words('从左侧分类选择一个来源，这里显示它的登录态、覆盖范围与最近检查。',
           'Pick a source from the list; its login state, coverage and latest check appear here.')}</p> : <>
         <DetailSection title={words('采集能力', 'Capture capabilities')} note={words('按该来源已登记的固定操作', 'Fixed operations registered for this source')}>
           <p className="object-detail-value">{(selectedSource.operations ?? []).map((item) => operationLabels[item.operation] ?? baiduLabels[item.operation] ?? item.operation).join(' · ') || words('无固定操作', 'No fixed operations')}</p>
@@ -242,6 +235,7 @@ export function CaptureSourcesPage() {
         </div>
       </>}
     </ObjectDetailPanel>
+    </WorkbenchCard>
     {runTarget && <Modal title={words('单次采集', 'Collect once')} onClose={() => { if (runBusy) return; setRunTarget(null); setRunReceipt(null); setRunError(null); }} busy={runBusy}>
       <p><strong>{runTarget.source.label}</strong> · {words('按当前已保存的操作和参数发起一次真实采集；页面不会自动运行或自动登录。', 'Runs one real collection with the saved operation and parameters; nothing runs or logs in automatically.')}</p>
       <p className="database-scope">{words('操作', 'Operation')} {runTarget.setting?.operation ?? '—'} · {words('参数', 'Parameters')} {runTarget.setting && Object.keys(runTarget.setting.parameters).length ? JSON.stringify(runTarget.setting.parameters) : '{}'}</p>

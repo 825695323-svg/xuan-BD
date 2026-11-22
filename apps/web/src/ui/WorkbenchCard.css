@@ -1,0 +1,12 @@
+[data-slot="card"].workbench-card {
+  min-width: 0;
+  min-height: 0;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--card-foreground);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: none;
+}

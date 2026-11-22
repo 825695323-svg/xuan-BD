@@ -65,12 +65,14 @@ function VisualAuditFixture() {
   }, []);
   return <div className="design-canvas" ref={setCanvas}>
     <CanvasContext.Provider value={canvas}><Tooltip.Provider delayDuration={0}>
-      <div className="app-shell">
-        <header className="app-header" />
-        <nav className="global-nav" aria-label="主导航"><div className="nav-main">
+      <div className="app-shell workspace-shortcuts-frame">
+        <nav className="workspace-shortcuts" aria-label="主导航"><div className="nav-main">
           {['来源', '算法', '数据库'].map(label => <button key={label} className="icon-button nav-button" aria-label={label}>{label[0]}</button>)}
         </div></nav>
-        <main className="page-host">
+        {/* The shell has two grid tracks: outer rail and workspace. Keep the
+            static component fixture inside the real right-hand workspace track. */}
+        <div className="workspace-shortcuts-original" style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
+        <main className="page-host" style={{ flex: 1 }}>
           <div className="workspace" data-agent-open={!narrow}>
             <div className="workspace-content">
               <div className="data-page page-panes page-panes--api">
@@ -115,6 +117,7 @@ function VisualAuditFixture() {
               </aside>}
           </div>
         </main>
+        </div>
       </div>
       {view === 'modal' && <dialog id="audit-dialog" className="ui-dialog" aria-label="视觉验收对话框">
         <div className="dialog-heading"><h2>运行来源动作</h2><button className="icon-button" aria-label="关闭">×</button></div>
