@@ -6,7 +6,7 @@ import { EVENT_TEXT_VERSION } from '../../modules/collection/data-processing/eve
 import { createFullChainFixture, openFullChainHost } from './full-chain-test-support.js';
 
 // Synthetic source claims through the real event_records bridge; no event occurrence is inferred.
-test('event source claims preserve distinct propagation in actual WFD event_records publication and fixed restart read',
+test('event source claims preserve distinct propagation, reject duplicate appends, and remain readable after restart',
   { skip: !process.env.WFD_PYTHON || !process.env.XUAN_FULL_CHAIN_ROOT, timeout: 300_000 }, async () => {
     const fixture = createFullChainFixture({ name: 'event-records-r1', machine: true, units: { text: { dimension: 'text' } } });
     let host = await openFullChainHost(fixture);
@@ -26,6 +26,8 @@ test('event source claims preserve distinct propagation in actual WFD event_reco
       assert.equal((await host.settled(upload.jobId)).status, 'succeeded');
       const materialId = host.services.materials!.getByTask(upload.jobId)!.envelope.materialId;
       let snapshotId: string | null = null, productId = '';
+      const read = () => host.call('/r1/products/read', { snapshotId, productId });
+      let publishedRows: unknown;
       for (const [index, publicationId] of ['original', 'repost', 'original', 'original'].entries()) {
         const requestId = 'claim-' + index;
         const target = { datasetId: 'synthetic_event_claims', outputKey: 'event.source.claim', expectedParentSnapshotId: snapshotId,
@@ -74,21 +76,37 @@ test('event source claims preserve distinct propagation in actual WFD event_reco
           const recover = await host.call(`/r1/requests/${requestId}/recover`, { lookupId: 'event-readback-recover' }, 202);
           done = await host.settled(recover.jobId, 180_000);
         }
-        assert.equal(done.status, 'succeeded', JSON.stringify(await host.call(`/r1/requests/${requestId}`)));
         const view = await host.call(`/r1/requests/${requestId}`);
-        if (index === 3) {
-          assert.equal(view.state, 'conflicts_pending', JSON.stringify(view));
-          assert.equal(view.rowSummary.conflict_pending, 1);
-          assert.equal(view.local.associations.length, 0);
+        if (index >= 2) {
+          // A new request ID cannot append the same event key, regardless of content equality.
+          assert.equal(done.status, 'failed', JSON.stringify(view));
+          assert.equal(view.state, 'rejected', JSON.stringify(view));
+          assert.equal(view.error.code, 'R1_WFD_REJECTED');
+          const output = view.local.receipt.output_results[0];
+          assert.equal(output.errors[0].code, 'DUPLICATE_LOGICAL_KEY_REQUIRES_REVISION');
+          assert.equal(output.publication_state, 'not_published');
+          assert.deepEqual(output.records, []);
+          assert.deepEqual(view.local.associations, []);
           assert.equal((await host.call('/r1/products/snapshot', {})).snapshotId, snapshotId);
+          assert.deepEqual((await read()).result.rows, publishedRows);
           continue;
         }
+        assert.equal(done.status, 'succeeded', JSON.stringify(view));
         assert.equal(view.state, 'associated', JSON.stringify(view));
+        assert.equal(view.local.associations.length, 1);
         const association = view.local.associations[0];
-        if (index < 2) { snapshotId = association.snapshot_id; productId = association.product_id; }
-        else assert.equal((await host.call('/r1/products/snapshot', {})).snapshotId, snapshotId, 'Same occurrence is an identical duplicate, not a third independent claim');
+        snapshotId = association.snapshot_id; productId = association.product_id;
+        if (index === 0) {
+          const repeated = await host.call(`/r1/requests/${requestId}/submit`, { confirmationDigest: prepared.documentSha256 }, 202);
+          assert.equal(repeated.jobId, submit.jobId);
+          assert.deepEqual(await host.call(`/r1/requests/${requestId}`), view);
+          assert.equal((await host.call('/r1/products/snapshot', {})).snapshotId, snapshotId);
+        } else {
+          publishedRows = (await read()).result.rows;
+          assert.ok(Array.isArray(publishedRows));
+          assert.equal(publishedRows.length, 2);
+        }
       }
-      const read = () => host.call('/r1/products/read', { snapshotId, productId });
       const timeline = await host.call('/r1/query/context', { operation: 'read_event_timeline', datasetId: 'synthetic_event_claims', snapshotId,
         subject: { kind: 'entity', namespace: 'full.chain.test', id: 'synthetic_issuer' } });
       assert.equal(timeline.result.rows.length, 2);
