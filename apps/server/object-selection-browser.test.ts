@@ -92,10 +92,18 @@ const stored = (browser: Browser) => browser.evaluate<string | null>("sessionSto
 async function capture(browser: Browser, root: string, name: string, width: number, scheme: string, diagnostics = false) {
   await browser.page('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
   await browser.page('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }] });
+  if (width <= 767) {
+    await browser.until(`(() => {
+      const trigger = document.querySelector('.bd-admin-header [data-slot="sidebar-trigger"]');
+      const control = trigger?.getAttribute('aria-expanded') === 'true'
+        ? document.querySelector('.catalog-navigation input[type=search]') : trigger;
+      return matchMedia('(max-width: 767px)').matches && !!control?.getClientRects().length;
+    })()`, 'Mobile catalog must expose its search or its closed drawer trigger');
+  }
   const geometry = await browser.evaluate<Array<{ label: string; left: number; right: number; top: number; bottom: number;
     visibleLeft: number; visibleRight: number; visibleTop: number; visibleBottom: number }>>(`(async()=>{
     const results=[];
-    const controls=[...document.querySelectorAll('.catalog-navigation input[type=search],.object-detail button,.object-detail input,.object-detail select,.object-detail summary')]
+    const controls=[...document.querySelectorAll('.catalog-navigation input[type=search],.bd-admin-header [data-slot="sidebar-trigger"][aria-expanded="false"],.object-detail button,.object-detail input,.object-detail select,.object-detail summary')]
       .filter(e=>e.getClientRects().length>0);
     for(const e of controls){
       e.scrollIntoView({block:'center',inline:'nearest'});
@@ -304,6 +312,11 @@ test('actual three-page selections preserve shared conversation and survive real
       await nav(browser, '算法'); assert.equal(await browser.evaluate("sessionStorage.getItem('xuan.tools.object')"), toolId);
       await nav(browser, '接口源');
       for (const [key, value] of Object.entries(apiSelections)) assert.equal(await browser.evaluate(`sessionStorage.getItem(${q(key)})`), value);
+      // A remembered ID can exist while the route's async supplier catalogue is
+      // still loading. Capture the restored supplier, not that pending frame.
+      await browser.until(`document.querySelector('.object-detail-title')?.textContent === ${q(apiTitle)}
+        && !!document.querySelector('.object-detail-diagnostics > summary')?.getClientRects().length`,
+        'Returning to API sources must visibly restore the selected supplier detail');
       await capture(browser, visuals, 'selection-api-dark-narrow', 390, 'dark');
       await browser.page('Page.reload'); await nav(browser, '采集源');
       await restoredCard(browser, "[...document.querySelectorAll('.object-card[aria-current=true]')].some(e=>e.textContent.includes('Synthetic selection A'))", 'Refresh did not restore selected source');
