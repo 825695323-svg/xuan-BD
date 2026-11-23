@@ -302,5 +302,15 @@ process.stdin.on('end', () => {
       client.bundleImportFull({ package_path: join(f.packages, 'pkg'), descriptor_sha256: descriptorSha256 }, undefined, 'legacy-import-1'),
       (e: unknown) => e instanceof WfdProductMachineError && e.code === 'OPERATION_UNSUPPORTED' && e.mayHaveBeenAccepted === false,
     );
+    // Large request (>700 KiB) triggers stdin EPIPE on early exit; host must still report OPERATION_UNSUPPORTED / unwritten.
+    const largeFields = Array.from({ length: 256 }, (_, j) => `f_${String(j).padStart(3, '0')}_${'x'.repeat(32)}`);
+    const largeProducts = Array.from({ length: 64 }, (_, i) => ({
+      product_id: `p_${String(i).padStart(24, '0')}`,
+      fields: largeFields,
+    }));
+    await assert.rejects(
+      client.bundleExportFull({ package_path: join(f.packages, 'pkg-large'), snapshot_id: snapshotId, products: largeProducts }, undefined, 'legacy-export-large'),
+      (e: unknown) => e instanceof WfdProductMachineError && e.code === 'OPERATION_UNSUPPORTED' && e.mayHaveBeenAccepted === false,
+    );
   } finally { f.database.close(); }
 });

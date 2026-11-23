@@ -363,9 +363,9 @@ def test_write_failure_never_claims_no_write():
     assert "没有写入任何数据" not in machine._action_for("SOMETHING_UNKNOWN")
 
 
-def test_nt_reparse_point_distinguishes_surrogates_from_filter_tags():
+def test_nt_reparse_point_distinguishes_surrogates_from_filter_tags(tmp_path, monkeypatch):
     import types
-    from wfd_sdk.transfer import is_nt_link_stat
+    from wfd_sdk.transfer import is_bundle_link, is_nt_link_stat
     reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
     symlink_tag = getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C)
     mount_tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
@@ -383,6 +383,23 @@ def test_nt_reparse_point_distinguishes_surrogates_from_filter_tags():
         assert helper(types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_file_attributes=reparse, st_reparse_tag=af_unix_tag)) is True
         assert helper(types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_file_attributes=reparse, st_reparse_tag=dedup_tag)) is False
         assert helper(types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_file_attributes=reparse, st_reparse_tag=wof_tag)) is False
+
+    # On Windows, _is_nt_link_path / transfer.is_bundle_link must rely on raw FindFirstFileW reparse tags rather than lstat().
+    sample = tmp_path / "entry"
+    sample.mkdir()
+    assert is_bundle_link is machine._is_nt_link_path
+    with monkeypatch.context() as mp:
+        mp.setattr(machine.os, "name", "nt")
+        mp.setattr(Path, "lstat", lambda _self: types.SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o755, st_file_attributes=reparse, st_reparse_tag=0))
+        mp.setattr(machine, "_nt_raw_reparse_info", lambda _p: (reparse, wof_tag))
+        assert is_bundle_link(sample) is False
+        mp.setattr(Path, "lstat", lambda _self: types.SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o755, st_file_attributes=0, st_reparse_tag=0))
+        mp.setattr(machine, "_nt_raw_reparse_info", lambda _p: (reparse, appexeclink_tag))
+        assert is_bundle_link(sample) is True
+        mp.setattr(machine, "_nt_raw_reparse_info", lambda _p: (reparse, 0))
+        assert is_bundle_link(sample) is True
 
 
 def test_machine_correlates_config_not_found_and_marks_unwritten(tmp_path, monkeypatch, capsys):
@@ -545,20 +562,22 @@ def test_machine_correlates_config_io_error(tmp_path, monkeypatch, capsys):
         assert rw_reply["error"]["code"] == "STORAGE_IO_ERROR"
         assert rw_reply["error"]["details"]["write_context"]["may_have_written"] is True
 
-    # Unhashable non-string profile (e.g. JSON array) returns correlated CONFIG_INVALID instead of unparsed TypeError.
-    bad_dir = base / "bad-profile"
-    bad_dir.mkdir(mode=0o700)
-    bad_profile_cfg = _config(bad_dir, store=str(store), profile=["data_only"], sources={})
-    bad_profile_digest = "sha256:" + hashlib.sha256(bad_profile_cfg.read_bytes()).hexdigest()
-    for argv in (["--config", str(bad_profile_cfg)],
-                 ["--config", str(bad_profile_cfg), "--expected-config-sha256", bad_profile_digest]):
-        code, bad_reply, _ = invoke(
-            argv, "req-bad-profile", "bundle_import_full",
-            {"package_path": str(package_dir / "pkg1"), "descriptor_sha256": "sha256:" + "0" * 64})
-        assert code == 2 and bad_reply["ok"] is False
-        assert bad_reply["request_id"] == "req-bad-profile" and bad_reply["operation"] == "bundle_import_full"
-        assert bad_reply["error"]["code"] == "CONFIG_INVALID"
-        assert bad_reply["error"]["details"]["write_context"]["may_have_written"] is False
+    # Unhashable non-string profile or explicit null storage_format returns correlated CONFIG_INVALID.
+    for idx, overrides in enumerate(({"profile": ["data_only"], "sources": {}},
+                                     {"profile": "data_only", "sources": {}, "storage_format": None})):
+        bad_dir = base / f"bad-cfg-{idx}"
+        bad_dir.mkdir(mode=0o700)
+        bad_cfg = _config(bad_dir, store=str(store), **overrides)
+        bad_digest = "sha256:" + hashlib.sha256(bad_cfg.read_bytes()).hexdigest()
+        for argv in (["--config", str(bad_cfg)],
+                     ["--config", str(bad_cfg), "--expected-config-sha256", bad_digest]):
+            code, bad_reply, _ = invoke(
+                argv, f"req-bad-cfg-{idx}", "bundle_import_full",
+                {"package_path": str(package_dir / "pkg1"), "descriptor_sha256": "sha256:" + "0" * 64})
+            assert code == 2 and bad_reply["ok"] is False
+            assert bad_reply["request_id"] == f"req-bad-cfg-{idx}" and bad_reply["operation"] == "bundle_import_full"
+            assert bad_reply["error"]["code"] == "CONFIG_INVALID"
+            assert bad_reply["error"]["details"]["write_context"]["may_have_written"] is False
 
     store.rmdir()
     code, missing_reply, _ = invoke(["--config", str(cfg_path)], "req-no-digest-missing", "capabilities", {})
@@ -816,7 +835,7 @@ def test_bundle_write_tracking_compatibility_and_capabilities(tmp_path, monkeypa
         assert inter_write["error"]["details"]["write_context"]["may_have_written"] is True
         assert inter_dispatch_calls == 2
 
-    # 4) Positional-only on_write_start / write_tracking wrappers stay consistent across both capability queries.
+    # 4) Positional-only (with or without **kwargs) and generic **kwargs wrappers must NOT claim write-tracking support.
     def posonly_capabilities(config, write_tracking=False, /):
         return product_machine_bundle.capabilities(config, write_tracking=write_tracking)
 
@@ -824,35 +843,56 @@ def test_bundle_write_tracking_compatibility_and_capabilities(tmp_path, monkeypa
         assert operation == "bundle_capabilities"
         return legacy_capabilities(config)
 
-    posonly_bundle = types.SimpleNamespace(
-        load_access=product_machine_bundle.load_access,
-        capabilities=posonly_capabilities,
-        dispatch=posonly_dispatch,
-    )
-    with monkeypatch.context() as mp:
-        mp.setattr(machine, "_optional_bundle_module", lambda: posonly_bundle)
-        code, pos_bcaps = run_main({
-            "protocol_version": machine.MACHINE_PROTOCOL,
-            "request_id": "req-posonly-bcaps",
-            "operation": "bundle_capabilities",
-            "arguments": {},
-        })
-        assert code == 0 and pos_bcaps["ok"] is True
-        assert pos_bcaps["result"]["write_tracking"] is False
-        assert all(item["supported"] is False and item["reason"] == "OPERATION_UNSUPPORTED"
-                   for item in pos_bcaps["result"]["operations"].values())
+    def posonly_kwargs_dispatch(service, config, operation, args, on_write_start=None, /, **_extra):
+        assert operation == "bundle_capabilities"
+        return legacy_capabilities(config)
 
-        code, pos_gcaps = run_main({
-            "protocol_version": machine.MACHINE_PROTOCOL,
-            "request_id": "req-posonly-gcaps",
-            "operation": "capabilities",
-            "arguments": {},
-        })
-        assert code == 0 and pos_gcaps["ok"] is True
-        assert pos_gcaps["result"]["bundle_write_tracking"] is False
-        for op in machine.BUNDLE_ROLES:
-            assert pos_gcaps["result"]["operations"][op]["supported"] is False
-            assert pos_gcaps["result"]["operations"][op]["reason"] == "OPERATION_UNSUPPORTED"
+    def generic_kwargs_dispatch(service, config, operation, args, **_extra):
+        assert operation == "bundle_capabilities"
+        return legacy_capabilities(config)
+
+    for variant, fn in (("posonly", posonly_dispatch),
+                        ("posonly-kwargs", posonly_kwargs_dispatch),
+                        ("generic-kwargs", generic_kwargs_dispatch)):
+        bundle_stub = types.SimpleNamespace(
+            load_access=product_machine_bundle.load_access,
+            capabilities=posonly_capabilities,
+            dispatch=fn,
+        )
+        with monkeypatch.context() as mp:
+            mp.setattr(machine, "_optional_bundle_module", lambda _b=bundle_stub: _b)
+            code, pos_bcaps = run_main({
+                "protocol_version": machine.MACHINE_PROTOCOL,
+                "request_id": f"req-{variant}-bcaps",
+                "operation": "bundle_capabilities",
+                "arguments": {},
+            })
+            assert code == 0 and pos_bcaps["ok"] is True
+            assert pos_bcaps["result"]["write_tracking"] is False
+            assert all(item["supported"] is False and item["reason"] == "OPERATION_UNSUPPORTED"
+                       for item in pos_bcaps["result"]["operations"].values())
+
+            code, pos_gcaps = run_main({
+                "protocol_version": machine.MACHINE_PROTOCOL,
+                "request_id": f"req-{variant}-gcaps",
+                "operation": "capabilities",
+                "arguments": {},
+            })
+            assert code == 0 and pos_gcaps["ok"] is True
+            assert pos_gcaps["result"]["bundle_write_tracking"] is False
+            for op in machine.BUNDLE_ROLES:
+                assert pos_gcaps["result"]["operations"][op]["supported"] is False
+                assert pos_gcaps["result"]["operations"][op]["reason"] == "OPERATION_UNSUPPORTED"
+
+            code, pos_write = run_main({
+                "protocol_version": machine.MACHINE_PROTOCOL,
+                "request_id": f"req-{variant}-write",
+                "operation": "bundle_import_full",
+                "arguments": {"package_path": str(packages / "pkg1"), "descriptor_sha256": "sha256:" + "0" * 64},
+            })
+            assert code == 0 and pos_write["ok"] is False
+            assert pos_write["error"]["code"] == "OPERATION_UNSUPPORTED"
+            assert pos_write["error"]["details"]["write_context"]["may_have_written"] is False
 
 
 def test_bundle_write_io_errors_preserve_may_have_written(tmp_path, monkeypatch, capsys):

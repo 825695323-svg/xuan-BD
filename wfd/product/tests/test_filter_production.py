@@ -497,3 +497,49 @@ def test_indexed_product_filter_rejects_market_known_at_before_partition_disclos
         query(legacy_svc, cfg, dict(base_args))
     with pytest.raises(ProductQueryError, match='BULK_PARTITION_LOCATOR_REQUIRED'):
         query(volume, cfg, {**base_args, 'history_mode': 'snapshot_contents', 'knowledge_cutoff': None})
+
+
+def test_volume_service_filter_respects_definition_public_time(tmp_path):
+    from test_p4b_precise_hydration import _volume
+    from test_product_query import known_second
+    from wfd_sdk.product_query import ProductQueryError
+    volume, _ = _volume(tmp_path, 'volume-filter')
+
+    def publish_bar(request_id, subject_id, parent, def_time):
+        output = bar_output(policy=False, subject=subject_id)
+        if def_time is not None:
+            output['definition_public_time'] = copy.deepcopy(def_time)
+        output['definition']['semantic_code'] = 'vol.' + subject_id
+        output['definition']['field_definitions'] = [
+            f for f in output['definition']['field_definitions'] if f['field_code'] in {'close', 'high'}]
+        row_obj = output['payload']['rows'][0]
+        row_obj['values'] = {f: cell for f, cell in row_obj['values'].items() if f in {'close', 'high'}}
+        row_obj['values']['close'].update(value='10', value_state='valid_value')
+        row_obj['business_key'] = subject_id + '_day0'
+        row_obj['observation_time'] = known_day('2026-01-05')
+        row_obj['public_time'] = known_second(2026, 1, 6)
+        res = volume.submit(request([output], request_id, parent=parent))
+        assert res['state'] == 'published_formal', res
+        return res['snapshot_id'], res['output_results'][0]['product_id'], output['subject']
+
+    sid1, qualified_pid, q_subj = publish_bar('vol-pub-1', 'qualified', None, known_second(2025, 1, 1))
+    sid2, unqualified_pid, u_subj = publish_bar('vol-pub-2', 'unqualified', sid1, None)
+    cfg = {'store': str(volume.root), 'runtime': str(tmp_path / 'runtime')}
+
+    def make_args(sid, pid, subj, field='close'):
+        return {
+            'protocol_version': PROTOCOL, 'operation': 'filter_objects', 'dataset_id': 'wfd_r1_local',
+            'snapshot_id': sid, 'history_mode': 'market_known_at',
+            'knowledge_cutoff': known_second(2026, 1, 10), 'held_scope': None, 'usable_stage': None,
+            'universe': {'kind': 'explicit_subjects', 'subjects': [subj]},
+            'metrics': [{'metric': 'close', 'field': field,
+                         'bindings': [{'subject': subj, 'product_id': pid}]}],
+            'predicate': {'compare': {'metric': 'close', 'op': '>=', 'value': constant('1')}},
+            'business_time_range': None, 'order_by': [{'kind': 'subject', 'direction': 'asc'}],
+            'page_size': 10, 'max_scan_bytes': 268435456, 'max_nodes': 200000,
+        }
+
+    matched = query(volume, cfg, make_args(sid2, qualified_pid, q_subj))
+    assert matched['status'] == 'matched' and len(matched['objects']) == 1
+    with pytest.raises(ProductQueryError, match='HISTORY_DEFINITION_TIME_UNSUPPORTED'):
+        query(volume, cfg, make_args(sid2, unqualified_pid, u_subj, field='undisclosed_field'))

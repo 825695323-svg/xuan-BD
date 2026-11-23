@@ -682,6 +682,7 @@ export class WfdProductMachineClient {
       let settled = false;
       let stdout = Buffer.alloc(0);
       let stderr = '';
+      let stdinError: unknown = null;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const launch = [this.config.entryPath, '--config', this.config.configPath];
       if (operation === 'bundle_capabilities' || Object.hasOwn(WFD_BUNDLE_OPERATIONS, operation)) {
@@ -729,9 +730,16 @@ export class WfdProductMachineClient {
       child.on('error', error => finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_TRANSPORT', '无法启动或等待 WFD 产品进程。', {
         operation, requestId, cause: error, mayHaveBeenAccepted: hasSideEffect && dispatched,
       })));
-      child.stdin.on('error', error => finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_TRANSPORT', '写入薄入口请求失败。', {
-        operation, requestId, cause: error, mayHaveBeenAccepted: hasSideEffect && dispatched,
-      })));
+      child.stdin.on('error', error => {
+        const errCode = (error as NodeJS.ErrnoException)?.code;
+        if (errCode === 'EPIPE' || errCode === 'ERR_STREAM_DESTROYED') {
+          stdinError = error;
+          return;
+        }
+        finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_TRANSPORT', '写入薄入口请求失败。', {
+          operation, requestId, cause: error, mayHaveBeenAccepted: hasSideEffect && dispatched,
+        }));
+      });
       child.stdout.on('data', (chunk: Buffer) => {
         if (settled) return;
         stdout = Buffer.concat([stdout, chunk]);
@@ -754,6 +762,11 @@ export class WfdProductMachineClient {
             && stderr.includes('unrecognized arguments: --require-bundle-write-tracking')) {
             return finish(new WfdProductMachineError('OPERATION_UNSUPPORTED', '所登记的 WFD 入口不支持分包写入状态追踪，未执行任何分包操作。', {
               operation, requestId, cause: stderr, mayHaveBeenAccepted: false,
+            }));
+          }
+          if (stdinError) {
+            return finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_TRANSPORT', '写入薄入口请求失败。', {
+              operation, requestId, cause: stdinError, mayHaveBeenAccepted: hasSideEffect && dispatched,
             }));
           }
           return finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_RESPONSE', `薄入口没有返回单个 JSON（exit=${String(code)}, signal=${String(signalName)}）。`, {

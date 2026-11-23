@@ -291,17 +291,88 @@ _NT_TRANSPARENT_REPARSE_TAGS = frozenset({
 })
 
 
-def _is_nt_link_stat(info):
-    if stat.S_ISLNK(info.st_mode):
-        return True
-    attrs = getattr(info, "st_file_attributes", 0)
-    if not (attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+def _is_nt_link_attrs(attrs, tag):
+    if not (attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)):
         return False
-    tag = getattr(info, "st_reparse_tag", 0)
     # Fail closed on every reparse point (including symlinks, junctions,
     # APPEXECLINK, AF_UNIX, and tag==0) except known transparent NTFS
     # storage filter tags (DEDUP, WOF).
     return tag not in _NT_TRANSPARENT_REPARSE_TAGS
+
+
+def _is_nt_link_stat(info):
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    return _is_nt_link_attrs(getattr(info, "st_file_attributes", 0),
+                             getattr(info, "st_reparse_tag", 0))
+
+
+def _nt_raw_reparse_info(path):
+    """Read raw dwFileAttributes and dwReserved0 (reparse tag) via FindFirstFileW without traversing reparse points."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class _WIN32_FIND_DATAW(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("dwReserved0", wintypes.DWORD),
+            ("dwReserved1", wintypes.DWORD),
+            ("cFileName", wintypes.WCHAR * 260),
+            ("cAlternateFileName", wintypes.WCHAR * 14),
+        ]
+
+    raw = os.fspath(path)
+    if not os.path.isabs(raw):
+        raw = os.path.abspath(raw)
+    raw = raw.replace("/", "\\").rstrip("\\")
+    if not raw or (len(raw) == 2 and raw[1] == ":"):
+        return None
+    if "*" in raw or "?" in raw:
+        raise ValueError("BUNDLE_PATH_INVALID")
+    if raw.startswith("\\\\?\\"):
+        query = raw
+    elif raw.startswith("\\\\"):
+        query = "\\\\?\\UNC\\" + raw.lstrip("\\")
+    else:
+        query = "\\\\?\\" + raw
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.FindFirstFileW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(_WIN32_FIND_DATAW)]
+    kernel32.FindFirstFileW.restype = wintypes.HANDLE
+    kernel32.FindClose.argtypes = [wintypes.HANDLE]
+    kernel32.FindClose.restype = wintypes.BOOL
+    data = _WIN32_FIND_DATAW()
+    handle = kernel32.FindFirstFileW(query, ctypes.byref(data))
+    if handle == wintypes.HANDLE(-1).value:
+        err = ctypes.get_last_error()
+        if err in {2, 3}:
+            raise FileNotFoundError(err, "path not found", raw)
+        raise OSError(err, "FindFirstFileW failed")
+    try:
+        return int(data.dwFileAttributes), int(data.dwReserved0)
+    finally:
+        kernel32.FindClose(handle)
+
+
+def _is_nt_link_path(path):
+    if os.name == "nt":
+        try:
+            raw = _nt_raw_reparse_info(path)
+        except FileNotFoundError:
+            return False
+        if raw is not None:
+            return _is_nt_link_attrs(raw[0], raw[1])
+    try:
+        info = Path(path).lstat()
+    except FileNotFoundError:
+        return False
+    return _is_nt_link_stat(info)
 
 
 def _canonical_bundle_path(value):
@@ -314,11 +385,7 @@ def _canonical_bundle_path(value):
         for part in (*path.parents, path):
             if part.parent == part:
                 continue
-            try:
-                info = part.lstat()
-            except FileNotFoundError:
-                continue
-            if _is_nt_link_stat(info):
+            if _is_nt_link_path(part):
                 raise ValueError("BUNDLE_PATH_INVALID")
     return path
 
@@ -348,16 +415,11 @@ def _accepts_keyword_param(fn, name):
     if not callable(fn):
         return False
     try:
-        params = inspect.signature(fn).parameters.values()
+        param = inspect.signature(fn).parameters.get(name)
     except (TypeError, ValueError):
         return False
-    for param in params:
-        if param.kind is inspect.Parameter.VAR_KEYWORD:
-            return True
-        if param.name == name and param.kind in (
-                inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
-            return True
-    return False
+    return (param is not None
+            and param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY))
 
 
 def _bundle_supports_write_tracking(bundle_module):
@@ -501,7 +563,7 @@ def _load_config(path, expected_sha256=None):
             raise ValueError("CONFIG_INVALID:volume mount_point must equal store")
         volume = binding.to_dict()
     storage_format = config.get("storage_format")
-    if storage_format is not None and (not isinstance(storage_format, str) or storage_format != "joint_experimental"):
+    if "storage_format" in config and (not isinstance(storage_format, str) or storage_format != "joint_experimental"):
         raise ValueError("CONFIG_INVALID:storage_format")
     if storage_format and (profile != "data_only" or volume is not None):
         raise ValueError("CONFIG_INVALID:joint format requires local data_only")
