@@ -413,27 +413,59 @@ def test_nt_reparse_point_distinguishes_surrogates_from_filter_tags(tmp_path, mo
         with pytest.raises(ValueError, match="BUNDLE_PATH_INVALID"):
             machine._nt_find_query(wildcard)
 
-    # Repeated raw Win32 queries reuse cached ctypes prototypes without leaking pointer types.
+    # Drive-relative Windows paths are absolutized rather than emitted as invalid \\?\C:relative queries.
+    with monkeypatch.context() as mp:
+        mp.setattr(machine.os.path, "abspath", lambda _p: r"C:\review\dir\file")
+        mp.setattr(machine.os.path, "isabs", lambda p: p.startswith(("\\\\", "//")) or (len(p) >= 3 and p[1] == ":" and p[2] in ("\\", "/")))
+        assert machine._nt_find_query(r"C:dir\file") == r"\\?\C:\review\dir\file"
+
+    # Cold initialization of _nt_find_file_api creates Win32 ctypes structures once and reuses them.
     import ctypes
-    class FakeData:
-        dwFileAttributes = reparse
-        dwReserved0 = wof_tag
+    from ctypes import wintypes
+    dll_loads = 0
     calls = 0
-    def fake_first(_q, _ref):
+
+    def fake_first(_q, ref):
         nonlocal calls
         calls += 1
+        ref._obj.dwFileAttributes = reparse
+        ref._obj.dwReserved0 = wof_tag
         return 1
+
     def fake_close(_h):
         return True
-    fake_ctypes = types.SimpleNamespace(byref=lambda obj: obj, get_last_error=lambda: 0)
+
+    def fake_windll(_name, use_last_error=False):
+        nonlocal dll_loads
+        dll_loads += 1
+        return types.SimpleNamespace(FindFirstFileW=fake_first, FindClose=fake_close)
+
     with monkeypatch.context() as mp:
         mp.setattr(machine.os, "name", "nt")
-        mp.setattr(machine, "_NT_FIND_FILE_API", (fake_ctypes, FakeData, fake_first, fake_close, -1))
-        before_cache = len(ctypes._pointer_type_cache)
-        for _ in range(64):
+        mp.setattr(machine, "_NT_FIND_FILE_API", None)
+        mp.setattr(ctypes, "WinDLL", fake_windll, raising=False)
+        mp.setattr(ctypes, "get_last_error", lambda: 0, raising=False)
+        if not hasattr(wintypes, "HANDLE"):
+            mp.setattr(wintypes, "HANDLE", ctypes.c_void_p, raising=False)
+        if not hasattr(wintypes, "DWORD"):
+            mp.setattr(wintypes, "DWORD", ctypes.c_uint32, raising=False)
+        if not hasattr(wintypes, "LPCWSTR"):
+            mp.setattr(wintypes, "LPCWSTR", ctypes.c_wchar_p, raising=False)
+        if not hasattr(wintypes, "WCHAR"):
+            mp.setattr(wintypes, "WCHAR", ctypes.c_wchar, raising=False)
+        if not hasattr(wintypes, "BOOL"):
+            mp.setattr(wintypes, "BOOL", ctypes.c_int, raising=False)
+        if not hasattr(wintypes, "FILETIME"):
+            class _FakeFileTime(ctypes.Structure):
+                _fields_ = [("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32)]
+            mp.setattr(wintypes, "FILETIME", _FakeFileTime, raising=False)
+        assert machine._nt_raw_reparse_info(r"\\?\C:\WFD\objects\abc") == (reparse, wof_tag)
+        after_first_cache = len(ctypes._pointer_type_cache)
+        for _ in range(63):
             assert machine._nt_raw_reparse_info(r"\\?\C:\WFD\objects\abc") == (reparse, wof_tag)
+        assert dll_loads == 1
         assert calls == 64
-        assert len(ctypes._pointer_type_cache) == before_cache
+        assert len(ctypes._pointer_type_cache) == after_first_cache
 
 
 def test_machine_correlates_config_not_found_and_marks_unwritten(tmp_path, monkeypatch, capsys):
@@ -892,10 +924,16 @@ def test_bundle_write_tracking_compatibility_and_capabilities(tmp_path, monkeypa
         assert operation == "bundle_capabilities"
         return legacy_capabilities(config)
 
+    import inspect
+    wrapped_sig_dispatch = functools.wraps(product_machine_bundle.dispatch)(
+        lambda service, config, operation, args, **_extra: legacy_capabilities(config))
+    wrapped_sig_dispatch.__signature__ = inspect.signature(product_machine_bundle.dispatch)
+
     for variant, fn in (("posonly", posonly_dispatch),
                         ("posonly-kwargs", posonly_kwargs_dispatch),
                         ("generic-kwargs", generic_kwargs_dispatch),
-                        ("wrapped-kwargs", wrapped_kwargs_dispatch)):
+                        ("wrapped-kwargs", wrapped_kwargs_dispatch),
+                        ("wrapped-sig", wrapped_sig_dispatch)):
         bundle_stub = types.SimpleNamespace(
             load_access=product_machine_bundle.load_access,
             capabilities=posonly_capabilities,

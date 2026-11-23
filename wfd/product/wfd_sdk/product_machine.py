@@ -25,6 +25,7 @@ import re
 import stat
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path, PureWindowsPath
 
@@ -308,13 +309,13 @@ def _is_nt_link_stat(info):
 
 
 _NT_FIND_FILE_API = None
+_NT_FIND_FILE_LOCK = threading.Lock()
 
 
 def _nt_find_query(path):
     raw = os.fspath(path)
-    if (not raw.startswith(("\\\\", "//"))
-            and not (len(raw) >= 2 and raw[1] == ":" and raw[0].isalpha())
-            and not os.path.isabs(raw)):
+    is_drive_abs = len(raw) >= 3 and raw[1] == ":" and raw[0].isalpha() and raw[2] in ("\\", "/")
+    if not raw.startswith(("\\\\", "//")) and not is_drive_abs and not os.path.isabs(raw):
         raw = os.path.abspath(raw)
     raw = raw.replace("/", "\\").rstrip("\\")
     if not raw:
@@ -341,32 +342,35 @@ def _nt_find_file_api():
     global _NT_FIND_FILE_API
     if _NT_FIND_FILE_API is not None:
         return _NT_FIND_FILE_API
-    import ctypes
-    from ctypes import wintypes
+    with _NT_FIND_FILE_LOCK:
+        if _NT_FIND_FILE_API is not None:
+            return _NT_FIND_FILE_API
+        import ctypes
+        from ctypes import wintypes
 
-    class _WIN32_FIND_DATAW(ctypes.Structure):
-        _fields_ = [
-            ("dwFileAttributes", wintypes.DWORD),
-            ("ftCreationTime", wintypes.FILETIME),
-            ("ftLastAccessTime", wintypes.FILETIME),
-            ("ftLastWriteTime", wintypes.FILETIME),
-            ("nFileSizeHigh", wintypes.DWORD),
-            ("nFileSizeLow", wintypes.DWORD),
-            ("dwReserved0", wintypes.DWORD),
-            ("dwReserved1", wintypes.DWORD),
-            ("cFileName", wintypes.WCHAR * 260),
-            ("cAlternateFileName", wintypes.WCHAR * 14),
-        ]
+        class _WIN32_FIND_DATAW(ctypes.Structure):
+            _fields_ = [
+                ("dwFileAttributes", wintypes.DWORD),
+                ("ftCreationTime", wintypes.FILETIME),
+                ("ftLastAccessTime", wintypes.FILETIME),
+                ("ftLastWriteTime", wintypes.FILETIME),
+                ("nFileSizeHigh", wintypes.DWORD),
+                ("nFileSizeLow", wintypes.DWORD),
+                ("dwReserved0", wintypes.DWORD),
+                ("dwReserved1", wintypes.DWORD),
+                ("cFileName", wintypes.WCHAR * 260),
+                ("cAlternateFileName", wintypes.WCHAR * 14),
+            ]
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    find_first = kernel32.FindFirstFileW
-    find_first.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(_WIN32_FIND_DATAW)]
-    find_first.restype = wintypes.HANDLE
-    find_close = kernel32.FindClose
-    find_close.argtypes = [wintypes.HANDLE]
-    find_close.restype = wintypes.BOOL
-    _NT_FIND_FILE_API = (ctypes, _WIN32_FIND_DATAW, find_first, find_close, wintypes.HANDLE(-1).value)
-    return _NT_FIND_FILE_API
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        find_first = kernel32.FindFirstFileW
+        find_first.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(_WIN32_FIND_DATAW)]
+        find_first.restype = wintypes.HANDLE
+        find_close = kernel32.FindClose
+        find_close.argtypes = [wintypes.HANDLE]
+        find_close.restype = wintypes.BOOL
+        _NT_FIND_FILE_API = (ctypes, _WIN32_FIND_DATAW, find_first, find_close, wintypes.HANDLE(-1).value)
+        return _NT_FIND_FILE_API
 
 
 def _nt_raw_reparse_info(path):
@@ -444,6 +448,11 @@ def _accepts_keyword_param(fn, name):
     import inspect
     if not callable(fn):
         return False
+    code = getattr(fn, "__code__", None)
+    if code is not None:
+        posonly = getattr(code, "co_posonlyargcount", 0)
+        total = code.co_argcount + code.co_kwonlyargcount
+        return name in code.co_varnames[posonly:total]
     try:
         param = inspect.signature(fn, follow_wrapped=False).parameters.get(name)
     except (TypeError, ValueError):
