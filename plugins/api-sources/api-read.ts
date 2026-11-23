@@ -1,3 +1,4 @@
+import type { ReportSubjectEvidence } from '../../contracts/source-settings.js';
 import type { JsonValue } from '../../contracts/task-contracts.js';
 import { DirectError } from '../../platform/runtime/file-workspace.js';
 import { sourceOperations } from './operations.js';
@@ -10,6 +11,9 @@ export interface ApiReadProjection {
   projection: unknown | null;
   recordCount?: number;
   subjectId?: string;
+  statement?: string;
+  encodeUrl?: string;
+  subject?: ReportSubjectEvidence;
   start?: string;
   end?: string;
   pagination?: { page: number; nextPage: number | null; continuation: string; total: number | null };
@@ -17,7 +21,7 @@ export interface ApiReadProjection {
 export interface ApiReadRequest {
   url: URL; method: 'GET' | 'POST'; headers?: Record<string, string>; body?: string;
   requiresCredential: boolean;
-  decode(bytes: Uint8Array): ApiReadProjection;
+  decode(bytes: Uint8Array, decodedText?: string): ApiReadProjection;
 }
 
 /** 只构造已登记的读取协议。网络、凭据、原件、失败回执继续由 source runtime 负责。 */
@@ -27,12 +31,12 @@ export function buildApiReadRequest(providerId: string, baseUrl: string, operati
     throw new DirectError('SOURCE_KIND_UNSUPPORTED', '此供应商没有登记所选接口读取动作。');
   if (providerId === 'ths') {
     const url = buildThsRequest(baseUrl, operation, parameters);
-    return { url, method: 'GET', requiresCredential: true, decode(bytes) {
+    return { url, method: 'GET', requiresCredential: true, decode(bytes, decodedText) {
       if (operation === 'financial_statements') {
         const projection = projectThsFinancials(parameters, bytes);
-        return { projection, recordCount: projection.recordCount, subjectId: String(parameters.thscode) };
+        return { projection, recordCount: projection.recordCount, subjectId: String(parameters.thscode), statement: String(parameters.statement) };
       }
-      decodeThsResponse(bytes);
+      decodeThsResponse(decodedText ?? bytes);
       return { projection: null, subjectId: String(parameters.thscode) };
     } };
   }
@@ -43,13 +47,14 @@ export function buildApiReadRequest(providerId: string, baseUrl: string, operati
         const projection = decodeEastmoneyReports(request.request, bytes);
         return { projection, recordCount: projection.recordCount,
           subjectId: request.request.symbol ?? `reports:${request.request.category}`,
-          start: request.request.start, end: request.request.end,
+          subject: projection.subject, start: request.request.start, end: request.request.end,
           pagination: { page: projection.page, nextPage: projection.nextPage, continuation: projection.continuation, total: projection.total } };
       } };
     }
     const request = buildEastmoneyReportDetailRequest(parameters);
     return { ...request, requiresCredential: false,
-      decode: bytes => ({ projection: decodeEastmoneyReportDetail(request.request, bytes) }) };
+      decode: bytes => ({ projection: decodeEastmoneyReportDetail(request.request, bytes),
+        subjectId: `reports:${request.request.category}`, encodeUrl: request.request.encodeUrl }) };
   }
   throw new DirectError('SOURCE_KIND_UNSUPPORTED', '来源身份与固定服务地址不符。');
 }

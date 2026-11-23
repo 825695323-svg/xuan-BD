@@ -1,6 +1,9 @@
+import { isDeepStrictEqual } from 'node:util';
+import { isWfdRecord, type WfdRecord } from '../../adapters/database/wfd-transport.js';
+import { knownFinancialLabel } from './financial-l4-operators.js';
 import { isExplicitUtcInstant } from '../../contracts/financial-value.js';
 import { add, compare, divide, formatExactDecimal, multiply, negative, readExactDecimal,
-  type DecimalInput } from '../collection/numeric-precision.js';
+  type DecimalInput, type Fraction } from '../collection/numeric-precision.js';
 
 export type MarketAdjustmentDirection = 'forward_qfq' | 'backward_hfq';
 
@@ -31,6 +34,69 @@ export interface MarketAdjustmentInput {
   anchorDate: string;
   bars: readonly UnadjustedDailyBar[];
   actions: readonly MarketCorporateAction[];
+}
+
+/** The fixed-product reader supplies original subject and unit envelopes for each input row. */
+export interface MarketRowBasis {
+  subject: unknown;
+  subjectId: unknown;
+  currency: unknown;
+  units: Record<string, WfdRecord>;
+}
+export interface MarketAdjustmentBasis { bars: MarketRowBasis[]; actions: MarketRowBasis[]; actionProductSubjects: unknown[] }
+
+const priceDimensions = new Set(['price', 'money_per_share', 'currency_per_share', 'money', 'currency', 'monetary']);
+const ratioDimensions = new Set(['ratio', 'dimensionless', 'shares_per_share']);
+export function validMarketUnitDimension(field: string, unit: WfdRecord): boolean {
+  const dimension = isWfdRecord(unit.definition) ? unit.definition.dimension : null;
+  if (['open', 'high', 'low', 'close', 'cashPerShare'].includes(field))
+    return typeof dimension === 'string' && priceDimensions.has(dimension);
+  if (field === 'splitRatio' || field === 'sharesPerShare')
+    return typeof dimension === 'string' && ratioDimensions.has(dimension);
+  return true;
+}
+export function declaredMarketUnitScale(unit: WfdRecord | undefined): Fraction | null {
+  if (!unit || unit.resolved !== true || !knownFinancialLabel(unit.unit_code)
+    || !isWfdRecord(unit.definition) || !knownFinancialLabel(unit.definition.dimension)) return null;
+  if (!Object.hasOwn(unit, 'scale') && !Object.hasOwn(unit.definition, 'scale')) return null;
+  const scales = [unit, unit.definition].flatMap(source =>
+    ['scale', 'scale_decimal', 'multiplier'].filter(key => Object.hasOwn(source, key)).map(key => source[key]));
+  try {
+    const [first, ...rest] = scales.map(value => readExactDecimal(value, 'scale'));
+    return first.n > 0n && rest.every(scale => compare(first, scale) === 0) ? first : null;
+  } catch { return null; }
+}
+
+export function validMarketBasis(input: MarketAdjustmentInput, basis: MarketAdjustmentBasis): boolean {
+  if (!basis || !Array.isArray(basis.bars) || !Array.isArray(basis.actions) || !basis.bars.length
+    || basis.bars.length !== input.bars.length || basis.actions.length !== input.actions.length) return false;
+  const first = basis.bars[0], subject = first.subject, price = first.units.close;
+  if (!isWfdRecord(subject) || !['kind', 'namespace', 'id'].every(key => knownFinancialLabel(subject[key]))
+    || !Array.isArray(basis.actionProductSubjects) || (input.actions.length === 0 && basis.actionProductSubjects.length === 0)
+    || !basis.actionProductSubjects.every(item => isDeepStrictEqual(subject, item))
+    || !knownFinancialLabel(first.currency) || !declaredMarketUnitScale(price)) return false;
+  const definitions = new Map<string, WfdRecord>();
+  for (const row of [...basis.bars, ...basis.actions]) {
+    if (!isDeepStrictEqual(row.subject, subject) || row.subjectId !== subject.id || row.currency !== first.currency) return false;
+    for (const [field, unit] of Object.entries(row.units)) {
+      if (!isWfdRecord(unit) || !knownFinancialLabel(unit.unit_code) || !validMarketUnitDimension(field, unit)) return false;
+      const previous = definitions.get(unit.unit_code);
+      if (previous && !isDeepStrictEqual(unit, previous)) return false;
+      definitions.set(unit.unit_code, unit);
+    }
+  }
+  if (basis.bars.some(row => ['open', 'high', 'low', 'close'].some(field => !isDeepStrictEqual(row.units[field], price)))) return false;
+  let shareUnit: WfdRecord | undefined;
+  return input.actions.every((action, i) => {
+    const units = basis.actions[i].units;
+    if (action.kind === 'cash_dividend') return isDeepStrictEqual(units.cashPerShare, price);
+    const ratio = action.kind === 'split' ? units.splitRatio : units.sharesPerShare;
+    if (shareUnit && !isDeepStrictEqual(shareUnit, ratio)) return false;
+    shareUnit = ratio;
+    const scale = declaredMarketUnitScale(ratio);
+    // Shares are added to one pre-event share directly. Percent or scaled ratios need a different contract.
+    return scale !== null && scale.n === scale.d && ['ratio', 'shares_per_share'].includes(String(ratio.unit_code));
+  });
 }
 
 const ONE = { n: 1n, d: 1n };

@@ -45,8 +45,15 @@ export function parseVisionEvidence(json: string, plainText: string): VisionEvid
   const width = integer(root.width, VISION_LIMITS.side), height = integer(root.height, VISION_LIMITS.side);
   if (width * height > VISION_LIMITS.pixels) return fail();
   if (!Array.isArray(root.languages) || root.languages.length !== 2 || root.languages[0] !== 'zh-Hans' || root.languages[1] !== 'en-US') return fail();
-  if (!Array.isArray(root.observations) || root.observations.length > VISION_LIMITS.observations) return fail();
-  const observations = root.observations.map(value => {
+  const observations = parseVisionObservations(root.observations, plainText);
+  return { schema: VISION_EVIDENCE_SCHEMA, width, height, revision: integer(root.revision, 1_000_000), osVersion: text(root.osVersion, 256), languages: ['zh-Hans', 'en-US'], observations };
+}
+
+/** Review packets and native evidence use exactly the same text and rectangle contract. */
+export function parseVisionObservations(value: unknown, plainText: string): VisionObservation[] {
+  if (typeof plainText !== 'string' || Buffer.byteLength(plainText) > VISION_LIMITS.textBytes) return fail();
+  if (!Array.isArray(value) || value.length > VISION_LIMITS.observations) return fail();
+  const observations = value.map(value => {
     const item = object(value, ['page', 'text', 'confidence', 'boundingBox']);
     if (item.page !== 1) return fail();
     const box = object(item.boundingBox, ['x', 'y', 'width', 'height']);
@@ -55,5 +62,5 @@ export function parseVisionEvidence(json: string, plainText: string): VisionEvid
     return { page: 1 as const, text: text(item.text, VISION_LIMITS.textBytes), confidence: normalized(item.confidence), boundingBox };
   });
   if (observations.map(item => item.text).join('\n') !== plainText) return fail();
-  return { schema: VISION_EVIDENCE_SCHEMA, width, height, revision: integer(root.revision, 1_000_000), osVersion: text(root.osVersion, 256), languages: ['zh-Hans', 'en-US'], observations };
+  return observations;
 }

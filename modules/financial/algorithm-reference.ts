@@ -1,15 +1,22 @@
 import { TaskError } from '../../platform/jobs/tasks.js';
 import { canonicalWfdJson, isWfdRecord } from '../../adapters/database/wfd-transport.js';
+import { add, divide, exactBinary64, formatExactDecimal, multiply } from '../collection/numeric-precision.js';
+import { indexAlgorithmDiagnostics } from './algorithm-service.js';
 import { ALGORITHM_METHODS, invalidAlgorithmParameter, type AlgorithmBar, type AlgorithmComputedResult,
-  type AlgorithmData, type AlgorithmMethodId, type AlgorithmParametersByMethod } from './algorithm-types.js';
+  type AlgorithmData, type AlgorithmDiagnosticReason, type AlgorithmMethodId, type AlgorithmParametersByMethod } from './algorithm-types.js';
 
 const mismatch = (message: string): never => { throw new TaskError('DERIVED_NUMERIC_MISMATCH', message); };
 const same = (actual: unknown, expected: number | null) => expected === null ? actual === null
   : typeof actual === 'number' && Number.isFinite(actual) && Number.isFinite(expected)
     && Math.abs(actual - expected) <= 1e-10 * Math.max(1, Math.abs(expected));
+const sameRelative = (actual: unknown, expected: number | null) => expected === null ? actual === null
+  : typeof actual === 'number' && Number.isFinite(actual) && Number.isFinite(expected)
+    && (expected === 0 ? actual === 0 : Math.abs(actual - expected) <= 1e-12 * Math.abs(expected));
+
+type NumericResult = Pick<AlgorithmComputedResult, 'metadata' | 'methodId' | 'parameters' | 'rows' | 'diagnostics'>;
 
 /** 从原任务冻结的行重算，与 Python 实现和原输出声明独立。 */
-export function verifyAlgorithmNumbers(result: AlgorithmComputedResult, input: AlgorithmData): void {
+export function verifyAlgorithmNumbers(result: NumericResult, input: AlgorithmData) {
   const rows = result.rows, source = input.rows;
   if (source.length !== rows.length || !source.length || input.metadata.series_id !== result.metadata.series_id
     || canonicalWfdJson(input.metadata) !== canonicalWfdJson(result.metadata)) {
@@ -23,23 +30,39 @@ export function verifyAlgorithmNumbers(result: AlgorithmComputedResult, input: A
     return row.close;
   });
   const { methodId, parameters } = result;
+  const declared = methodId === 'macd' && result.diagnostics === undefined
+    ? new Map<string, AlgorithmDiagnosticReason>()
+    : indexAlgorithmDiagnostics(result.diagnostics, 'DERIVED_NULL_REASON_MISSING');
   if (methodId === 'macd') {
+    if (declared.size) throw new TaskError('DERIVED_DIAGNOSTIC_UNEXPECTED', 'MACD 全部输出为数值，不能带有空值诊断。');
     verifyMacdNumbers(result, close);
-    return;
+    return declared;
   }
   const method = ALGORITHM_METHODS[methodId];
   if (invalidAlgorithmParameter(methodId, parameters) !== null) mismatch(`${method.operation} 参数不符合登记。`);
   if (method.closeDomain === 'positive' && close.some(value => value <= 0)) mismatch(`${method.operation} 要求正收盘价。`);
   const request = { methodId, parameters } as IndicatorRequest;
   const expected = referenceColumns(request, close, source);
+  const verified = new Map<string, AlgorithmDiagnosticReason>();
   for (const field of method.outputFields) {
     for (const [index, value] of expected[field]!.entries()) {
-      if (!same(rows[index]?.[field], value)) mismatch(`第 ${index + 1} 行 ${field} 的独立数值核对不一致。`);
+      if (typeof value === 'string') {
+        const key = `${source[index]!.timestamp}/${field}`;
+        if (declared.get(key) !== value)
+          throw new TaskError('DERIVED_NULL_REASON_MISSING', `${key} 缺少独立核验所得的空值原因 ${value}。`);
+        declared.delete(key);
+        verified.set(key, value);
+      }
+      const matches = methodId === 'alpha191_116' ? sameRelative : same;
+      if (!matches(rows[index]?.[field], typeof value === 'string' ? null : value)) mismatch(`第 ${index + 1} 行 ${field} 的独立数值核对不一致。`);
     }
   }
+  if (declared.size)
+    throw new TaskError('DERIVED_DIAGNOSTIC_UNEXPECTED', '存在未对应独立核验空值的计算诊断。');
+  return verified;
 }
 
-function verifyMacdNumbers(result: AlgorithmComputedResult, close: number[]): void {
+function verifyMacdNumbers(result: NumericResult, close: number[]): void {
   const p = isWfdRecord(result.parameters) ? result.parameters : {};
   if (p.short_period !== 12 || p.long_period !== 26 || p.signal_period !== 9 || p.init !== 'first_valid')
     mismatch('MACD 参数不是固定 12/26/9 首值初始化。');
@@ -61,13 +84,14 @@ function verifyMacdNumbers(result: AlgorithmComputedResult, close: number[]): vo
 
 type IndicatorId = Exclude<AlgorithmMethodId, 'macd'>;
 type IndicatorRequest = { [Id in IndicatorId]: { methodId: Id; parameters: AlgorithmParametersByMethod[Id] } }[IndicatorId];
-type NumericSeries = (number | null)[];
+const warmup = 'insufficient_warmup', zeroDenominator = 'undefined_zero_denominator';
+type NumericSeries = (number | AlgorithmDiagnosticReason)[];
 
 function referenceColumns(request: IndicatorRequest, close: number[], source: AlgorithmBar[]): Record<string, NumericSeries> {
   const { methodId, parameters } = request;
   switch (methodId) {
     case 'ma':
-      return { MA: close.map((_, index) => index + 1 < parameters.period ? null
+      return { MA: close.map((_, index) => index + 1 < parameters.period ? warmup
         : mean(close.slice(index + 1 - parameters.period, index + 1))) };
     case 'ema': {
       const weight = 2 / (parameters.period + 1);
@@ -81,7 +105,7 @@ function referenceColumns(request: IndicatorRequest, close: number[], source: Al
       const { period, std_dev } = parameters;
       for (const [index] of close.entries()) {
         if (index + 1 < period) {
-          mid.push(null); upper.push(null); lower.push(null);
+          mid.push(warmup); upper.push(warmup); lower.push(warmup);
           continue;
         }
         const window = close.slice(index + 1 - period, index + 1);
@@ -91,7 +115,7 @@ function referenceColumns(request: IndicatorRequest, close: number[], source: Al
       return { BOLL_MID: mid, BOLL_UPPER: upper, BOLL_LOWER: lower };
     }
     case 'roc':
-      return { ROC: returns(close, parameters.period, 'simple').map(value => value === null ? null : 100 * value) };
+      return { ROC: returns(close, parameters.period, 'simple').map(value => typeof value === 'string' ? value : 100 * value) };
     case 'obv': {
       let balance = 0;
       return { OBV: source.map(({ volume, close }, index) => {
@@ -108,9 +132,9 @@ function referenceColumns(request: IndicatorRequest, close: number[], source: Al
       const { period, annualization_factor } = parameters;
       const scale = annualization_factor === undefined ? 1 : Math.sqrt(annualization_factor);
       return { VOLATILITY: daily.map((_, index) => {
-        if (index < period) return null;
+        if (index < period) return warmup;
         const window = daily.slice(index + 1 - period, index + 1);
-        if (window.some(value => value === null)) return null;
+        if (window.includes(zeroDenominator)) return zeroDenominator;
         const complete = window as number[];
         return scale * deviation(complete, mean(complete), period - 1);
       }) };
@@ -120,7 +144,7 @@ function referenceColumns(request: IndicatorRequest, close: number[], source: Al
       const { period } = parameters;
       for (const [end, last] of close.entries()) {
         if (period !== undefined && end + 1 < period) {
-          drawdown.push(null); peaks.push(null);
+          drawdown.push(warmup); peaks.push(warmup);
           continue;
         }
         const start = period === undefined ? 0 : end + 1 - period;
@@ -136,24 +160,28 @@ function referenceColumns(request: IndicatorRequest, close: number[], source: Al
       return { MAX_DRAWDOWN: drawdown, PEAK_CLOSE: peaks };
     }
     case 'alpha191_014':
-      return { ALPHA191_014: close.map((value, index) => index < 5 ? null : value - close[index - 5]!) };
+      return { ALPHA191_014: close.map((value, index) => index < 5 ? warmup : value - close[index - 5]!) };
     case 'alpha191_031':
       return { ALPHA191_031: close.map((value, index) => {
-        if (index < 11) return null;
-        const center = nonnegativeMean(close.slice(index - 11, index + 1));
-        return center === 0 ? null : 100 * ((value - center) / center);
+        if (index < 11) return warmup;
+        const window = close.slice(index - 11, index + 1), scale = Math.max(...window);
+        if (scale === 0) return zeroDenominator;
+        const scaled = window.map(price => price / scale), last = value / scale;
+        // mean(last - price) = last - mean(price), evaluated entirely in the scaled window.
+        return 100 * (mean(scaled.map(price => last - price)) / mean(scaled));
       }) };
-    case 'alpha191_116':
-      return { ALPHA191_116: close.map((_, index) => {
-        if (index < 19) return null;
-        const window = close.slice(index - 19, index + 1);
-        // Pairwise covariance identity independently checks the Python centered-weight formula.
-        let slope = 0;
-        for (let i = 0; i < 20; i++) for (let j = i + 1; j < 20; j++) {
-          slope += ((j - i) / 13300) * (window[j]! - window[i]!);
-        }
-        return slope;
+    case 'alpha191_116': {
+      // 全部 i<j 的 (j−i)(price[j]−price[i])，按每个价格的系数合并，以精确有理数求和。
+      // 分母为所有 (j−i)² 之和。此路径不做 Python 的十对镜像浮点减法。
+      const prices = close.map(exactBinary64);
+      const weights = Array.from({ length: 20 }, (_, k) => BigInt((k * (k + 1) - (19 - k) * (20 - k)) / 2));
+      return { ALPHA191_116: prices.map((_, end) => {
+        if (end < 19) return warmup;
+        const covariance = weights.reduce((sum, weight, k) =>
+          add(sum, multiply({ n: weight, d: 1n }, prices[end - 19 + k]!)), { n: 0n, d: 1n });
+        return Number(formatExactDecimal(divide(covariance, { n: 13300n, d: 1n })));
       }) };
+    }
     case 'alpha191_168': {
       const volume = source.map((row, index) => {
         if (typeof row.volume !== 'number' || !Number.isFinite(row.volume) || row.volume < 0)
@@ -161,14 +189,14 @@ function referenceColumns(request: IndicatorRequest, close: number[], source: Al
         return row.volume;
       });
       return { ALPHA191_168: volume.map((value, index) => {
-        if (index < 19) return null;
+        if (index < 19) return warmup;
         const window = volume.slice(index - 19, index + 1), scale = Math.max(...window);
-        return scale === 0 ? null : -(value / scale) / mean(window.map(item => item / scale));
+        return scale === 0 ? zeroDenominator : -(value / scale) / mean(window.map(item => item / scale));
       }) };
     }
     case 'alpha191_189':
       return { ALPHA191_189: close.map((_, index) => {
-        if (index < 10) return null;
+        if (index < 10) return warmup;
         const deviations = Array.from({ length: 6 }, (_, offset) => {
           const end = index - offset;
           return Math.abs(close[end]! - nonnegativeMean(close.slice(end - 5, end + 1)));
@@ -203,7 +231,7 @@ function relativeStrength(close: number[], period: number): NumericSeries {
   const decay = 1 - 1 / period;
   let gains = 0, losses = 0;
   return close.map((value, index) => {
-    if (index === 0) return null;
+    if (index === 0) return warmup;
     const change = value - close[index - 1]!;
     if (index > period) {
       gains *= decay;
@@ -212,15 +240,16 @@ function relativeStrength(close: number[], period: number): NumericSeries {
     gains += Math.max(change, 0);
     losses += Math.max(-change, 0);
     const total = gains + losses;
-    return index < period || total === 0 ? null : 100 * (gains / total);
+    if (index < period) return warmup;
+    return total === 0 ? 'undefined_flat_rsi' : 100 * (gains / total);
   });
 }
 
 function returns(close: number[], lag: number, mode: 'simple' | 'log'): NumericSeries {
   return close.map((value, index) => {
-    if (index < lag) return null;
+    if (index < lag) return warmup;
     const previous = close[index - lag]!;
-    if (mode === 'log') return previous > 0 && value > 0 ? Math.log(value) - Math.log(previous) : null;
-    return previous === 0 ? null : (value - previous) / previous;
+    if (mode === 'log') return previous > 0 && value > 0 ? Math.log(value) - Math.log(previous) : 'undefined_nonpositive_log_price';
+    return previous === 0 ? zeroDenominator : (value - previous) / previous;
   });
 }

@@ -91,3 +91,12 @@ test('PDF page declaration must cover every native page exactly once', () => {
     { ...valid.content, pages: [{ ...valid.content.pages[0]!, page: 2 }] },
   ]) assert.throws(() => segmentsFromConversionArtifact({ ...valid, content }, ref), /页数或逐页身份不完整/);
 });
+
+test('Office never falls back to loose text, PDF geometry or an XLSX disguised as a document', () => {
+  const base = { operation: 'conversion.document', status: 'complete', issues: [], text: 'not a native node' };
+  assert.throws(() => segmentsFromConversionArtifact({ ...base, content: { native: { format: 'docx', blocks: [], supplements: [] } } }, ref), /没有可用/u);
+  assert.throws(() => segmentsFromConversionArtifact({ ...base, content: { native: { format: 'pptx', slides: [
+    { page: 2, part: 'ppt/slides/slide1.xml', blocks: [] }] } } }, ref), /页序/u);
+  assert.throws(() => segmentsFromConversionArtifact({ ...base, source: { detectedType: 'docx' }, content: envelope().content }, ref), /冲突/u);
+  assert.throws(() => segmentsFromConversionArtifact({ ...base, source: { detectedType: 'xlsx' }, content: envelope().content }, ref), /结构化表登记路线/u);
+});

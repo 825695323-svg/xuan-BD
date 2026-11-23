@@ -31,7 +31,9 @@ export function captureAssets(root: string): FinancialAssetBundle {
   }
   return { version: `sha256:${financialDigest(hashes)}`, files, hashes };
 }
-export function verifyAssets(bundle: FinancialAssetBundle): void {
+export function verifyAssets(bundle: FinancialAssetBundle, expectedVersion?: string): void {
+  if (expectedVersion !== undefined && bundle?.version !== expectedVersion)
+    throw new TaskError('FINANCIAL_IMPLEMENTATION_CHANGED', '取回的计算资产包与任务固定的实现版本不同。');
   if (!bundle || typeof bundle !== 'object' || !bundle.files || !bundle.hashes
     || canonical(Object.keys(bundle.files).sort()) !== canonical([...ASSET_FILES].sort())
     || canonical(Object.keys(bundle.hashes).sort()) !== canonical([...ASSET_FILES].sort())) {

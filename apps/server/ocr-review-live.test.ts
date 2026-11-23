@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createCanvas } from '@napi-rs/canvas';
 import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
-import { createFullChainFixture } from './full-chain-test-support.js';
+import { readRetrievalEvidence } from './retrieval-evidence.js';
+import { createFullChainFixture, settleFixtureTask } from './full-chain-test-support.js';
 import { readOcrReviewHandoff } from './ocr-handoff.js';
 import { readOcrReviewPacket } from './ocr-review.js';
 import { assertLateMediaOriginalRejected, openMediaReviewHost as open, invokeMediaAction as invoke, model, unusedPiContext } from './media-review-test-support.js';
@@ -52,6 +53,16 @@ test('real conversation material read and Vision OCR produce a read-only, unrevi
       assert.ok(packet.observations.length > 0); assert.ok(packet.recognizer.revision > 0);
       assert.equal(packet.reviewStatus, 'not_recorded'); assert.equal(packet.eventEligibility, 'not_established');
       assert.equal(packet.textBasis, 'ocr_recognition');
+      const segments = host.companion.segments!;
+      assert.partialDeepStrictEqual(segments.capabilities(), { ocrReviewReaderWired: true, ocr: { runnerAvailable: true } });
+      const registration = segments.requestOcrReview({ materialId, taskId: ocrTask.id, packetSha256: packet.packetSha256 }, 'verified-vision-segments');
+      const indexed = await settleFixtureTask(host.companion.tasks, registration.id);
+      assert.equal(indexed.status, 'succeeded', JSON.stringify(indexed.error));
+      const indexVersion = (indexed.result!.data as any).indexVersion;
+      const [hit] = segments.search({ method: 'exact', query: packet.observations[0].text, indexVersion }).citations;
+      assert.ok(hit?.issues.includes('ocr_unverified_recognition'));
+      const proof = await readRetrievalEvidence(host.companion, { indexVersion, segmentId: hit.segment_id });
+      for (const check of [proof.cache, proof.artifact, proof.original]) assert.equal(check.status, 'verified');
       const count = () => host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get();
       // Synthetic HTTP answers below are test fixtures, never the owner's approval.
       await assertLateMediaOriginalRejected(host.services, materialId, result.textReference.fileRefId, () => readOcrReviewPacket(host.services, materialId, ocrTask.id));

@@ -6,9 +6,9 @@ export const SEGMENT_TOKENIZER = 'cjk-bigram+unicode61-v1';
 
 export type SegmentKind = 'paragraph' | 'table';
 
-export interface SegmentBBox { x0: number; y0: number; x1: number; y1: number }
+export interface SegmentBBox { x0: number; y0: number; x1: number; y1: number; coordinate_unit?: 'original_image_page_1_top_left_normalized' }
 
-export interface TableCell { cell_ref: string; text: string; x0: number; x1: number }
+export interface TableCell { cell_ref: string; text: string; x0: number | null; x1: number | null }
 export interface TableRow { row: number; label: string | null; cells: TableCell[] }
 export interface SegmentTable {
   table_id: string;
@@ -20,7 +20,7 @@ export interface SegmentTable {
   rows: TableRow[];
   row_count: number;
   cell_count: number;
-  verification: 'unverified-geometry';
+  verification: 'unverified-geometry' | 'native-structure';
   /** 单位不推断；缺失即 null 并置缺口码。 */
   unit: null;
   /** 表头上方相邻行的文本（未确认、可能是跨行表头的另一半）；无则 null。 */
@@ -34,10 +34,11 @@ export interface DocSegment {
   parser_version: string;
   ordinal: number;
   kind: SegmentKind;
-  page_number: number;
+  /** Word 原生流没有固定页码。 */
+  page_number: number | null;
   page_label: string | null;
   section_path: string[];
-  bbox: SegmentBBox;
+  bbox: SegmentBBox | null;
   table: SegmentTable | null;
   source_ref: string;
   text: string;
@@ -68,12 +69,12 @@ export interface SegmentBuildInput {
   pages: PdfPageInput[];
 }
 
-export interface SegmentBuildResult {
-  segments: DocSegment[];
+export interface SegmentBuildResult<S extends DocSegment = DocSegment> {
+  segments: S[];
   /** 各片段 text 按 ordinal 以换行连接；char_start/char_end 以此为坐标。 */
   fullText: string;
   /** 文档级缺口（如整页无文字层），不对应任何片段。 */
-  documentIssues: { code: string; page: number; detail?: string }[];
+  documentIssues: { code: string; page: number | null; detail?: string }[];
 }
 
 export interface SearchHit { segment: DocSegment; matched: 'keyword' | 'exact'; score?: number }
@@ -129,7 +130,8 @@ export interface DocumentTimeRecord {
   disclosed_at: TimeDimension;
   /** 本次解析（片段生成）时间。 */
   parsed_at: number;
-  page_count: number;
+  /** 可核对的原生页数；未分页的 Word 文档为 null。 */
+  page_count: number | null;
   segment_count: number;
   issues: string[];
 }
@@ -180,13 +182,14 @@ export interface RetrievalCitation {
   parser_version: string;
   ordinal: number;
   kind: SegmentKind;
-  page_number: number;
+  /** Word 原生流没有固定页码。 */
+  page_number: number | null;
   page_label: string | null;
   section_path: string[];
-  bbox: SegmentBBox;
+  bbox: SegmentBBox | null;
   /** 表格定位：分片范围与首末单元格引用；段落为 null。 */
   table: { table_id: string; part: number; parts: number; header: string[]; period_axis: string[];
-    unit: null; verification: 'unverified-geometry'; first_cell_ref: string | null; last_cell_ref: string | null } | null;
+    unit: null; verification: 'unverified-geometry' | 'native-structure'; first_cell_ref: string | null; last_cell_ref: string | null } | null;
   excerpt: string;
   excerpt_truncated: boolean;
   text_digest: string;
@@ -197,6 +200,19 @@ export interface RetrievalCitation {
   /** Document-wide persisted gaps; null means metadata unavailable, never full-text assurance. */
   document_issues: string[] | null;
   issues: string[];
+}
+
+export interface RetrievalIntegrityCheck { status: 'verified' | 'unknown' | 'mismatch'; reason: string }
+export interface RetrievalEvidenceResult {
+  schema: 'bd.retrieval-evidence/1';
+  citation: RetrievalCitation;
+  cache: RetrievalIntegrityCheck;
+  artifact: RetrievalIntegrityCheck;
+  original: RetrievalIntegrityCheck;
+  factVerification: 'not_established';
+  historicalQualification: 'not_evaluated';
+  limitations: string[];
+  limits: { maxArtifactBytes: number; maxOriginalBytes: number };
 }
 
 export interface SegmentRetrievalResult {
@@ -214,7 +230,8 @@ export interface SegmentRetrievalResult {
 // ── 4.3 证据账本：材料 ↔ 转换产物（一对多） ──────────────────────────────
 
 /** 可进入片段与索引的转换产物类型；其余（页图/媒体/字幕/归档）只登记不入索引。 */
-export const SEGMENTABLE_ARTIFACT_TYPES = ['conversion.document', 'pdf.extract'] as const;
+export const OCR_PACKET_SCHEMA = 'bd-ocr-review-packet/1';
+export const SEGMENTABLE_ARTIFACT_TYPES = ['conversion.document', 'pdf.extract', OCR_PACKET_SCHEMA] as const;
 export const REGISTRABLE_ARTIFACT_TYPES = [...SEGMENTABLE_ARTIFACT_TYPES, 'conversion.structured',
   'conversion.inspect', 'conversion.subtitle', 'conversion.archive', 'conversion.pdf_render', 'conversion.image',
   'conversion.media'] as const;

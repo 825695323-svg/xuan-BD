@@ -1,10 +1,10 @@
 import { R1_CONTEXT_OPERATIONS, type R1ContextOperation } from '../../contracts/r1-contracts.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { appendFileSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { DataServiceError } from './wfd-error.js';
-import { isWfdRecord, type WfdRecord } from './wfd-transport.js';
+import { isWfdRecord, wfdSha256, type WfdRecord } from './wfd-transport.js';
 import type { TabularBatchChunk, TabularBatchHeader, TabularCell, TabularReadPage } from '../../contracts/tabular-batch.js';
 import type { SourceMinuteBatchChunk, SourceMinuteBatchHeader, SourceMinuteCell, SourceMinuteReadPage } from '../../contracts/source-minute-batch.js';
 
@@ -19,12 +19,96 @@ import type { SourceMinuteBatchChunk, SourceMinuteBatchHeader, SourceMinuteCell,
  *
  * 本批接入 canonical 入口的 capabilities/schema、固定读取、submit/recovery、
  * evidence_ingest、request_status、read_product 分页与 batch_*。入口仍决定权限、
- * 来源角色/权威和合同；客户端不传递 store/runtime/principal/roles。packages/export
+ * 来源角色/权威和合同；独立小库仅走显式 bundle_* 操作。通用 packages/export
  * 等未支持操作由入口明确返回 `OPERATION_UNSUPPORTED`，不伪造异步 job。
  */
 export const WFD_PRODUCT_MACHINE_PROTOCOL = 'wfd.product-machine/0.1';
 const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const MAX_STDERR_BYTES = 16_384;
+export const WFD_BUNDLE_OPERATIONS = {
+  bundle_export_full: { mode: 'full', writesDatabase: false, hasSideEffect: true, statuses: ['exported', 'already_exported'] },
+  bundle_import_full: { mode: 'full', writesDatabase: true, hasSideEffect: true, statuses: ['imported_structured_readable', 'already_imported'] },
+  bundle_export_delta: { mode: 'delta', writesDatabase: false, hasSideEffect: true, statuses: ['exported', 'already_exported'] },
+  bundle_apply_delta: { mode: 'delta', writesDatabase: true, hasSideEffect: true, statuses: ['applied', 'already_applied'] },
+  bundle_export_reference: { mode: 'reference', writesDatabase: false, hasSideEffect: true, statuses: ['exported', 'already_exported'] },
+  bundle_register_reference: { mode: 'reference', writesDatabase: true, hasSideEffect: true, statuses: ['registered_reference_readable',
+    'registered_reference_unavailable', 'reference_already_registered'] },
+} as const;
+export type WfdBundleOperation = keyof typeof WFD_BUNDLE_OPERATIONS;
+export const WFD_BUNDLE_FORMAT = 'wfd.structured-bundle/1.0';
+
+export function bundleHostPath(value: unknown): string | null {
+  if (typeof value !== 'string' || !isAbsolute(value) || /[\x00-\x1f\x7f-\x9f]/u.test(value)) return null;
+  if (sep === '\\') {
+    if (!/^[A-Za-z]:[\\/]/u.test(value) || value.split(/[\\/]/u).includes('..')) return null;
+  } else if (value.startsWith('//') || value.includes('\\') || value.split('/').includes('..')) return null;
+  return resolve(value);
+}
+export interface WfdBundleProduct {
+  product_id: string;
+  fields?: string[];
+  subject?: { kind: string; namespace: string; id: string };
+  business_time_range?: { role: 'observation'; start: string; end: string; timezone: string };
+}
+const onlyKeys = (value: WfdRecord, allowed: string[]): boolean => Object.keys(value).every(k => allowed.includes(k));
+const bundleIdPart = (v: unknown): v is string => typeof v === 'string' && REQUEST_ID.test(v);
+export function isWfdBundleProducts(value: unknown): value is WfdBundleProduct[] {
+  if (!Array.isArray(value) || !value.length || value.length > 64) return false;
+  const unique = new Set<string>();
+  for (const p of value) {
+    if (!isWfdRecord(p) || !onlyKeys(p, ['product_id', 'fields', 'subject', 'business_time_range'])
+      || !bundleIdPart(p.product_id) || unique.has(p.product_id)) return false;
+    unique.add(p.product_id);
+    if (p.fields !== undefined && (!Array.isArray(p.fields) || !p.fields.length || p.fields.length > 256
+      || new Set(p.fields).size !== p.fields.length || !p.fields.every(bundleIdPart))) return false;
+    const s = p.subject, t = p.business_time_range;
+    if (s !== undefined && (!isWfdRecord(s) || !onlyKeys(s, ['kind', 'namespace', 'id'])
+      || ![s.kind, s.namespace, s.id].every(bundleIdPart))) return false;
+    if (t !== undefined && (!isWfdRecord(t) || !onlyKeys(t, ['role', 'start', 'end', 'timezone'])
+      || t.role !== 'observation' || !bundleIdPart(t.start) || !bundleIdPart(t.end)
+      || typeof t.timezone !== 'string' || !t.timezone || t.timezone.length > 128)) return false;
+  }
+  return true;
+}
+export interface WfdBundleExport { package_path: string; snapshot_id: string; products: WfdBundleProduct[] }
+export interface WfdBundleDeltaExport extends WfdBundleExport { baseline_snapshot_id: string }
+export interface WfdBundleImport { package_path: string; descriptor_sha256: string }
+export interface WfdBundleReceipt {
+  format_version: typeof WFD_BUNDLE_FORMAT; mode: 'full' | 'delta' | 'reference';
+  status: (typeof WFD_BUNDLE_OPERATIONS)[WfdBundleOperation]['statuses'][number]; bundle_id: string; descriptor_sha256: string; source_snapshot_id: string;
+  source_dataset_id: string; baseline_snapshot_id: string | null; target_snapshot_id: string | null;
+  read_self_contained: boolean; source_permission_required: boolean; write_authority_granted: false;
+  products: Array<{ product_id: string; source_product_id: string; row_count: number; rows_sha256: string }>;
+  readable?: boolean; instance_id?: string | null; active_head?: null;
+  dependency_gaps?: Array<{ product_id: string; reason: string }>;
+}
+export interface WfdBundleCapabilities {
+  format_version: typeof WFD_BUNDLE_FORMAT; profile: 'wfd.data-only/1.0'; max_products: number;
+  operations: Record<WfdBundleOperation, { supported: boolean; writes_target: boolean; reason: string | null }>;
+}
+const bundleOperations = Object.entries(WFD_BUNDLE_OPERATIONS);
+const digest = (value: unknown): value is string => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/u.test(value);
+const fixedSnapshot = (value: unknown): value is string => typeof value === 'string' && /^s_[a-f0-9]{24}$/u.test(value);
+function matchingBundleProofs(value: unknown, selected?: WfdBundleProduct[]): boolean {
+  if (!Array.isArray(value) || !value.length || value.length > 64) return false;
+  const sources = new Set<string>(), targets = new Set<string>();
+  for (const item of value) {
+    if (!isWfdRecord(item) || !bundleIdPart(item.product_id) || !bundleIdPart(item.source_product_id)
+      || !Number.isSafeInteger(item.row_count) || Number(item.row_count) < 0 || !digest(item.rows_sha256)) return false;
+    sources.add(item.source_product_id);
+    targets.add(item.product_id);
+  }
+  return sources.size === value.length && targets.size === value.length
+    && (!selected || (selected.length === value.length && selected.every(p => sources.has(p.product_id))));
+}
+
+function referenceStatusValid(receipt: WfdRecord): boolean {
+  const gaps = receipt.dependency_gaps;
+  return typeof receipt.readable === 'boolean' && Array.isArray(gaps) && gaps.length <= 64
+    && receipt.readable === (gaps.length === 0)
+    && gaps.every(gap => isWfdRecord(gap) && bundleIdPart(gap.product_id) && bundleIdPart(gap.reason));
+}
+
 const WRITE_OPERATIONS = new Set(['submit', 'recovery', 'evidence_ingest', 'batch_begin', 'batch_put_chunk', 'batch_finalize']);
 
 /**
@@ -57,6 +141,8 @@ export interface WfdProductMachineConfiguration {
   maxResponseBytes?: number;
   /** stdin 请求上限；默认 1 MiB。 */
   maxRequestBytes?: number;
+  /** 可选：调用方同一次读取已计算的受控配置 SHA-256，避免构造期间二次读盘。 */
+  configSha256?: string;
 }
 
 export interface WfdProductMachineTransport {
@@ -176,6 +262,8 @@ export class WfdProductMachineClient {
   private readonly config: Required<Pick<WfdProductMachineConfiguration, 'pythonPath' | 'entryPath' | 'configPath'
     | 'projectRoot' | 'timeoutMs' | 'maxResponseBytes' | 'maxRequestBytes'>>;
 
+  private readonly bundleConfigDigest: string;
+
   filterObjects(plan: WfdFilterPlan, signal?: AbortSignal): Promise<WfdProductMachineReply> {
     return this.request('filter_objects', plan as unknown as WfdRecord, signal);
   }
@@ -207,7 +295,7 @@ export class WfdProductMachineClient {
         });
       }
       // venv 的 python 通常是指向基础解释器的符号链接；保留原路径才能使用 venv 依赖。
-      if (label !== 'python' && real !== resolve(path)) {
+      if (label !== 'python' && relative(real, resolve(path)) !== '') {
         throw new WfdProductMachineError('WFD_PRODUCT_MACHINE_CONFIG', `薄入口${label}包含符号链接或非规范路径：${path}`, {
           operation: 'config', requestId: 'config',
         });
@@ -222,7 +310,7 @@ export class WfdProductMachineClient {
         operation: 'config', requestId: 'config', cause: error,
       });
     }
-    if (root !== resolve(config.projectRoot)) {
+    if (relative(root, resolve(config.projectRoot)) !== '') {
       throw new WfdProductMachineError('WFD_PRODUCT_MACHINE_CONFIG', 'WFD 工程根包含符号链接或非规范路径。', {
         operation: 'config', requestId: 'config',
       });
@@ -243,10 +331,83 @@ export class WfdProductMachineClient {
       });
     }
     this.config = config;
+    const pinnedSha = typeof configuration.configSha256 === 'string' && /^[a-f0-9]{64}$/u.test(configuration.configSha256)
+      ? configuration.configSha256 : wfdSha256(readFileSync(config.configPath));
+    this.bundleConfigDigest = 'sha256:' + pinnedSha;
   }
 
   capabilities(signal?: AbortSignal): Promise<WfdProductMachineReply> {
     return this.request('capabilities', {}, signal);
+  }
+
+  async bundleCapabilities(signal?: AbortSignal) {
+    const reply = await this.request('bundle_capabilities', {}, signal);
+    const caps = reply.result;
+    if (caps.format_version !== WFD_BUNDLE_FORMAT || caps.profile !== 'wfd.data-only/1.0'
+      || caps.max_products !== 64 || !isWfdRecord(caps.operations)
+      || !bundleOperations.every(([name, spec]) => {
+        const item = (caps.operations as WfdRecord)[name];
+        return isWfdRecord(item) && typeof item.supported === 'boolean' && item.writes_target === spec.writesDatabase
+          && (item.supported ? item.reason === null : typeof item.reason === 'string');
+      })) throw new WfdProductMachineError('WFD_PRODUCT_MACHINE_RESPONSE', '分包能力声明不完整。', reply.transport);
+    return { ...reply, result: caps as unknown as WfdBundleCapabilities };
+  }
+
+  bundleExportFull(input: WfdBundleExport, signal?: AbortSignal, requestId?: string) {
+    return this.bundle('bundle_export_full', input, signal, requestId);
+  }
+  bundleImportFull(input: WfdBundleImport, signal?: AbortSignal, requestId?: string) {
+    return this.bundle('bundle_import_full', input, signal, requestId);
+  }
+  bundleExportDelta(input: WfdBundleDeltaExport, signal?: AbortSignal, requestId?: string) {
+    return this.bundle('bundle_export_delta', input, signal, requestId);
+  }
+  bundleApplyDelta(input: WfdBundleImport, signal?: AbortSignal, requestId?: string) {
+    return this.bundle('bundle_apply_delta', input, signal, requestId);
+  }
+  bundleExportReference(input: WfdBundleExport, signal?: AbortSignal, requestId?: string) {
+    return this.bundle('bundle_export_reference', input, signal, requestId);
+  }
+  bundleRegisterReference(input: WfdBundleImport, signal?: AbortSignal, requestId?: string) {
+    return this.bundle('bundle_register_reference', input, signal, requestId);
+  }
+
+  private async bundle(operation: WfdBundleOperation, input: WfdBundleExport | WfdBundleImport, signal?: AbortSignal, requestId?: string) {
+    const spec = WFD_BUNDLE_OPERATIONS[operation], args: unknown = input;
+    const allowed = spec.writesDatabase ? ['package_path', 'descriptor_sha256'] : ['package_path', 'snapshot_id', 'products'];
+    if (operation === 'bundle_export_delta') allowed.push('baseline_snapshot_id');
+    if (!isWfdRecord(args) || !onlyKeys(args, allowed)
+      || (spec.writesDatabase ? !digest(args.descriptor_sha256) : !fixedSnapshot(args.snapshot_id) || !isWfdBundleProducts(args.products))
+      || (operation === 'bundle_export_delta' && !fixedSnapshot(args.baseline_snapshot_id))) {
+      return fail('WFD_PRODUCT_MACHINE_REQUEST', '分包参数须与显式操作及固定选择相符。', { operation, requestId: 'request' });
+    }
+    const packagePath = bundleHostPath(args.package_path);
+    if (!packagePath)
+      return fail('BUNDLE_PATH_INVALID', '分包操作需要规范绝对路径。', { operation, requestId: 'request' });
+    const reply = await this.request(operation, { ...args, package_path: packagePath }, signal, requestId);
+    const r = reply.result;
+    const reference = spec.mode === 'reference';
+    if (r.format_version !== WFD_BUNDLE_FORMAT || r.mode !== spec.mode
+      || !(spec.statuses as readonly string[]).includes(String(r.status))
+      || typeof r.bundle_id !== 'string' || !/^(sb|sd|sr)_[a-f0-9]{24}$/u.test(r.bundle_id)
+      || !r.bundle_id.startsWith({ full: 'sb_', delta: 'sd_', reference: 'sr_' }[spec.mode])
+      || !digest(r.descriptor_sha256) || !fixedSnapshot(r.source_snapshot_id)
+      || (reference ? r.target_snapshot_id !== null : !fixedSnapshot(r.target_snapshot_id))
+      || !bundleIdPart(r.source_dataset_id) || r.source_permission_required !== reference
+      || (operation === 'bundle_import_full' && !bundleIdPart(r.instance_id))
+      || (operation === 'bundle_apply_delta' && !(bundleIdPart(r.instance_id) || (r.status === 'already_applied' && r.instance_id === null)))
+      || (spec.mode === 'delta' ? !fixedSnapshot(r.baseline_snapshot_id) : r.baseline_snapshot_id !== null)
+      || (operation === 'bundle_export_delta' && r.baseline_snapshot_id !== args.baseline_snapshot_id)
+      || r.write_authority_granted !== false || r.read_self_contained !== !reference
+      || (spec.writesDatabase && r.active_head !== null)
+      || ('snapshot_id' in input && r.source_snapshot_id !== input.snapshot_id)
+      || ('descriptor_sha256' in input && r.descriptor_sha256 !== input.descriptor_sha256)
+      || (operation === 'bundle_register_reference' && !referenceStatusValid(r))
+      || !matchingBundleProofs(r.products, 'products' in input ? input.products : undefined)) {
+      throw new WfdProductMachineError('WFD_PRODUCT_MACHINE_RESPONSE', '独立小库回执的身份、范围或读回摘要无效。',
+        { ...reply.transport, mayHaveBeenAccepted: spec.hasSideEffect });
+    }
+    return { ...reply, result: r as unknown as WfdBundleReceipt };
   }
 
   reviewDefinition(intent: import('../../contracts/r1-contracts.js').R1DefinitionIntent, signal?: AbortSignal) {
@@ -477,9 +638,8 @@ export class WfdProductMachineClient {
   }
 
   /** 只用于边界负向验证；入口仍会拒绝未支持操作，不因客户端调用而扩权。 */
-  request(operation: string, args: WfdRecord, signal?: AbortSignal): Promise<WfdProductMachineReply> {
-    const requestId = 'bd-' + randomUUID();
-    if (!REQUEST_ID.test(requestId)) {
+  request(operation: string, args: WfdRecord, signal?: AbortSignal, requestId: string = 'bd-' + randomUUID()): Promise<WfdProductMachineReply> {
+    if (typeof requestId !== 'string' || !REQUEST_ID.test(requestId)) {
       return Promise.reject(new WfdProductMachineError('WFD_PRODUCT_MACHINE_REQUEST', '本机请求编号无效。', {
         operation, requestId,
       }));
@@ -490,6 +650,7 @@ export class WfdProductMachineClient {
       }));
     }
     const serializeStarted = Date.now();
+    const requestedDescriptor = args.descriptor_sha256;
     const body = JSON.stringify({ protocol_version: WFD_PRODUCT_MACHINE_PROTOCOL, request_id: requestId, operation, arguments: args });
     const serializeMs = Date.now() - serializeStarted;
     if (Buffer.byteLength(body) > this.config.maxRequestBytes) {
@@ -500,13 +661,19 @@ export class WfdProductMachineClient {
     return new Promise<WfdProductMachineReply>((resolveCall, reject) => {
       const started = Date.now();
       let spawnAt = 0, stdinAt = 0;
-      const writeOperation = WRITE_OPERATIONS.has(operation);
+      const bundleSpec = Object.hasOwn(WFD_BUNDLE_OPERATIONS, operation) ? WFD_BUNDLE_OPERATIONS[operation as WfdBundleOperation] : undefined;
+      const writesDatabase = bundleSpec?.writesDatabase ?? WRITE_OPERATIONS.has(operation);
+      const hasSideEffect = bundleSpec?.hasSideEffect ?? writesDatabase;
       let dispatched = false;
       let settled = false;
       let stdout = Buffer.alloc(0);
       let stderr = '';
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const child = spawn(this.config.pythonPath, [this.config.entryPath, '--config', this.config.configPath], {
+      const launch = [this.config.entryPath, '--config', this.config.configPath];
+      if (operation === 'bundle_capabilities' || Object.hasOwn(WFD_BUNDLE_OPERATIONS, operation)) {
+        launch.push('--expected-config-sha256', this.bundleConfigDigest);
+      }
+      const child = spawn(this.config.pythonPath, launch, {
         cwd: this.config.projectRoot,
         shell: false,
         windowsHide: true,
@@ -515,7 +682,7 @@ export class WfdProductMachineClient {
       });
       const timing = (ok: boolean, reply?: WfdProductMachineReply) => {
         const totalMs = Date.now() - started;
-        recordTiming({ at: Date.now(), operation, requestId, write: writeOperation,
+        recordTiming({ at: Date.now(), operation, requestId, write: writesDatabase,
           requestBytes: Buffer.byteLength(body), responseBytes: stdout.length, serializeMs,
           spawnMs: spawnAt ? spawnAt - started : -1, stdinMs: stdinAt && spawnAt ? stdinAt - spawnAt : -1,
           waitMs: totalMs, totalMs, machineElapsedMs: reply?.transport?.elapsedMs ?? null, ok });
@@ -529,25 +696,31 @@ export class WfdProductMachineClient {
         if (error) { reject(error); child.kill('SIGKILL'); } else resolveCall(reply!);
       };
       const abort = () => finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_ABORTED', '本次等待已中止；没有重发；若已发送请按原 identity 查询。', {
-        operation, requestId, mayHaveBeenAccepted: writeOperation && dispatched,
+        operation, requestId, mayHaveBeenAccepted: hasSideEffect && dispatched,
       }));
       timer = setTimeout(() => finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_TIMEOUT', `等待 WFD 产品进程超过 ${this.config.timeoutMs} ms；没有自动重发；若已发送请按原 identity 查询。`, {
-        operation, requestId, mayHaveBeenAccepted: writeOperation && dispatched,
+        operation, requestId, mayHaveBeenAccepted: hasSideEffect && dispatched,
       })), this.config.timeoutMs);
       signal?.addEventListener('abort', abort, { once: true });
-      child.on('spawn', () => { spawnAt = Date.now(); });
+      child.on('spawn', () => {
+        if (settled) return;
+        spawnAt = Date.now();
+        dispatched = true;
+        child.stdin.end(body);
+        stdinAt = Date.now();
+      });
       child.on('error', error => finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_TRANSPORT', '无法启动或等待 WFD 产品进程。', {
-        operation, requestId, cause: error, mayHaveBeenAccepted: writeOperation && dispatched,
+        operation, requestId, cause: error, mayHaveBeenAccepted: hasSideEffect && dispatched,
       })));
       child.stdin.on('error', error => finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_TRANSPORT', '写入薄入口请求失败。', {
-        operation, requestId, cause: error, mayHaveBeenAccepted: writeOperation && dispatched,
+        operation, requestId, cause: error, mayHaveBeenAccepted: hasSideEffect && dispatched,
       })));
       child.stdout.on('data', (chunk: Buffer) => {
         if (settled) return;
         stdout = Buffer.concat([stdout, chunk]);
         if (stdout.length > this.config.maxResponseBytes) {
           finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_OUTPUT_BUDGET', '薄入口响应超过有界上限；没有截断采用。', {
-            operation, requestId, mayHaveBeenAccepted: writeOperation && dispatched,
+            operation, requestId, mayHaveBeenAccepted: hasSideEffect && dispatched,
           }));
         }
       });
@@ -558,22 +731,23 @@ export class WfdProductMachineClient {
         if (settled) return;
         const elapsedMs = Date.now() - started;
         let parsed: unknown;
-        try { parsed = JSON.parse(stdout.toString('utf8')); } catch (error) {
+        try { parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(stdout)); } catch (error) {
           return finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_RESPONSE', `薄入口没有返回单个 JSON（exit=${String(code)}, signal=${String(signalName)}）。`, {
-            operation, requestId, cause: stderr || error, mayHaveBeenAccepted: writeOperation && dispatched,
+            operation, requestId, cause: stderr || error, mayHaveBeenAccepted: hasSideEffect && dispatched,
           }));
         }
         if (!isWfdRecord(parsed)) {
           return finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_RESPONSE', '薄入口响应不是 JSON 对象。', {
-            operation, requestId, mayHaveBeenAccepted: writeOperation && dispatched,
+            operation, requestId, mayHaveBeenAccepted: hasSideEffect && dispatched,
           }));
         }
         const response = parsed;
         if (response.protocol_version !== WFD_PRODUCT_MACHINE_PROTOCOL || response.request_id !== requestId
-          || response.operation !== operation || typeof response.ok !== 'boolean') {
+          || response.operation !== operation || typeof response.ok !== 'boolean'
+          || (bundleSpec && (response.ok ? response.error != null : response.result != null))) {
           return finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_RESPONSE', '薄入口响应的协议、请求编号或操作未核对。', {
             operation, requestId, service: isWfdRecord(response.service) ? response.service : null,
-            mayHaveBeenAccepted: writeOperation && dispatched,
+            mayHaveBeenAccepted: hasSideEffect && dispatched,
           }));
         }
         const service = isWfdRecord(response.service) ? response.service : null;
@@ -592,35 +766,46 @@ export class WfdProductMachineClient {
         };
         if (response.ok === false) {
           const error = isWfdRecord(response.error) ? response.error : {};
+          if (bundleSpec && (typeof error.code !== 'string' || !error.code || typeof error.message !== 'string')) {
+            return finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_RESPONSE', '分包错误回执缺少错误身份或说明。', {
+              operation, requestId, mayHaveBeenAccepted: hasSideEffect && dispatched,
+            }));
+          }
           const remoteCode = typeof error.code === 'string' ? error.code : 'WFD_PRODUCT_MACHINE_REMOTE';
           const message = typeof error.message === 'string' ? error.message : '薄入口返回失败但没有可读原因。';
           const action = typeof error.action === 'string' ? error.action : null;
           const errorDetails = isWfdRecord(error.details) ? error.details : {};
-          const writeContext = isWfdRecord(errorDetails.write_context) ? errorDetails.write_context : {};
+          const context = errorDetails.write_context;
+          const explicitlyUnwritten = isWfdRecord(context) && context.operation === operation
+            && context.may_have_written === false && (context.request_id === undefined || context.request_id === requestId)
+            && (bundleSpec?.writesDatabase
+              ? digest(requestedDescriptor) && context.descriptor_sha256 === requestedDescriptor
+              : context.descriptor_sha256 == null || digest(context.descriptor_sha256))
+            && (context.do_not_resubmit_with_new_identity === undefined || typeof context.do_not_resubmit_with_new_identity === 'boolean')
+            && remoteCode !== 'PROCESS_OUTPUT_FAILED'
+            && [errorDetails, context, errorDetails.cause_details].filter(isWfdRecord).every(item =>
+              ['write_may_have_happened', 'may_have_written', 'operation_completed', 'operation_result_known']
+                .every(key => !Object.hasOwn(item, key) || item[key] === false));
           return finish(new WfdProductMachineError(remoteCode, `${message}${action ? ' 下一步：' + action : ''}`, {
             operation, requestId, remoteCode, action,
             identity: isWfdRecord(error.identity) ? error.identity : identity,
             service: isWfdRecord(error.service) ? error.service : service,
             cause: typeof error.cause === 'string' ? error.cause : undefined,
-            mayHaveBeenAccepted: writeOperation && (errorDetails.write_may_have_happened === true
-              || writeContext.may_have_written === true || remoteCode === 'PROCESS_OUTPUT_FAILED'),
+            mayHaveBeenAccepted: hasSideEffect && dispatched && !explicitlyUnwritten,
           }));
         }
         if (!isWfdRecord(response.result)) {
           return finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_RESPONSE', '薄入口成功响应缺少 result 对象。', {
-            operation, requestId, service, mayHaveBeenAccepted: writeOperation && dispatched,
+            operation, requestId, service, mayHaveBeenAccepted: hasSideEffect && dispatched,
           }));
         }
         if (code !== 0) {
           return finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_TRANSPORT', `薄入口退出码 ${String(code)} 但响应标记成功；拒绝采用。`, {
-            operation, requestId, service, mayHaveBeenAccepted: writeOperation && dispatched,
+            operation, requestId, service, mayHaveBeenAccepted: hasSideEffect && dispatched,
           }));
         }
         finish(undefined, { result: response.result, response, transport });
       });
-      dispatched = true;
-      child.stdin.end(body);
-      stdinAt = Date.now();
     });
   }
 }

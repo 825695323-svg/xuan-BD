@@ -1,4 +1,5 @@
 import { readRetrievalEvidence } from './retrieval-evidence.js';
+import { createR1BundleRouter } from './r1-bundle-routes.js';
 import express, { Router } from 'express';
 import { userInfo } from 'node:os';
 import { basename } from 'node:path';
@@ -17,6 +18,7 @@ import { R1_CHUNKED_CSV_LIMITS } from '../../modules/collection/r1-chunked-csv.j
 export function createWorkspaceRouter(services: ApplicationServices, assertReadAccess?: (req: express.Request) => void): Router {
   const router = Router(), { bd, materials, tasks, files, processing } = services;
   if (!bd) throw new TaskError('SERVICE_ROLE_REQUIRED', '材料入口需要服务身份。');
+  if (services.r1Bundles) router.use(createR1BundleRouter(services.r1Bundles, req => { assertReadAccess?.(req); }));
   router.get('/workspace', (_req, res) => res.json({ mode: 'bd-workspace', version: bd.versions.bd,
     modules: { materials: !!materials, collection: !!(services.collection || services.candidates || services.materials || processing), processing: processing ? 'step_plans' : 'not_enabled' },
     status: bd.status(), uploadLimitBytes: MATERIAL_UPLOAD_LIMIT,

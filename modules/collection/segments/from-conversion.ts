@@ -1,25 +1,24 @@
-/**
- * 从**已登记的转换产物**生成片段。
- * 入口用 `conversion.document` / `pdf.extract` 的产物（ConversionEnvelope），
- * 而不是直接调底层 pdfNative：权限、预算、产物登记与证据由动作外壳负责。
- * 本文件只做「产物 → 片段」的确定性转换，不重新解析原件。
- */
+/** 只消费固定的原生转换信封或 OCR 核对包。执行权限、任务和字节核对由宿主管理。 */
 import type { SegmentBuildResult } from './contracts.js';
-import { SEGMENT_ISSUES, SEGMENTER_VERSION } from './contracts.js';
+import { isWfdRecord } from '../../../adapters/database/wfd-transport.js';
+import { segmentsFromOffice } from './from-office.js';
+import { segmentsFromOcrPacket } from './from-ocr.js';
+import { OCR_PACKET_SCHEMA, SEGMENT_ISSUES, SEGMENTER_VERSION } from './contracts.js';
 import { buildDocumentSegments, pdfPagesFromConversion } from './segmenter.js';
 
 /** 产物中的转换信封（与 ConversionEnvelope 同形，只取生成片段所需字段）。 */
 export interface ConversionArtifactEnvelope {
+  operation?: string;
   status: 'complete' | 'partial' | 'failed';
   issues: { code: string; message?: string; location?: unknown }[];
   content: unknown;
   text?: string;
   implementation?: { name?: string; version?: string; pdfjs?: string };
-  source?: { sha256?: string; declaredName?: string; fileRefId?: string; fileRefVersion?: number };
+  source?: { detectedType?: string; sha256?: string; declaredName?: string; fileRefId?: string; fileRefVersion?: number };
 }
 
 export interface SegmentSourceRef {
-  /** 已登记产物引用（structured-conversion / original-text-view 的 fileRefId）。 */
+  /** 已登记产物的 fileRefId 或绑定任务和摘要的 OCR 核对包引用。 */
   artifactRef: string;
   /** 原件身份：4.3 保管材料 id，不用文件名。 */
   documentId: string;
@@ -34,13 +33,33 @@ const CONVERSION_ISSUE_MAP: Record<string, string> = {
   PDF_READING_ORDER_UNVERIFIED: 'reading_order_unverified',
 };
 
-export function segmentsFromConversionArtifact(envelope: ConversionArtifactEnvelope, ref: SegmentSourceRef): SegmentBuildResult & { pageCount: number } {
+export function segmentsFromConversionArtifact(value: unknown, ref: SegmentSourceRef): SegmentBuildResult & { pageCount: number | null } {
   if (!ref.artifactRef.trim()) throw new Error('缺少产物引用：片段化必须指向已登记的转换产物。');
   if (!ref.documentId.trim()) throw new Error('缺少原件身份 documentId。');
   if (!ref.documentVersion.trim()) throw new Error('缺少原件版本 documentVersion。');
+  if (!isWfdRecord(value)) throw new Error('片段化需要登记产物的 JSON 对象。');
+  if (value.schema === OCR_PACKET_SCHEMA) return segmentsFromOcrPacket(value, ref);
+  const envelope = value as unknown as ConversionArtifactEnvelope;
+  const content = isWfdRecord(envelope.content) ? envelope.content : {};
+  const native = isWfdRecord(content.native) ? content.native : {};
+  const formats = [envelope.source?.detectedType, content.format, native.format].filter(v => v !== undefined);
+  if (envelope.operation === 'conversion.structured' || formats.includes('xlsx'))
+    throw new Error('结构化表产物须走结构化表登记路线，不能进入文档片段库。');
+  if (!['complete', 'partial', 'failed'].includes(envelope.status) || !Array.isArray(envelope.issues))
+    throw new Error('转换状态或缺口清单不完整。');
   if (envelope.status === 'failed') {
     throw new Error(`转换产物状态为 failed，不能生成片段：${(envelope.issues ?? []).map(issue => issue.code).join(',') || '无缺口码'}`);
   }
+  if (envelope.operation !== undefined && !['conversion.document', 'pdf.extract'].includes(envelope.operation))
+    throw new Error('该转换操作未登记为文档片段来源。');
+  if (envelope.operation === 'pdf.extract' && formats.some(format => format !== 'pdf'))
+    throw new Error('PDF 抽取操作与已登记格式不符。');
+  if (new Set(formats).size > 1) throw new Error('原件与转换内容的格式身份冲突。');
+  if (native.format === 'docx' || native.format === 'pptx') return segmentsFromOffice(envelope, content, native, ref);
+  // Historical registered page-geometry envelopes also carry producer-specific format labels.
+  if (formats.some(format => format === 'docx' || format === 'pptx')
+    || formats.length && !formats.includes('pdf') && !Array.isArray(content.pages))
+    throw new Error('该格式缺少受支持的文档原生结构。');
   // 解析器版本必须能追溯到实际转换实现：不写死，避免产物换版后片段仍用旧版本号。
   // 真实 PDF 转换把 pdfjs 版本放在 content.implementation.pdfjs；顶层 implementation 只有插件名与版本。
   const pdfjs = (envelope.content as { implementation?: { pdfjs?: string } } | undefined)?.implementation?.pdfjs

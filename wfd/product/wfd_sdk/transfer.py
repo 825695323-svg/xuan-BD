@@ -24,7 +24,11 @@ from wfd_sdk.writerlock import guarded_method, guarded_store_arg, guarded_store_
 
 import hashlib
 import json
+import os
+import re
 import shutil
+import stat
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,6 +42,57 @@ def now() -> str:
 
 class TransferError(RuntimeError):
     pass
+
+
+class TransferIntegrityError(ValueError):
+    pass
+
+
+def is_bundle_link(path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    return (stat.S_ISLNK(info.st_mode) or
+            bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT))
+
+
+def verified_object_bytes(package, digest):
+    """Pin objects/<digest> and verify the exact buffer the caller will install."""
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise TransferIntegrityError("STRUCTURED_RECORD_DIGEST_INVALID")
+    objects = package / "objects"
+    path = objects / digest
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        chain = (package, objects, path)
+        if any(is_bundle_link(item) for item in chain):
+            raise TransferIntegrityError("STRUCTURED_SYMLINK_FORBIDDEN:" + digest)
+        before = [item.lstat() for item in chain]
+        if not stat.S_ISREG(before[-1].st_mode):
+            raise TransferIntegrityError("STRUCTURED_RECORD_TYPE_INVALID:" + digest)
+        with ExitStack() as handles:
+            if os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW"):
+                dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                root_fd = os.open(package, dir_flags)
+                handles.callback(os.close, root_fd)
+                objects_fd = os.open("objects", dir_flags, dir_fd=root_fd)
+                handles.callback(os.close, objects_fd)
+                fd = os.open(digest, flags, dir_fd=objects_fd)
+            else:
+                fd = os.open(path, flags)
+            stream = handles.enter_context(os.fdopen(fd, "rb"))
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(opened, before[-1]):
+                raise TransferIntegrityError("STRUCTURED_RECORD_CHANGED:" + digest)
+            raw = stream.read()
+            if any(is_bundle_link(item) or not os.path.samestat(old, item.lstat()) for item, old in zip(chain, before)):
+                raise TransferIntegrityError("STRUCTURED_RECORD_CHANGED:" + digest)
+    except OSError as exc:
+        raise TransferIntegrityError("STRUCTURED_RECORD_MISSING:" + digest) from exc
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise TransferIntegrityError("STRUCTURED_RECORD_DIGEST_MISMATCH:" + digest)
+    return raw
 
 
 class StorageTierUnavailable(RuntimeError):
@@ -202,18 +257,30 @@ def verify_package(pkg_dir: Path) -> dict:
 
 # ---------------------------------------------------------------- 导入（增量）
 @guarded_store_arg(1)
-def import_package(pkg_dir: Path, store: Path, *, interrupt_after: int | None = None) -> dict:
-    """把包导入目标库。只拷缺失对象；已有对象必须哈希一致才复用。"""
+def import_package(pkg_dir: Path, store: Path, *, interrupt_after: int | None = None,
+                   verified_inventory: dict | None = None) -> dict:
+    """只拷缺失对象。外层已核验时沿用其 verify_package 结果中的 inventory 和 transfer。"""
     from .joint_state import reject_unsupported as reject_joint_operation
     reject_joint_operation(store, "transfer")
     pkg_dir, store = Path(pkg_dir), Path(store)
-    v = verify_package(pkg_dir)
-    if not v["ok"]:
+    checked = verify_package(pkg_dir) if verified_inventory is None else verified_inventory
+    if not checked["ok"]:
         return {"status": "rejected", "code": "TRANSFER_INTEGRITY_FAILED",
-                "hash_mismatch": v["hash_mismatch"][:5], "missing": v["missing"][:5]}
+                "hash_mismatch": checked["hash_mismatch"][:5], "missing": checked["missing"][:5]}
+    try:
+        return _import_verified_package(pkg_dir, store, checked, interrupt_after)
+    except TransferIntegrityError as exc:
+        return {"status": "rejected", "code": "TRANSFER_INTEGRITY_FAILED", "detail": str(exc)}
+
+
+def _import_verified_package(pkg_dir, store, v, interrupt_after):
+    metadata = {}
     for item in v["inventory"]["metadata"]:
+        digest = item["sha256"]
+        if digest not in metadata:
+            metadata[digest] = verified_object_bytes(pkg_dir, digest)
         if str(item.get("rel_path", "")).startswith("catalog/snapshots/"):
-            snapshot = json.loads((pkg_dir / "objects" / item["sha256"]).read_bytes())
+            snapshot = json.loads(metadata[digest])
             reject_unsupported(snapshot, "transfer")
     store.mkdir(parents=True, exist_ok=True)
     for d in ("catalog/manifests", "catalog/snapshots", "catalog/commits", "catalog/lineage", "catalog/forks",
@@ -222,7 +289,7 @@ def import_package(pkg_dir: Path, store: Path, *, interrupt_after: int | None = 
 
     copied, reused, conflicts, skipped = [], [], [], []
     for obj in v["inventory"]["objects"]:
-        data = (pkg_dir / "objects" / obj["sha256"]).read_bytes()
+        data = verified_object_bytes(pkg_dir, obj["sha256"])
         for rel in obj["rel_paths"]:
             target = store / rel
             if target.is_file():
@@ -241,7 +308,7 @@ def import_package(pkg_dir: Path, store: Path, *, interrupt_after: int | None = 
     written = 0
     for m in v["inventory"]["metadata"]:
         target = store / m["rel_path"]
-        data = (pkg_dir / "objects" / m["sha256"]).read_bytes()
+        data = metadata[m["sha256"]]
         if target.is_file() and sha_file(target) == m["sha256"]:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)

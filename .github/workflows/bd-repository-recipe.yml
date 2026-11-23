@@ -105,6 +105,37 @@ jobs:
           print('README_CONFIGURATION_COMMANDS_VERIFIED')
           PYCFG
           "$BD_NODE" --import tsx --test platform/resources/local-web.test.ts
+      - name: Verify isolated Wave1 file I/O and structured WFD bundles on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP "bdw1 文件"
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $env:XUAN_TEST_ROOT = (New-Item -ItemType Directory -Path (Join-Path $root 'node')).FullName
+          $env:XUAN_FULL_CHAIN_ROOT = (New-Item -ItemType Directory -Path (Join-Path $root 'wfd')).FullName
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
+          $env:PYTHONPATH = @((Join-Path $PWD 'wfd/product'), (Join-Path $PWD 'wfd/product/tests')) -join [IO.Path]::PathSeparator
+          $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($root))
+          Write-Host "Windows runner filesystem: $($drive.DriveFormat); disposable synthetic data only."
+          function Invoke-BdTest([string[]]$Arguments) {
+            $output = & $env:BD_NODE @Arguments
+            $status = $LASTEXITCODE
+            $output | Write-Host
+            if ($status -ne 0 -or $output -notcontains '# fail 0' -or $output -notcontains '# skipped 0' -or -not ($output -match '^# tests [1-9][0-9]*$')) {
+              throw 'The targeted Windows Node test did not pass without skips.'
+            }
+          }
+          $nodeTest = @('--import', 'tsx', '--test', '--test-concurrency=1', '--test-reporter=tap')
+          Invoke-BdTest ($nodeTest + 'platform/runtime/file-workspace.test.ts')
+          Invoke-BdTest ($nodeTest + '--test-name-pattern=^HTTP full, delta and reference bundles' + 'apps/server/r1-bundle.test.ts')
+          $pythonResult = & $env:WFD_PYTHON -m pytest -q --basetemp (Join-Path $root 'pytest-tmp') -p no:cacheprovider wfd/product/tests/test_product_bundle_r2b_structured.py::test_structured_full_synthetic_daily_field_subset_and_physical_scan
+          $pythonStatus = $LASTEXITCODE
+          $pythonResult | Write-Host
+          if ($pythonStatus -ne 0 -or -not ($pythonResult -match '^1 passed in ')) {
+            throw 'The targeted Windows structured WFD case did not execute and pass.'
+          }
       - name: Verify WFD target identity and publication-guard regressions
         if: runner.os == 'Linux'
         shell: bash

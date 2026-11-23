@@ -167,8 +167,8 @@ def _walk(predicate, metrics, definitions, depth=1, count=None):
         if name not in metrics:
             _reject('METRIC_NOT_BOUND', '条件引用未绑定指标。', {'metric': name})
     if kind == 'compare_metrics':
-        left, right = definitions[names[0]], definitions[names[1]]
-        if any(left[k] != right[k] for k in ('data_type', 'unit_code', 'measurement_nature', 'time_role')):
+        left, right = (definitions.get(name) for name in names)
+        if left and right and any(left[k] != right[k] for k in ('data_type', 'unit_code', 'measurement_nature', 'time_role')):
             _reject('METRICS_INCOMPATIBLE', '指标类型、单位、性质或时间角色不相容。')
         left_bind = { _subject_key(b['subject']): b['product_id'] for b in metrics[names[0]]['bindings'] }
         right_bind = { _subject_key(b['subject']): b['product_id'] for b in metrics[names[1]]['bindings'] }
@@ -178,7 +178,7 @@ def _walk(predicate, metrics, definitions, depth=1, count=None):
     name = names[0]
     constants = [node['value']] if kind == 'compare' else node['values'] if kind == 'in' else [node['low'], node['high']]
     for value in constants:
-        if value['unit_code'] != definitions[name]['unit_code']:
+        if name in definitions and value['unit_code'] != definitions[name]['unit_code']:
             _reject('UNIT_INCOMPATIBLE', '常量单位必须与固定字段单位一致，不作隐式转换。', {'metric': name})
         _decimal(value['value'], 'predicate.constant')
     if kind == 'between' and _decimal(node['low']['value'], 'low') > _decimal(node['high']['value'], 'high'):
@@ -287,7 +287,7 @@ def run(service, config, request, query_factory, service_identity):
         discovered = query_factory().fixed_filter_products(
             snapshot_id=request['snapshot_id'],
             product_ids=[binding['product_id'] for metric in metrics.values() for binding in metric['bindings']],
-            max_scan_bytes=request['max_scan_bytes'])
+            max_scan_bytes=request['max_scan_bytes'], history=request)
     except ProductQueryError as exc:
         if exc.code != 'SCAN_BUDGET_EXCEEDED':
             raise
@@ -298,6 +298,8 @@ def run(service, config, request, query_factory, service_identity):
     for product in discovered.get('products', []):
         products.setdefault(product['product_id'], []).append(product)
     groups, definitions, refs = {}, {}, []
+    reasons = {subject: [] for subject in subject_map}
+    unqualified = set(discovered['unqualified_products'])
     for name, metric in metrics.items():
         seen, signatures = set(), set()
         for binding in metric['bindings']:
@@ -305,6 +307,11 @@ def run(service, config, request, query_factory, service_identity):
             if subject not in subject_map or subject in seen:
                 _reject('METRIC_BINDING_INVALID', '指标产品须唯一绑定本次集合内的完整对象身份。')
             seen.add(subject)
+            if binding['product_id'] in unqualified:
+                reasons[subject].append({'metric': name, 'product_id': binding['product_id'],
+                                         'code': 'NO_QUALIFIED_RECORD_IN_RANGE',
+                                         'qualification_diagnostics': [{'code': 'HISTORY_DEFINITION_TIME_UNSUPPORTED'}]})
+                continue
             candidates = [p for p in products.get(binding['product_id'], []) if p.get('subject') == binding['subject']]
             if not candidates:
                 _reject('PRODUCT_NOT_IN_SNAPSHOT', '固定快照内没有绑定该对象的产品。', binding)
@@ -330,7 +337,7 @@ def run(service, config, request, query_factory, service_identity):
                          'contract_bundle_ref': product.get('contract_bundle_ref')})
             group = groups.setdefault((subject, binding['product_id']), {'subject': binding['subject'], 'fields': {}, 'product': product})
             group['fields'][name] = metric['field']
-        if len(signatures) != 1:
+        if len(signatures) > 1:
             _reject('METRIC_DEFINITION_INCOMPATIBLE', '同一指标别名在对象间的固定定义或语义口径不同。', {'metric': name})
     _walk(request['predicate'], metrics, definitions)
     for order in request['order_by']:
@@ -342,7 +349,6 @@ def run(service, config, request, query_factory, service_identity):
     last = _decode_cursor(config, request['cursor'], query_hash, scope, request['snapshot_id']) if request.get('cursor') else None
     records = {subject: {} for subject in subject_map}
     cells = {subject: {} for subject in subject_map}
-    reasons = {subject: [] for subject in subject_map}
     budget_bytes = discovered['metadata_bytes']
     budget_nodes = scanned = candidate_rows = 0
     gaps, ambiguous = [], False

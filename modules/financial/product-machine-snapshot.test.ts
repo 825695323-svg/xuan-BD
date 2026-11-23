@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { WfdProductMachineClient } from '../../adapters/database/wfd-product-machine.js';
 import type { WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { AlgorithmSnapshotReference } from './algorithm-types.js';
-import { createWfdProductMachineSnapshotPort, inspectProductMachineSemantics } from './product-machine-snapshot.js';
+import { createWfdProductMachineSnapshotPort, extractSelectedCells, inspectProductMachineSemantics, matchesVolumeDefinition } from './product-machine-snapshot.js';
 
 const reference: AlgorithmSnapshotReference = {
   kind: 'wfd_fixed_snapshot', instanceId: 'fixture', productId: 'daily', snapshotId: 'snapshot', definitionRevision: 'revision',
@@ -30,6 +30,57 @@ function product(roles: WfdRecord, direction: string, timezone = 'UTC'): WfdReco
   } };
 }
 const roles = { observation: 'date', availability: 'available_at', bar_closed: 'true' };
+
+test('固定快照投影只将数值列的规范 reported_zero 交给算法为 0，证据保留原值和状态', async () => {
+  const volumeReference: AlgorithmSnapshotReference = { ...reference, fields: [...reference.fields, 'volume'],
+    fieldMapping: { ...reference.fieldMapping, volume: 'volume' }, semantics: { ...reference.semantics, volumeUnit: 'share' } };
+  const identities = { definition_ref: { version: reference.definitionRevision, digest: 'sha256:' + 'd'.repeat(64) },
+    contract_ref: { digest: 'sha256:' + 'a'.repeat(64) } };
+  const definition = { field_code: 'volume', data_type: 'integer', unit_code: 'share' };
+  const discovered = product(roles, 'raw');
+  ((discovered.declaration as WfdRecord).field_definitions as WfdRecord[]).push(definition);
+  const cell = { value: '0' as unknown, data_type: 'integer', value_state: 'reported_zero' };
+  const raw = { ...identities, product_id: reference.productId, row: { ...rows[0].row as WfdRecord,
+    values: { date: { value: '2026-01-01', value_state: 'valid_value' }, close: { value: '10', value_state: 'valid_value' },
+      available_at: { value: '2026-01-01T16:00:00Z', value_state: 'valid_value' }, volume: cell } } };
+  const client = {
+    discover: async () => ({ result: { products: [{ ...discovered, ...identities }] }, transport: 'synthetic' }),
+    read: async () => ({ result: { snapshot_id: reference.snapshotId, row_count: 1, rows: [raw] }, transport: 'synthetic' }),
+  } as unknown as WfdProductMachineClient;
+  const port = createWfdProductMachineSnapshotPort({ instanceId: reference.instanceId, client });
+  for (const type of ['decimal', 'integer']) for (const zero of ['0', 0]) {
+    cell.value = zero;
+    cell.data_type = definition.data_type = type;
+    const read = await port.read(volumeReference, readContext);
+    assert.equal(read.rows[0].volume, 0);
+    const inspected = extractSelectedCells([raw], ['volume']);
+    assert.deepEqual(inspected.unsafe, []);
+    assert.equal(inspected.cells[0].value, zero);
+    assert.equal(inspected.cells[0].value_state, 'reported_zero');
+  }
+  for (const [state, value, type] of [
+    ['reported_zero', '1', 'decimal'], ['reported_zero', -1, 'integer'], ['reported_zero', null, 'decimal'],
+    ['reported_zero', '0.0', 'decimal'], ['reported_zero', false, 'integer'], ['reported_zero', '0', 'text'],
+    ['unknown', '0', 'integer'], ['insufficient_warmup', null, 'decimal'], ['valid_value', null, 'decimal'],
+  ] as const) {
+    cell.value = value;
+    cell.value_state = state;
+    cell.data_type = definition.data_type = type;
+    await assert.rejects(port.read(volumeReference, readContext), { code: 'ALGORITHM_SNAPSHOT_CELL_STATE_UNSUPPORTED' });
+  }
+});
+
+test('成交量使用明示的数量单位并与数值字段定义精确匹配', () => {
+  for (const unit of ['share', 'shares', 'lot', 'lot_100_shares', 'hand', 'contract', 'unit', 'count', 'volume_shares']) {
+    for (const type of ['decimal', 'integer'])
+      assert.equal(matchesVolumeDefinition({ data_type: type, unit_code: unit }, unit), true);
+  }
+  for (const unit of ['cny', 'usd', 'money', 'cny_100million', 'cny_per_share', 'percent', 'ratio', 'bps',
+    'text', 'not_applicable', 'volume_usd', 'unknown'])
+    assert.equal(matchesVolumeDefinition({ data_type: 'decimal', unit_code: unit }, unit), false);
+  assert.equal(matchesVolumeDefinition({ data_type: 'text', unit_code: 'share' }, 'share'), false);
+  assert.equal(matchesVolumeDefinition({ data_type: 'decimal', unit_code: 'lot' }, 'share'), false);
+});
 
 test('MACD 用 WFD 固定定义的实际语义轴核对未复权收盘价和可得时间列', () => {
   const result = inspectProductMachineSemantics(product(roles, 'raw'), rows, reference);

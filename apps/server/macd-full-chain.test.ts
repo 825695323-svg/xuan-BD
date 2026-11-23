@@ -14,8 +14,9 @@ import { buildStructuredIngestDocument } from '../../modules/collection/r1-struc
 import { ALGORITHM_METHOD_IDS, ALGORITHM_RUNTIME } from '../../modules/financial/algorithm-types.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { ProcessRuntime } from '../../platform/runtime/programs.js';
+import { digestOperationArgs } from '../../platform/security/permissions.js';
 import { CoreDatabase } from '../../platform/state/database.js';
-import { createFullChainFixture } from './full-chain-test-support.js';
+import { createFullChainFixture, readModelEvidencePreview } from './full-chain-test-support.js';
 import { localAlgorithmConfiguration } from './financial-configuration.js';
 import { createApplicationServices } from './services.js';
 
@@ -115,11 +116,11 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
         { action: 'execute', target: { kind: 'file', path: processRuntime.path('python3') } },
       ] });
       const toolsInLibrary = workspace.toolLibrary!.view().tools;
-      assert.deepEqual(toolsInLibrary.filter(tool => tool.status === 'ready').map(tool => tool.id), ALGORITHM_METHOD_IDS);
-      const assetTools = toolsInLibrary.filter(tool => tool.state === 'assets_only');
-      assert.deepEqual(assetTools.map(tool => tool.id),
+      assert.deepEqual(toolsInLibrary.filter(tool => tool.category === 'market' && tool.status === 'ready').map(tool => tool.id), ALGORITHM_METHOD_IDS);
+      const pureTools = toolsInLibrary.filter(tool => tool.executor === 'typescript');
+      assert.deepEqual(pureTools.map(tool => tool.id),
         ['financial_single_quarter', 'financial_ttm', 'financial_growth', 'financial_ratios', 'price_adjustment']);
-      assert.ok(assetTools.every(tool => tool.status === 'unavailable' && tool.reason?.includes('algorithms.calculate')));
+      assert.ok(pureTools.every(tool => tool.state === 'executable' && tool.status === 'ready' && tool.reason === null));
       assert.equal(runtime.currentIdentity().mode, 'user_test');
       const submitted = (await runtime.client.submit(sourceDocument(suppliedCloses))).result;
       assert.equal(submitted.state, 'published_formal', JSON.stringify({ errors: submitted.errors, state: submitted.state }));
@@ -147,7 +148,9 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
         assert.ok(frozen?.internalAgentRulesText && frozen.internalAgentRules);
         const boundary = frozen.internalAgentRulesText.indexOf('\n\n13. **算法边界**');
         assert.ok(boundary > 0);
-        const historical = { ...frozen, internalAgentRulesText: frozen.internalAgentRulesText.slice(0, boundary) + '\n',
+        const v18Text = frozen.internalAgentRulesText.slice(0, boundary).replace(/^1\. .+$/mu,
+          '1. **身份与范围**：你是 xuan BD（数据处理与导入应用）的内置操作代理，只处理来源采集、转换、解析、清洗、标注、核对、结构化、基础算法和导入交接。研究、交易、回测及独立 xuan 不属于本应用。') + '\n';
+        const historical = { ...frozen, internalAgentRulesText: v18Text,
           internalAgentRules: { ...frozen.internalAgentRules, version: 18,
             digest: 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c' } };
         assertInternalAgentRules(historical);
@@ -162,17 +165,7 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
         JSON.parse(output.content.filter(part => part.type === 'text').map(part => part.text).join(''));
       async function invoke(action: string, args: Record<string, unknown>, callId: string) {
         const result = parse(await perform.execute(callId, { action, args }, undefined, undefined, context));
-        if (result.complete !== false) return result;
-        const { evidenceId, sha256 } = result.evidence;
-        let page = result.evidence, text = page.text;
-        for (let index = 0; !page.done; index++) {
-          assert.ok(page.nextCursor);
-          page = parse(await evidenceRead.execute(`${callId}-evidence-${index}`,
-            { evidenceId, sha256, cursor: page.nextCursor }, undefined, undefined, context));
-          text += page.text;
-        }
-        assert.equal(wfdSha256(text), sha256);
-        return JSON.parse(text);
+        return readModelEvidencePreview(result, evidenceRead, callId);
       }
       for (const methodId of ['unregistered_indicator', 'ttm', 'macro_yoy']) {
         await assert.rejects(invoke('algorithms.calculate', { calculationJson: JSON.stringify({ ...request, methodId }) },
@@ -205,6 +198,12 @@ for (const size of [80, 12]) test(`AGENTS MACD publishes ${size} synthetic rows 
       const { taskId, wfdPublication } = data;
       const result = algorithms.view(taskId).result!;
       assert.ok(result);
+      const current = runtime.currentIdentity();
+      const oldConnection = Object.fromEntries((['connectionId', 'protocol', 'profile', 'mode', 'purpose', 'runtimeIdentity',
+        'store', 'runtime', 'callerId', 'namespace', 'configSha256', 'schemaSha256', 'entrySha256', 'pythonPath', 'entryPath'] as const)
+        .map(key => [key, current[key]]));
+      assert.equal((result.source as WfdRecord).connectionIdentityDigest, digestOperationArgs(oldConnection),
+        '派生任务持久化的连接摘要须与旧 R1 身份完全相同，随后按原任务号恢复发布');
       assert.equal(result.rows.length, suppliedCloses.length);
       const associations = workspace.r1!.localExplanation(wfdPublication.requestId).associations as WfdRecord[];
       assert.equal(associations.length, suppliedCloses.length);

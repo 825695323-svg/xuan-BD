@@ -33,28 +33,28 @@ interface Diagnostic {
   fields: readonly string[];
 }
 
-const basisAxes = ['subject', 'accounting_standard', 'currency', 'scope', 'comparability_basis', 'unit'] as const;
+export const financialBasisAxes = ['subject', 'accounting_standard', 'currency', 'scope', 'comparability_basis', 'unit'] as const;
 const subtract = (a: Fraction, b: Fraction) => add(a, negative(b));
 const missing = (value: unknown): value is null | undefined => value === null || value === undefined;
-const known = (value: unknown): value is string => typeof value === 'string' && !!value && value.trim() === value
-  && !/^(?:unknown|unresolved|unspecified|unverified|not_asserted|未知|未明确)$/iu.test(value);
+export const knownFinancialLabel = (value: unknown): value is string => typeof value === 'string' && !!value && value.trim() === value
+  && !/^(?:unknown|unresolved|unspecified|unverified|not_asserted|not_applicable|indeterminate|未知|未明确|不明|待核)$/iu.test(value);
 
 function reject(code: string, message: string): never {
   throw Object.assign(new Error(message), { code: 'FINANCIAL_' + code });
 }
 
 function validateBasis(basis: FinancialBasis, requireFiscalCalendar: boolean): void {
-  for (const axis of basisAxes) {
-    if (!known(basis[axis])) reject('BASIS_REQUIRED', '缺少明确财务口径 ' + axis);
+  for (const axis of financialBasisAxes) {
+    if (!knownFinancialLabel(basis[axis])) reject('BASIS_REQUIRED', '缺少明确财务口径 ' + axis);
   }
-  if ((requireFiscalCalendar || basis.fiscalCalendar !== undefined) && !known(basis.fiscalCalendar))
+  if ((requireFiscalCalendar || basis.fiscalCalendar !== undefined) && !knownFinancialLabel(basis.fiscalCalendar))
     reject('BASIS_REQUIRED', '缺少明确财历。');
 }
 
 function validateObservation(row: FinancialObservation, reference: FinancialObservation): void {
   validateBasis(row, true);
-  if (!known(row.concept)) reject('BASIS_REQUIRED', '缺少明确财务科目。');
-  for (const axis of [...basisAxes, 'concept', 'fiscalCalendar', 'periodType', 'additive'] as const) {
+  if (!knownFinancialLabel(row.concept)) reject('BASIS_REQUIRED', '缺少明确财务科目。');
+  for (const axis of [...financialBasisAxes, 'concept', 'fiscalCalendar', 'periodType', 'additive'] as const) {
     if (row[axis] !== reference[axis]) reject('BASIS_MISMATCH', '财务观测口径不一致 ' + axis);
   }
   if (!['duration', 'instant'].includes(row.periodType) || typeof row.additive !== 'boolean'
@@ -152,9 +152,9 @@ export function computeFinancialGrowth(current: FinancialObservation, prior: Fin
   return { value: formatExactDecimal(value), lineage, diagnostics: [] as Diagnostic[] };
 }
 
-const snapshotFields = ['revenue', 'costOfRevenue', 'netProfit', 'averageAssets', 'averageEquity', 'currentAssets', 'currentLiabilities',
+export const financialRatioFields = ['revenue', 'costOfRevenue', 'netProfit', 'averageAssets', 'averageEquity', 'currentAssets', 'currentLiabilities',
   'averageReceivables', 'averageInventory', 'averagePayables', 'periodDays', 'cfo', 'capex'] as const;
-type SnapshotField = typeof snapshotFields[number];
+type SnapshotField = typeof financialRatioFields[number];
 
 /** Supply a single comparable period and monetary unit. CAPEX is a positive outflow magnitude. */
 export type FinancialRatioSnapshot = FinancialBasis & Partial<Record<SnapshotField, DecimalInput | null>> & {
@@ -164,10 +164,10 @@ export type FinancialRatioSnapshot = FinancialBasis & Partial<Record<SnapshotFie
 
 export function computeFinancialRatios(snapshot: FinancialRatioSnapshot) {
   validateBasis(snapshot, false);
-  if (!known(snapshot.periodRef)) reject('PERIOD', '比率快照须声明期间。');
+  if (!knownFinancialLabel(snapshot.periodRef)) reject('PERIOD', '比率快照须声明期间。');
   const diagnostics: Diagnostic[] = [];
   const inputs = new Map<SnapshotField, Fraction>();
-  for (const field of snapshotFields) {
+  for (const field of financialRatioFields) {
     const raw = snapshot[field];
     if (!missing(raw)) inputs.set(field, readExactDecimal(raw, field));
   }

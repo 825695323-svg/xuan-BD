@@ -54,6 +54,8 @@ export interface CandidateTablePlan {
   financialCalculation?: import('./data-processing/financial-fixed.js').FinancialCalculation;
   /** 宿主在计划建立时冻结；外部readTables参数不接收此字段。 */
   financialReaderBinding?: string;
+  /** 宿主在计划建立时冻结的外置 WFD 读取实现摘要。 */
+  financialReadBindingDigest?: string;
   xbrlSelection?: XbrlSelection;
   necessaryTextSelection?: NecessaryTextSelection;
   eventTextSelection?: EventTextSelection;

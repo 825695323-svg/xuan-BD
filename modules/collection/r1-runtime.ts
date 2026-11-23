@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import type { R1ConnectionIdentity } from '../../contracts/r1-contracts.js';
+import type { R1ConnectionIdentity, R1ReadBinding } from '../../contracts/r1-contracts.js';
 import { canonicalWfdJson, wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
 import type { ResourceBindings } from '../../platform/resources/bindings.js';
@@ -33,6 +33,12 @@ export interface R1Runtime {
   client: WfdStructuredIngestClient;
   /** Re-resolve the registered identity and hash its actual files before every dispatch/recovery. */
   currentIdentity(): R1ConnectionIdentity;
+  currentBundleIdentity(): R1ConnectionIdentity & { bundleImplSha256: string | null };
+  currentBundleSnapshot?(): {
+    identity: R1ConnectionIdentity & { bundleImplSha256: string | null };
+    legacyIdentities: readonly (R1ConnectionIdentity & { bundleImplSha256?: string | null })[];
+  };
+  currentReadBinding(): R1ReadBinding;
 }
 export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
   const registeredSelection = () => options.resources.document.resources.connections_registry
@@ -46,19 +52,21 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
     processing: options.processing, candidates: options.candidates, verifyFixedDerived: options.verifyFixedDerived,
     requireG5Admission: options.requireG5Admission ?? connection.profile.mode === 'production' });
   const client = new WfdStructuredIngestClient(connection.client, connection.schemaPath);
-  const initialConfig = JSON.parse(readFileSync(connection.configPath, 'utf8')) as Record<string, unknown>;
-  const currentIdentity = (): R1ConnectionIdentity => {
+  const initialConfig = connection.config;
+  const currentConnection = () => {
     if ((options.connectionId ?? registeredSelection()) !== selectedConnectionId) {
       throw new TaskError('R1_CONNECTION_RELOAD_REQUIRED', '手动投喂的受控连接选择已变化；须核对后重新装配，原请求不改绑。');
     }
     const actual = resolveProductMachineConnection(options.resources, connection.connectionId, connectionOptions);
-    const raw = readFileSync(actual.configPath);
-    const config = JSON.parse(raw.toString('utf8')) as Record<string, unknown>;
+    const raw = actual.configRaw, config = actual.config;
     if (canonicalWfdJson(actual.profile) !== canonicalWfdJson(connection.profile)
       || actual.schemaPath !== connection.schemaPath || config.project_root !== initialConfig.project_root) {
       throw new TaskError('R1_CONNECTION_RELOAD_REQUIRED', '连接登记或内部进程入口已变化；现有客户端不能展示新连接却调用旧入口，须核对后重新装配。');
     }
     if (config.profile !== 'data_only') throw new TaskError('R1_PROFILE_REQUIRED', '新交接只允许已登记的 data_only 连接；旧 profile 不能被重放。');
+    return { actual, raw, config };
+  };
+  const identityOf = ({ actual, raw }: ReturnType<typeof currentConnection>): R1ConnectionIdentity => {
     const usage = actual.profile.mode === 'production'
       ? { mode: 'production' as const, purpose: 'production' as const }
       : { mode: 'user_test' as const, purpose: 'user_test' as const };
@@ -69,6 +77,27 @@ export function createR1HandoffRuntime(options: R1RuntimeOptions): R1Runtime {
       entrySha256: wfdSha256(readFileSync(actual.profile.entry_path)),
       pythonPath: actual.profile.python_path, entryPath: actual.profile.entry_path };
   };
+  const currentIdentity = () => identityOf(currentConnection());
   if (connection.profile.mode === 'production') currentIdentity();
-  return { connection, service, client, currentIdentity };
+  return { connection, service, client, currentIdentity,
+    currentBundleIdentity: () => {
+      const current = currentConnection();
+      const bundleImplSha256 = current.actual.bundleImplSha256();
+      // 装配时核对实现可读，未配置分包权限的连接仍沿用历史账本的空摘要。
+      return { ...identityOf(current), bundleImplSha256: current.config.bundle_access == null ? null : bundleImplSha256 };
+    },
+    currentBundleSnapshot: () => {
+      const current = currentConnection(), base = identityOf(current);
+      const digests = current.actual.bundleImplDigests
+        ? current.actual.bundleImplDigests()
+        : { current: current.actual.bundleImplSha256(), legacy: [] };
+      const hasAccess = current.config.bundle_access != null;
+      return {
+        identity: { ...base, bundleImplSha256: hasAccess ? digests.current : null },
+        legacyIdentities: hasAccess
+          ? [base, ...digests.legacy.map(bundleImplSha256 => ({ ...base, bundleImplSha256 }))]
+          : [base],
+      };
+    },
+    currentReadBinding: () => currentConnection().actual.readBinding() };
 }

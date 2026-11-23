@@ -2,8 +2,9 @@ import type { JsonValue } from '../../contracts/task-contracts.js';
 import { canonicalWfdJson, wfdSha256, type WfdRecord } from '../../adapters/database/wfd-transport.js';
 import type { WfdProductMachineClient } from '../../adapters/database/wfd-product-machine.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
-import { isExplicitUtcInstant } from '../../contracts/financial-value.js';
+import { isExplicitUtcInstant, isNumericReportedZero } from '../../contracts/financial-value.js';
 import type { AlgorithmSnapshotPort, AlgorithmSnapshotRead, AlgorithmSnapshotReference, AlgorithmSnapshotRowEvidence } from './algorithm-types.js';
+import { historicalExclusionSummary } from './historical-exclusions.js';
 import { wfdFixedReadEvidence } from '../collection/purpose-eligibility.js';
 
 /**
@@ -55,6 +56,16 @@ export interface ProductMachineFieldDefinition {
   measurement_nature: string | null;
 }
 
+// WFD 已知数量单位及明确的成交量别名。带 volume_ 前缀的单位也须能确定实际量纲。
+const VOLUME_UNITS = new Set(['share', 'shares', 'lot', 'lots', 'lot_100_shares', 'hand', 'hands',
+  'contract', 'contracts', 'unit', 'units', 'count', 'vehicle']);
+
+export function matchesVolumeDefinition(field: unknown, declaredUnit: unknown): boolean {
+  return isWfdRecord(field) && (field.data_type === 'decimal' || field.data_type === 'integer')
+    && typeof declaredUnit === 'string' && field.unit_code === declaredUnit
+    && VOLUME_UNITS.has(declaredUnit.toLowerCase().replace(/^volume_/u, ''));
+}
+
 export interface ProductMachineCellMetadata {
   row: number;
   field: string;
@@ -75,8 +86,8 @@ export interface ProductMachineCellInspection {
 
 /**
  * 逐单元格保留 value/value_state/data_type/unit_code/unit_ref，不把
- * unknown/null 与 not_applicable/null 抹成同一个裸 null。算法只接受
- * value_state=valid_value 且 value 非 null 的单元格；其余明确拒绝。
+ * unknown/null 与 not_applicable/null 抹成同一个裸 null。数值列的 reported_zero
+ * 只接受规范的 '0' 或 0，保留原始单元格证据，计算投影统一为数值 0。
  */
 export function extractSelectedCells(rows: WfdRecord[], fields: string[], definitions?: ProductMachineFieldDefinition[],
   defaultUnitCode?: string | null): ProductMachineCellInspection {
@@ -86,6 +97,9 @@ export function extractSelectedCells(rows: WfdRecord[], fields: string[], defini
       const cell = valueCell(row, field);
       const present = cell !== null;
       const definition = definitions?.find(item => item.field_code === field);
+      const dataType = definition?.data_type ?? cell?.data_type;
+      const reportedZero = cell?.value_state === 'reported_zero' && isNumericReportedZero(dataType, cell.value)
+        && (!cell.data_type || cell.data_type === dataType);
       cells.push({
         row: rowIndex,
         field,
@@ -96,8 +110,8 @@ export function extractSelectedCells(rows: WfdRecord[], fields: string[], defini
         unit_code: cell?.unit_code ?? null,
         unit_ref: cell?.unit_ref ?? null,
         declared_unit_code: definition?.unit_code ?? (fields.length === 1 ? defaultUnitCode ?? null : null),
-        safe_value_state: present && cell?.value_state === 'valid_value'
-          && cell.value !== null && cell.value !== undefined,
+        safe_value_state: reportedZero || (present && cell.value_state === 'valid_value'
+          && cell.value !== null && cell.value !== undefined),
       });
     }
   }
@@ -219,8 +233,18 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
       if (fixed.perspective && fixed.perspective !== 'snapshot_contents'
         && diagnostics.some(item => isWfdRecord(item) && (item.decision === 'indeterminate'
           || fixed.perspective === 'market_known_at' && item.reason === 'WITHDRAWN_AT_PERSPECTIVE' && !isWfdRecord(item.withdrawal_public_time)))) {
-        throw new TaskError('ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE',
+        const error = new TaskError('ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE',
           '历史版本选择存在待补证据，不能把仍有撤销/公开时间缺口的部分结果送入计算。');
+        recordHistoricalRejectionAudit(error, canonicalRecord({
+          kind: 'historical_snapshot_incomplete',
+          product_id: fixed.productId,
+          snapshot_id: fixed.snapshotId,
+          perspective: fixed.perspective,
+          at: fixed.at ?? null,
+          row_count: rawRows.length,
+          diagnostics,
+        }) as unknown as JsonValue);
+        throw error;
       }
       const declaredRows = typeof result.row_count === 'number' ? result.row_count : null;
       if (declaredRows === null || rawRows.length !== declaredRows) {
@@ -231,11 +255,20 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
       }
       if (rawRows.length === 0) {
         if (fixed.perspective !== undefined && fixed.perspective !== 'snapshot_contents') {
-          throw new TaskError('ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', JSON.stringify({
+          const error = new TaskError('ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION', JSON.stringify({
             product_id: fixed.productId, snapshot_id: fixed.snapshotId,
-            perspective: fixed.perspective, at: fixed.at ?? null, diagnostics: diagnostics.slice(0, 64),
+            perspective: fixed.perspective, at: fixed.at ?? null, historicalExclusions: historicalExclusionSummary(diagnostics),
             action: '该固定快照没有在所请求历史视角/截止下合格的具体版本；不退回当前版本或快照内容。',
           }));
+          recordHistoricalRejectionAudit(error, canonicalRecord({
+            kind: 'historical_no_eligible_version',
+            product_id: fixed.productId,
+            snapshot_id: fixed.snapshotId,
+            perspective: fixed.perspective,
+            at: fixed.at ?? null,
+            diagnostics,
+          }) as unknown as JsonValue);
+          throw error;
         }
         throw new TaskError('ALGORITHM_SNAPSHOT_EMPTY', '固定快照产品没有行；算法入口不接受空输入。');
       }
@@ -331,7 +364,7 @@ export function createWfdProductMachineSnapshotPort(options: WfdProductMachineSn
           requestedHeldScope: fixed.heldScope ?? null, actualHeldScope: result.held_scope ?? null,
           requestedUsableStage: fixed.usableStage ?? null, actualUsableStage: result.usable_stage ?? null,
           includeHistory: result.include_history ?? null,
-          diagnostics: diagnostics.slice(0, 64),
+          diagnostics,
         },
       } as unknown as JsonValue;
       // 逐行提取实际 WFD 资格、公开/持有时间、修订状态和治理证据，供共用用途资格规则消费。
@@ -623,12 +656,12 @@ function verifyFixedFields(product: WfdRecord, rows: WfdRecord[], reference: Alg
     throw new TaskError('ALGORITHM_SNAPSHOT_CELL_STATE_UNSUPPORTED', JSON.stringify({
       product_id: reference.productId,
       snapshot_id: reference.snapshotId,
-      reason: 'algorithm input requires value_state=valid_value and a non-null value for every selected cell',
+      reason: 'selected cells require a non-null valid_value or a numeric reported_zero carrying zero',
       unsafe: cellInspection.unsafe.slice(0, 64),
     }));
   }
   const mappingFields = [reference.fieldMapping.timestamp, reference.fieldMapping.close,
-    reference.fieldMapping.open, reference.fieldMapping.high, reference.fieldMapping.low, reference.fieldMapping.available_at]
+    reference.fieldMapping.open, reference.fieldMapping.high, reference.fieldMapping.low, reference.fieldMapping.volume, reference.fieldMapping.available_at]
     .filter((field): field is string => typeof field === 'string' && field.length > 0);
   const mappingNotRequested = mappingFields.filter(field => !reference.fields.includes(field));
   if (mappingNotRequested.length) {
@@ -647,7 +680,7 @@ function projectValueRows(rows: WfdRecord[], fields: string[]): Record<string, u
     for (const field of fields) {
       const cell = valueCell(row, field);
       if (!cell) throw new TaskError('ALGORITHM_SNAPSHOT_FIELDS_MISMATCH', `第 ${index} 行缺少固定定义字段 ${field}。`);
-      projected[field] = cell.value;
+      projected[field] = cell.value_state === 'reported_zero' ? 0 : cell.value;
     }
     return projected;
   });
@@ -825,6 +858,16 @@ function assertReference(reference: AlgorithmSnapshotReference): void {
     || reference.fields.some(field => typeof field !== 'string' || !field)) {
     throw new TaskError('ALGORITHM_SNAPSHOT_INVALID', '固定快照引用需要实例、产品、具体 snapshot、定义修订和明确字段。');
   }
+}
+
+const historicalRejectionAudits = new WeakMap<object, JsonValue>();
+
+export function recordHistoricalRejectionAudit(error: unknown, payload: JsonValue): void {
+  if (error && typeof error === 'object') historicalRejectionAudits.set(error, payload);
+}
+
+export function readHistoricalRejectionAudit(error: unknown): JsonValue | undefined {
+  return error && typeof error === 'object' ? historicalRejectionAudits.get(error) : undefined;
 }
 
 function canonicalRecord(value: unknown): WfdRecord {

@@ -55,8 +55,8 @@ function unionBox(boxes: SegmentBBox[]): SegmentBBox {
   };
 }
 
-function segmentId(fields: {
-  documentId: string; documentVersion: string; parserVersion: string; kind: string; pageNumber: number;
+export function segmentId(fields: {
+  documentId: string; documentVersion: string; parserVersion: string; kind: string; pageNumber: number | null;
   anchor: unknown; textDigest: string;
 }): string {
   const key = JSON.stringify([SEGMENT_SCHEMA, fields.documentId, fields.documentVersion, fields.parserVersion,
@@ -161,10 +161,10 @@ function dataLikeRow(row: PdfRowInput): boolean {
   return cells.filter(numericValue).length * 2 >= cells.length;
 }
 
-function splitTableParts(rows: PdfRowInput[]): PdfRowInput[][] {
-  const parts: PdfRowInput[][] = [];
-  let current: PdfRowInput[] = [];
-  const cellsOf = (list: PdfRowInput[]) => list.reduce((total, row) => total + row.cells.length, 0);
+export function splitTableParts<R extends { cells: unknown[] }>(rows: R[]): R[][] {
+  const parts: R[][] = [];
+  let current: R[] = [];
+  const cellsOf = (list: R[]) => list.reduce((total, row) => total + row.cells.length, 0);
   for (const row of rows) {
     if (current.length && (current.length >= MAX_TABLE_ROWS_PER_PART || cellsOf([...current, row]) > MAX_TABLE_CELLS_PER_PART)) {
       parts.push(current); current = [row]; continue;
@@ -254,9 +254,11 @@ function renderTable(plan: TablePlan, rows: PdfRowInput[], tableId: string, part
   };
 }
 
-export function buildDocumentSegments(input: SegmentBuildInput): SegmentBuildResult {
+type PdfSegment = DocSegment & { bbox: SegmentBBox; page_number: number };
+
+export function buildDocumentSegments(input: SegmentBuildInput): SegmentBuildResult<PdfSegment> {
   const parserVersion = input.parserVersion ?? SEGMENTER_VERSION;
-  const segments: DocSegment[] = [];
+  const segments: PdfSegment[] = [];
   const documentIssues: SegmentBuildResult['documentIssues'] = [];
   let ordinal = 0;
 
@@ -283,7 +285,7 @@ export function buildDocumentSegments(input: SegmentBuildInput): SegmentBuildRes
       occurrences.set(key, value);
       return value;
     };
-    const pushSegment = (segment: DocSegment) => { ordinal += 1; segments.push({ ...segment, ordinal }); };
+    const pushSegment = (segment: PdfSegment) => { ordinal += 1; segments.push({ ...segment, ordinal }); };
     const flushParagraph = () => {
       if (!paragraph.length) return;
       const first = paragraph[0]!, last = paragraph[paragraph.length - 1]!;
@@ -351,6 +353,10 @@ export function buildDocumentSegments(input: SegmentBuildInput): SegmentBuildRes
     }
   }
 
+  return finishSegments(segments, documentIssues);
+}
+
+export function finishSegments<S extends DocSegment>(segments: S[], documentIssues: SegmentBuildResult['documentIssues']): SegmentBuildResult<S> {
   let cursor = 0;
   for (const segment of segments) {
     segment.char_start = cursor;

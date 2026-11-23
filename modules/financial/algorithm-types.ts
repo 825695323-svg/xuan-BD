@@ -207,6 +207,13 @@ export const ALGORITHM_METHODS = Object.freeze({
 export type AlgorithmMethodId = keyof typeof ALGORITHM_METHODS;
 export const ALGORITHM_METHOD_IDS = Object.freeze(Object.keys(ALGORITHM_METHODS) as AlgorithmMethodId[]);
 
+export const PURE_OPERATOR_IDS = Object.freeze(['financial_single_quarter', 'financial_ttm', 'financial_growth',
+  'financial_ratios', 'price_adjustment'] as const);
+export type PureOperatorId = typeof PURE_OPERATOR_IDS[number];
+export function isPureOperatorId(value: unknown): value is PureOperatorId {
+  return PURE_OPERATOR_IDS.some(id => id === value);
+}
+
 export function isAlgorithmMethodId(value: unknown): value is AlgorithmMethodId {
   return typeof value === 'string' && Object.hasOwn(ALGORITHM_METHODS, value);
 }
@@ -433,7 +440,14 @@ export interface AlgorithmSnapshotPort {
   read(reference: AlgorithmSnapshotReference, context: { signal: AbortSignal; taskId?: string }): Promise<AlgorithmSnapshotRead>;
 }
 
-export type AlgorithmDiagnosticReason = 'insufficient_warmup' | 'undefined_zero_denominator' | 'undefined_flat_rsi' | 'undefined_nonpositive_log_price';
+export const ALGORITHM_NULL_STATES = Object.freeze({
+  insufficient_warmup: 'insufficient_warmup',
+  zero_denominator: 'not_applicable',
+  undefined_zero_denominator: 'not_applicable',
+  undefined_flat_rsi: 'not_applicable',
+  undefined_nonpositive_log_price: 'not_applicable',
+} as const);
+export type AlgorithmDiagnosticReason = keyof typeof ALGORITHM_NULL_STATES;
 export interface AlgorithmInvalidInterval { start: string; end: string; reason: 'insufficient_history' | AlgorithmDiagnosticReason; count: number }
 export interface AlgorithmGap { code: string; message: string; scope?: string }
 

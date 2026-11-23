@@ -2,12 +2,15 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import fs, { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { Backend } from '../../contracts/backend.js';
 import type { HealthResponse } from '../../contracts/contracts.js';
+import type { TaskService } from '../../platform/jobs/tasks.js';
 import type { JsonValue, TaskRecord } from '../../contracts/task-contracts.js';
 import { PersonalCore } from '../../modules/agent/runtime/core.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
@@ -25,6 +28,36 @@ const productRoot = join(codeRoot, 'wfd/product');
 const health: HealthResponse = { name: 'xuan BD', backend: 'demo', configured: false, model: null, provider: null,
   notice: 'isolated full-chain test; model disabled' };
 const backend: Backend = { id: 'isolated-no-model', createSession: async () => { throw new Error('Model calls are disabled in full-chain tests'); } };
+
+export async function readModelEvidencePreview(first: Record<string, any>, reader: ToolDefinition, callId: string) {
+  if (first.complete !== false || !first.evidence) return first;
+  const { evidenceId, sha256 } = first.evidence;
+  let page = first.evidence, text = page.text;
+  for (let count = 1; !page.done; count++) {
+    assert.ok(page.nextCursor && count < 128);
+    const result = await reader.execute(callId + '-page-' + count, { evidenceId, sha256, cursor: page.nextCursor },
+      undefined, undefined, {} as Parameters<ToolDefinition['execute']>[4]);
+    page = JSON.parse(result.content.map(part => part.type === 'text' ? part.text : '').join(''));
+    assert.equal(page.startByte, Buffer.byteLength(text)); text += page.text;
+  }
+  assert.equal(createHash('sha256').update(text).digest('hex'), sha256);
+  return JSON.parse(text);
+}
+
+/** 对真实实现文件的读回字节做进程内故障注入；不改源码磁盘，finally 恢复原 fs 导出。 */
+export function changedImplementation(suffix: string, check: () => void): void {
+  const read = fs.readFileSync;
+  let matched = 0;
+  fs.readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => {
+    const original = read(...args);
+    if (!String(args[0]).replaceAll('\\', '/').endsWith(suffix)) return original;
+    matched++;
+    return typeof original === 'string' ? original + '\n' : Buffer.concat([original, Buffer.from('\n')]);
+  }) as typeof fs.readFileSync;
+  syncBuiltinESMExports();
+  try { check(); assert.ok(matched > 0, suffix); }
+  finally { fs.readFileSync = read; syncBuiltinESMExports(); }
+}
 
 export interface FullChainFixture {
   root: string;
@@ -46,9 +79,10 @@ function writeJson(path: string, value: unknown): void {
 /** Caller selects a new, dedicated parent root after checking that it did not exist before this batch. */
 export function createFullChainFixture(input: { name: string; machine?: boolean; bundledTranscription?: boolean;
   privateRoot?: string;
+  parentRoot?: string;
   bundledCodeRoot?: string;
   units?: Record<string, { dimension: string }> }): FullChainFixture {
-  const parent = process.env.XUAN_FULL_CHAIN_ROOT;
+  const parent = input.parentRoot ?? process.env.XUAN_FULL_CHAIN_ROOT;
   assert.ok(parent && isAbsolute(parent) && existsSync(parent) && statSync(parent).isDirectory(),
     'XUAN_FULL_CHAIN_ROOT must name the dedicated, pre-created full-chain test root.');
   assert.match(input.name, /^[a-z0-9_-]{1,48}$/u);
@@ -174,16 +208,7 @@ export async function openFullChainHost(fixture: FullChainFixture, webRoot?: str
     assert.equal(response.status, 202, JSON.stringify(value));
     return value;
   };
-  const settled = async (taskId: string, timeoutMs = 60_000): Promise<TaskRecord> => {
-    const terminal = (task: TaskRecord) => ['succeeded', 'failed', 'cancelled', 'needs_review', 'waiting_approval', 'blocked', 'interrupted'].includes(task.status);
-    const current = services.tasks.get(taskId); if (terminal(current)) return current;
-    return await new Promise<TaskRecord>((resolve, reject) => {
-      const timer = setTimeout(() => { unsubscribe(); reject(new Error('Task did not settle: ' + taskId)); }, timeoutMs);
-      const unsubscribe = services.tasks.subscribe(({ task }) => {
-        if (task.id === taskId && terminal(task)) { clearTimeout(timer); unsubscribe(); resolve(task); }
-      });
-    });
-  };
+  const settled = (taskId: string, timeoutMs?: number) => settleFixtureTask(services.tasks, taskId, timeoutMs);
   let closed = false;
   return { fixture, database, core, services, base, call, upload, settled, async close() {
     // 测试内的 fetch keep-alive 连接会让 server.close 一直等待；显式关闭全部
@@ -227,4 +252,15 @@ export function startDirect(host: FullChainHost, action: string, args: Record<st
     runtimeId: routed.runtimeId, action: routed.action, args: routed.args, requestId,
     versions: host.services.direct.registry.captureVersions(routed.action, routed.args) });
   return task.status === 'ready' ? host.services.tasks.start(task.id, task.version) : task;
+}
+
+export async function settleFixtureTask(tasks: TaskService, taskId: string, timeoutMs = 60_000): Promise<TaskRecord> {
+  const terminal = (task: TaskRecord) => ['succeeded', 'failed', 'cancelled', 'needs_review', 'waiting_approval', 'blocked', 'interrupted'].includes(task.status);
+  const current = tasks.get(taskId); if (terminal(current)) return current;
+  return await new Promise<TaskRecord>((resolve, reject) => {
+    const timer = setTimeout(() => { unsubscribe(); reject(new Error('Task did not settle: ' + taskId)); }, timeoutMs);
+    const unsubscribe = tasks.subscribe(({ task }) => {
+      if (task.id === taskId && terminal(task)) { clearTimeout(timer); unsubscribe(); resolve(task); }
+    });
+  });
 }

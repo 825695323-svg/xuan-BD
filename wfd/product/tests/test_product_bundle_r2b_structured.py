@@ -198,6 +198,92 @@ def _valid_bundle(tmp_path):
     return descriptor, product_id, snapshot_id
 
 
+@pytest.mark.parametrize("change", ["replaced_bytes", "symlink_to_identical_bytes"])
+def test_import_rechecks_catalog_object_at_immutable_write(tmp_path, monkeypatch, change):
+    from wfd_sdk import product_bundle
+    descriptor, _, _ = _valid_bundle(tmp_path)
+    bundle, target = tmp_path / "bundle", tmp_path / "target"
+    record = next(r for r in descriptor["records"] if "/definitions/" in r["relative_path"])
+    obj = bundle / "objects" / record["sha256"]
+    original = obj.read_bytes()
+    verify = product_bundle._verify_structured_bundle
+
+    def verify_then_replace(*args):
+        verified = verify(*args)
+        replacement = tmp_path / "replacement"
+        if change == "replaced_bytes":
+            replacement.write_bytes(original + b"\n")
+            replacement.replace(obj)
+        else:
+            obj.rename(replacement)
+            obj.symlink_to(replacement)
+        return verified
+
+    with monkeypatch.context() as patch:
+        patch.setattr(product_bundle, "_verify_structured_bundle", verify_then_replace)
+        with pytest.raises(ValueError, match="STRUCTURED_RECORD_DIGEST_MISMATCH|STRUCTURED_(SYMLINK_FORBIDDEN|PATH_ESCAPE)"):
+            import_structured_bundle(bundle, target, runtime_root=tmp_path / "rt")
+    assert not (target / record["relative_path"]).exists()
+    obj.unlink()
+    obj.write_bytes(original)
+    _, recovered = import_structured_bundle(bundle, target, runtime_root=tmp_path / "rt")
+    assert recovered["target_snapshot_id"] == descriptor["target_snapshot_id"]
+    assert (target / record["relative_path"]).read_bytes() == original
+
+
+def test_full_import_uses_the_inventory_approved_by_the_outer_verifier(tmp_path, monkeypatch):
+    from wfd_sdk import product_bundle
+    _valid_bundle(tmp_path)
+    bundle, target = tmp_path / "bundle", tmp_path / "target"
+    import_package = product_bundle.import_package
+    extra_data, extra_meta = "observations/unlisted.parquet", "catalog/unlisted.json"
+
+    def replace_disk_inventory(package, store, **kwargs):
+        path = package / "inventory.json"
+        replacement = json.loads(path.read_bytes())
+        replacement["objects"][0]["rel_paths"].append(extra_data)
+        replacement["metadata"].append({**replacement["metadata"][0], "rel_path": extra_meta})
+        path.write_bytes(canonical(replacement))
+        return import_package(package, store, **kwargs)
+
+    monkeypatch.setattr(product_bundle, "import_package", replace_disk_inventory)
+    _, report = import_structured_bundle(bundle, target, runtime_root=tmp_path / "rt")
+    assert report["status"] == "imported_structured_readable"
+    assert not (target / extra_data).exists()
+    assert not (target / extra_meta).exists()
+
+
+@pytest.mark.parametrize("kind", ["objects", "metadata"])
+@pytest.mark.parametrize("change", ["different_bytes", "symlink"])
+def test_transfer_import_checks_the_bytes_it_installs(tmp_path, monkeypatch, kind, change):
+    from wfd_sdk import transfer
+    descriptor, _, _ = _valid_bundle(tmp_path)
+    package = tmp_path / "bundle" / descriptor["storage_packages"][0]["directory"]
+    verify = transfer.verify_package
+    item = verify(package)["inventory"][kind][0]
+    target = tmp_path / "recipient"
+    destination = target / (item["rel_paths"][0] if kind == "objects" else item["rel_path"])
+
+    def checked_then_changed(path):
+        checked = verify(path)
+        assert checked["ok"]
+        member = path / "objects" / item["sha256"]
+        replacement = tmp_path / "synthetic-member"
+        if change == "symlink":
+            member.rename(replacement)
+            member.symlink_to(replacement)
+        else:
+            replacement.write_bytes(member.read_bytes() + b" ")
+            replacement.replace(member)
+        return checked
+
+    monkeypatch.setattr(transfer, "verify_package", checked_then_changed)
+    result = transfer.import_package(package, target)
+    assert (result["status"], result["code"]) == ("rejected", "TRANSFER_INTEGRITY_FAILED")
+    assert not destination.exists()
+    assert not (target / "catalog/state.json").exists()
+
+
 def test_structured_subject_selection_cannot_return_another_subject(tmp_path):
     source, service, snapshot_id, product_id = _make_daily_slice(tmp_path)
     with pytest.raises(ValueError, match="STRUCTURED_SUBJECT_NOT_IN_PRODUCT_SCOPE"):

@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, chmodSync, statSync, symlinkSync } from 'node:fs';
+import { once } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { publicWebRequestHeaders } from '../../platform/capabilities/browser/public-web.js';
+import { buildApiReadRequest } from './api-read.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -12,6 +18,7 @@ import type { AuthorizationReceipt } from '../../platform/security/permissions.j
 import { CoreDatabase } from '../../platform/state/database.js';
 import { publicKlineProviders } from './public-kline.js';
 import { createSourceRuntime } from './runtime.js';
+import { sourceRequestKey } from './source-acquisition.js';
 import { sourceCandidateFeedback, sourceOperations } from './operations.js';
 import { thsSource } from './providers/ths/api.js';
 
@@ -196,4 +203,187 @@ test('empty response, raw-only source, and missing evidence are never reported a
     /SOURCE_CANDIDATE_ROWS/u);
   assert.throws(() => sourceCandidateFeedback({ ...base, providerId: 'ths', operationId: 'minute_bars' }),
     /SOURCE_OPERATION_NOT_REGISTERED/u);
+});
+
+test('Public POST has one case-insensitive header per name, with the last explicit value', () => {
+  const headers = publicWebRequestHeaders('POST', { Accept: 'text/html', 'Content-Type': 'application/json',
+    'content-type': 'application/json; charset=utf-8', 'X-Fixture': 'first', 'x-fixture': 'last' });
+  assert.deepEqual(Object.keys(headers).sort(), ['accept', 'accept-encoding', 'content-type', 'user-agent', 'x-fixture']);
+  assert.equal(headers['content-type'], 'application/json; charset=utf-8');
+  assert.equal(headers['x-fixture'], 'last');
+  assert.equal(headers.accept, 'text/html');
+});
+
+test('Receipt request keys bind the actual financial statement and report detail identifier', () => {
+  const base = { scopeId: 'CN/A_STOCK', acquiredAtUtc: '2026-01-05T00:00:00Z', originals: [{ fileRefId: 'original', sha256: 'a'.repeat(64) }] };
+  const common = { scopeId: base.scopeId, subjectId: null, start: null, end: null, adjustment: null };
+  for (const [operationId, invalid] of [
+    ['financial_statements', [{}, { statement: '' }, { statement: 'quarterly' }]],
+    ['research_report_detail', [{}, { encodeUrl: ' ' }, { encodeUrl: 'x'.repeat(2049) }]],
+  ] as const) {
+    for (const fields of invalid) assert.throws(() => sourceRequestKey({ ...common, operationId, ...fields }),
+      { code: 'SOURCE_REQUEST_INVALID' });
+  }
+  const reportKeys = ['income', 'balance_sheet', 'cash_flow'].map(statement => {
+    const projection = buildApiReadRequest('ths', thsSource.apiBaseUrl, 'financial_statements', {
+      thscode: '600001.SH', statement, period: 'quarterly', limit: 2 }).decode(Buffer.from('{"code":0,"data":{"item":[]}}'));
+    const feedback = sourceCandidateFeedback({ ...base, ...projection, operationId: 'financial_statements', providerId: 'ths', connectionId: 'ths' });
+    assert.equal(feedback.logicalRequest.statement, statement);
+    return feedback.acquisition!.requestKey;
+  });
+  assert.equal(new Set(reportKeys).size, 3);
+  const detailKeys = ['a+b/c=', 'a b/c='].map(encodeUrl => {
+    const projection = buildApiReadRequest('eastmoney', 'https://push2his.eastmoney.com', 'research_report_detail', { category: 'macro', encodeUrl })
+      .decode(Buffer.from('<script>window.pdf="https://pdf.dfcfw.com/pdf/H3_AP202601010001_1.pdf"</script>'));
+    const feedback = sourceCandidateFeedback({ ...base, ...projection, operationId: 'research_report_detail', providerId: 'eastmoney', connectionId: 'eastmoney' });
+    assert.equal(feedback.logicalRequest.encodeUrl, encodeUrl);
+    return feedback.acquisition!.requestKey;
+  });
+  assert.notEqual(detailKeys[0], detailKeys[1]);
+});
+
+test('First registration chooses a stable free ID, preserves colliding policies and replays the pre-upgrade receipt', () => {
+  const root = mkdtempSync(join(tmpdir(), 'source-migrate-')), database = new CoreDatabase(':memory:');
+  try {
+    const path = join(root, 'settings.json'), service = new SourceSettingsService(path, database);
+    const original = service.get(), prior = { ...original, revision: 2,
+      plugins: original.plugins.filter(item => item.id !== 'tickflow' && item.id !== 'sina'),
+      connections: original.connections.filter(item => item.pluginId !== 'tickflow' && item.pluginId !== 'sina') };
+    const origin = prior.connections.find(item => item.pluginId === 'ths')!;
+    for (const id of ['tickflow-main', 'tickflow-main-2', 'sina-main']) prior.connections.push({ ...origin, id });
+    prior.operationPolicies.push({ scopeId: 'CN/A_STOCK', operationId: 'daily_bars', primary: 'tickflow-main', backups: ['sina-main'] });
+    const candidate = { ...prior, revision: 1 };
+    const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    database.connection.prepare(`INSERT INTO source_settings_operations(request_id,content_hash,expected_revision,status,body,created_at,updated_at)
+      VALUES(?,?,1,'saving',?,'fixture','fixture')`).run('old-save-request', hash(candidate), JSON.stringify(candidate));
+    writeFileSync(path, JSON.stringify(prior));
+    const migrated = service.get();
+    assert.equal(migrated.connections.find(item => item.pluginId === 'tickflow')?.id, 'tickflow-main-3');
+    assert.equal(migrated.connections.find(item => item.pluginId === 'sina')?.id, 'sina-main-2');
+    assert.equal(migrated.connections.find(item => item.pluginId === 'sina')?.enabled, false);
+    assert.deepEqual(service.operationCandidates('CN/A_STOCK', 'daily_bars').map(item => item.pluginId), ['ths', 'ths']);
+    assert.deepEqual(service.update(candidate, 'old-save-request'), migrated);
+    assert.equal(service.operation('old-save-request')?.actualMatches, true);
+    assert.equal(readFileSync(path, 'utf8'), JSON.stringify(prior));
+    migrated.connections.find(item => item.pluginId === 'tickflow')!.alias += ' changed';
+    writeFileSync(path, JSON.stringify(migrated));
+    assert.equal(service.operation('old-save-request')?.actualMatches, false);
+  } finally { database.close(); rmSync(root, { recursive: true }); }
+});
+
+test('Killed SQLite recovery releases its transaction; another process saves through a stale legacy guard', { timeout: 20_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'source-recovery-')), path = join(root, 'settings.json'), lock = path + '.lock';
+  const db = new CoreDatabase(':memory:'), service = new SourceSettingsService(path, db);
+  t.after(() => { db.close(); rmSync(root, { recursive: true }); });
+  const initial = service.update(service.get());
+  const exited = spawnSync(process.execPath, ['-e', '']);
+  assert.equal(exited.status, 0);
+  const dead = JSON.stringify({ version: 1, pid: exited.pid, token: 'exited-owner' });
+  writeFileSync(lock, dead, { flag: 'wx' });
+  writeFileSync(lock + '.recover', 'stale-legacy-guard', { flag: 'wx' });
+  const program = `
+    import { writeSync } from 'node:fs';
+    import { DatabaseSync } from 'node:sqlite';
+    import { SourceSettingsService } from './platform/config/source-settings.ts';
+    import { CoreDatabase } from './platform/state/database.ts';
+    const db = new CoreDatabase(':memory:');
+    const service = new SourceSettingsService(process.argv[1], db);
+    if (process.argv[2] === 'interrupt') {
+      const exec = DatabaseSync.prototype.exec;
+      DatabaseSync.prototype.exec = function (sql) {
+        const result = exec.call(this, sql);
+        if (sql === 'BEGIN IMMEDIATE') {
+          writeSync(1, 'locked');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+        }
+        return result;
+      };
+    }
+    writeSync(1, String(service.update(service.get()).revision));
+    db.close();`;
+  const args = ['--import', 'tsx', '--input-type=module', '-e', program, path];
+  const child = spawn(process.execPath, [...args, 'interrupt'], { stdio: ['ignore', 'pipe', 'inherit'] });
+  t.after(() => { if (!child.signalCode && child.exitCode === null) child.kill('SIGKILL'); });
+  const exit = once(child, 'exit');
+  const ready = await Promise.race([once(child.stdout, 'data'), exit]);
+  assert.equal(String(ready[0]), 'locked');
+  const contender = new DatabaseSync(path + '.recover.sqlite');
+  try {
+    contender.exec('PRAGMA busy_timeout = 0');
+    assert.throws(() => contender.exec('BEGIN IMMEDIATE'), { errcode: 5 }); // SQLITE_BUSY
+  } finally { contender.close(); }
+  assert.equal(readFileSync(lock, 'utf8'), dead);
+  child.kill('SIGKILL');
+  assert.deepEqual(await exit, [null, 'SIGKILL']);
+  const next = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 8000 });
+  assert.equal(next.status, 0, next.stderr);
+  assert.equal(Number(next.stdout), initial.revision + 1);
+  assert.equal(service.get().revision, initial.revision + 1);
+  assert.equal(statSync(path + '.recover.sqlite').mode & 0o777, 0o600);
+  assert.ok(!existsSync(lock));
+  const live = JSON.stringify({ version: 1, pid: process.pid, token: 'next-holder' });
+  writeFileSync(lock, live, { flag: 'wx' });
+  assert.throws(() => service.update(service.get()), { code: 'SOURCE_SETTINGS_BUSY' });
+  assert.equal(readFileSync(lock, 'utf8'), live);
+});
+
+test('Recovery refuses symlinks and nonprivate SQLite guard files before reclaiming the primary lock', () => {
+  const root = mkdtempSync(join(tmpdir(), 'source-private-guard-')), db = new CoreDatabase(':memory:');
+  try {
+    const path = join(root, 'settings'), service = new SourceSettingsService(path, db), guard = path + '.recover.sqlite';
+    const exited = spawnSync(process.execPath, ['-e', '']);
+    assert.equal(exited.status, 0);
+    const dead = JSON.stringify({ version: 1, pid: exited.pid, token: 'dead' });
+    writeFileSync(path + '.lock', dead);
+    const target = join(root, 'other');
+    writeFileSync(target, 'other');
+    symlinkSync(target, guard);
+    assert.throws(() => service.update(service.get()), { code: 'SOURCE_SETTINGS_BUSY' });
+    assert.equal(readFileSync(target, 'utf8'), 'other');
+    rmSync(guard);
+    writeFileSync(guard, '');
+    chmodSync(guard, 0o644);
+    assert.throws(() => service.update(service.get()), { code: 'SOURCE_SETTINGS_BUSY' });
+    assert.equal(readFileSync(path + '.lock', 'utf8'), dead);
+    chmodSync(guard, 0o600);
+    const initial = service.get();
+    assert.equal(service.update(initial).revision, initial.revision + 1);
+  } finally { db.close(); rmSync(root, { recursive: true }); }
+});
+
+test('Racing saves from independent processes reclaim one stale settings lock and advance the revision once', { timeout: 30000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'source-lock-processes-')), database = new CoreDatabase(':memory:');
+  t.after(() => { database.close(); rmSync(root, { recursive: true }); });
+  const path = join(root, 'settings.json'), service = new SourceSettingsService(path, database);
+  const current = service.update(service.get());
+  const exited = spawnSync(process.execPath, ['-e', '']);
+  assert.equal(exited.status, 0);
+  writeFileSync(path + '.lock', JSON.stringify({ version: 1, pid: exited.pid, token: 'exited-owner' }));
+  const program = `
+    import { SourceSettingsService } from './platform/config/source-settings.ts';
+    import { CoreDatabase } from './platform/state/database.ts';
+    const db = new CoreDatabase(':memory:');
+    const service = new SourceSettingsService(process.argv[1], db);
+    const candidate = service.get();
+    process.once('message', () => {
+      let outcome;
+      try { service.update(candidate); outcome = 'saved'; } catch (error) { outcome = error.code; }
+      db.close();
+      process.send(outcome, () => process.disconnect());
+    });
+    process.send('ready');`;
+  const children = Array.from({ length: 3 }, () => spawn(process.execPath,
+    ['--import', 'tsx', '--input-type=module', '-e', program, path], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] }));
+  t.after(() => children.forEach(child => { if (child.exitCode === null) child.kill(); }));
+  const exits = children.map(child => once(child, 'exit'));
+  const ready = await Promise.all(children.map(child => once(child, 'message')));
+  assert.ok(ready.every(([message]) => message === 'ready'));
+  const results = Promise.all(children.map(child => once(child, 'message')));
+  for (const child of children) child.send('save');
+  const outcomes = (await results).map(([outcome]) => outcome);
+  assert.equal(outcomes.filter(value => value === 'saved').length, 1);
+  assert.ok(outcomes.every(value => ['saved', 'SOURCE_SETTINGS_BUSY', 'SOURCE_SETTINGS_CONFLICT'].includes(value)));
+  assert.ok((await Promise.all(exits)).every(([code]) => code === 0));
+  assert.equal(service.get().revision, current.revision + 1);
+  assert.ok(!existsSync(path + '.lock') && !existsSync(path + '.lock.recover'));
 });

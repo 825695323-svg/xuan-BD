@@ -101,6 +101,14 @@ export async function pinnedGet(parameters: PublicWebRequest): Promise<PublicWeb
   return pinnedRequest({ ...parameters, method: 'GET' });
 }
 
+export function publicWebRequestHeaders(method: 'GET' | 'POST', overrides?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { accept: 'text/plain,text/markdown,application/json,text/html;q=0.9',
+    'accept-encoding': 'identity', 'user-agent': 'MashiroAgent/0.1 (public-text-reader)' };
+  if (method === 'POST') headers['content-type'] = 'application/json';
+  for (const [name, value] of Object.entries(overrides ?? {})) headers[name.toLowerCase()] = value;
+  return headers;
+}
+
 /** 来源协议使用的有界 JSON POST 与原 GET 共用已核地址、权限和资源收束。 */
 export async function pinnedRequest(parameters: PublicWebRequest & { method: 'GET' | 'POST'; body?: string }): Promise<PublicWebResponse> {
   if (!['GET', 'POST'].includes(parameters.method)
@@ -117,9 +125,7 @@ export async function pinnedRequest(parameters: PublicWebRequest & { method: 'GE
     parameters.assertAuthorized(); parameters.signal.throwIfAborted();
     const response = await request(parameters.url, { dispatcher, method: parameters.method, body: parameters.body,
       signal: parameters.signal, headersTimeout: TIMEOUT_MS, bodyTimeout: TIMEOUT_MS,
-      headers: { accept: 'text/plain,text/markdown,application/json,text/html;q=0.9', 'accept-encoding': 'identity',
-        'user-agent': 'MashiroAgent/0.1 (public-text-reader)',
-        ...(parameters.method === 'POST' ? { 'content-type': 'application/json' } : {}), ...parameters.headers } });
+      headers: publicWebRequestHeaders(parameters.method, parameters.headers) });
     response.body.on('error', () => {});
     let closed = false;
     return { status: response.statusCode, headers: response.headers, body: response.body,

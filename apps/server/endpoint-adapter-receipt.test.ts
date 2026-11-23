@@ -59,7 +59,7 @@ test('真实宿主 issuer：TaskService.get 读取得回执，按材料 sha+file
     const receiptData = (sha256: string, fileRefId: string, url: string, requested?: Record<string, unknown>) => ({
       status: 'downloaded', sourceId: 'eastmoney', operation: 'daily_bars', scopeId: 'CN/A_STOCK',
       observedAt: '2026-11-06T01:00:00Z', requested: requested ?? { adjustment: 'none' },
-      dailyValidation: { adjustment: 'none' },
+      dailyValidation: { adjustment: 'none', rawSha256: sha256 },
       sourceReceipts: [{ url, sha256, fileRefId, contentType: 'application/json', status: 200 }] });
     let pending: { sha: string; fileRef: string; url: string; requested?: Record<string, unknown> } = {
       sha: material.sha256, fileRef: material.fileRefId!, url: 'https://push2his.eastmoney.example.test/api/qt/stock/kline/get?fields2=f51,f52,f53,f54,f55,f56,f57&secid=1.600519' };
