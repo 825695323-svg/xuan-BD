@@ -227,7 +227,7 @@ def test_config_requires_explicit_roles_and_authorities(tmp_path):
 
 def test_config_rejects_export_grant(tmp_path):
     path = _config(tmp_path)
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     data["sources"]["fixture"]["may_export"] = True
     path.write_text(json.dumps(data), "utf-8")
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
@@ -237,7 +237,7 @@ def test_config_rejects_export_grant(tmp_path):
 
 def test_config_rejects_unknown_machine_role(tmp_path):
     path = _config(tmp_path)
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     data["caller"]["roles"].append("redistribute")
     path.write_text(json.dumps(data), "utf-8")
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
@@ -257,7 +257,7 @@ def test_compute_role_is_explicit_in_trusted_config_only(tmp_path):
     assert "compute" not in plain["caller"]["roles"]
 
     path = _config(tmp_path)
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     data["caller"]["roles"].append("compute")
     path.write_text(json.dumps(data), "utf-8")
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)

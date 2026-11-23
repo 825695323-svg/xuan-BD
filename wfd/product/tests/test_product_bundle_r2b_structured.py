@@ -117,7 +117,7 @@ def test_structured_full_synthetic_daily_field_subset_and_physical_scan(tmp_path
     # Every target parquet row is physically complete but contains only the
     # selected value field; excluded source/evidence metadata is absent.
     package = tmp_path / "bundle" / descriptor["storage_packages"][0]["directory"]
-    inventory = json.loads((package / "inventory.json").read_text())
+    inventory = json.loads((package / "inventory.json").read_text(encoding="utf-8"))
     parquet_objects = [obj for obj in inventory["objects"]
                        if any(rel.endswith(".parquet") for rel in obj["rel_paths"])]
     assert parquet_objects
@@ -165,7 +165,7 @@ def test_structured_verifier_rejects_external_metadata(tmp_path):
     bundle = tmp_path / "tampered"
     shutil.copytree(tmp_path / "bundle", bundle)
     path = bundle / "financial_bundle.json"
-    value = json.loads(path.read_text())
+    value = json.loads(path.read_text(encoding="utf-8"))
     value["source_id"] = "bd-forbidden-source"
     path.write_bytes(canonical(value))
     inventory = []
@@ -301,7 +301,7 @@ def test_structured_traversal_record_rejected_before_target_write(tmp_path):
     descriptor, _, _ = _valid_bundle(tmp_path)
     bundle = tmp_path / "traversal"
     shutil.copytree(tmp_path / "bundle", bundle)
-    value = json.loads((bundle / "financial_bundle.json").read_text())
+    value = json.loads((bundle / "financial_bundle.json").read_text(encoding="utf-8"))
     value["records"][0]["relative_path"] = "../outside_target_probe.json"
     (bundle / "financial_bundle.json").write_bytes(canonical(value))
     _resign(bundle)
@@ -317,7 +317,7 @@ def test_structured_invented_record_map_rejected(tmp_path):
     descriptor, _, _ = _valid_bundle(tmp_path)
     bundle = tmp_path / "mapping"
     shutil.copytree(tmp_path / "bundle", bundle)
-    value = json.loads((bundle / "financial_bundle.json").read_text())
+    value = json.loads((bundle / "financial_bundle.json").read_text(encoding="utf-8"))
     value["record_map"][0]["source_product_id"] = "unrelated_product"
     value["record_map"][0]["source_record_version"] = "invented_version"
     (bundle / "financial_bundle.json").write_bytes(canonical(value))
@@ -333,7 +333,7 @@ def test_structured_hidden_lineage_external_metadata_rejected(tmp_path):
     descriptor, _, _ = _valid_bundle(tmp_path)
     bundle = tmp_path / "lineage"
     shutil.copytree(tmp_path / "bundle", bundle)
-    value = json.loads((bundle / "financial_bundle.json").read_text())
+    value = json.loads((bundle / "financial_bundle.json").read_text(encoding="utf-8"))
     probe = canonical({"source_id": "BD_EXCLUDED_SOURCE",
                        "original_path": "/tmp/BD_EXCLUDED_ORIGINAL.pdf",
                        "processing_record": {"run_log": "BD_EXCLUDED_PROCESS"}})
@@ -352,13 +352,13 @@ def test_structured_hidden_lineage_external_metadata_rejected(tmp_path):
 
 
 def _tamper_lineage(bundle: Path, extra: dict):
-    descriptor = json.loads((bundle / "financial_bundle.json").read_text())
+    descriptor = json.loads((bundle / "financial_bundle.json").read_text(encoding="utf-8"))
     sid = descriptor["target_snapshot_id"]
     package = bundle / descriptor["storage_packages"][0]["directory"]
-    inventory = json.loads((package / "inventory.json").read_text())
+    inventory = json.loads((package / "inventory.json").read_text(encoding="utf-8"))
     meta = next(item for item in inventory["metadata"]
                 if item["rel_path"] == f"catalog/lineage/{sid}.json")
-    body = json.loads((package / "objects" / meta["sha256"]).read_text())
+    body = json.loads((package / "objects" / meta["sha256"]).read_text(encoding="utf-8"))
     body.update(extra)
     raw = canonical(body)
     digest = hashlib.sha256(raw).hexdigest()
@@ -369,13 +369,13 @@ def _tamper_lineage(bundle: Path, extra: dict):
 
 
 def _lineage_body(bundle: Path):
-    descriptor = json.loads((bundle / "financial_bundle.json").read_text())
+    descriptor = json.loads((bundle / "financial_bundle.json").read_text(encoding="utf-8"))
     sid = descriptor["target_snapshot_id"]
     package = bundle / descriptor["storage_packages"][0]["directory"]
-    inventory = json.loads((package / "inventory.json").read_text())
+    inventory = json.loads((package / "inventory.json").read_text(encoding="utf-8"))
     meta = next(item for item in inventory["metadata"]
                 if item["rel_path"] == f"catalog/lineage/{sid}.json")
-    return json.loads((package / "objects" / meta["sha256"]).read_text())
+    return json.loads((package / "objects" / meta["sha256"]).read_text(encoding="utf-8"))
 
 
 def test_structured_internal_lineage_exact_fields_and_actual_digests(tmp_path):

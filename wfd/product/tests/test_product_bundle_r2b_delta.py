@@ -152,8 +152,8 @@ def test_structured_delta_new_day_keeps_old_and_new_fixed_reads(delta_env):
         assert record["target_record_version"] == target_versions[record["target_record_id"]]
     assert [item["record_version"] for item in old] == [
         target_versions[item["record_id"]] for item in old]
-    old_snap = json.loads((env["tmp"] / "target" / f"catalog/snapshots/{env['baseline']['target_snapshot_id']}.json").read_text())
-    new_snap = json.loads((env["tmp"] / "target" / f"catalog/snapshots/{report['target_snapshot_id']}.json").read_text())
+    old_snap = json.loads((env["tmp"] / "target" / f"catalog/snapshots/{env['baseline']['target_snapshot_id']}.json").read_text(encoding="utf-8"))
+    new_snap = json.loads((env["tmp"] / "target" / f"catalog/snapshots/{report['target_snapshot_id']}.json").read_text(encoding="utf-8"))
     old_product = old_snap["files"][0]["source_bundle"]["_wfd_product_bindings"][old_snap["files"][0]["output_key"]]["product"]
     new_product = new_snap["files"][0]["source_bundle"]["_wfd_product_bindings"][new_snap["files"][0]["output_key"]]["product"]
     assert old_product["definition_ref"] == new_product["definition_ref"]
@@ -178,7 +178,7 @@ def test_structured_delta_wrong_baseline_or_selection_does_not_touch_old(delta_e
     bad_target = env["tmp"] / "bad_target"
     shutil.copytree(env["tmp"] / "target", bad_target)
     snap_path = bad_target / f"catalog/snapshots/{env['baseline']['target_snapshot_id']}.json"
-    snap = json.loads(snap_path.read_text())
+    snap = json.loads(snap_path.read_text(encoding="utf-8"))
     snap["receipt"]["normalized_selection_digest"] = "sha256:" + "0" * 64
     snap_path.write_bytes(canonical(snap))
     with pytest.raises(ValueError, match="STRUCTURED_BASELINE_SELECTION_MISMATCH"):
@@ -202,7 +202,7 @@ def test_structured_delta_interruption_and_repeat(delta_env):
         runtime_root=env["tmp"] / "apply_rt", caller_roles={"read"},
         interrupt_after=1)
     assert first["status"] == "interrupted"
-    record = json.loads((env["tmp"] / "target" / f"catalog/bundles/{descriptor['bundle_id']}.json").read_text())
+    record = json.loads((env["tmp"] / "target" / f"catalog/bundles/{descriptor['bundle_id']}.json").read_text(encoding="utf-8"))
     assert record["state"] == "staging"
     assert record["verified_objects"]
     reader = _reader(env["tmp"] / "target", env["tmp"] / "read_rt")
@@ -247,7 +247,7 @@ def test_structured_delta_object_hash_tamper_rejected(delta_env):
         baseline_snapshot_id=env["baseline"]["target_snapshot_id"],
         selection=env["selection"])
     package = env["tmp"] / "delta" / descriptor["storage_packages"][0]["directory"]
-    inventory = json.loads((package / "inventory.json").read_text())
+    inventory = json.loads((package / "inventory.json").read_text(encoding="utf-8"))
     victim = inventory["objects"][0]["sha256"]
     (package / "objects" / victim).write_bytes(b"tampered")
     with pytest.raises(ValueError, match="BUNDLE_STORAGE_INTEGRITY_FAILED|STRUCTURED_OBJECT_HASH_MISMATCH|BUNDLE_INTEGRITY_FAILED"):
@@ -353,9 +353,9 @@ def _resign(bundle):
 
 
 def _tamper_metadata_role(bundle, role, mutate):
-    descriptor = json.loads((bundle / "financial_bundle.json").read_text())
+    descriptor = json.loads((bundle / "financial_bundle.json").read_text(encoding="utf-8"))
     package = bundle / descriptor["storage_packages"][0]["directory"]
-    inventory = json.loads((package / "inventory.json").read_text())
+    inventory = json.loads((package / "inventory.json").read_text(encoding="utf-8"))
     if role == "manifest":
         match = lambda rel: rel.startswith("catalog/manifests/")
     elif role == "commit":
@@ -363,7 +363,7 @@ def _tamper_metadata_role(bundle, role, mutate):
     else:
         raise AssertionError(role)
     meta = next(item for item in inventory["metadata"] if match(item["rel_path"]))
-    value = json.loads((package / "objects" / meta["sha256"]).read_text())
+    value = json.loads((package / "objects" / meta["sha256"]).read_text(encoding="utf-8"))
     mutate(value)
     raw = canonical(value)
     digest = hashlib.sha256(raw).hexdigest()
@@ -437,3 +437,27 @@ def test_structured_delta_manifest_nested_unknown_metadata_rejected(delta_env):
                                       runtime_root=env["tmp"] / "bad_nested_rt",
                                       caller_roles={"read"})
     assert len(list((bad_target / "catalog/commits").glob("*.json"))) == commits
+
+
+def test_structured_delta_export_and_apply_use_explicit_utf8_encoding(delta_env, monkeypatch):
+    import io
+
+    env = delta_env
+    orig_text_encoding = io.text_encoding
+
+    def _require_explicit_encoding(encoding, stacklevel=2):
+        if encoding is None:
+            raise AssertionError("implicit locale encoding is forbidden in structured delta bundles")
+        return orig_text_encoding(encoding, stacklevel)
+
+    monkeypatch.setattr(io, "text_encoding", _require_explicit_encoding)
+    descriptor = export_structured_delta_bundle(
+        env["new_service"], [env["product_id"]], env["tmp"] / "delta_utf8",
+        snapshot_id=env["new_source"], baseline_store=env["tmp"] / "target",
+        baseline_snapshot_id=env["baseline"]["target_snapshot_id"],
+        selection=env["selection"])
+    report = apply_structured_delta_bundle(
+        env["tmp"] / "delta_utf8", env["tmp"] / "target",
+        runtime_root=env["tmp"] / "apply_utf8_rt", caller_roles={"read"})
+    assert descriptor["mode"] == "delta"
+    assert report["status"] == "applied"

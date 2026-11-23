@@ -98,3 +98,25 @@ def test_actual_fixed_binding_does_not_invent_a_replacement(tmp_path):
     assert evaluate(req, [], [evidence])['status'] == 'unknown'
     assert query.execute(base) == before
     assert ProductQuery(make_data_service(tmp_path)).execute(base) == before
+
+
+def test_module_import_decodes_utf8_schema_under_cp1252_default():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    product_root = str(Path(__file__).resolve().parents[1])
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": product_root}
+    env.pop("PYTHONUTF8", None)
+    probe = (
+        "import io; "
+        "io.text_encoding = (lambda enc, stacklevel=2: 'cp1252' if enc is None else enc); "
+        "import wfd_sdk.definition_replacement_candidates as mod; "
+        "assert 'properties' in mod._TIME_SCHEMA"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-X", "warn_default_encoding", "-W", "error::EncodingWarning", "-c", probe],
+        env=env, capture_output=True, encoding="utf-8", check=False,
+    )
+    assert proc.returncode == 0, proc.stderr

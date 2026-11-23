@@ -4949,7 +4949,7 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
             "ancestry": [baseline_snapshot_id, target_sid], "partial": True,
             "baseline_snapshot_id": baseline_snapshot_id,
         }
-        (partial / "inventory.json").write_text(json.dumps(inventory, ensure_ascii=False, indent=2) + "\n")
+        (partial / "inventory.json").write_text(json.dumps(inventory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         transfer = {"format_version": "wfd.transfer/1.0",
                     "transfer_id": "structured_delta_" + target_sid,
                     "created_at_utc": _now(), "dataset_id": source_dataset_id,
@@ -4963,12 +4963,12 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
                                "snapshot_id": snapshot_id,
                                "files_root": checked["inventory"].get("files_root"),
                                "writer_host": None, "writer_epoch": 0}}
-        (partial / "transfer.json").write_text(json.dumps(transfer, ensure_ascii=False, indent=2) + "\n")
+        (partial / "transfer.json").write_text(json.dumps(transfer, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         lines = []
         for path in sorted(partial.rglob("*")):
             if path.is_file() and path.name != "CHECKSUMS.sha256":
                 lines.append(f"{sha_file(path)}  {path.relative_to(partial).as_posix()}")
-        (partial / "CHECKSUMS.sha256").write_text("\n".join(lines) + "\n")
+        (partial / "CHECKSUMS.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
         descriptor = {
             "format_version": STRUCTURED_BUNDLE_FORMAT, "profile": STRUCTURED_PROFILE,
             "mode": "delta", "delta_format": STRUCTURED_DELTA_FORMAT,
