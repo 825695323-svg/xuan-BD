@@ -196,3 +196,61 @@ test('算法紧凑详情区分登记参数、关联定义与真实执行，当�
     assert.equal(env.document.querySelector('.object-detail-content > .object-detail-section'), null);
   } finally { await act(() => root.unmount()); globalThis.fetch = previousFetch; env.cleanup(); }
 });
+
+test('统一算法目录按三类展示，收起分类保留已选详情，查看与刷新只发送 GET', async () => {
+  const { PreferencesProvider, ToolsPage } = await loadPageComponents();
+  const { ToolLibraryService } = await import('../../../../modules/financial/tool-library.js');
+  const { createRoot } = await import('react-dom/client');
+  const full = new ToolLibraryService({ hasWfdReader: () => true }).view();
+  for (const [language, theme, labels] of [
+    ['zh-CN', 'light', ['行情指标', '财务', '复权']],
+    ['en', 'dark', ['Market indicators', 'Financial', 'Adjustments']],
+  ] as const) {
+    const env = browser(), previous = globalThis.fetch, calls: string[] = [];
+    const root = createRoot(env.document.getElementById('root')!);
+    globalThis.fetch = async (input, init) => {
+      assert.equal(init?.method ?? 'GET', 'GET');
+      const url = String(input); calls.push(url);
+      if (url === '/api/ui/preferences') return reply({ ...preferences, language, theme });
+      assert.equal(url, '/api/ui/tool-library');
+      return reply(full);
+    };
+    try {
+      await act(() => root.render(<PreferencesProvider><ToolsPage /></PreferencesProvider>));
+      assert.equal(env.document.documentElement.dataset.theme, theme);
+      const catalog = env.document.querySelector('.catalog-navigation')!;
+      const filters = [...catalog.querySelectorAll<HTMLButtonElement>('.data-nav-item.is-group')];
+      const cards = () => [...catalog.querySelectorAll<HTMLButtonElement>('.object-card')];
+      assert.deepEqual(filters.map(el => el.textContent), labels);
+      assert.equal(cards().length, full.tools.length);
+      assert.equal(env.document.querySelector('.page-cards'), null);
+      assert.equal(env.document.querySelector('[role="alert"]'), null);
+      for (const [index, category] of ['market', 'financial', 'adjustment'].entries()) {
+        const filter = filters[index]!;
+        const ids = full.tools.filter(tool => tool.category === category).map(tool => tool.id);
+        const groupCards = () => [...filter.parentElement!.querySelectorAll<HTMLButtonElement>('.object-card')];
+        assert.deepEqual(groupCards().map(card => card.querySelector('.object-card-meta')?.textContent), ids);
+        await act(() => groupCards()[0]!.click());
+        const title = env.document.querySelector('.object-detail-title')?.textContent;
+        assert.equal(groupCards()[0]!.getAttribute('aria-current'), 'true');
+        const detail = env.document.querySelector('.object-detail-content')!.textContent ?? '';
+        assert.match(detail, /algorithms\.capabilities/u); assert.match(detail, /algorithms\.calculate/u);
+        if (category === 'adjustment') {
+          assert.match(detail, /forward_qfq/u);
+          assert.match(env.document.querySelector('details')?.textContent ?? '', /adj_factor/u);
+          assert.match(env.document.querySelector('.object-detail-summary')?.textContent ?? '', /TypeScript/u);
+        }
+        await act(() => filter.click());
+        assert.equal(filter.getAttribute('aria-expanded'), 'false');
+        assert.equal(groupCards().length, 0);
+        assert.equal(env.storage.get('xuan.tools.object'), ids[0]);
+        assert.equal(env.document.querySelector('.object-detail-title')?.textContent, title);
+        await act(() => filter.click());
+        assert.equal(groupCards()[0]!.getAttribute('aria-current'), 'true');
+      }
+      assert.doesNotMatch(env.document.body.textContent ?? '', /Invalid tool-library response/u);
+      await act(() => env.document.querySelector<HTMLButtonElement>('.object-detail-head button')!.click());
+      assert.deepEqual(calls.filter(url => url !== '/api/ui/preferences'), ['/api/ui/tool-library', '/api/ui/tool-library']);
+    } finally { await act(() => root.unmount()); globalThis.fetch = previous; env.cleanup(); }
+  }
+});

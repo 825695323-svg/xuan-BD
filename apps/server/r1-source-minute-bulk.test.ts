@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { screenFixedWfdStrategy } from '../../modules/financial/strategy-screen-wfd.js';
 import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { createFullChainFixture, openFullChainHost, type FullChainFixture, type FullChainHost } from './full-chain-test-support.js';
 import type { R1SourceMinuteBulkView } from '../../modules/collection/r1-source-minute-bulk-service.js';
@@ -103,6 +104,15 @@ test('assembled R1 HTTP accepts managed whole-date CSV, then publishes and reads
     assert.equal(complete.state, 'completed'); assert.equal(complete.totalRows, 2);
     assert.equal(complete.bulk.readbackVerified, true);
     assert.equal(complete.bulk.association?.materialId, complete.materialId);
+    const reader = host.services.r1Workspace!;
+    const ranked = await screenFixedWfdStrategy({
+      snapshotId: complete.bulk.association!.snapshotId, productId: complete.bulk.association!.productId,
+      historyMode: 'snapshot_contents', readMode: 'indexed', factorNames: ['src_5'], keyField: 'src_0',
+      selection: { dateField: 'src_2', date: '2026-04-07', dateFormat: 'YYYYMMDD' }, filter: '', orderBy: 'src_5', topN: 1,
+    }, reader.readProduct.bind(reader));
+    assert.equal(ranked.fixedRead.crossSectionRows, 2);
+    assert.ok(ranked.fixedRead.contractRef && ranked.fixedRead.definitionRefs?.length === 1);
+    assert.equal(ranked.selected[0].key, '000001');
     const first = await host.call(base + '/' + id + '/fixed-read', { pageSize: 1, cursor: null });
     const second = await host.call(base + '/' + id + '/fixed-read', { pageSize: 1, cursor: first.next_cursor });
     assert.deepEqual(first.rows[0].cells.slice(0, 5), ['000001', '甲"名\r\n续', '20260407', '2026-04-07 09:30:00', '0.0']);

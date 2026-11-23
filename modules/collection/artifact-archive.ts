@@ -7,19 +7,20 @@ import type { FileReferenceService } from '../../platform/resources/files.js';
 import type { TaskExecutionContext, TaskService } from '../../platform/jobs/tasks.js';
 import { TaskError } from '../../platform/jobs/tasks.js';
 import { acquireAuthority, fileCapability } from '../../platform/runtime/file-workspace.js';
-import { cloudEvidenceDirectory, CLOUD_EVIDENCE_PURPOSES, CLOUD_EVIDENCE_TOPICS, CLOUD_MAX_BYTES, type CloudCustodyBackend, type CloudObject } from '../../plugins/storage/baidu-drive.js';
+import { cloudEvidenceDirectory, cloudObjectBinding, CLOUD_EVIDENCE_PURPOSES, CLOUD_EVIDENCE_TOPICS, CLOUD_MAX_BYTES, type CloudCustodyBackend, type CloudObject } from '../../plugins/storage/baidu-drive.js';
+import { baiduReturnUrl } from '../../plugins/capture-sources/baidu-drive/contract.js';
 
-export const ARTIFACT_ARCHIVE_VERSION = 'bd.artifact-archive/1';
+export const ARTIFACT_ARCHIVE_VERSION = 'bd.artifact-archive/2';
 type Topic = typeof CLOUD_EVIDENCE_TOPICS[number];
 type Purpose = typeof CLOUD_EVIDENCE_PURPOSES[number];
 type Input = { sourceTaskId: string; fileRefId: string; topic: Topic; purpose: Purpose };
 interface ArchiveRow {
   source_task_id: string; file_ref_id: string; file_version: number; sha256: string; byte_length: number;
   topic: string; purpose: string; target_path: string; binding_json: string;
-  remote_id: string | null; state: 'pending' | 'confirmed'; created_at: number;
+  remote_id: string | null; return_url: string | null; state: 'pending' | 'confirmed'; created_at: number;
 }
 const SCHEMA = `
-CREATE TABLE artifact_archive_receipts (
+CREATE TABLE IF NOT EXISTS artifact_archive_receipts (
   source_task_id TEXT NOT NULL, file_ref_id TEXT NOT NULL, file_version INTEGER NOT NULL,
   sha256 TEXT NOT NULL, byte_length INTEGER NOT NULL, topic TEXT NOT NULL, purpose TEXT NOT NULL,
   target_path TEXT NOT NULL UNIQUE, binding_json TEXT NOT NULL, remote_id TEXT,
@@ -29,8 +30,11 @@ CREATE TABLE artifact_archive_receipts (
 `;
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const validId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9._:-]{1,200}$/u.test(value);
-const sameBinding = (row: ArchiveRow, expected: Record<string, string | null>) =>
-  row.binding_json === JSON.stringify(expected);
+export function matchesArchiveBinding(stored: string, backend?: CloudCustodyBackend): boolean {
+  const versions = backend?.versionBinding ?? {};
+  return stored === JSON.stringify({ artifactArchive: ARTIFACT_ARCHIVE_VERSION, ...versions })
+    || stored === JSON.stringify({ artifactArchive: 'bd.artifact-archive/1', ...cloudObjectBinding(versions) });
+}
 function inputOf(value: Record<string, JsonValue>): Input {
   const keys = ['sourceTaskId', 'fileRefId', 'topic', 'purpose'];
   if (Object.keys(value).some(key => !keys.includes(key)) || !validId(value.sourceTaskId) || !validId(value.fileRefId)
@@ -45,7 +49,8 @@ function result(row: ArchiveRow, status: 'confirmed' | 'needs_review'): TaskResu
     : '远端归档结果尚未确认，已保存原目标；不得更换编号自动重传或删除本地文件。',
     data: { state: status, sourceTaskId: row.source_task_id, fileRefId: row.file_ref_id,
       sourceSha256: row.sha256, byteLength: row.byte_length, remotePath: row.target_path,
-      remoteId: row.remote_id, confirmation: status === 'confirmed' ? 'skill_name_size_id' : 'unconfirmed',
+      remoteId: row.remote_id, returnUrl: baiduReturnUrl(row.return_url),
+      confirmation: status === 'confirmed' ? 'skill_name_size_id' : 'unconfirmed',
       localDeletion: 'forbidden', contentReadback: false } };
 }
 
@@ -55,6 +60,11 @@ export function createArtifactArchiveActions(options: {
   backend?: CloudCustodyBackend;
 }) {
   options.database.migrate('artifact_archive', 1, SCHEMA);
+  const db = options.database.connection;
+  options.database.transaction(() => {
+    if (!db.prepare("SELECT 1 FROM pragma_table_info('artifact_archive_receipts') WHERE name='return_url'").get())
+      db.exec('ALTER TABLE artifact_archive_receipts ADD COLUMN return_url TEXT');
+  });
   const backend = options.backend;
   const available = () => backend?.availability() ?? { available: false, reason: '尚未装配百度网盘 Skill 归档后端。' };
   const versionBinding = () => ({ artifactArchive: ARTIFACT_ARCHIVE_VERSION, ...(backend?.versionBinding ?? {}) });
@@ -73,9 +83,14 @@ export function createArtifactArchiveActions(options: {
     available,
     validate: inputOf,
   };
-  const db = options.database.connection;
   const find = (task: string, file: string) => db.prepare('SELECT * FROM artifact_archive_receipts WHERE source_task_id=? AND file_ref_id=?')
     .get(task, file) as ArchiveRow | undefined;
+  const observe = (row: ArchiveRow, remote: CloudObject, confirmed: boolean): ArchiveRow => {
+    // 单件回执已提供的链接可在后续 ls 缺字段时沿用。已登记的编号不可被并发核对覆盖。
+    db.prepare("UPDATE artifact_archive_receipts SET state=CASE WHEN ? THEN 'confirmed' ELSE state END,remote_id=?,return_url=COALESCE(?,return_url) WHERE source_task_id=? AND file_ref_id=? AND (remote_id IS NULL OR remote_id=?)")
+      .run(Number(confirmed), remote.id, baiduReturnUrl(remote.returnUrl), row.source_task_id, row.file_ref_id, remote.id);
+    return find(row.source_task_id, row.file_ref_id)!;
+  };
   const validRemote = (remote: CloudObject | null, target: string, bytes: number): remote is CloudObject =>
     !!remote && remote.kind === 'file' && remote.path === target && remote.size === bytes
     && /^[0-9]{1,30}$/u.test(remote.id);
@@ -126,7 +141,7 @@ export function createArtifactArchiveActions(options: {
       }
       const sha = bytes ? digest(bytes) : row!.sha256;
       const directory = cloudEvidenceDirectory(input.topic, input.purpose);
-      if (row && !sameBinding(row, versionBinding()))
+      if (row && !matchesArchiveBinding(row.binding_json, backend))
         throw new TaskError('ARTIFACT_ARCHIVE_BINDING_CHANGED', '原网盘程序或账号绑定已经变化，不能通过另一账号确认旧归档。');
       let session: Awaited<ReturnType<CloudCustodyBackend['open']>> | undefined;
       try {
@@ -136,16 +151,15 @@ export function createArtifactArchiveActions(options: {
           const found = await lookup(session, row.target_path);
           if (!validRemote(found, row.target_path, row.byte_length)
             || row.remote_id && found.id !== row.remote_id) return result(row, 'needs_review');
-          db.prepare("UPDATE artifact_archive_receipts SET state='confirmed',remote_id=? WHERE source_task_id=? AND file_ref_id=?")
-            .run(found.id, input.sourceTaskId, input.fileRefId);
-          return result({ ...row, state: 'confirmed', remote_id: found.id }, 'confirmed');
+          row = observe(row, found, true);
+          return result(row, row.remote_id === found.id ? 'confirmed' : 'needs_review');
         }
         if (!bytes) throw new TaskError('ARTIFACT_ARCHIVE_SOURCE', '没有新归档的本地原字节。');
         await session.prepareDirectory(directory, true);
         const extension = /\.[a-zA-Z0-9]{1,12}$/u.exec(reference.displayName)?.[0]?.toLowerCase() ?? '';
         const target = posix.join(directory, sha + '-' + randomUUID() + extension);
         // 写入意图必须在远端上传之前持久化；任何不确定结果之后均不重复写入。
-        db.prepare('INSERT INTO artifact_archive_receipts VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(
+        db.prepare('INSERT INTO artifact_archive_receipts(source_task_id,file_ref_id,file_version,sha256,byte_length,topic,purpose,target_path,binding_json,remote_id,state,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(
           input.sourceTaskId, reference.id, reference.version, sha, bytes.length,
           input.topic, input.purpose, target, JSON.stringify(versionBinding()), null, 'pending', Date.now());
         row = find(input.sourceTaskId, input.fileRefId)!;
@@ -153,12 +167,13 @@ export function createArtifactArchiveActions(options: {
         if (before) return result(row, 'needs_review');
         try {
           const uploaded = await session.put(bytes, target);
+          if (!validRemote(uploaded, target, bytes.length)) return result(row, 'needs_review');
+          row = observe(row, uploaded, false);
+          if (row.remote_id !== uploaded.id) return result(row, 'needs_review');
           const confirmed = await lookup(session, target);
           if (!validRemote(confirmed, target, bytes.length) || uploaded.id !== confirmed.id
             || uploaded.md5 && confirmed.md5 && uploaded.md5 !== confirmed.md5) return result(row, 'needs_review');
-          db.prepare("UPDATE artifact_archive_receipts SET state='confirmed',remote_id=? WHERE source_task_id=? AND file_ref_id=?")
-            .run(confirmed.id, input.sourceTaskId, reference.id);
-          return result({ ...row, state: 'confirmed', remote_id: confirmed.id }, 'confirmed');
+          return result(observe(row, confirmed, true), 'confirmed');
         } catch (error) {
           if (context.signal.aborted) throw error;
           return result(row, 'needs_review');

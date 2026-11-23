@@ -2,14 +2,16 @@
  * 文档片段与精选索引的服务装配（R01—R06、R09）。
  *
  * 职责边界：
- * - 输入只接受**已登记的转换产物**（`conversion.document` / `pdf.extract`），经
- *   `FileReferenceService` 在任务内按 `file:read` 读回；不直接调底层 PDF 能力。
+ * - 输入接受已登记转换文件以及宿主核验的固定 OCR 包。文件读取、原件保管与核对包读取各沿用其权限边界。
  * - 登记进 4.3 证据账本（`conversion_artifacts`，一对多），片段与文档时间进独立
  *   `segments.sqlite`；两者都不写 WFD 正式数据。
  * - 检索结果必须带历史资格、覆盖与缺口；未命中不得合并成“无结果”。
  *
  * 规则来源：《4.2-文档片段化实现契约-v1》§一—§十、4.3 §8、4.8 §8、V2.0 §8.3。
  */
+import { canonicalWfdJson, isWfdRecord } from '../../../adapters/database/wfd-transport.js';
+import type { OcrClaimReader } from '../data-processing/ocr-claim.js';
+import { checkOcrPacket, OCR_PARSER_VERSION, OCR_REVIEW_REF } from './from-ocr.js';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -21,7 +23,7 @@ import { digestOperationArgs, PermissionError } from '../../../platform/security
 import type { FileReferenceService } from '../../../platform/resources/files.js';
 import type { MaterialService } from '../materials/service.js';
 import {
-  NOT_APPLICABLE_TIME, REGISTRABLE_ARTIFACT_TYPES, SEGMENT_RETRIEVAL_SCHEMA, SEGMENTABLE_ARTIFACT_TYPES,
+  NOT_APPLICABLE_TIME, OCR_PACKET_SCHEMA, REGISTRABLE_ARTIFACT_TYPES, SEGMENT_RETRIEVAL_SCHEMA, SEGMENTABLE_ARTIFACT_TYPES,
   SEGMENT_TOKENIZER, SEGMENTER_VERSION, SEGMENT_ISSUES, UNKNOWN_TIME,
   type ConversionArtifactRecord, type DocSegment, type DocumentTimeRecord, type RetrievalCitation, type RetrievalCoverage,
   type RetrievalExclusion, type RetrievalHistoryMode, type RetrievalQualification, type SegmentRetrievalResult,
@@ -32,7 +34,7 @@ import { discoverArtifacts, findArtifactByRef, ensureArtifactLedger, recordArtif
 import {
   rebuildSegmentFts, FTS_REBUILD_LIMITS, createCurrentIndexVersion, documentsWithoutTextLayer, ensureSegmentSchema, listDocumentVersions,
   listIndexVersions, listSegments, putDocumentSegments, putDocumentVersion, readDocumentVersion, readSegment,
-  readIndexedSegment, resolveIndexVersion, resolveVisibleVersions, searchSegments, searchSegmentsExact, segmentStorage, upperOf,
+  readIndexedSegment, openReadOnlySegmentDb, resolveIndexVersion, resolveVisibleVersions, searchSegments, searchSegmentsExact, segmentStorage, upperOf,
 } from './store.js';
 
 export const SEGMENT_RUNTIME = 'bd.doc-segment-runtime';
@@ -57,7 +59,7 @@ export type TimeInput = string | { state: TimeDimension['state']; value?: string
 
 export interface ArtifactIngestInput {
   materialId: string;
-  /** 已登记转换产物的 fileRefId（structured-conversion）。 */
+  /** 已登记转换文件的 fileRefId，或 requestOcrReview 构造的固定核对包引用。 */
   artifactRef: string;
   /** 来源版本；缺省取 4.3 材料版本，不按文件名或当前时间编造。 */
   documentVersion?: string;
@@ -113,6 +115,35 @@ const DEFAULT_SETTINGS: SegmentSettings = { autoRegister: 'enabled', autoSegment
 export class SegmentService {
   private db: DatabaseSync | null = null;
   private coreMigrated = false;
+  private ocrReader?: OcrClaimReader;
+  private ocrRunner?: () => { available: boolean };
+  bindOcrReviewReader(reader: OcrClaimReader, runner?: () => { available: boolean }): void {
+    if (this.ocrReader && (this.ocrReader !== reader || this.ocrRunner !== runner))
+      throw new TaskError('SEGMENT_OCR_READER_BOUND', '当前片段服务已绑定宿主 OCR 核对包读端。');
+    this.ocrReader = reader;
+    this.ocrRunner = runner;
+  }
+
+  /** 以同一受控任务消费读端返回的完整核对包，不需要把个人文件引用复制进伴随库。 */
+  requestOcrReview(input: Omit<ArtifactIngestInput, 'artifactRef' | 'conversionTaskId'> & {
+    taskId: string; packetSha256: string }, requestId: string): TaskRecord {
+    const { taskId, packetSha256, ...binding } = input;
+    const artifactRef = `ocr-review:${taskId}:${packetSha256}`;
+    if (!OCR_REVIEW_REF.test(artifactRef)) throw new TaskError('SEGMENT_OCR_BINDING', '需要固定的 OCR 任务和核对包摘要。');
+    return this.requestArtifact({ ...binding, artifactRef }, requestId);
+  }
+
+  async readPinnedOcrArtifact(materialId: string, taskId: string, packetSha256: string): Promise<Buffer> {
+    if (!this.ocrReader) throw new TaskError('SEGMENT_OCR_READER_UNAVAILABLE', '宿主尚未装配 OCR 核对包读端。');
+    const packet = await this.ocrReader(materialId, taskId);
+    let proof: ReturnType<typeof checkOcrPacket>;
+    try { proof = checkOcrPacket(packet, materialId); }
+    catch { throw new TaskError('SEGMENT_OCR_PACKET_MISMATCH', '宿主返回的 OCR 核对包未通过原件、识别文本或检测框校验。'); }
+    if (proof.taskId !== taskId || proof.packetSha256 !== packetSha256)
+      throw new TaskError('SEGMENT_OCR_PACKET_MISMATCH', '原任务核对包与固定身份或摘要不符。');
+    return Buffer.from(canonicalWfdJson(packet));
+  }
+
   private jointEntry: string | null = null;
 
   attachJointRetrieval(entry: string): void { this.jointEntry = entry; }
@@ -129,12 +160,27 @@ export class SegmentService {
     const db = new DatabaseSync(path, { enableForeignKeyConstraints: true });
     if (path !== ':memory:') chmodSync(path, 0o600);
     try {
-      db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
+      db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;');
       ensureSegmentSchema(db);
     } catch (error) { db.close(); throw error; }
     this.db = db;
     return db;
   }
+
+  private withReader<T>(read: (db: DatabaseSync | null) => T): T {
+    if (this.options.databasePath === ':memory:') return read(this.db);
+    const reader = openReadOnlySegmentDb(this.options.databasePath);
+    if (!reader) return read(null);
+    try {
+      reader.db.exec('BEGIN'); // Pin one read snapshot across eligibility, membership and citations.
+      return read(reader.db);
+    } finally {
+      reader.db.close();
+      reader.assertCurrent();
+    }
+  }
+
+  readState(): 'ready' | 'uninitialized' { return this.withReader(db => db ? 'ready' : 'uninitialized'); }
 
   /** 请求表与处理策略表只迁移一次；迁移自身会开事务，不能在别的核心事务里触发。 */
   private get core(): DatabaseSync {
@@ -207,8 +253,9 @@ export class SegmentService {
     }
   }
 
-  capabilities(): JsonValue {
-    return { schema: SEGMENT_RETRIEVAL_SCHEMA, tokenizer: SEGMENT_TOKENIZER,
+  capabilities(documentIds?: readonly string[]): JsonValue {
+    const ocrReviewReaderWired = !!this.ocrReader;
+    return { schema: SEGMENT_RETRIEVAL_SCHEMA, storageState: this.readState(), tokenizer: SEGMENT_TOKENIZER, ocrReviewReaderWired,
       // 出站只报文件名：本机绝对路径不随能力描述外发（4.3 §四）。
       databaseFile: this.options.databasePath.split('/').pop() ?? 'segments.sqlite',
       segmentableArtifactTypes: [...SEGMENTABLE_ARTIFACT_TYPES],
@@ -222,14 +269,19 @@ export class SegmentService {
       structuredSide: { wired: this.jointEntry !== null, entry: this.jointEntry,
         reason: this.jointEntry ? '联合入口按已核对的WFD记录/版本关联材料；独立文档结果保持bd.doc-retrieval/2。'
           : '当前实例未装配联合入口。' },
-      permissionScope: { wired: false, reason: '本地材料没有逐文档权限模型；4.3 §8.5 的“权限收紧”状态本轮不可产生。' },
-      ocr: { wired: false, reason: 'OCR 未接入；无文字层的页面不生成片段，只记缺口，不补字。' } } as unknown as JsonValue;
+      permissionScope: documentIds !== undefined ? { wired: true, basis: 'conversation_branch_materials' }
+        : { wired: false, reason: '本地材料没有逐文档权限模型；4.3 §8.5 的“权限收紧”状态本轮不可产生。' },
+      ocr: { wired: true, packetSchema: OCR_PACKET_SCHEMA, reviewReaderWired: ocrReviewReaderWired,
+        runnerAvailable: this.ocrRunner?.().available ?? null, automaticRecognition: false,
+        reason: '已支持核对包片段入库。运行器可用性由宿主报告，未报告时为 null。' } } as unknown as JsonValue;
   }
 
   // ── 处理策略 ──────────────────────────────────────────────────────────
 
   settings(): SegmentSettings {
-    const rows = this.core.prepare('SELECT key, value FROM segment_settings').all() as unknown as { key: string; value: string }[];
+    const db = this.options.database.connection;
+    if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='segment_settings'").get()) return { ...DEFAULT_SETTINGS };
+    const rows = db.prepare('SELECT key, value FROM segment_settings').all() as unknown as { key: string; value: string }[];
     const stored = new Map(rows.map(row => [row.key, row.value]));
     const read = (key: keyof SegmentSettings): 'enabled' | 'disabled' =>
       stored.get(key) === 'disabled' ? 'disabled' : 'enabled';
@@ -290,13 +342,14 @@ export class SegmentService {
     const binding = this.requestByTask(context.task.id);
     const material = this.options.materials.get(binding.materialId);
     const documentVersion = binding.documentVersion ?? String(material.envelope.version);
-    const reference = this.options.files.verify(binding.artifactRef);
-    if (reference.status !== 'available') throw new TaskError('SEGMENT_ARTIFACT_UNAVAILABLE', '产物引用当前不可读取。');
+    const pinned = OCR_REVIEW_REF.exec(binding.artifactRef);
+    const reference = this.options.files.verify(pinned ? material.envelope.fileRefId : binding.artifactRef);
+    if (reference.status !== 'available' || pinned && reference.version !== material.envelope.fileRefVersion) throw new TaskError('SEGMENT_ARTIFACT_UNAVAILABLE', '产物引用当前不可读取。');
 
+    const capabilities = [{ action: 'read' as const, target: { kind: 'file' as const, path: reference.invocationPath } }];
     const operation: TaskOperation = { operationId: ARTIFACT_ACTION, operationVersion: SEGMENT_OPERATION_VERSION,
       argsDigest: digestOperationArgs({ materialId: binding.materialId, artifactRef: binding.artifactRef, documentVersion }),
-      targets: [{ kind: 'file', path: reference.invocationPath }] };
-    const capabilities = [{ action: 'read' as const, target: { kind: 'file' as const, path: reference.invocationPath } }];
+      targets: capabilities.map(cap => cap.target) };
     let approvalId: string | undefined;
     try { context.assertAuthorized(operation, capabilities); }
     catch (error) {
@@ -304,34 +357,51 @@ export class SegmentService {
       approvalId = (await context.requestApproval(operation, capabilities)).approvalId ?? undefined;
     }
     context.signal.throwIfAborted();
-    const bytes = await this.options.files.readBytes(binding.artifactRef,
-      { operation: context.operationScope(operation), approvalId, maxBytes: SEGMENT_ARTIFACT_MAX_BYTES });
+    const bytes = pinned ? await this.readPinnedOcrArtifact(binding.materialId, pinned[1]!, pinned[2]!)
+      : await this.options.files.readBytes(binding.artifactRef,
+        { operation: context.operationScope(operation), approvalId, maxBytes: SEGMENT_ARTIFACT_MAX_BYTES });
+    let raw: unknown;
+    try { raw = JSON.parse(bytes.toString('utf8')); }
+    catch { throw new TaskError('SEGMENT_ARTIFACT_INVALID', '产物不是可解析的 JSON。'); }
+    if (!isWfdRecord(raw)) throw new TaskError('SEGMENT_ARTIFACT_INVALID', '产物 JSON 不是对象。');
+    const ocr = raw.schema === OCR_PACKET_SCHEMA;
+    const artifactType = ocr ? OCR_PACKET_SCHEMA : typeof raw.operation === 'string' ? raw.operation : '';
+    if (!REGISTRABLE_ARTIFACT_TYPES.some(type => type === artifactType) || !ocr && artifactType === OCR_PACKET_SCHEMA)
+      throw new TaskError('SEGMENT_ARTIFACT_OPERATION', '产物操作未登记，不能进入证据账本。');
+    if (!isWfdRecord(raw.source) || raw.source.sha256 !== material.envelope.sha256
+      || (ocr ? raw.source.materialId !== binding.materialId : raw.source.fileRefId !== material.envelope.fileRefId))
+      throw new TaskError('SEGMENT_ARTIFACT_MISMATCH', '产物来源与保管材料的原件身份或摘要不一致。');
+    if (material.preview.format === 'excel' && SEGMENTABLE_ARTIFACT_TYPES.some(type => type === artifactType))
+      throw new TaskError('SEGMENT_STRUCTURED_TABLE', '已保管工作簿须走结构化表登记路线，不能以文档或 OCR 包进入片段库。');
+    let runId: string;
+    if (ocr) {
+      if (typeof raw.taskId !== 'string' || typeof raw.packetSha256 !== 'string'
+        || binding.conversionTaskId !== undefined && binding.conversionTaskId !== raw.taskId)
+        throw new TaskError('SEGMENT_OCR_BINDING', '登记任务与 OCR 核对包不一致。');
+      if (!pinned) {
+        const verified = await this.readPinnedOcrArtifact(binding.materialId, raw.taskId, raw.packetSha256);
+        if (verified.toString('utf8') !== canonicalWfdJson(raw)) throw new TaskError('SEGMENT_OCR_PACKET_MISMATCH', '文件与宿主核验的 OCR 包不一致。');
+      }
+      runId = raw.taskId;
+    } else {
+      runId = binding.conversionTaskId === undefined ? `direct:${artifactType}`
+        : this.verifyConversionRun(binding.conversionTaskId, binding.artifactRef, binding.materialId);
+    }
     context.signal.throwIfAborted();
-
-    let envelope: ConversionArtifactEnvelope & { operation?: string };
-    try { envelope = JSON.parse(bytes.toString('utf8')) as typeof envelope; }
-    catch { throw new TaskError('SEGMENT_ARTIFACT_INVALID', '产物不是可解析的转换信封 JSON。'); }
-    const artifactType = typeof envelope.operation === 'string' ? envelope.operation : '';
-    if (!(REGISTRABLE_ARTIFACT_TYPES as readonly string[]).includes(artifactType))
-      throw new TaskError('SEGMENT_ARTIFACT_OPERATION', `产物操作 ${artifactType || '(缺失)'} 未登记，不能进入证据账本。`);
-    // 产物必须属于该材料的那份原件：校验它自称的来源身份，不用文件名、不用当前时间。
-    if (envelope.source?.fileRefId !== material.envelope.fileRefId || envelope.source?.sha256 !== material.envelope.sha256)
-      throw new TaskError('SEGMENT_ARTIFACT_MISMATCH', '产物来源与 4.3 保管材料的原件身份或摘要不一致。');
-
-    // 转换运行身份只用可核对的事实：给了任务号就核对它的回执确实引用了这份产物。
-    const runId = binding.conversionTaskId === undefined ? `direct:${artifactType}`
-      : this.verifyConversionRun(binding.conversionTaskId, binding.artifactRef, material.envelope.materialId);
+    context.assertAuthorized(operation, capabilities, { approvalId });
+    this.options.files.verify(reference.id);
+    const envelope = raw as unknown as ConversionArtifactEnvelope;
     const ledger = recordArtifact(this.options.database, { material_id: binding.materialId,
       material_version: documentVersion, material_sha256: material.envelope.sha256,
       conversion_run_id: runId,
       artifact_ref: binding.artifactRef, artifact_type: artifactType,
       artifact_sha256: digestOf(bytes), artifact_bytes: bytes.byteLength,
-      parser_version: pdfjsOf(envelope) ?? null, declared_source_sha256: envelope.source?.sha256 ?? null });
+      parser_version: ocr ? OCR_PARSER_VERSION : pdfjsOf(envelope) ?? envelope.implementation?.version ?? null, declared_source_sha256: material.envelope.sha256 });
 
     const segmentable = (SEGMENTABLE_ARTIFACT_TYPES as readonly string[]).includes(artifactType);
     const settings = this.settings();
     if (!segmentable || settings.autoSegment === 'disabled') {
-      return artifactResult(ledger, { segmented: false, reason: segmentable ? 'auto_segment_disabled' : 'artifact_type_not_segmentable' });
+      return artifactResult(ledger, { segmented: false, reason: segmentable ? 'auto_segment_disabled' : artifactType === 'conversion.structured' ? 'structured_table_route' : 'artifact_type_not_segmentable' });
     }
 
     let built;
@@ -406,11 +476,17 @@ export class SegmentService {
     finally { db.close(); }
   }
 
-  indexVersions(): ReturnType<typeof listIndexVersions> { return listIndexVersions(this.connection); }
+  indexVersions(documentIds?: readonly string[]): ReturnType<typeof listIndexVersions> {
+    return this.withReader(db => db ? listIndexVersions(db, documentIds) : []);
+  }
 
   // ── 检索 ─────────────────────────────────────────────────────────────
 
-  search(input: SearchRequestInput): SegmentRetrievalResult {
+  search(input: SearchRequestInput, allowedDocumentIds?: readonly string[]): SegmentRetrievalResult {
+    return this.withReader(db => this.searchIndex(db, input, allowedDocumentIds));
+  }
+
+  private searchIndex(db: DatabaseSync | null, input: SearchRequestInput, allowedDocumentIds?: readonly string[]): SegmentRetrievalResult {
     const method: 'keyword' | 'exact' = input.method === 'exact' ? 'exact' : 'keyword';
     const query = typeof input.query === 'string' ? input.query : '';
     if (!query.trim()) throw new TaskError('SEGMENT_QUERY_REQUIRED', '检索需要非空查询文本。');
@@ -420,66 +496,79 @@ export class SegmentService {
       || input.documentIds.some(id => typeof id !== 'string' || !id || id.length > 128))) {
       throw new TaskError('SEGMENT_DOCUMENT_SCOPE_INVALID', '文档范围必须是最多500个已关联材料身份。');
     }
-    const gaps: string[] = [...(this.jointEntry ? [] : ['structured_query_not_wired']), 'permission_scope_not_implemented'];
-    const versions = this.indexVersions();
-    // 严格系统持有按 built_at 钉住版本；市场公开历史用当前索引，并标为事后重建。
-    const resolved = input.indexVersion
-      ? versions.find(version => version.index_version === input.indexVersion) ?? null
-      : (() => { const pointer = resolveIndexVersion(this.connection, mode === 'market_known_at' ? null : asOfMs);
-        return pointer === null ? null : versions.find(version => version.index_version === pointer.index_version) ?? null; })();
-    if (!resolved) {
+    let documentIds = input.documentIds ?? allowedDocumentIds;
+    if (allowedDocumentIds && input.documentIds) {
+      const allowed = new Set(allowedDocumentIds);
+      documentIds = input.documentIds.filter(id => allowed.has(id));
+    }
+    const gaps: string[] = this.jointEntry ? [] : ['structured_query_not_wired'];
+    if (allowedDocumentIds === undefined) gaps.push('permission_scope_not_implemented');
+    const cutoff = mode === 'system_held_at' ? asOfMs : null;
+    const selected = input.indexVersion ?? (db && resolveIndexVersion(db, cutoff, documentIds)?.index_version);
+    const resolved = db && selected ? listIndexVersions(db, documentIds, selected)[0] : null;
+    const tooLate = resolved && cutoff !== null && resolved.built_at > cutoff;
+    if (!db || !resolved || tooLate) {
+      if (!db) gaps.push('segment_store_uninitialized');
+      const reason = tooLate ? 'index_built_after_as_of' : input.indexVersion ? 'index_version_not_found' : 'no_index_at_as_of';
       return { schema: SEGMENT_RETRIEVAL_SCHEMA, structured: null, status: 'index_missing',
         query: { method, text: query, as_of: input.asOf ?? null },
         qualification: qualificationOf(mode, asOfMs, null), citations: [],
         coverage: { index_version: null, index_built_at: null, indexed_segments: 0, indexed_documents: 0,
-          documents_without_text_layer: documentsWithoutTextLayer(this.connection), as_of: asOfMs, excluded: [] },
-        gaps: [...gaps, input.indexVersion ? 'index_version_not_found' : 'no_index_at_as_of'] };
+          documents_without_text_layer: db ? documentsWithoutTextLayer(db, documentIds) : 0, as_of: asOfMs, excluded: [] },
+        gaps: [...gaps, reason] };
     }
     const indexVersion = resolved.index_version;
     // 时间门与版本收敛在 store 里一次算清：历史时点只答“当时可见的最后版本”。
     const view = asOfMs === null ? null
-      : resolveVisibleVersions(this.connection, { indexVersion, asOf: asOfMs, mode });
-    const hits = (method === 'exact' ? searchSegmentsExact : searchSegments)(this.connection,
-      { indexVersion, query, limit: input.limit, visibleVersions: view?.allowed ?? null, documentIds: input.documentIds });
-    const excluded: RetrievalExclusion[] = (view?.excluded ?? []).filter(item => input.documentIds === undefined || input.documentIds.includes(item.document_id));
+      : resolveVisibleVersions(db, { indexVersion, asOf: asOfMs, mode, documentIds });
+    const hits = (method === 'exact' ? searchSegmentsExact : searchSegments)(db,
+      { indexVersion, query, limit: input.limit, visibleVersions: view?.allowed ?? null, documentIds });
+    const excluded: RetrievalExclusion[] = view?.excluded ?? [];
     const coverage: RetrievalCoverage = { index_version: indexVersion, index_built_at: resolved.built_at,
       indexed_segments: resolved.segment_count, indexed_documents: resolved.document_count,
-      documents_without_text_layer: documentsWithoutTextLayer(this.connection), as_of: asOfMs, excluded };
+      documents_without_text_layer: documentsWithoutTextLayer(db, documentIds), as_of: asOfMs, excluded };
     if (coverage.documents_without_text_layer > 0) gaps.push('documents_without_text_layer');
     const status: SegmentRetrievalStatus = hits.length ? 'matched'
       : (asOfMs !== null && excluded.length ? 'history_unavailable' : 'no_match');
     return { schema: SEGMENT_RETRIEVAL_SCHEMA, structured: null, status,
       query: { method, text: query, as_of: input.asOf ?? null },
       qualification: qualificationOf(mode, asOfMs, resolved.built_at),
-      citations: hits.map(hit => this.citationWithDocumentIssues(hit.segment, indexVersion)), coverage, gaps };
+      citations: hits.map(hit => this.citationWithDocumentIssues(db, hit.segment, indexVersion)), coverage, gaps };
   }
 
   /** Persisted document gaps are separate from this exact segment's extraction issues.
    * Missing legacy metadata is unknown, not complete; no artifact or source re-read here. */
-  private citationWithDocumentIssues(segment: DocSegment, indexVersion: string | null): RetrievalCitation {
-    const document = readDocumentVersion(this.connection, segment.document_id, segment.document_version, segment.parser_version);
+  private citationWithDocumentIssues(db: DatabaseSync, segment: DocSegment, indexVersion: string | null): RetrievalCitation {
+    const document = readDocumentVersion(db, segment.document_id, segment.document_version, segment.parser_version);
     return { ...citation(segment, indexVersion), document_issues: document?.issues ?? null };
   }
 
   /** Frozen local evidence binding, not historical qualification or source truth. */
-  evidenceBinding(indexVersion: string, segmentId: string) {
-    const segment = readIndexedSegment(this.connection, indexVersion, segmentId);
-    if (!segment) throw new TaskError('SEGMENT_INDEX_MEMBERSHIP', '片段不属于指定固定索引，未回退。');
-    const document = readDocumentVersion(this.connection, segment.document_id, segment.document_version, segment.parser_version);
-    const artifact = findArtifactByRef(this.options.database, segment.document_id, segment.document_version, segment.source_ref);
-    return { segment, citation: this.citationWithDocumentIssues(segment, indexVersion), document, artifact };
+  evidenceBinding(indexVersion: string, segmentId: string, documentIds?: readonly string[]) {
+    return this.withReader(db => {
+      const segment = db && readIndexedSegment(db, indexVersion, segmentId, documentIds);
+      if (!db || !segment) throw new TaskError('SEGMENT_INDEX_MEMBERSHIP', '获准的固定索引范围内没有该片段。');
+      const document = readDocumentVersion(db, segment.document_id, segment.document_version, segment.parser_version);
+      const artifact = findArtifactByRef(this.options.database, segment.document_id, segment.document_version, segment.source_ref);
+      return { segment, citation: { ...citation(segment, indexVersion), document_issues: document?.issues ?? null }, document, artifact };
+    });
   }
 
   segment(segmentId: string): RetrievalCitation {
-    const found = readSegment(this.connection, segmentId);
-    if (!found) throw new TaskError('SEGMENT_NOT_FOUND', '没有该片段。');
-    return this.citationWithDocumentIssues(found, null);
+    return this.withReader(db => {
+      const found = db && readSegment(db, segmentId);
+      if (!db || !found) throw new TaskError('SEGMENT_NOT_FOUND', '没有该片段。');
+      return this.citationWithDocumentIssues(db, found, null);
+    });
   }
 
-  documents(): ReturnType<typeof listDocumentVersions> { return listDocumentVersions(this.connection); }
+  documents(documentIds?: readonly string[]): ReturnType<typeof listDocumentVersions> {
+    return this.withReader(db => db ? listDocumentVersions(db, documentIds) : []);
+  }
 
   segments(documentId: string, documentVersion?: string): RetrievalCitation[] {
-    return listSegments(this.connection, documentId, documentVersion).map(segment => this.citationWithDocumentIssues(segment, null));
+    return this.withReader(db => db ? listSegments(db, documentId, documentVersion)
+      .map(segment => this.citationWithDocumentIssues(db, segment, null)) : []);
   }
 
   /** 产物发现：按“可进索引”优先列出该材料已登记的转换产物。 */
@@ -492,16 +581,16 @@ export class SegmentService {
   storage(): JsonValue {
     // Do not use the lazy writable connection: inspecting capacity must not create or migrate a store.
     const sizes = fileSizes(this.options.databasePath);
-    let db: DatabaseSync | null = null;
     let report: ReturnType<typeof segmentStorage>;
     try {
-      db = this.options.databasePath === ':memory:' ? this.db : new DatabaseSync(this.options.databasePath, { readOnly: true });
-      if (!db) throw new TaskError('RETRIEVAL_STORAGE_UNAVAILABLE', '检索库尚未建立；未把未知容量显示为零。');
-      report = segmentStorage(db, true);
+      report = this.withReader(db => {
+        if (!db) throw new TaskError('RETRIEVAL_STORAGE_UNAVAILABLE', '检索库尚未建立，无法读取容量。');
+        return segmentStorage(db, true);
+      });
     } catch (error) {
       if (error instanceof TaskError) throw error;
-      throw new TaskError('RETRIEVAL_STORAGE_UNAVAILABLE', '检索容量暂不可读取；未创建、迁移或清理数据库。');
-    } finally { if (db && db !== this.db) db.close(); }
+      throw new TaskError('RETRIEVAL_STORAGE_UNAVAILABLE', '检索容量暂不可读取。');
+    }
     return { schema: 'bd.retrieval-storage/1', basis: 'sqlite_file_lengths_and_logical_contents', database: { file: this.options.databasePath.split('/').pop() ?? 'segments.sqlite', bytes: sizes.total, walBytes: sizes.wal,
         segments: report.segments, documents: report.documents, indexVersions: report.indexVersions,
         textBytes: report.textBytes, ftsTokenBytes: report.tokenBytes, ftsIndexBytes: report.ftsIndexBytes,
@@ -611,7 +700,7 @@ function timeIssue(dimension: TimeDimension, kind: 'event' | 'disclosure'): stri
 }
 
 function qualificationOf(mode: RetrievalHistoryMode, asOfMs: number | null, indexBuiltAt: number | null): RetrievalQualification {
-  return { mode, applied: asOfMs !== null,
+  return { mode, applied: asOfMs !== null && indexBuiltAt !== null,
     reconstruction: mode === 'market_known_at' && asOfMs !== null && indexBuiltAt !== null && indexBuiltAt > asOfMs
       ? 'post_hoc' : 'none',
     index_built_at: indexBuiltAt };
@@ -688,6 +777,6 @@ function artifactResult(ledger: ConversionArtifactRecord, outcome: {
     ...(outcome.index ? { indexVersion: outcome.index.indexVersion, indexReused: outcome.index.reused } : {}) };
   const summary = outcome.segmented
     ? `转换产物已登记并入索引：${ledger.artifact_type}${outcome.record ? `，${outcome.record.segment_count} 个片段` : ''}。`
-    : `转换产物已登记，未进入文档索引：${outcome.reason === 'auto_segment_disabled' ? '自动片段化已关闭' : '该产物类型不进索引'}。`;
+    : `转换产物已登记，未进入文档索引：${outcome.reason === 'auto_segment_disabled' ? '自动片段化已关闭' : outcome.reason === 'structured_table_route' ? '保持结构化表登记路线' : '该产物类型不进索引'}。`;
   return { summary, artifactIds: [ledger.artifact_ref], data: data as unknown as JsonValue };
 }

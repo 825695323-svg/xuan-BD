@@ -523,14 +523,15 @@ export function validateWhisperHeader(header: Buffer): void {
     || ![80, 128].includes(mels!) || ftype! < 0 || ftype! > 10_000) throw new DirectError('INVALID_WHISPER_MODEL', 'Whisper 模型参数无效或超出支持范围。');
 }
 
-export function conversionArguments(input: string, inputExtension: string, output: string, format: string): string[] {
+export function conversionArguments(input: string, inputExtension: string, output: string, format: string, alignMediaClock = false): string[] {
   const demuxer = INPUT_DEMUXERS[inputExtension];
   if (!demuxer) throw new DirectError('UNSUPPORTED_INPUT', '媒体输入格式尚未支持。');
   const inputArgs = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-n', '-protocol_whitelist', 'file', '-format_whitelist', demuxer, '-f', demuxer];
   if (demuxer === 'mov') inputArgs.push('-enable_drefs', '0', '-use_absolute_path', '0');
   inputArgs.push('-i', input, '-map_metadata', '-1', '-threads', '2', '-fs', String(MAX_OUTPUT_BYTES));
   const outputs: Record<string, string[]> = {
-    wav: ['-map', '0:a:0', '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-f', 'wav'],
+    // Preserve the container timeline, including a delayed first audio frame and timestamp gaps.
+    wav: ['-map', '0:a:0', '-vn', ...(alignMediaClock ? ['-af', 'aresample=async=1:first_pts=0'] : []), '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-f', 'wav'],
     mp3: ['-map', '0:a:0', '-vn', '-c:a', 'libmp3lame', '-b:a', '192k', '-f', 'mp3'],
     mp4: ['-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', '-f', 'mp4'],
     png: ['-map', '0:v:0', '-frames:v', '1', '-c:v', 'png', '-f', 'image2', '-update', '1'],

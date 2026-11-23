@@ -3,6 +3,7 @@ import type { SkillRegistration } from '../../platform/plugins/registry.js';
 import { TaskError, type TaskExecutionContext, type TaskService } from '../../platform/jobs/tasks.js';
 import type { FileReferenceService } from '../../platform/resources/files.js';
 import type { CoreDatabase } from '../../platform/state/database.js';
+import { baiduReturnUrl } from '../../plugins/capture-sources/baidu-drive/contract.js';
 
 const id = (value: unknown): value is string => typeof value === 'string' && /^[a-zA-Z0-9._:-]{1,200}$/u.test(value);
 const obj = (value: unknown): Record<string, unknown> | null =>
@@ -25,7 +26,7 @@ export function createArtifactManifestActions(options: {
   const db = options.database.connection;
   return {
     registration,
-    versionBinding() { return { artifactManifest: 'bd.artifact-manifest/1' }; },
+    versionBinding() { return { artifactManifest: 'bd.artifact-manifest/2' }; },
     execute(_context: TaskExecutionContext, args: Record<string, JsonValue>): Promise<TaskResult> {
       if (Object.keys(args).some(key => key !== 'sourceTaskId') || !id(args.sourceTaskId))
         throw new TaskError('ARTIFACT_MANIFEST_INPUT', '需要已有成功来源任务编号，不接受目录路径或额外参数。');
@@ -66,8 +67,8 @@ export function createArtifactManifestActions(options: {
         const ref = options.files.getRef(fileRefId);
         const producerMatched = ref.source === 'generated' && ref.kind === 'file'
           && ref.relations.some(link => link.kind === 'task' && link.id === sourceTaskId);
-        const archive = db.prepare('SELECT state,sha256,remote_id,target_path FROM artifact_archive_receipts WHERE source_task_id=? AND file_ref_id=?')
-          .get(sourceTaskId, fileRefId) as { state: string; sha256: string; remote_id: string | null; target_path: string } | undefined;
+        const archive = db.prepare('SELECT state,remote_id,target_path,return_url FROM artifact_archive_receipts WHERE source_task_id=? AND file_ref_id=?')
+          .get(sourceTaskId, fileRefId) as { state: string; remote_id: string | null; target_path: string; return_url: string | null } | undefined;
         const release = db.prepare('SELECT state FROM artifact_local_releases WHERE source_task_id=? AND file_ref_id=?')
           .get(sourceTaskId, fileRefId) as { state: string } | undefined;
         const annotated = [...(roles.get(fileRefId) ?? new Set(['unclassified']))];
@@ -75,7 +76,7 @@ export function createArtifactManifestActions(options: {
         const evidence = annotated.some(role => ['transcription-evidence', 'article-html', 'article-text', 'visible-text', 'web-dom', 'site-result'].includes(role));
         return { fileRefId, name: ref.displayName, bytes: ref.size, registeredStatus: ref.status,
           sourceRoles: annotated, producerMatched, archiveState: archive?.state ?? 'not_archived',
-          remotePath: archive?.target_path ?? null, remoteId: archive?.remote_id ?? null,
+          remotePath: archive?.target_path ?? null, remoteId: archive?.remote_id ?? null, returnUrl: baiduReturnUrl(archive?.return_url),
           archiveEvidence: archive?.state === 'confirmed' ? 'remote_name_size_id_only' : 'none',
           releaseState: release?.state ?? 'not_requested',
           suggestedDisposition: original ? 'archive-original' : evidence ? 'archive-evidence'

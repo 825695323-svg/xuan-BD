@@ -11,6 +11,9 @@ import { canonicalWfdJson, isWfdRecord, wfdSha256 } from '../../adapters/databas
 import type { OperatorContext, ProcessingPlanInput } from './processing-plan.js';
 import type { ProcessingQuality } from '../../contracts/processing-quality.js';
 import { processingQualitySummary } from './processing-quality.js';
+import { isAlgorithmMethodId } from '../financial/algorithm-types.js';
+import { fixedWfdBinding, pureOperatorAvailability } from '../financial/tool-library.js';
+import { algorithmAllowedByRules, frozenAlgorithmCapabilities } from '../financial/basic-algorithm-tool-contract.js';
 import { PRODUCTION_MODULES, stepModuleForAction, readWfdModulePage,
   productionModuleDirectory, factorLibraryView, semanticDictionaryView, sourceSemanticView,
   readPublishedWfdSemanticDefinition } from './production-module-ports.js';
@@ -23,6 +26,10 @@ const text = (key: string, label: string, required = false, maxLength = 160): Sk
   ({ key, label, type: 'text', required, maxLength });
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
 const view = (value: unknown): Record<string, JsonValue> => ({ kind: 'conversation-processing', modelPreview: json(value) });
+function wfdQueryAvailable(port: WorkspaceServices['r1Workspace']): boolean {
+  return !!port?.snapshotStatus && !!port.discoverProducts && !!port.readProduct
+    && ['ready', 'configured'].includes(port.capabilities().configuration.state);
+}
 
 /**
  * 受信会话宿主到处理计划的桥：材料只来自本会话分支 material.read 的保管关系；
@@ -89,9 +96,7 @@ export class ConversationProcessingBridge {
         text('fieldsJson', '可选字段数组JSON', false, 2000),
         text('cursor', '原分页游标（可选）', false, 8192),
       ]), available: () => {
-        const port = options.companion.r1Workspace;
-        const ready = !!port?.snapshotStatus && !!port?.discoverProducts && !!port?.readProduct
-          && port.capabilities().configuration.state === 'ready';
+        const ready = wfdQueryAvailable(options.companion.r1Workspace);
         return ready ? { available: true } : { available: false,
           reason: 'WFD受信只读连接未装配、未配置或不可用；不能伪造数据库查询结果。' };
       } },
@@ -236,6 +241,8 @@ export class ConversationProcessingBridge {
         ? args.wfdRefJson : null;
       const rawSourceQuery = moduleAction.id === 'semantics' && typeof args.sourceQueryJson === 'string' && args.sourceQueryJson.trim()
         ? args.sourceQueryJson.trim() : null;
+      const factors = moduleAction.id === 'factors'
+        ? this.factorLibrary(origin, typeof args.factorId === 'string' ? args.factorId.trim() || undefined : undefined) : null;
       const hasTemplateSelection = typeof args.groupId === 'string' && !!args.groupId.trim();
       if (moduleAction.id === 'semantics'
         && [!!rawSourceQuery, !!rawReference, hasTemplateSelection].filter(Boolean).length > 1)
@@ -264,8 +271,7 @@ export class ConversationProcessingBridge {
         if (args.planId || args.stepId) throw new TaskError('PRODUCTION_MODULE_MODE',
           '因子库与语义词典只读，不执行原报加工计划。');
         const catalog = moduleAction.id === 'factors'
-          ? factorLibraryView(typeof args.factorId === 'string' && args.factorId.trim()
-            ? args.factorId.trim() : undefined)
+          ? factors
           : rawSourceQuery || selection ? null
             : semanticDictionaryView(typeof args.groupId === 'string' && args.groupId.trim()
               ? args.groupId.trim() : undefined);
@@ -480,6 +486,16 @@ export class ConversationProcessingBridge {
       conversation: { conversationId: origin.conversationId, branchId: origin.branchId,
         verifyUserMessage: (messageId, quote) => this.verifyUserMessage(origin, messageId, quote) } };
   }
+  private factorLibrary(origin: ModelTaskOrigin, factorId?: string) {
+    const version = this.options.core.runConfiguration(origin.parentRunId)?.internalAgentRules?.version;
+    const rules = frozenAlgorithmCapabilities(version);
+    const allowed = (id: string) => isAlgorithmMethodId(id) ? algorithmAllowedByRules(id, version) : rules.allFactorDefinitions;
+    if (factorId && !allowed(factorId))
+      throw new TaskError('ALGORITHM_METHOD_NOT_ALLOWED_BY_RULES', '本会话冻结规则不允许读取该因子定义。');
+    const companion = this.options.companion;
+    return factorLibraryView(factorId, allowed, { algorithms: companion.algorithms, hasWfdReader: () => !!fixedWfdBinding(companion.r1Workspace),
+      calculateEnabled: () => companion.productionModuleSwitches?.calculate !== false, hasDailyPublisher: () => !!companion.derivedPublisher }, rules.pureOperators === true);
+  }
   private verifyUserMessage(origin: ModelTaskOrigin, messageId: string, quote: string): boolean {
     if (!quote.trim()) return false;
     let id: string | null = origin.messageId, seen = new Set<string>();
@@ -513,6 +529,7 @@ export class ConversationProcessingBridge {
     return rows.map(row => row.material_id);
   }
   private capabilitiesView(origin: ModelTaskOrigin) {
+    const version = this.options.core.runConfiguration(origin.parentRunId)?.internalAgentRules?.version;
     const service = this.options.companion.processing!;
     const rows = this.options.database.connection.prepare(`SELECT material_id FROM conversation_material_links
       WHERE origin_json LIKE ? ORDER BY created_at DESC,rowid DESC LIMIT 20`)
@@ -550,14 +567,20 @@ export class ConversationProcessingBridge {
       querySources: {
         decision: '由AGENTS依据材料与解析反馈按需决定，查询结果必须返回AGENTS重新评估，不把来源动作当处理阶段',
         wfd: { actions: ['data.wfd.query'], operations: ['snapshot','discover','product'],
-          mode: 'trusted_read_only_fixed_snapshot', available: this.options.companion.r1Workspace?.capabilities().configuration.state === 'ready' },
+          mode: 'trusted_read_only_fixed_snapshot', available: wfdQueryAvailable(this.options.companion.r1Workspace) },
         api: { actions: ['source.api.read','source.kline.read','source.werss.read','source.fetch'],
           discoverVia: 'list_actions', readiness: 'depends_on_registered_connections', preservesOriginalReceipt: true },
         capture: { actions: ['capture.<site>.read','source.wechat.extract','web.read_public','web.search'],
           discoverVia: 'list_actions', readiness: 'depends_on_source_session_and_permissions', preservesOriginalReceipt: true },
       },
       parallelModuleDirectory: productionModuleDirectory({
-        processing: service, algorithms: this.options.companion.algorithms,
+        processing: service, algorithms: this.options.companion.algorithms && { catalog: () => {
+          const catalog = this.options.companion.algorithms!.catalog();
+          return { ...catalog, methods: catalog.methods.filter(method => algorithmAllowedByRules(method.id, version)) };
+        } },
+        pureOperators: frozenAlgorithmCapabilities(version).pureOperators ? pureOperatorAvailability({
+          hasWfdReader: () => !!fixedWfdBinding(this.options.companion.r1Workspace),
+          calculateEnabled: () => this.options.companion.productionModuleSwitches?.calculate !== false }) : undefined,
         hasWfdReader: !!this.options.companion.r1Workspace?.readProduct,
         hasSourceProfiles: !!this.options.companion.sourceFieldProfiles,
         enabled: this.options.companion.productionModuleSwitches,

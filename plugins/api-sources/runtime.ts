@@ -17,7 +17,8 @@ import { readTdxMinutes, tdxAvailability, tdxVersions, type TdxPackageBinding } 
 import { decodePublicDailyBars, normalizePublicDailyRequest, publicKlineProvider, publicKlineProviders, type SupportedDailyProviderId, type PublicKlineOperationId } from './public-kline.js';
 import { cacheUrl, parseWerssFeed, readWerssCache, WERSS_CACHE_LIMIT, WERSS_PROJECTION_VERSION } from './providers/werss/cache.js';
 import { runWechatScript, wechatArticleUrl } from './providers/wechat/script.js';
-import { sourceCandidateFeedback, sourceOperationsForAction } from './operations.js';
+import { FETCH_OPERATIONS, sourceCandidateFeedback, sourceOperationsForAction } from './operations.js';
+import { decodeThsResponse } from './providers/ths/requests.js';
 import { buildApiReadRequest, validateApiReadRequest } from './api-read.js';
 
 const MAX = 2 * 1024 * 1024;
@@ -25,6 +26,15 @@ const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).
 const object = (v: unknown): v is Record<string, JsonValue> => !!v && typeof v === 'object' && !Array.isArray(v);
 const officialHost = (hostname: string) => ['sse.com.cn', 'szse.cn', 'cninfo.com.cn', 'csindex.com.cn'].some(host => hostname === host || hostname.endsWith('.' + host));
 interface SourceBytes { url: string; status: number; bytes: Buffer; contentType: string; observedAt: string }
+interface SourceAttempt {
+  connectionId: string; outcome: 'started' | 'used' | 'skipped_or_failed';
+  fileRefId: string | null; sha256: string | null; reason?: string; code?: string;
+}
+function terminalSourceError(error: unknown): boolean {
+  return error instanceof DirectError && error.unknown || !!error && typeof error === 'object' && 'code' in error
+    && ['SOURCE_RATE_LIMITED', 'SOURCE_RATE_LIMIT_UNVERIFIABLE', 'SOURCE_CONFIGURATION_CHANGED', 'SOURCE_RESPONSE_CREDENTIAL_ECHO',
+      'SOURCE_ARTIFACT_PUBLICATION_FAILED'].includes(String(error.code));
+}
 const accountLanes = new Map<string, Promise<void>>();
 const accountLastCall = new Map<string, number>();
 export const SOURCE_ACTIONS = ['source.fetch', 'source.api.read', 'source.kline.read', 'source.werss.read', 'source.wechat.extract'] as const;
@@ -286,11 +296,18 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
       try {
         assert(); const key = await credential(connection, options.processRuntime);
         assert();
-        const response = await serial(connection, () => { assert(); return readBytes(new URL(connection.baseUrl + '/api/a-share-index/constituents/ths-stock-list?thscode=000300.SH'), assert, undefined, { 'X-api-key': key }); });
+        const response = await serial(connection, () => { assert(); return readBytes(new URL(connection.baseUrl + '/api/a-share-index/constituents/ths-stock-list?thscode=000300.SH'), assert, undefined, { 'X-api-key': key }, undefined, { providerId: 'ths' }, options.network); });
         reachable = true;
-        const value = json(response); authorized = response.status === 200 && value.code === 0; capabilityAvailable = authorized;
-        reason = authorized ? '指定凭据与当前指数成分GET端点已实际核验；其他端点权限、剩余额度和数据及时性仍未知。' : `服务已响应，当前端点未通过授权或业务检查（HTTP ${response.status}，code ${String(value.code ?? 'unknown')}）。`;
-      } catch (error) { reason = safeFailure(error); }
+        if (responseEchoesCredential(response, key)) throw credentialEchoError();
+        decodeThsResponse(decode(response));
+        authorized = response.status === 200; capabilityAvailable = authorized;
+        reason = authorized ? '指定凭据与当前指数成分GET端点已实际核验；其他端点权限、剩余额度和数据及时性仍未知。' : `服务已响应，当前端点返回 HTTP ${response.status}。`;
+      } catch (error) {
+        reason = safeFailure(error);
+        if (error instanceof DirectError && ['SOURCE_UNAUTHORIZED', 'SOURCE_FORBIDDEN'].includes(error.code)) {
+          reachable = true; authorized = false; capabilityAvailable = false;
+        } else if (error instanceof DirectError && error.code === 'SOURCE_RATE_LIMITED') reachable = true;
+      }
       return settings.saveCheck({ id: connectionId, checkedAt: new Date().toISOString(), configurationRevision: current.revision, configurationDigest,
         status: capabilityAvailable ? 'passed' : 'blocked', reachable, authorized, capabilityAvailable, freshness: 'unknown', reason });
     },
@@ -307,14 +324,42 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
         id, ...identity, checkedAt: new Date().toISOString(), status: success ? 'passed' : 'blocked',
         reachable: success ? true : null, authorized: success ? true : null, capabilityAvailable: success, freshness: 'unknown', reason,
       });
-      const artifacts: string[] = [], receipts: Array<{ url: string; sha256: string; fileRefId: string; contentType: string; status: number | null; transport: 'https' | 'native-tcp'; method?: 'GET' | 'POST'; requestBodySha256?: string }> = [];
-      const publish = async (name: string, bytes: Buffer | string) => {
-        const staged = typeof bytes === 'string' ? await workspace.createText(name, bytes) : await workspace.createBytes(name, bytes);
-        const reference = await workspace.publishFile(staged, prepareDestination(join(options.artifactRoot, `${prefix}-${name}`)), action, { scopeId }, MAX);
-        artifacts.push(reference.id); return reference;
+      const artifacts: string[] = [], receipts: Array<{ connectionId: string; url: string; sha256: string; fileRefId: string; contentType: string; status: number | null; transport: 'https' | 'native-tcp'; method?: 'GET' | 'POST'; requestBodySha256?: string }> = [];
+      const attempts: SourceAttempt[] = [];
+      let restrictedResponse: JsonValue | undefined;
+      const beginAttempt = (connectionId: string): SourceAttempt => {
+        const attempt: SourceAttempt = { connectionId, outcome: 'started', fileRefId: null, sha256: null };
+        attempts.push(attempt);
+        return attempt;
+      };
+      const assertCandidate = (candidate: SourceConnection, operation: SourceOperationId, expectedDigest: string) => {
+        context.signal.throwIfAborted();
+        if (settings.checkIdentity(candidate.id) !== expectedDigest)
+          throw new DirectError('SOURCE_CONFIGURATION_CHANGED', '读取中来源配置已改变，本请求不沿用旧身份。');
+        settings.assertOperationConnectionEnabled(candidate.id, scopeId, operation);
+      };
+      const recordCandidateFailure = async (candidate: SourceConnection, attempt: SourceAttempt, error: unknown,
+        identity: { configurationRevision: number; configurationDigest: string }) => {
+        const reason = safeFailure(error);
+        attempt.outcome = 'skipped_or_failed'; attempt.reason = reason;
+        if (error instanceof DirectError) attempt.code = error.code;
+        saveDownload(candidate.id, false, reason, identity);
+        await context.emit({ type: 'progress', message: `连接 ${candidate.alias} 未完成：${reason}`, data: { ...attempt } });
+      };
+      const publish = async (filename: string, bytes: Buffer | string) => {
+        const name = attempts.length ? `attempt-${attempts.length}-${filename}` : filename;
+        try {
+          if (Buffer.byteLength(bytes) > MAX) throw new DirectError('SOURCE_ARTIFACT_PUBLICATION_FAILED', '本地任务产物超过单份 2 MiB 发布预算。');
+          const staged = typeof bytes === 'string' ? await workspace.createText(name, bytes) : await workspace.createBytes(name, bytes);
+          const reference = await workspace.publishFile(staged, prepareDestination(join(options.artifactRoot, `${prefix}-${name}`)), action, { scopeId }, MAX);
+          artifacts.push(reference.id); return reference;
+        } catch (error) {
+          if (context.signal.aborted || terminalSourceError(error)) throw error;
+          throw new DirectError('SOURCE_ARTIFACT_PUBLICATION_FAILED', '本地任务产物发布失败，请核对本次任务的保管记录。');
+        }
       };
       const fetchRetain = async (url: URL, assertCurrent = assert, headers?: Record<string, string>, accountScope = sourceId,
-        request: { method?: 'GET' | 'POST'; body?: string } = {}) => {
+        request: { method?: 'GET' | 'POST'; body?: string; providerId?: string } = {}) => {
         const key = JSON.stringify([url.origin, accountScope]);
         let networkAuthority = networkAuthorities.get(key);
         if (!networkAuthority) {
@@ -323,13 +368,21 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
         }
         networkAuthority.assert(); assertCurrent();
         const result = await readBytes(url, assertCurrent, context, headers, networkAuthority, request, options.network);
+        const attempt = attempts.at(-1), sha256 = hash(result.bytes);
+        const secret = requestCredential(headers);
+        if (secret && responseEchoesCredential(result, secret)) {
+          restrictedResponse = { sha256, status: result.status, byteLength: result.bytes.length, disposition: 'withheld_credential_echo' };
+          throw credentialEchoError();
+        }
         const name = `${receipts.length + 1}-raw.${result.contentType.includes('pdf') ? 'pdf' : result.contentType.includes('html') ? 'html' : 'json'}`;
-        const reference = await publish(name, result.bytes); receipts.push({ url: result.url, sha256: hash(result.bytes), fileRefId: reference.id,
+        const reference = await publish(name, result.bytes);
+        receipts.push({ connectionId: attempt?.connectionId ?? sourceId, url: result.url, sha256, fileRefId: reference.id,
           contentType: result.contentType, status: result.status, transport: 'https', method: request.method ?? 'GET',
           ...(request.body === undefined ? {} : { requestBodySha256: hash(request.body) }) });
-        await context.emit({ type: 'checkpoint', checkpoint: { sourceReceipts: receipts as unknown as JsonValue, artifactIds: artifacts, complete: false } });
-        if (result.status === 429) throw new DirectError('SOURCE_RATE_LIMITED', '来源触发HTTP 429限流；原响应已保留，本任务停止，不立即重试或切换同账号别名。');
-        if (result.status < 200 || result.status >= 300) throw new DirectError('SOURCE_HTTP_ERROR', `来源返回HTTP ${result.status}；原响应已保留，未假报成功。`);
+        if (attempt) { attempt.fileRefId = reference.id; attempt.sha256 = sha256; }
+        try { await context.emit({ type: 'checkpoint', checkpoint: { sourceReceipts: receipts as unknown as JsonValue, artifactIds: artifacts, complete: false } }); }
+        catch { throw new DirectError('SOURCE_ARTIFACT_PUBLICATION_FAILED', '本地原件回执未能写入任务检查点。'); }
+        if (result.status < 200 || result.status >= 300) throw sourceHttpError(result, request.providerId === 'ths');
         return result;
       };
       try {
@@ -339,18 +392,14 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
           if (operation !== 'minute_bars' && operation !== 'daily_bars') throw new DirectError('SOURCE_PARAMETERS_INVALID', 'K线类型必须是分钟或日线。');
           const dailyRequest = p.adjustment === undefined ? null : normalizePublicDailyRequest(p, true);
           if (dailyRequest && scopeId !== 'CN/A_STOCK') throw new DirectError('SOURCE_SCOPE_UNSUPPORTED', '受控不复权日线目前只登记中国A股范围。');
-          const attempts: Array<{ connectionId: string; outcome: string; reason?: string }> = [];
           // 只解析并遍历明确配置的主源与备用源；未入选连接不自动补入。
           const candidates = settings.operationCandidates(scopeId, operation);
           for (const candidate of candidates) {
+            const attempt = beginAttempt(candidate.id);
+            let validated = false;
             const provider = publicKlineProvider(candidate.pluginId), downloadIdentity = { configurationDigest: settings.checkIdentity(candidate.id), configurationRevision: settings.get().revision };
             try {
-              const assertConnection = () => {
-                context.signal.throwIfAborted();
-                settings.assertOperationConnectionEnabled(candidate.id, scopeId, operation);
-                if (settings.checkIdentity(candidate.id) !== downloadIdentity.configurationDigest)
-                  throw new DirectError('SOURCE_CONFIGURATION_CHANGED', '读取中来源配置已改变；本请求不沿用旧身份。');
-              };
+              const assertConnection = () => assertCandidate(candidate, operation, downloadIdentity.configurationDigest);
               // 停用先于能力与参数判断；停用连接不会因为其他实现不可用而被绕过。
               assertConnection();
               if (!provider || !provider.operations.some(item => item.id === operation)) throw new DirectError('SOURCE_KIND_UNSUPPORTED', '此连接不支持所选K线类型，已跳过。');
@@ -365,13 +414,14 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
               sourceAuthority.assert(); assertConnection();
               const result = await serial(candidate, async () => { sourceAuthority.assert(); assertConnection(); return fetchRetain(requestURL, () => { sourceAuthority.assert(); assertConnection(); }, provider.headers, settings.accountId(candidate)); });
               const decoded = dailyRequest ? decodePublicDailyBars(provider.id as SupportedDailyProviderId, dailyRequest, result.bytes) : null;
+              assertConnection(); validated = true;
               const projection = decoded ? await publish('daily-projection.json', JSON.stringify(decoded) + '\n') : null;
               const dailyValidation = decoded ? { decoderVersion: decoded.decoderVersion, symbol: decoded.symbol, adjustment: decoded.adjustment,
                 requestedStart: decoded.requestedStart, requestedEnd: decoded.requestedEnd, actualStart: decoded.actualStart, actualEnd: decoded.actualEnd,
                 recordCount: decoded.recordCount, rawSha256: decoded.rawSha256, projectionRef: projection!.id, projectionRefVersion: projection!.version,
                 volumeUnit: decoded.volumeUnit, amountUnit: decoded.amountUnit,
                 database: 'not_submitted', historicalAvailability: 'not_established' } : undefined;
-              attempts.push({ connectionId: candidate.id, outcome: 'used' });
+              attempt.outcome = 'used';
               const candidateFeedback = sourceCandidateFeedback({
                 scopeId, operationId: operation, providerId: candidate.pluginId, connectionId: candidate.id,
                 acquiredAtUtc: result.observedAt, ...(typeof p.symbol === 'string' ? { subjectId: p.symbol } : {}),
@@ -392,27 +442,25 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
                   observedAt: result.observedAt, sourceReceipts: receipts, artifactIds: artifacts,
                   candidateFeedback, ...(dailyValidation ? { dailyValidation } : {}) } } as unknown as JsonValue };
             } catch (error) {
-              if (context.signal.aborted || error instanceof DirectError && (error.unknown || error.code === 'SOURCE_RATE_LIMITED')) throw error;
-              saveDownload(candidate.id, false, safeFailure(error), downloadIdentity);
-              attempts.push({ connectionId: candidate.id, outcome: 'skipped_or_failed', reason: safeFailure(error) });
-              await context.emit({ type: 'progress', message: `连接 ${candidate.alias} 未完成：${safeFailure(error)}`, data: { connectionId: candidate.id } });
+              if (validated || context.signal.aborted || terminalSourceError(error)) throw error;
+              await recordCandidateFailure(candidate, attempt, error, downloadIdentity);
             }
           }
           throw new DirectError('SOURCE_NO_ELIGIBLE_CONNECTION', dailyRequest ? '已配置主备中没有通过本次不复权日线请求核对的连接；原响应已保留，未调用未入选连接。'
             : '已配置的明确主备中没有完成此请求的公开K线连接。');
         }
         if (action === 'source.api.read') {
-          const attempts: Array<{ connectionId: string; outcome: string; reason?: string }> = [];
           const operation = String(args.operation) as SourceOperationId;
           validateApiReadRequest(operation, p);
-          if (scopeId !== 'CN/A_STOCK') throw new DirectError('SOURCE_SCOPE_UNSUPPORTED', '当前接口读取协议仅登记中国A股范围。');
+          if (!['daily_bars', 'index_constituents'].includes(operation) && scopeId !== 'CN/A_STOCK')
+            throw new DirectError('SOURCE_SCOPE_UNSUPPORTED', '财报与研报读取协议仅登记中国A股范围。');
           const attemptedAccounts = new Set<string>();
           for (const candidate of settings.operationCandidates(scopeId, operation)) {
+            const attempt = beginAttempt(candidate.id);
+            let validated = false;
             const downloadIdentity = { configurationDigest: settings.checkIdentity(candidate.id), configurationRevision: settings.get().revision };
             try {
-              const assertConnection = () => { context.signal.throwIfAborted(); settings.assertOperationConnectionEnabled(candidate.id, scopeId, operation);
-                if (settings.checkIdentity(candidate.id) !== downloadIdentity.configurationDigest)
-                  throw new DirectError('SOURCE_CONFIGURATION_CHANGED', '读取中来源配置已改变；本请求不沿用旧身份。'); };
+              const assertConnection = () => assertCandidate(candidate, operation, downloadIdentity.configurationDigest);
               assertConnection();
               const request = buildApiReadRequest(candidate.pluginId, candidate.baseUrl, operation, p);
               const requestURL = request.url, accountScope = settings.accountId(candidate);
@@ -426,15 +474,18 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
               sourceAuthority.assert(); assertConnection();
               const headers = { ...request.headers, ...(request.requiresCredential ? { 'X-api-key': await credential(candidate, options.processRuntime) } : {}) };
               const result = await serial(candidate, async () => { sourceAuthority.assert(); assertConnection();
-                return fetchRetain(requestURL, () => { sourceAuthority.assert(); assertConnection(); }, headers, accountScope, request); });
-              const decoded = request.decode(result.bytes);
+                return fetchRetain(requestURL, () => { sourceAuthority.assert(); assertConnection(); }, headers, accountScope, { ...request, providerId: candidate.pluginId }); });
+              const legacyThs = candidate.pluginId === 'ths' && operation !== 'financial_statements';
+              const decoded = request.decode(result.bytes, legacyThs ? decode(result) : undefined);
+              assertConnection(); validated = true;
               const projection = decoded.projection === null ? null : await publish('field-projection.json', JSON.stringify(decoded.projection) + '\n');
               const projectionEvidence = projection ? { projectionRef: projection.id, projectionRefVersion: projection.version,
                 rawSha256: hash(result.bytes), historicalAvailability: 'not_established', database: 'not_submitted' } : null;
-              attempts.push({ connectionId: candidate.id, outcome: 'used' });
+              attempt.outcome = 'used';
               const candidateFeedback = sourceCandidateFeedback({
                 scopeId, operationId: operation, providerId: candidate.pluginId, connectionId: candidate.id,
-                acquiredAtUtc: result.observedAt, subjectId: decoded.subjectId,
+                acquiredAtUtc: result.observedAt, subjectId: decoded.subjectId, subject: decoded.subject,
+                statement: decoded.statement, encodeUrl: decoded.encodeUrl,
                 start: decoded.start, end: decoded.end, rowCount: decoded.recordCount,
                 originals: receipts.slice(-1).map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })),
               });
@@ -450,46 +501,50 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
                   candidateFeedback, ...(projectionEvidence ? { projection: projectionEvidence } : {}),
                   ...(decoded.pagination ? { pagination: decoded.pagination } : {}) } } as unknown as JsonValue };
             } catch (error) {
-              if (context.signal.aborted || error instanceof DirectError && (error.unknown || error.code === 'SOURCE_RATE_LIMITED')) throw error;
-              saveDownload(candidate.id, false, safeFailure(error), downloadIdentity);
-              attempts.push({ connectionId: candidate.id, outcome: 'skipped_or_failed', reason: safeFailure(error) });
-              await context.emit({ type: 'progress', message: `连接 ${candidate.alias} 未完成：${safeFailure(error)}`, data: { connectionId: candidate.id } });
+              if (validated || context.signal.aborted || terminalSourceError(error)) throw error;
+              await recordCandidateFailure(candidate, attempt, error, downloadIdentity);
             }
           }
           throw new DirectError('SOURCE_NO_ELIGIBLE_CONNECTION', '已配置组合中没有完成此请求的合格连接；未调用名单外账号。');
         }
-        let actualConnectionId: string | null = null;
+        if (!Object.hasOwn(FETCH_OPERATIONS, sourceId)) throw new DirectError('SOURCE_PARAMETERS_INVALID', '下载来源没有登记操作。');
+        const fetchOperation = FETCH_OPERATIONS[sourceId as keyof typeof FETCH_OPERATIONS];
+        let actualConnectionId: string | null = null, observedAt: string | null = null;
         if (sourceId === 'tdx') {
-          let acquired = false; const attemptedAccounts = new Set<string>();
-          const operation: SourceOperationId = 'minute_bars';
+          const attemptedAccounts = new Set<string>();
+          const operation = FETCH_OPERATIONS.tdx;
           for (const connection of settings.operationCandidates(scopeId, operation)) {
             if (connection.pluginId !== 'tdx') continue;
+            const attempt = beginAttempt(connection.id);
             const downloadIdentity = { configurationDigest: settings.checkIdentity(connection.id), configurationRevision: settings.get().revision };
             try {
               const assertConnection = () => { context.signal.throwIfAborted(); settings.assertOperationConnectionEnabled(connection.id, scopeId, operation); };
               assertConnection();
-              if (!claimSourceAccountAttempt(attemptedAccounts, settings.accountId(connection))) continue;
+              if (!claimSourceAccountAttempt(attemptedAccounts, settings.accountId(connection))) {
+                attempt.outcome = 'skipped_or_failed'; attempt.reason = '本任务已经尝试同一账号。'; continue;
+              }
               const raw = await serial(connection, async () => { assertConnection(); return readTdxMinutes({ ...context,
                 assertAuthorized: (operation, capabilities, input) => { assertConnection(); return context.assertAuthorized(operation, capabilities, input); },
                 requestApproval: async (operation, capabilities, input) => { assertConnection(); const receipt = await context.requestApproval(operation, capabilities, input); assertConnection(); return receipt; } },
               connection, p, options.processRuntime, options.tdxaidataPackage); });
               const reference = await publish(`${receipts.length + 1}-raw.json`, raw.bytes);
-              receipts.push({ url: raw.url, sha256: hash(raw.bytes), fileRefId: reference.id, contentType: raw.contentType, status: raw.status, transport: 'native-tcp' });
+              attempt.fileRefId = reference.id; attempt.sha256 = hash(raw.bytes); attempt.outcome = 'used';
+              receipts.push({ connectionId: connection.id, url: raw.url, sha256: attempt.sha256, fileRefId: reference.id, contentType: raw.contentType, status: raw.status, transport: 'native-tcp' });
               await context.emit({ type: 'checkpoint', checkpoint: { sourceReceipts: receipts as unknown as JsonValue, artifactIds: artifacts, complete: false } });
-              actualConnectionId = connection.id; acquired = true;
+              actualConnectionId = connection.id; observedAt = raw.observedAt;
               saveDownload(connection.id, true, `已下载${String(p.symbol)}的1分钟原始响应。`, downloadIdentity); break;
             } catch (error) {
-              saveDownload(connection.id, false, safeFailure(error), downloadIdentity);
-              if (context.signal.aborted || error instanceof DirectError && (error.unknown || error.code === 'SOURCE_RATE_LIMITED')) throw error;
-              await context.emit({ type: 'progress', message: `${connection.alias}下载未完成：${safeFailure(error)}` });
+              if (attempt.outcome === 'used' || context.signal.aborted || terminalSourceError(error)) throw error;
+              await recordCandidateFailure(connection, attempt, error, downloadIdentity);
             }
           }
-          if (!acquired) throw new DirectError('SOURCE_NO_ELIGIBLE_CONNECTION', '已配置组合中没有完成下载的通达信连接。');
+          if (observedAt === null) throw new DirectError('SOURCE_NO_ELIGIBLE_CONNECTION', '已配置组合中没有完成下载的通达信连接。');
         } else if (sourceId === 'eastmoney') {
-          await fetchRetain(eastmoneyMinuteRequest(p));
+          observedAt = (await fetchRetain(eastmoneyMinuteRequest(p))).observedAt;
           saveDownload('eastmoney', true, '已下载东方财富原始JSON。');
         } else {
           const raw = await fetchRetain(validatePublicWebUrl(String(p.url)));
+          observedAt = raw.observedAt;
           if (raw.contentType.includes('html')) {
             const { document } = parseHTML(decode(raw));
             const pdfs = [...new Set([...document.querySelectorAll('a[href]')].map(anchor => { try { return new URL(anchor.getAttribute('href')!, raw.url).href; } catch { return ''; } }).filter(url => /\.pdf(?:$|\?)/iu.test(url)))];
@@ -500,7 +555,9 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
             }
           }
         }
-        const receipt = { status: 'downloaded', sourceId, actualConnectionId, sourceReceipts: receipts, sourceConfigurationDigest: context.task.versions.directConfiguration };
+        const receipt = { status: 'downloaded', sourceId, operation: fetchOperation,
+          scopeId, observedAt, actualConnectionId, ...(attempts.length ? { attempts } : {}),
+          sourceReceipts: receipts, sourceConfigurationDigest: context.task.versions.directConfiguration };
         await publish('receipt.json', JSON.stringify(receipt, null, 2)); await workspace.cleanup();
         return { summary: `原件下载完成，共${receipts.length}份。`, artifactIds: artifacts,
           data: { ...receipt, modelPreview: { ...receipt, artifactIds: artifacts } } as unknown as JsonValue };
@@ -508,6 +565,7 @@ export function createSourceRuntime(options: SourceRuntimeOptions) {
         if (sourceId === 'eastmoney') saveDownload('eastmoney', false, safeFailure(error));
         await workspace.recordRetained();
         if (!(error instanceof DirectError && error.unknown)) { try { await workspace.cleanup(); } catch { /* 原任务检查点保留自有暂存，不能掩盖已保管的来源。 */ } }
+        if (restrictedResponse) await context.emit({ type: 'checkpoint', checkpoint: { restrictedResponse } });
         throw error;
       }
     },
@@ -555,17 +613,53 @@ function safeFailure(error: unknown): string {
   return error instanceof DirectError || error && typeof error === 'object' && 'code' in error && String(error.code).startsWith('SOURCE_')
     ? String((error as { message: string }).message) : '来源调用未完整完成；未返回底层异常或敏感请求信息。';
 }
-function json(source: SourceBytes): Record<string, JsonValue> {
-  try { const value: unknown = JSON.parse(decode(source)); if (object(value)) return value; } catch { /* 原响应已经保管。 */ }
-  throw new DirectError('SOURCE_RESPONSE_INVALID', '来源响应不是预期的JSON对象，原件已保留。');
+function requestCredential(headers?: Record<string, string>): string | undefined {
+  return Object.entries(headers ?? {}).findLast(([name]) => name.toLowerCase() === 'x-api-key')?.[1];
+}
+function credentialEchoError(): DirectError {
+  return new DirectError('SOURCE_RESPONSE_CREDENTIAL_ECHO', '凭据请求的响应回显了本次密钥，仅登记受限响应摘要。');
+}
+function responseEchoesCredential(response: SourceBytes, secret: string): boolean {
+  if (response.bytes.includes(secret)) return true;
+  const jsonUnescape = (text: string) => text.replace(/\\(?:u([a-fA-F\d]{4})|(["\\/bfnrt]))/gu,
+    (token, hex: string | undefined) => hex ? String.fromCharCode(parseInt(hex, 16)) : JSON.parse('"' + token + '"'));
+  const urlUnescape = (text: string) => text.replace(/(?:%[a-f\d]{2})+/giu,
+    run => Buffer.from(run.replaceAll('%', ''), 'hex').toString('utf8'));
+  const contains = (text: string) => {
+    const json = jsonUnescape(text);
+    return [text, json].some(value => value.includes(secret) || jsonUnescape(urlUnescape(value)).includes(secret)
+      || jsonUnescape(urlUnescape(value.replaceAll('+', ' '))).includes(secret));
+  };
+  if (contains(response.contentType) || contains(response.bytes.toString('utf8'))) return true;
+  const charset = /charset\s*=\s*["']?([\w-]+)/iu.exec(response.contentType)?.[1];
+  return !!charset && !/^utf-?8$/iu.test(charset) && iconv.encodingExists(charset) && contains(iconv.decode(response.bytes, charset));
+}
+function sourceHttpError(source: SourceBytes, ths: boolean): DirectError {
+  if (ths) {
+    // 即使供应商把错误页的字符集标错，也先检查原始 JSON 业务码；旧端点另支持声明编码。
+    const classified = (body: Uint8Array | string): DirectError | undefined => {
+      try { decodeThsResponse(body); } catch (error) {
+        if (error instanceof DirectError && ['SOURCE_RATE_LIMITED', 'SOURCE_UNAUTHORIZED', 'SOURCE_FORBIDDEN'].includes(error.code)) return error;
+      }
+      return undefined;
+    };
+    let businessError = classified(source.bytes);
+    if (!businessError) {
+      try { businessError = classified(decode(source)); } catch { /* 无可解码的业务码，保留实际 HTTP 状态。 */ }
+    }
+    if (businessError) return businessError;
+  }
+  if (source.status >= 300 && source.status < 400)
+    return new DirectError('SOURCE_REDIRECT_UNSUPPORTED', '本次来源发生重定向，已停止在原端点。');
+  return new DirectError('SOURCE_HTTP_ERROR', `来源返回 HTTP ${source.status}，原响应已保留。`);
 }
 function decode(source: SourceBytes): string {
-  const charset = /charset\s*=\s*([\w-]+)/iu.exec(source.contentType)?.[1] ?? 'utf-8';
+  const charset = /charset\s*=\s*["']?([\w-]+)/iu.exec(source.contentType)?.[1] ?? 'utf-8';
   if (!iconv.encodingExists(charset)) throw new DirectError('SOURCE_ENCODING_UNSUPPORTED', '来源声明了未支持的编码；未猜测字符集。');
   return iconv.decode(source.bytes, charset);
 }
 async function readBytes(url: URL, assertCurrent: () => void, context?: TaskExecutionContext, headers?: Record<string, string>, existingAuthority?: DirectAuthority,
-  request: { method?: 'GET' | 'POST'; body?: string } = {}, network: SourceNetwork = {}): Promise<SourceBytes> {
+  request: { method?: 'GET' | 'POST'; body?: string; providerId?: string } = {}, network: SourceNetwork = {}): Promise<SourceBytes> {
   validatePublicWebUrl(url.href);
   const signal = context ? AbortSignal.any([context.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
   const authority = existingAuthority ?? (context ? await acquireAuthority(context, `source.read.${hash(url.origin).slice(0, 16)}`, { origin: url.origin }, [{ action: 'network', target: { kind: 'network', origin: url.origin } }]) : undefined);
@@ -575,23 +669,38 @@ async function readBytes(url: URL, assertCurrent: () => void, context?: TaskExec
   if (!addresses.length) throw new DirectError('SOURCE_NETWORK_UNAVAILABLE', '来源域名没有可用公开地址。');
   const effectId = randomUUID();
   if (context) await context.emit({ type: 'side_effect_started', effectId, description: '读取明确来源的公开或已授权对象',
-    operation: { url: url.href, method: request.method ?? 'GET', credentials: headers?.['X-api-key'] ? 'reference' : 'none',
+    operation: { url: url.href, method: request.method ?? 'GET', credentials: requestCredential(headers) ? 'reference' : 'none',
       ...(request.body === undefined ? {} : { requestBodySha256: hash(request.body) }) } });
-  let response: Awaited<ReturnType<typeof pinnedRequest>> | undefined, completed = false;
+  let response: Awaited<ReturnType<typeof pinnedRequest>> | undefined, completed = false, failure: unknown;
   try {
     assert(); response = await (network.transport ?? pinnedRequest)({ url, address: addresses[0]!, signal, headers, assertAuthorized: assert,
       method: request.method ?? 'GET', ...(request.body === undefined ? {} : { body: request.body }) });
-    if (response.headers['content-encoding'] && String(response.headers['content-encoding']).toLowerCase() !== 'identity')
+    if (response.status === 429) throw new DirectError('SOURCE_RATE_LIMITED', '来源返回 HTTP 429 限流，本次任务停止。');
+    if (response.headers['content-encoding'] && String(response.headers['content-encoding']).trim().toLowerCase() !== 'identity') {
+      if (request.providerId === 'ths' && response.status >= 400)
+        throw new DirectError('SOURCE_RATE_LIMIT_UNVERIFIABLE', '扶摇返回压缩的 HTTP 错误响应，无法核验业务限流码，本次任务停止。');
       throw new DirectError('SOURCE_ENCODING_UNSUPPORTED', '来源忽略了不压缩请求；未把未解码字节当完整原文。');
+    }
     if (response.status === 206 || response.headers['content-range'])
       throw new DirectError('SOURCE_RESPONSE_INCOMPLETE', '来源返回部分响应，未作为完整原件接收。');
     const chunks: Buffer[] = []; let count = 0;
     for await (const chunk of response.body) { assert(); count += chunk.byteLength; if (count > MAX) throw new DirectError('SOURCE_SIZE_LIMIT', '来源原件超过单份2MiB上限；未把截断内容当完整结果。'); chunks.push(Buffer.from(chunk)); }
     const contentType = String(response.headers['content-type'] ?? 'application/octet-stream');
-    if (response.status >= 300 && response.status < 400) throw new DirectError('SOURCE_REDIRECT_UNSUPPORTED', '本次明确来源发生重定向；为保留身份与凭据范围，未自动改用目标。');
+    assert();
     completed = true; return { url: url.href, status: response.status, bytes: Buffer.concat(chunks), contentType, observedAt: new Date().toISOString() };
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    await response?.close();
-    if (context) await context.emit({ type: 'side_effect_result', effectId, outcome: completed ? 'succeeded' : 'failed', evidence: completed ? '来源响应已完整读取且自有网络资源已收束；内容与权限另按业务合同核对。' : '本次来源读取未完整完成，未自动重试。' });
+    try {
+      await response?.close();
+      if (context) await context.emit({ type: 'side_effect_result', effectId, outcome: completed ? 'succeeded' : 'failed',
+        evidence: response?.status === 429 ? 'HTTP 429 限流，已停止读取。' : completed ? '来源响应已完整读取。' : '本次来源读取未完整完成。' });
+    } catch (error) {
+      if (!terminalSourceError(failure)) {
+        if (context?.signal.aborted) throw error;
+        throw new DirectError('SOURCE_NETWORK_RESOURCES_UNKNOWN', '本次来源读取的资源或动作回执未能收束。', true);
+      }
+    }
   }
 }

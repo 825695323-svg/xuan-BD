@@ -29,7 +29,7 @@ export class StructuredRetrievalService {
         'local documents have no per-document permission model', 'WFD current-only business policy remains enforced'] };
   }
 
-  async search(value: unknown, signal?: AbortSignal): Promise<WfdRecord> {
+  async search(value: unknown, signal?: AbortSignal, branch?: { allowedDocumentIds: readonly string[]; assertCurrent(): void }): Promise<WfdRecord> {
     const input = object(value, ['structured', 'documents']);
     const plan = object(input.structured, ['dataset_id', 'snapshot_id', 'history_mode', 'knowledge_cutoff', 'held_scope', 'usable_stage',
       'universe', 'metrics', 'business_time_range', 'predicate', 'order_by', 'page_size', 'cursor']);
@@ -54,11 +54,14 @@ export class StructuredRetrievalService {
     }
     // The document/index context is included in the WFD-signed query cursor.
     // A later page cannot silently replace the text, index or history mode.
-    const contextDigest = 'sha256:' + wfdSha256(canonicalWfdJson({ schema: JOINT_RETRIEVAL_SCHEMA, documents: docs }));
+    const allowed = branch && new Set(branch.allowedDocumentIds);
+    const contextDigest = 'sha256:' + wfdSha256(canonicalWfdJson({ schema: JOINT_RETRIEVAL_SCHEMA, documents: docs,
+      ...(allowed ? { allowedDocumentIds: [...allowed].sort() } : {}) }));
     const scope = this.options.structured.beginJointEvidenceRead(signal);
     scope.assertCurrent();
     const structured = await this.options.structured.filterObjects(plan, signal, contextDigest);
     scope.assertCurrent();
+    branch?.assertCurrent(); // Recheck the branch after WFD yields, before reading local associations or excerpts.
     const objects = Array.isArray(structured.objects) ? structured.objects : [];
     const joined: WfdRecord[] = [];
     for (const item of objects) {
@@ -78,23 +81,24 @@ export class StructuredRetrievalService {
         const key = canonicalWfdJson(identity);
         if (seen.has(key)) continue;
         seen.add(key);
-        const found = scope.recordMaterials(identity);
-        if (!found) { gaps.push({ code: 'BD_RECORD_ASSOCIATION_MISSING', metric, ...identity }); continue; }
+        const found = allowed?.size === 0 ? null : scope.recordMaterials(identity);
+        const permitted = found?.materialIds.filter(id => !allowed || allowed.has(id)) ?? [];
+        if (!found || (allowed && !permitted.length)) { gaps.push({ code: 'BD_RECORD_ASSOCIATION_MISSING', metric, ...identity }); continue; }
         if (!found.materialIds.length) { gaps.push({ code: 'DOCUMENT_MATERIAL_LINK_MISSING', metric, requestId: found.requestId }); continue; }
-        found.materialIds.forEach(id => materialIds.add(id));
-        associations.push({ ...identity, ...found });
+        permitted.forEach(id => materialIds.add(id));
+        associations.push(allowed ? { ...identity, materialIds: permitted } : { ...identity, ...found });
       }
       scope.assertCurrent();
       const retrieval: SegmentRetrievalResult | null = materialIds.size ? this.options.segments.search({
         method: docs.method as 'keyword' | 'exact', query: docs.query as string,
         limit: Number(docs.limit ?? 20), indexVersion: docs.indexVersion as string,
         asOf, ...(historical ? { mode: history } : {}), documentIds: [...materialIds].sort(),
-      }) : null;
+      }, branch?.allowedDocumentIds) : null;
       if (retrieval?.status === 'index_missing') gaps.push({ code: 'DOCUMENT_INDEX_MISSING', indexVersion: docs.indexVersion });
       if (retrieval?.status === 'history_unavailable') gaps.push({ code: 'DOCUMENT_HISTORY_UNAVAILABLE', excluded: retrieval.coverage.excluded });
       if (retrieval?.status === 'no_match') gaps.push({ code: 'NO_DOCUMENT_MATCH_IN_VERIFIED_SCOPE' });
       if (retrieval && !retrieval.citations.length && !retrieval.coverage.excluded.length && retrieval.status !== 'index_missing') {
-        const indexed = new Set(this.options.segments.documents().map(document => document.document_id));
+        const indexed = new Set(this.options.segments.documents([...materialIds]).map(document => document.document_id));
         for (const id of materialIds) if (!indexed.has(id)) gaps.push({ code: 'DOCUMENT_NOT_INDEXED', materialId: id });
       }
       joined.push({ subject: item.subject, values: item.values, record_refs: item.record_refs,

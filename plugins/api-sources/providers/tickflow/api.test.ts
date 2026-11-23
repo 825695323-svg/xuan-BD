@@ -68,3 +68,32 @@ test('TickFlow detects reversed, duplicate, out-of-window and second-unit timest
     [stamp('2026-01-04'), stamp('2026-01-06')], [stamp('2026-01-05') / 1000, stamp('2026-01-06') / 1000]])
     assert.throws(() => decodeTickflowDailyBars(request, bytes({ data: { ...response().data, timestamp } })), code('SOURCE_DAILY_RESPONSE_INVALID'));
 });
+
+test('TickFlow separates reported zero, null and decimal lexemes from unsafe numeric approximations', () => {
+  const raw = JSON.stringify(response()).replace('[101,null]', '[1.2300,0e-400]');
+  const projected = decodeTickflowDailyBars(request, Buffer.from(raw));
+  assert.equal(projected.rows[0].volume, 1.23);
+  assert.equal(projected.rows[0].rawText.volume, '1.2300');
+  assert.equal(projected.rows[0].rawText.amount, null);
+  assert.equal(projected.rows[1].volume, 0);
+  assert.equal(projected.rows[1].rawText.volume, '0e-400');
+  for (const token of ['1e-400', '9007199254740993', '1.2300000000000000001', '1e400'])
+    assert.throws(() => decodeTickflowDailyBars(request, Buffer.from(raw.replace('1.2300', token))), code('SOURCE_DAILY_RESPONSE_INVALID'));
+  assert.deepEqual(projected.identityProvenance, { symbol: 'request', period: 'request', adjustment: 'request' });
+  assert.deepEqual(decodeTickflowDailyBars(request, bytes({ data: { ...response().data,
+    symbol: request.symbol, period: '1d', adjust: 'none' } })).identityProvenance,
+  { symbol: 'response', period: 'response', adjustment: 'response' });
+});
+
+test('TickFlow binds both boundaries and recovered dates using Shanghai historical daylight saving time', () => {
+  const { limit: _limit, ...withoutLimit } = request;
+  const built = buildTickflowDailyRequest({ ...withoutLimit, start: '1991-07-01', end: '1991-07-01' });
+  assert.equal(built.request.limit, 320);
+  const transition = buildTickflowDailyRequest({ ...withoutLimit, start: '1991-09-15', end: '1991-09-15' }).url;
+  assert.equal(Number(transition.searchParams.get('end_time')) + 1 - Number(transition.searchParams.get('start_time')), 25 * 3600000);
+  const midnight = Date.parse('1991-06-30T15:00:00Z');
+  assert.equal(Number(built.url.searchParams.get('start_time')), midnight);
+  assert.equal(Number(built.url.searchParams.get('end_time')), midnight + 86400000 - 1);
+  assert.equal(decodeTickflowDailyBars(built.request, bytes({ data: { timestamp: [midnight],
+    open: [1], high: [1], low: [1], close: [1], volume: [0] } })).actualStart, '1991-07-01');
+});

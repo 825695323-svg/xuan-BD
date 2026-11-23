@@ -67,7 +67,7 @@ export function findArtifact(db: CoreDatabase, recordId: string): ConversionArti
 
 export function findArtifactByRef(db: CoreDatabase, materialId: string, materialVersion: string,
   artifactRef: string): ConversionArtifactRecord | null {
-  ensureArtifactLedger(db);
+  if (!db.connection.prepare("SELECT 1 FROM sqlite_schema WHERE name='conversion_artifacts' AND type='table'").get()) return null;
   const row = db.connection.prepare(`SELECT * FROM conversion_artifacts
     WHERE material_id=? AND material_version=? AND artifact_ref=?`).get(materialId, materialVersion, artifactRef);
   return row ? toRecord(row) : null;
@@ -75,7 +75,7 @@ export function findArtifactByRef(db: CoreDatabase, materialId: string, material
 
 export function listArtifacts(db: CoreDatabase, input: { materialId?: string; materialVersion?: string;
   limit?: number } = {}): ConversionArtifactRecord[] {
-  ensureArtifactLedger(db);
+  if (!db.connection.prepare("SELECT 1 FROM sqlite_schema WHERE name='conversion_artifacts' AND type='table'").get()) return [];
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
   const rows = input.materialId === undefined
     ? db.connection.prepare('SELECT * FROM conversion_artifacts ORDER BY created_at DESC, rowid DESC LIMIT ?').all(limit)

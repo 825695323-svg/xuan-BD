@@ -401,7 +401,9 @@ export class PermissionService {
         if (!approval?.approved.some((entry) => covers(entry, capability))) throw new PermissionError('APPROVAL_REQUIRED', '此更改动作尚未获得完整批准。');
         continue;
       }
-      if (operation.approvalMode === 'automatic' || DEFAULT_ALLOWED.has(capability.capability.action)
+      const target = capability.capability.target;
+      const explicitSecret = target.kind === 'secret' && target.name.startsWith('baidu-drive.share-passcode.');
+      if ((operation.approvalMode === 'automatic' && !explicitSecret) || DEFAULT_ALLOWED.has(capability.capability.action)
         && capability.capability.target.kind !== 'network' && capability.capability.target.kind !== 'secret') continue;
       const grant = grants.find((item) => item.effect === 'allow' && item.bound.some((entry) => covers(entry, capability)));
       if (grant) { used.add(grant.id); continue; }

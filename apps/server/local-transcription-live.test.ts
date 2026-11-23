@@ -4,6 +4,7 @@ import test from 'node:test';
 import { wfdSha256 } from '../../adapters/database/wfd-transport.js';
 import { EVENT_TEXT_VERSION } from '../../modules/collection/data-processing/event-text.js';
 import { parseWhisperTranscription } from '../../platform/capabilities/transcription/local.js';
+import { readTranscriptionReviewPacket } from './transcription-review.js';
 import { createFullChainFixture, grantSelectedFile, openFullChainHost, startDirect } from './full-chain-test-support.js';
 
 const bundle = process.env.XUAN_TEST_TRANSCRIPTION_BUNDLE, audio = process.env.XUAN_TEST_TRANSCRIPTION_AUDIO;
@@ -38,6 +39,9 @@ test('actual manifest-verified local Whisper preserves native transcript evidenc
       const text = artifact(data.textReference).toString('utf8'), evidence = artifact(data.evidenceReference).toString('utf8');
       // The sample duration is 11 seconds; these are native recognizer offsets, not reconstructed from words.
       const segments = parseWhisperTranscription(evidence, text, 11000);
+      const packet = await readTranscriptionReviewPacket(host.services, material.envelope.materialId, task.id);
+      assert.deepEqual(packet.segments, segments); assert.equal(packet.source.fileRefId, ref.id);
+      assert.equal(packet.source.sha256, sampleSha256); assert.equal(packet.reviewStatus, 'not_recorded');
       assert.ok(segments.length > 0); assert.equal(data.segmentCount, segments.length);
       assert.match(text, /ask not/iu, 'A coarse fixture anchor, not word-for-word recognition certification.');
       assert.throws(() => parseWhisperTranscription(evidence, text + '\nNot spoken in the source.', 11000), /核对/);
@@ -60,6 +64,7 @@ test('actual manifest-verified local Whisper preserves native transcript evidenc
       const count = host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get();
       await host.close(); host = await openFullChainHost(fixture);
       assert.equal(host.services.tasks.get(task.id).status, 'succeeded');
+      assert.deepEqual(await readTranscriptionReviewPacket(host.services, material.envelope.materialId, task.id), packet);
       assert.equal(artifact(data.textReference).toString('utf8'), text);
       assert.equal(artifact(data.evidenceReference).toString('utf8'), evidence);
       assert.deepEqual(host.database.connection.prepare('SELECT count(*) AS n FROM tasks').get(), count);

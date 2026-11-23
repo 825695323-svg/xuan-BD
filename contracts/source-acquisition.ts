@@ -6,6 +6,17 @@ export interface AcquisitionRequest {
   start: string | null;
   end: string | null;
   adjustment: string | null;
+  statement?: string;
+  encodeUrl?: string;
+}
+
+const statements = ['income', 'balance_sheet', 'cash_flow'] as const;
+export type FinancialStatement = typeof statements[number];
+export function isFinancialStatement(value: unknown): value is FinancialStatement {
+  return statements.some(statement => statement === value);
+}
+export function isReportEncodeUrl(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= 2048 && !/[\u0000-\u001f]/u.test(value);
 }
 export interface AcquisitionBinding { providerId: string; connectionId: string; configurationDigest: string }
 export interface AcquisitionOriginal { fileRefId: string; sha256: string }

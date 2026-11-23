@@ -13,7 +13,8 @@ import { trustedBundledDependencyRoot } from '../capabilities/local-actions.js';
 import { createDirectRuntime } from '../../apps/server/capabilities.js';
 import type { JsonValue } from '../../contracts/task-contracts.js';
 
-const codeRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
+const codeRoot = process.env.XUAN_TEST_TRANSCRIPTION_BUNDLE
+  ? realpathSync(process.env.XUAN_TEST_TRANSCRIPTION_BUNDLE) : resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const bundledPlatform = ['darwin-arm64', 'win32-x64'].includes(`${process.platform}-${process.arch}`);
 const bundledResourceSkip = bundledPlatform && existsSync(join(codeRoot, 'resources/bundled/manifest.json'))
   ? false

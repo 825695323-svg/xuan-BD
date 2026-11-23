@@ -4,7 +4,9 @@
  */
 import { TaskError } from '../../../platform/jobs/tasks.js';
 import { createHash } from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
+import { lstatSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import type { DocSegment, DocumentTimeRecord, RetrievalExclusion, RetrievalHistoryMode, SearchHit, SegmentTable,
   TimeDimension, TimeDimensionState, TimePrecision } from './contracts.js';
 import { NOT_APPLICABLE_TIME, SEGMENT_TOKENIZER, UNKNOWN_TIME } from './contracts.js';
@@ -122,6 +124,35 @@ function storageVersion(db: DatabaseSync): number | null {
   return row ? Number(row.schema_version) : null;
 }
 
+function assertReadableSegmentSchema(db: DatabaseSync): void {
+  if (storageVersion(db) !== STORAGE_VERSION)
+    throw new TaskError('RETRIEVAL_STORAGE_SCHEMA_UNSUPPORTED', '片段库结构需要显式维护，当前只读请求无法读取。');
+}
+
+export function openReadOnlySegmentDb(path: string) {
+  const file = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  const hasJournal = () => ['-wal', '-shm', '-journal'].some(suffix => lstatSync(path + suffix, { throwIfNoEntry: false }));
+  const changed = () => new TaskError('RETRIEVAL_STORAGE_CHANGED', '片段库文件已变化或存在事务日志，须重新读取。');
+  if (!file) {
+    if (hasJournal()) throw changed();
+    return null;
+  }
+  if (!file.isFile()) throw changed();
+  const assertCurrent = () => {
+    const current = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    if (!current?.isFile() || current.dev !== file.dev || current.ino !== file.ino || current.size !== file.size
+      || current.ctimeNs !== file.ctimeNs || hasJournal()) throw changed();
+  };
+  assertCurrent();
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(pathToFileURL(path).href + '?immutable=1', { readOnly: true });
+    assertReadableSegmentSchema(db);
+    assertCurrent();
+    return { db, assertCurrent };
+  } catch (error) { db?.close(); assertCurrent(); throw error; }
+}
+
 /**
  * 旧库只压缩可证明等价的索引表示，片段、文档时间和索引身份不变。
  * 稳定序号不依赖 SQLite 隐含 rowid（VACUUM 可能改变它）；全量版本只保存序号上界。
@@ -213,7 +244,8 @@ function toSegment(row: SegmentRow): DocSegment {
     segment_id: row.segment_id, document_id: row.document_id, document_version: row.document_version,
     parser_version: row.parser_version, ordinal: row.ordinal,
     kind: row.kind === 'table' ? 'table' : 'paragraph',
-    page_number: row.page_number, page_label: row.page_label,
+    // The historical NOT NULL columns use zero for an unpaginated native flow.
+    page_number: row.page_number === 0 ? null : row.page_number, page_label: row.page_label,
     section_path: JSON.parse(row.section_path_json) as string[],
     bbox: JSON.parse(row.bbox_json) as DocSegment['bbox'],
     table: row.table_json === null ? null : JSON.parse(row.table_json) as SegmentTable,
@@ -263,7 +295,7 @@ export function putDocumentSegments(db: DatabaseSync, segments: DocSegment[], no
       if (!hasDocument.get(segment.document_id)) state.document_count++;
       state.last_seq++;
       insert.run(segment.segment_id, segment.document_id, segment.document_version, segment.parser_version,
-        segment.ordinal, segment.kind, segment.page_number, segment.page_label, JSON.stringify(segment.section_path),
+        segment.ordinal, segment.kind, segment.page_number ?? 0, segment.page_label, JSON.stringify(segment.section_path),
         JSON.stringify(segment.bbox), segment.table === null ? null : JSON.stringify(segment.table), segment.source_ref,
         segment.text, segment.text_digest, segment.char_start, segment.char_end, JSON.stringify(segment.issues), now, state.last_seq);
       inserted += 1;
@@ -327,14 +359,16 @@ export function createCurrentIndexVersion(db: DatabaseSync, note?: string, now =
   });
 }
 
+type DocumentVersionKey = readonly [string, string, string];
+
 export interface SearchInput { indexVersion: string; query: string; limit?: number;
   /** Explicit evidence documents from a verified structured row association; applied before LIMIT. */
   documentIds?: readonly string[];
   /**
-   * 已解析的可见版本键（`document_id@document_version`）。
+   * 文档、文档版本及解析器版本的精确三元组。
    * `null` / 缺省＝不施加时间门（当前视图）；空数组＝该时点一个版本都不可见。
    */
-  visibleVersions?: readonly string[] | null }
+  visibleVersions?: readonly DocumentVersionKey[] | null }
 
 const SEGMENT_COLUMNS = `s.segment_id, s.document_id, s.document_version, s.parser_version, s.ordinal, s.kind,
   s.page_number, s.page_label, s.section_path_json, s.bbox_json, s.table_json, s.source_ref, s.text, s.text_digest,
@@ -344,12 +378,17 @@ const TIME_JOIN = `JOIN doc_document_versions d ON d.document_id = s.document_id
   AND d.document_version = s.document_version AND d.parser_version = s.parser_version`;
 
 /** 时间门与版本收敛都在 `resolveVisibleVersions` 里算；SQL 只按解析结果过滤。 */
-const VERSION_FILTER = `AND (d.document_id || '@' || d.document_version) IN (SELECT value FROM json_each(?))`;
+const VERSION_FILTER = `AND (d.document_id,d.document_version,d.parser_version) IN
+  (SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]') FROM json_each(?))`;
 const INDEX_JOIN = 'JOIN doc_index_versions v ON v.index_version = ?';
 const INDEX_FILTER = `AND ((v.segment_cutoff IS NOT NULL AND s.segment_seq <= v.segment_cutoff)
   OR (v.segment_cutoff IS NULL AND EXISTS (SELECT 1 FROM doc_index_members m
     WHERE m.index_version=v.index_version AND m.segment_id=s.segment_id)))`;
 
+function documentScope(ids: readonly string[] | undefined, column: string) {
+  return { sql: ids === undefined ? '' : `AND ${column} IN (SELECT value FROM json_each(?))`,
+    params: ids === undefined ? [] : [JSON.stringify(ids)] };
+}
 function versionParams(input: SearchInput): string[] | null {
   if (input.visibleVersions === null || input.visibleVersions === undefined) return null;
   return [JSON.stringify([...input.visibleVersions])];
@@ -357,13 +396,12 @@ function versionParams(input: SearchInput): string[] | null {
 
 /** 关键词检索：按 BM25 排序，稳定片段ID解开修订版本平局，保证限量结果可复现。 */
 export function searchSegments(db: DatabaseSync, input: SearchInput): SearchHit[] {
-  ensureSegmentSchema(db);
+  assertReadableSegmentSchema(db);
   const expression = ftsQuery(input.query);
   if (expression === null) return [];
   const limit = Math.min(Math.max(input.limit ?? 20, 1), 500);
   const filter = versionParams(input);
-  const documents = input.documentIds === undefined ? [] : [JSON.stringify(input.documentIds)];
-  const documentFilter = documents.length ? 'AND s.document_id IN (SELECT value FROM json_each(?))' : '';
+  const { sql: documentFilter, params: documents } = documentScope(input.documentIds, 's.document_id');
   if (filter !== null) {
     const rows = db.prepare(`SELECT ${SEGMENT_COLUMNS}, bm25(doc_segments_fts) AS rank
       FROM doc_segments_fts
@@ -387,13 +425,12 @@ export function searchSegments(db: DatabaseSync, input: SearchInput): SearchHit[
 
 /** 精确检索：不做分词的大小写敏感子串匹配，用于代码、公告编号、期间等确定性标识。 */
 export function searchSegmentsExact(db: DatabaseSync, input: SearchInput): SearchHit[] {
-  ensureSegmentSchema(db);
+  assertReadableSegmentSchema(db);
   const term = input.query.trim();
   if (!term) return [];
   const limit = Math.min(Math.max(input.limit ?? 20, 1), 500);
   const filter = versionParams(input);
-  const documents = input.documentIds === undefined ? [] : [JSON.stringify(input.documentIds)];
-  const documentFilter = documents.length ? 'AND s.document_id IN (SELECT value FROM json_each(?))' : '';
+  const { sql: documentFilter, params: documents } = documentScope(input.documentIds, 's.document_id');
   if (filter !== null) {
     const rows = db.prepare(`SELECT ${SEGMENT_COLUMNS}
       FROM doc_segments s
@@ -414,21 +451,22 @@ export function searchSegmentsExact(db: DatabaseSync, input: SearchInput): Searc
 }
 
 /** Exact immutable index membership, including compact cutoff indexes; no current-index fallback. */
-export function readIndexedSegment(db: DatabaseSync, indexVersion: string, segmentId: string): DocSegment | null {
-  ensureSegmentSchema(db);
+export function readIndexedSegment(db: DatabaseSync, indexVersion: string, segmentId: string, documentIds?: readonly string[]): DocSegment | null {
+  assertReadableSegmentSchema(db);
+  const scope = documentScope(documentIds, 's.document_id');
   const row = db.prepare(`SELECT ${SEGMENT_COLUMNS} FROM doc_segments s ${INDEX_JOIN}
-    WHERE s.segment_id = ? ${INDEX_FILTER}`).get(indexVersion, segmentId) as unknown as SegmentRow | undefined;
+    WHERE s.segment_id = ? ${INDEX_FILTER} ${scope.sql}`).get(indexVersion, segmentId, ...scope.params) as unknown as SegmentRow | undefined;
   return row ? toSegment(row) : null;
 }
 
 export function readSegment(db: DatabaseSync, segmentId: string): DocSegment | null {
-  ensureSegmentSchema(db);
+  assertReadableSegmentSchema(db);
   const row = db.prepare(`SELECT ${SEGMENT_COLUMNS} FROM doc_segments s WHERE s.segment_id = ?`).get(segmentId) as unknown as SegmentRow | undefined;
   return row ? toSegment(row) : null;
 }
 
 export function listSegments(db: DatabaseSync, documentId: string, documentVersion?: string): DocSegment[] {
-  ensureSegmentSchema(db);
+  assertReadableSegmentSchema(db);
   const rows = (documentVersion === undefined
     ? db.prepare(`SELECT ${SEGMENT_COLUMNS} FROM doc_segments s WHERE s.document_id = ? ORDER BY s.parser_version, s.ordinal`).all(documentId)
     : db.prepare(`SELECT ${SEGMENT_COLUMNS} FROM doc_segments s WHERE s.document_id = ? AND s.document_version = ?
@@ -436,11 +474,21 @@ export function listSegments(db: DatabaseSync, documentId: string, documentVersi
   return rows.map(toSegment);
 }
 
-export function listIndexVersions(db: DatabaseSync): { index_version: string; tokenizer: string; built_at: number; segment_count: number; document_count: number }[] {
-  ensureSegmentSchema(db);
-  return db.prepare(`SELECT index_version, tokenizer, built_at, segment_count, document_count
-    FROM doc_index_versions ORDER BY built_at`).all() as unknown as {
-      index_version: string; tokenizer: string; built_at: number; segment_count: number; document_count: number }[];
+interface SegmentIndexVersion {
+  index_version: string; tokenizer: string; built_at: number; segment_count: number; document_count: number;
+}
+export function listIndexVersions(db: DatabaseSync, documentIds?: readonly string[], fixedVersion?: string): SegmentIndexVersion[] {
+  assertReadableSegmentSchema(db);
+  if (documentIds?.length === 0) return [];
+  const scope = documentScope(documentIds, 's.document_id');
+  const fixed = fixedVersion === undefined ? '' : 'AND v.index_version=?';
+  const counts = documentIds === undefined ? 'v.segment_count,v.document_count'
+    : 'count(*) segment_count,count(DISTINCT s.document_id) document_count';
+  const members = documentIds === undefined ? '' : `JOIN doc_segments s ON 1=1 ${INDEX_FILTER} ${scope.sql}`;
+  const group = documentIds === undefined ? '' : 'GROUP BY v.index_version';
+  return db.prepare(`SELECT v.index_version,v.tokenizer,v.built_at,${counts} FROM doc_index_versions v ${members}
+    WHERE 1=1 ${fixed} ${group} ORDER BY v.built_at,v.rowid`)
+    .all(...scope.params, ...(fixedVersion === undefined ? [] : [fixedVersion])) as unknown as SegmentIndexVersion[];
 }
 
 // ── 文档版本时间资格与索引解析（R09 / 4.8 §8） ─────────────────────────────
@@ -467,7 +515,7 @@ function toDocumentTime(row: DocumentRow): DocumentTimeRecord {
     acquired_at: row.acquired_at,
     event_time: dimensionOf(row.event_time_state, row.event_time, row.event_time_precision),
     disclosed_at: dimensionOf(row.disclosed_at_state, row.disclosed_at, row.disclosed_at_precision),
-    parsed_at: row.parsed_at, page_count: row.page_count, segment_count: row.segment_count,
+    parsed_at: row.parsed_at, page_count: row.page_count === 0 ? null : row.page_count, segment_count: row.segment_count,
     issues: JSON.parse(row.issues_json) as string[] };
 }
 
@@ -501,31 +549,36 @@ export function putDocumentVersion(db: DatabaseSync, record: DocumentTimeRecord)
     record.event_time.state, record.event_time.state === 'known' ? record.event_time.precision : null,
     record.disclosed_at.state === 'known' ? record.disclosed_at.value : null,
     record.disclosed_at.state, record.disclosed_at.state === 'known' ? record.disclosed_at.precision : null,
-    record.parsed_at, record.page_count, record.segment_count, JSON.stringify(record.issues));
+    record.parsed_at, record.page_count ?? 0, record.segment_count, JSON.stringify(record.issues));
   return 'inserted';
 }
 
 export function readDocumentVersion(db: DatabaseSync, documentId: string, documentVersion: string, parserVersion: string): DocumentTimeRecord | null {
-  ensureSegmentSchema(db);
+  assertReadableSegmentSchema(db);
   const row = db.prepare(`SELECT * FROM doc_document_versions
     WHERE document_id=? AND document_version=? AND parser_version=?`).get(documentId, documentVersion, parserVersion) as unknown as DocumentRow | undefined;
   return row ? toDocumentTime(row) : null;
 }
 
-export function listDocumentVersions(db: DatabaseSync): DocumentTimeRecord[] {
-  ensureSegmentSchema(db);
-  const rows = db.prepare('SELECT * FROM doc_document_versions ORDER BY document_id, document_version, parser_version').all() as unknown as DocumentRow[];
+export function listDocumentVersions(db: DatabaseSync, documentIds?: readonly string[]): DocumentTimeRecord[] {
+  assertReadableSegmentSchema(db);
+  const scope = documentScope(documentIds, 'document_id');
+  const rows = db.prepare(`SELECT * FROM doc_document_versions WHERE 1=1 ${scope.sql}
+    ORDER BY document_id, document_version, parser_version`).all(...scope.params) as unknown as DocumentRow[];
   return rows.map(toDocumentTime);
 }
 
 /** 当前视图取最新索引版本；历史视图取 `built_at <= as_of` 的最新版本，重建不改变旧时点回答。 */
-export function resolveIndexVersion(db: DatabaseSync, asOf: number | null): { index_version: string; built_at: number } | null {
-  ensureSegmentSchema(db);
-  const row = (asOf === null
-    ? db.prepare('SELECT index_version, built_at FROM doc_index_versions ORDER BY built_at DESC, rowid DESC LIMIT 1').get()
-    : db.prepare('SELECT index_version, built_at FROM doc_index_versions WHERE built_at <= ? ORDER BY built_at DESC, rowid DESC LIMIT 1').get(asOf)) as
-    { index_version?: string; built_at?: number } | undefined;
-  return row?.index_version === undefined ? null : { index_version: row.index_version, built_at: Number(row.built_at) };
+export function resolveIndexVersion(db: DatabaseSync, asOf: number | null, documentIds?: readonly string[]): { index_version: string; built_at: number } | null {
+  assertReadableSegmentSchema(db);
+  if (documentIds?.length === 0) return null;
+  const scope = documentScope(documentIds, 's.document_id');
+  const member = documentIds === undefined ? '' : `AND EXISTS
+    (SELECT 1 FROM doc_segments s WHERE 1=1 ${INDEX_FILTER} ${scope.sql})`;
+  const row = db.prepare(`SELECT v.index_version,v.built_at FROM doc_index_versions v WHERE 1=1
+    ${asOf === null ? '' : 'AND v.built_at<=?'} ${member} ORDER BY v.built_at DESC,v.rowid DESC LIMIT 1`)
+    .get(...(asOf === null ? [] : [asOf]), ...scope.params);
+  return row ? { index_version: String(row.index_version), built_at: Number(row.built_at) } : null;
 }
 
 /**
@@ -573,20 +626,21 @@ function gatePass(record: DocumentTimeRecord, asOf: number, mode: RetrievalHisto
  * 2. **精度区间**：比较用区间末端，不把“2024 年 1 月”当 1 月 1 日零点已公开。
  */
 export function resolveVisibleVersions(db: DatabaseSync, input: { indexVersion: string; asOf: number;
-  mode?: RetrievalHistoryMode }): { allowed: string[]; excluded: RetrievalExclusion[] } {
-  ensureSegmentSchema(db);
+  mode?: RetrievalHistoryMode; documentIds?: readonly string[] }): { allowed: DocumentVersionKey[]; excluded: RetrievalExclusion[] } {
+  assertReadableSegmentSchema(db);
   const mode = input.mode ?? 'system_held_at';
+  const scope = documentScope(input.documentIds, 'd.document_id');
   const records = db.prepare(`SELECT d.* FROM doc_document_versions d
     WHERE EXISTS (SELECT 1 FROM doc_segments s ${INDEX_JOIN}
       WHERE s.document_id = d.document_id ${INDEX_FILTER}
         AND s.document_version = d.document_version AND s.parser_version = d.parser_version)
-    ORDER BY d.document_id, d.document_version`).all(input.indexVersion) as unknown as DocumentRow[];
-  const byDocument = new Map<string, { key: string; record: DocumentTimeRecord; reason: RetrievalExclusion['reason'] | null }[]>();
+    ${scope.sql} ORDER BY d.document_id, d.document_version, d.parser_version`).all(input.indexVersion, ...scope.params) as unknown as DocumentRow[];
+  const byDocument = new Map<string, { key: DocumentVersionKey; record: DocumentTimeRecord; reason: RetrievalExclusion['reason'] | null }[]>();
   const excluded: RetrievalExclusion[] = [];
-  const allowed: string[] = [];
+  const allowed: DocumentVersionKey[] = [];
   for (const row of records) {
     const record = toDocumentTime(row);
-    const entry = { key: `${record.document_id}@${record.document_version}`, record,
+    const entry = { key: [record.document_id, record.document_version, record.parser_version] as const, record,
       reason: gatePass(record, input.asOf, mode) };
     const list = byDocument.get(record.document_id) ?? [];
     list.push(entry);
@@ -602,7 +656,7 @@ export function resolveVisibleVersions(db: DatabaseSync, input: { indexVersion: 
       continue;
     }
     // 多版本：需要能排出“当时最后一个公开版本”，否则整份排除
-    const orderable = visible.every(version => version.record.disclosed_at.state === 'known');
+    const orderable = new Set(visible.map(v => v.record.document_version)).size <= 1 || visible.every(version => version.record.disclosed_at.state === 'known');
     if (!orderable) {
       for (const version of versions) excluded.push({ document_id: version.record.document_id,
         document_version: version.record.document_version, reason: 'version_order_unresolved' });
@@ -610,7 +664,8 @@ export function resolveVisibleVersions(db: DatabaseSync, input: { indexVersion: 
     }
     const winner = [...visible].sort((left, right) =>
       (Number(right.record.disclosed_at.value ?? 0) - Number(left.record.disclosed_at.value ?? 0))
-      || right.record.document_version.localeCompare(left.record.document_version))[0];
+      || right.record.document_version.localeCompare(left.record.document_version)
+      || right.record.parsed_at - left.record.parsed_at || right.record.parser_version.localeCompare(left.record.parser_version))[0];
     for (const version of versions) {
       if (version.reason !== null) excluded.push(exclusionOf(version));
       else if (version.key === winner?.key) allowed.push(version.key);
@@ -618,7 +673,7 @@ export function resolveVisibleVersions(db: DatabaseSync, input: { indexVersion: 
         reason: 'superseded_by_revision' });
     }
   }
-  return { allowed: allowed.sort(), excluded };
+  return { allowed, excluded };
 }
 
 function exclusionOf(version: { record: DocumentTimeRecord; reason: RetrievalExclusion['reason'] | null }): RetrievalExclusion {
@@ -634,15 +689,16 @@ export function timeExclusions(db: DatabaseSync, input: { indexVersion: string; 
 
 /** 建索引的成员集合：当前全部片段（v1 契约：全量片段落本地、索引全部片段）。 */
 export function indexableSegmentIds(db: DatabaseSync): string[] {
-  ensureSegmentSchema(db);
+  assertReadableSegmentSchema(db);
   return (db.prepare('SELECT segment_id FROM doc_segments ORDER BY document_id, document_version, parser_version, ordinal').all() as unknown as { segment_id: string }[])
     .map(row => row.segment_id);
 }
 
 /** 整份没有文字层（0 片段）的文档版本数：解析失败的事实，不当成“无结果”。 */
-export function documentsWithoutTextLayer(db: DatabaseSync): number {
-  ensureSegmentSchema(db);
-  const row = db.prepare('SELECT COUNT(*) AS n FROM doc_document_versions WHERE segment_count = 0').get() as { n?: number } | undefined;
+export function documentsWithoutTextLayer(db: DatabaseSync, documentIds?: readonly string[]): number {
+  assertReadableSegmentSchema(db);
+  const scope = documentScope(documentIds, 'document_id');
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM doc_document_versions WHERE segment_count = 0 ${scope.sql}`).get(...scope.params) as { n?: number } | undefined;
   return Number(row?.n ?? 0);
 }
 

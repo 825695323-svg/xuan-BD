@@ -1,9 +1,11 @@
 import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { readConnectionRegistry, registeredConnection } from '../../platform/config/connections.js';
 import { ConfigError } from '../../platform/runtime/errors.js';
 import type { ResourceBindings } from '../../platform/resources/bindings.js';
-import { WfdProductMachineClient } from './wfd-product-machine.js';
+import type { R1ReadBinding } from '../../contracts/r1-contracts.js';
+import { bundleHostPath, WfdProductMachineClient } from './wfd-product-machine.js';
+import { canonicalWfdJson, wfdSha256 } from './wfd-transport.js';
 
 /**
  * 已登记的 WFD 产品机器连接。
@@ -29,11 +31,16 @@ export type ProductMachineConnectionProfile = ProductMachineConnectionProfileBas
 export interface ResolvedProductMachineConnection {
   connectionId: string;
   configPath: string;
+  configRaw: Buffer;
+  config: Record<string, unknown>;
   store: string;
   runtime: string;
   callerId: string;
   trustedActorNamespace: string;
   schemaPath: string;
+  readBinding(): R1ReadBinding;
+  bundleImplSha256(): string;
+  bundleImplDigests?(): { current: string; legacy: readonly string[] };
   client: WfdProductMachineClient;
   profile: ProductMachineConnectionProfile;
 }
@@ -41,12 +48,17 @@ export interface ResolvedProductMachineConnection {
 const fail = (message: string): never => { throw new ConfigError(message); };
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
+function matchesRegisteredPath(value: unknown, registered: string): boolean {
+  if (process.platform !== 'win32') return value === registered;
+  const actual = bundleHostPath(value), expected = bundleHostPath(registered);
+  return actual !== null && expected !== null && relative(actual, expected) === '';
+}
 const absoluteFile = (value: unknown, label: string): string => {
   if (typeof value !== 'string' || !isAbsolute(value) || value.includes('\0')) return fail(`${label}需要明确的绝对路径。`);
   let stat;
   try { stat = lstatSync(value); } catch { return fail(`${label}当前不可达。`); }
   if (!stat.isFile() || stat.isSymbolicLink()) return fail(`${label}必须是无符号链接的普通文件。`);
-  if (realpathSync(value) !== resolve(value)) return fail(`${label}包含非规范路径。`);
+  if (relative(realpathSync(value), resolve(value)) !== '') return fail(`${label}包含非规范路径。`);
   return value;
 };
 const absoluteProgram = (value: unknown, label: string): string => {
@@ -62,7 +74,7 @@ const absoluteDir = (value: unknown, label: string): string => {
   let stat;
   try { stat = lstatSync(value); } catch { return fail(`${label}当前不可达。`); }
   if (!stat.isDirectory() || stat.isSymbolicLink()) return fail(`${label}必须是无符号链接的目录。`);
-  if (realpathSync(value) !== resolve(value)) return fail(`${label}包含非规范路径。`);
+  if (relative(realpathSync(value), resolve(value)) !== '') return fail(`${label}包含非规范路径。`);
   return value;
 };
 
@@ -106,41 +118,66 @@ export function resolveProductMachineConnection(resources: ResourceBindings,
   if (!raw) return fail(`连接 ${connectionId} 尚未在受控登记中。`);
   const profile = parseProductMachineConnectionProfile(raw, options);
   if (profile.id !== connectionId) return fail('连接登记 id 与选择不一致。');
-  if (profile.harness_binding.root !== resources.runtimeRoot
+  if (!matchesRegisteredPath(profile.harness_binding.root, resources.runtimeRoot)
     || profile.harness_binding.root_id !== resources.document.runtimeIdentity) {
     return fail('连接登记不属于当前运行根身份。');
   }
   const configStat = lstatSync(profile.config_path);
-  if ((configStat.mode & 0o022) !== 0) return fail('产品机器配置不得组/其他可写。');
+  if (process.platform !== 'win32' && (configStat.mode & 0o022) !== 0) return fail('产品机器配置不得组/其他可写。');
+  let configRaw: Buffer;
   let config: Record<string, unknown>;
-  try { config = JSON.parse(readFileSync(profile.config_path, 'utf8')) as Record<string, unknown>; }
-  catch { return fail('产品机器配置无法解析。'); }
+  try {
+    configRaw = readFileSync(profile.config_path);
+    config = JSON.parse(configRaw.toString('utf8')) as Record<string, unknown>;
+  } catch { return fail('产品机器配置无法解析。'); }
   if (!record(config) || config.protocol_version !== 'wfd.product-machine-config/0.1'
-    || config.connection_id !== profile.id || config.store !== profile.store
-    || config.runtime !== profile.runtime) {
+    || config.connection_id !== profile.id || !matchesRegisteredPath(config.store, profile.store)
+    || !matchesRegisteredPath(config.runtime, profile.runtime)) {
     return fail('产品机器配置与连接登记身份、store 或 runtime 不一致。');
   }
   const caller = record(config.caller) ? config.caller : {};
   if (typeof caller.caller_id !== 'string' || typeof caller.trusted_actor_namespace !== 'string') {
     return fail('产品机器配置缺少实际调用者身份。');
   }
-  const protocolRoot = typeof config.protocol_root === 'string' ? config.protocol_root : null;
-  if (!protocolRoot) return fail('产品机器配置缺少 protocol_root。');
+  const protocolRoot = absoluteDir(config.protocol_root, 'protocol_root');
+  const projectRoot = absoluteDir(config.project_root, 'project_root');
   const schemaPath = resolve(protocolRoot, 'schemas/wfd-structured-ingest.schema.json');
+  const digestFiles = (root: string, names: string[]) => wfdSha256(canonicalWfdJson(names.map(name =>
+    [name, wfdSha256(readFileSync(absoluteFile(resolve(root, name), name)))])));
   const client = new WfdProductMachineClient({
     pythonPath: profile.python_path,
     entryPath: profile.entry_path,
     configPath: profile.config_path,
-    projectRoot: absoluteDir(config.project_root, 'project_root'),
+    projectRoot,
+    configSha256: wfdSha256(configRaw),
   });
   return {
     connectionId: profile.id,
     configPath: profile.config_path,
+    configRaw,
+    config,
     store: profile.store,
     runtime: profile.runtime,
     callerId: caller.caller_id,
     trustedActorNamespace: caller.trusted_actor_namespace,
     schemaPath,
+    readBinding: () => ({
+      readSchemaSha256: digestFiles(resolve(protocolRoot, 'schemas'), ['wfd-read-product.schema.json', 'wfd-common.schema.json']),
+      queryImplSha256: digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_query.py', 'indexed_tabular_query.py', 'filter_plan.py']),
+    }),
+    bundleImplSha256: () => digestFiles(resolve(projectRoot, 'wfd_sdk'), ['product_machine_bundle.py', 'product_bundle.py', 'transfer.py', 'product_machine.py']),
+    bundleImplDigests: () => {
+      const sdk = resolve(projectRoot, 'wfd_sdk');
+      const entries = ['product_machine_bundle.py', 'product_bundle.py', 'transfer.py', 'product_machine.py'].map(name =>
+        [name, wfdSha256(readFileSync(absoluteFile(resolve(sdk, name), name)))] as const);
+      return {
+        current: wfdSha256(canonicalWfdJson(entries)),
+        legacy: [
+          wfdSha256(canonicalWfdJson(entries.slice(0, 3))),
+          wfdSha256(canonicalWfdJson(entries.slice(0, 2))),
+        ],
+      };
+    },
     client,
     profile,
   };

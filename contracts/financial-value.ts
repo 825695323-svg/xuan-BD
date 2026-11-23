@@ -10,3 +10,8 @@ export function isExplicitUtcInstant(value: unknown): value is string {
   const canonical = `${value.slice(0, 19)}.${(matched[7] ?? '').padEnd(3, '0')}Z`;
   return new Date(epoch).toISOString() === canonical;
 }
+
+/** WFD 的 reported_zero 只允许数值列使用明确的零值。 */
+export function isNumericReportedZero(dataType: unknown, value: unknown): boolean {
+  return (dataType === 'decimal' || dataType === 'integer') && (value === '0' || value === 0);
+}

@@ -78,7 +78,7 @@ export async function saveSourceSettings(input: SourceSettingsView, requestId: s
   const body = {
     revision: input.revision, updatedAt: input.updatedAt,
     plugins: input.plugins, connections: input.connections, policies: input.policies,
-    operationPolicies: input.operationPolicies, capture: input.capture, execution: input.execution,
+    operationPolicies: input.operationPolicies, wechatExtract: input.wechatExtract, capture: input.capture, execution: input.execution,
   };
   const value = await sourceRequest(base, 'PUT', body, {
     signal, keepalive: false, headers: { 'Idempotency-Key': requestId },

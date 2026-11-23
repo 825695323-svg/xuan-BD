@@ -287,7 +287,7 @@ def run(service, config, request, query_factory, service_identity):
         discovered = query_factory().fixed_filter_products(
             snapshot_id=request['snapshot_id'],
             product_ids=[binding['product_id'] for metric in metrics.values() for binding in metric['bindings']],
-            max_scan_bytes=request['max_scan_bytes'])
+            max_scan_bytes=request['max_scan_bytes'], history=request)
     except ProductQueryError as exc:
         if exc.code != 'SCAN_BUDGET_EXCEEDED':
             raise

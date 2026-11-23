@@ -13,8 +13,13 @@ import { LocalAlgorithmService, captureCodeBinding } from './algorithm-service.j
 import { MaterialService } from '../collection/materials/service.js';
 import { ResourceBindings } from '../../platform/resources/bindings.js';
 import { FileReferenceService } from '../../platform/resources/files.js';
-import { TaskRuntimeRegistry, TaskService } from '../../platform/jobs/tasks.js';
+import { TaskRuntimeRegistry, TaskService, type TaskExecutionContext } from '../../platform/jobs/tasks.js';
 import { PermissionService } from '../../platform/security/permissions.js';
+import { ConversationAlgorithmBridge } from './conversation-algorithms.js';
+import { createWfdProductMachineSnapshotPort } from './product-machine-snapshot.js';
+import type { WfdProductMachineClient } from '../../adapters/database/wfd-product-machine.js';
+import type { WorkspaceServices } from '../../contracts/workspace-services.js';
+import type { ModelTaskOrigin } from '../agent/model-tools.js';
 import { CoreDatabase } from '../../platform/state/database.js';
 
 const codeRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -166,6 +171,94 @@ test('WFD-only 计算入口拒绝受管表，即使有真实用户用途授权�
     } finally { await host.close(); }
   });
 
+test('历史计算及 status 仅向模型返回原因计数，完整未来修订仅在原任务审计中', { skip: !python }, async () => {
+  const root = realpathSync(mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'historical-preview-')));
+  configure(root);
+  const cutoff = reference.at!, reason = 'time_interval_starts_after_cutoff';
+  const diagnostics = Array.from({ length: 65 }, (_, i) => ({ decision: 'ineligible', reason,
+    revision_id: 'r_future_' + i, business_key: 'future-key-' + i, subject: { id: 'future-subject' } }));
+  const observations = [{ ...marchRow, row: { ...marchRow.row, values: { close: marchRow.row.close,
+    available_at: marchRow.row.available_at, trade_date: { value_state: 'valid_value', value: marchRow.row.trade_date } },
+    observation_time: { ...marchRow.row.public_time, earliest_utc: '2026-02-28T16:00:00Z', latest_exclusive_utc: '2026-03-01T16:00:00Z' } } }];
+  const selectedProduct = { ...product, payload_kind: 'tabular_rows', declaration: {
+    field_definitions: [{ field_code: 'close', data_type: 'decimal', unit_code: 'cny_per_share' },
+      ...['trade_date', 'available_at'].map(field_code => ({ field_code, data_type: 'text', unit_code: 'date' }))],
+    semantic_context: { ...product.declaration.semantic_context, version: 'wfd.semantic-context/1.0', time: { frequency: 'day', timezone: 'Asia/Shanghai',
+      roles: { observation: 'trade_date', availability: 'available_at', bar_closed: 'true' } },
+      financial: { price_adjustment: { direction: 'raw' } } } } };
+  const client = {
+    discover: async () => ({ result: { products: [selectedProduct] }, transport: { operation: 'contract_discovery' } }),
+    read: async () => ({ result: { snapshot_id: snapshot, perspective: 'market_known_at', at: cutoff,
+      rows: observations, row_count: observations.length, diagnostics }, transport: { operation: 'fixed_read' } }),
+  } as unknown as WfdProductMachineClient;
+  const host = open(root, createWfdProductMachineSnapshotPort({ instanceId: reference.instanceId, client }));
+  try {
+    const origin = { conversationId: 'synthetic', branchId: 'history', parentRunId: 'preview' } as ModelTaskOrigin;
+    const bridge = new ConversationAlgorithmBridge({ database: host.database, origin: () => origin, rulesVersion: () => 21,
+      submissionContext: () => ({ authority: 'operator-http', requestId: 'history-purpose', observedAtUtc: cutoff }),
+      companion: { algorithms: host.algorithms, tasks: host.tasks, derivedPublisher: { publish: async () => ({ published: false,
+        state: 'not_requested' }) } } as unknown as WorkspaceServices });
+    const request = { methodId: 'macd', parameters: { short_period: 12, long_period: 26, signal_period: 9, init: 'first_valid' },
+      source: { kind: 'fixed_snapshot', reference: { ...reference, semantics: { ...reference.semantics,
+        adjustmentBasis: 'WFD financial.price_adjustment.direction=raw' } } },
+      usage: { purpose: 'historical_compute', historyMode: 'market_known_at', perspective: 'market_known_at', cutoff } };
+    async function invoke(action: string, args: object, id: string) {
+      const context = { task: { id, action, args }, signal: new AbortController().signal, assertAuthorized() {} } as unknown as TaskExecutionContext;
+      const { data } = await bridge.execute(context);
+      const preview = (data as { modelPreview: { taskId: string; status: string;
+        error: { code: string; message: string } | null; result: { source: { resolution: {
+          historicalRead: { historicalExclusions: { excludedCount: number; byReason: WfdRecord } } } } } | null } }).modelPreview;
+      assert.doesNotMatch(JSON.stringify(preview), /r_future|future-key|future-subject/u);
+      return preview;
+    }
+    for (const expected of ['succeeded', 'failed']) {
+      const calculated = await invoke('algorithms.calculate', { calculationJson: JSON.stringify(request) }, 'calculate-' + expected);
+      assert.equal(calculated.status, expected, JSON.stringify(calculated.error));
+      const status = await invoke('algorithms.status', { taskId: calculated.taskId }, 'status-' + expected);
+      assert.equal(status.status, expected);
+      for (const preview of [calculated, status]) {
+        const summary = preview.result?.source.resolution.historicalRead.historicalExclusions ?? JSON.parse(preview.error!.message);
+        assert.equal(summary.excludedCount, 65);
+        assert.deepEqual(summary.byReason, { [reason]: 65 });
+      }
+      if (expected === 'succeeded') {
+        const persisted = host.algorithms.view(calculated.taskId).result!;
+        const audit = persisted.source as { resolution: { historicalRead: { diagnostics: unknown[] } } };
+        assert.deepEqual(audit.resolution.historicalRead.diagnostics, diagnostics);
+        observations.length = 0;
+      } else {
+        assert.equal(status.error?.code, 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION');
+        assert.doesNotMatch(host.tasks.get(calculated.taskId).error!.message, /r_future|future-key|future-subject/u);
+        const callAudit = host.database.connection.prepare('SELECT state,raw_result_json,raw_result_digest FROM algorithm_calls WHERE task_id=?').get(calculated.taskId) as
+          { state: string; raw_result_json: string | null; raw_result_digest: string | null };
+        assert.equal(callAudit.state, 'failed');
+        assert.ok(callAudit.raw_result_json && callAudit.raw_result_digest);
+        const parsedAudit = JSON.parse(callAudit.raw_result_json);
+        assert.equal(parsedAudit.kind, 'historical_no_eligible_version');
+        assert.deepEqual(parsedAudit.diagnostics, diagnostics);
+        const legacy = JSON.stringify({ diagnostics: diagnostics.slice(0, 64) });
+        for (const message of [legacy, legacy.slice(0, 180)]) {
+          host.database.connection.prepare('UPDATE tasks SET error=? WHERE id=?').run(
+            JSON.stringify({ code: status.error!.code, message }), calculated.taskId);
+          const old = await invoke('algorithms.status', { taskId: calculated.taskId }, 'legacy-status');
+          assert.equal(old.error?.code, status.error!.code);
+        }
+        diagnostics.splice(0, diagnostics.length, { decision: 'indeterminate', reason: 'INSTANCE_HOLDING_COVERAGE_GAP',
+          revision_id: 'r_future_indeterminate', subject: { id: 'future-subject' } } as typeof diagnostics[number]);
+        const incomplete = await invoke('algorithms.calculate', { calculationJson: JSON.stringify(request) }, 'calculate-indeterminate-zero');
+        assert.equal(incomplete.error?.code, 'ALGORITHM_SNAPSHOT_HISTORY_INCOMPLETE');
+        assert.doesNotMatch(JSON.stringify(incomplete), /r_future|future-subject/u);
+        const incompleteAudit = host.database.connection.prepare('SELECT state,raw_result_json,raw_result_digest FROM algorithm_calls WHERE task_id=?')
+          .get(incomplete.taskId) as { state: string; raw_result_json: string | null; raw_result_digest: string | null };
+        assert.equal(incompleteAudit.state, 'failed');
+        assert.ok(incompleteAudit.raw_result_json && incompleteAudit.raw_result_digest);
+        assert.equal(JSON.parse(incompleteAudit.raw_result_json).kind, 'historical_snapshot_incomplete');
+        assert.deepEqual(JSON.parse(incompleteAudit.raw_result_json).diagnostics, diagnostics);
+      }
+    }
+  } finally { await host.close(); }
+});
+
 test('本机算法固定快照：4月历史只接受3月版本，5月修订与暂停证据不得放行',
   { skip: missing.length ? `未显式选择 ${missing.join('、')}` : false, timeout: 90_000 }, async () => {
     const parent = process.env.XUAN_ALGORITHM_ELIGIBILITY_ROOT ?? process.env.XUAN_TEST_ROOT ?? tmpdir();
@@ -196,6 +289,29 @@ test('本机算法固定快照：4月历史只接受3月版本，5月修订与�
         { authority: 'operator-http', requestId: 'snapshot-may-april', observedAtUtc: '2026-04-30T00:00:00Z' });
       const done = await settle(host.tasks, submitted.taskId);
       assert.ok(['PURPOSE_ELIGIBILITY_INELIGIBLE', 'ALGORITHM_HISTORICAL_NO_ELIGIBLE_VERSION'].includes(String(done.error?.code)), JSON.stringify(done.error));
+      if (done.error?.code === 'PURPOSE_ELIGIBILITY_INELIGIBLE') {
+        assert.doesNotMatch(done.error.message, /r_synthetic_may|"checks"|"timings"|2026-05-/u);
+        const parsedErr = JSON.parse(done.error.message) as { history: { mode: string; cutoff: string; perspective: string; historical: boolean } };
+        assert.equal(parsedErr.history.mode, 'market_known_at');
+        assert.equal(parsedErr.history.cutoff, '2026-04-30T00:00:00Z');
+        assert.equal(parsedErr.history.perspective, 'market_known_at');
+        assert.equal(parsedErr.history.historical, true);
+        const auditRow = host.database.connection.prepare('SELECT raw_result_json,raw_result_digest FROM algorithm_calls WHERE task_id=?')
+          .get(submitted.taskId) as { raw_result_json: string | null; raw_result_digest: string | null };
+        assert.ok(auditRow.raw_result_json && auditRow.raw_result_digest);
+        assert.ok(Array.isArray(JSON.parse(auditRow.raw_result_json).checks));
+        const origin = { conversationId: 'c1', branchId: 'b1', parentRunId: 'r1' } as ModelTaskOrigin;
+        const bridge = new ConversationAlgorithmBridge({ database: host.database, origin: () => origin, rulesVersion: () => 21,
+          companion: { algorithms: host.algorithms, tasks: host.tasks, derivedPublisher: { publish: async () => ({ published: false,
+            state: 'not_requested' }) } } as unknown as WorkspaceServices });
+        host.database.connection.prepare('INSERT INTO conversation_algorithm_links VALUES(?,?,?,?,?)')
+          .run(submitted.taskId, 'local-may', 'calculate', JSON.stringify(origin), Date.now());
+        const statusReply = await bridge.execute({ task: { id: 'status-may', action: 'algorithms.status', args: { taskId: submitted.taskId } },
+          signal: new AbortController().signal, assertAuthorized() {} } as unknown as TaskExecutionContext);
+        assert.doesNotMatch(JSON.stringify(statusReply), /r_synthetic_may|"checks"|"timings"|2026-05-/u);
+        const statusErr = JSON.parse(((statusReply.data as { modelPreview: { error: { message: string } } }).modelPreview).error.message);
+        assert.deepEqual(statusErr.history, { mode: 'market_known_at', cutoff: '2026-04-30T00:00:00Z', perspective: 'market_known_at', historical: true });
+      }
     } finally { await host.close(); }
 
     host = open(root, fakePort([marchRow], { publishable: false, compute_eligible: false, audit_reproduction: false,
@@ -207,6 +323,16 @@ test('本机算法固定快照：4月历史只接受3月版本，5月修订与�
       const done = await settle(host.tasks, submitted.taskId);
       assert.equal(done.error?.code, 'PURPOSE_ELIGIBILITY_INELIGIBLE', JSON.stringify(done.error));
       assert.match(String(done.error?.message), /USAGE_RESTRICTED/);
+      const origin = { conversationId: 'c-cur', branchId: 'b-cur', parentRunId: 'r-cur' } as ModelTaskOrigin;
+      const bridge = new ConversationAlgorithmBridge({ database: host.database, origin: () => origin, rulesVersion: () => 21,
+        companion: { algorithms: host.algorithms, tasks: host.tasks, derivedPublisher: { publish: async () => ({ published: false,
+          state: 'not_requested' }) } } as unknown as WorkspaceServices });
+      host.database.connection.prepare('INSERT INTO conversation_algorithm_links VALUES(?,?,?,?,?)')
+        .run(submitted.taskId, 'local-cur', 'calculate', JSON.stringify(origin), Date.now());
+      const curStatus = await bridge.execute({ task: { id: 'status-cur', action: 'algorithms.status', args: { taskId: submitted.taskId } },
+        signal: new AbortController().signal, assertAuthorized() {} } as unknown as TaskExecutionContext);
+      const curPreview = JSON.parse(((curStatus.data as { modelPreview: { error: { message: string } } }).modelPreview).error.message);
+      assert.ok(Array.isArray(curPreview.checks) && curPreview.purpose === 'current_compute');
     } finally { await host.close(); }
   });
 

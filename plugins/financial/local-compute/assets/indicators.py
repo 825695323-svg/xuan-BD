@@ -1,5 +1,7 @@
 """Registered indicators over supplied daily observations."""
+from fractions import Fraction
 import math
+import sys
 
 from _common import exact_keys, require, validate_bars
 from operators import combine, next_state, rolling_windows, smooth, standard_deviation
@@ -173,8 +175,13 @@ def alpha191_031(close, params, rows):
         if window is None:
             values.append(WARMUP)
             continue
-        center = nonnegative_mean(window)
-        values.append(100 * ((window[-1] - center) / center) if center else ZERO_DENOMINATOR)
+        scale = max(window)
+        if not scale:
+            values.append(ZERO_DENOMINATOR)
+            continue
+        scaled_total = math.fsum(price / scale for price in window)
+        # (last - mean) / mean on the scaled window, cancelling the common window length.
+        values.append(100 * (len(window) * (window[-1] / scale) - scaled_total) / scaled_total)
     return {"ALPHA191_031": values}
 
 
@@ -184,9 +191,9 @@ def alpha191_116(close, params, rows):
         if window is None:
             values.append(WARMUP)
             continue
-        # Center the price as well as the observation number to avoid subtracting large sums.
-        values.append(math.fsum(((index - 9.5) / 665) * (value - window[0])
-                                for index, value in enumerate(window)))
+        # Exact IEEE-754 rational linear combination prevents cancellation on large baseline offsets.
+        total = sum((2 * k - 19) * Fraction(price) for k, price in enumerate(window))
+        values.append(float(total / 1330))
     return {"ALPHA191_116": values}
 
 

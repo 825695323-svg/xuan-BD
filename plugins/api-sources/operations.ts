@@ -1,4 +1,4 @@
-import type { SourceCandidateFeedback, SourceOperationView } from '../../contracts/source-settings.js';
+import type { ReportSubjectEvidence, SourceCandidateFeedback, SourceOperationView, SourceRunRequest } from '../../contracts/source-settings.js';
 import { publicKlineProvider, publicKlineProviders } from './public-kline.js';
 import { sourceReceiptReview } from './source-acquisition.js';
 
@@ -6,8 +6,13 @@ import { sourceReceiptReview } from './source-acquisition.js';
  * 唯一的接口操作目录：页面展示的操作与服务端路由使用同一份声明。
  * 新增来源时只登记已经由执行器支持的动作；不在页面猜测供应商协议。
  */
+// 下载回执也覆盖既有的站点采集入口；只有接口插件的操作进入账号路由。
+export const FETCH_OPERATIONS = Object.freeze({
+  tdx: 'minute_bars', eastmoney: 'minute_bars', official_web: 'official_document',
+} as const satisfies Record<SourceRunRequest['sourceId'], SourceOperationView['id'] | 'official_document'>);
+
 const providerOperations: Record<string, SourceOperationView[]> = {
-  tdx: [{ id: 'minute_bars', label: '1分钟K线', dataCapability: 'history', assetScope: 'equity',
+  tdx: [{ id: FETCH_OPERATIONS.tdx, label: '1分钟K线', dataCapability: 'history', assetScope: 'equity',
     run: { action: 'source.fetch', sourceId: 'tdx' } }],
   ths: [
     { id: 'daily_bars', label: '日线行情', dataCapability: 'history', assetScope: 'equity',
@@ -45,6 +50,7 @@ export function sourceOperationsForAction(action: SourceOperationView['run']['ac
 export function sourceCandidateFeedback(input: {
   scopeId: string; operationId: SourceOperationView['id']; providerId: string; connectionId: string;
   acquiredAtUtc: string; subjectId?: string; start?: string; end?: string; adjustment?: string;
+  statement?: string; encodeUrl?: string; subject?: ReportSubjectEvidence;
   rowCount?: number; actualStart?: string | null; actualEnd?: string | null;
   originals: { fileRefId: string; sha256: string }[];
 }): SourceCandidateFeedback {
@@ -57,14 +63,16 @@ export function sourceCandidateFeedback(input: {
   const state = input.rowCount === undefined ? 'raw_only' : input.rowCount === 0 ? 'empty_unconfirmed' : 'rows_observed';
   const logicalRequest: SourceCandidateFeedback['logicalRequest'] = { scopeId: input.scopeId, operationId: input.operationId,
     subjectId: input.subjectId ?? null, start: input.start ?? null, end: input.end ?? null,
-    adjustment: input.adjustment ?? null };
+    adjustment: input.adjustment ?? null, ...(input.statement === undefined ? {} : { statement: input.statement }),
+    ...(input.encodeUrl === undefined ? {} : { encodeUrl: input.encodeUrl }) };
   return {
     contract: 'bd.source-candidate-feedback/1', logicalRequest,
     actualSource: { providerId: input.providerId, connectionId: input.connectionId },
     observation: { state, rowCount: input.rowCount ?? null, acquiredAtUtc: input.acquiredAtUtc },
     coverage: { actualStart: input.actualStart ?? null, actualEnd: input.actualEnd ?? null,
       completeness: 'not_established' },
-    evidence: { originalRefs: input.originals.map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })) },
+    evidence: { originalRefs: input.originals.map(item => ({ fileRefId: item.fileRefId, sha256: item.sha256 })),
+      ...(input.subject ? { subject: input.subject } : {}) },
     semanticStatus: 'not_verified', acquisition: sourceReceiptReview(logicalRequest, input.rowCount ?? null),
     gaps: [state === 'raw_only' ? '当前只有保管的原始响应；业务记录、空响应性质及覆盖未解析。'
       : state === 'empty_unconfirmed' ? '本次没有观测到记录；未证明来源确认无数据，不能补零或声明历史完整。'

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync, type BigIntStats } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { SourceCheck, SourceConnection, SourceOperationId, SourceOperationPolicy, SourcePolicy, SourceSettingsDocument, SourceSettingsView } from '../../contracts/source-settings.js';
 import { CAPTURE_SOURCE_IDS, CAPTURE_SOURCES, type CaptureSourceId } from '../../plugins/capture-sources/contracts.js';
@@ -36,23 +37,11 @@ const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).di
 const operationHash = (value: SourceSettingsDocument) => digest({ ...value, updatedAt: null });
 /** 历史操作按原 schema 比较；升级补出的禁用来源仍未被使用时不改写旧回执。 */
 function comparableForOperation(current: SourceSettingsDocument, historical: SourceSettingsDocument): SourceSettingsDocument {
-  const additions = ['werss', 'tickflow'].filter(provider => !historical.plugins.some(item => item.id === provider)
-    && current.plugins.find(item => item.id === provider)?.enabled === false
-    && (provider === 'werss' ? !current.connections.some(item => item.pluginId === provider)
-      : current.connections.filter(item => item.pluginId === provider).every(connection => {
-        const definition = publicKlineProvider(provider)!;
-        return connection.id === 'tickflow-main' && connection.alias === definition.alias && !connection.enabled
-          && connection.baseUrl === definition.baseUrl && connection.credential === null
-          && connection.scopes.length === 1 && connection.scopes[0] === 'CN/A_STOCK'
-          && connection.tdxMode === undefined && connection.feedIds === undefined;
-      })));
-  const addedConnections = current.connections.filter(item => additions.includes(item.pluginId));
-  const used = addedConnections.some(connection => [...current.policies, ...current.operationPolicies]
-    .some(policy => policy.primary === connection.id || policy.backups.includes(connection.id)));
-  const comparable = !used ? { ...current, plugins: current.plugins.filter(item => !additions.includes(item.id)),
-    connections: current.connections.filter(item => !additions.includes(item.pluginId)) } : current;
-  return !Object.hasOwn(historical, 'wechatExtract') && comparable.wechatExtract.enabled === false
-    ? Object.fromEntries(Object.entries(comparable).filter(([key]) => key !== 'wechatExtract')) as unknown as SourceSettingsDocument : comparable;
+  // 用同一迁移从当年的连接及策略重建预期结果，包括当时发生 ID 冲突时的选择。
+  const original = { ...historical, revision: current.revision };
+  const migrated = structuredClone(original);
+  migrateSettings(migrated);
+  return operationHash(current) === operationHash(migrated) ? original : current;
 }
 const assertRequestId = (value: string): void => {
   if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/u.test(value)) {
@@ -113,12 +102,7 @@ export class SourceSettingsService {
     if (!existsSync(this.path)) return defaults(this.connectionsRegistryPath);
     let value: unknown;
     try { value = JSON.parse(readFileSync(this.path, 'utf8')); } catch { throw new CoreError('SOURCE_SETTINGS_UNAVAILABLE', '来源配置当前无法读取，请保留原文件后检查。', 503); }
-    // 旧配置没有按接口类型的策略；空数组合法表示沿用范围主备，不伪造历史编排。
-    if (object(value) && !Object.hasOwn(value, 'operationPolicies')) value.operationPolicies = [];
-    if (object(value)) migrateProviderNames(value);
-    if (object(value)) migratePublicProviders(value);
-    if (object(value)) migrateWerssProvider(value);
-    if (object(value) && !Object.hasOwn(value, 'wechatExtract')) value.wechatExtract = defaultWechatExtract();
+    if (object(value)) migrateSettings(value);
     const result = validate(value);
     for (const connection of result.connections) if (connection.credential?.kind === 'dsh-ref') this.credentialFiles.add(resolve(connection.credential.path));
     return result;
@@ -130,7 +114,7 @@ export class SourceSettingsService {
       const historicalPlugins = object(input) && Array.isArray(input.plugins) ? input.plugins : null;
       // 升级前的原请求只可凭既有 requestId 和原候选摘要精确重放；不把缺失 WeRSS 字段的内容当新配置提交。
       if (historical && object(input) && (historicalPlugins !== null
-        && ['werss', 'tickflow'].some(provider => !historicalPlugins.some(item => object(item) && item.id === provider)) || !Object.hasOwn(input, 'wechatExtract'))) {
+        && ['werss', ...publicKlineProviderIds].some(provider => !historicalPlugins.some(item => object(item) && item.id === provider)) || !Object.hasOwn(input, 'wechatExtract'))) {
         this.assertReplay(historical, operationHash(input as unknown as SourceSettingsDocument));
         if (String(historical.status) === 'saving' && this.operation(requestId)?.status === 'saving') {
           throw new CoreError('SOURCE_SETTINGS_UNRESOLVED', '该旧请求的保存结果仍无法确认，未覆盖当前配置。', 409);
@@ -306,8 +290,30 @@ export class SourceSettingsService {
     throw new CoreError('SOURCE_SETTINGS_BUSY', '来源设置正在另一进程保存；本次未更改配置，请稍后重试。', 409);
   }
   private recoverDeadLock(lockPath: string): boolean {
-    let fd: number | undefined, checkFd: number | undefined;
+    const dir = realpathSync(dirname(this.path));
+    const guardPath = join(dir, `${basename(this.path)}.recover.sqlite`);
+    let guard: DatabaseSync | undefined, guardCheck: number | undefined, fd: number | undefined;
     try {
+      // 此私有文件永久复用同一 inode。回收进程退出后内核释放 SQLite 写锁；全程保持句柄钉住节点。
+      try {
+        const created = openSync(guardPath, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+        closeSync(created);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      const node = lstatSync(guardPath, { bigint: true }), win32 = process.platform === 'win32';
+      if (!node.isFile() || node.nlink !== 1n || (!win32 && (node.mode & 0o7777n) !== 0o600n)) return false;
+      guardCheck = openSync(guardPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const openedGuard = fstatSync(guardCheck, { bigint: true });
+      if (!openedGuard.isFile() || openedGuard.dev !== node.dev || openedGuard.ino !== node.ino || openedGuard.nlink !== 1n
+        || (!win32 && (openedGuard.mode & 0o7777n) !== 0o600n)) return false;
+      guard = new DatabaseSync(guardPath);
+      guard.exec('PRAGMA busy_timeout = 5000');
+      guard.exec('BEGIN IMMEDIATE');
+      const locked = lstatSync(guardPath, { bigint: true }), pinned = fstatSync(guardCheck, { bigint: true });
+      if (!locked.isFile() || locked.dev !== node.dev || locked.ino !== node.ino || locked.nlink !== 1n
+        || pinned.dev !== node.dev || pinned.ino !== node.ino || pinned.nlink !== 1n
+        || (!win32 && ((locked.mode & 0o7777n) !== 0o600n || (pinned.mode & 0o7777n) !== 0o600n))) return false;
       const before = lstatSync(lockPath, { bigint: true });
       if (!before.isFile() || before.nlink !== 1n || before.size > 1024n) return false;
       fd = openSync(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -315,27 +321,23 @@ export class SourceSettingsService {
       if (!opened.isFile() || opened.nlink !== 1n || opened.size > 1024n
         || opened.dev !== before.dev || opened.ino !== before.ino) return false;
       const raw = readFileSync(fd, 'utf8'), after = fstatSync(fd, { bigint: true });
-      closeSync(fd); fd = undefined;
       if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) return false;
       const owner = JSON.parse(raw) as { version?: unknown; pid?: unknown; token?: unknown };
-      const pid = Number(owner?.pid);
-      if (!owner || owner.version !== 1 || !Number.isSafeInteger(pid) || pid < 1 || typeof owner.token !== 'string' || !owner.token) return false;
+      const pid = owner?.pid;
+      if (!owner || owner.version !== 1 || typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid < 1 || typeof owner.token !== 'string' || !owner.token) return false;
       try { process.kill(pid, 0); return false; }
       catch (error) { if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ESRCH')) return false; }
       const current = lstatSync(lockPath, { bigint: true });
       if (current.dev !== before.dev || current.ino !== before.ino || current.size !== before.size
         || current.mtimeNs !== before.mtimeNs || current.ctimeNs !== before.ctimeNs) return false;
-      checkFd = openSync(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
-      const checkStat = fstatSync(checkFd, { bigint: true });
-      if (checkStat.dev !== before.dev || checkStat.ino !== before.ino || checkStat.size !== before.size
-        || readFileSync(checkFd, 'utf8') !== raw) return false;
-      closeSync(checkFd); checkFd = undefined;
       unlinkSync(lockPath);
+      guard.exec('COMMIT');
       return true;
     } catch { return false; }
     finally {
       if (fd !== undefined) try { closeSync(fd); } catch { /* 已关闭。 */ }
-      if (checkFd !== undefined) try { closeSync(checkFd); } catch { /* 已关闭。 */ }
+      guard?.close(); // 未提交的事务在关闭时回滚。
+      if (guardCheck !== undefined) try { closeSync(guardCheck); } catch { /* 已关闭。 */ }
     }
   }
   private releaseLock(lock: SourceSettingsLock): void {
@@ -507,6 +509,13 @@ export class SourceSettingsService {
       capabilityAvailable: status ? !status.needsAttention : false, freshness: 'unknown', reason: !this.get().capture.find(item => item.sourceId === sourceId)?.enabled ? '本站已停用。' : status?.message ?? '本站独立会话未装配；没有发起站点读取。' }));
   }
 }
+function migrateSettings(value: Record<string, unknown>): void {
+  if (!Object.hasOwn(value, 'operationPolicies')) value.operationPolicies = [];
+  migrateProviderNames(value);
+  migratePublicProviders(value);
+  migrateWerssProvider(value);
+  if (!Object.hasOwn(value, 'wechatExtract')) value.wechatExtract = defaultWechatExtract();
+}
 function migrateProviderNames(value: Record<string, unknown>): void {
   if (Array.isArray(value.plugins)) for (const plugin of value.plugins) if (object(plugin) && plugin.id === 'fuyao') plugin.id = 'ths';
   if (Array.isArray(value.connections)) for (const connection of value.connections) if (object(connection) && connection.pluginId === 'fuyao') connection.pluginId = 'ths';
@@ -517,7 +526,11 @@ function migratePublicProviders(value: Record<string, unknown>): void {
     const firstRegistration = !value.plugins.some(item => object(item) && item.id === provider.id);
     if (firstRegistration) value.plugins.push({ id: provider.id, enabled: provider.initiallyEnabled ?? true });
     if ((provider.id !== 'tickflow' || firstRegistration) && !value.connections.some(item => object(item) && item.pluginId === provider.id)) {
-      value.connections.push({ id: `${provider.id}-main`, pluginId: provider.id, alias: provider.alias, enabled: provider.initiallyEnabled ?? true, baseUrl: provider.baseUrl, credential: null, scopes: ['CN/A_STOCK'] });
+      const base = `${provider.id}-main`;
+      const occupied = new Set(value.connections.filter(object).map(item => item.id));
+      let connectionId = base;
+      for (let suffix = 2; occupied.has(connectionId); suffix++) connectionId = `${base}-${suffix}`;
+      value.connections.push({ id: connectionId, pluginId: provider.id, alias: provider.alias, enabled: connectionId === base && (provider.initiallyEnabled ?? true), baseUrl: provider.baseUrl, credential: null, scopes: ['CN/A_STOCK'] });
     }
   }
 }

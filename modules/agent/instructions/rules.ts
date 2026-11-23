@@ -7,12 +7,14 @@ import type { FrozenRunConfiguration } from '../../../contracts/ui-contracts.js'
 const AGENTS_FILE = new URL('./AGENTS.md', import.meta.url);
 
 /** 与已审核正文绑定；规则改版同步更新版本与可信摘要。 */
-export const INTERNAL_AGENT_RULES = Object.freeze({ id: 'xuan-bd-internal-agent', version: 20,
-  digest: 'd6c8ecfc20feabf9d1512654d4123e54a803d6029ade74fdd70205a51e1ba49c' });
+export const INTERNAL_AGENT_RULES = Object.freeze({ id: 'xuan-bd-internal-agent', version: 22,
+  digest: 'b11a074299c746312eafc2a0e5c4d94fac4e0eda7954a5424d3cfefe8ea4f92c' });
 /** 旧任务携带的完整冻结规则仅按原版本/摘要验真，不能被新版 AGENTS 正文替换。 */
 const FROZEN_PRIOR_AGENT_RULES = Object.freeze([
   { version: 18, digest: 'fb576a22f1942ea217a66180149c737f5388392e32112ec28589a592140d124c' },
   { version: 19, digest: '38342f494b3a83fc5f0512c1fd42515a49877ea61f70e62c6ce3089b257ff45c' },
+  { version: 20, digest: 'd6c8ecfc20feabf9d1512654d4123e54a803d6029ade74fdd70205a51e1ba49c' },
+  { version: 21, digest: 'c6dc990bfd99628b50ef08a3bc37bb9869cbaf36c3cd34c88160f886e4c48cb7' },
 ]);
 
 export function captureInternalAgentRules(): Pick<FrozenRunConfiguration, 'internalAgentRules' | 'internalAgentRulesText'> {

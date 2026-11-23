@@ -1,3 +1,7 @@
+import { mkdtempSync, readFileSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { SegmentService, type SegmentServiceOptions } from './segments/service.js';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
@@ -5,7 +9,7 @@ import { NOT_APPLICABLE_TIME, UNKNOWN_TIME, type DocumentTimeRecord, type Retrie
   type TimeDimension } from './segments/contracts.js';
 import { buildDocumentSegments } from './segments/segmenter.js';
 import { syntheticPages, twoRowPages } from './segments/fixture.js';
-import { createIndexVersion, documentsWithoutTextLayer, ensureSegmentSchema, indexableSegmentIds,
+import { createIndexVersion, documentsWithoutTextLayer, ensureSegmentSchema, indexableSegmentIds, openReadOnlySegmentDb,
   putDocumentSegments, putDocumentVersion, resolveIndexVersion, resolveVisibleVersions, searchSegments,
   searchSegmentsExact, segmentStorage, timeExclusions, upperOf } from './segments/store.js';
 
@@ -57,6 +61,64 @@ function seeded() {
   createIndexVersion(db, { indexVersion, segmentIds: indexableSegmentIds(db) }, t0 + 4 * day);
   return { db, indexVersion, docA, docB, recordA, recordB };
 }
+
+test('只读查询保持已提交主库字节与目录项，遇到活跃 WAL 或任一伴随文件立即拒绝', () => {
+  const dir = mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'segment-journals-'));
+  const path = join(dir, 'segments.sqlite'), db = new DatabaseSync(path);
+  const built = buildDocumentSegments({ documentId: 'mat_a', documentVersion: '1', sourceRef: 'synthetic', pages: syntheticPages() });
+  try {
+    ensureSegmentSchema(db);
+    putDocumentSegments(db, built.segments, t0);
+    putDocumentVersion(db, record({ document_id: 'mat_a', parser_version: built.segments[0]!.parser_version }));
+  } finally { db.close(); }
+  const service = new SegmentService({ databasePath: path } as SegmentServiceOptions);
+  const snapshot = () => readdirSync(dir).sort().map(name => [name, readFileSync(join(dir, name))]);
+  try {
+    const index = service.buildIndex();
+    const before = snapshot();
+    assert.deepEqual(readdirSync(dir), ['segments.sqlite']);
+    assert.equal(service.indexVersions()[0].index_version, index.indexVersion);
+    assert.deepEqual(snapshot(), before);
+  } finally { service.close(); }
+
+  const writer = new DatabaseSync(path);
+  try {
+    writer.exec("PRAGMA journal_mode=WAL; UPDATE doc_index_versions SET note='synthetic WAL'");
+    const before = snapshot();
+    assert.deepEqual(readdirSync(dir).sort(), ['segments.sqlite', 'segments.sqlite-shm', 'segments.sqlite-wal']);
+    assert.throws(() => openReadOnlySegmentDb(path), { code: 'RETRIEVAL_STORAGE_CHANGED' });
+    assert.deepEqual(snapshot(), before);
+    const alias = join(dir, 'alias.sqlite');
+    symlinkSync(path, alias, 'file');
+    assert.throws(() => openReadOnlySegmentDb(alias), { code: 'RETRIEVAL_STORAGE_CHANGED' });
+  } finally { writer.close(); }
+
+  for (const suffix of ['-wal', '-shm', '-journal']) {
+    const reader = openReadOnlySegmentDb(path)!;
+    try {
+      writeFileSync(path + suffix, 'synthetic pending journal');
+      const before = snapshot();
+      assert.throws(() => reader.assertCurrent(), { code: 'RETRIEVAL_STORAGE_CHANGED' });
+      assert.throws(() => openReadOnlySegmentDb(path), { code: 'RETRIEVAL_STORAGE_CHANGED' });
+      assert.deepEqual(snapshot(), before);
+    } finally { reader.db.close(); unlinkSync(path + suffix); }
+  }
+});
+
+test('主库缺失时，孤立的 WAL、SHM 或回滚日志均阻止返回未初始化', () => {
+  const dir = mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'segment-orphans-'));
+  const path = join(dir, 'segments.sqlite'), service = new SegmentService({ databasePath: path } as SegmentServiceOptions);
+  try {
+    assert.equal(service.readState(), 'uninitialized');
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      writeFileSync(path + suffix, 'synthetic orphan');
+      assert.throws(() => service.readState(), { code: 'RETRIEVAL_STORAGE_CHANGED' });
+      assert.deepEqual(readdirSync(dir), ['segments.sqlite' + suffix]);
+      unlinkSync(path + suffix);
+    }
+    assert.equal(service.readState(), 'uninitialized');
+  } finally { service.close(); }
+});
 
 test('当前视图不施加时间门：两份文档都进结果', () => {
   const { db, indexVersion } = seeded();
@@ -171,7 +233,7 @@ test('R09 边界一：历史公开只取当时已发布的版本，后来才发�
 
   // 2024 年时点：只有 v1 公开过，v2 不能出现
   const view = resolveVisibleVersions(db, { indexVersion: 'idx_rev', asOf: t0 + 30 * day, mode: 'market_known_at' });
-  assert.deepEqual(view.allowed, ['mat_corrected@v1']);
+  assert.deepEqual(view.allowed, [['mat_corrected', 'v1', original.segments[0]!.parser_version]]);
   assert.equal(view.excluded.some(entry => entry.reason === 'superseded_by_revision'), false,
     '当时 v1 就是当前版本，不能被后来的版本状态回写成“已被取代”');
   assert.deepEqual(view.excluded, [{ document_id: 'mat_corrected', document_version: 'v2',
@@ -181,7 +243,7 @@ test('R09 边界一：历史公开只取当时已发布的版本，后来才发�
 
   // 更正发布之后：取 v2，v1 标为被取代，不再混入
   const later = resolveVisibleVersions(db, { indexVersion: 'idx_rev', asOf: t0 + 500 * day, mode: 'market_known_at' });
-  assert.deepEqual(later.allowed, ['mat_corrected@v2']);
+  assert.deepEqual(later.allowed, [['mat_corrected', 'v2', original.segments[0]!.parser_version]]);
   assert.deepEqual(later.excluded, [{ document_id: 'mat_corrected', document_version: 'v1',
     reason: 'superseded_by_revision' }]);
   assert.deepEqual([...new Set(exact(db, 'idx_rev', '普通正文',
@@ -192,7 +254,7 @@ test('R09 边界一：历史公开只取当时已发布的版本，后来才发�
 
   // 严格系统持有同样收敛，不因严格而同时返回两版
   assert.deepEqual(resolveVisibleVersions(db, { indexVersion: 'idx_rev', asOf: t0 + 500 * day }).allowed,
-    ['mat_corrected@v2']);
+    [['mat_corrected', 'v2', original.segments[0]!.parser_version]]);
 });
 
 test('R09 边界一之二：多版本无法按披露时间排序时整份排除，不猜当时版本', () => {
@@ -243,6 +305,42 @@ test('R09 边界二：低精度时间按区间末端比较，不提前放行', (
   // 年精度同理：2024 年内不算公开，2025 年起才算
   assert.equal(known(Date.parse('2024-01-01T00:00:00Z'), 'year').upper, Date.parse('2025-01-01T00:00:00Z'));
   assert.equal(known(Date.parse('2024-01-01T00:00:00Z'), 'quarter').upper, Date.parse('2024-04-01T00:00:00Z'));
+});
+
+test('3 日系统持有拒绝 5 日固定索引，资格和两种 SQL 只匹配 2 日的完整解析身份', () => {
+  const path = join(mkdtempSync(join(process.env.XUAN_TEST_ROOT ?? tmpdir(), 'parser-cutoff-')), 'segments.sqlite');
+  const db = new DatabaseSync(path);
+  const service = new SegmentService({ databasePath: path } as SegmentServiceOptions);
+  try {
+    for (const [i, pages] of [syntheticPages(), twoRowPages()].entries()) {
+      const parser = 'parser-' + i, parsed = t0 + (i === 0 ? 1 : 3) * day;
+      const built = buildDocumentSegments({ documentId: 'same@id', documentVersion: 'v1', parserVersion: parser,
+        sourceRef: 'artifact-' + i, pages });
+      putDocumentSegments(db, built.segments, parsed);
+      putDocumentVersion(db, record({ document_id: 'same@id', document_version: 'v1', parser_version: parser,
+        acquired_at: t0, parsed_at: parsed, disclosed_at: known(t0), event_time: NOT_APPLICABLE_TIME }));
+    }
+    const indexVersion = 'jan-5', asOf = t0 + 2 * day;
+    createIndexVersion(db, { indexVersion, segmentIds: indexableSegmentIds(db) }, t0 + 4 * day);
+    for (const fixed of [indexVersion, undefined]) {
+      const blocked = service.search({ indexVersion: fixed, method: 'exact', query: '普通正文', asOf: new Date(asOf).toISOString(), mode: 'system_held_at' });
+      assert.equal(blocked.status, 'index_missing'); assert.deepEqual(blocked.citations, []); assert.equal(blocked.qualification.applied, false);
+      assert.ok(blocked.gaps.includes(fixed ? 'index_built_after_as_of' : 'no_index_at_as_of'));
+    }
+    const visibleVersions = resolveVisibleVersions(db, { indexVersion, asOf, mode: 'system_held_at' }).allowed;
+    assert.deepEqual(visibleVersions, [['same@id', 'v1', 'parser-0']]);
+    for (const search of [searchSegments, searchSegmentsExact]) {
+      assert.deepEqual(search(db, { indexVersion, visibleVersions, query: '普通正文' }), []);
+      assert.ok(search(db, { indexVersion, visibleVersions, query: '半导体' }).length > 0);
+    }
+    const later = service.search({ indexVersion, method: 'exact', query: '普通正文', asOf: new Date(t0 + 5 * day).toISOString() });
+    assert.equal(later.citations[0]?.parser_version, 'parser-1');
+    assert.ok(later.gaps.includes('permission_scope_not_implemented'));
+    const docScoped = service.search({ indexVersion, method: 'exact', query: '普通正文', asOf: new Date(t0 + 5 * day).toISOString(), documentIds: ['same@id'] });
+    assert.ok(docScoped.gaps.includes('permission_scope_not_implemented'));
+    const branchScoped = service.search({ indexVersion, method: 'exact', query: '普通正文', asOf: new Date(t0 + 5 * day).toISOString(), documentIds: ['same@id'] }, ['same@id']);
+    assert.equal(branchScoped.gaps.includes('permission_scope_not_implemented'), false);
+  } finally { service.close(); db.close(); }
 });
 
 test('索引版本按 built_at 钉住：重建不改变旧时点解析到的版本', () => {

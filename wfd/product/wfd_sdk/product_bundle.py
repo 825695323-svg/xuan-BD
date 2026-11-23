@@ -17,6 +17,7 @@ import json
 import re
 import shutil
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -32,7 +33,8 @@ from .product_holdings import (
 from .product_query import ProductQuery, ProductQueryError
 from .product_service import WFDProductService
 from .product_data_service import WFDDataOnlyService
-from .transfer import export_package, import_package, object_manifest, verify_package
+from .transfer import (export_package, import_package, is_bundle_link as _is_bundle_link,
+                       object_manifest, verified_object_bytes, verify_package)
 from .writerlock import writer_lock
 from .row_version_objects import reject_unsupported
 
@@ -321,8 +323,7 @@ def _limits(value):
 
 def _normalize_selection(selection, product_ids):
     if selection is None:
-        return {"products": [{"product_id": pid} for pid in sorted(set(product_ids))],
-                "evidence": {"mode": "if_licensed", "require_original": False}}
+        selection = {"products": [{"product_id": pid} for pid in sorted(set(product_ids))]}
     if not isinstance(selection, dict) or set(selection) - {"products", "evidence", "at"}:
         raise ValueError("BUNDLE_SELECTION_INVALID")
     raw = selection.get("products")
@@ -2939,6 +2940,9 @@ def _structured_target_product(source, target_pid, fields, selection_digest,
     declared = _declaration_fields(source)
     changed = sorted(fields) != declared
     product = copy.deepcopy(source)
+    # Discovery counts cover the entire source snapshot. A selected package
+    # has its own verified row counts and the 1.0 product binding is closed.
+    product.pop("published_record_count", None)
     declaration = copy.deepcopy(source["declaration"])
     contracts = copy.deepcopy(source["contracts"])
     if changed:
@@ -3354,9 +3358,9 @@ _STRUCTURED_PID = re.compile(r"^p_[a-zA-Z0-9_.:-]{1,120}$")
 def _structured_safe_rel(rel, *, prefixes=None, allow_empty=False):
     if not isinstance(rel, str) or (not rel and not allow_empty):
         raise ValueError("STRUCTURED_PATH_INVALID:" + repr(rel))
-    if "\\" in rel or rel.startswith("/") or re.match(r"^[A-Za-z]:", rel):
+    if "\\" in rel or rel.startswith("/") or re.search(r"(?:^|/)[A-Za-z]:|[\x00-\x1f\x7f-\x9f]", rel):
         raise ValueError("STRUCTURED_PATH_INVALID:" + rel)
-    parts = PurePosixPath(rel).parts
+    parts = rel.split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise ValueError("STRUCTURED_PATH_INVALID:" + rel)
     if prefixes and not any(rel == prefix or rel.startswith(prefix if prefix.endswith("/") else prefix + "/")
@@ -3367,6 +3371,8 @@ def _structured_safe_rel(rel, *, prefixes=None, allow_empty=False):
 
 def _structured_safe_target(root, rel, *, prefixes=None):
     _structured_safe_rel(rel, prefixes=prefixes)
+    if _is_bundle_link(Path(root)):
+        raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + rel)
     root = Path(root).resolve()
     target = (root / rel).resolve()
     if target != root and root not in target.parents:
@@ -3374,9 +3380,13 @@ def _structured_safe_target(root, rel, *, prefixes=None):
     cursor = root
     for part in PurePosixPath(rel).parts:
         cursor = cursor / part
-        if cursor.exists() and cursor.is_symlink():
+        if _is_bundle_link(cursor):
             raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + rel)
     return target
+
+
+def _read_structured_record(bundle, record):
+    return verified_object_bytes(bundle, record["sha256"])
 
 
 def _structured_record_allowed(rel):
@@ -3604,12 +3614,34 @@ def _json_bytes(raw):
         raise ValueError("STRUCTURED_JSON_INVALID") from exc
 
 
-def _verify_structured_bundle(bundle):
+def _structured_storage_directory(bundle, descriptor):
+    sid = descriptor["target_snapshot_id"]
+    expected = [{"snapshot_id": sid, "directory": "storage/" + sid}]
+    if descriptor.get("storage_packages") != expected:
+        raise ValueError("STRUCTURED_STORAGE_PACKAGE_INVALID")
+    directory = _structured_safe_target(bundle, expected[0]["directory"])
+    inventory = _json(directory / "inventory.json")
+    # The lower transfer verifier opens objects by hash. Validate the physical
+    # names before delegation, including metadata-only object references.
+    for item in inventory["objects"] + inventory["metadata"]:
+        if not isinstance(item.get("sha256"), str) or not _STRUCTURED_HEX.fullmatch(item["sha256"]):
+            raise ValueError("STRUCTURED_OBJECT_ID_INVALID")
+    return directory
+
+
+def _structured_descriptor(bundle, expected_sha256=None):
+    raw = (bundle / "financial_bundle.json").read_bytes()
+    if expected_sha256 is not None and "sha256:" + sha(raw) != expected_sha256:
+        raise ValueError("BUNDLE_DESCRIPTOR_DIGEST_MISMATCH")
+    return _json_bytes(raw)
+
+
+def _verify_structured_bundle(bundle, expected_sha256=None):
     bundle = Path(bundle)
     for path in bundle.rglob("*"):
-        if path.is_symlink():
+        if _is_bundle_link(path):
             raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + path.relative_to(bundle).as_posix())
-    descriptor = _json(bundle / "financial_bundle.json")
+    descriptor = _structured_descriptor(bundle, expected_sha256)
     if (descriptor.get("format_version") != STRUCTURED_BUNDLE_FORMAT
             or descriptor.get("profile") != STRUCTURED_PROFILE
             or descriptor.get("mode") != "full"):
@@ -3641,12 +3673,12 @@ def _verify_structured_bundle(bundle):
         raise ValueError("STRUCTURED_SOURCE_PERMISSION_CLAIM")
     if len(descriptor.get("storage_packages", [])) != 1:
         raise ValueError("STRUCTURED_STORAGE_PACKAGE_INVALID")
-    package = descriptor["storage_packages"][0]
-    directory = _structured_safe_target(bundle, package["directory"])
+    directory = _structured_storage_directory(bundle, descriptor)
     checked = verify_package(directory)
     if not checked["ok"] or checked["transfer"]["target_snapshot_id"] != target_sid:
         raise ValueError("BUNDLE_STORAGE_INTEGRITY_FAILED")
     seen_objects, seen_meta, seen_rels = set(), set(), set()
+    files = {}
     lineage_raw = None
     for obj in checked["inventory"]["objects"]:
         if not _STRUCTURED_HEX.match(str(obj.get("sha256"))) or obj["sha256"] in seen_objects:
@@ -3661,6 +3693,7 @@ def _verify_structured_bundle(bundle):
             if rel in seen_rels:
                 raise ValueError("STRUCTURED_DUPLICATE_ALIAS:" + rel)
             seen_rels.add(rel)
+            files[rel] = raw
             if not rel.endswith(".parquet"):
                 raise ValueError("STRUCTURED_OBJECT_ROLE_UNKNOWN:" + rel)
             roles.add("parquet")
@@ -3680,11 +3713,11 @@ def _verify_structured_bundle(bundle):
         raw = (directory / "objects" / meta["sha256"]).read_bytes()
         if sha(raw) != meta["sha256"]:
             raise ValueError("STRUCTURED_METADATA_HASH_MISMATCH")
+        files[rel] = raw
         if rel == f"catalog/lineage/{target_sid}.json":
             lineage_raw = raw
         _structured_scan_bytes(rel, raw)
     snap_rel = f"catalog/snapshots/{target_sid}.json"
-    _, files = _package_files(directory)
     snap = _json_bytes(files[snap_rel])
     if snap.get("snapshot_id") != target_sid or snap.get("parent_snapshot_id") is not None:
         raise ValueError("STRUCTURED_TARGET_SNAPSHOT_INVALID")
@@ -3729,13 +3762,12 @@ def _verify_structured_bundle(bundle):
         raise ValueError("STRUCTURED_PRODUCT_SET_MISMATCH")
     catalog = {}
     for record in descriptor.get("records", []):
+        if not isinstance(record.get("sha256"), str) or not _STRUCTURED_HEX.fullmatch(record["sha256"]):
+            raise ValueError("STRUCTURED_RECORD_DIGEST_INVALID")
         rel = _structured_safe_rel(record["relative_path"])
         if not _structured_record_allowed(rel) or rel in catalog:
             raise ValueError("STRUCTURED_RECORD_PATH_NOT_ALLOWED:" + rel)
-        obj = _structured_safe_target(bundle, "objects/" + str(record["sha256"]))
-        if not obj.is_file() or obj.is_symlink() or sha_file(obj) != record["sha256"]:
-            raise ValueError("STRUCTURED_RECORD_MISSING:" + rel)
-        raw = obj.read_bytes()
+        raw = _read_structured_record(bundle, record)
         _structured_scan_bytes(rel, raw)
         catalog[rel] = raw
     expected_map, product_map, scope = _structured_verified(
@@ -3743,6 +3775,7 @@ def _verify_structured_bundle(bundle):
     descriptor["_verified_record_map"] = expected_map
     descriptor["_verified_product_map"] = product_map
     descriptor["_verified_bd_scope"] = scope
+    descriptor["_verified_package"] = checked
     _structured_scan_store(directory)
     if any(rel.startswith("evidence/") for rel in files):
         raise ValueError("BUNDLE_EXTERNAL_METADATA_FORBIDDEN:evidence/")
@@ -4022,9 +4055,31 @@ def _record_target_holdings(root, instance_id, snapshot_id, groups, bundle_ident
 
 
 
+def _require_detached_target(root):
+    from .state import COMPAT_FORMATS, StateStore
+    state = StateStore(root).read()
+    if state is None:
+        if not _target_store_uninitialized(root):
+            raise ValueError("BUNDLE_DESTINATION_EXISTS")
+    elif (state.get("format_version") not in COMPAT_FORMATS or state.get("writer_host") is not None
+          or state.get("active_head") is not None):
+        raise ValueError("WRITE_AUTHORITY_REQUIRED:target must be a detached bundle store")
+
+
+@contextmanager
+def _structured_target_lock(root, require_detached):
+    _structured_safe_target(root, "catalog/.writer.lock")
+    if require_detached:
+        _require_detached_target(root)  # Refuse before creating even the lock file.
+    with writer_lock(root):
+        if require_detached:
+            _require_detached_target(root)
+        yield
+
+
 def import_structured_bundle(bundle, destination, *, runtime_root,
                              protocol_root=None, caller_roles=None,
-                             interrupt_after=None, fault_hook=None):
+                             interrupt_after=None, fault_hook=None, expected_sha256=None, require_detached=False):
     """Open a structured package and bind its real target instance.
 
     A fresh destination is initialized once. An existing destination is accepted
@@ -4034,7 +4089,7 @@ def import_structured_bundle(bundle, destination, *, runtime_root,
     from .joint_state import reject_unsupported as reject_joint_operation
     reject_joint_operation(destination, "bundle")
     bundle, destination = Path(bundle), Path(destination)
-    descriptor = _verify_structured_bundle(bundle)
+    descriptor = _verify_structured_bundle(bundle, expected_sha256)
     roles = set(["read", "read_evidence"] if caller_roles is None else caller_roles)
     if "read" not in roles:
         raise PermissionError("WFD_READ_PERMISSION_REQUIRED")
@@ -4045,27 +4100,27 @@ def import_structured_bundle(bundle, destination, *, runtime_root,
     target_sid = descriptor["target_snapshot_id"]
     protocol_root = (Path(protocol_root) if protocol_root
                      else Path(__file__).resolve().parents[1] / "protocol")
-    marker = None
-    if destination.exists():
-        if destination.is_symlink() or not destination.is_dir():
-            raise ValueError("BUNDLE_DESTINATION_EXISTS")
-        marker = _load_target_import_marker(destination, descriptor["bundle_id"])
-        if marker is not None:
-            _target_marker_matches(marker, descriptor)
-        elif not _target_store_uninitialized(destination):
-            raise ValueError("BUNDLE_DESTINATION_EXISTS")
-    destination.mkdir(parents=True, exist_ok=True)
-    instance = resolve_target_instance(destination, create=True)
-    instance_id = instance["instance_id"]
-    if marker is not None and marker["instance_id"] != instance_id:
-        raise ValueError("STRUCTURED_TARGET_IDENTITY_CONFLICT")
-    marker = _write_target_import_marker(destination, descriptor, instance_id, "staging")
-    bundle_identity = _target_bundle_identity(descriptor)
-    engine = WFDDuckDBPrototype(destination, load_protocol_validator(protocol_root),
-                                runtime_root=Path(runtime_root), sandbox=False,
-                                writer_host=None)
-    status = "imported_structured_readable"
-    with writer_lock(destination):
+    with _structured_target_lock(destination, require_detached):
+        marker = None
+        if destination.exists():
+            if destination.is_symlink() or not destination.is_dir():
+                raise ValueError("BUNDLE_DESTINATION_EXISTS")
+            marker = _load_target_import_marker(destination, descriptor["bundle_id"])
+            if marker is not None:
+                _target_marker_matches(marker, descriptor)
+            elif not _target_store_uninitialized(destination):
+                raise ValueError("BUNDLE_DESTINATION_EXISTS")
+        destination.mkdir(parents=True, exist_ok=True)
+        instance = resolve_target_instance(destination, create=True)
+        instance_id = instance["instance_id"]
+        if marker is not None and marker["instance_id"] != instance_id:
+            raise ValueError("STRUCTURED_TARGET_IDENTITY_CONFLICT")
+        marker = _write_target_import_marker(destination, descriptor, instance_id, "staging")
+        bundle_identity = _target_bundle_identity(descriptor)
+        engine = WFDDuckDBPrototype(destination, load_protocol_validator(protocol_root),
+                                    runtime_root=Path(runtime_root), sandbox=False,
+                                    writer_host=None)
+        status = "imported_structured_readable"
         commit = destination / f"catalog/commits/{target_sid}.json"
         recovered = commit.is_file()
         if recovered:
@@ -4075,6 +4130,7 @@ def import_structured_bundle(bundle, destination, *, runtime_root,
         else:
             package = descriptor["storage_packages"][0]
             result = import_package(_path(bundle, package["directory"]), destination,
+                                    verified_inventory=descriptor["_verified_package"],
                                     interrupt_after=interrupt_after)
             if result["status"] == "interrupted":
                 return {
@@ -4097,13 +4153,13 @@ def import_structured_bundle(bundle, destination, *, runtime_root,
                 # A package exported from another target must not overwrite this
                 # target's own instance identity, import markers or holdings.
                 continue
-            target = destination / record["relative_path"]
-            raw = (bundle / "objects" / record["sha256"]).read_bytes()
+            target = _structured_safe_target(destination, record["relative_path"])
             if target.is_file():
                 if sha_file(target) != record["sha256"]:
                     raise ValueError("STRUCTURED_TARGET_RECORD_CONFLICT:"
                                      + record["relative_path"])
                 continue
+            raw = _read_structured_record(bundle, record)
             engine._write_immutable(record["relative_path"], raw)
         groups = _structured_snapshot_holding_groups(snapshot)
         acquired_at = _now()
@@ -4204,12 +4260,7 @@ def _structured_normalized_digest(selection_core):
     return "sha256:" + sha(canonical(body))
 
 
-def _structured_baseline_products(store, baseline_sid):
-    engine = WFDDuckDBPrototype(
-        Path(store), load_protocol_validator(Path(__file__).resolve().parents[1] / "protocol"),
-        runtime_root=Path(store).parent / (Path(store).name + "_delta_base_runtime"),
-        sandbox=False, writer_host=None)
-    snapshot = _bundle_snapshot(engine, baseline_sid)
+def _structured_baseline_products(snapshot):
     products = {}
     for entry in snapshot["files"]:
         product = entry["source_bundle"]["_wfd_product_bindings"][entry["output_key"]]["product"]
@@ -4217,7 +4268,7 @@ def _structured_baseline_products(store, baseline_sid):
         if source_pid in products:
             raise ValueError("STRUCTURED_BASELINE_PRODUCT_DUPLICATE:" + str(source_pid))
         products[source_pid] = {"product": product, "entry": entry}
-    return products, snapshot
+    return products
 
 
 def _structured_delta_record_map(descriptor, snap, files):
@@ -4328,7 +4379,7 @@ def _structured_validate_full_metadata(manifest, snap, commit, files, descriptor
     if snap["metadata_versions"] != []:
         raise ValueError("STRUCTURED_METADATA_FIELD_NOT_ALLOWED:metadata_versions")
     for entry in manifest["files"]:
-        _structured_validate_delta_entry(entry)
+        _structured_validate_delta_entry(entry, descriptor["source_dataset_id"])
     if canonical(manifest["files"]) != canonical(snap["files"]):
         raise ValueError("STRUCTURED_MANIFEST_SNAPSHOT_MISMATCH")
     _structured_exact_keys(commit, {"snapshot_id", "snapshot_file", "snapshot_sha256"},
@@ -4431,14 +4482,16 @@ def _structured_validate_delta_descriptor(descriptor):
     for key in ("missing_objects", "baseline_reused_files"):
         for item in descriptor.get(key) or []:
             _structured_exact_keys(item, {"relative_path", "sha256"}, key)
+            _structured_safe_rel(item["relative_path"], prefixes=("observations/", "foundation/", "events/"))
     for item in descriptor.get("storage_packages") or []:
         _structured_exact_keys(item, {"snapshot_id", "directory"}, "storage_package")
     _structured_exact_keys(descriptor.get("baseline") or {},
                            {"target_snapshot_id", "normalized_selection_digest"}, "baseline")
 
 
-def _structured_validate_delta_entry(entry):
+def _structured_validate_delta_entry(entry, dataset_id):
     _structured_exact_keys(entry, _STRUCTURED_ENTRY_KEYS, "entry")
+    _structured_safe_rel(entry["file_relpath"], prefixes=("observations/", "foundation/", "events/"))
     carrier = entry.get("source_bundle")
     _structured_exact_keys(carrier, _STRUCTURED_ALLOWED_CARRIER, "carrier")
     if entry.get("evidence_refs") != []:
@@ -4453,6 +4506,12 @@ def _structured_validate_delta_entry(entry):
         raise ValueError("STRUCTURED_METADATA_FIELD_NOT_ALLOWED:source_admission")
     product = binding.get("product")
     _structured_exact_keys(product, _STRUCTURED_PRODUCT_KEYS, "product")
+    if product["dataset_id"] != dataset_id or product["bundle_target"]["source_dataset_id"] != dataset_id:
+        raise ValueError("STRUCTURED_PRODUCT_DATASET_MISMATCH")
+    _structured_exact_keys(product["contract_refs"], set(_STRUCTURED_ROLE_BODY), "contract_refs")
+    for ref in (product["definition_ref"], product["contract_bundle_ref"], *product["contract_refs"].values()):
+        if not isinstance(ref, dict) or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(ref.get("digest"))):
+            raise ValueError("STRUCTURED_CONTRACT_DIGEST_INVALID")
     if product.get("product_id") != entry["product_id"]:
         raise ValueError("STRUCTURED_PRODUCT_BINDING_MISMATCH")
     if canonical(entry.get("definition")) != canonical(product.get("declaration"))             or canonical(entry.get("subject")) != canonical(product.get("subject")):
@@ -4486,7 +4545,7 @@ def _structured_validate_delta_metadata(manifest, snap, commit, files, descripto
     if snap["metadata_versions"] != []:
         raise ValueError("STRUCTURED_METADATA_FIELD_NOT_ALLOWED:metadata_versions")
     for entry in manifest["files"]:
-        _structured_validate_delta_entry(entry)
+        _structured_validate_delta_entry(entry, descriptor["source_dataset_id"])
     if canonical(manifest["files"]) != canonical(snap["files"]):
         raise ValueError("STRUCTURED_MANIFEST_SNAPSHOT_MISMATCH")
     _structured_exact_keys(commit, {"snapshot_id", "snapshot_file", "snapshot_sha256"},
@@ -4537,8 +4596,7 @@ def _structured_delta_scan_package(bundle, descriptor):
         raise ValueError("STRUCTURED_READ_DEPENDENCY_NOT_IMPLEMENTED")
     if descriptor.get("source_permission_required") is not False or descriptor.get("bd_required") is not False:
         raise ValueError("STRUCTURED_SOURCE_PERMISSION_CLAIM")
-    package = descriptor["storage_packages"][0]
-    directory = _structured_safe_target(bundle, package["directory"])
+    directory = _structured_storage_directory(bundle, descriptor)
     checked = verify_package(directory)
     if not checked["ok"] or checked["transfer"]["target_snapshot_id"] != descriptor["target_snapshot_id"]:
         raise ValueError("BUNDLE_STORAGE_INTEGRITY_FAILED")
@@ -4625,8 +4683,12 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
     destination = Path(destination)
     if destination.exists():
         raise ValueError("BUNDLE_DESTINATION_EXISTS")
-    baseline_products, baseline_snap = _structured_baseline_products(
-        baseline_store, baseline_snapshot_id)
+    base_engine = WFDDuckDBPrototype.open_existing(
+        Path(baseline_store), service.engine.validator, runtime_root=service.engine.runtime_root,
+        read_only=True, sandbox=False)
+    baseline_snap = _bundle_snapshot(base_engine, baseline_snapshot_id)
+    baseline_products = _structured_baseline_products(baseline_snap)
+    base_service = WFDDataOnlyService(base_engine, caller_roles={"read"}, caller_id="structured-delta-base")
     baseline_receipt = baseline_snap.get("receipt") or {}
     baseline_selection = (baseline_receipt.get("normalized_selection_digest")
                           or baseline_receipt.get("selection_digest"))
@@ -4662,13 +4724,6 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
                 raise ValueError("STRUCTURED_DELTA_CONTRACT_CHANGED:" + source["product_id"])
             rows = service.read(source["product_id"], snapshot_id=snapshot_id,
                                 include_history=False)["rows"]
-            base_engine = WFDDuckDBPrototype(
-                Path(baseline_store), load_protocol_validator(
-                    Path(__file__).resolve().parents[1] / "protocol"),
-                runtime_root=Path(baseline_store).parent / (Path(baseline_store).name + "_delta_base_read"),
-                sandbox=False, writer_host=None)
-            base_service = WFDDataOnlyService(base_engine, caller_roles={"read"},
-                                              caller_id="structured-delta-base")
             base_rows = {item2["record_id"]: item2["row"] for item2 in base_service.read(
                 base_product["product_id"], snapshot_id=baseline_snapshot_id)["rows"]}
             base_versions = {v["logical_key"]: v for v in (
@@ -4862,13 +4917,8 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
         full_dir = destination / "storage" / target_sid
         export_package(root, target_sid, full_dir)
         checked, full_files = _package_files(full_dir)
-        baseline_engine = WFDDuckDBPrototype(
-            Path(baseline_store), load_protocol_validator(
-                Path(__file__).resolve().parents[1] / "protocol"),
-            runtime_root=Path(baseline_store).parent / (Path(baseline_store).name + "_delta_base_runtime"),
-            sandbox=False, writer_host=None)
         baseline_entries = {e["file_relpath"]: e["file_sha256"].split(":")[-1]
-                            for e in _bundle_snapshot(baseline_engine, baseline_snapshot_id)["files"]}
+                            for e in baseline_snap["files"]}
         reused, missing_objects = [], []
         objects = []
         for obj in checked["inventory"]["objects"]:
@@ -4899,7 +4949,7 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
             "ancestry": [baseline_snapshot_id, target_sid], "partial": True,
             "baseline_snapshot_id": baseline_snapshot_id,
         }
-        (partial / "inventory.json").write_text(json.dumps(inventory, ensure_ascii=False, indent=2) + "\n")
+        (partial / "inventory.json").write_text(json.dumps(inventory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         transfer = {"format_version": "wfd.transfer/1.0",
                     "transfer_id": "structured_delta_" + target_sid,
                     "created_at_utc": _now(), "dataset_id": source_dataset_id,
@@ -4913,12 +4963,12 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
                                "snapshot_id": snapshot_id,
                                "files_root": checked["inventory"].get("files_root"),
                                "writer_host": None, "writer_epoch": 0}}
-        (partial / "transfer.json").write_text(json.dumps(transfer, ensure_ascii=False, indent=2) + "\n")
+        (partial / "transfer.json").write_text(json.dumps(transfer, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         lines = []
         for path in sorted(partial.rglob("*")):
             if path.is_file() and path.name != "CHECKSUMS.sha256":
                 lines.append(f"{sha_file(path)}  {path.relative_to(partial).as_posix()}")
-        (partial / "CHECKSUMS.sha256").write_text("\n".join(lines) + "\n")
+        (partial / "CHECKSUMS.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
         descriptor = {
             "format_version": STRUCTURED_BUNDLE_FORMAT, "profile": STRUCTURED_PROFILE,
             "mode": "delta", "delta_format": STRUCTURED_DELTA_FORMAT,
@@ -4978,13 +5028,16 @@ def export_structured_delta_bundle(service, product_ids, destination, *, snapsho
                for p in sorted(destination.rglob("*"))
                if p.is_file() and p.name != "CHECKSUMS.json"]
         (destination / "CHECKSUMS.json").write_bytes(canonical(inv))
-        _verify_structured_delta_bundle(destination)
+        _verify_structured_delta_bundle(destination, baseline_store=baseline_store)
         return descriptor
 
 
-def _verify_structured_delta_bundle(bundle):
+def _verify_structured_delta_bundle(bundle, expected_sha256=None, *, baseline_store=None):
     bundle = Path(bundle)
-    descriptor = _json(bundle / "financial_bundle.json")
+    for path in bundle.rglob("*"):
+        if _is_bundle_link(path):
+            raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + path.relative_to(bundle).as_posix())
+    descriptor = _structured_descriptor(bundle, expected_sha256)
     if (descriptor.get("format_version") != STRUCTURED_BUNDLE_FORMAT
             or descriptor.get("profile") != STRUCTURED_PROFILE
             or descriptor.get("mode") != "delta"):
@@ -5008,6 +5061,8 @@ def _verify_structured_delta_bundle(bundle):
     if selection_digest != descriptor.get("selection_digest"):
         raise ValueError("STRUCTURED_SELECTION_DIGEST_MISMATCH")
     baseline_sid = (descriptor.get("baseline") or {}).get("target_snapshot_id")
+    if not isinstance(baseline_sid, str) or not re.fullmatch(r"s_[0-9a-f]{24}", baseline_sid):
+        raise ValueError("STRUCTURED_BASELINE_ID_INVALID")
     target_sid = "s_" + sha(canonical([STRUCTURED_BUNDLE_FORMAT, "delta",
                                        selection_digest, baseline_sid,
                                        descriptor.get("target_state_digest")]))[:24]
@@ -5020,15 +5075,25 @@ def _verify_structured_delta_bundle(bundle):
     if "sha256:" + sha(canonical(descriptor.get("logical_state"))) != descriptor.get("logical_state_digest"):
         raise ValueError("STRUCTURED_LOGICAL_STATE_MISMATCH")
     snap, products, checked, files = _structured_delta_scan_package(bundle, descriptor)
-    _structured_delta_record_map(descriptor, snap, files)
+    reused = {item["relative_path"]: item["sha256"] for item in descriptor["baseline_reused_files"]}
+    if reused:
+        if baseline_store is None:
+            raise ValueError("STRUCTURED_BASELINE_UNAVAILABLE:" + baseline_sid)
+        base = WFDDuckDBPrototype.open_existing(
+            Path(baseline_store), load_protocol_validator(Path(__file__).resolve().parents[1] / "protocol"),
+            runtime_root=Path(baseline_store).with_name(Path(baseline_store).name + "_delta_read"),
+            read_only=True, sandbox=False)
+        baseline = _bundle_snapshot(base, baseline_sid)
+        original = {entry["file_relpath"]: entry["file_sha256"] for entry in baseline["files"]}
+        for rel, digest in reused.items():
+            if rel in files or original.get(rel) != digest:
+                raise ValueError("STRUCTURED_BASELINE_OBJECT_MISSING:" + rel)
+            files[rel] = _structured_safe_target(baseline_store, rel).read_bytes()
     for entry in snap["files"]:
         rel = entry["file_relpath"]
-        if rel in files:
-            if sha(files[rel]) != entry["file_sha256"]:
-                raise ValueError("STRUCTURED_FILE_HASH_MISMATCH:" + entry["product_id"])
-        elif not any(item["relative_path"] == rel and item["sha256"] == entry["file_sha256"]
-                     for item in descriptor.get("baseline_reused_files", [])):
-            raise ValueError("STRUCTURED_BASELINE_OBJECT_MISSING:" + rel)
+        if rel not in files or sha(files[rel]) != entry["file_sha256"]:
+            raise ValueError("STRUCTURED_FILE_HASH_MISMATCH:" + entry["product_id"])
+    _structured_delta_record_map(descriptor, snap, files)
     if not descriptor.get("missing_objects"):
         raise ValueError("STRUCTURED_DELTA_NO_MISSING_OBJECTS")
     _structured_scan_json(descriptor, "financial_bundle")
@@ -5037,12 +5102,12 @@ def _verify_structured_delta_bundle(bundle):
 
 def apply_structured_delta_bundle(bundle, target_store, *, runtime_root,
                                   caller_roles=None, protocol_root=None,
-                                  interrupt_after=None):
+                                  interrupt_after=None, expected_sha256=None, require_detached=False):
     """Apply a structured delta to an existing target; old snapshot remains readable."""
     from .joint_state import reject_unsupported as reject_joint_operation
     reject_joint_operation(target_store, "bundle")
     bundle, target_store = Path(bundle), Path(target_store)
-    descriptor = _verify_structured_delta_bundle(bundle)
+    descriptor = _verify_structured_delta_bundle(bundle, expected_sha256, baseline_store=target_store)
     roles = set(["read", "read_evidence"] if caller_roles is None else caller_roles)
     if "read" not in roles:
         raise PermissionError("WFD_READ_PERMISSION_REQUIRED")
@@ -5100,33 +5165,33 @@ def apply_structured_delta_bundle(bundle, target_store, *, runtime_root,
                 if not path.is_file() or sha_file(path) != entry["file_sha256"]:
                     raise ValueError("STRUCTURED_DEPENDENCY_MISSING:" + rel)
     bundle_id = descriptor["bundle_id"]
-    record_path = target_store / f"catalog/bundles/{bundle_id}.json"
-    record_path.parent.mkdir(parents=True, exist_ok=True)
-    prior_record = _json(record_path) if record_path.is_file() else None
-    commit_path = target_store / f"catalog/commits/{descriptor['target_snapshot_id']}.json"
-    legacy_applied = commit_path.is_file() and (
-        not isinstance(prior_record, dict) or not prior_record.get("instance_id"))
-    instance_id = None
-    instance_source = None
-    if not legacy_applied:
-        instance = resolve_target_instance(target_store, create=True)
-        instance_id = instance["instance_id"]
-        instance_source = instance["source"]
-    active_before = (_json(target_store / "catalog/state.json").get("active_head")
-                     if (target_store / "catalog/state.json").is_file() else None)
-    staging = {"format_version": "wfd.structured-delta/1.0", "bundle_id": bundle_id,
-               "kind": "structured_delta", "state": "staging",
-               "baseline": copy.deepcopy(descriptor["baseline"]),
-               "target_snapshot_id": descriptor["target_snapshot_id"],
-               "selection_digest": descriptor["selection_digest"],
-               "logical_state_digest": descriptor["logical_state_digest"],
-               "instance_id": instance_id,
-               "verified_objects": descriptor["missing_objects"],
-               "created_at_utc": _now(),
-               "target_instance_held_time": "recorded per record at target import; see held_stages"}
-    record_path.write_bytes(canonical(staging))
-    bundle_identity = _target_bundle_identity(descriptor)
-    with writer_lock(target_store):
+    with _structured_target_lock(target_store, require_detached):
+        record_path = target_store / f"catalog/bundles/{bundle_id}.json"
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        prior_record = _json(record_path) if record_path.is_file() else None
+        commit_path = target_store / f"catalog/commits/{descriptor['target_snapshot_id']}.json"
+        legacy_applied = commit_path.is_file() and (
+            not isinstance(prior_record, dict) or not prior_record.get("instance_id"))
+        instance_id = None
+        instance_source = None
+        if not legacy_applied:
+            instance = resolve_target_instance(target_store, create=True)
+            instance_id = instance["instance_id"]
+            instance_source = instance["source"]
+        active_before = (_json(target_store / "catalog/state.json").get("active_head")
+                         if (target_store / "catalog/state.json").is_file() else None)
+        staging = {"format_version": "wfd.structured-delta/1.0", "bundle_id": bundle_id,
+                   "kind": "structured_delta", "state": "staging",
+                   "baseline": copy.deepcopy(descriptor["baseline"]),
+                   "target_snapshot_id": descriptor["target_snapshot_id"],
+                   "selection_digest": descriptor["selection_digest"],
+                   "logical_state_digest": descriptor["logical_state_digest"],
+                   "instance_id": instance_id,
+                   "verified_objects": descriptor["missing_objects"],
+                   "created_at_utc": _now(),
+                   "target_instance_held_time": "recorded per record at target import; see held_stages"}
+        record_path.write_bytes(canonical(staging))
+        bundle_identity = _target_bundle_identity(descriptor)
         commit = target_store / f"catalog/commits/{descriptor['target_snapshot_id']}.json"
         if commit.is_file():
             engine = WFDDuckDBPrototype(target_store, load_protocol_validator(
@@ -5328,25 +5393,6 @@ def _structured_reference_rows(service, product, fields, subject, business_range
                               "record_version": revision.get("revision_id"),
                               "row": copy.deepcopy(row)})
     return bindings, normalized, selected_rows
-
-
-def _structured_reference_path(root, rel):
-    if not isinstance(rel, str) or not rel or "\\" in rel or rel.startswith("/") \
-            or re.match(r"^[A-Za-z]:", rel):
-        raise ValueError("STRUCTURED_PATH_INVALID:" + repr(rel))
-    parts = PurePosixPath(rel).parts
-    if any(part in {"", ".", ".."} for part in parts):
-        raise ValueError("STRUCTURED_PATH_INVALID:" + rel)
-    root = Path(root).resolve()
-    target = (root / rel).resolve()
-    if target != root and root not in target.parents:
-        raise ValueError("STRUCTURED_PATH_ESCAPE:" + rel)
-    cursor = root
-    for part in parts:
-        cursor = cursor / part
-        if cursor.exists() and cursor.is_symlink():
-            raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + rel)
-    return target
 
 
 def export_structured_reference_bundle(service, product_ids, destination, *, snapshot_id,
@@ -5626,12 +5672,12 @@ def _structured_validate_reference_external(obj, descriptor):
         raise ValueError("STRUCTURED_REFERENCE_ROW_DIGEST_MISMATCH")
 
 
-def _verify_structured_reference_bundle(bundle):
+def _verify_structured_reference_bundle(bundle, expected_sha256=None):
     bundle = Path(bundle)
     for path in bundle.rglob("*"):
-        if path.is_symlink():
+        if _is_bundle_link(path):
             raise ValueError("STRUCTURED_SYMLINK_FORBIDDEN:" + path.relative_to(bundle).as_posix())
-    descriptor = _json(bundle / "financial_bundle.json")
+    descriptor = _structured_descriptor(bundle, expected_sha256)
     if (descriptor.get("format_version") != STRUCTURED_BUNDLE_FORMAT
             or descriptor.get("profile") != STRUCTURED_PROFILE
             or descriptor.get("mode") != "reference"
@@ -5705,7 +5751,7 @@ def _verify_structured_reference_bundle(bundle):
     listed = set()
     for item in inventory:
         rel = item["path"]
-        path = _structured_reference_path(bundle, rel)
+        path = _structured_safe_target(bundle, rel)
         if not path.is_file() or path.is_symlink() or path.stat().st_size != item["size"] \
                 or sha_file(path) != item["sha256"] or rel in listed:
             raise ValueError("BUNDLE_INTEGRITY_FAILED:" + rel)
@@ -5834,50 +5880,58 @@ class StructuredReferenceHandle:
 
 def register_structured_reference_bundle(bundle, target_store, *, resolvers,
                                          runtime_root, protocol_root=None,
-                                         caller_roles=None):
+                                         caller_roles=None, expected_sha256=None, require_detached=False):
     """Register a reference record; target store holds metadata only, no snapshot."""
     from .joint_state import reject_unsupported as reject_joint_operation
     reject_joint_operation(target_store, "bundle")
     bundle, target_store = Path(bundle), Path(target_store)
-    descriptor = _verify_structured_reference_bundle(bundle)
+    descriptor = _verify_structured_reference_bundle(bundle, expected_sha256)
     roles = set(["read", "read_evidence"] if caller_roles is None else caller_roles)
     if "read" not in roles:
         raise PermissionError("WFD_READ_PERMISSION_REQUIRED")
-    target_store.mkdir(parents=True, exist_ok=True)
-    protocol_root = Path(protocol_root) if protocol_root else Path(__file__).resolve().parents[1] / "protocol"
-    engine = WFDDuckDBPrototype(target_store, load_protocol_validator(protocol_root),
-                                runtime_root=Path(runtime_root), sandbox=False, writer_host=None)
-    active_before = (engine.state.read() or {}).get("active_head")
-    handle = StructuredReferenceHandle(target_store, descriptor, resolvers, roles)
-    status = handle.status()
-    record = {
-        "format_version": "wfd.structured-reference-registration/1.0",
-        "profile": STRUCTURED_PROFILE,
-        "reference_format": STRUCTURED_REFERENCE_FORMAT,
-        "reference_id": descriptor["reference_id"],
-        "descriptor_sha256": "sha256:" + sha(canonical(descriptor)),
-        "selection_digest": descriptor["selection_digest"],
-        "source_dataset_id": descriptor["source_dataset_id"],
-        "source_snapshot_id": descriptor["source_snapshot_id"],
-        "external_objects": descriptor["external_objects"],
-        "readable": status["readable"],
-        "read_self_contained": False,
-        "source_permission_required": True,
-        "bd_required": False,
-        "dependency_gaps": status["dependency_gaps"],
-        "proof": status["proof"],
-        "registered_at_utc": _now(),
-        "target_instance_held_time": "unknown; P4a2 not implemented",
-        "active_head": active_before,
-        "write_authority_granted": False,
-    }
-    rel = f"catalog/bundles/{descriptor['reference_id']}.json"
-    target_path = _structured_reference_path(target_store, rel)
-    body = canonical(record)
-    already = False
-    with writer_lock(target_store):
+    with _structured_target_lock(target_store, require_detached):
+        target_store.mkdir(parents=True, exist_ok=True)
+        protocol_root = Path(protocol_root) if protocol_root else Path(__file__).resolve().parents[1] / "protocol"
+        engine = WFDDuckDBPrototype(target_store, load_protocol_validator(protocol_root),
+                                    runtime_root=Path(runtime_root), sandbox=False, writer_host=None)
+        active_before = (engine.state.read() or {}).get("active_head")
+        handle = StructuredReferenceHandle(target_store, descriptor, resolvers, roles)
+        status = handle.status()
+        record = {
+            "format_version": "wfd.structured-reference-registration/1.0",
+            "profile": STRUCTURED_PROFILE,
+            "reference_format": STRUCTURED_REFERENCE_FORMAT,
+            "reference_id": descriptor["reference_id"],
+            "descriptor_sha256": "sha256:" + sha(canonical(descriptor)),
+            "selection_digest": descriptor["selection_digest"],
+            "source_dataset_id": descriptor["source_dataset_id"],
+            "source_snapshot_id": descriptor["source_snapshot_id"],
+            "external_objects": descriptor["external_objects"],
+            "readable": status["readable"],
+            "read_self_contained": False,
+            "source_permission_required": True,
+            "bd_required": False,
+            "dependency_gaps": status["dependency_gaps"],
+            "proof": status["proof"],
+            "registered_at_utc": _now(),
+            "target_instance_held_time": "unknown; P4a2 not implemented",
+            "active_head": active_before,
+            "write_authority_granted": False,
+        }
+        rel = f"catalog/bundles/{descriptor['reference_id']}.json"
+        target_path = _structured_safe_target(target_store, rel)
+        body = canonical(record)
+        already = False
         if target_path.exists():
-            if target_path.is_symlink() or target_path.read_bytes() != body:
+            if target_path.is_symlink():
+                raise ValueError("STRUCTURED_REFERENCE_IDENTITY_CONFLICT")
+            existing = _json(target_path)
+            # Compare every immutable registration field against this fixed
+            # read, using the original registration clock on a retry.
+            registered = existing.get("registered_at_utc")
+            if not isinstance(registered, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", registered):
+                raise ValueError("STRUCTURED_REFERENCE_IDENTITY_CONFLICT")
+            if existing != {**record, "registered_at_utc": registered}:
                 raise ValueError("STRUCTURED_REFERENCE_IDENTITY_CONFLICT")
             already = True
         else:

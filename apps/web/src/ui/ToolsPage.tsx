@@ -13,6 +13,12 @@ import { setWorkspaceObject } from './workspace-context';
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 
+const categories = {
+  market: ['行情指标', 'Market indicators'], financial: ['财务', 'Financial'],
+  adjustment: ['复权', 'Adjustments'], statistics: ['统计', 'Statistics'], utility: ['工具', 'Utilities'],
+} as const;
+const categoryIds = Object.keys(categories) as (keyof typeof categories)[];
+
 function isTool(value: unknown): value is ToolLibraryTool {
   return isRecord(value) && typeof value.id === 'string' && value.id.length > 0
     && typeof value.title === 'string' && typeof value.description === 'string'
@@ -21,11 +27,15 @@ function isTool(value: unknown): value is ToolLibraryTool {
     && Array.isArray(value.parameters) && value.parameters.every(parameter => isRecord(parameter)
       && typeof parameter.key === 'string' && typeof parameter.label === 'string'
       && [parameter.defaultValue, parameter.min, parameter.max].every(number => typeof number === 'number' && Number.isFinite(number)))
+    && (value.category === undefined || typeof value.category === 'string' && Object.hasOwn(categories, value.category))
+    && (value.executor === undefined || value.executor === 'python' || value.executor === 'typescript')
     && (value.sources === undefined || strings(value.sources))
     && strings(value.outputFields) && strings(value.limitations)
     && (value.requiredInputs === undefined || strings(value.requiredInputs))
     && (value.missing === undefined || strings(value.missing))
     && (value.definition === undefined || isRecord(value.definition) && Array.isArray(value.definition.formula)
+      && (value.definition.semantics === undefined || Array.isArray(value.definition.semantics)
+        && value.definition.semantics.every(item => isRecord(item) && typeof item.key === 'string' && typeof item.value === 'string'))
       && (value.definition.products === undefined || Array.isArray(value.definition.products) && value.definition.products.every(product => isRecord(product) && ['id', 'label', 'configurationId', 'note'].every(key => typeof product[key] === 'string')))
       && value.definition.formula.every(line => isRecord(line) && typeof line.output === 'string'
         && typeof line.expression === 'string' && (line.note === undefined || typeof line.note === 'string')));
@@ -70,7 +80,11 @@ export function ToolsPage() {
   const view = catalog.state === 'loaded' ? catalog.view : null;
   const tools = view?.tools ?? [];
   const selection = useObjectSelection('xuan.tools.object', tools.map(tool => tool.id), catalog.state === 'loaded', 'first');
+  const search = query.trim().toLowerCase();
+  const visible = tools.filter(tool => [tool.title, tool.id, tool.description, ...(tool.requiredInputs ?? [])]
+    .some(text => text.toLowerCase().includes(search)));
   const selected = tools.find(tool => tool.id === selection.id);
+  const parameterText = selected?.definition?.semantics?.find(item => item.key === 'parameters')?.value;
   const selectedId = selected?.id;
   const selectedTitle = selected?.title;
   useEffect(() => {
@@ -78,34 +92,29 @@ export function ToolsPage() {
     return () => setWorkspaceObject(null);
   }, [selectedId, selectedTitle, selected, view]);
 
-  const search = query.trim().toLowerCase();
-  const visible = tools.filter(tool => [tool.title, tool.id, tool.description, ...(tool.requiredInputs ?? [])]
-    .some(text => text.toLowerCase().includes(search)));
   const labels: Record<ToolLibraryTool['status'], string> = {
     ready: words('准入可用', 'Eligible'),
     blocked: words('受阻', 'Blocked'),
     unavailable: words('不可用', 'Unavailable'),
   };
   const facts = selected ? [
+    ...(selected.executor ? [{ label: words('执行器', 'Executor'), value: selected.executor === 'python' ? 'Python' : 'TypeScript' }] : []),
     ...(selected.requiredInputs?.length ? [{ label: words('输入', 'Inputs'), value: selected.requiredInputs.join(words('、', ', ')) }] : []),
     ...(selected.outputFields.length ? [{ label: words('输出', 'Outputs'), value: selected.outputFields.join(words('、', ', ')) }] : []),
   ] : [];
   const formula = selected?.definition?.formula;
   const requirements = selected?.missing ?? [];
 
-  const categories = [
-    ['market', words('行情指标', 'Market indicators')], ['financial', words('财务', 'Financial')],
-    ['adjustment', words('复权', 'Adjustments')], ['statistics', words('统计', 'Statistics')],
-    ['utility', words('工具', 'Utilities')], ['other', words('其他算法', 'Other algorithms')],
+  const groups = [
+    ...categoryIds.map(id => [id, words(categories[id][0], categories[id][1])] as const),
+    ['other', words('其他算法', 'Other algorithms')],
   ] as const;
-  const knownCategories = new Set<string>(categories.map(([id]) => id));
-  const groupOf = (tool: ToolLibraryTool) => tool.category && knownCategories.has(tool.category) ? tool.category : 'other';
 
   return <div className="catalog-page">
     <CatalogSidebar label={words('算法目录', 'Algorithm catalog')} search={
       <PageSearch compact label={words('搜索算法、编号或用途', 'Search algorithms, IDs or purposes')} value={query} onChange={setQuery} />}>
-      {categories.map(([id, title]) => {
-        const rows = visible.filter(tool => groupOf(tool) === id);
+      {groups.map(([id, title]) => {
+        const rows = visible.filter(tool => (tool.category ?? 'other') === id);
         const expanded = !collapsed.has(id) || !!search;
         return rows.length > 0 && <CatalogCategory key={id} label={title} className="is-group"
           expanded={expanded} onClick={() => toggle(id)}>
@@ -157,13 +166,16 @@ export function ToolsPage() {
           {selected.parameters.length ? <DetailFacts items={selected.parameters.map(parameter => ({ label: parameter.key,
             value: parameter.min === parameter.max ? words(`固定 ${parameter.defaultValue}`, `Fixed ${parameter.defaultValue}`)
               : words(`默认 ${parameter.defaultValue}；范围 ${parameter.min}–${parameter.max}`, `Default ${parameter.defaultValue}; range ${parameter.min}–${parameter.max}`) }))} />
-            : <p className="object-detail-value">{words('未登记参数。', 'No registered parameters.')}</p>}
+            : !parameterText && <p className="object-detail-value">{words('未登记参数。', 'No registered parameters.')}</p>}
+          {parameterText && <p className="object-detail-value">{parameterText}</p>}
         </DetailSection>
         <DetailSection title={words('关联产物', 'Related products')} note={words('定义关联，不是实际产物回执', 'Definition links, not actual product receipts')}>
           {selected.definition?.products?.length ? <ul className="object-detail-value">{selected.definition.products.map(product => <li key={product.id}>{product.label} · {product.configurationId} · {product.note}</li>)}</ul>
             : <p className="object-detail-value">{words('目录未登记产物关联；实际产物需按任务核对。', 'No product links are registered in this catalog; actual products require task evidence.')}</p>}
         </DetailSection>
         <DetailSection title={words('准入与执行状态', 'Eligibility and execution')}>
+          <p className="object-detail-value">{words('本页只读。先由 AGENTS 通过 algorithms.capabilities 发现固定 WFD 快照的产品与字段，再按契约调用 algorithms.calculate。',
+            'This catalog is read-only. AGENTS discovers products and fields in a fixed WFD snapshot with algorithms.capabilities before calling algorithms.calculate.')}</p>
           <p className="object-detail-value">{words('顶部状态仅为当前准入；本页未读取执行回执，不能据此判定已运行或成功。', 'The header shows eligibility only. This page has not read execution receipts and cannot establish that a run occurred or succeeded.')}</p>
         </DetailSection>
       </>}

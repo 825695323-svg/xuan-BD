@@ -16,7 +16,7 @@ from datetime import datetime
 from .duckdb_sdk import canonical, sha, eligibility_at
 
 
-_TIME_SCHEMA = json.loads((Path(__file__).resolve().parents[1] / 'protocol/schemas/wfd-common.schema.json').read_text())['$defs']['TimeWithPrecision']
+_TIME_SCHEMA = json.loads((Path(__file__).resolve().parents[1] / 'protocol/schemas/wfd-common.schema.json').read_text(encoding='utf-8'))['$defs']['TimeWithPrecision']
 _TIME_VALIDATOR = Draft202012Validator(_TIME_SCHEMA)
 
 

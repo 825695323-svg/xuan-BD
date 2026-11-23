@@ -68,6 +68,7 @@ test('source manifest deduplicates signed artifacts and reports roles without ex
     assert.equal(result.items[1].suggestedDisposition, 'archive-evidence');
     assert.equal(result.items[2].suggestedDisposition, 'retain-lightweight-source-locator');
     assert.equal(result.items[0].nextAction, 'artifact.archive');
+    assert.equal(result.items[0].returnUrl, null);
     assert.doesNotMatch(JSON.stringify(result), /private-do-not-share/u);
     const inspectJob = f.tasks.create({ title: 'inspect after manifest', runtimeId: 'direct', action: 'artifact.inspect',
       args: { sourceTaskId: f.task.id, fileRefId: f.ids[0]! }, ownerRole: 'service', requestId: randomUUID() });
@@ -78,13 +79,15 @@ test('source manifest deduplicates signed artifacts and reports roles without ex
       '只读清单任务不能因展示文件编号而创建虚假的内容消费关系');
     const ref = f.files.getRef(f.ids[0]!);
     const sha = createHash('sha256').update(Buffer.from('data-0')).digest('hex');
-    f.database.connection.prepare('INSERT INTO artifact_archive_receipts VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+    const viewUrl = 'https://pan.baidu.com/disk/main#/index?category=all';
+    f.database.connection.prepare('INSERT INTO artifact_archive_receipts(source_task_id,file_ref_id,file_version,sha256,byte_length,topic,purpose,target_path,binding_json,remote_id,state,created_at,return_url) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .run(f.task.id, ref.id, ref.version, sha, ref.size, '资讯', '来源原件',
-        '/apps/bdpan/证据盘/资讯/来源原件/archive.dat', '{}', '123456', 'confirmed', Date.now());
+        '/apps/bdpan/证据盘/资讯/来源原件/archive.dat', '{}', '123456', 'confirmed', Date.now(), viewUrl);
     const second = await f.call(f.task.id);
     const item = (second.result!.data as any).items[0];
     assert.equal(item.archiveState, 'confirmed');
     assert.equal(item.archiveEvidence, 'remote_name_size_id_only');
+    assert.equal(item.returnUrl, viewUrl);
     assert.equal(item.nextAction, 'artifact.inspect');
   } finally { await f.close(); }
 });

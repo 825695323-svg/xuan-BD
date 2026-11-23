@@ -10,6 +10,7 @@ import { acquireAuthority, fileCapability } from '../../platform/runtime/file-wo
 import type { ModelTaskOrigin } from '../agent/model-tools.js';
 import type { BackendInput } from '../../contracts/backend.js';
 import type { WorkspaceServices } from '../../contracts/workspace-services.js';
+import { SOURCE_DOWNLOAD_ACTIONS, readSourceReceiptFromTask, type AdapterReceiptEvidence } from './endpoint-adapter-registry.js';
 import { acceptWorkspaceMaterial, MATERIAL_CUSTODY_LIMIT } from './accept-material.js';
 import type { MaterialCategory } from './materials/contracts.js';
 import { createMediaPluginRegistrations, mediaPluginCatalog, type MaterialMediaAdapter } from './materials/plugins.js';
@@ -19,6 +20,7 @@ import { isCaptchaGateURL } from '../../platform/capabilities/browser/raw-page.j
 import { cacheUrl, parseWerssFeed, WERSS_CACHE_LIMIT, WERSS_PROJECTION_VERSION } from '../../plugins/api-sources/providers/werss/cache.js';
 import { wechatArticleUrl } from '../../plugins/api-sources/providers/wechat/script.js';
 import { WECHAT_EXTRACT_SHA256 } from '../../platform/config/source-settings.js';
+import { cloudPath, CLOUD_ROOT } from '../../plugins/capture-sources/baidu-drive/contract.js';
 
 export interface ConversationMaterialOptions {
   database: CoreDatabase;
@@ -29,6 +31,14 @@ export interface ConversationMaterialOptions {
   assertPath(path: string): void;
   /** 仅受信宿主提供组件；采用惰性绑定避免改写任务身份或构造第二个运行时。 */
   mediaAdapters?: () => readonly MaterialMediaAdapter[];
+}
+type PersonalSourceOriginal = { taskId: string; evidence: AdapterReceiptEvidence };
+function personalSourceOriginal(task: Record<string, unknown>, taskId: string, result: TaskResult, fileRefId: string): PersonalSourceOriginal | undefined {
+  if (task.owner_role !== 'personal' || task.requires_review !== 0 || !Array.isArray(result?.artifactIds) || !result.artifactIds.includes(fileRefId)) return;
+  const evidence = readSourceReceiptFromTask({ action: String(task.action), runtimeId: String(task.runtime_id),
+    status: String(task.status), result }, ['direct']);
+  const entries = evidence?.receipts.filter(entry => entry.fileRefId === fileRefId);
+  if (evidence && entries?.length === 1) return { taskId, evidence: { ...evidence, receipts: entries } };
 }
 type LinkRow = { material_id: string; service_task_id: string; sha256: string; file_ref_id: string; file_ref_version: number };
 type WebMaterialEvidence = {
@@ -74,11 +84,11 @@ export class ConversationMaterialBridge {
         local_task_id TEXT PRIMARY KEY REFERENCES tasks(id), service_task_id TEXT NOT NULL,
         material_id TEXT NOT NULL, operation TEXT NOT NULL, created_at INTEGER NOT NULL);`);
     this.registrations = [
-      this.registration('material.read', '读取当前会话材料正文', '接收当前消息或祖先消息明确附上的文件，或同分支祖先成功网页读取任务经核对的正文textRef；旧网页任务证据不足须重读原网址。先只读用途待判断的原件，返回有界原文、原件摘要、位置单位、语义提案合同及实际用户消息。网页partial仅是部分静态正文，验证码和登录页不作为文章。unclassified（待判断）不代表真实用户声明。后续加工使用 data.processing（材料加工）能力；正式交接使用 R1（结构化交接）并单独确认。只分享必要文本，不执行原件代码。', [
-        { key: 'fileRefId', label: '消息原件或已核对正文引用', type: 'file', required: true },
+      this.registration('material.read', '读取当前会话材料正文', '接收当前消息或祖先消息明确附上的文件，或同分支祖先成功下载的百度网盘 fileRefId 和成功网页读取的正文 textRef；旧网页任务证据不足须重读原网址。先只读用途待判断的原件，返回有界原文、原件摘要、位置单位、语义提案合同及实际用户消息。网页partial仅是部分静态正文，验证码和登录页不作为文章。unclassified（待判断）不代表真实用户声明。后续加工使用 data.processing（材料加工）能力；正式交接使用 R1（结构化交接）并单独确认。只分享必要文本，不执行原件代码。', [
+        { key: 'fileRefId', label: '消息原件、已核对下载或正文引用', type: 'file', required: true },
       ]),
       this.registration('material.process', '保存用途、语义判断并执行受控清洗', '先用material.read读取合同。用途待判断的原件由当前模型按原文和用户需求给出classification及证据；unclassified（待判断）不算用户声明。proposalJson提供语义依据和允许的规则，不提供数据行。通用材料先发现 data.processing.capabilities（加工能力）并按真实声明形成受管产物；语义依据须来自原文或真实用户消息，不自报confirmed（已确认）。程序核对引用；有影响结果的未知或冲突则保存待确认并返回问题。', [
-        { key: 'fileRefId', label: '消息原件或已核对正文引用', type: 'file', required: true },
+        { key: 'fileRefId', label: '消息原件、已核对下载或正文引用', type: 'file', required: true },
         { key: 'materialId', label: '已接收材料编号', type: 'text', required: true, maxLength: 160 },
         { key: 'proposalJson', label: '模型语义提案', type: 'text', required: true, maxLength: 32_000 },
       ]),
@@ -86,6 +96,27 @@ export class ConversationMaterialBridge {
     ];
   }
   handles(action: string): boolean { return ACTIONS.has(action); }
+  allowedMaterialIds(input: Pick<BackendInput, 'conversationId' | 'branchId' | 'messageId'>,
+    selection: ReturnType<PersonalCore['selectedAttachmentsForInput']>): string[] {
+    const approved = selection.filter(ref => {
+      try { this.selectedGeneratedMaterial(this.options.files.getRef(ref.fileRefId), input, true); return true; }
+      catch { return false; }
+    });
+    const rows = this.options.database.connection.prepare(`WITH RECURSIVE ancestors(id,parent_id) AS (
+      SELECT id,parent_id FROM messages WHERE id=? AND conversation_id=?
+      UNION SELECT m.id,m.parent_id FROM messages m JOIN ancestors a ON m.id=a.parent_id WHERE m.conversation_id=?)
+      SELECT l.material_id FROM conversation_material_links l
+      WHERE (l.file_ref_id,l.file_ref_version) IN
+        (SELECT json_extract(value,'$.fileRefId'),json_extract(value,'$.version') FROM json_each(?))
+      OR EXISTS (SELECT 1 FROM conversation_material_calls c JOIN tasks t ON t.id=c.local_task_id
+        JOIN model_tool_calls m ON m.task_id=t.id
+        WHERE c.material_id=l.material_id AND c.service_task_id=l.service_task_id AND c.operation='material.read'
+          AND t.status='succeeded' AND t.requires_review=0 AND m.tool_name='perform_action' AND m.action=c.operation
+          AND m.conversation_id=? AND m.branch_id=? AND m.message_id IN (SELECT id FROM ancestors))
+      ORDER BY l.material_id`).all(input.messageId, input.conversationId, input.conversationId, JSON.stringify(approved),
+        input.conversationId, input.branchId);
+    return rows.map(row => String(row.material_id));
+  }
   /** 只为 material.read/process 的明确引用补充候选；完整原件核验和读取权限仍在 execute。 */
   canSelectGeneratedMaterial(fileRefId: string, input: Pick<BackendInput, 'conversationId' | 'branchId' | 'messageId'>): boolean {
     try { return !!this.generatedMaterial(fileRefId, input); }
@@ -97,7 +128,7 @@ export class ConversationMaterialBridge {
   mediaAdapters(): readonly MaterialMediaAdapter[] { return this.options.mediaAdapters?.() ?? []; }
   private registration(action: string, title: string, description: string, fields: SkillRegistration['fields']): SkillRegistration {
     return { action, title, description, fields, runtimeId: 'direct', kind: 'direct', modelCalls: 0,
-      permissionSummary: ['仅本次会话附件或同分支已核对正文及当前模型', '程序核对原文依据并保存实际差异', '不执行上传代码或正式入库'],
+      permissionSummary: ['仅本次会话附件、同分支已核对的下载文件或正文及当前模型', '程序核对原文依据并保存实际差异', '不执行上传代码或正式入库'],
       available: () => this.options.companion.materials && this.options.companion.semantics
         ? { available: true } : { available: false, reason: '材料语义服务尚未装配。' } };
   }
@@ -113,10 +144,21 @@ export class ConversationMaterialBridge {
     const selection = this.options.core.selectedAttachmentsForInput(input);
     let bound = selection.find(item => item.fileRefId === args.fileRefId);
     const requested = this.options.files.getRef(String(args.fileRefId));
-    const governedProducer = requested.source === 'generated' && requested.relations.some(item => item.kind === 'task'
-      && ['web.read_public', 'source.werss.read', 'source.wechat.extract'].includes(String(this.options.database.connection.prepare('SELECT action FROM tasks WHERE id=?').get(item.id)?.action)));
-    const generated = !bound || governedProducer ? this.generatedMaterial(requested.id, origin) : undefined;
-    if (governedProducer && !generated?.web && !generated?.werss && !generated?.wechat) throw new TaskError('MATERIAL_NOT_SELECTED', '来源正文不属于当前会话分支的可核对祖先任务。');
+    const producers = this.producers(requested);
+    const generated = this.selectedGeneratedMaterial(requested, origin, !!bound, producers);
+    // 明确选件的读取权限来自本次选择，来源身份仍只取个人库中生成该文件的成功任务。
+    let sourceOriginal = generated?.sourceOriginal;
+    if (bound && action === 'material.read' && this.options.companion.endpointAdapters?.recordTrustedSourceHandoff) {
+      for (const { taskId, action: producer } of producers) {
+        if (!SOURCE_DOWNLOAD_ACTIONS.includes(producer)) continue;
+        const task = this.options.database.connection.prepare('SELECT * FROM tasks WHERE id=?').get(taskId);
+        if (!task?.result) continue;
+        const found = personalSourceOriginal(task, taskId, JSON.parse(String(task.result)), requested.id);
+        if (!found) continue;
+        if (sourceOriginal && sourceOriginal.taskId !== taskId) throw new TaskError('MATERIAL_RECEIPT_MISMATCH', '多个成功来源任务声明了同一文件。');
+        sourceOriginal = found;
+      }
+    }
     if (!bound && generated) bound = { fileRefId: generated.fileRefId, version: generated.version, category: 'unclassified' };
     if (!bound) throw new TaskError('MATERIAL_NOT_SELECTED', '原件不属于本次消息或当前分支祖先的明确附件。');
     const reference = this.options.files.verify(bound.fileRefId);
@@ -130,21 +172,33 @@ export class ConversationMaterialBridge {
     for (const item of evidenceRefs) this.options.assertPath(item.invocationPath);
     const authority = await acquireAuthority(context, action, args, capabilities);
     authority.assert();
-    const generatedBytes = generated?.web ? await this.verifyWebMaterial(context, generated.web, authority)
+    let generatedBytes = generated?.web ? await this.verifyWebMaterial(context, generated.web, authority)
       : generated?.werss ? await this.verifyWerssMaterial(context, generated.werss, authority)
         : generated?.wechat ? await this.verifyWechatMaterial(context, generated.wechat, authority) : undefined;
+    if (generated?.baidu) {
+      generatedBytes = await this.options.files.readBytes(reference.id, { operation: context.operationScope(authority.operation),
+        approvalId: authority.approvalId, maxBytes: MATERIAL_CUSTODY_LIMIT });
+      authority.assert();
+      if (createHash('sha256').update(generatedBytes).digest('hex') !== generated.baidu.sha256)
+        throw new TaskError('MATERIAL_BAIDU_PROVENANCE', '下载文件实际字节与网盘任务签发的 SHA-256 不一致。');
+    }
     const companion = this.options.companion;
     companion.bd!.assertDispatch();
     const userMessages = this.userMessages(origin);
     const db = this.options.database.connection;
+    const existing = db.prepare('SELECT * FROM conversation_material_links WHERE file_ref_id=? AND file_ref_version=?')
+      .get(reference.id, reference.version) as LinkRow | undefined;
+    if (generated?.baidu && existing && existing.sha256 !== generated.baidu.sha256)
+      throw new TaskError('MATERIAL_BAIDU_PROVENANCE', '已保管的材料摘要与当前下载回执不一致。');
     if (action === 'material.read') {
-      let link = db.prepare('SELECT * FROM conversation_material_links WHERE file_ref_id=? AND file_ref_version=?')
-        .get(reference.id, reference.version) as LinkRow | undefined;
+      let link = existing;
       if (!link) {
         const bytes = generatedBytes ?? await this.options.files.readBytes(reference.id, { operation: context.operationScope(authority.operation),
           approvalId: authority.approvalId, maxBytes: MATERIAL_CUSTODY_LIMIT });
         authority.assert(); this.options.files.verify(reference.id);
         const sha256 = createHash('sha256').update(bytes).digest('hex');
+        if (sourceOriginal && sourceOriginal.evidence.receipts[0]!.sha256 !== sha256)
+          throw new TaskError('MATERIAL_RECEIPT_MISMATCH', '个人侧文件实际字节与来源成功回执不符。');
         const serviceTaskId = await acceptWorkspaceMaterial(companion, { bytes, name: reference.displayName,
           category: bound.category, requestId: `conversation:${reference.id}:v${reference.version}` });
         const materialId = (companion.tasks.get(serviceTaskId).args as { materialId: string }).materialId;
@@ -166,6 +220,13 @@ export class ConversationMaterialBridge {
       authority.assert();
       const material = companion.materials!.get(link.material_id), original = companion.materials!.readOriginal(link.material_id);
       if (material.envelope.sha256 !== link.sha256) throw new TaskError('MATERIAL_RECEIPT_MISMATCH', '两端接收的原件摘要未能核对。');
+      if (sourceOriginal && companion.endpointAdapters?.recordTrustedSourceHandoff) {
+        const workspaceFileRefId = material.envelope.fileRefId;
+        if (!workspaceFileRefId) throw new TaskError('MATERIAL_RECEIPT_MISMATCH', '工作台材料缺少已保管文件身份。');
+        companion.endpointAdapters.recordTrustedSourceHandoff({ sourceTaskId: sourceOriginal.taskId,
+          sourceFileRefId: reference.id, sha256: link.sha256, materialId: link.material_id,
+          workspaceFileRefId, evidence: sourceOriginal.evidence });
+      }
       let text: string | null = null;
       if (material.preview.source) {
         try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(original.bytes); }
@@ -190,8 +251,10 @@ export class ConversationMaterialBridge {
       const conversionPreview = xlsxConversion && upstreamPreview?.format === 'xlsx'
         && Buffer.byteLength(JSON.stringify(upstreamPreview)) <= 6_000 ? upstreamPreview as JsonValue : null;
       const modelPreview = { materialId: link.material_id, originalSha256: link.sha256, category: bound.category,
+        ...(sourceOriginal && companion.endpointAdapters?.recordTrustedSourceHandoff ? { sourceReceiptTaskId: sourceOriginal.taskId } : {}),
         filename: reference.displayName, support: xlsxConversion ? 'needs_adapter' : material.preview.support,
         format: xlsxConversion ? 'json-document' : material.preview.format,
+        ...(generated?.baidu ? { baiduSource: generated.baidu } : {}),
         ...(generated?.web ? { webSource: { sourceURL: generated.web.sourceURL, finalURL: generated.web.finalURL,
           status: generated.web.status, complete: generated.web.status === 'complete', reasons: generated.web.reasons,
           completenessScope: 'static-captured-document', textRef: generated.web.body.id,
@@ -232,9 +295,8 @@ export class ConversationMaterialBridge {
           fileRefId: reference.id, originalSha256: link.sha256, category: bound.category,
           modelPreview }) };
     }
-    const link = db.prepare('SELECT * FROM conversation_material_links WHERE material_id=? AND file_ref_id=? AND file_ref_version=?')
-      .get(String(args.materialId), reference.id, reference.version) as LinkRow | undefined;
-    if (!link) throw new TaskError('MATERIAL_BINDING_MISMATCH', '先读取本次选定原件，不能处理其他会话材料。');
+    const link = existing;
+    if (!link || link.material_id !== args.materialId) throw new TaskError('MATERIAL_BINDING_MISMATCH', '先读取本次选定原件，不能处理其他会话材料。');
     this.assertCategory(link, bound.category);
     if (action === 'material.ocr' || action === 'material.transcribe') {
       const adapter = this.mediaAdapters().find(candidate => candidate.id === action);
@@ -308,6 +370,18 @@ export class ConversationMaterialBridge {
         localProposal: { status: 'saved', readback: 'verified', proposalId: record.envelope.proposalId },
         status: record.result.status, applied: record.result.applied, formalIngest: record.result.formalIngest } }) };
   }
+  private producers(reference: FileReference) {
+    return reference.source === 'generated' ? reference.relations.filter(item => item.kind === 'task')
+      .map(item => ({ taskId: item.id, action: String(this.options.database.connection.prepare('SELECT action FROM tasks WHERE id=?').get(item.id)?.action) })) : [];
+  }
+  private selectedGeneratedMaterial(reference: FileReference, origin: Pick<ModelTaskOrigin, 'conversationId' | 'branchId' | 'messageId'>,
+    attached: boolean, producers = this.producers(reference)) {
+    const governed = producers.some(item => ['web.read_public', 'source.werss.read', 'source.wechat.extract', 'baidu.drive'].includes(item.action));
+    const generated = !attached || governed ? this.generatedMaterial(reference.id, origin) : undefined;
+    if (governed && !generated?.web && !generated?.werss && !generated?.wechat && !generated?.baidu)
+      throw new TaskError('MATERIAL_NOT_SELECTED', '来源文件缺少当前会话分支祖先任务的有效签发回执。');
+    return generated;
+  }
   private generatedMaterial(fileRefId: string, origin: Pick<ModelTaskOrigin, 'conversationId' | 'branchId' | 'messageId'>) {
     const reference = this.options.files.getRef(fileRefId);
     if (reference.source !== 'generated') return undefined;
@@ -318,10 +392,28 @@ export class ConversationMaterialBridge {
       while (messageId) { if (seen.has(messageId)) break; seen.add(messageId); if (messageId === prior.messageId) { ancestor = true; break; }
         const message = this.options.core.store.message(messageId); if (message.conversation_id !== origin.conversationId) break; messageId = message.parent_id; }
       if (!ancestor) continue;
-      const task = this.options.database.connection.prepare('SELECT action,args,status,result,versions FROM tasks WHERE id=?').get(relation.id);
-      if (!task || task.status !== 'succeeded' || !/^(conversion\.|pdf\.extract$|image\.ocr$|audio\.transcribe$|material\.transcribe$|web\.read_public$|source\.werss\.read$|source\.wechat\.extract$)/.test(String(task.action))) continue;
+      const task = this.options.database.connection.prepare('SELECT * FROM tasks WHERE id=?').get(relation.id);
+      const sourceDownload = SOURCE_DOWNLOAD_ACTIONS.includes(String(task?.action));
+      const baiduDrive = task?.action === 'baidu.drive';
+      if (!task || task.status !== 'succeeded' || !sourceDownload && !baiduDrive && !/^(conversion\.|pdf\.extract$|image\.ocr$|audio\.transcribe$|material\.transcribe$|web\.read_public$|source\.werss\.read$|source\.wechat\.extract$)/.test(String(task.action))) continue;
       const result = task.result ? JSON.parse(String(task.result)) : null;
       if (!result || !Array.isArray(result.artifactIds) || !result.artifactIds.includes(reference.id)) continue;
+      const sourceOriginal = sourceDownload && task.conversation_id === origin.conversationId
+        ? personalSourceOriginal(task, relation.id, result, reference.id) : undefined;
+      if (sourceDownload && !sourceOriginal) continue;
+      let baidu: { remotePath: string; sha256: string } | undefined;
+      if (baiduDrive) {
+        const args: unknown = JSON.parse(String(task.args)), data: unknown = result.data;
+        if (task.requires_review !== 0 || task.runtime_id !== 'direct' || task.conversation_id !== origin.conversationId
+          || !isRecord(args) || args.operation !== 'download' || !isRecord(data) || data.operation !== 'download' || data.complete !== true
+          || reference.kind !== 'file' || reference.status !== 'available' || reference.size < 1 || result.artifactIds.length !== 1
+          || data.fileRefId !== reference.id || data.bytes !== reference.size || data.fileRefVersion !== undefined && data.fileRefVersion !== reference.version
+          || typeof data.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(data.sha256)) continue;
+        const path = data.remotePath ?? data.path;
+        if (typeof path !== 'string' || path !== args.path || path === CLOUD_ROOT) continue;
+        try { cloudPath(path); } catch { continue; }
+        baidu = { remotePath: path, sha256: data.sha256 };
+      }
       const web = task.action === 'web.read_public'
         ? this.webMaterialEvidence(reference, relation.id, JSON.parse(String(task.args)), result) : undefined;
       const werss = task.action === 'source.werss.read'
@@ -329,7 +421,7 @@ export class ConversationMaterialBridge {
       const wechat = task.action === 'source.wechat.extract'
         ? this.wechatMaterialEvidence(reference, relation.id, JSON.parse(String(task.args)), result) : undefined;
       return { fileRefId: reference.id, version: reference.version, processingTask: { taskId: relation.id, action: String(task.action),
-        versions: JSON.parse(String(task.versions)), resultDigest: digestOperationArgs(result), data: result.data ?? null }, web, werss, wechat };
+        versions: JSON.parse(String(task.versions)), resultDigest: digestOperationArgs(result), data: result.data ?? null }, web, werss, wechat, baidu, sourceOriginal };
     }
     return undefined;
   }

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { forgetLocalDataSession, localDataGeneration, setLocalDataSession } from '../local-data-context.js';
-import { loadSourceSettings, sourceSettingsOperation } from './sourceSettingsClient.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { CoreDatabase } from '../../../../platform/state/database.js';
+import { SourceSettingsService } from '../../../../platform/config/source-settings.js';
+import { loadSourceSettings, saveSourceSettings, sourceSettingsOperation } from './sourceSettingsClient.js';
 
 /** 用本地内存模拟网络；没有服务端、浏览器账号或实际资料可被触及。 */
 function withSession(): () => void {
@@ -52,4 +57,29 @@ test('来源设置通过统一请求发送代次，回执404视为原操作不�
     assert.deepEqual(generations, ['1', '1']);
     assert.deepEqual(paths, ['/api/ui/source-settings', '/api/ui/source-settings/operations/missing-operation']);
   } finally { globalThis.fetch = previousFetch; cleanup(); }
+});
+
+test('保存 TickFlow 策略的 PUT 正文通过同一服务的校验并按原请求读回', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'source-settings-ui-')), database = new CoreDatabase(join(root, 'ui.sqlite'));
+  const service = new SourceSettingsService(join(root, 'settings.json'), database);
+  const cleanup = withSession(), previousFetch = globalThis.fetch;
+  try {
+    const input = await service.view(), requestId = 'test-ui-save-tickflow';
+    input.wechatExtract.scriptPath = join(root, 'wechat_extract.py');
+    input.plugins.find(item => item.id === 'tickflow')!.enabled = true;
+    input.connections.find(item => item.id === 'tickflow-main')!.enabled = true;
+    input.operationPolicies = [{ scopeId: 'CN/A_STOCK', operationId: 'daily_bars', primary: 'tickflow-main', backups: [] }];
+    globalThis.fetch = async (_url, init) => {
+      assert.equal(init?.method, 'PUT');
+      assert.equal(new Headers(init.headers).get('Idempotency-Key'), requestId);
+      service.update(JSON.parse(String(init.body)), requestId);
+      return Response.json({ ...await service.view(), operation: service.operation(requestId) });
+    };
+    const saved = await saveSourceSettings(input, requestId);
+    assert.equal(saved.operation?.status, 'adopted');
+    assert.equal(saved.operation.actualMatches, true);
+    assert.deepEqual(service.get().wechatExtract, input.wechatExtract);
+    assert.deepEqual(saved.view.operationPolicies, input.operationPolicies);
+    assert.equal((await saveSourceSettings(input, requestId)).view.revision, saved.view.revision);
+  } finally { globalThis.fetch = previousFetch; cleanup(); database.close(); rmSync(root, { recursive: true }); }
 });

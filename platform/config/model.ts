@@ -37,7 +37,7 @@ export interface AppConfiguration {
 }
 
 /** 只解析指定引用，不执行 YAML 标签，也不回退到其他服务的凭据。 */
-export async function readDshCredential(file: string, reference: string): Promise<string> {
+export async function readDshCredential(file: string, reference: string, format: 'trimmed' | 'exact' = 'trimmed'): Promise<string> {
   if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(reference)) throw new ConfigError('凭据引用名无效。');
   let raw: string;
   try { raw = await readFile(file, 'utf8'); }
@@ -48,7 +48,7 @@ export async function readDshCredential(file: string, reference: string): Promis
     if (document.errors.length || document.warnings.length) throw new Error('invalid document');
     const entry = document.getIn(['refs', reference], true);
     if (!isScalar(entry) || typeof entry.value !== 'string' || !entry.value.trim()) throw new Error('missing credential');
-    const key = entry.value.trim();
+    const key = format === 'exact' ? entry.value : entry.value.trim();
     if (/[\r\n\u0000]/.test(key)) throw new Error('invalid credential');
     return key;
   } catch {
@@ -58,19 +58,42 @@ export async function readDshCredential(file: string, reference: string): Promis
 }
 
 /** 固定系统入口按 service/account 精确读取；底层错误和输出不进入异常链。 */
-export async function readKeychainCredential(service: string, account: string, runtime?: ProcessRuntime): Promise<string> {
+export async function readKeychainCredential(service: string, account: string, runtime?: ProcessRuntime, format: 'trimmed' | 'exact' = 'trimmed',
+  task?: { signal?: AbortSignal; assertAuthorized?(): void; binaryPath?: string }): Promise<string> {
   if (!keychainAttribute(service) || !keychainAttribute(account)) throw new ConfigError('钥匙串引用需要明确的服务名称和账户名称。');
   if (process.platform !== 'darwin') throw new ConfigError('系统钥匙串凭据引用仅支持 macOS。');
   try {
     if (!runtime) throw new Error('unbound runtime');
-    const response = await runDirectProcess({ runtime, binary: 'security', args: ['find-generic-password', '-s', service, '-a', account, '-w'],
-      cwd: '/', signal: new AbortController().signal, timeoutMs: 15_000, maxOutputBytes: 8192,
-      assertAuthorized: () => { runtime.path('security'); } });
-    const key = response.stdout.trim();
+    const response = await runDirectProcess({ runtime, binary: 'security', binaryPath: task?.binaryPath, args: ['find-generic-password', '-s', service, '-a', account, '-w'],
+      cwd: '/', signal: task?.signal ?? new AbortController().signal, timeoutMs: 15_000, maxOutputBytes: 8192,
+      onHeartbeat: task?.assertAuthorized,
+      assertAuthorized: () => { runtime.path('security'); task?.assertAuthorized?.(); } });
+    task?.signal?.throwIfAborted();
+    task?.assertAuthorized?.();
+    // security -w 在值后写入一个 LF。严格格式的调用方需要核对值自身的所有字符。
+    const key = format === 'exact' ? response.stdout.replace(/\n$/u, '') : response.stdout.trim();
     if (!key || key.length > 4096 || /[\u0000-\u001f\u007f\ufffd]/u.test(key)) throw new Error('invalid key');
     return key;
-  } catch { throw new ConfigError('无法读取指定的钥匙串凭据，请检查登记程序、所选项目和访问权限。'); }
+  } catch {
+    task?.signal?.throwIfAborted();
+    task?.assertAuthorized?.();
+    throw new ConfigError('无法读取指定的钥匙串凭据，请检查登记程序、所选项目和访问权限。');
+  }
+}
 
+export function parseCredentialReference(reference: unknown): CredentialReference {
+  if (record(reference)) {
+    if (reference.kind === 'dsh-ref' && onlyKeys(reference, ['kind', 'path', 'ref'])
+      && typeof reference.path === 'string' && reference.path.trim()
+      && typeof reference.ref === 'string' && /^[A-Z][A-Z0-9_]{0,127}$/u.test(reference.ref)) {
+      return { kind: 'dsh-ref', path: reference.path, ref: reference.ref };
+    }
+    if (reference.kind === 'keychain' && onlyKeys(reference, ['kind', 'service', 'account'])
+      && keychainAttribute(reference.service) && keychainAttribute(reference.account)) {
+      return { kind: 'keychain', service: reference.service, account: reference.account };
+    }
+  }
+  throw new ConfigError('凭据配置须为指定 DSH 引用或明确的系统钥匙串服务与账户，不接受明文密钥。');
 }
 
 export function parseModelConfiguration(value: unknown): ModelConfiguration {
@@ -96,16 +119,7 @@ export function parseModelConfiguration(value: unknown): ModelConfiguration {
     || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
     throw new ConfigError('模型服务地址须使用 HTTPS，或明确的 127.0.0.1 HTTP 端口，且不能包含凭据、查询参数或片段。');
   }
-  const reference = value.credential;
-  let credential: CredentialReference;
-  if (reference.kind === 'dsh-ref' && onlyKeys(reference, ['kind', 'path', 'ref'])
-    && typeof reference.path === 'string' && reference.path.trim()
-    && typeof reference.ref === 'string' && /^[A-Z][A-Z0-9_]{0,127}$/.test(reference.ref)) {
-    credential = { kind: 'dsh-ref', path: reference.path, ref: reference.ref };
-  } else if (reference.kind === 'keychain' && onlyKeys(reference, ['kind', 'service', 'account'])
-    && keychainAttribute(reference.service) && keychainAttribute(reference.account)) {
-    credential = { kind: 'keychain', service: reference.service, account: reference.account };
-  } else throw new ConfigError('凭据配置须为指定 DSH 引用或明确的系统钥匙串服务与账户，不接受明文密钥。');
+  const credential = parseCredentialReference(value.credential);
   const defaultThinkingLevel = value.defaultThinkingLevel ?? 'off';
   if (!['off', 'low', 'high', 'max'].includes(String(defaultThinkingLevel))) throw new ConfigError('默认思考档位无效，请选择关闭、低、高或最高。');
   const parsed: ModelConfiguration = {

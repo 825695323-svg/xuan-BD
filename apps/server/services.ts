@@ -1,5 +1,6 @@
 import { readTranscriptionReviewPacket } from './transcription-review.js';
 import { readOcrReviewPacket } from './ocr-review.js';
+import { readRetrievalEvidence } from './retrieval-evidence.js';
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { PersonalCore } from '../../modules/agent/runtime/core.js';
@@ -30,13 +31,15 @@ import { InputRouter } from '../../modules/agent/input-router.js';
 import { PersonalResourceService } from '../../modules/agent/personal-resources.js';
 import { ToolSettingsService } from '../../platform/config/tool-settings.js';
 import { SourceSettingsService } from '../../platform/config/source-settings.js';
-import { readConnectionRegistry } from '../../platform/config/connections.js';
+import { extractConnectionRegistryProtectedPaths } from '../../platform/config/connections.js';
 import { DirectConversationService } from '../../modules/agent/direct-conversations.js';
 import { BdService } from '../../modules/agent/service.js';
 import { CollectionService } from '../../modules/collection/service.js';
 import type { ChartOfAccountsRegistry } from '../../modules/collection/data-processing/financial-coa-registry.js';
 import type { LocalAlgorithmService } from '../../modules/financial/algorithm-service.js';
-import { ConversationAlgorithmBridge } from '../../modules/financial/conversation-algorithms.js';
+import { ConversationAlgorithmBridge, conversationAlgorithmSubmission, parseConversationCalculation } from '../../modules/financial/conversation-algorithms.js';
+import { isPureOperatorId } from '../../modules/financial/algorithm-types.js';
+import { ConversationRetrievalBridge } from '../../modules/collection/conversation-retrieval.js';
 import { DerivedWfdPublisher } from '../../modules/financial/derived-wfd-publisher.js';
 import type { LocalAlgorithmFactory } from './financial-configuration.js';
 import { ConversationProcessingBridge } from '../../modules/collection/conversation-processing.js';
@@ -59,6 +62,7 @@ import { createR1HandoffRuntime, type R1Runtime } from '../../modules/collection
 import { ProcessingPlanService } from '../../modules/collection/processing-plan.js';
 import { R1_WORKSPACE_RUNTIME, R1WorkspaceService } from '../../modules/collection/r1-workspace.js';
 import { R1AutoService } from '../../modules/collection/r1-auto.js';
+import { R1BundleService } from '../../modules/collection/r1-bundle.js';
 import { R1AutoBatchService } from '../../modules/collection/r1-auto-batch.js';
 import { ManagedOriginalStore } from '../../modules/collection/managed-originals.js';
 import { TabularBulkProfileStore } from '../../modules/collection/tabular-bulk-profile.js';
@@ -81,7 +85,7 @@ import type { CaptureSessionService } from '../../plugins/capture-sources/sessio
 import { BusinessGoalService } from '../../platform/jobs/business-goals.js';
 import { ConversationTaskCompletions } from '../../modules/agent/task-completions.js';
 import { directDependencyVersions, directoryVersion, type DirectImplementation } from '../../platform/plugins/direct-versions.js';
-import { ToolLibraryService } from '../../modules/financial/tool-library.js';
+import { fixedWfdBinding, ToolLibraryService } from '../../modules/financial/tool-library.js';
 import type { ProductionModuleId } from '../../modules/collection/production-module-ports.js';
 import { PolarsSourceCleaner } from '../../modules/collection/data-processing/polars-cleaning.js';
 import type { LocalDataLifecycle, LocalDataLifecycleRecord } from '../../platform/runtime/local-data-lifecycle.js';
@@ -181,6 +185,7 @@ export interface ApplicationServices {
   r1?: R1HandoffService;
   r1Runtime?: R1Runtime;
   r1Workspace?: R1WorkspaceService;
+  r1Bundles?: R1BundleService;
   r1Auto?: R1AutoService;
   r1Batches?: R1AutoBatchService;
   /** 已发布错误更正编排；用途暂停权威在 WFD catalog。 */
@@ -246,14 +251,13 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   if (options.credentialReference?.path) protectedPaths.push(options.credentialReference.path);
   if (options.baiduDrive?.configPath) protectedPaths.push(options.baiduDrive.configPath);
   if (options.baiduDrive?.tokenKeyPath) protectedPaths.push(options.baiduDrive.tokenKeyPath);
+  for (const locator of Object.values(options.baiduDrive?.sharePasscodeRefs ?? {})) {
+    if (locator.kind === 'dsh-ref') protectedPaths.push(locator.path);
+  }
   if (options.browser?.daemonConfigPath) protectedPaths.push(options.browser.daemonConfigPath);
   if (options.shortcutConfigPath) protectedPaths.push(options.shortcutConfigPath);
   if (connectionsRegistryPath) {
-    protectedPaths.push(dirname(connectionsRegistryPath));
-    try {
-      const registry = readConnectionRegistry(connectionsRegistryPath);
-      if (registry?.credentialRegistryPath) protectedPaths.push(dirname(registry.credentialRegistryPath));
-    } catch { /* 可选登记不可读时保留其明确父根保护；不猜其他账号位置或阻断无关能力。 */ }
+    protectedPaths.push(dirname(connectionsRegistryPath), ...extractConnectionRegistryProtectedPaths(connectionsRegistryPath));
   }
   sourceSettings.get();
   protectedPaths.push(...sourceSettings.credentialPaths());
@@ -289,10 +293,18 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     assertPath: path => direct.assertPublicPath(path), mediaAdapters: () => mediaAdapters }) : undefined;
   const conversationAlgorithms = options.workspaceServices?.toolLibrary ? new ConversationAlgorithmBridge({
     database, companion: options.workspaceServices, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
+    submissionContext: (origin, intent) => conversationAlgorithmSubmission(core, origin, intent),
     rulesVersion: runId => core.runConfiguration(runId)?.internalAgentRules?.version }) : undefined;
   const conversationProcessing = options.workspaceServices ? new ConversationProcessingBridge({ database, core, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
+  const companion = options.workspaceServices;
+  const conversationRetrieval = options.role !== 'service' && companion ? new ConversationRetrievalBridge({
+    core, companion, origin: taskId => modelTools?.taskOrigin(taskId) ?? null,
+    allowedMaterialIds: (input, attachments) => conversationMaterials!.allowedMaterialIds(input, attachments),
+    readEvidence: (input, assertCurrent, ids) => readRetrievalEvidence(companion, input, assertCurrent, ids),
+  }) : undefined;
   const conversationR1 = options.role !== 'service' && options.workspaceServices?.r1Workspace
     ? new ConversationR1Bridge({ database, core, files, companion: options.workspaceServices, origin: task => modelTools?.taskOrigin(task) ?? null }) : undefined;
+  const workspaceBridges = [conversationR1, conversationProcessing, conversationRetrieval, conversationMaterials].filter(bridge => bridge !== undefined);
   if (selectedTools.shortcutConfigPath) protectedPaths.push(selectedTools.shortcutConfigPath);
   direct = createDirectRuntime({ files, artifactRoot, processRuntime: options.processRuntime, resources: options.resources, protectedPaths, whisperModelPath: selectedTools.whisperModelPath ?? undefined, shortcuts: selectedTools.shortcuts, videoMaxMinutes: selectedTools.videoMaxMinutes, videoMaxBytes: selectedTools.videoMaxBytes,
     sourceSettings,
@@ -318,27 +330,51 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       : options.modelInput && !options.modelInput.includes('image') ? { available: false, reason: '当前绑定模型配置未声明图像输入；不能识字、改模型或调用原生兜底。' }
       : { available: true },
     artifactArchive, artifactRestore, artifactLifecycle, candidateReclaim, artifactManifest,
-    conversationMaterials: conversationMaterials || conversationProcessing || conversationR1 ? { registrations: conversationMaterials?.registrations ?? [],
-      handles: action => !!conversationR1?.handles(action) || !!conversationProcessing?.handles(action) || !!conversationMaterials?.handles(action),
-      execute: (context, action, args) => conversationR1?.handles(action) ? conversationR1.execute(context, action, args)
-        : conversationProcessing?.handles(action) ? conversationProcessing.execute(context, action, args)
-          : conversationMaterials!.execute(context, action, args) } : undefined, baiduDrive: options.baiduDrive, browser: options.browser,
+    conversationMaterials: workspaceBridges.length ? { registrations: conversationMaterials?.registrations ?? [],
+      handles: action => workspaceBridges.some(bridge => bridge.handles(action)),
+      execute: (context, action, args) => workspaceBridges.find(bridge => bridge.handles(action))!.execute(context, action, args),
+    } : undefined, baiduDrive: options.baiduDrive, browser: options.browser,
     browserUnavailableReason: options.browserUnavailableReason,
     captureSessions: options.role !== 'service' ? options.captureSessions : undefined,
     capturePrivateArtifactRoot, captureUnavailableReason: options.captureUnavailableReason, customSources: options.customSources });
   if (!conversationMaterials) for (const registration of mediaPluginRegistrations) direct.registry.register(registration);
+  const readVersions = (required: boolean) => {
+    const workspace = options.workspaceServices?.r1Workspace;
+    const r1 = workspace?.versionBinding ?? null, fixed = fixedWfdBinding(workspace);
+    if (fixed && (!required || r1?.r1Workspace)) return { r1, r1Connection: fixed.connection, r1ReadBinding: fixed.binding };
+    const caps = !required && typeof workspace?.capabilities === 'function' ? workspace.capabilities() : null;
+    if (required || workspace && (typeof workspace.capabilities !== 'function' || caps?.connection && (!caps.configuration || caps.configuration.state === 'configured'))) {
+      throw new TaskError('DIRECT_DEPENDENCY_UNAVAILABLE', 'WFD 固定读取绑定缺失，不能冻结外置查询实现。');
+    }
+    return { r1, r1Connection: caps?.connection ?? null, r1ReadBinding: workspace?.readBinding?.() ?? null };
+  };
   for (const entry of conversationAlgorithms?.registrations ?? []) {
     direct.registry.register(entry);
-    const publishes = ['algorithms.calculate', 'data.modules.calculate', 'algorithms.publish'].includes(entry.action);
-    const readsWfd = publishes || entry.action === 'algorithms.screen';
-    const implementation: DirectImplementation[] = publishes ? ['algorithms', 'algorithmPublication', 'r1']
-      : entry.action === 'algorithms.screen' ? ['algorithms', 'algorithmRead'] : ['algorithms'];
-    direct.registry.bindVersions(entry.action, () => {
-      const workspace = options.workspaceServices?.r1Workspace;
-      return directDependencyVersions(entry.action, implementation,
-        { ...conversationAlgorithms!.versionBinding, execution: options.workspaceServices?.algorithms?.versionBinding ?? null,
-          ...(readsWfd ? { r1: workspace?.versionBinding ?? null, r1Connection: workspace?.capabilities?.().connection ?? null } : {}) }, {});
+    direct.registry.bindVersions(entry.action, args => {
+      const calculate = entry.action === 'algorithms.calculate' || entry.action === 'data.modules.calculate';
+      const calculation = calculate && args.calculationJson !== undefined ? parseConversationCalculation(args.calculationJson) : args;
+      const pure = calculate && isPureOperatorId(calculation.methodId);
+      const discover = entry.action === 'algorithms.capabilities' && typeof args.snapshotId === 'string' && args.snapshotId.length > 0;
+      const execution = (calculate && !pure) || entry.action === 'algorithms.publish';
+      const implementation: DirectImplementation[] = ['algorithms'];
+      if (entry.action === 'algorithms.status') implementation.push('algorithmPureStatus');
+      if (execution) implementation.push('algorithmPublication', 'r1');
+      const readOnly = pure || discover || entry.action === 'algorithms.screen';
+      if (readOnly) implementation.push('algorithmRead');
+      if (pure) implementation.push('algorithmPure');
+      return directDependencyVersions(entry.action, implementation, { ...conversationAlgorithms!.versionBinding,
+        ...(execution ? { execution: options.workspaceServices?.algorithms?.versionBinding ?? null } : {}),
+        ...(execution || readOnly ? readVersions(pure || discover) : {}) }, {});
     });
+  }
+  for (const entry of conversationRetrieval?.registrations ?? []) {
+    direct.registry.register(entry);
+    const joint = entry.action === 'data.retrieval.joint';
+    const implementation: DirectImplementation[] = ['retrieval'];
+    if (joint) implementation.push('algorithmRead');
+    if (entry.action === 'data.retrieval.evidence') implementation.push('retrievalEvidence');
+    direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, implementation,
+      { ...conversationRetrieval!.versionBinding, ...(joint ? readVersions(true) : {}) }, {}));
   }
   for (const entry of conversationProcessing?.registrations ?? []) { direct.registry.register(entry); direct.registry.bindVersions(entry.action, () => directDependencyVersions(entry.action, ['r1', 'material', 'materialRead'], { ...(options.workspaceServices?.processing?.versionBinding ?? {}) }, {})); }
   for (const entry of conversationR1?.registrations ?? []) {
@@ -422,6 +458,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
       return r1Workspace.readProduct(value, signal);
     },
     financialReaderIdentity: (): unknown => r1Workspace?.capabilities().connection,
+    financialReadBinding: (): unknown => r1Workspace?.readBinding?.() ?? null,
     objects: { put: (bytes, mediaType) => candidates.saveObject(bytes, mediaType), get: ref => candidates.objectBytes(ref),
       verify: ref => candidates.verifyObject(ref) } }) : undefined;
   let r1Runtime: R1Runtime | undefined;
@@ -453,10 +490,19 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   const workspaceFieldProfiles = r1Runtime?.connection.profile.mode === 'production' || hasSourceProfiles
     ? sourceFieldProfiles : undefined;
   const r1Workspace: R1WorkspaceService | undefined = r1 && processing && materials ? new R1WorkspaceService({ database, tasks: currentTasks,
-    handoff: r1, processing, materials, runtime: r1Runtime, configuration: r1Configuration,
+    handoff: r1, processing, materials, runtime: r1Runtime,
+    configuration: r1Configuration.state === 'ready' ? { state: 'configured', reason: null } : r1Configuration,
     fieldProfiles: workspaceFieldProfiles, semanticProducts }) : undefined;
   const algorithms = options.configureAlgorithms?.({ database, tasks: currentTasks, permissions, r1Runtime });
-  const toolLibrary = options.role === 'service' ? new ToolLibraryService({ algorithms }) : undefined;
+  const toolLibrary = options.role === 'service' ? new ToolLibraryService({ algorithms,
+    hasWfdReader: () => !!fixedWfdBinding(r1Workspace), calculateEnabled: () => options.productionModuleSwitches?.calculate !== false,
+    hasDailyPublisher: () => !!derivedPublisher }) : undefined;
+  let r1Bundles: R1BundleService | undefined;
+  if (options.role === 'service' && r1Runtime) {
+    try {
+      r1Bundles = new R1BundleService({ runtime: r1Runtime, database, control: () => currentTasks().getControl() });
+    } catch { /* 可选分包初始化失败时，其余服务继续装配。 */ }
+  }
   if (algorithms && r1Runtime && r1Workspace && r1) {
     derivedPublisher = new DerivedWfdPublisher({
       viewAlgorithm: taskId => algorithms.view(taskId),
@@ -476,7 +522,7 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
     core, health: options.health, versions: options.serviceVersions, collection, materials, semantics }) : undefined;
   const batchCustody = { core, database, get tasks() { return currentTasks(); }, files, permissions, attachmentRoot, bd, materials };
   const questions = new AgentQuestionService(database, core);
-  modelTools = createCoreModelTools({ database, core, permissions, files, registry: direct.registry, service: bd, conversationAlgorithms, businessGoals, questions,
+  modelTools = createCoreModelTools({ database, core, permissions, files, registry: direct.registry, service: bd, conversationAlgorithms, conversationRetrieval, businessGoals, questions,
     codeRoot: options.codeRoot ?? options.projectRoot,
     mediaPlugins: () => mediaPluginCatalog(conversationMaterials?.mediaAdapters() ?? []),
     // 工具桥按当次已批准结果承接编辑后的版本；这里仍固定原用户选择身份。
@@ -652,7 +698,10 @@ export function createApplicationServices(core: PersonalCore, database: CoreData
   queueMicrotask(() => core.dispatchTaskCompletions());
   const assembled = { core, database, permissions, files, tasks: runningTasks, memory, agentSkills, questions, toolSettings, sourceSettings, personalResources, uiPreferences, contextLedger, inputRules, inputRouter, directConversations, direct, modelTools,
     ...(options.localData ? { localData: options.localData.lifecycle, localDataId: options.localData.dataId } : {}),
-    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, productionModuleSwitches: options.productionModuleSwitches, semantics, r1, r1Runtime, r1Workspace, r1Auto, r1Batches, corrections, endpointAdapters, sourceFieldProfiles, semanticProducts, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
+    artifactRoot, attachmentRoot, captureSessions: options.captureSessions, customSources: options.customSources, options, bd, collection, algorithms, derivedPublisher, toolLibrary, materials, cloudCustody, structuredRetrieval, productionModuleSwitches: options.productionModuleSwitches, semantics, r1, r1Runtime, r1Workspace, r1Bundles, r1Auto, r1Batches, corrections, endpointAdapters, sourceFieldProfiles, semanticProducts, r1Configuration, candidates, processing, segments, taskCompletions, businessGoals, sourceForMessage, ensureModelChannel, modelContext };
+  if (options.role !== 'service' && companion?.segments) {
+    companion.segments.bindOcrReviewReader((materialId, taskId) => readOcrReviewPacket(assembled, materialId, taskId), () => direct.localOcr.availability());
+  }
   if (options.role !== 'service' && options.workspaceServices?.processing) {
     options.workspaceServices.processing.bindTranscriptionClaimReader((materialId, taskId) => readTranscriptionReviewPacket(assembled, materialId, taskId));
     options.workspaceServices.processing.bindOcrClaimReader((materialId, taskId) => readOcrReviewPacket(assembled, materialId, taskId));

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readModelEvidencePreview } from '../../apps/server/full-chain-test-support.js';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -198,11 +199,11 @@ function callTask(h: Host, input: BackendInput, toolCallId: string): TaskRecord 
 }
 async function invoke(h: Host, input: BackendInput, action: string, args: Record<string, unknown> = {},
   toolCallId = 'r1-call-' + (++traceSequence)) {
-  const { perform } = toolsFor(h, input);
+  const { tools, perform } = toolsFor(h, input);
   const tracePath = join(h.root, `tool-${String(++traceSequence).padStart(4, '0')}-${toolCallId}.json`);
   try {
     const raw = await perform.execute(toolCallId, { action, args }, undefined, undefined, unusedPiContext);
-    const preview = resultValue(raw);
+    const preview = await readModelEvidencePreview(resultValue(raw), tools.find(tool => tool.name === 'core_evidence_read')!, toolCallId);
     json(tracePath, { toolCallId, action, args, preview, details: raw.details });
     return { preview, raw, toolCallId };
   } catch (error) {
@@ -560,8 +561,8 @@ test('processing financial-fixed selector survives personal tool schema and norm
 test('F05 R1 UI invalidates confirmation on detail loads and gates recovery on original submission', () => {
   const entry = readFileSync(join(codeRoot, 'apps/web/src/ui/R1Panel.tsx'), 'utf8');
   assert.ok(entry.includes("from './R1SingleOutputPanel'"));
-  assert.match(entry, /<SingleOutputPanel\b[^>]*\/>/u,
-    'The single-output panel must remain mounted when the entry supplies reading-mode props.');
+  assert.ok(entry.includes("<div hidden={mode === 'review'}><SingleOutputPanel reading={mode === 'reader'} /></div>"),
+    'The mounted single-output panel must receive the selected read mode and be hidden during plan review.');
   const source = readFileSync(join(codeRoot, 'apps/web/src/ui/R1SingleOutputPanel.tsx'), 'utf8');
   const show = /const showView = \(current: R1RequestView\) => \{([\s\S]*?)\n  \};/u.exec(source);
   assert.ok(show);
@@ -935,6 +936,11 @@ test('F05 actual personal R1 prepare → host-confirmed real Python publish with
       const fixed = h.companion.r1Workspace!.get(preparedRequestId);
       assert.equal(fixed.rowCount, 2); assert.equal(fixed.submitTaskId, null); assert.equal(submitCalls, 0);
       assert.equal(fixed.planId, planned.planId); assert.deepEqual(fixed.connection.profile, 'data_only');
+      const savedBinding = h.companionDatabase.connection.prepare('SELECT binding_json FROM r1_workspace_requests WHERE request_id=?').get(preparedRequestId)!;
+      assert.deepEqual(Object.keys(JSON.parse(String(savedBinding.binding_json))).sort(), [
+        'connectionId', 'protocol', 'profile', 'mode', 'purpose', 'runtimeIdentity', 'store', 'runtime', 'callerId', 'namespace',
+        'configSha256', 'schemaSha256', 'entrySha256', 'pythonPath', 'entryPath',
+      ].sort(), '原 R1 请求只冻结 9f520b78 的连接身份字段');
       const replay = await invoke(h, selected.input, 'data.r1.prepare', prepareArgs(selected.input, planned.planId), 'python-r1-prepare');
       assert.equal(replay.preview.taskId, prepared.preview.taskId, 'Same toolCall must reuse its actual local task.');
       const repeated = await invoke(h, selected.input, 'data.r1.prepare', prepareArgs(selected.input, planned.planId), 'python-r1-prepare-again');
@@ -958,6 +964,8 @@ test('F05 actual personal R1 prepare → host-confirmed real Python publish with
       const pendingModel = await invoke(h, selected.input, 'data.r1.get', { requestId: preparedRequestId }, 'python-r1-get-pending');
       assert.equal(pendingModel.preview.data.state, 'pending_unknown'); assertModelView(pendingModel.preview.data, f);
       const originalConversation = selected.input.conversationId, originalBranch = selected.input.branchId;
+      const readSchema = join(f.schemaPath, '..', 'wfd-read-product.schema.json');
+      writeFileSync(readSchema, readFileSync(readSchema, 'utf8') + '\n');
       await h.close(); h = await host(f);
       h.companion.r1Runtime!.client.submit = async () => { submitCalls++; throw new Error('Restart recovery attempted a forbidden resubmit.'); };
       const resumedInput = await startInput(h, '请沿原request、原任务和原连接核对结果，不重新提交。', 'python-recovery-user-resume',

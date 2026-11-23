@@ -108,6 +108,10 @@ class WFDVolumeService:
     def engine(self):
         return self._target_service().engine
 
+    def _guard_definition_history(self, entries, *, perspective, at):
+        return self._target_service()._guard_definition_history(
+            entries, perspective=perspective, at=at)
+
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError(name)

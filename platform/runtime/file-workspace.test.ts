@@ -54,8 +54,8 @@ test('revocation between blocks and at the final boundary refuses the digest', a
   }
 });
 
-test('block-boundary abort, mutation and replaced scratch identity all refuse', async () => {
-  for (const kind of ['abort', 'mutate', 'directory']) {
+test('block-boundary abort and mutation both refuse the digest', async () => {
+  for (const kind of ['abort', 'mutate']) {
     const f = await fixture();
     try {
       const path = join(f.workspace.path, 'source'), bytes = Buffer.alloc(2 * 1024 * 1024);
@@ -63,11 +63,32 @@ test('block-boundary abort, mutation and replaced scratch identity all refuse', 
       f.reset(() => {
         if (f.checks !== 3) return;
         if (kind === 'abort') f.controller.abort(new Error('cancelled between blocks'));
-        else if (kind === 'mutate') writeFileSync(path, Buffer.alloc(bytes.length, 1));
-        else { renameSync(f.workspace.path, f.workspace.path + '-old'); mkdirSync(f.workspace.path); }
+        else writeFileSync(path, Buffer.alloc(bytes.length, 1));
       });
-      await assert.rejects(f.workspace.fingerprint(path, bytes.length),
-        kind === 'abort' ? /cancelled/ : kind === 'mutate' ? /已变化/ : /暂存目录身份/);
+      await assert.rejects(f.workspace.fingerprint(path, bytes.length), kind === 'abort' ? /cancelled/ : /已变化/);
+    } finally { f.close(); }
+  }
+});
+
+test('fingerprint rejects a real replacement of its scratch directory', async () => {
+  // Windows can deny renaming a parent with an open child. All platforms test
+  // replacement immediately before open; POSIX also tests it between reads.
+  for (const at of process.platform === 'win32' ? [1] : [1, 3]) {
+    const f = await fixture();
+    try {
+      const path = join(f.workspace.path, 'source'), bytes = Buffer.alloc(2 * 1024 * 1024);
+      writeFileSync(path, bytes);
+      let replaced = false;
+      f.reset(() => {
+        if (f.checks !== at) return;
+        renameSync(f.workspace.path, f.workspace.path + '-old');
+        mkdirSync(f.workspace.path);
+        writeFileSync(path, bytes);
+        replaced = true;
+      });
+      await assert.rejects(f.workspace.fingerprint(path, bytes.length), { code: 'STAGE_CHANGED' });
+      assert.equal(replaced, true, 'the original pathname was reused by a different directory containing the same bytes');
+      assert.equal(f.checks, at, 'the identity guard rejects at the authorization boundary that changed the directory');
     } finally { f.close(); }
   }
 });
