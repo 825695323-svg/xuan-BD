@@ -307,10 +307,40 @@ def _is_nt_link_stat(info):
                              getattr(info, "st_reparse_tag", 0))
 
 
-def _nt_raw_reparse_info(path):
-    """Read raw dwFileAttributes and dwReserved0 (reparse tag) via FindFirstFileW without traversing reparse points."""
-    if os.name != "nt":
+_NT_FIND_FILE_API = None
+
+
+def _nt_find_query(path):
+    raw = os.fspath(path)
+    if (not raw.startswith(("\\\\", "//"))
+            and not (len(raw) >= 2 and raw[1] == ":" and raw[0].isalpha())
+            and not os.path.isabs(raw)):
+        raw = os.path.abspath(raw)
+    raw = raw.replace("/", "\\").rstrip("\\")
+    if not raw:
         return None
+    if raw.startswith("\\\\?\\"):
+        body = raw[4:]
+        query = raw
+    elif raw.startswith("\\\\"):
+        body = raw.lstrip("\\")
+        query = "\\\\?\\UNC\\" + body
+    else:
+        body = raw
+        query = "\\\\?\\" + raw
+    if "*" in body or "?" in body:
+        raise ValueError("BUNDLE_PATH_INVALID")
+    if not body or (len(body) == 2 and body[1] == ":"):
+        return None
+    if query.upper().startswith("\\\\?\\UNC\\") and len([p for p in query[8:].split("\\") if p]) <= 2:
+        return None
+    return query
+
+
+def _nt_find_file_api():
+    global _NT_FIND_FILE_API
+    if _NT_FIND_FILE_API is not None:
+        return _NT_FIND_FILE_API
     import ctypes
     from ctypes import wintypes
 
@@ -328,36 +358,36 @@ def _nt_raw_reparse_info(path):
             ("cAlternateFileName", wintypes.WCHAR * 14),
         ]
 
-    raw = os.fspath(path)
-    if not os.path.isabs(raw):
-        raw = os.path.abspath(raw)
-    raw = raw.replace("/", "\\").rstrip("\\")
-    if not raw or (len(raw) == 2 and raw[1] == ":"):
-        return None
-    if "*" in raw or "?" in raw:
-        raise ValueError("BUNDLE_PATH_INVALID")
-    if raw.startswith("\\\\?\\"):
-        query = raw
-    elif raw.startswith("\\\\"):
-        query = "\\\\?\\UNC\\" + raw.lstrip("\\")
-    else:
-        query = "\\\\?\\" + raw
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.FindFirstFileW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(_WIN32_FIND_DATAW)]
-    kernel32.FindFirstFileW.restype = wintypes.HANDLE
-    kernel32.FindClose.argtypes = [wintypes.HANDLE]
-    kernel32.FindClose.restype = wintypes.BOOL
-    data = _WIN32_FIND_DATAW()
-    handle = kernel32.FindFirstFileW(query, ctypes.byref(data))
-    if handle == wintypes.HANDLE(-1).value:
+    find_first = kernel32.FindFirstFileW
+    find_first.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(_WIN32_FIND_DATAW)]
+    find_first.restype = wintypes.HANDLE
+    find_close = kernel32.FindClose
+    find_close.argtypes = [wintypes.HANDLE]
+    find_close.restype = wintypes.BOOL
+    _NT_FIND_FILE_API = (ctypes, _WIN32_FIND_DATAW, find_first, find_close, wintypes.HANDLE(-1).value)
+    return _NT_FIND_FILE_API
+
+
+def _nt_raw_reparse_info(path):
+    """Read raw dwFileAttributes and dwReserved0 (reparse tag) via FindFirstFileW without traversing reparse points."""
+    if os.name != "nt":
+        return None
+    query = _nt_find_query(path)
+    if query is None:
+        return None
+    ctypes, find_data_cls, find_first, find_close, invalid_handle = _nt_find_file_api()
+    data = find_data_cls()
+    handle = find_first(query, ctypes.byref(data))
+    if handle == invalid_handle:
         err = ctypes.get_last_error()
         if err in {2, 3}:
-            raise FileNotFoundError(err, "path not found", raw)
+            raise FileNotFoundError(err, "path not found", os.fspath(path))
         raise OSError(err, "FindFirstFileW failed")
     try:
         return int(data.dwFileAttributes), int(data.dwReserved0)
     finally:
-        kernel32.FindClose(handle)
+        find_close(handle)
 
 
 def _is_nt_link_path(path):
@@ -415,7 +445,7 @@ def _accepts_keyword_param(fn, name):
     if not callable(fn):
         return False
     try:
-        param = inspect.signature(fn).parameters.get(name)
+        param = inspect.signature(fn, follow_wrapped=False).parameters.get(name)
     except (TypeError, ValueError):
         return False
     return (param is not None

@@ -401,6 +401,40 @@ def test_nt_reparse_point_distinguishes_surrogates_from_filter_tags(tmp_path, mo
         mp.setattr(machine, "_nt_raw_reparse_info", lambda _p: (reparse, 0))
         assert is_bundle_link(sample) is True
 
+    # Extended-length Windows prefixes are accepted while wildcards in the path body are rejected.
+    assert machine._nt_find_query(r"C:\WFD\objects\abc") == r"\\?\C:\WFD\objects\abc"
+    assert machine._nt_find_query(r"\\?\C:\WFD\objects\abc") == r"\\?\C:\WFD\objects\abc"
+    assert machine._nt_find_query(r"\\?\UNC\srv\share\objects\abc") == r"\\?\UNC\srv\share\objects\abc"
+    assert machine._nt_find_query(r"\\srv\share\objects\abc") == r"\\?\UNC\srv\share\objects\abc"
+    assert machine._nt_find_query(r"C:\\") is None
+    assert machine._nt_find_query(r"\\?\C:\\") is None
+    assert machine._nt_find_query(r"\\?\UNC\srv\share") is None
+    for wildcard in (r"C:\WFD\a?b", r"\\?\C:\WFD\a?b", r"\\?\C:\WFD\a*b"):
+        with pytest.raises(ValueError, match="BUNDLE_PATH_INVALID"):
+            machine._nt_find_query(wildcard)
+
+    # Repeated raw Win32 queries reuse cached ctypes prototypes without leaking pointer types.
+    import ctypes
+    class FakeData:
+        dwFileAttributes = reparse
+        dwReserved0 = wof_tag
+    calls = 0
+    def fake_first(_q, _ref):
+        nonlocal calls
+        calls += 1
+        return 1
+    def fake_close(_h):
+        return True
+    fake_ctypes = types.SimpleNamespace(byref=lambda obj: obj, get_last_error=lambda: 0)
+    with monkeypatch.context() as mp:
+        mp.setattr(machine.os, "name", "nt")
+        mp.setattr(machine, "_NT_FIND_FILE_API", (fake_ctypes, FakeData, fake_first, fake_close, -1))
+        before_cache = len(ctypes._pointer_type_cache)
+        for _ in range(64):
+            assert machine._nt_raw_reparse_info(r"\\?\C:\WFD\objects\abc") == (reparse, wof_tag)
+        assert calls == 64
+        assert len(ctypes._pointer_type_cache) == before_cache
+
 
 def test_machine_correlates_config_not_found_and_marks_unwritten(tmp_path, monkeypatch, capsys):
     from io import BytesIO
@@ -835,7 +869,9 @@ def test_bundle_write_tracking_compatibility_and_capabilities(tmp_path, monkeypa
         assert inter_write["error"]["details"]["write_context"]["may_have_written"] is True
         assert inter_dispatch_calls == 2
 
-    # 4) Positional-only (with or without **kwargs) and generic **kwargs wrappers must NOT claim write-tracking support.
+    # 4) Positional-only, generic **kwargs, and functools.wraps(**kwargs) wrappers must NOT claim write-tracking support.
+    import functools
+
     def posonly_capabilities(config, write_tracking=False, /):
         return product_machine_bundle.capabilities(config, write_tracking=write_tracking)
 
@@ -851,9 +887,15 @@ def test_bundle_write_tracking_compatibility_and_capabilities(tmp_path, monkeypa
         assert operation == "bundle_capabilities"
         return legacy_capabilities(config)
 
+    @functools.wraps(product_machine_bundle.dispatch)
+    def wrapped_kwargs_dispatch(service, config, operation, args, **_extra):
+        assert operation == "bundle_capabilities"
+        return legacy_capabilities(config)
+
     for variant, fn in (("posonly", posonly_dispatch),
                         ("posonly-kwargs", posonly_kwargs_dispatch),
-                        ("generic-kwargs", generic_kwargs_dispatch)):
+                        ("generic-kwargs", generic_kwargs_dispatch),
+                        ("wrapped-kwargs", wrapped_kwargs_dispatch)):
         bundle_stub = types.SimpleNamespace(
             load_access=product_machine_bundle.load_access,
             capabilities=posonly_capabilities,
