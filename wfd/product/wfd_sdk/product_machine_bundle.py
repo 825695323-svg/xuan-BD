@@ -64,14 +64,15 @@ def _denial(config, operation):
     return None
 
 
-def capabilities(config):
+def capabilities(config, *, write_tracking=False):
     operations = {}
     for name in BUNDLE_ROLES:
-        denial = _denial(config, name)
+        denial = _denial(config, name) if write_tracking else "OPERATION_UNSUPPORTED"
         operations[name] = {"supported": denial is None, "writes_target": name in BUNDLE_WRITES,
                             "reason": denial.split(":")[0] if denial else None}
     return {"format_version": sdk.STRUCTURED_BUNDLE_FORMAT, "profile": sdk.STRUCTURED_PROFILE,
-            "operations": operations, "max_products": MAX_PRODUCTS}
+            "operations": operations, "max_products": MAX_PRODUCTS,
+            "write_tracking": bool(write_tracking)}
 
 
 def _require_snapshot(value):
@@ -87,7 +88,9 @@ def _check_tree(root):
             raise ValueError("BUNDLE_PATH_INVALID:non-regular bundle member")
 
 
-def _export(service, access, operation, args, package):
+def _export(service, access, operation, args, package, *, on_write_start=None):
+    if not callable(on_write_start):
+        raise ValueError("OPERATION_UNSUPPORTED:bundle write-tracking entry required")
     required = {"package_path", "snapshot_id", "products"}
     if operation == "bundle_export_delta":
         required.add("baseline_snapshot_id")
@@ -138,6 +141,7 @@ def _export(service, access, operation, args, package):
               "bundle_export_reference": sdk.export_structured_reference_bundle}[operation]
     # Publish only a completely verified directory. Recovery never overwrites
     # an existing package, including one created by a concurrent request.
+    on_write_start()
     with tempfile.TemporaryDirectory(dir=package.parent, prefix=".bundle-") as staging:
         staged = Path(staging) / "package"
         descriptor = export(service, ids, staged, **options)
@@ -185,11 +189,13 @@ def _summary(descriptor, digest):
             "read_self_contained": descriptor["read_self_contained"], "write_authority_granted": False}
 
 
-def dispatch(service, config, operation, args):
+def dispatch(service, config, operation, args, *, on_write_start=None):
+    if operation != "bundle_capabilities" and not callable(on_write_start):
+        raise ValueError("OPERATION_UNSUPPORTED:bundle write-tracking entry required")
     service.require_permission("read")
     if operation == "bundle_capabilities":
         _exact(args, set(), set())
-        return capabilities(config)
+        return capabilities(config, write_tracking=callable(on_write_start))
     denial = _denial(config, operation)
     if denial:
         raise ValueError(denial)
@@ -201,7 +207,7 @@ def dispatch(service, config, operation, args):
     if package.parent != root or not NAME.fullmatch(package.name):
         raise ValueError("BUNDLE_PATH_INVALID:outside package_root")
     if operation not in BUNDLE_WRITES:
-        return _export(service, access, operation, args, package)
+        return _export(service, access, operation, args, package, on_write_start=on_write_start)
     _exact(args, {"package_path", "descriptor_sha256"}, {"package_path", "descriptor_sha256"})
     digest = args["descriptor_sha256"]
     if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
@@ -225,6 +231,7 @@ def dispatch(service, config, operation, args):
     _check_tree(target)
     options = {"runtime_root": runtime, "protocol_root": config["protocol_root"],
                "caller_roles": {"read"}, "expected_sha256": digest, "require_detached": True}
+    on_write_start()
     if mode == "full":
         _, report = sdk.import_structured_bundle(package, target, **options)
     elif mode == "delta":

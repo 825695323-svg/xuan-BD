@@ -214,7 +214,7 @@ test('HTTP full, delta and reference bundles use a real isolated WFD process and
     writeFileSync(object, 'synthetic damaged object');
     assert.equal((await call('full/import', { ...inbound, packageName: 'damaged', requestId: 'damaged' })).data.code,
       'BUNDLE_INTEGRITY_FAILED');
-    symlinkSync(f.root, join(damaged, 'link'));
+    symlinkSync(f.root, join(damaged, 'link'), process.platform === 'win32' ? 'junction' : undefined);
     assert.equal((await call('full/import', { ...inbound, packageName: 'damaged', requestId: 'linked' })).data.code, 'BUNDLE_PATH_INVALID');
     assert.equal(existsSync(target), false);
     const imported: WfdBundleReceipt = (await ok('full/import', inbound)).receipt;
@@ -275,7 +275,7 @@ test('HTTP full, delta and reference bundles use a real isolated WFD process and
       await assert.rejects(source.request('bundle_export_full', { snapshot_id: sid, products: selection.products,
         package_path: join(packages, 'injected'), [key]: value }), { code: 'REQUEST_INVALID' });
     }
-    symlinkSync(packages, join(packages, 'alias'));
+    symlinkSync(packages, join(packages, 'alias'), process.platform === 'win32' ? 'junction' : undefined);
     for (const path of [join(f.root, 'escape'), packages + '/alias/new', packages + '/none/../escape', 'relative']) {
       await assert.rejects(source.bundleExportFull({ package_path: path, snapshot_id: sid, products: selection.products }), { code: 'BUNDLE_PATH_INVALID' });
     }

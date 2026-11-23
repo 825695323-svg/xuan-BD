@@ -24,7 +24,7 @@ import type { CloudCustodyBackend } from '../../plugins/storage/baidu-drive.js';
 import { createApplicationServices } from './services.js';
 
 const codeRoot = fileURLToPath(new URL('../..', import.meta.url));
-const productRoot = join(codeRoot, 'wfd/product');
+const productRoot = realpathSync(join(codeRoot, 'wfd/product'));
 const health: HealthResponse = { name: 'xuan BD', backend: 'demo', configured: false, model: null, provider: null,
   notice: 'isolated full-chain test; model disabled' };
 const backend: Backend = { id: 'isolated-no-model', createSession: async () => { throw new Error('Model calls are disabled in full-chain tests'); } };

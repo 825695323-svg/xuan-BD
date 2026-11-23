@@ -32,11 +32,13 @@ def make_data_service(tmp_path):
                               trusted_actor_namespaces={'wfd.local'})
 
 
-def query_fixture(tmp_path, *, policy=False, dates=1):
+def query_fixture(tmp_path, *, policy=False, dates=1, definition_public_time=None):
     service = make_data_service(tmp_path)
     snapshot, products, subjects = None, [], []
     for index, value in enumerate(['10', '10', None, '0']):
         output = bar_output(policy=policy, subject='query_' + str(index))
+        if definition_public_time is not None:
+            output['definition_public_time'] = copy.deepcopy(definition_public_time)
         output['definition']['semantic_code'] = 'r07.synthetic_value'
         output['definition']['field_definitions'] = [f for f in output['definition']['field_definitions'] if f['field_code'] in {'close', 'high'}]
         row = output['payload']['rows'][0]
@@ -336,7 +338,7 @@ def test_legacy_machine_submit_evidence_schema_and_reopen(tmp_path):
 
 def test_historical_qualification_missing_is_specific(tmp_path):
     from test_product_query import known_second
-    service, config, args = query_fixture(tmp_path)
+    service, config, args = query_fixture(tmp_path, definition_public_time=known_second(2025, 1, 1))
     requested = dict(args, history_mode='market_known_at', knowledge_cutoff=known_second(2026, 1, 10))
     historical = query(service, config, requested)
     assert historical['objects'] == [] and historical['status'] == 'coverage_insufficient', historical
@@ -427,10 +429,71 @@ def test_candidate_wire_stays_compatible_and_unknown_is_not_empty(tmp_path):
 
 def test_filter_hides_unqualified_definition_before_field_binding(tmp_path):
     from test_product_query import known_second
-    service, config, args = query_fixture(tmp_path)
-    args.update(history_mode='market_known_at', knowledge_cutoff=known_second(2026, 1, 10))
-    args['metrics'][0]['field'] = 'undisclosed_field'
-    result = query(service, config, args)
-    assert result['status'] == 'coverage_insufficient'
-    assert result['bindings'] == [] and result['coverage']['products'] == []
-    assert result['objects'] == [] and len(result['indeterminate']) == len(args['universe']['subjects'])
+    from wfd_sdk.product_query import ProductQueryError
+    for idx, def_time in enumerate((None, known_second(2026, 2, 1))):
+        case_dir = tmp_path / f'case-{idx}'
+        case_dir.mkdir()
+        service, config, args = query_fixture(case_dir, definition_public_time=def_time)
+        args.update(history_mode='market_known_at', knowledge_cutoff=known_second(2026, 1, 10))
+        args['metrics'][0]['field'] = 'undisclosed_field'
+        with pytest.raises(ProductQueryError, match='HISTORY_DEFINITION_TIME_UNSUPPORTED'):
+            query(service, config, args)
+
+
+def test_legacy_machine_filter_refuses_market_known_at_before_field_binding(tmp_path):
+    from synthetic_daily import make_daily_store
+    from test_product_query import known_second
+    from wfd_sdk.product_query import ProductQueryError
+    fixture = make_daily_store(tmp_path / 'legacy-history')
+    args = {'protocol_version': PROTOCOL, 'operation': 'filter_objects', 'dataset_id': 'synthetic_daily',
+            'snapshot_id': fixture.snapshot_id, 'history_mode': 'market_known_at',
+            'knowledge_cutoff': known_second(2026, 1, 10), 'held_scope': None, 'usable_stage': None,
+            'universe': {'kind': 'explicit_subjects', 'subjects': [SUBJECT]},
+            'metrics': [{'metric': 'close', 'field': 'undisclosed_field',
+                         'bindings': [{'subject': SUBJECT, 'product_id': fixture.product_id}]}],
+            'predicate': {'compare': {'metric': 'close', 'op': '>=',
+                                      'value': {'data_type': 'decimal', 'value': '0', 'unit_code': 'cny_per_share'}}},
+            'business_time_range': None, 'order_by': [{'kind': 'subject', 'direction': 'asc'}],
+            'page_size': 10, 'max_scan_bytes': 268435456, 'max_nodes': 200000}
+    with pytest.raises(ProductQueryError, match='HISTORY_DEFINITION_TIME_UNSUPPORTED'):
+        query(fixture.service, {'store': str(fixture.store), 'runtime': str(tmp_path / 'runtime')}, args)
+
+
+def test_indexed_product_filter_rejects_market_known_at_before_partition_disclosure(tmp_path):
+    from test_indexed_tabular_query import minute_header, publish, row
+    from test_p4b_precise_hydration import _volume
+    from test_product_query import known_second
+    from wfd_sdk.product_batches import ProductBatchLedger
+    from wfd_sdk.product_query import ProductQueryError
+    from wfd_sdk.product_service import WFDProductService
+    volume, _ = _volume(tmp_path, 'indexed-filter')
+    volume.unit_registry['date'] = {'dimension': 'date'}
+    ledger = ProductBatchLedger(volume, ledger_root=tmp_path / 'ledger')
+    rows = [row('20260407', minute='09:30', first='1.0000')]
+    published = publish(ledger, minute_header('indexed-day', rows), rows)
+    base_args = {
+        'protocol_version': PROTOCOL, 'operation': 'filter_objects', 'dataset_id': 'wfd_r1_local',
+        'snapshot_id': published['snapshot_id'], 'history_mode': 'market_known_at',
+        'knowledge_cutoff': known_second(2026, 4, 8), 'held_scope': None, 'usable_stage': None,
+        'universe': {'kind': 'explicit_subjects', 'subjects': [SUBJECT]},
+        'metrics': [{'metric': 'close', 'field': 'undisclosed_field',
+                     'bindings': [{'subject': SUBJECT, 'product_id': published['product_id']}]}],
+        'predicate': {'compare': {'metric': 'close', 'op': '>=',
+                                  'value': {'data_type': 'decimal', 'value': '0', 'unit_code': 'cny_per_share'}}},
+        'business_time_range': None, 'order_by': [{'kind': 'subject', 'direction': 'asc'}],
+        'page_size': 10, 'max_scan_bytes': 268435456, 'max_nodes': 200000,
+    }
+    cfg = {'store': str(volume.root), 'runtime': str(tmp_path / 'runtime')}
+    with pytest.raises(ProductQueryError, match='HISTORY_DEFINITION_TIME_UNSUPPORTED'):
+        query(volume, cfg, dict(base_args))
+    legacy_svc = WFDProductService(
+        volume.engine,
+        allowed_sources={'fixture': {'may_read': True, 'usage_scope': 'test'}},
+        caller_roles={'read'},
+        caller_id='legacy-indexed',
+        unit_registry=volume.unit_registry,
+    )
+    with pytest.raises(ProductQueryError, match='HISTORY_DEFINITION_TIME_UNSUPPORTED'):
+        query(legacy_svc, cfg, dict(base_args))
+    with pytest.raises(ProductQueryError, match='BULK_PARTITION_LOCATOR_REQUIRED'):
+        query(volume, cfg, {**base_args, 'history_mode': 'snapshot_contents', 'knowledge_cutoff': None})

@@ -502,7 +502,7 @@ export class SegmentService {
       documentIds = input.documentIds.filter(id => allowed.has(id));
     }
     const gaps: string[] = this.jointEntry ? [] : ['structured_query_not_wired'];
-    if (documentIds === undefined) gaps.push('permission_scope_not_implemented');
+    if (allowedDocumentIds === undefined) gaps.push('permission_scope_not_implemented');
     const cutoff = mode === 'system_held_at' ? asOfMs : null;
     const selected = input.indexVersion ?? (db && resolveIndexVersion(db, cutoff, documentIds)?.index_version);
     const resolved = db && selected ? listIndexVersions(db, documentIds, selected)[0] : null;

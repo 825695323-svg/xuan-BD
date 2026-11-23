@@ -64,6 +64,7 @@ USAGE_OPERATIONS = {"usage_status", "usage_audit_read", "usage_suspend",
 USAGE_WRITE_OPERATIONS = {"usage_suspend", "usage_authorize_repair", "usage_resolve"}
 DATA_ONLY_CALLER_ROLES = {"read", "register", "submit", "publish"}
 MAX_INPUT_BYTES = 1_048_576
+MAX_ALLOWED_INPUT_BYTES = 8_388_608
 MAX_OUTPUT_BYTES = 33_554_432
 REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 CONNECTION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -284,18 +285,40 @@ def _parse_bundle_host_path(value, path_type=Path):
     return path
 
 
+_NT_TRANSPARENT_REPARSE_TAGS = frozenset({
+    0x80000013,  # IO_REPARSE_TAG_DEDUP
+    0x80000017,  # IO_REPARSE_TAG_WOF
+})
+
+
+def _is_nt_link_stat(info):
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    attrs = getattr(info, "st_file_attributes", 0)
+    if not (attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+        return False
+    tag = getattr(info, "st_reparse_tag", 0)
+    # Fail closed on every reparse point (including symlinks, junctions,
+    # APPEXECLINK, AF_UNIX, and tag==0) except known transparent NTFS
+    # storage filter tags (DEDUP, WOF).
+    return tag not in _NT_TRANSPARENT_REPARSE_TAGS
+
+
 def _canonical_bundle_path(value):
     path = _parse_bundle_host_path(value)
     if path.resolve() != path:
         raise ValueError("BUNDLE_PATH_INVALID")
-    # Windows may resolve a non-symlink reparse point to the same spelling.
+    # Windows may resolve a name-surrogate reparse point (junction/mount/symlink)
+    # or include non-surrogate filter tags on intermediate components or drive roots.
     if os.name == "nt":
         for part in (*path.parents, path):
+            if part.parent == part:
+                continue
             try:
-                attributes = part.lstat().st_file_attributes
+                info = part.lstat()
             except FileNotFoundError:
                 continue
-            if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            if _is_nt_link_stat(info):
                 raise ValueError("BUNDLE_PATH_INVALID")
     return path
 
@@ -318,6 +341,40 @@ def _optional_bundle_module():
     except (ImportError, OSError):
         return None
     return product_machine_bundle
+
+
+def _accepts_keyword_param(fn, name):
+    import inspect
+    if not callable(fn):
+        return False
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    for param in params:
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == name and param.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+            return True
+    return False
+
+
+def _bundle_supports_write_tracking(bundle_module):
+    return _accepts_keyword_param(getattr(bundle_module, "dispatch", None), "on_write_start")
+
+
+def _bundle_capabilities(bundle_module, config, *, write_tracking):
+    accepts_flag = _accepts_keyword_param(getattr(bundle_module, "capabilities", None), "write_tracking")
+    caps = (bundle_module.capabilities(config, write_tracking=write_tracking)
+            if accepts_flag else bundle_module.capabilities(config))
+    if not write_tracking:
+        ops = {}
+        for name, info in caps.get("operations", {}).items():
+            ops[name] = ({**info, "supported": False, "reason": "OPERATION_UNSUPPORTED"}
+                         if isinstance(info, dict) else info)
+        caps = {**caps, "operations": ops}
+    return {**caps, "write_tracking": bool(write_tracking)}
 
 
 def _load_config(path, expected_sha256=None):
@@ -384,7 +441,7 @@ def _load_config(path, expected_sha256=None):
     if extra_roles:
         raise ValueError("CONFIG_INVALID:machine roles not supported " + ",".join(extra_roles))
     profile = config.get("profile", "legacy")
-    if profile not in PROFILES:
+    if not isinstance(profile, str) or profile not in PROFILES:
         raise ValueError("CONFIG_INVALID:profile")
     sources = config.get("sources", config.get("allowed_sources", {}))
     if not isinstance(sources, dict):
@@ -414,7 +471,7 @@ def _load_config(path, expected_sha256=None):
         raise ValueError("CONFIG_INVALID:limits")
     max_input = limits.get("max_request_bytes", MAX_INPUT_BYTES)
     max_output = limits.get("max_response_bytes", MAX_OUTPUT_BYTES)
-    if not isinstance(max_input, int) or not (1024 <= max_input <= 8_388_608):
+    if not isinstance(max_input, int) or not (1024 <= max_input <= MAX_ALLOWED_INPUT_BYTES):
         raise ValueError("CONFIG_INVALID:max_request_bytes")
     if not isinstance(max_output, int) or not (65_536 <= max_output <= MAX_OUTPUT_BYTES):
         raise ValueError("CONFIG_INVALID:max_response_bytes")
@@ -444,7 +501,7 @@ def _load_config(path, expected_sha256=None):
             raise ValueError("CONFIG_INVALID:volume mount_point must equal store")
         volume = binding.to_dict()
     storage_format = config.get("storage_format")
-    if storage_format not in (None, "joint_experimental"):
+    if storage_format is not None and (not isinstance(storage_format, str) or storage_format != "joint_experimental"):
         raise ValueError("CONFIG_INVALID:storage_format")
     if storage_format and (profile != "data_only" or volume is not None):
         raise ValueError("CONFIG_INVALID:joint format requires local data_only")
@@ -643,13 +700,19 @@ def _service_error(exc):
     text = str(exc)
     if isinstance(exc, OverflowError) and "RESPONSE_TOO_LARGE" in text:
         return "RESPONSE_TOO_LARGE", text
-    if isinstance(exc, PermissionError):
+    if isinstance(exc, FileNotFoundError):
+        code = "WFD_STORE_UNAVAILABLE"
+        if getattr(exc, "errno", None) is not None and getattr(exc, "filename", None):
+            text = exc.strerror or "file not found"
+    elif isinstance(exc, PermissionError) and getattr(exc, "errno", None) is None:
         code = "CALLER_PERMISSION_DENIED"
         match = _CODE_PREFIX.match(text)
         if match and match.group(1).startswith(("CALLER_", "SOURCE_")):
             code = match.group(1)
-    elif isinstance(exc, FileNotFoundError):
-        code = "WFD_STORE_UNAVAILABLE"
+    elif isinstance(exc, OSError):
+        code = "STORAGE_IO_ERROR"
+        if getattr(exc, "errno", None) is not None:
+            text = exc.strerror or "storage I/O error"
     else:
         match = _CODE_PREFIX.match(text)
         code = match.group(1) if match else "REQUEST_INVALID"
@@ -1416,7 +1479,7 @@ def _review_definition(service, namespace, args):
             "product_ids": sorted({p["product_id"] for p in family}), "missing_fields": missing}
 
 
-def _handle(service, config, request):
+def _handle(service, config, request, *, on_bundle_write_start=None):
     request_id, operation, arguments = _request_object(request)
     identity = _caller_identity(config, service)
     service_identity = _service_identity(service)
@@ -1452,10 +1515,29 @@ def _handle(service, config, request):
         bundle_module = _optional_bundle_module()
         if bundle_module is None:
             raise _Unsupported(operation, request_id, identity, service_identity)
-        result = bundle_module.dispatch(service, config, operation, arguments)
+        supports_write_tracking = _bundle_supports_write_tracking(bundle_module)
+        if operation == "bundle_capabilities":
+            effective_tracking = supports_write_tracking and callable(on_bundle_write_start)
+            if supports_write_tracking:
+                result = bundle_module.dispatch(service, config, operation, arguments,
+                                                on_write_start=on_bundle_write_start)
+            else:
+                result = bundle_module.dispatch(service, config, operation, arguments)
+            if not effective_tracking:
+                for info in result.get("operations", {}).values():
+                    if isinstance(info, dict):
+                        info["supported"] = False
+                        info["reason"] = "OPERATION_UNSUPPORTED"
+            result["write_tracking"] = bool(effective_tracking)
+        else:
+            if not supports_write_tracking or not callable(on_bundle_write_start):
+                raise ValueError("OPERATION_UNSUPPORTED:bundle write-tracking SDK required")
+            result = bundle_module.dispatch(service, config, operation, arguments,
+                                            on_write_start=on_bundle_write_start)
     elif operation == "capabilities":
         _exact(arguments, set(), set())
-        result = _capabilities(service, config, identity, service_identity)
+        result = _capabilities(service, config, identity, service_identity,
+                               bundle_write_tracking=callable(on_bundle_write_start))
     elif operation == "service_capabilities":
         _exact(arguments, set(), set())
         result = service.capabilities()
@@ -1807,7 +1889,7 @@ class _Unsupported(Exception):
         self.service = service
 
 
-def _capabilities(service, config, identity, service_identity):
+def _capabilities(service, config, identity, service_identity, *, bundle_write_tracking=False):
     service_caps = service.capabilities()
     data_only = config.get("profile") == "data_only"
     exposed = list(QUERY_MACHINE_OPERATIONS) if data_only else ["read_product"]
@@ -1877,8 +1959,11 @@ def _capabilities(service, config, identity, service_identity):
                for name, reason in sorted(UNSUPPORTED.items())]
         )
     bundle_module = _optional_bundle_module() if data_only and not config.get("volume") else None
+    effective_tracking = False
     if bundle_module is not None:
-        for name, info in bundle_module.capabilities(config)["operations"].items():
+        effective_tracking = bundle_write_tracking and _bundle_supports_write_tracking(bundle_module)
+        bundle_caps = _bundle_capabilities(bundle_module, config, write_tracking=effective_tracking)
+        for name, info in bundle_caps["operations"].items():
             operations[name].update(info)
     else:
         for name in BUNDLE_OPERATIONS:
@@ -1902,6 +1987,7 @@ def _capabilities(service, config, identity, service_identity):
         "machine_protocol": MACHINE_PROTOCOL,
         "service_identity": service_identity,
         "profile": config.get("profile", "legacy"),
+        "bundle_write_tracking": bool(effective_tracking),
         "operations": operations,
         "unsupported": unsupported,
         "service_capabilities": service_caps,
@@ -1976,7 +2062,7 @@ def _write_response(response, limit):
     sys.stdout.buffer.flush()
 
 
-def _error_response(exc, config, service, request, started):
+def _error_response(exc, config, service, request, started, *, bundle_write_started=False):
     request_id = request.get("request_id") if isinstance(request, dict) else None
     operation = request.get("operation") if isinstance(request, dict) else None
     # Service construction can stat or open the volume marker before ProductQuery runs.
@@ -2018,11 +2104,13 @@ def _error_response(exc, config, service, request, started):
         else:
             action = (action + " 本操作属于写操作：不要假定未写入，也不要换新身份重投；"
                   "请用同一 request_identity/batch_id 查询真实状态后按 recovery 处理。")
-    if operation in BUNDLE_ROLES and code in {
-            "CALLER_PERMISSION_DENIED", "SOURCE_READ_PERMISSION_MISSING", "SOURCE_NOT_ADMITTED",
-            "WRITE_AUTHORITY_REQUIRED", "BUNDLE_CONFIG_CHANGED", "BUNDLE_PATH_INVALID",
-            "BUNDLE_OPERATION_NOT_CONFIGURED", "SOURCE_EXPORT_PERMISSION_MISSING", "REQUEST_INVALID",
-            "BUNDLE_DESCRIPTOR_DIGEST_MISMATCH", "OPERATION_UNSUPPORTED"} and write_context is not None:
+    if (not bundle_write_started and getattr(exc, "errno", None) is None
+            and operation in BUNDLE_ROLES and code in {
+                "CALLER_PERMISSION_DENIED", "SOURCE_READ_PERMISSION_MISSING", "SOURCE_NOT_ADMITTED",
+                "WRITE_AUTHORITY_REQUIRED", "BUNDLE_CONFIG_CHANGED", "BUNDLE_PATH_INVALID",
+                "BUNDLE_OPERATION_NOT_CONFIGURED", "SOURCE_EXPORT_PERMISSION_MISSING", "REQUEST_INVALID",
+                "BUNDLE_DESCRIPTOR_DIGEST_MISMATCH", "OPERATION_UNSUPPORTED",
+                "CONFIG_INVALID", "CONFIG_UNSAFE", "CONFIG_NOT_FOUND"} and write_context is not None):
         write_context["may_have_written"] = False
     if write_context is not None:
         details = {"write_context": write_context,
@@ -2052,26 +2140,38 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="WFD product-service local process boundary")
     parser.add_argument("--config", required=True, help="absolute path to trusted machine configuration")
     parser.add_argument("--expected-config-sha256", help="host-pinned configuration identity")
+    parser.add_argument("--require-bundle-write-tracking", action="store_true",
+                        help="require bundle write-tracking support in entry and SDK")
     args = parser.parse_args(argv)
     started = time.monotonic()
     config = None
     service = None
     request = None
     response = None
+    bundle_write_started = False
+
+    def _mark_bundle_write():
+        nonlocal bundle_write_started
+        bundle_write_started = True
+
     try:
+        # Correlate the refusal without loading any paths or principals
+        # from the invalid or changed configuration.
         try:
             config = _load_config(args.config, args.expected_config_sha256)
-        except ValueError as exc:
-            if str(exc) == "BUNDLE_CONFIG_CHANGED":
-                # Correlate the refusal without loading any paths or principals
-                # from the changed configuration.
-                request = _read_json_bounded(sys.stdin.buffer, MAX_INPUT_BYTES)
-                _request_object(request)
+        except (ValueError, OSError, TypeError) as exc:
+            try:
+                candidate = _read_json_bounded(sys.stdin.buffer, MAX_ALLOWED_INPUT_BYTES)
+                _request_object(candidate)
+                request = candidate
+            except Exception:
+                if str(exc) == "BUNDLE_CONFIG_CHANGED":
+                    raise
             raise
         request = _read_json_bounded(sys.stdin.buffer, config["max_request_bytes"])
         _, operation, _ = _request_object(request)
         service = _build_service(config, operation=operation)
-        response = _handle(service, config, request)
+        response = _handle(service, config, request, on_bundle_write_start=_mark_bundle_write)
         _write_response(response, config["max_response_bytes"])
         return 0
     except _Unsupported as exc:
@@ -2099,7 +2199,8 @@ def main(argv=None):
                 fallback = _output_failure_response(exc, config, service, request,
                                                     response, started)
             else:
-                fallback = _error_response(exc, config, service, request, started)
+                fallback = _error_response(exc, config, service, request, started,
+                                           bundle_write_started=bundle_write_started)
         except Exception:
             fallback = {
                 "protocol_version": MACHINE_PROTOCOL,

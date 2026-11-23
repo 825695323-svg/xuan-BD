@@ -93,7 +93,7 @@ export class StructuredRetrievalService {
         method: docs.method as 'keyword' | 'exact', query: docs.query as string,
         limit: Number(docs.limit ?? 20), indexVersion: docs.indexVersion as string,
         asOf, ...(historical ? { mode: history } : {}), documentIds: [...materialIds].sort(),
-      }) : null;
+      }, branch?.allowedDocumentIds) : null;
       if (retrieval?.status === 'index_missing') gaps.push({ code: 'DOCUMENT_INDEX_MISSING', indexVersion: docs.indexVersion });
       if (retrieval?.status === 'history_unavailable') gaps.push({ code: 'DOCUMENT_HISTORY_UNAVAILABLE', excluded: retrieval.coverage.excluded });
       if (retrieval?.status === 'no_match') gaps.push({ code: 'NO_DOCUMENT_MATCH_IN_VERIFIED_SCOPE' });

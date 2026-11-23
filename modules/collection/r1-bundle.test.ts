@@ -22,7 +22,7 @@ function setup() {
   const sdk = join(root, 'external-wfd', 'wfd_sdk'), product = fileURLToPath(new URL('../../wfd/product/', import.meta.url));
   const store = join(root, 'store'), wfdRuntime = join(root, 'wfd-runtime');
   for (const dir of [packages, store, wfdRuntime, sdk, join(root, 'config')]) mkdirSync(dir, { recursive: true });
-  for (const name of ['product_query.py', 'indexed_tabular_query.py', 'filter_plan.py', 'product_machine_bundle.py', 'product_bundle.py', 'transfer.py'])
+  for (const name of ['product_query.py', 'indexed_tabular_query.py', 'filter_plan.py', 'product_machine_bundle.py', 'product_bundle.py', 'transfer.py', 'product_machine.py'])
     copyFileSync(join(product, 'wfd_sdk', name), join(sdk, name));
   const registry = join(root, 'config', 'connections.json');
   writeFileSync(join(root, '.xuan-runtime.json'), JSON.stringify({ application: 'xuan-bd', version: 1, identity: 'bundle-test' }));
@@ -109,7 +109,7 @@ test('logical package names, exact nested selections, stopped generation and con
     for (const body of [{ ...selection, packageName: '../escape' }, { ...selection, store: f.packages },
       { ...selection, products: [{ product_id: 'p_synthetic', roles: ['read'] }] }])
       assert.throws(() => f.service.dispatch('bundle_export_full', body), { code: 'R1_BUNDLE_INPUT' });
-    symlinkSync(f.packages, join(f.packages, 'link'));
+    symlinkSync(f.packages, join(f.packages, 'link'), process.platform === 'win32' ? 'junction' : undefined);
     await assert.rejects(f.service.dispatch('bundle_export_full', { ...selection, packageName: 'link' }), { code: 'BUNDLE_PATH_INVALID' });
     assert.equal(f.service.requestStatus(selection.requestId).state, 'failed');
     const dispatch = f.service.dispatch('bundle_export_full', { ...selection, requestId: 'stale' });
@@ -153,7 +153,7 @@ test('registered external WFD bytes bind fixed reads and bundle dispatch, status
     appendFileSync(join(f.sdk, 'filter_plan.py'), '\n');
     assert.notEqual(runtime.currentReadBinding().queryImplSha256, read.queryImplSha256);
     assert.deepEqual(runtime.currentBundleIdentity(), initial);
-    for (const file of ['product_machine_bundle.py', 'product_bundle.py', 'transfer.py']) {
+    for (const file of ['product_machine_bundle.py', 'product_bundle.py', 'transfer.py', 'product_machine.py']) {
       const path = join(f.sdk, file), original = readFileSync(path);
       appendFileSync(path, '\n');
       assert.notEqual(runtime.currentBundleIdentity().bundleImplSha256, initial.bundleImplSha256);
@@ -196,9 +196,15 @@ test('81734d0 and 9e40cf65 request bindings keep confirmed receipts and unconfir
       ['product_machine_bundle.py', wfdSha256(readFileSync(join(f.sdk, 'product_machine_bundle.py')))],
       ['product_bundle.py', wfdSha256(readFileSync(join(f.sdk, 'product_bundle.py')))],
     ]));
+    const threeFileSha = wfdSha256(canonicalWfdJson([
+      ['product_machine_bundle.py', wfdSha256(readFileSync(join(f.sdk, 'product_machine_bundle.py')))],
+      ['product_bundle.py', wfdSha256(readFileSync(join(f.sdk, 'product_bundle.py')))],
+      ['transfer.py', wfdSha256(readFileSync(join(f.sdk, 'transfer.py')))],
+    ]));
     const legacyRows = [
       ['old', wfdSha256(canonicalWfdJson([f.service.versionBinding, baseIdentity]))],
       ['prev', wfdSha256(canonicalWfdJson([f.service.versionBinding, { ...baseIdentity, bundleImplSha256: twoFileSha }]))],
+      ['prev3', wfdSha256(canonicalWfdJson([f.service.versionBinding, { ...baseIdentity, bundleImplSha256: threeFileSha }]))],
     ] as const;
     for (const [prefix, binding] of legacyRows) {
       for (const state of ['succeeded', 'outcome_unknown']) {
@@ -226,6 +232,7 @@ test('81734d0 and 9e40cf65 request bindings keep confirmed receipts and unconfir
       assert.throws(() => service.requestStatus(selection.requestId), { code: 'R1_CONNECTION_BINDING_CHANGED' });
       const mutated = new R1BundleService({ ...f.options, database });
       assert.throws(() => mutated.requestStatus('prev-succeeded'), { code: 'R1_BUNDLE_REQUEST_NOT_FOUND' });
+      assert.throws(() => mutated.requestStatus('prev3-succeeded'), { code: 'R1_BUNDLE_REQUEST_NOT_FOUND' });
       appendFileSync(f.configPath, '\n');
       const other = new R1BundleService({ ...f.options, database });
       assert.throws(() => other.requestStatus('old-succeeded'), { code: 'R1_BUNDLE_REQUEST_NOT_FOUND' });
@@ -246,10 +253,54 @@ test('a dispatched export timeout stays uncertain across reopening and an unsucc
     try {
       const reopened = new R1BundleService({ ...f.options, database });
       assert.equal(reopened.requestStatus(input.requestId).state, 'outcome_unknown');
-      symlinkSync(f.packages, join(f.packages, input.packageName));
+      symlinkSync(f.packages, join(f.packages, input.packageName), process.platform === 'win32' ? 'junction' : undefined);
       await assert.rejects(reopened.dispatch('bundle_export_full', input), { code: 'BUNDLE_PATH_INVALID', mayHaveBeenAccepted: true });
       assert.equal(reopened.requestStatus(input.requestId).state, 'outcome_unknown');
       assert.equal(readFileSync(f.log, 'utf8').trim().split('\n').length, 1);
     } finally { database.close(); }
+  } finally { f.database.close(); }
+});
+
+test('host rejects legacy entry and SDK pairs lacking write-tracking support before any bundle side effect', async () => {
+  const f = setup();
+  try {
+    const legacyEntry = join(f.packages, '..', 'legacy-entry.cjs');
+    writeFileSync(legacyEntry, `
+if (process.argv.includes('--require-bundle-write-tracking')) {
+  process.stderr.write('usage: product_machine.py\\nproduct_machine.py: error: unrecognized arguments: --require-bundle-write-tracking\\n');
+  process.exit(2);
+}
+let raw = '';
+process.stdin.on('data', part => raw += part);
+process.stdin.on('end', () => {
+  const req = JSON.parse(raw);
+  const ops = {};
+  for (const [name, writes_target] of [
+    ['bundle_export_full', false], ['bundle_export_delta', false], ['bundle_export_reference', false],
+    ['bundle_import_full', true], ['bundle_apply_delta', true], ['bundle_register_reference', true],
+  ]) ops[name] = { supported: true, writes_target, reason: null };
+  const result = req.operation === 'bundle_capabilities'
+    ? { format_version: 'wfd.structured-bundle/1.0', profile: 'wfd.data-only/1.0', max_products: 64, operations: ops }
+    : { operations: ops };
+  process.stdout.write(JSON.stringify({
+    protocol_version: req.protocol_version, request_id: req.request_id, operation: req.operation,
+    identity: { connection_id: 'isolated', caller_id: 'operator', trusted_actor_namespace: 'synthetic' },
+    ok: true, result,
+  }));
+});`);
+    const client = new WfdProductMachineClient({
+      configPath: f.configPath, entryPath: legacyEntry, projectRoot: join(f.sdk, '..'), pythonPath: process.execPath,
+    });
+    const bcaps = (await client.bundleCapabilities()).result;
+    assert.ok(Object.values(bcaps.operations).every(item => item.supported === false && item.reason === 'OPERATION_UNSUPPORTED'));
+    const gcaps = (await client.capabilities()).result.operations as Record<string, { supported: boolean; reason: string }>;
+    for (const op of Object.keys(WFD_BUNDLE_OPERATIONS)) {
+      assert.equal(gcaps[op]?.supported, false);
+      assert.equal(gcaps[op]?.reason, 'OPERATION_UNSUPPORTED');
+    }
+    await assert.rejects(
+      client.bundleImportFull({ package_path: join(f.packages, 'pkg'), descriptor_sha256: descriptorSha256 }, undefined, 'legacy-import-1'),
+      (e: unknown) => e instanceof WfdProductMachineError && e.code === 'OPERATION_UNSUPPORTED' && e.mayHaveBeenAccepted === false,
+    );
   } finally { f.database.close(); }
 });

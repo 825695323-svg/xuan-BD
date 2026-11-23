@@ -84,6 +84,7 @@ export interface WfdBundleReceipt {
 }
 export interface WfdBundleCapabilities {
   format_version: typeof WFD_BUNDLE_FORMAT; profile: 'wfd.data-only/1.0'; max_products: number;
+  write_tracking?: boolean;
   operations: Record<WfdBundleOperation, { supported: boolean; writes_target: boolean; reason: string | null }>;
 }
 const bundleOperations = Object.entries(WFD_BUNDLE_OPERATIONS);
@@ -336,8 +337,15 @@ export class WfdProductMachineClient {
     this.bundleConfigDigest = 'sha256:' + pinnedSha;
   }
 
-  capabilities(signal?: AbortSignal): Promise<WfdProductMachineReply> {
-    return this.request('capabilities', {}, signal);
+  async capabilities(signal?: AbortSignal): Promise<WfdProductMachineReply> {
+    const reply = await this.request('capabilities', {}, signal);
+    if (reply.result.bundle_write_tracking !== true && isWfdRecord(reply.result.operations)) {
+      const ops = reply.result.operations as WfdRecord;
+      for (const [name] of bundleOperations) {
+        if (isWfdRecord(ops[name])) ops[name] = { ...ops[name], supported: false, reason: 'OPERATION_UNSUPPORTED' };
+      }
+    }
+    return reply;
   }
 
   async bundleCapabilities(signal?: AbortSignal) {
@@ -350,6 +358,12 @@ export class WfdProductMachineClient {
         return isWfdRecord(item) && typeof item.supported === 'boolean' && item.writes_target === spec.writesDatabase
           && (item.supported ? item.reason === null : typeof item.reason === 'string');
       })) throw new WfdProductMachineError('WFD_PRODUCT_MACHINE_RESPONSE', '分包能力声明不完整。', reply.transport);
+    if (caps.write_tracking !== true) {
+      const ops = caps.operations as WfdRecord;
+      for (const [name] of bundleOperations) {
+        ops[name] = { ...(ops[name] as WfdRecord), supported: false, reason: 'OPERATION_UNSUPPORTED' };
+      }
+    }
     return { ...reply, result: caps as unknown as WfdBundleCapabilities };
   }
 
@@ -673,6 +687,9 @@ export class WfdProductMachineClient {
       if (operation === 'bundle_capabilities' || Object.hasOwn(WFD_BUNDLE_OPERATIONS, operation)) {
         launch.push('--expected-config-sha256', this.bundleConfigDigest);
       }
+      if (Object.hasOwn(WFD_BUNDLE_OPERATIONS, operation)) {
+        launch.push('--require-bundle-write-tracking');
+      }
       const child = spawn(this.config.pythonPath, launch, {
         cwd: this.config.projectRoot,
         shell: false,
@@ -732,6 +749,13 @@ export class WfdProductMachineClient {
         const elapsedMs = Date.now() - started;
         let parsed: unknown;
         try { parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(stdout)); } catch (error) {
+          if (Object.hasOwn(WFD_BUNDLE_OPERATIONS, operation)
+            && stdout.length === 0 && code === 2
+            && stderr.includes('unrecognized arguments: --require-bundle-write-tracking')) {
+            return finish(new WfdProductMachineError('OPERATION_UNSUPPORTED', '所登记的 WFD 入口不支持分包写入状态追踪，未执行任何分包操作。', {
+              operation, requestId, cause: stderr, mayHaveBeenAccepted: false,
+            }));
+          }
           return finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_RESPONSE', `薄入口没有返回单个 JSON（exit=${String(code)}, signal=${String(signalName)}）。`, {
             operation, requestId, cause: stderr || error, mayHaveBeenAccepted: hasSideEffect && dispatched,
           }));
@@ -747,6 +771,7 @@ export class WfdProductMachineClient {
           || (bundleSpec && (response.ok ? response.error != null : response.result != null))) {
           return finish(new WfdProductMachineError('WFD_PRODUCT_MACHINE_RESPONSE', '薄入口响应的协议、请求编号或操作未核对。', {
             operation, requestId, service: isWfdRecord(response.service) ? response.service : null,
+            cause: isWfdRecord(response.error) ? response.error : undefined,
             mayHaveBeenAccepted: hasSideEffect && dispatched,
           }));
         }

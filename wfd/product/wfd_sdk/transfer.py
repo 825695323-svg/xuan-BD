@@ -48,13 +48,15 @@ class TransferIntegrityError(ValueError):
     pass
 
 
+from .product_machine import _is_nt_link_stat as is_nt_link_stat
+
+
 def is_bundle_link(path):
     try:
         info = path.lstat()
     except FileNotFoundError:
         return False
-    return (stat.S_ISLNK(info.st_mode) or
-            bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT))
+    return is_nt_link_stat(info)
 
 
 def verified_object_bytes(package, digest):

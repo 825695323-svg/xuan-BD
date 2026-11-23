@@ -522,8 +522,8 @@ export class R1WorkspaceService {
       if (scope.effectivePeriodPolicy === 'explicit_range' && mapping.effectivePeriod.status !== 'known')
         fail('G5_CROSS_SOURCE_EVIDENCE_REQUIRED', '关系字段档案声明 explicit_range，冻结映射须提供已知有效期。');
     }
-    const occurrencePolicy = event && scope?.domain === 'event_claim' ? scope.eventSemantics?.occurrencePolicy : undefined;
-    const preservePropagation = occurrencePolicy === 'preserve_distinct_propagation';
+    const preservePropagation = event && scope?.domain === 'event_claim'
+      && scope.eventSemantics?.occurrencePolicy === 'preserve_distinct_propagation';
     const checked = tabular ? checkR1MappedRows(parsed.rows, declaration) : null;
     if (checked && checked.quality !== 'pass') fail('R1_TABULAR_SEMANTICS', checked.gaps.join('；'));
     const rows = checked ? checked.rows : scalarRows(parsed.rows, input.mapping as R1ScalarMapping, input.target.inputMode === 'partial_observation');
@@ -532,8 +532,8 @@ export class R1WorkspaceService {
     if (input.target.inputMode === 'source_correction' && canonicalWfdJson(Object.keys(input.target.revisions!).sort()) !== canonicalWfdJson(rows.map(row => String((row as WfdRecord)[event ? 'event_id' : 'business_key'])).sort())) fail('R1_CORRECTION_KEYS', '修订前驱必须精确覆盖全部实际记录键。');
     const structured: R1StructuredRequest = { ...input.target, namespace: identity.namespace, producerNamespace: identity.namespace,
       requestId: input.requestId,
-      // 两种 G5 事件身份策略都要求严格追加；普通来源主张可复用相同事件的既有记录。
-      ...(input.target.inputMode === 'partial_observation' && occurrencePolicy === undefined ? { duplicatePolicy: 'skip_identical_append' as const } : {}),
+      // WFD 的严格追加会拒绝既有逻辑键，包括宿主没有逐行来源关联的记录；事件独立输出一律严格追加。
+      ...(input.target.inputMode === 'partial_observation' && !event ? { duplicatePolicy: 'skip_identical_append' as const } : {}),
       submissionDigest: 'sha256:' + '0'.repeat(64), payload: { kind: relation ? 'relation_edges' : event ? 'event_records' : tabular ? 'tabular_rows' : 'scalar_rows', rows } };
     const unsigned = buildStructuredIngestDocument(structured);
     const digestInput = structuredClone(unsigned);

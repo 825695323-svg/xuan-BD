@@ -758,24 +758,21 @@ class ProductQuery:
             raise ProductQueryError("SCAN_BUDGET_EXCEEDED", "Fixed filter metadata exceeds the scan allowance",
                                     {"required_scan_bytes": metadata_bytes, "max_scan_bytes": max_scan_bytes})
         selected = set(product_ids)
-        if selected.intersection(manifest.get("_indexed_product_ids", [])):
-            raise ProductQueryError("BULK_PARTITION_LOCATOR_REQUIRED", "Use batch_read_page for indexed products")
+        indexed_selected = selected.intersection(manifest.get("_indexed_product_ids", []))
         entries = [entry for entry in manifest["files"] if entry.get("product_id") in selected]
         self._authorize_metadata_sources(self._source_ids_from_entries(entries), require_nonempty=bool(entries))
-        unqualified = set()
         if history and history["history_mode"] == "market_known_at":
             at, _ = self._knowledge_cutoff(history)
-            for entry in entries:
-                try:
-                    self._guard_history_metadata([entry], history, at)
-                except ProductQueryError as exc:
-                    if exc.code != "HISTORY_DEFINITION_TIME_UNSUPPORTED":
-                        raise
-                    unqualified.add(entry["product_id"])
-            entries = [entry for entry in entries if entry["product_id"] not in unqualified]
+            self._guard_history_metadata(entries, history, at, require_guard=True)
+            if indexed_selected:
+                raise ProductQueryError(
+                    "HISTORY_DEFINITION_TIME_UNSUPPORTED",
+                    "Fixed definition history qualification is unavailable for indexed products",
+                )
+        if indexed_selected:
+            raise ProductQueryError("BULK_PARTITION_LOCATOR_REQUIRED", "Use batch_read_page for indexed products")
         products = self._manifest_products(entries)
         return {"products": list(products.values()), "metadata_bytes": metadata_bytes,
-                "unqualified_products": sorted(unqualified),
                 **({"row_version_object_validation_bytes": object_bytes} if object_bytes else {})}
 
     def _manifest_products(self, entries):
@@ -1729,7 +1726,7 @@ class ProductQuery:
             self._decode_offset_cursor(request["cursor"], session["query_hash"])
         return session
 
-    def _guard_history_metadata(self, entries, request, at):
+    def _guard_history_metadata(self, entries, request, at, *, require_guard=False):
         guard = getattr(self.service, "_guard_definition_history", None)
         if callable(guard):
             try:
@@ -1737,6 +1734,11 @@ class ProductQuery:
             except ValueError as exc:
                 code = "CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED" if str(exc) == "CURRENT_ONLY_BUSINESS_HISTORY_UNSUPPORTED" else "HISTORY_DEFINITION_TIME_UNSUPPORTED"
                 raise ProductQueryError(code, "Fixed definition is not qualified at this market cutoff") from exc
+        elif require_guard and request.get("history_mode") == "market_known_at":
+            raise ProductQueryError(
+                "HISTORY_DEFINITION_TIME_UNSUPPORTED",
+                "Fixed definition history qualification is unavailable for this service profile",
+            )
 
     def _read_context_product(self, session, product_id):
         cache = session["cache"]

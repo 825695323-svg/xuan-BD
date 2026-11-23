@@ -335,6 +335,11 @@ test('3 日系统持有拒绝 5 日固定索引，资格和两种 SQL 只匹配 
     }
     const later = service.search({ indexVersion, method: 'exact', query: '普通正文', asOf: new Date(t0 + 5 * day).toISOString() });
     assert.equal(later.citations[0]?.parser_version, 'parser-1');
+    assert.ok(later.gaps.includes('permission_scope_not_implemented'));
+    const docScoped = service.search({ indexVersion, method: 'exact', query: '普通正文', asOf: new Date(t0 + 5 * day).toISOString(), documentIds: ['same@id'] });
+    assert.ok(docScoped.gaps.includes('permission_scope_not_implemented'));
+    const branchScoped = service.search({ indexVersion, method: 'exact', query: '普通正文', asOf: new Date(t0 + 5 * day).toISOString(), documentIds: ['same@id'] }, ['same@id']);
+    assert.equal(branchScoped.gaps.includes('permission_scope_not_implemented'), false);
   } finally { service.close(); db.close(); }
 });
 
