@@ -445,17 +445,20 @@ def test_structured_delta_export_and_apply_use_explicit_utf8_encoding(delta_env,
     env = delta_env
     orig_text_encoding = io.text_encoding
 
-    def _require_explicit_encoding(encoding, stacklevel=2):
-        if encoding is None:
-            raise AssertionError("implicit locale encoding is forbidden in structured delta bundles")
+    def _require_explicit_utf8(encoding, stacklevel=2):
+        if not isinstance(encoding, str) or encoding.lower().replace("_", "-") not in {"utf-8", "utf8"}:
+            raise AssertionError(f"explicit UTF-8 encoding is required in structured delta bundles, got {encoding!r}")
         return orig_text_encoding(encoding, stacklevel)
 
-    monkeypatch.setattr(io, "text_encoding", _require_explicit_encoding)
+    monkeypatch.setattr(io, "text_encoding", _require_explicit_utf8)
     descriptor = export_structured_delta_bundle(
         env["new_service"], [env["product_id"]], env["tmp"] / "delta_utf8",
         snapshot_id=env["new_source"], baseline_store=env["tmp"] / "target",
         baseline_snapshot_id=env["baseline"]["target_snapshot_id"],
         selection=env["selection"])
+    storage = env["tmp"] / "delta_utf8" / descriptor["storage_packages"][0]["directory"]
+    for name in ("inventory.json", "transfer.json", "CHECKSUMS.sha256"):
+        assert (storage / name).read_bytes().decode("utf-8")
     report = apply_structured_delta_bundle(
         env["tmp"] / "delta_utf8", env["tmp"] / "target",
         runtime_root=env["tmp"] / "apply_utf8_rt", caller_roles={"read"})
